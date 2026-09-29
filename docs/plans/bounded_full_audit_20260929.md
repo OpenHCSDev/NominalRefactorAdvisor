@@ -66,9 +66,34 @@ policy was changed. The scan result is not presented as controlled timing.
 
 Main owns integration, the baseline and public tracking. Darwin reviews existing
 source/fact/snapshot lifetime owners; Nash independently reviews full-export,
-cache-invalidation and proof tests. Both initial reviews are read-only and use
-the same base. No competing heavy scan or scientific execution is authorized
-for these reviews.
+cache-invalidation and proof tests. Both initial reviews completed read-only
+against the same production base. Neither produced a production patch. Nash's
+test worktree is clean; no test patch or test run was made. Both workers are now
+closed to reduce the fleet after the desktop resource check warned about disk
+headroom and swap. The two owned worktrees were moved intact under `/home/ts/wt`.
+
+The user explicitly directed that NRA must not block OpenHCS work. Use the
+lightweight census/overlay scripts and bounded canonical Python queries for
+local ownership investigation, followed by actual native regression and MCP
+checks. Keep the FULL repair independent, without relabeling local evidence as
+global audit completion. The next OpenHCS defect is the already reproduced
+PolyStore POINT archive codec issue, tracked in PolyStore issue 12 / draft PR13.
+
+The census and overlay completed against current NRA production sources with
+no parse warning. A bounded Python query through `parse_python_modules` and
+`ModuleSyntaxIndex` inspected all 24 original classes in `roi.py` and 29 in
+`roi_converters.py`, exposing the existing ImageJ converter family. It exited 0
+in 0.94 seconds at 64,300 KiB maximum RSS. This is original-syntax inspection,
+not resolved native binding/MRO, invocation, codec or biological proof.
+
+The architecture review identified the decisive FULL lifetime problem: cached
+`CodemodSourceContext` still carries AST-bearing `ClassFamilyIndex`, and recipe
+compilation/simulation retains complete parsed snapshots. Extending bounded
+projection/source-index/observation owners is insufficient unless native recipe
+and proof materialization also gains a bounded original-identity lifetime.
+Do not merely enable compact eligibility or defer the same eager snapshot.
+The independent test review identified missing combined FULL cold/warm export,
+complete-status, dependency-invalidation and native-proof rejection regressions.
 
 Prefer one source owner with bounded native materialization and derived exports
 over another source roster, parser, proof cache or metadata mirror. Exact target
