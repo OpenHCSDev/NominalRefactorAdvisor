@@ -50,6 +50,9 @@ The example is an authored exact-fixture migration, not automatic async extracti
 For a current source-backed string-dispatch lead and a full migration-closure
 receipt, read [string dispatch → whole plan](references/source-backed-dispatch-planning.md).
 The lead preserves intervening unmatched guards and has no executable recipe.
+For cheap long-condition and repeated-literal-roster leads, and the way to
+turn clustered source questions into one admitted multistage trajectory, read
+[heuristic leads → trajectory](references/heuristic-to-trajectory.md).
 
 ## Establish the actual source and contracts
 
