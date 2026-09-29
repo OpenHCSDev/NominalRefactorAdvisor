@@ -39,7 +39,9 @@ owner to enumerate all cases:
    counterevidence. The plan is not done while a second authority survives.
 
 This is how cheap searches reduce the busy work **before** the real semantic
-choice, and how one choice can authorize many deterministic DSL stages. NRA
-currently does not infer the choice, automatically join these three heuristic
-families into an admitted dossier, or certify arbitrary async source movement.
-Do not label this workflow an implemented automatic plan generator.
+choice. The practitioner LLM already investigates and chains semantic decisions:
+it can admit one ownership relation, simulate dependent stages, inspect the
+projected source and make the next decision, yielding a large ordered codemod.
+NRA supplies source leads and deterministic DSL/proof gates; it does not infer
+business meaning or certify arbitrary async source movement. Do not confuse
+this existing LLM-led workflow with an unattended automatic plan generator.
