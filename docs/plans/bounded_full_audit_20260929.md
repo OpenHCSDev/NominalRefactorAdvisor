@@ -41,7 +41,7 @@ registered detectors. Import location was verified against the isolated worktree
 
 ## Current baseline and resource contract
 
-One FULL scan is running against the isolated current source and the same nine
+One FULL scan ran against the isolated current source and the same nine
 analysis/context roots. Its separate receipt is
 `scan-recovery-full-2048-cli-restart-current-main.*`; it does not overwrite the
 earlier held-prelaunch receipt. Native scan budget is 160 seconds, guarded shell
@@ -49,7 +49,18 @@ shard 165 seconds, sampled scanner RSS ceiling 2 GiB. Start requires 11 GiB
 available and memory PSI full at most 1 percent for ten seconds. Stop on less
 than 8 GiB available, sampled RSS over the ceiling, or sustained pressure.
 This is a diagnostic envelope, not a new production default or a proof of
-constant-space behavior. No complete coverage result is available yet.
+constant-space behavior.
+
+Actual result: the guard stopped the scanner at 94 seconds when sampled RSS
+reached 2,105,892 KiB, above the 2,097,152 KiB ceiling. Exit 143 reflects that
+guard termination, not a native deadline. The FULL JSON is empty and the owned
+scanner is absent after cleanup. Thus no complete coverage or full/raw R1 result
+is available. This is a reproduced resource failure on current main with the
+original source context, not just the earlier held-prelaunch condition.
+
+An attempted 20-second `py-spy` attach to this owned scanner was denied by the
+operating system. It exited 1 and produced no profile. No privilege or kernel
+policy was changed. The scan result is not presented as controlled timing.
 
 ## Ownership and validation work
 
