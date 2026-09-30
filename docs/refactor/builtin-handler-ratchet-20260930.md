@@ -30,4 +30,42 @@ under `/home/ts/wt/nra-builtin-handler-ratchet-20260930`.
 Acceptance: real historical debt growth is measured; the existing family and
 CLI discover the new declaration; authorized codecs remain explicit; actual
 consumer ratchets include the per-function measures; archive matches source.
-Draft scope only: no implementation or readiness claimed yet.
+## Scoped acceptance
+
+PR14 is preserved and closed in favor of stacked PR15. Verified remote base
+`checkpoint/native-proof-performance-20260914` is
+`9c4546964e899d06c74c896143b083f6b343da24`; no PR for that prerequisite branch
+exists. The item3 diff contains audit, collector, package and proof files, not
+the four prerequisite commits or newer main's unrelated native changes.
+
+Code/package checkpoint: `d392c5e4cd189ce1203127a746337ad498a0330d`.
+There is one classifier, `audit.handler_declarations.BuiltinHandlerDeclarations`.
+The audit Measure and Core466's original per-file Measure delegate to it. The
+lightweight distribution exposes the same source directory, with no NRA parser
+or tree-sitter dependency and no copied detector in Core.
+
+The existing skill suite passes four cases. The real PR421 specimen grows from
+zero to six primitive arms while the older TypeSwitch count falls from one to
+zero. Fixture provenance retains both exact Git revisions and source hashes.
+Archive SHA256 is
+`78bbad2b86182f64a65d643a96760bc0dfbb4de15cfeeeb5ca63a47e84034d80`;
+each of its 32 entries was verified byte-equal to source.
+
+Receiving Core466 checkpoint `e863bbbc174910aec4faeb6e67497a88b95b3b4e`
+builds and installs a real wheel in its own worktree. The installed
+`agent-comms-ratchet` rejects the original PR421 Git comparison with exit1 and
+`BuiltinHandlerTypeSwitch:src/agent_comms/acp_failure.py` delta +6. Installed
+command and collector bytes match their reviewed sources. The exact collector
+Git dependency is the NRA code checkpoint above. Twenty-four original
+per-function command cases passed; both new primitive growth/codec command
+cases pass after fixing the initially missing abstract occurrence hook. The
+first nonadmitted report is retained in Core's receipt.
+
+Deleted lines: 2 in NRA and 1 in Core at these code checkpoints. This is new
+ratchet coverage; existing StringDispatch/TypeSwitch definitions remain owners.
+No provider calls, public owner actions or default installation changes occurred.
+This proves the affected installed command, not unrelated UI/ACP readiness.
+
+OpenHCS consumer gap: no local ratchet was found in its current tools, scripts,
+tests or .github tree. Parent owns notifying its active agent of the exact
+published NRA/Core pins and closing that consumer admission gap.
