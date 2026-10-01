@@ -21,9 +21,11 @@ from collections import Counter
 from collections.abc import (
     Callable,
     Iterable,
+    Iterator,
     Mapping,
     Sequence,
 )
+from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from enum import Flag, StrEnum, auto
 from functools import cached_property, lru_cache
@@ -5029,7 +5031,8 @@ class _ProjectionVisitor(ParsedModuleClassFunctionStackNodeVisitor):
             self._collecting_presentations
             and self._collect_assignment_projection(node, node.value)
         )
-        self._traverse_projection_children(node, suppress=projected)
+        with self._suppress_projection_descendants(projected):
+            super().visit_Assign(node)
 
     def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
         projected = (
@@ -5041,7 +5044,8 @@ class _ProjectionVisitor(ParsedModuleClassFunctionStackNodeVisitor):
                 axis_type_names=ProjectionTypeScope.annotation_type_names(node.annotation),
             )
         )
-        self._traverse_projection_children(node, suppress=projected)
+        with self._suppress_projection_descendants(projected):
+            super().visit_AnnAssign(node)
 
     def visit_Return(self, node: ast.Return) -> None:
         projected = (
@@ -5049,15 +5053,17 @@ class _ProjectionVisitor(ParsedModuleClassFunctionStackNodeVisitor):
             and node.value is not None
             and self._collect_return_projection(node, node.value)
         )
-        self._traverse_projection_children(node, suppress=projected)
+        with self._suppress_projection_descendants(projected):
+            super().visit_Return(node)
 
-    def _traverse_projection_children(self, node: ast.AST, *, suppress: bool) -> None:
+    @contextmanager
+    def _suppress_projection_descendants(self, suppress: bool) -> Iterator[None]:
         # An emitted presentation has already consumed this expression's
         # descendant facts. Suppress only this capability, never another
         # cooperative capability's required syntax events.
         self._projection_suppression_depth += int(suppress)
         try:
-            super().generic_visit(node)
+            yield
         finally:
             self._projection_suppression_depth -= int(suppress)
 

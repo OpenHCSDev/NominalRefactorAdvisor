@@ -1577,6 +1577,9 @@ class ClassFunctionStackNodeVisitor(ast.NodeVisitor, ABC):
     visit_Call = ast.NodeVisitor.generic_visit
     visit_Compare = ast.NodeVisitor.generic_visit
     visit_Lambda = ast.NodeVisitor.generic_visit
+    visit_Assign = ast.NodeVisitor.generic_visit
+    visit_AnnAssign = ast.NodeVisitor.generic_visit
+    visit_Return = ast.NodeVisitor.generic_visit
 
 
 class ParsedModuleClassFunctionStackNodeVisitor(ClassFunctionStackNodeVisitor):

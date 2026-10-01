@@ -126,6 +126,124 @@ def test_new_capability_is_only_a_declaration_and_cooperative_hook(tmp_path):
     assert mro.count(ParsedModuleClassFunctionStackNodeVisitor) == 1
 
 
+class StatementCensus(ParsedModuleClassFunctionStackNodeVisitor):
+    """Independent same-node capability, not a second visitor or dispatch map."""
+
+    def __init__(self, parsed_module, **kwargs):
+        super().__init__(parsed_module, **kwargs)
+        self.statements = Counter()
+        self.calls = Counter()
+
+    def visit_Assign(self, node):
+        self.statements[(self.qualname, id(node))] += 1
+        super().visit_Assign(node)
+
+    def visit_AnnAssign(self, node):
+        self.statements[(self.qualname, id(node))] += 1
+        super().visit_AnnAssign(node)
+
+    def visit_Return(self, node):
+        self.statements[(self.qualname, id(node))] += 1
+        super().visit_Return(node)
+
+    def visit_Call(self, node):
+        self.calls[id(node)] += 1
+        super().visit_Call(node)
+
+
+class CensusBeforeProjection(StatementCensus, _CompactSemanticProjectionVisitor):
+    pass
+
+
+class CensusAfterProjection(_CompactSemanticProjectionVisitor, StatementCensus):
+    pass
+
+
+@pytest.mark.parametrize("visitor_type", (CensusBeforeProjection, CensusAfterProjection))
+@pytest.mark.parametrize("include_presentations", (True, False))
+def test_same_node_capability_composes_in_both_mro_orders(
+    tmp_path, visitor_type, include_presentations
+):
+    source = """\
+class Example:
+    def target(self, value: Value):
+        projected = {'left': isinstance(value.count, int), 'right': 'name'}
+        annotated: dict = {'left': isinstance(value.count, int), 'right': 'name'}
+        plain = consume(value)
+        uninitialized: int
+        def nested():
+            local = consume(value)
+            return
+        return {'left': isinstance(value.count, int), 'right': 'name'}
+"""
+    module = SourceModule(tmp_path / "case.py", "case", source).parse()
+    independent = _ProjectionVisitor(
+        module, include_presentations=include_presentations
+    )
+    independent.visit(module.module)
+    visitor = visitor_type(module, include_presentations=include_presentations)
+    visitor.visit(module.module)
+    target = module.module.body[0].body[0]
+    nested = target.body[4]
+    assert visitor.statements == Counter(
+        {
+            ("Example.target", id(node)): 1
+            for node in (*target.body[:4], target.body[-1])
+        }
+    ) + Counter({("Example.target.nested", id(node)): 1 for node in nested.body})
+    assert visitor.calls == Counter(
+        {id(node): 1 for node in ast.walk(module.module) if isinstance(node, ast.Call)}
+    )
+    assert visitor.projections == independent.projections
+    assert visitor.class_supplements == independent.class_supplements
+    assert DeclaredTypeCheckModule.from_collector(
+        visitor
+    ) == DeclaredTypeCheckModule.collect(module)
+    assert len(visitor.checks) == 3
+    mro = visitor_type.__mro__
+    assert mro.count(ParsedModuleClassFunctionStackNodeVisitor) == 1
+    assert mro.index(StatementCensus) < mro.index(
+        ParsedModuleClassFunctionStackNodeVisitor
+    )
+    assert visitor.class_stack == visitor.function_stack == []
+    assert visitor.subjects == visitor.locals == []
+    assert visitor._projection_suppression_depth == 0
+
+
+@pytest.mark.parametrize(
+    "statement",
+    (
+        "result = {'left': consume(value), 'right': 'name'}",
+        "result: dict = {'left': consume(value), 'right': 'name'}",
+        "return {'left': consume(value), 'right': 'name'}",
+    ),
+)
+def test_same_node_exception_unwinds_projection_policy_and_scope(tmp_path, statement):
+    class FailAtStatement(ParsedModuleClassFunctionStackNodeVisitor):
+        def visit_Assign(self, node):
+            assert self._projection_suppression_depth == 1
+            raise RuntimeError("controlled same-node failure")
+
+        visit_AnnAssign = visit_Assign
+        visit_Return = visit_Assign
+
+    class Failing(_CompactSemanticProjectionVisitor, FailAtStatement):
+        pass
+
+    source = (
+        "class Example:\n    def target(self, value: Value):\n        " + statement
+    )
+    module = SourceModule(tmp_path / "case.py", "case", source).parse()
+    visitor = Failing(module)
+    with pytest.raises(RuntimeError, match="controlled same-node failure"):
+        visitor.visit(module.module)
+    assert visitor.class_stack == visitor.function_stack == []
+    assert visitor.subjects == visitor.locals == []
+    assert visitor.owner_construction_stack == visitor.type_scopes == []
+    assert visitor.class_supplement_stack == visitor.active_class_method_frames == []
+    assert visitor._projection_suppression_depth == 0
+
+
 def test_exception_unwinds_both_capabilities_and_shared_owner(tmp_path):
     class FailOnCall(ParsedModuleClassFunctionStackNodeVisitor):
         def visit_Call(self, node):
