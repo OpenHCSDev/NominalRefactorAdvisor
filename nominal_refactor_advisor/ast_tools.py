@@ -1562,13 +1562,21 @@ class ClassFunctionStackNodeVisitor(ast.NodeVisitor, ABC):
         finally:
             self.class_stack.pop()
 
-    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
-        self.before_visit_function(node)
+    @contextmanager
+    def function_name_scope(
+        self, node: ast.FunctionDef | ast.AsyncFunctionDef
+    ) -> Iterator[None]:
+        """Own name-stack restoration for traversal and scoped postludes."""
         self.function_stack.append(node.name)
         try:
-            self.traverse_function_body(node)
+            yield
         finally:
             self.function_stack.pop()
+
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+        self.before_visit_function(node)
+        with self.function_name_scope(node):
+            self.traverse_function_body(node)
 
     visit_AsyncFunctionDef = visit_FunctionDef
 
@@ -1588,6 +1596,29 @@ class ParsedModuleClassFunctionStackNodeVisitor(ClassFunctionStackNodeVisitor):
     def __init__(self, parsed_module: ParsedModule) -> None:
         super().__init__()
         self.parsed_module = parsed_module
+
+    @contextmanager
+    def function_scope(
+        self,
+        node: ast.FunctionDef | ast.AsyncFunctionDef,
+        assigned_names: frozenset[str],
+        argument_names: frozenset[str],
+    ) -> Iterator[None]:
+        """Cooperative capability hook spanning one function's traversal."""
+        del node, assigned_names, argument_names
+        yield
+
+    def visit_FunctionDef(
+        self, node: ast.FunctionDef | ast.AsyncFunctionDef
+    ) -> None:
+        # The original lexical authority determines these facts once per event.
+        # Pass them through C3 capability hooks, not a node-id cache or a store.
+        assigned_names = LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(node.body)
+        argument_names = LEXICAL_SCOPE_BINDING_AUTHORITY.argument_names(node)
+        with self.function_scope(node, assigned_names, argument_names):
+            super().visit_FunctionDef(node)
+
+    visit_AsyncFunctionDef = visit_FunctionDef
 
 
 _TRegistered = TypeVar("_TRegistered")

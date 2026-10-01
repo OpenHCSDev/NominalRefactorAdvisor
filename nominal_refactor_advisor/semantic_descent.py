@@ -81,7 +81,6 @@ from .deadline import scan_deadline_checkpoint
 from .enum_semantics import PYTHON_ENUM_BASE_AUTHORITY
 from .export_tools import PYTHON_PUBLIC_EXPORT_ASSIGNMENT
 from .implementation_identity import ImplementationSource, implementation_module_names
-from .lexical_bindings import LEXICAL_SCOPE_BINDING_AUTHORITY
 from .json_reports import (
     DataclassJsonReport,
     SemanticRecord,
@@ -4850,10 +4849,13 @@ class _ProjectionVisitor(ParsedModuleClassFunctionStackNodeVisitor):
                     )
                 )
 
-    def visit_FunctionDef(
+    @contextmanager
+    def function_scope(
         self,
         node: ast.FunctionDef | ast.AsyncFunctionDef,
-    ) -> None:
+        assigned_names: frozenset[str],
+        argument_names: frozenset[str],
+    ) -> Iterator[None]:
         direct_class_frames = tuple(
             frame
             for frame in self.class_supplement_stack
@@ -4877,12 +4879,11 @@ class _ProjectionVisitor(ParsedModuleClassFunctionStackNodeVisitor):
             )
         )
         try:
-            super().visit_FunctionDef(node)
+            with super().function_scope(node, assigned_names, argument_names):
+                yield
             if self.include_presentations:
                 collector = MappingReadProjectionCollector()
-                bound_names = LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(
-                    node.body
-                ) | LEXICAL_SCOPE_BINDING_AUTHORITY.argument_names(node)
+                bound_names = assigned_names | argument_names
                 for statement in node.body:
                     collector.visit(statement)
                 for subject, reads in collector.reads.items():
@@ -4928,39 +4929,35 @@ class _ProjectionVisitor(ParsedModuleClassFunctionStackNodeVisitor):
                         if parts[0] not in bound_names
                         or (
                             parts == (classmethod_receiver,)
-                            and classmethod_receiver
-                            not in LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(
-                                node.body
-                            )
+                            and classmethod_receiver not in assigned_names
                         )
                     )
-                    self.function_stack.append(node.name)
-                    self._append_projection(
-                        node,
-                        PresentationProjectionKind.MAPPING_READ,
-                        f"{node.name}:{subject}",
-                        tuple(
-                            PresentationToken(
-                                key,
-                                PresentationTokenKind.STRING_LITERAL,
-                                PresentationTokenRole.DICT_KEY,
-                            )
-                            for key in keys
-                        ),
-                        mapping_read_constructors=constructors,
-                    )
-                    if self.class_reference_resolver is not None:
-                        projection = self.projections[-1]
-                        self.projections[-1] = replace(
-                            projection,
-                            class_symbols=projection.resolved_read_constructor_symbols(
-                                lambda parts: self.class_reference_resolver.symbol_for_reference(
-                                    ast.parse(".".join(parts), mode="eval").body
-                                ),
-                                self.class_reference_resolver.class_index,
+                    with self.function_name_scope(node):
+                        self._append_projection(
+                            node,
+                            PresentationProjectionKind.MAPPING_READ,
+                            f"{node.name}:{subject}",
+                            tuple(
+                                PresentationToken(
+                                    key,
+                                    PresentationTokenKind.STRING_LITERAL,
+                                    PresentationTokenRole.DICT_KEY,
+                                )
+                                for key in keys
                             ),
+                            mapping_read_constructors=constructors,
                         )
-                    self.function_stack.pop()
+                        if self.class_reference_resolver is not None:
+                            projection = self.projections[-1]
+                            self.projections[-1] = replace(
+                                projection,
+                                class_symbols=projection.resolved_read_constructor_symbols(
+                                    lambda parts: self.class_reference_resolver.symbol_for_reference(
+                                        ast.parse(".".join(parts), mode="eval").body
+                                    ),
+                                    self.class_reference_resolver.class_index,
+                                ),
+                            )
         finally:
             self.type_scopes.pop()
             if frame is not None:
@@ -4979,8 +4976,6 @@ class _ProjectionVisitor(ParsedModuleClassFunctionStackNodeVisitor):
                     )
             if direct_class_frames:
                 del self.active_class_method_frames[-len(direct_class_frames) :]
-
-    visit_AsyncFunctionDef = visit_FunctionDef
 
     def _axis_type_names_for_node(self, node: ast.AST) -> tuple[str, ...]:
         return (

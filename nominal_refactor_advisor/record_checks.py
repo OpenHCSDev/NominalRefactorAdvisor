@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import ast
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 
 from .annotation_semantics import NOMINAL_ANNOTATION_SOURCE_AUTHORITY
@@ -16,7 +18,6 @@ from .class_index import (
     ModuleNominalBindingAuthority,
     ModuleNominalBindingSnapshot,
 )
-from .lexical_bindings import LEXICAL_SCOPE_BINDING_AUTHORITY
 from .models import SourceLocation
 
 
@@ -64,12 +65,20 @@ class DeclaredAttributeCheckCollector(ParsedModuleClassFunctionStackNodeVisitor)
         self.locals: list[frozenset[str]] = []
         self.checks: list[DeclaredAttributeCheck] = []
 
-    def visit_FunctionDef(self, node: ast.FunctionDef | ast.AsyncFunctionDef) -> None:
-        assigned = LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(node.body)
+    @contextmanager
+    def function_scope(
+        self,
+        node: ast.FunctionDef | ast.AsyncFunctionDef,
+        assigned_names: frozenset[str],
+        argument_names: frozenset[str],
+    ) -> Iterator[None]:
         parameters = (*node.args.posonlyargs, *node.args.args, *node.args.kwonlyargs)
         subjects = {}
         for parameter in parameters:
-            if parameter.arg not in assigned and parameter.annotation is not None:
+            if (
+                parameter.arg not in assigned_names
+                and parameter.annotation is not None
+            ):
                 parts = NOMINAL_ANNOTATION_SOURCE_AUTHORITY.reference_parts_or_none(
                     parameter.annotation
                 )
@@ -80,7 +89,7 @@ class DeclaredAttributeCheckCollector(ParsedModuleClassFunctionStackNodeVisitor)
             and not self.function_stack
             and parameters
             and parameters[0].arg == "self"
-            and "self" not in assigned
+            and "self" not in assigned_names
             and not any(
                 isinstance(d, ast.Name) and d.id in {"staticmethod", "classmethod"}
                 for d in node.decorator_list
@@ -88,16 +97,13 @@ class DeclaredAttributeCheckCollector(ParsedModuleClassFunctionStackNodeVisitor)
         ):
             subjects["self"] = (*self.class_stack,)
         self.subjects.append(subjects)
-        self.locals.append(
-            assigned | LEXICAL_SCOPE_BINDING_AUTHORITY.argument_names(node)
-        )
+        self.locals.append(assigned_names | argument_names)
         try:
-            super().visit_FunctionDef(node)
+            with super().function_scope(node, assigned_names, argument_names):
+                yield
         finally:
             self.subjects.pop()
             self.locals.pop()
-
-    visit_AsyncFunctionDef = visit_FunctionDef
 
     def visit_Lambda(self, node: ast.Lambda) -> None:
         # This capability has never admitted checks in lambda bodies. Other
