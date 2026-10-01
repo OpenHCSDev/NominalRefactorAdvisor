@@ -1510,6 +1510,7 @@ class ClassFunctionStackNodeVisitor(ast.NodeVisitor, ABC):
     """Nominal AST visitor base that owns class/function scope stack lifecycle."""
 
     def __init__(self) -> None:
+        super().__init__()
         self.class_stack: list[str] = []
         self.function_stack: list[str] = []
 
@@ -1561,13 +1562,61 @@ class ClassFunctionStackNodeVisitor(ast.NodeVisitor, ABC):
         finally:
             self.class_stack.pop()
 
-    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
-        self.before_visit_function(node)
+    @contextmanager
+    def function_name_scope(
+        self, node: ast.FunctionDef | ast.AsyncFunctionDef
+    ) -> Iterator[None]:
+        """Own name-stack restoration for traversal and scoped postludes."""
         self.function_stack.append(node.name)
         try:
-            self.traverse_function_body(node)
+            yield
         finally:
             self.function_stack.pop()
+
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+        self.before_visit_function(node)
+        with self.function_name_scope(node):
+            self.traverse_function_body(node)
+
+    visit_AsyncFunctionDef = visit_FunctionDef
+
+    # Cooperative capabilities observe an event before delegating here. The
+    # owning ancestor traverses children once, regardless of capability count.
+    visit_Call = ast.NodeVisitor.generic_visit
+    visit_Compare = ast.NodeVisitor.generic_visit
+    visit_Lambda = ast.NodeVisitor.generic_visit
+    visit_Assign = ast.NodeVisitor.generic_visit
+    visit_AnnAssign = ast.NodeVisitor.generic_visit
+    visit_Return = ast.NodeVisitor.generic_visit
+
+
+class ParsedModuleClassFunctionStackNodeVisitor(ClassFunctionStackNodeVisitor):
+    """Source-bound scope traversal shared by independent module capabilities."""
+
+    def __init__(self, parsed_module: ParsedModule) -> None:
+        super().__init__()
+        self.parsed_module = parsed_module
+
+    @contextmanager
+    def function_scope(
+        self,
+        node: ast.FunctionDef | ast.AsyncFunctionDef,
+        assigned_names: frozenset[str],
+        argument_names: frozenset[str],
+    ) -> Iterator[None]:
+        """Cooperative capability hook spanning one function's traversal."""
+        del node, assigned_names, argument_names
+        yield
+
+    def visit_FunctionDef(
+        self, node: ast.FunctionDef | ast.AsyncFunctionDef
+    ) -> None:
+        # The original lexical authority determines these facts once per event.
+        # Pass them through C3 capability hooks, not a node-id cache or a store.
+        assigned_names = LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(node.body)
+        argument_names = LEXICAL_SCOPE_BINDING_AUTHORITY.argument_names(node)
+        with self.function_scope(node, assigned_names, argument_names):
+            super().visit_FunctionDef(node)
 
     visit_AsyncFunctionDef = visit_FunctionDef
 

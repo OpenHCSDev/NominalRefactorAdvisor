@@ -1,0 +1,63 @@
+============================= test session starts ==============================
+platform linux -- Python 3.12.3, pytest-8.3.5, pluggy-1.6.0 -- /home/ts/wt/openhcs-generated-inputs-installed-parent-20261001/.venv/bin/python
+rootdir: /home/ts/wt/nra-bounded-full-audit-20260929
+configfile: pyproject.toml
+collecting ... collected 1 item
+
+tests/test_syntax_children_projection.py::test_completion_does_not_repeat_whole_module_syntax_walk FAILED [100%]
+
+=================================== FAILURES ===================================
+___________ test_completion_does_not_repeat_whole_module_syntax_walk ___________
+ValueError: Native class capture remains unproved
+
+The above exception was the direct cause of the following exception:
+
+    def test_completion_does_not_repeat_whole_module_syntax_walk():
+        entry = entry_for("key = None\npass")
+        syntax = module_syntax_index(entry.execution.module.module)
+>       expected = entry.final_evaluation
+
+tests/test_syntax_children_projection.py:55: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+nominal_refactor_advisor/source_execution.py:2922: in final_evaluation
+    self.execution.require_terminal_evaluation(evaluation)
+nominal_refactor_advisor/source_execution.py:3867: in require_terminal_evaluation
+    prefix = self.required_prefix(context, None)
+nominal_refactor_advisor/source_execution.py:3879: in required_prefix
+    result.require_closed()
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = OpenCapturedReference(violation=<CapturedReferenceViolation.UNPROVED_EFFECTS: 'unproved_execution_effects'>, mutation=None)
+
+    def require_closed(self) -> None:
+>       raise self.rejection("Object capture")
+E       nominal_refactor_advisor.captured_reference.CapturedReferenceRejection: Object capture remains open: unproved_execution_effects
+
+nominal_refactor_advisor/captured_reference.py:533: CapturedReferenceRejection
+=========================== short test summary info ============================
+FAILED tests/test_syntax_children_projection.py::test_completion_does_not_repeat_whole_module_syntax_walk
+============================== 1 failed in 0.39s ===============================
+Command exited with non-zero status 1
+	Command being timed: "timeout --signal=TERM --kill-after=3s 60s taskset -c 0 /home/ts/wt/openhcs-generated-inputs-installed-parent-20261001/.venv/bin/python -I -B -c import sys; sys.path.insert(0,"/home/ts/wt/nra-bounded-full-audit-20260929"); import pytest; raise SystemExit(pytest.main(["-v","-o","addopts=","-p","no:cacheprovider","--basetemp=/home/ts/.cache/agent-scratch/nra-r1-preparation-owner-357-20261001/pytest-predecessor-08","tests/test_syntax_children_projection.py::test_completion_does_not_repeat_whole_module_syntax_walk"]))"
+	User time (seconds): 2.06
+	System time (seconds): 0.11
+	Percent of CPU this job got: 99%
+	Elapsed (wall clock) time (h:mm:ss or m:ss): 0:02.18
+	Average shared text size (kbytes): 0
+	Average unshared data size (kbytes): 0
+	Average stack size (kbytes): 0
+	Average total size (kbytes): 0
+	Maximum resident set size (kbytes): 86920
+	Average resident set size (kbytes): 0
+	Major (requiring I/O) page faults: 0
+	Minor (reclaiming a frame) page faults: 24557
+	Voluntary context switches: 34
+	Involuntary context switches: 229
+	Swaps: 0
+	File system inputs: 88
+	File system outputs: 16
+	Socket messages sent: 0
+	Socket messages received: 0
+	Signals delivered: 0
+	Page size (bytes): 4096
+	Exit status: 1

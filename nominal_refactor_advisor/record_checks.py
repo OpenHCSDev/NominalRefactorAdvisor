@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import ast
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 
 from .annotation_semantics import NOMINAL_ANNOTATION_SOURCE_AUTHORITY
-from .ast_tools import ClassFunctionStackNodeVisitor, ParsedModule
+from .ast_tools import ParsedModuleClassFunctionStackNodeVisitor, ParsedModule
 from .class_index import (
     CompactClassFamilyIndex,
     CompactClassReferenceResolver,
@@ -16,7 +18,6 @@ from .class_index import (
     ModuleNominalBindingAuthority,
     ModuleNominalBindingSnapshot,
 )
-from .lexical_bindings import LEXICAL_SCOPE_BINDING_AUTHORITY
 from .models import SourceLocation
 
 
@@ -43,28 +44,41 @@ class DeclaredTypeCheckModule:
         collector = DeclaredAttributeCheckCollector(module)
         if include_checks:
             collector.visit(module.module)
+        return cls.from_collector(collector)
+
+    @classmethod
+    def from_collector(
+        cls, collector: DeclaredAttributeCheckCollector
+    ) -> DeclaredTypeCheckModule:
         return cls(collector.module_bindings, tuple(collector.checks))
 
 
-class DeclaredAttributeCheckCollector(ClassFunctionStackNodeVisitor):
+class DeclaredAttributeCheckCollector(ParsedModuleClassFunctionStackNodeVisitor):
     """Collect contracts once at the lexical boundary, without a second class index."""
 
-    def __init__(self, module: ParsedModule) -> None:
-        super().__init__()
-        self.module = module
-        self.module_bindings = ModuleNominalBindingAuthority(module).snapshot_before(
-            None
-        )
+    def __init__(self, parsed_module: ParsedModule) -> None:
+        super().__init__(parsed_module)
+        self.module_bindings = ModuleNominalBindingAuthority(
+            parsed_module
+        ).snapshot_before(None)
         self.subjects: list[dict[str, tuple[str, ...]]] = []
         self.locals: list[frozenset[str]] = []
         self.checks: list[DeclaredAttributeCheck] = []
 
-    def visit_FunctionDef(self, node: ast.FunctionDef | ast.AsyncFunctionDef) -> None:
-        assigned = LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(node.body)
+    @contextmanager
+    def function_scope(
+        self,
+        node: ast.FunctionDef | ast.AsyncFunctionDef,
+        assigned_names: frozenset[str],
+        argument_names: frozenset[str],
+    ) -> Iterator[None]:
         parameters = (*node.args.posonlyargs, *node.args.args, *node.args.kwonlyargs)
         subjects = {}
         for parameter in parameters:
-            if parameter.arg not in assigned and parameter.annotation is not None:
+            if (
+                parameter.arg not in assigned_names
+                and parameter.annotation is not None
+            ):
                 parts = NOMINAL_ANNOTATION_SOURCE_AUTHORITY.reference_parts_or_none(
                     parameter.annotation
                 )
@@ -75,7 +89,7 @@ class DeclaredAttributeCheckCollector(ClassFunctionStackNodeVisitor):
             and not self.function_stack
             and parameters
             and parameters[0].arg == "self"
-            and "self" not in assigned
+            and "self" not in assigned_names
             and not any(
                 isinstance(d, ast.Name) and d.id in {"staticmethod", "classmethod"}
                 for d in node.decorator_list
@@ -83,19 +97,24 @@ class DeclaredAttributeCheckCollector(ClassFunctionStackNodeVisitor):
         ):
             subjects["self"] = (*self.class_stack,)
         self.subjects.append(subjects)
-        self.locals.append(
-            assigned | LEXICAL_SCOPE_BINDING_AUTHORITY.argument_names(node)
-        )
+        self.locals.append(assigned_names | argument_names)
         try:
-            super().visit_FunctionDef(node)
+            with super().function_scope(node, assigned_names, argument_names):
+                yield
         finally:
             self.subjects.pop()
             self.locals.pop()
 
-    visit_AsyncFunctionDef = visit_FunctionDef
-
     def visit_Lambda(self, node: ast.Lambda) -> None:
-        pass
+        # This capability has never admitted checks in lambda bodies. Other
+        # composed capabilities may still require those syntax events.
+        self.subjects.append({})
+        self.locals.append(frozenset())
+        try:
+            super().visit_Lambda(node)
+        finally:
+            self.locals.pop()
+            self.subjects.pop()
 
     def _builtin(self, node: ast.AST, name: str) -> bool:
         return (
@@ -112,7 +131,7 @@ class DeclaredAttributeCheckCollector(ClassFunctionStackNodeVisitor):
             and not node.keywords
         ):
             self._record(node, node.args[0], node.args[1])
-        self.generic_visit(node)
+        super().visit_Call(node)
 
     def visit_Compare(self, node: ast.Compare) -> None:
         if len(node.ops) == 1 and isinstance(
@@ -129,7 +148,7 @@ class DeclaredAttributeCheckCollector(ClassFunctionStackNodeVisitor):
                     and not call.keywords
                 ):
                     self._record(node, call.args[0], expected)
-        self.generic_visit(node)
+        super().visit_Compare(node)
 
     def _record(self, node: ast.AST, value: ast.AST, expected: ast.AST) -> None:
         if (
@@ -150,7 +169,9 @@ class DeclaredAttributeCheckCollector(ClassFunctionStackNodeVisitor):
             return
         self.checks.append(
             DeclaredAttributeCheck(
-                SourceLocation(self.module.file_path, node.lineno, self.qualname),
+                SourceLocation(
+                    self.parsed_module.file_path, node.lineno, self.qualname
+                ),
                 subject_type,
                 value.attr,
                 self.module_bindings.reference_for(expected_parts),

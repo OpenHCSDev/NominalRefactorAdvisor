@@ -1,0 +1,25 @@
+{
+  "source_owner": "Schrodinger/Codex",
+  "integration_and_original_qualification_owner": "parent",
+  "draft_pr": "https://github.com/OpenHCSDev/NominalRefactorAdvisor/pull/16",
+  "source_checkpoint": "19f21b6cb660826fa7c593af1d59101009b46019",
+  "predecessor_evidence_head": "c6ec13f8bf2b6c07b8fae8db8533fcd6fb5d6d2b",
+  "baseline": "673c062fc656e9c74f1eddcab30f036c9befbc1f",
+  "source_sha256": {
+    "nominal_refactor_advisor/ast_tools.py": "6eb222cdb5a262178c10166b50fe63a21382b5871a50234618b40cef0861f143",
+    "nominal_refactor_advisor/semantic_descent.py": "028189663e120322be8ccb730815b95acc0b731e4ea70db3ccde9c0ce5aa141f",
+    "tests/test_cooperative_semantic_preparation.py": "0516c686c26b058d8f394e1ba8ed591805237db3d4ecbe1ab4377cb28832adff"
+  },
+  "immutable_consumer_sha256": "4c6282f52e7c188068dd9d63399f5522a7cb1d222504d0c0b809be10303884ca",
+  "current_distinct_passing_cases": 47,
+  "new_cases": 7,
+  "same_node_bypass": "demonstrated downstream in C3, repaired; no observed installed regression claimed",
+  "source_limits": {"cpu": 1, "memory_mib": 512, "swap_mib": 0, "outer_seconds": 60},
+  "peak_observed_kib": 105996,
+  "original_r0_r1_and_installed_acceptance": "pending parent qualification, untouched",
+  "global_85_detector_full": "unqualified",
+  "earlier_native_proof_failure_and_timeout": "retained unchanged, not requalified",
+  "science_native_installs_locks_providers_downloads": "none",
+  "owned_scratch": "/home/ts/.cache/agent-scratch/nra-r1-same-node-357-20261001",
+  "cleanup": "only owned816KiB root removed after retained checksums, realpath, process and no-handle proof; all receipts retained"
+}

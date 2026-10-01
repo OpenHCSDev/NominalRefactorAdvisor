@@ -1,0 +1,30 @@
+{
+  "source_owner": "Schrodinger/Codex",
+  "integration_and_complete_qualification_owner": "parent",
+  "draft_pr": "https://github.com/OpenHCSDev/NominalRefactorAdvisor/pull/16",
+  "reviewed_evidence_head": "18910a5aea638e0c2dcd7a574c40a498bcbf3aea",
+  "production_checkpoint_unchanged": "19f21b6cb660826fa7c593af1d59101009b46019",
+  "source_sha256": {
+    "nominal_refactor_advisor/ast_tools.py": "6eb222cdb5a262178c10166b50fe63a21382b5871a50234618b40cef0861f143",
+    "nominal_refactor_advisor/record_checks.py": "4b77a6fc7af2eaff8d81e5a7e764b8f3db0fd6b4a7af687c4bb8c7831512fd53",
+    "nominal_refactor_advisor/semantic_descent.py": "028189663e120322be8ccb730815b95acc0b731e4ea70db3ccde9c0ce5aa141f",
+    "nominal_refactor_advisor/analysis.py": "9df4ad1ea64bae4b88a4d911e6355630c82826ff2a54c96d720fa6171d92cfbd"
+  },
+  "immutable_consumer_sha256": "4c6282f52e7c188068dd9d63399f5522a7cb1d222504d0c0b809be10303884ca",
+  "base_revision": "791650087e01c9d25766f12802a37296851f37cf",
+  "head_revision": "3d58912d6e74e4b3dd4fa9e07a6b4a9d7dd9c7e4",
+  "original_context_roots": 3,
+  "original_recursive_dependencies": 8,
+  "source_limits": {"cpu": 1, "memory_mib": 512, "swap_mib": 0, "outer_seconds": 60},
+  "diagnostic_cpu_stop_seconds": 45,
+  "diagnostic_status": "INCOMPLETE exit75; not complete R1 or throughput evidence",
+  "diagnostic_wall_seconds": 48.37,
+  "diagnostic_peak_kib": 122540,
+  "original_parent_r1_status": "FAILED ScanDeadlineExceeded160s; exit1,164.42s,187.41MiB",
+  "original_r0_installed_global_full": "not qualified by this checkpoint",
+  "behavioral_evidence": "earlier47 source cases retained and applicable; not rerun here",
+  "unresolved_ownership": "two composed function capabilities rescan same lexical body bindings",
+  "science_native_installs_locks_providers_downloads": "none",
+  "owned_scratch": "/home/ts/.cache/agent-scratch/nra-r1-publication-357-20261001",
+  "cleanup": "only owned288KiB root removed after checksum/no-handle/process/realpath proof; retained evidence intact"
+}

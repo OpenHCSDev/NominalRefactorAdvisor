@@ -1,0 +1,33 @@
+============================= test session starts ==============================
+platform linux -- Python 3.12.3, pytest-8.3.5, pluggy-1.6.0 -- /home/ts/wt/openhcs-generated-inputs-installed-parent-20261001/.venv/bin/python
+rootdir: /home/ts/wt/nra-r1-preparation-owner-357-20261001
+configfile: pyproject.toml
+collecting ... collected 2 items
+
+tests/test_exact_cache_coverage.py::test_cli_full_scan_rejects_subset_aggregate[summary] PASSED [ 50%]
+tests/test_exact_cache_coverage.py::test_cli_full_scan_rejects_subset_aggregate[full] PASSED [100%]
+
+============================== 2 passed in 15.90s ==============================
+	Command being timed: "timeout --signal=TERM --kill-after=3s 60s taskset -c 0 /home/ts/wt/openhcs-generated-inputs-installed-parent-20261001/.venv/bin/python -I -B -c import sys; sys.path.insert(0,"/home/ts/wt/nra-r1-preparation-owner-357-20261001"); import pytest; raise SystemExit(pytest.main(["-v","-o","addopts=","-p","no:cacheprovider","--basetemp=/home/ts/.cache/agent-scratch/nra-r1-preparation-owner-357-20261001/pytest-cli-10","tests/test_exact_cache_coverage.py::test_cli_full_scan_rejects_subset_aggregate[summary]","tests/test_exact_cache_coverage.py::test_cli_full_scan_rejects_subset_aggregate[full]"]))"
+	User time (seconds): 17.48
+	System time (seconds): 0.72
+	Percent of CPU this job got: 98%
+	Elapsed (wall clock) time (h:mm:ss or m:ss): 0:18.57
+	Average shared text size (kbytes): 0
+	Average unshared data size (kbytes): 0
+	Average stack size (kbytes): 0
+	Average total size (kbytes): 0
+	Maximum resident set size (kbytes): 88644
+	Average resident set size (kbytes): 0
+	Major (requiring I/O) page faults: 15
+	Minor (reclaiming a frame) page faults: 142477
+	Voluntary context switches: 354
+	Involuntary context switches: 156
+	Swaps: 0
+	File system inputs: 1104
+	File system outputs: 7584
+	Socket messages sent: 0
+	Socket messages received: 0
+	Signals delivered: 0
+	Page size (bytes): 4096
+	Exit status: 0

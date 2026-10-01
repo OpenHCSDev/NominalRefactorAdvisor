@@ -1,0 +1,142 @@
+============================= test session starts ==============================
+platform linux -- Python 3.12.3, pytest-8.3.5, pluggy-1.6.0 -- /home/ts/wt/openhcs-generated-inputs-installed-parent-20261001/.venv/bin/python
+rootdir: /home/ts/wt/nra-r1-preparation-owner-357-20261001
+configfile: pyproject.toml
+collecting ... collected 6 items / 4 deselected / 2 selected
+
+tests/test_cooperative_function_bindings.py::test_shared_function_bindings_need_one_determination_per_event[CensusBeforeProjection] FAILED [ 50%]
+tests/test_cooperative_function_bindings.py::test_shared_function_bindings_need_one_determination_per_event[CensusAfterProjection] FAILED [100%]
+
+=================================== FAILURES ===================================
+_ test_shared_function_bindings_need_one_determination_per_event[CensusBeforeProjection] _
+
+tmp_path = PosixPath('/home/ts/.cache/agent-scratch/nra-r1-function-scope-357-20261001/pytest-before/test_shared_function_bindings_0')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7fa118aff1d0>
+visitor_type = <class 'test_cooperative_function_bindings.CensusBeforeProjection'>
+
+    @pytest.mark.parametrize("visitor_type", (CensusBeforeProjection, CensusAfterProjection))
+    def test_shared_function_bindings_need_one_determination_per_event(
+        tmp_path, monkeypatch, visitor_type
+    ):
+        module = SourceModule(tmp_path / "case.py", "case", SOURCE).parse()
+        functions = tuple(
+            node
+            for node in ast.walk(module.module)
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        )
+        body_ids = {id(node.body) for node in functions}
+        body_calls = Counter()
+        argument_calls = Counter()
+        original_bound = LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names
+        original_arguments = LEXICAL_SCOPE_BINDING_AUTHORITY.argument_names
+    
+        def observed_bound(nodes):
+            if id(nodes) in body_ids:
+                body_calls[id(nodes)] += 1
+            return original_bound(nodes)
+    
+        def observed_arguments(node):
+            argument_calls[id(node)] += 1
+            return original_arguments(node)
+    
+        # Parse/source identity and existing lexical algorithm are unchanged. Only
+        # observe calls during this one original generic visitor invocation.
+        monkeypatch.setattr(LEXICAL_SCOPE_BINDING_AUTHORITY, "bound_names", observed_bound)
+        monkeypatch.setattr(
+            LEXICAL_SCOPE_BINDING_AUTHORITY, "argument_names", observed_arguments
+        )
+        visitor = visitor_type(module)
+        visitor.visit(module.module)
+>       assert body_calls == Counter({id(node.body): 1 for node in functions})
+E       AssertionError: assert Counter({1403...879410816: 2}) == Counter({1403...882213952: 1})
+E         
+E         Differing items:
+E         {140329882162944: 2} != {140329882162944: 1}
+E         {140329882166080: 2} != {140329882166080: 1}
+E         {140329879410816: 2} != {140329879410816: 1}
+E         {140329882213952: 2} != {140329882213952: 1}
+E         ...
+E         
+E         ...Full output truncated (17 lines hidden), use '-vv' to show
+
+tests/test_cooperative_function_bindings.py:94: AssertionError
+_ test_shared_function_bindings_need_one_determination_per_event[CensusAfterProjection] _
+
+tmp_path = PosixPath('/home/ts/.cache/agent-scratch/nra-r1-function-scope-357-20261001/pytest-before/test_shared_function_bindings_1')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7fa118b16ab0>
+visitor_type = <class 'test_cooperative_function_bindings.CensusAfterProjection'>
+
+    @pytest.mark.parametrize("visitor_type", (CensusBeforeProjection, CensusAfterProjection))
+    def test_shared_function_bindings_need_one_determination_per_event(
+        tmp_path, monkeypatch, visitor_type
+    ):
+        module = SourceModule(tmp_path / "case.py", "case", SOURCE).parse()
+        functions = tuple(
+            node
+            for node in ast.walk(module.module)
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        )
+        body_ids = {id(node.body) for node in functions}
+        body_calls = Counter()
+        argument_calls = Counter()
+        original_bound = LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names
+        original_arguments = LEXICAL_SCOPE_BINDING_AUTHORITY.argument_names
+    
+        def observed_bound(nodes):
+            if id(nodes) in body_ids:
+                body_calls[id(nodes)] += 1
+            return original_bound(nodes)
+    
+        def observed_arguments(node):
+            argument_calls[id(node)] += 1
+            return original_arguments(node)
+    
+        # Parse/source identity and existing lexical algorithm are unchanged. Only
+        # observe calls during this one original generic visitor invocation.
+        monkeypatch.setattr(LEXICAL_SCOPE_BINDING_AUTHORITY, "bound_names", observed_bound)
+        monkeypatch.setattr(
+            LEXICAL_SCOPE_BINDING_AUTHORITY, "argument_names", observed_arguments
+        )
+        visitor = visitor_type(module)
+        visitor.visit(module.module)
+>       assert body_calls == Counter({id(node.body): 1 for node in functions})
+E       AssertionError: assert Counter({1403...881254912: 2}) == Counter({1403...881369984: 1})
+E         
+E         Differing items:
+E         {140329881369152: 2} != {140329881369152: 1}
+E         {140329881254912: 2} != {140329881254912: 1}
+E         {140329881367552: 2} != {140329881367552: 1}
+E         {140329881369984: 2} != {140329881369984: 1}
+E         ...
+E         
+E         ...Full output truncated (17 lines hidden), use '-vv' to show
+
+tests/test_cooperative_function_bindings.py:94: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_cooperative_function_bindings.py::test_shared_function_bindings_need_one_determination_per_event[CensusBeforeProjection]
+FAILED tests/test_cooperative_function_bindings.py::test_shared_function_bindings_need_one_determination_per_event[CensusAfterProjection]
+======================= 2 failed, 4 deselected in 0.16s ========================
+Command exited with non-zero status 1
+	Command being timed: "timeout --signal=TERM --kill-after=3s 60s taskset -c 0 /home/ts/wt/openhcs-generated-inputs-installed-parent-20261001/.venv/bin/python -I -B -c import sys; sys.path.insert(0,"/home/ts/wt/nra-r1-preparation-owner-357-20261001"); import pytest; raise SystemExit(pytest.main(["-v","-o","addopts=","-p","no:cacheprovider","--basetemp=/home/ts/.cache/agent-scratch/nra-r1-function-scope-357-20261001/pytest-before","tests/test_cooperative_function_bindings.py","-k","shared_function_bindings"]))"
+	User time (seconds): 2.54
+	System time (seconds): 0.11
+	Percent of CPU this job got: 100%
+	Elapsed (wall clock) time (h:mm:ss or m:ss): 0:02.65
+	Average shared text size (kbytes): 0
+	Average unshared data size (kbytes): 0
+	Average stack size (kbytes): 0
+	Average total size (kbytes): 0
+	Maximum resident set size (kbytes): 85136
+	Average resident set size (kbytes): 0
+	Major (requiring I/O) page faults: 0
+	Minor (reclaiming a frame) page faults: 25069
+	Voluntary context switches: 27
+	Involuntary context switches: 23
+	Swaps: 0
+	File system inputs: 0
+	File system outputs: 24
+	Socket messages sent: 0
+	Socket messages received: 0
+	Signals delivered: 0
+	Page size (bytes): 4096
+	Exit status: 1

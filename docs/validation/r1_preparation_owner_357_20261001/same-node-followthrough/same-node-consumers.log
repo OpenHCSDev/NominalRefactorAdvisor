@@ -1,0 +1,42 @@
+============================= test session starts ==============================
+platform linux -- Python 3.12.3, pytest-8.3.5, pluggy-1.6.0 -- /home/ts/wt/openhcs-generated-inputs-installed-parent-20261001/.venv/bin/python
+rootdir: /home/ts/wt/nra-r1-preparation-owner-357-20261001
+configfile: pyproject.toml
+collecting ... collected 11 items
+
+tests/test_deferred_projection_family.py::test_complete_content_signature_does_not_require_loading_all_graphs PASSED [  9%]
+tests/test_deferred_projection_family.py::test_missing_signature_requires_complete_original_content_evidence PASSED [ 18%]
+tests/test_deferred_projection_family.py::test_materialized_public_api_retains_its_tuple_contract PASSED [ 27%]
+tests/test_deferred_projection_family.py::test_count_derives_unique_source_materializations_without_rescanning_batches PASSED [ 36%]
+tests/test_deferred_projection_family.py::test_corrupt_cache_repairs_only_the_requested_original_source PASSED [ 45%]
+tests/test_deferred_projection_family.py::test_repair_rejects_a_changed_source_and_can_retry_the_original PASSED [ 54%]
+tests/test_deferred_projection_family.py::test_global_lookup_still_reads_later_ambiguous_modules PASSED [ 63%]
+tests/test_deferred_projection_family.py::test_eligibility_short_circuit_does_not_truncate_later_queries PASSED [ 72%]
+tests/test_semantic_descent.py::test_construction_authority_materialization_indexes_each_method_once PASSED [ 81%]
+tests/test_semantic_descent.py::test_semantic_descent_graph_flags_returned_declaration_table PASSED [ 90%]
+tests/test_semantic_descent.py::test_semantic_descent_ignores_function_local_variable_tuple_projection PASSED [100%]
+
+============================== 11 passed in 4.00s ==============================
+	Command being timed: "timeout --signal=TERM --kill-after=3s 60s taskset -c 0 /home/ts/wt/openhcs-generated-inputs-installed-parent-20261001/.venv/bin/python -I -B -c import sys; sys.path.insert(0,"/home/ts/wt/nra-r1-preparation-owner-357-20261001"); import pytest; raise SystemExit(pytest.main(["-v","-o","addopts=","-p","no:cacheprovider","--basetemp=/home/ts/.cache/agent-scratch/nra-r1-same-node-357-20261001/pytest-consumers","tests/test_deferred_projection_family.py","tests/test_semantic_descent.py::test_construction_authority_materialization_indexes_each_method_once","tests/test_semantic_descent.py::test_semantic_descent_graph_flags_returned_declaration_table","tests/test_semantic_descent.py::test_semantic_descent_ignores_function_local_variable_tuple_projection"]))"
+	User time (seconds): 5.92
+	System time (seconds): 0.54
+	Percent of CPU this job got: 98%
+	Elapsed (wall clock) time (h:mm:ss or m:ss): 0:06.57
+	Average shared text size (kbytes): 0
+	Average unshared data size (kbytes): 0
+	Average stack size (kbytes): 0
+	Average total size (kbytes): 0
+	Maximum resident set size (kbytes): 105996
+	Average resident set size (kbytes): 0
+	Major (requiring I/O) page faults: 0
+	Minor (reclaiming a frame) page faults: 91982
+	Voluntary context switches: 32
+	Involuntary context switches: 1085
+	Swaps: 0
+	File system inputs: 0
+	File system outputs: 648
+	Socket messages sent: 0
+	Socket messages received: 0
+	Signals delivered: 0
+	Page size (bytes): 4096
+	Exit status: 0
