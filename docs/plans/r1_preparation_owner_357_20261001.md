@@ -106,3 +106,30 @@ two-revision acceptance inputs is licensed by this bounded component comparison.
 Broader five-file test shard: INCOMPLETE exit124, 60.01s, 88.42MiB. Partial dots
 are not an accepted test count. Remaining checks split under the same bounds.
 All failures and profiles remain retained for the final source handoff.
+
+## Frozen source handoff
+
+Production checkpoint `2ae2309967904e0195f0d8e75b9b9988c736a52a`.
+[Validation index](../validation/r1_preparation_owner_357_20261001/INDEX.md)
+and [freeze manifest](../validation/r1_preparation_owner_357_20261001/freeze-manifest.json)
+retain exact commands, profiles, source/consumer hashes, all failed attempts,
+ownership/new-case review and cleanup. Draft PR16 is the visible source vehicle.
+
+83distinct source cases pass; one native proof test remains failing identically
+on candidate and unchanged baseline with `unproved_execution_effects`. The60s
+broader shard timeout, first pytest rejection and repaired new-case failure are
+retained. No proof weakening or blanket success claim. Peak observed source
+shard443.25MiB remained below512MiB.
+
+Canonical four-file component comparison via original module/path owner gives
+identical content signatures at0.747386 ->0.612257s collection in one sample;
+cold-process wall2.99 ->3.73s, so no overall startup claim. Original unchanged
+consumer profiles both stop intentionally at20CPU (exit75); semantic family
+cost3.231 ->2.853s, second standalone check traversal absent, not a completed
+two-revision comparison. Original3roots/eightexactdeps remain intact.
+
+Parent retains original R0/R1 160/165complete qualification and installed
+acceptance. Global85detector/FULL remains separately unqualified. No native/UI,
+science replay, install, lock, provider, download or other-owner source change.
+Owned19MiB scratch removed after handle/process proof and evidence preservation;
+the parent's original terminal cache address was neither reused nor removed.

@@ -1,0 +1,43 @@
+============================= test session starts ==============================
+platform linux -- Python 3.12.3, pytest-8.3.5, pluggy-1.6.0 -- /home/ts/wt/openhcs-generated-inputs-installed-parent-20261001/.venv/bin/python
+rootdir: /home/ts/wt/nra-r1-preparation-owner-357-20261001
+configfile: pyproject.toml
+collecting ... collected 12 items
+
+tests/test_exact_cache_coverage.py::test_cli_full_scan_rejects_subset_aggregate[agent] PASSED [  8%]
+tests/test_exact_cache_coverage.py::test_cli_full_scan_rejects_subset_aggregate[loop] PASSED [ 16%]
+tests/test_cooperative_semantic_preparation.py::test_composed_facts_equal_independent_capabilities[] PASSED [ 25%]
+tests/test_cooperative_semantic_preparation.py::test_composed_facts_equal_independent_capabilities[\nisinstance = lambda *args: True\n] PASSED [ 33%]
+tests/test_cooperative_semantic_preparation.py::test_composed_facts_equal_independent_capabilities[\ntype = lambda value: int\n] PASSED [ 41%]
+tests/test_cooperative_semantic_preparation.py::test_compact_family_does_not_reenter_independent_check_collection PASSED [ 50%]
+tests/test_cooperative_semantic_preparation.py::test_new_capability_is_only_a_declaration_and_cooperative_hook PASSED [ 58%]
+tests/test_cooperative_semantic_preparation.py::test_exception_unwinds_both_capabilities_and_shared_owner PASSED [ 66%]
+tests/test_cooperative_semantic_preparation.py::test_presentation_short_circuit_does_not_hide_another_capability[result = {'left': isinstance(value.count, int), 'right': 'name'}] PASSED [ 75%]
+tests/test_cooperative_semantic_preparation.py::test_presentation_short_circuit_does_not_hide_another_capability[result: dict = {'left': isinstance(value.count, int), 'right': 'name'}] PASSED [ 83%]
+tests/test_cooperative_semantic_preparation.py::test_presentation_short_circuit_does_not_hide_another_capability[return {'left': isinstance(value.count, int), 'right': 'name'}] PASSED [ 91%]
+tests/test_cooperative_semantic_preparation.py::test_context_only_family_keeps_its_existing_no_checks_contract PASSED [100%]
+
+============================= 12 passed in 15.28s ==============================
+	Command being timed: "timeout --signal=TERM --kill-after=3s 60s taskset -c 0 /home/ts/wt/openhcs-generated-inputs-installed-parent-20261001/.venv/bin/python -I -B -c import sys; sys.path.insert(0,"/home/ts/wt/nra-r1-preparation-owner-357-20261001"); import pytest; raise SystemExit(pytest.main(["-v","-o","addopts=","-p","no:cacheprovider","--basetemp=/home/ts/.cache/agent-scratch/nra-r1-preparation-owner-357-20261001/pytest-cli-09","tests/test_exact_cache_coverage.py::test_cli_full_scan_rejects_subset_aggregate[agent]","tests/test_exact_cache_coverage.py::test_cli_full_scan_rejects_subset_aggregate[loop]","tests/test_cooperative_semantic_preparation.py"]))"
+	User time (seconds): 16.96
+	System time (seconds): 0.62
+	Percent of CPU this job got: 98%
+	Elapsed (wall clock) time (h:mm:ss or m:ss): 0:17.91
+	Average shared text size (kbytes): 0
+	Average unshared data size (kbytes): 0
+	Average stack size (kbytes): 0
+	Average total size (kbytes): 0
+	Maximum resident set size (kbytes): 89560
+	Average resident set size (kbytes): 0
+	Major (requiring I/O) page faults: 0
+	Minor (reclaiming a frame) page faults: 142281
+	Voluntary context switches: 258
+	Involuntary context switches: 275
+	Swaps: 0
+	File system inputs: 16
+	File system outputs: 5872
+	Socket messages sent: 0
+	Socket messages received: 0
+	Signals delivered: 0
+	Page size (bytes): 4096
+	Exit status: 0

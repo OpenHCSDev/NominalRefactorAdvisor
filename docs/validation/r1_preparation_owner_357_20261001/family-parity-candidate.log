@@ -1,0 +1,27 @@
+{"path": "/home/ts/wt/nra-bounded-full-audit-20260929/nominal_refactor_advisor/semantic_descent.py", "raw_sha256": "7a30d8cb97412abfbd6a113368712e4f56a71897cc1858d1b4c640ebeca019a1", "content_signature": "0a9ab8d0c987ac754232f6da054bc4d5", "collection_seconds": 0.21006925404071808, "presentations": 116, "checks": 10, "supplements": 138}
+{"path": "/home/ts/wt/nra-bounded-full-audit-20260929/nominal_refactor_advisor/class_index.py", "raw_sha256": "245f8e47ebc4456c67db8d180efa223362af292d73e7facb62264b7ae5f53a9f", "content_signature": "a6103a7a18fa058c7ddabd0472f5262d", "collection_seconds": 0.26070872601121664, "presentations": 215, "checks": 19, "supplements": 88}
+{"path": "/home/ts/wt/nra-bounded-full-audit-20260929/nominal_refactor_advisor/ast_tools.py", "raw_sha256": "ca795d41eac570fab9eb81d94f71cce01f21529a2ab3c143519328654104b1e1", "content_signature": "cfa0fcbde095e4aa3f0897e78c74f445", "collection_seconds": 0.13834056904306635, "presentations": 119, "checks": 6, "supplements": 62}
+{"path": "/home/ts/wt/nra-bounded-full-audit-20260929/nominal_refactor_advisor/record_checks.py", "raw_sha256": "2a31a0a132ac3ca611a1c53daa575b8fa471cf6a53f0d88738a926d14a194eaf", "content_signature": "5d0f4015b5d82d4ef9f9ce9d76b4b14f", "collection_seconds": 0.010819121962413192, "presentations": 8, "checks": 1, "supplements": 4}
+	Command being timed: "timeout --signal=TERM --kill-after=3s 60s taskset -c 0 /home/ts/wt/openhcs-generated-inputs-installed-parent-20261001/.venv/bin/python -I -B -u tools/check_semantic_preparation_parity.py --advisor-root /home/ts/wt/nra-r1-preparation-owner-357-20261001 /home/ts/wt/nra-bounded-full-audit-20260929/nominal_refactor_advisor/semantic_descent.py /home/ts/wt/nra-bounded-full-audit-20260929/nominal_refactor_advisor/class_index.py /home/ts/wt/nra-bounded-full-audit-20260929/nominal_refactor_advisor/ast_tools.py /home/ts/wt/nra-bounded-full-audit-20260929/nominal_refactor_advisor/record_checks.py"
+	User time (seconds): 3.52
+	System time (seconds): 0.09
+	Percent of CPU this job got: 100%
+	Elapsed (wall clock) time (h:mm:ss or m:ss): 0:03.61
+	Average shared text size (kbytes): 0
+	Average unshared data size (kbytes): 0
+	Average stack size (kbytes): 0
+	Average total size (kbytes): 0
+	Maximum resident set size (kbytes): 85092
+	Average resident set size (kbytes): 0
+	Major (requiring I/O) page faults: 0
+	Minor (reclaiming a frame) page faults: 24999
+	Voluntary context switches: 27
+	Involuntary context switches: 25
+	Swaps: 0
+	File system inputs: 0
+	File system outputs: 8
+	Socket messages sent: 0
+	Socket messages received: 0
+	Signals delivered: 0
+	Page size (bytes): 4096
+	Exit status: 0

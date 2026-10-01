@@ -1,0 +1,25 @@
+{
+  "source_owner": "Schrodinger/Codex",
+  "integration_and_original_qualification_owner": "parent",
+  "draft_pr": "https://github.com/OpenHCSDev/NominalRefactorAdvisor/pull/16",
+  "worktree": "/home/ts/wt/nra-r1-preparation-owner-357-20261001",
+  "source_checkpoint": "2ae2309967904e0195f0d8e75b9b9988c736a52a",
+  "baseline": "673c062fc656e9c74f1eddcab30f036c9befbc1f",
+  "source_sha256": {
+    "nominal_refactor_advisor/ast_tools.py": "e41ef8011aac67857131f5f79b140c201c9a0f6ca4584a92d57789cd234b354e",
+    "nominal_refactor_advisor/record_checks.py": "4b77a6fc7af2eaff8d81e5a7e764b8f3db0fd6b4a7af687c4bb8c7831512fd53",
+    "nominal_refactor_advisor/semantic_descent.py": "7ba2cf06a9e2a175e45e7f213ba111fdebf1bf2a17e83df4ac7926aa4a1e8ff9"
+  },
+  "immutable_consumer": "/home/ts/wt/openhcs-r1-revision-staging-357-20261001/scripts/check_refactor_r1.py",
+  "consumer_sha256": "4c6282f52e7c188068dd9d63399f5522a7cb1d222504d0c0b809be10303884ca",
+  "base_revision": "791650087e01c9d25766f12802a37296851f37cf",
+  "head_revision": "3d58912d6e74e4b3dd4fa9e07a6b4a9d7dd9c7e4",
+  "original_context_roots": 3,
+  "original_recursive_dependencies": 8,
+  "source_limits": {"cpu": 1, "memory_mib": 512, "swap_mib": 0, "outer_seconds": 60},
+  "profile_disposition": "both intentional20CPU stops exit75 INCOMPLETE",
+  "original_r0_r1": "pending parent qualification",
+  "global_85_detector_full": "unqualified",
+  "retained_native_failure": "unproved_execution_effects reproduced on unchanged baseline",
+  "science_native_installs_locks_providers_downloads": "none"
+}

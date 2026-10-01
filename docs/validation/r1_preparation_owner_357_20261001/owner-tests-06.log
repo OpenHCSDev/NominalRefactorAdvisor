@@ -1,0 +1,63 @@
+============================= test session starts ==============================
+platform linux -- Python 3.12.3, pytest-8.3.5, pluggy-1.6.0 -- /home/ts/wt/openhcs-generated-inputs-installed-parent-20261001/.venv/bin/python
+rootdir: /home/ts/wt/nra-r1-preparation-owner-357-20261001
+configfile: pyproject.toml
+collecting ... collected 32 items
+
+tests/test_raw_record_detectors.py::test_mapping_reads_match_schema_but_only_actual_decode_descends PASSED [  3%]
+tests/test_raw_record_detectors.py::test_unmodeled_shapes_aggregate_same_keys_and_ignore_small_dynamic_reads PASSED [  6%]
+tests/test_raw_record_detectors.py::test_redundant_checks_resolve_declared_self_parameters_and_keep_unknowns PASSED [  9%]
+tests/test_raw_record_detectors.py::test_detector_ids_are_derived_and_registered PASSED [ 12%]
+tests/test_raw_record_detectors.py::test_cross_module_schema_and_annotated_owner_use_complete_context PASSED [ 15%]
+tests/test_family_identity_lifetime.py::test_unscoped_identity_remains_fresh PASSED [ 18%]
+tests/test_family_identity_lifetime.py::test_shared_schema_and_source_identity_live_only_within_outer_scan PASSED [ 21%]
+tests/test_family_identity_lifetime.py::test_token_format_is_unchanged_and_computed_once_per_identity[] PASSED [ 25%]
+tests/test_family_identity_lifetime.py::test_token_format_is_unchanged_and_computed_once_per_identity[focused-demand] PASSED [ 28%]
+tests/test_family_identity_lifetime.py::test_changed_source_demand_module_and_schema_keep_distinct_keys PASSED [ 31%]
+tests/test_family_identity_lifetime.py::test_changed_family_declaration_is_observed_on_the_next_invocation PASSED [ 34%]
+tests/test_family_identity_lifetime.py::test_replacement_does_not_inherit_an_old_derived_token PASSED [ 37%]
+tests/test_family_identity_lifetime.py::test_exception_releases_scoped_identities_and_contexts PASSED [ 40%]
+tests/test_source_projection_owner.py::test_source_projection_retains_actual_parsed_owner_without_compact_ast_debt PASSED [ 43%]
+tests/test_source_projection_owner.py::test_another_revision_reusing_ast_cannot_relabel_existing_source_observations PASSED [ 46%]
+tests/test_source_projection_owner.py::test_reparsed_source_owns_distinct_canonical_read_nodes PASSED [ 50%]
+tests/test_source_projection_owner.py::test_pickle_preserves_shared_module_node_identity_inside_source_projection PASSED [ 53%]
+tests/test_cooperative_semantic_preparation.py::test_composed_facts_equal_independent_capabilities[] PASSED [ 56%]
+tests/test_cooperative_semantic_preparation.py::test_composed_facts_equal_independent_capabilities[\nisinstance = lambda *args: True\n] PASSED [ 59%]
+tests/test_cooperative_semantic_preparation.py::test_composed_facts_equal_independent_capabilities[\ntype = lambda value: int\n] PASSED [ 62%]
+tests/test_cooperative_semantic_preparation.py::test_compact_family_does_not_reenter_independent_check_collection PASSED [ 65%]
+tests/test_cooperative_semantic_preparation.py::test_new_capability_is_only_a_declaration_and_cooperative_hook PASSED [ 68%]
+tests/test_cooperative_semantic_preparation.py::test_exception_unwinds_both_capabilities_and_shared_owner PASSED [ 71%]
+tests/test_cooperative_semantic_preparation.py::test_presentation_short_circuit_does_not_hide_another_capability[result = {'left': isinstance(value.count, int), 'right': 'name'}] PASSED [ 75%]
+tests/test_cooperative_semantic_preparation.py::test_presentation_short_circuit_does_not_hide_another_capability[result: dict = {'left': isinstance(value.count, int), 'right': 'name'}] PASSED [ 78%]
+tests/test_cooperative_semantic_preparation.py::test_presentation_short_circuit_does_not_hide_another_capability[return {'left': isinstance(value.count, int), 'right': 'name'}] PASSED [ 81%]
+tests/test_cooperative_semantic_preparation.py::test_context_only_family_keeps_its_existing_no_checks_contract PASSED [ 84%]
+tests/test_context_projection_reuse.py::test_cross_module_preparation_reuses_exact_candidate_snapshot PASSED [ 87%]
+tests/test_context_projection_reuse.py::test_grouped_shape_preparation_reuses_exact_shape_snapshot PASSED [ 90%]
+tests/test_context_projection_reuse.py::test_process_cli_hard_exits_after_publishing_deadline_payload PASSED [ 93%]
+tests/test_context_projection_reuse.py::test_hard_deadline_terminates_at_signal_boundary PASSED [ 96%]
+tests/test_context_projection_reuse.py::test_repository_semantic_signature_changes_for_contextual_source_edit PASSED [100%]
+
+============================== 32 passed in 2.54s ==============================
+	Command being timed: "timeout --signal=TERM --kill-after=3s 60s taskset -c 0 /home/ts/wt/openhcs-generated-inputs-installed-parent-20261001/.venv/bin/python -I -B -c import sys; sys.path.insert(0,"/home/ts/wt/nra-r1-preparation-owner-357-20261001"); import pytest; raise SystemExit(pytest.main(["-v","-o","addopts=","-p","no:cacheprovider","--basetemp=/home/ts/.cache/agent-scratch/nra-r1-preparation-owner-357-20261001/pytest-owner-06","tests/test_raw_record_detectors.py","tests/test_family_identity_lifetime.py","tests/test_source_projection_owner.py","tests/test_cooperative_semantic_preparation.py","tests/test_context_projection_reuse.py"]))"
+	User time (seconds): 4.12
+	System time (seconds): 0.15
+	Percent of CPU this job got: 56%
+	Elapsed (wall clock) time (h:mm:ss or m:ss): 0:07.55
+	Average shared text size (kbytes): 0
+	Average unshared data size (kbytes): 0
+	Average stack size (kbytes): 0
+	Average total size (kbytes): 0
+	Maximum resident set size (kbytes): 87268
+	Average resident set size (kbytes): 0
+	Major (requiring I/O) page faults: 0
+	Minor (reclaiming a frame) page faults: 27536
+	Voluntary context switches: 34
+	Involuntary context switches: 1286
+	Swaps: 0
+	File system inputs: 0
+	File system outputs: 152
+	Socket messages sent: 0
+	Socket messages received: 0
+	Signals delivered: 0
+	Page size (bytes): 4096
+	Exit status: 0

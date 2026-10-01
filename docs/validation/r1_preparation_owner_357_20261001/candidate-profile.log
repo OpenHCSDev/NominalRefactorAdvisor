@@ -1,0 +1,180 @@
+  File "/home/ts/wt/nra-r1-preparation-owner-357-20261001/tools/profile_r1_preparation.py", line 65, in <module>
+    raise SystemExit(main())
+  File "/home/ts/wt/nra-r1-preparation-owner-357-20261001/tools/profile_r1_preparation.py", line 49, in main
+    runpy.run_path(str(args.consumer), run_name="__main__")
+  File "<frozen runpy>", line 286, in run_path
+  File "<frozen runpy>", line 98, in _run_module_code
+  File "<frozen runpy>", line 88, in _run_code
+  File "/home/ts/wt/openhcs-r1-revision-staging-357-20261001/scripts/check_refactor_r1.py", line 338, in <module>
+    raise SystemExit(main())
+  File "/home/ts/wt/openhcs-r1-revision-staging-357-20261001/scripts/check_refactor_r1.py", line 326, in main
+    result = compare(
+  File "/home/ts/wt/openhcs-r1-revision-staging-357-20261001/scripts/check_refactor_r1.py", line 310, in compare
+    scan_counts(snapshot, roots, changed, cache_root=work / "nra")
+  File "/home/ts/wt/openhcs-r1-revision-staging-357-20261001/scripts/check_refactor_r1.py", line 183, in scan_counts
+    result = analyze_compact_roots_with_cache(
+  File "/home/ts/.pyenv/versions/3.12.3/lib/python3.12/contextlib.py", line 81, in inner
+    return func(*args, **kwds)
+  File "/home/ts/wt/nra-r1-preparation-owner-357-20261001/nominal_refactor_advisor/analysis.py", line 2292, in analyze_compact_roots_with_cache
+    build_results = worker_plan.map(
+  File "/home/ts/wt/nra-r1-preparation-owner-357-20261001/nominal_refactor_advisor/analysis.py", line 288, in map
+    return [function(item) for item in items]
+  File "/home/ts/.pyenv/versions/3.12.3/lib/python3.12/contextlib.py", line 81, in inner
+    return func(*args, **kwds)
+  File "/home/ts/wt/nra-r1-preparation-owner-357-20261001/nominal_refactor_advisor/analysis.py", line 1265, in build_compact_projection_shard
+    full_batch = collect_family_batch(module, family)
+  File "/home/ts/wt/nra-r1-preparation-owner-357-20261001/nominal_refactor_advisor/ast_tools.py", line 2303, in collect_family_batch
+    parsed_module.collected_family_cache.store_items(family, items),
+  File "/home/ts/wt/nra-r1-preparation-owner-357-20261001/nominal_refactor_advisor/ast_tools.py", line 2197, in store_items
+    return _store_collected_family_content_signature(
+  File "/home/ts/wt/nra-r1-preparation-owner-357-20261001/nominal_refactor_advisor/ast_tools.py", line 1996, in _store_collected_family_content_signature
+    signature = collected_family_items_content_signature(items)
+  File "/home/ts/wt/nra-r1-preparation-owner-357-20261001/nominal_refactor_advisor/ast_tools.py", line 1941, in collected_family_items_content_signature
+    _stable_collected_family_cache_value(items),
+  File "/home/ts/wt/nra-r1-preparation-owner-357-20261001/nominal_refactor_advisor/ast_tools.py", line 1974, in _stable_collected_family_cache_value
+    return "tuple", tuple(
+  File "/home/ts/wt/nra-r1-preparation-owner-357-20261001/nominal_refactor_advisor/ast_tools.py", line 1975, in <genexpr>
+    _stable_collected_family_cache_value(item) for item in value
+  File "/home/ts/wt/nra-r1-preparation-owner-357-20261001/nominal_refactor_advisor/ast_tools.py", line 1953, in _stable_collected_family_cache_value
+    tuple(
+  File "/home/ts/wt/nra-r1-preparation-owner-357-20261001/nominal_refactor_advisor/ast_tools.py", line 1956, in <genexpr>
+    _stable_collected_family_cache_value(getattr(value, item.name)),
+  File "/home/ts/wt/nra-r1-preparation-owner-357-20261001/nominal_refactor_advisor/ast_tools.py", line 1974, in _stable_collected_family_cache_value
+    return "tuple", tuple(
+  File "/home/ts/wt/nra-r1-preparation-owner-357-20261001/nominal_refactor_advisor/ast_tools.py", line 1975, in <genexpr>
+    _stable_collected_family_cache_value(item) for item in value
+  File "/home/ts/wt/nra-r1-preparation-owner-357-20261001/nominal_refactor_advisor/ast_tools.py", line 1953, in _stable_collected_family_cache_value
+    tuple(
+  File "/home/ts/wt/nra-r1-preparation-owner-357-20261001/nominal_refactor_advisor/ast_tools.py", line 1956, in <genexpr>
+    _stable_collected_family_cache_value(getattr(value, item.name)),
+  File "/home/ts/wt/nra-r1-preparation-owner-357-20261001/nominal_refactor_advisor/ast_tools.py", line 1974, in _stable_collected_family_cache_value
+    return "tuple", tuple(
+  File "/home/ts/wt/nra-r1-preparation-owner-357-20261001/nominal_refactor_advisor/ast_tools.py", line 1975, in <genexpr>
+    _stable_collected_family_cache_value(item) for item in value
+  File "/home/ts/wt/nra-r1-preparation-owner-357-20261001/nominal_refactor_advisor/ast_tools.py", line 1974, in _stable_collected_family_cache_value
+    return "tuple", tuple(
+  File "/home/ts/wt/nra-r1-preparation-owner-357-20261001/nominal_refactor_advisor/ast_tools.py", line 1975, in <genexpr>
+    _stable_collected_family_cache_value(item) for item in value
+  File "/home/ts/wt/nra-r1-preparation-owner-357-20261001/nominal_refactor_advisor/ast_tools.py", line 1961, in _stable_collected_family_cache_value
+    if isinstance(value, dict):
+INCOMPLETE: diagnostic CPU profiling bound reached
+         37124090 function calls (34620967 primitive calls) in 20.630 seconds
+
+   Ordered by: cumulative time
+   List reduced from 1572 to 50 due to restriction <50>
+
+   ncalls  tottime  percall  cumtime  percall filename:lineno(function)
+        1    0.000    0.000   20.802   20.802 <frozen runpy>:262(run_path)
+        1    0.000    0.000   20.799   20.799 <frozen runpy>:91(_run_module_code)
+        1    0.000    0.000   20.799   20.799 <frozen runpy>:65(_run_code)
+     43/1    0.003    0.000   20.799   20.799 {built-in method builtins.exec}
+        1    0.000    0.000   20.799   20.799 /home/ts/wt/openhcs-r1-revision-staging-357-20261001/scripts/check_refactor_r1.py:1(<module>)
+        1    0.000    0.000   20.792   20.792 /home/ts/wt/openhcs-r1-revision-staging-357-20261001/scripts/check_refactor_r1.py:319(main)
+        1    0.001    0.001   20.791   20.791 /home/ts/wt/openhcs-r1-revision-staging-357-20261001/scripts/check_refactor_r1.py:277(compare)
+        1    0.000    0.000   18.883   18.883 /home/ts/wt/openhcs-r1-revision-staging-357-20261001/scripts/check_refactor_r1.py:169(scan_counts)
+      4/1    0.015    0.004   18.881   18.881 /home/ts/.pyenv/versions/3.12.3/lib/python3.12/contextlib.py:78(inner)
+        1    0.045    0.045   18.878   18.878 /home/ts/wt/nra-r1-preparation-owner-357-20261001/nominal_refactor_advisor/analysis.py:1836(analyze_compact_roots_with_cache)
+       16    0.000    0.000    8.568    0.536 /home/ts/wt/nra-r1-preparation-owner-357-20261001/nominal_refactor_advisor/ast_tools.py:2282(collect_family_batch)
+        1    0.000    0.000    6.059    6.059 /home/ts/wt/nra-r1-preparation-owner-357-20261001/nominal_refactor_advisor/analysis.py:281(map)
+        3    0.001    0.000    6.044    2.015 /home/ts/wt/nra-r1-preparation-owner-357-20261001/nominal_refactor_advisor/analysis.py:1100(build_compact_projection_shard)
+       10    0.000    0.000    4.020    0.402 /home/ts/wt/nra-r1-preparation-owner-357-20261001/nominal_refactor_advisor/ast_tools.py:2307(collect_family_items)
+67328/33812    0.087    0.000    3.763    0.000 /home/ts/wt/nra-r1-preparation-owner-357-20261001/nominal_refactor_advisor/scan_cache.py:41(invoke)
+        8    0.000    0.000    3.642    0.455 /home/ts/wt/nra-r1-preparation-owner-357-20261001/nominal_refactor_advisor/class_index.py:3903(collect)
+        8    0.004    0.000    3.642    0.455 /home/ts/wt/nra-r1-preparation-owner-357-20261001/nominal_refactor_advisor/class_index.py:3981(_collect)
+525060/16856    0.380    0.000    3.419    0.000 /home/ts/.pyenv/versions/3.12.3/lib/python3.12/ast.py:403(visit)
+411402/11795    0.593    0.000    3.238    0.000 /home/ts/.pyenv/versions/3.12.3/lib/python3.12/ast.py:409(generic_visit)
+        2    0.001    0.000    3.158    1.579 /home/ts/wt/nra-r1-preparation-owner-357-20261001/nominal_refactor_advisor/analysis.py:2923(cache_identity)
+        2    0.001    0.000    3.157    1.579 /home/ts/wt/nra-r1-preparation-owner-357-20261001/nominal_refactor_advisor/analysis_cache.py:824(from_source_paths)
+        8    0.000    0.000    2.853    0.357 /home/ts/wt/nra-r1-preparation-owner-357-20261001/nominal_refactor_advisor/semantic_descent.py:4325(collect)
+        8    0.000    0.000    2.853    0.357 /home/ts/wt/nra-r1-preparation-owner-357-20261001/nominal_refactor_advisor/semantic_descent.py:4345(_collect)
+    19039    0.035    0.000    2.522    0.000 /home/ts/.pyenv/versions/3.12.3/lib/python3.12/pathlib.py:1228(resolve)
+1180/1165    0.023    0.000    2.430    0.002 /home/ts/wt/nra-r1-preparation-owner-357-20261001/nominal_refactor_advisor/semantic_descent.py:4851(visit_FunctionDef)
+ 1673/768    0.001    0.000    2.206    0.003 /home/ts/wt/nra-r1-preparation-owner-357-20261001/nominal_refactor_advisor/ast_tools.py:1544(traverse_node_body)
+    22109    0.035    0.000    2.183    0.000 <frozen posixpath>:431(realpath)
+     3070    0.008    0.000    2.176    0.001 /home/ts/wt/nra-r1-preparation-owner-357-20261001/nominal_refactor_advisor/analysis_cache.py:842(<genexpr>)
+     3073    0.015    0.000    2.165    0.001 /home/ts/wt/nra-r1-preparation-owner-357-20261001/nominal_refactor_advisor/cache_checkout.py:88(checkout_relative_path)
+        8    0.119    0.015    2.133    0.267 /home/ts/wt/nra-r1-preparation-owner-357-20261001/nominal_refactor_advisor/class_index.py:5321(_compact_class_syntax_facets)
+        8    0.000    0.000    2.112    0.264 /home/ts/wt/nra-r1-preparation-owner-357-20261001/nominal_refactor_advisor/ast_tools.py:657(_parse_source_module)
+    22109    0.415    0.000    1.986    0.000 <frozen posixpath>:440(_joinrealpath)
+     7678    0.075    0.000    1.945    0.000 /home/ts/.pyenv/versions/3.12.3/lib/python3.12/pathlib.py:663(relative_to)
+      9/1    0.005    0.001    1.743    1.743 /home/ts/wt/openhcs-r1-revision-staging-357-20261001/scripts/check_refactor_r1.py:151(materialize)
+     1534    0.007    0.000    1.723    0.001 /home/ts/wt/nra-r1-preparation-owner-357-20261001/nominal_refactor_advisor/cache_checkout.py:37(_admitted_checkout_path)
+      9/1    0.023    0.003    1.702    1.702 /home/ts/wt/openhcs-r1-revision-staging-357-20261001/scripts/check_refactor_r1.py:84(materialize)
+141310/90872    0.109    0.000    1.693    0.000 {built-in method builtins.any}
+      493    0.005    0.000    1.692    0.003 /home/ts/wt/nra-r1-preparation-owner-357-20261001/nominal_refactor_advisor/semantic_descent.py:4820(visit_ClassDef)
+     3068    0.004    0.000    1.646    0.001 /home/ts/wt/nra-r1-preparation-owner-357-20261001/nominal_refactor_advisor/cache_checkout.py:40(<genexpr>)
+     6136    0.007    0.000    1.643    0.000 /home/ts/wt/nra-r1-preparation-owner-357-20261001/nominal_refactor_advisor/cache_checkout.py:28(relative_path)
+      493    0.001    0.000    1.639    0.003 /home/ts/wt/nra-r1-preparation-owner-357-20261001/nominal_refactor_advisor/ast_tools.py:1557(visit_ClassDef)
+        8    0.001    0.000    1.616    0.202 /home/ts/wt/nra-r1-preparation-owner-357-20261001/nominal_refactor_advisor/ast_tools.py:3035(module_syntax_index)
+        8    0.770    0.096    1.616    0.202 /home/ts/wt/nra-r1-preparation-owner-357-20261001/nominal_refactor_advisor/ast_tools.py:2958(build)
+  7798362    1.339    0.000    1.577    0.000 {built-in method builtins.isinstance}
+1180/1165    0.010    0.000    1.545    0.001 /home/ts/wt/nra-r1-preparation-owner-357-20261001/nominal_refactor_advisor/record_checks.py:67(visit_FunctionDef)
+       16    0.002    0.000    1.535    0.096 /home/ts/wt/nra-r1-preparation-owner-357-20261001/nominal_refactor_advisor/ast_tools.py:2168(store_items)
+   394853    0.299    0.000    1.483    0.000 /home/ts/.pyenv/versions/3.12.3/lib/python3.12/ast.py:369(walk)
+        4    0.000    0.000    1.331    0.333 /home/ts/wt/nra-r1-preparation-owner-357-20261001/nominal_refactor_advisor/implementation_identity.py:57(declaration_implementation_module_names)
+        3    0.000    0.000    1.331    0.444 /home/ts/wt/nra-r1-preparation-owner-357-20261001/nominal_refactor_advisor/implementation_identity.py:65(_declaration_implementation_module_names)
+        3    0.003    0.001    1.331    0.444 /home/ts/wt/nra-r1-preparation-owner-357-20261001/nominal_refactor_advisor/implementation_identity.py:48(implementation_module_names)
+
+
+         37124090 function calls (34620967 primitive calls) in 20.630 seconds
+
+   Ordered by: internal time
+   List reduced from 1572 to 30 due to restriction <30>
+
+   ncalls  tottime  percall  cumtime  percall filename:lineno(function)
+  7798362    1.339    0.000    1.577    0.000 {built-in method builtins.isinstance}
+        8    0.770    0.096    1.616    0.202 /home/ts/wt/nra-r1-preparation-owner-357-20261001/nominal_refactor_advisor/ast_tools.py:2958(build)
+   259408    0.686    0.000    0.686    0.000 {built-in method posix.lstat}
+3052055/3051575    0.659    0.000    0.660    0.000 {built-in method builtins.getattr}
+23482/21207    0.650    0.000    0.676    0.000 {method 'read' of '_io.BufferedReader' objects}
+  2511879    0.616    0.000    0.870    0.000 /home/ts/.pyenv/versions/3.12.3/lib/python3.12/ast.py:257(iter_fields)
+  1054476    0.598    0.000    1.297    0.000 /home/ts/.pyenv/versions/3.12.3/lib/python3.12/ast.py:269(iter_child_nodes)
+411402/11795    0.593    0.000    3.238    0.000 /home/ts/.pyenv/versions/3.12.3/lib/python3.12/ast.py:409(generic_visit)
+   286214    0.477    0.000    0.841    0.000 <frozen posixpath>:71(join)
+        8    0.451    0.056    0.991    0.124 /home/ts/wt/nra-r1-preparation-owner-357-20261001/nominal_refactor_advisor/ast_tools.py:476(semantic_python_source_hash)
+    22109    0.415    0.000    1.986    0.000 <frozen posixpath>:440(_joinrealpath)
+    64091    0.412    0.000    0.736    0.000 /home/ts/.pyenv/versions/3.12.3/lib/python3.12/pathlib.py:387(_parse_path)
+525060/16856    0.380    0.000    3.419    0.000 /home/ts/.pyenv/versions/3.12.3/lib/python3.12/ast.py:403(visit)
+146305/16    0.345    0.000    0.756    0.047 /home/ts/wt/nra-r1-preparation-owner-357-20261001/nominal_refactor_advisor/ast_tools.py:1947(_stable_collected_family_cache_value)
+253034/98    0.342    0.000    1.328    0.014 /home/ts/wt/nra-r1-preparation-owner-357-20261001/nominal_refactor_advisor/implementation_identity.py:98(_visit)
+   394853    0.299    0.000    1.483    0.000 /home/ts/.pyenv/versions/3.12.3/lib/python3.12/ast.py:369(walk)
+1765838/1481586    0.272    0.000    0.324    0.000 {built-in method builtins.len}
+    65256    0.265    0.000    0.983    0.000 {built-in method posix.stat}
+210680/21    0.238    0.000    0.957    0.046 /home/ts/wt/nra-r1-preparation-owner-357-20261001/nominal_refactor_advisor/ast_tools.py:1106(retains_python_ast)
+   213540    0.238    0.000    0.412    0.000 /home/ts/.pyenv/versions/3.12.3/lib/python3.12/pathlib.py:358(__init__)
+   211984    0.230    0.000    0.411    0.000 /home/ts/.pyenv/versions/3.12.3/lib/python3.12/pathlib.py:484(_str_normcase)
+   204563    0.228    0.000    0.923    0.000 /home/ts/.pyenv/versions/3.12.3/lib/python3.12/pathlib.py:380(with_segments)
+     2597    0.220    0.000    0.220    0.000 {built-in method builtins.compile}
+   171268    0.194    0.000    0.316    0.000 /home/ts/.pyenv/versions/3.12.3/lib/python3.12/tokenize.py:569(_generate_tokens_from_c_tokenizer)
+   243400    0.192    0.000    1.120    0.000 /home/ts/.pyenv/versions/3.12.3/lib/python3.12/pathlib.py:437(__str__)
+   210717    0.184    0.000    0.239    0.000 <frozen abc>:117(__instancecheck__)
+   668886    0.184    0.000    0.184    0.000 {built-in method sys.intern}
+   380499    0.184    0.000    1.094    0.000 {method 'extend' of 'collections.deque' objects}
+   212006    0.183    0.000    0.592    0.000 /home/ts/.pyenv/versions/3.12.3/lib/python3.12/pathlib.py:1157(__init__)
+   691157    0.168    0.000    0.168    0.000 {method 'append' of 'list' objects}
+
+
+Command exited with non-zero status 75
+	Command being timed: "timeout --signal=TERM --kill-after=3s 60s taskset -c 0 /home/ts/wt/openhcs-generated-inputs-installed-parent-20261001/.venv/bin/python -I -B -u /home/ts/wt/nra-r1-preparation-owner-357-20261001/tools/profile_r1_preparation.py --consumer /home/ts/wt/openhcs-r1-revision-staging-357-20261001/scripts/check_refactor_r1.py --profile /home/ts/.cache/agent-scratch/nra-r1-preparation-owner-357-20261001/candidate.pstats --cpu-seconds 20 -- --base 791650087e01c9d25766f12802a37296851f37cf --head 3d58912d6e74e4b3dd4fa9e07a6b4a9d7dd9c7e4 --scratch-root /home/ts/.cache/agent-scratch/nra-r1-preparation-owner-357-20261001/candidate-r1 --budget-seconds 160"
+	User time (seconds): 22.12
+	System time (seconds): 1.07
+	Percent of CPU this job got: 99%
+	Elapsed (wall clock) time (h:mm:ss or m:ss): 0:23.34
+	Average shared text size (kbytes): 0
+	Average unshared data size (kbytes): 0
+	Average stack size (kbytes): 0
+	Average total size (kbytes): 0
+	Maximum resident set size (kbytes): 121804
+	Average resident set size (kbytes): 0
+	Major (requiring I/O) page faults: 0
+	Minor (reclaiming a frame) page faults: 57775
+	Voluntary context switches: 25284
+	Involuntary context switches: 24676
+	Swaps: 0
+	File system inputs: 1000
+	File system outputs: 65592
+	Socket messages sent: 0
+	Socket messages received: 0
+	Signals delivered: 0
+	Page size (bytes): 4096
+	Exit status: 75
