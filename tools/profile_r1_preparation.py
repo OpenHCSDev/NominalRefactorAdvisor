@@ -54,7 +54,9 @@ def main() -> int:
         profiler.disable()
         signal.setitimer(signal.ITIMER_PROF, 0.0)
         profiler.dump_stats(str(args.profile))
-        pstats.Stats(profiler, stream=sys.stderr).sort_stats("cumulative").print_stats(50)
+        pstats.Stats(profiler, stream=sys.stderr).sort_stats("cumulative").print_stats(
+            50
+        )
         pstats.Stats(profiler, stream=sys.stderr).sort_stats("tottime").print_stats(30)
     return 0
 

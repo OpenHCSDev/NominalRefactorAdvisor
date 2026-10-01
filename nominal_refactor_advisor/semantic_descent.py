@@ -36,10 +36,10 @@ from metaclass_registry import AutoRegisterMeta
 from .assignment_projection import SingleAssignmentAndValueNameProjection
 from .ast_tools import (
     AstExpressionProjection,
-    ClassFunctionStackNodeVisitor,
     CollectedFamily,
     CompactModuleIdentity,
     ParsedModule,
+    ParsedModuleClassFunctionStackNodeVisitor,
     PythonSourcePathPolicy,
     module_syntax_index,
     python_module_path_identities_for_roots,
@@ -95,7 +95,7 @@ from .models import (
 )
 from .name_algebra import CLASS_NAME_ALGEBRA
 from .python_module_identity import PythonModulePathIdentity
-from .record_checks import DeclaredTypeCheckModule
+from .record_checks import DeclaredAttributeCheckCollector, DeclaredTypeCheckModule
 from .registry_identity import AutoRegisterClassAuthority, class_name_registry_key
 from .semantic_identity import (
     SemanticIdentifierTokenProjection,
@@ -4351,14 +4351,18 @@ class CompactSemanticModuleProjectionFamily(
     ) -> list[CompactSemanticModuleProjection]:
         visitor = None
         if include_presentations:
-            visitor = _ProjectionVisitor(parsed_module, None)
+            visitor = _CompactSemanticProjectionVisitor(parsed_module, None)
             visitor.visit(parsed_module.module)
         return [
             CompactSemanticModuleProjection(
                 module_name=parsed_module.module_name,
                 file_path=parsed_module.file_path,
-                type_checks=DeclaredTypeCheckModule.collect(
-                    parsed_module, include_checks=include_presentations
+                type_checks=(
+                    DeclaredTypeCheckModule.from_collector(visitor)
+                    if visitor is not None
+                    else DeclaredTypeCheckModule.collect(
+                        parsed_module, include_checks=False
+                    )
                 ),
                 projections=sorted_tuple(
                     (() if visitor is None else visitor.projections),
@@ -4772,17 +4776,17 @@ class CompactSemanticClassSupplementFrame:
     constructed_type_names: set[str] = field(default_factory=set)
 
 
-class _ProjectionVisitor(ClassFunctionStackNodeVisitor):
+class _ProjectionVisitor(ParsedModuleClassFunctionStackNodeVisitor):
     def __init__(
         self,
         parsed_module: ParsedModule,
-        class_index: ClassFamilyIndex | None,
+        class_index: ClassFamilyIndex | None = None,
         *,
         include_presentations: bool = True,
     ) -> None:
-        super().__init__()
-        self.parsed_module = parsed_module
+        super().__init__(parsed_module)
         self.include_presentations = include_presentations
+        self._projection_suppression_depth = 0
         self.class_reference_resolver = (
             None
             if class_index is None or not include_presentations
@@ -4977,15 +4981,15 @@ class _ProjectionVisitor(ClassFunctionStackNodeVisitor):
         )
 
     def visit_Call(self, node: ast.Call) -> None:
-        if self.active_class_method_frames:
+        if self.active_class_method_frames and not self._projection_suppression_depth:
             self._record_class_construction_type_names(
                 PresentationAuthorityConstructionCollector.construction_type_names(node)
             )
-        if self.include_presentations:
+        if self.include_presentations and not self._projection_suppression_depth:
             self._record_owner_constructions(
                 PresentationAuthorityConstructionCollector.constructions_for_call(node)
             )
-        self.generic_visit(node)
+        super().visit_Call(node)
 
     def _record_class_construction_type_names(
         self,
@@ -5016,32 +5020,44 @@ class _ProjectionVisitor(ClassFunctionStackNodeVisitor):
             frame.constructions.update(constructions)
 
     def visit_Assign(self, node: ast.Assign) -> None:
-        if not self.include_presentations:
-            self.generic_visit(node)
-            return
-        if self._collect_assignment_projection(node, node.value):
-            return
-        self.generic_visit(node)
+        projected = (
+            self.include_presentations
+            and not self._projection_suppression_depth
+            and self._collect_assignment_projection(node, node.value)
+        )
+        self._traverse_projection_children(node, suppress=projected)
 
     def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
-        if not self.include_presentations:
-            self.generic_visit(node)
-            return
-        if node.value is not None and self._collect_assignment_projection(
-            node,
-            node.value,
-            axis_type_names=ProjectionTypeScope.annotation_type_names(node.annotation),
-        ):
-            return
-        self.generic_visit(node)
+        projected = (
+            self.include_presentations
+            and not self._projection_suppression_depth
+            and node.value is not None
+            and self._collect_assignment_projection(
+                node,
+                node.value,
+                axis_type_names=ProjectionTypeScope.annotation_type_names(node.annotation),
+            )
+        )
+        self._traverse_projection_children(node, suppress=projected)
 
     def visit_Return(self, node: ast.Return) -> None:
-        if not self.include_presentations:
-            self.generic_visit(node)
-            return
-        if node.value is not None and self._collect_return_projection(node, node.value):
-            return
-        self.generic_visit(node)
+        projected = (
+            self.include_presentations
+            and not self._projection_suppression_depth
+            and node.value is not None
+            and self._collect_return_projection(node, node.value)
+        )
+        self._traverse_projection_children(node, suppress=projected)
+
+    def _traverse_projection_children(self, node: ast.AST, *, suppress: bool) -> None:
+        # An emitted presentation has already consumed this expression's
+        # descendant facts. Suppress only this capability, never another
+        # cooperative capability's required syntax events.
+        self._projection_suppression_depth += int(suppress)
+        try:
+            super().generic_visit(node)
+        finally:
+            self._projection_suppression_depth -= int(suppress)
 
     def visit_If(self, node: ast.If) -> None:
         if not self.include_presentations:
@@ -5295,6 +5311,17 @@ class _ProjectionVisitor(ClassFunctionStackNodeVisitor):
             self.owner_construction_stack[-1].projection_indices.append(
                 len(self.projections) - 1
             )
+
+
+class _CompactSemanticProjectionVisitor(
+    _ProjectionVisitor, DeclaredAttributeCheckCollector
+):
+    """Independent presentation/check capabilities sharing one C3 traversal.
+
+    Presentation scope prelude precedes declared-check prelude, followed by the
+    common class/function lifecycle. Both postludes unwind in reverse order.
+    Neither capability owns or repeats the other's extraction algorithm.
+    """
 
 
 @dataclass(frozen=True)

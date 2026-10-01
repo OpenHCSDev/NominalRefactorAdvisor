@@ -6,7 +6,7 @@ import ast
 from dataclasses import dataclass
 
 from .annotation_semantics import NOMINAL_ANNOTATION_SOURCE_AUTHORITY
-from .ast_tools import ClassFunctionStackNodeVisitor, ParsedModule
+from .ast_tools import ParsedModuleClassFunctionStackNodeVisitor, ParsedModule
 from .class_index import (
     CompactClassFamilyIndex,
     CompactClassReferenceResolver,
@@ -43,18 +43,23 @@ class DeclaredTypeCheckModule:
         collector = DeclaredAttributeCheckCollector(module)
         if include_checks:
             collector.visit(module.module)
+        return cls.from_collector(collector)
+
+    @classmethod
+    def from_collector(
+        cls, collector: DeclaredAttributeCheckCollector
+    ) -> DeclaredTypeCheckModule:
         return cls(collector.module_bindings, tuple(collector.checks))
 
 
-class DeclaredAttributeCheckCollector(ClassFunctionStackNodeVisitor):
+class DeclaredAttributeCheckCollector(ParsedModuleClassFunctionStackNodeVisitor):
     """Collect contracts once at the lexical boundary, without a second class index."""
 
-    def __init__(self, module: ParsedModule) -> None:
-        super().__init__()
-        self.module = module
-        self.module_bindings = ModuleNominalBindingAuthority(module).snapshot_before(
-            None
-        )
+    def __init__(self, parsed_module: ParsedModule) -> None:
+        super().__init__(parsed_module)
+        self.module_bindings = ModuleNominalBindingAuthority(
+            parsed_module
+        ).snapshot_before(None)
         self.subjects: list[dict[str, tuple[str, ...]]] = []
         self.locals: list[frozenset[str]] = []
         self.checks: list[DeclaredAttributeCheck] = []
@@ -95,7 +100,15 @@ class DeclaredAttributeCheckCollector(ClassFunctionStackNodeVisitor):
     visit_AsyncFunctionDef = visit_FunctionDef
 
     def visit_Lambda(self, node: ast.Lambda) -> None:
-        pass
+        # This capability has never admitted checks in lambda bodies. Other
+        # composed capabilities may still require those syntax events.
+        self.subjects.append({})
+        self.locals.append(frozenset())
+        try:
+            super().visit_Lambda(node)
+        finally:
+            self.locals.pop()
+            self.subjects.pop()
 
     def _builtin(self, node: ast.AST, name: str) -> bool:
         return (
@@ -112,7 +125,7 @@ class DeclaredAttributeCheckCollector(ClassFunctionStackNodeVisitor):
             and not node.keywords
         ):
             self._record(node, node.args[0], node.args[1])
-        self.generic_visit(node)
+        super().visit_Call(node)
 
     def visit_Compare(self, node: ast.Compare) -> None:
         if len(node.ops) == 1 and isinstance(
@@ -129,7 +142,7 @@ class DeclaredAttributeCheckCollector(ClassFunctionStackNodeVisitor):
                     and not call.keywords
                 ):
                     self._record(node, call.args[0], expected)
-        self.generic_visit(node)
+        super().visit_Compare(node)
 
     def _record(self, node: ast.AST, value: ast.AST, expected: ast.AST) -> None:
         if (
@@ -150,7 +163,9 @@ class DeclaredAttributeCheckCollector(ClassFunctionStackNodeVisitor):
             return
         self.checks.append(
             DeclaredAttributeCheck(
-                SourceLocation(self.module.file_path, node.lineno, self.qualname),
+                SourceLocation(
+                    self.parsed_module.file_path, node.lineno, self.qualname
+                ),
                 subject_type,
                 value.attr,
                 self.module_bindings.reference_for(expected_parts),

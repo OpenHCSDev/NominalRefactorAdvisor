@@ -57,5 +57,52 @@ MEMB-1/2/5 declaration-derived inventories and TIME-1/3/9 replacement closure.
 Do not invent container dispatch families, a parallel schema or a compatibility
 facade. A new family/capability must need only its declaration, not consumer edits.
 
-Status: ownership and diagnosis checkpoint only. No production fix, focused
-pass, complete two-revision R1 or global85-detector/FULL audit is yet claimed.
+Status: source implementation checkpoint. Original complete two-revision R1,
+installed acceptance and global85-detector/FULL audit remain unqualified.
+
+## Admitted source-owner move (2026-10-01)
+
+The bounded original-consumer profile contains eight parses and is not a full
+audit. `CompactSemanticModuleProjectionFamily._collect` consumed 3.231s;
+its presentation visitor and `DeclaredTypeCheckModule.collect` independently
+walked the same live AST (the check visitor's function handlers alone consumed
+0.702s). AST admission checks consumed 0.829s overall: the sparse predecessor
+stack does not establish them as dominant. No whole-context dominance is claimed.
+
+Required answers are unchanged presentation/class supplements and unchanged
+declared-attribute checks, including ignored lambda checks, shadowed builtins,
+nested scope ownership and exact original source locations. These independently
+meaningful capabilities already inherit `ClassFunctionStackNodeVisitor`; that
+ancestor owns stack lifecycle and the single traversal endpoints. A source-bound
+ancestor owns the shared parsed-module context, not a second identity store.
+The compact semantic collector composes both existing capabilities via C3 and
+cooperative `super()`, rather than invoking a second module traversal. The
+type-check record owns construction from its collector. No consumer type switch,
+new registry, detector copy or cache policy change is required.
+
+Catalog review: IMPL-12/13 (duplicate traversal mechanism), IMPL-4 (capabilities
+must really participate in cooperative traversal), MEMB-1/2 (no parallel roster),
+IDEN-5 (one source context), TIME-1/3 (delete second traversal; no fallback facade).
+The supported refactor DSL does not certify this cooperative visitor fusion;
+it is a manually authored source refactor with separate behavioral/proof gates.
+No native equivalence, installed acceptance or global audit claim follows.
+
+## First behavioral checkpoint
+
+Composition/publication suite: 20 passed, 5.79s wall, 86.79MiB maxRSS.
+The first invocation rejected pytest's inherited parallel flags (exit4); the
+next retained one failed new-case test (6 passed) exposing presentation early
+returns hiding another capability's events. Fixed by capability-local subtree
+suppression and continued shared traversal, not weakened assertions. Subsequent
+check cases cover projected assignment/annotated-assignment/return descendants.
+
+Original four-file source-family comparison: identical raw SHA256 and content
+signatures, 458 presentations, 36 declared checks, 292 class supplements.
+Collection 0.708180s baseline -> 0.619938s candidate (single sample, about12.5%).
+Process wall was 2.77s -> 3.61s; no cold-process/full-context improvement claim.
+Baseline/candidate maxRSS 80.92/83.10MiB. No source pruning of the original
+two-revision acceptance inputs is licensed by this bounded component comparison.
+
+Broader five-file test shard: INCOMPLETE exit124, 60.01s, 88.42MiB. Partial dots
+are not an accepted test count. Remaining checks split under the same bounds.
+All failures and profiles remain retained for the final source handoff.

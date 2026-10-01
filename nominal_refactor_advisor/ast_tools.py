@@ -1510,6 +1510,7 @@ class ClassFunctionStackNodeVisitor(ast.NodeVisitor, ABC):
     """Nominal AST visitor base that owns class/function scope stack lifecycle."""
 
     def __init__(self) -> None:
+        super().__init__()
         self.class_stack: list[str] = []
         self.function_stack: list[str] = []
 
@@ -1570,6 +1571,20 @@ class ClassFunctionStackNodeVisitor(ast.NodeVisitor, ABC):
             self.function_stack.pop()
 
     visit_AsyncFunctionDef = visit_FunctionDef
+
+    # Cooperative capabilities observe an event before delegating here. The
+    # owning ancestor traverses children once, regardless of capability count.
+    visit_Call = ast.NodeVisitor.generic_visit
+    visit_Compare = ast.NodeVisitor.generic_visit
+    visit_Lambda = ast.NodeVisitor.generic_visit
+
+
+class ParsedModuleClassFunctionStackNodeVisitor(ClassFunctionStackNodeVisitor):
+    """Source-bound scope traversal shared by independent module capabilities."""
+
+    def __init__(self, parsed_module: ParsedModule) -> None:
+        super().__init__()
+        self.parsed_module = parsed_module
 
 
 _TRegistered = TypeVar("_TRegistered")
