@@ -1,5 +1,10 @@
 # Source checkpoint and retained evidence
 
+Latest terminal qualification/profile:
+[publication/preparation cost and unresolved ownership](publication-profile/README.md).
+Original full-context18910a5 R1 FAILED at160s; no production changes in this
+diagnostic checkpoint. Historical pending statuses below are not current success.
+
 Current authorized follow-through:
 [same-node cooperative receipt](same-node-followthrough/README.md), source19f21b6.
 The original checkpoint/results below remain historical evidence, not overwritten

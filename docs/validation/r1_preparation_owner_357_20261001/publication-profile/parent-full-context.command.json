@@ -1,0 +1,13 @@
+{
+  "command": [
+    "/usr/bin/taskset",
+    "-c",
+    "0",
+    "/bin/bash",
+    "/home/ts/wt/openhcs-issue-batch-20260929/r1-357-newcase-parent-20261001/run-full-case.sh"
+  ],
+  "exit": 1,
+  "limit": null,
+  "peak_rss_mib": 187.41,
+  "seconds": 164.42
+}

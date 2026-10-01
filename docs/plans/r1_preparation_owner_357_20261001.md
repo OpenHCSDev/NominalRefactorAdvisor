@@ -146,3 +146,15 @@ and its separate freeze manifest retain both failing experiments, 47 distinct
 passing current source cases (7 new), unchanged original component signatures,
 resource bounds and cleanup. Original failure evidence remains unchanged;
 parent's installed run and full qualification remain untouched.
+
+## Original full-context failure and bounded publication profile
+
+Parent's exact original18910a5 qualification is terminal ScanDeadlineExceeded160s,
+exit1/164.42s/187.41MiB, not a pass. The latest [publication/preparation receipt](../validation/r1_preparation_owner_357_20261001/publication-profile/README.md)
+retains that witness and one bounded45CPU profile inside the unchanged60s source
+envelope. AST retention consumed2.752/45.582s sampled work, not demonstrated
+overall dominance. Source remains19f21b6. A concrete unresolved IMPL-12/13
+duplication is recorded: the two composed function capabilities independently
+rescan the same lexical body bindings (4393 calls each). It requires source-scope
+owner reuse with lifecycle/proof behavior, not another cache authority or guard
+waiver. This profile/review checkpoint adds no production fix or new test pass.

@@ -1,0 +1,46 @@
+Thu Oct  1 11:34:54 2026    /home/ts/.cache/agent-scratch/nra-r1-publication-357-20261001/predecessor-publication.pstats
+
+         96830231 function calls (89480929 primitive calls) in 45.582 seconds
+
+   Ordered by: cumulative time
+   List reduced from 1606 to 10 due to restriction <'__post_init__|add_runtime_projection|retains_python_ast|collect_family_batch|store_items'>
+
+   ncalls  tottime  percall  cumtime  percall filename:lineno(function)
+       64    0.002    0.000   27.193    0.425 /home/ts/wt/nra-r1-preparation-owner-357-20261001/nominal_refactor_advisor/ast_tools.py:2285(collect_family_batch)
+       64    0.004    0.000    4.147    0.065 /home/ts/wt/nra-r1-preparation-owner-357-20261001/nominal_refactor_advisor/ast_tools.py:2171(store_items)
+731740/118    0.778    0.000    2.752    0.023 /home/ts/wt/nra-r1-preparation-owner-357-20261001/nominal_refactor_advisor/ast_tools.py:1106(retains_python_ast)
+       54    0.000    0.000    1.240    0.023 /home/ts/wt/nra-r1-preparation-owner-357-20261001/nominal_refactor_advisor/analysis.py:1110(add_runtime_projection)
+       54    0.000    0.000    1.240    0.023 /home/ts/wt/nra-r1-preparation-owner-357-20261001/nominal_refactor_advisor/analysis.py:1077(__post_init__)
+     7506    0.005    0.000    0.010    0.000 /home/ts/wt/nra-r1-preparation-owner-357-20261001/nominal_refactor_advisor/lexical_bindings.py:454(__post_init__)
+     2791    0.003    0.000    0.007    0.000 /home/ts/wt/nra-r1-preparation-owner-357-20261001/nominal_refactor_advisor/models.py:217(__post_init__)
+     1313    0.002    0.000    0.003    0.000 /home/ts/wt/nra-r1-preparation-owner-357-20261001/nominal_refactor_advisor/class_index.py:2815(__post_init__)
+        1    0.000    0.000    0.001    0.001 /home/ts/wt/nra-r1-preparation-owner-357-20261001/nominal_refactor_advisor/analysis.py:134(__post_init__)
+        5    0.000    0.000    0.000    0.000 /home/ts/wt/nra-r1-preparation-owner-357-20261001/nominal_refactor_advisor/class_index.py:2670(__post_init__)
+
+
+   Ordered by: cumulative time
+   List reduced from 1606 to 1 due to restriction <'retains_python_ast'>
+
+Function                                                                                                          was called by...
+                                                                                                                      ncalls  tottime  cumtime
+/home/ts/wt/nra-r1-preparation-owner-357-20261001/nominal_refactor_advisor/ast_tools.py:1106(retains_python_ast)  <-      54    0.000    1.237  /home/ts/wt/nra-r1-preparation-owner-357-20261001/nominal_refactor_advisor/analysis.py:791(_retains_ast)
+                                                                                                                   378664/1357    0.373    2.747  /home/ts/wt/nra-r1-preparation-owner-357-20261001/nominal_refactor_advisor/ast_tools.py:1122(<genexpr>)
+                                                                                                                       17122    0.026    0.208  /home/ts/wt/nra-r1-preparation-owner-357-20261001/nominal_refactor_advisor/ast_tools.py:1127(<genexpr>)
+                                                                                                                   335836/24862    0.379    2.668  /home/ts/wt/nra-r1-preparation-owner-357-20261001/nominal_refactor_advisor/ast_tools.py:1131(<genexpr>)
+                                                                                                                          64    0.000    1.515  /home/ts/wt/nra-r1-preparation-owner-357-20261001/nominal_refactor_advisor/ast_tools.py:2171(store_items)
+
+
+   Ordered by: cumulative time
+   List reduced from 1606 to 1 due to restriction <'retains_python_ast'>
+
+Function                                                                                                          called...
+                                                                                                                      ncalls  tottime  cumtime
+/home/ts/wt/nra-r1-preparation-owner-357-20261001/nominal_refactor_advisor/ast_tools.py:1106(retains_python_ast)  ->   71838    0.140    0.219  /home/ts/.pyenv/versions/3.12.3/lib/python3.12/dataclasses.py:1271(fields)
+                                                                                                                      166754    0.075    0.127  /home/ts/.pyenv/versions/3.12.3/lib/python3.12/dataclasses.py:1294(is_dataclass)
+                                                                                                                   166754/118    0.163    2.750  {built-in method builtins.any}
+                                                                                                                      255818    0.040    0.040  {built-in method builtins.id}
+                                                                                                                     1725091    0.533    0.948  {built-in method builtins.isinstance}
+                                                                                                                      166754    0.048    0.048  {method 'add' of 'set' objects}
+                                                                                                                          59    0.000    0.000  {method 'items' of 'dict' objects}
+
+
