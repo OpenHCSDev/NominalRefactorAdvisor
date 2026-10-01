@@ -4812,6 +4812,11 @@ class _ProjectionVisitor(ParsedModuleClassFunctionStackNodeVisitor):
             if supplement is not None
         )
 
+    @property
+    def _collecting_presentations(self) -> bool:
+        """Whether this capability still needs this subtree's facts."""
+        return self.include_presentations and not self._projection_suppression_depth
+
     def visit_ClassDef(self, node: ast.ClassDef) -> None:
         frame: CompactSemanticClassSupplementFrame | None = None
         if not self.function_stack:
@@ -4985,7 +4990,7 @@ class _ProjectionVisitor(ParsedModuleClassFunctionStackNodeVisitor):
             self._record_class_construction_type_names(
                 PresentationAuthorityConstructionCollector.construction_type_names(node)
             )
-        if self.include_presentations and not self._projection_suppression_depth:
+        if self._collecting_presentations:
             self._record_owner_constructions(
                 PresentationAuthorityConstructionCollector.constructions_for_call(node)
             )
@@ -5021,16 +5026,14 @@ class _ProjectionVisitor(ParsedModuleClassFunctionStackNodeVisitor):
 
     def visit_Assign(self, node: ast.Assign) -> None:
         projected = (
-            self.include_presentations
-            and not self._projection_suppression_depth
+            self._collecting_presentations
             and self._collect_assignment_projection(node, node.value)
         )
         self._traverse_projection_children(node, suppress=projected)
 
     def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
         projected = (
-            self.include_presentations
-            and not self._projection_suppression_depth
+            self._collecting_presentations
             and node.value is not None
             and self._collect_assignment_projection(
                 node,
@@ -5042,8 +5045,7 @@ class _ProjectionVisitor(ParsedModuleClassFunctionStackNodeVisitor):
 
     def visit_Return(self, node: ast.Return) -> None:
         projected = (
-            self.include_presentations
-            and not self._projection_suppression_depth
+            self._collecting_presentations
             and node.value is not None
             and self._collect_return_projection(node, node.value)
         )

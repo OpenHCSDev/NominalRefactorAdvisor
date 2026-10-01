@@ -19,7 +19,7 @@ def main() -> None:
     import nominal_refactor_advisor
     from nominal_refactor_advisor.analysis import release_module_analysis_memory
     from nominal_refactor_advisor.ast_tools import (
-        SourceModule,
+        PythonModuleRootParser,
         collected_family_items_content_signature,
         retains_python_ast,
     )
@@ -29,8 +29,9 @@ def main() -> None:
 
     assert Path(nominal_refactor_advisor.__file__).is_relative_to(args.advisor_root)
     for path in args.sources:
-        source = path.read_text(encoding="utf-8")
-        module = SourceModule(path, path.stem, source).parse()
+        module = PythonModuleRootParser.for_root(
+            path, use_parse_cache=False, parse_workers=1
+        ).parsed_source_path(path)
         started = perf_counter()
         items = tuple(CompactSemanticModuleProjectionFamily.collect(module))
         elapsed = perf_counter() - started
