@@ -1,0 +1,51 @@
+============================= test session starts ==============================
+platform linux -- Python 3.12.3, pytest-8.3.5, pluggy-1.6.0 -- /home/ts/wt/openhcs-generated-inputs-installed-parent-20261001/.venv/bin/python
+rootdir: /home/ts/wt/nra-r1-preparation-owner-357-20261001
+configfile: pyproject.toml
+collecting ... collected 27 items / 7 deselected / 20 selected
+
+tests/test_lexical_binding_authority.py::test_enclosing_bindings_match_native_python[def method(value=(hidden := 3)): pass] PASSED [  5%]
+tests/test_lexical_binding_authority.py::test_enclosing_bindings_match_native_python[async def method(value=(hidden := 3)): pass] PASSED [ 10%]
+tests/test_lexical_binding_authority.py::test_enclosing_bindings_match_native_python[@(hidden := staticmethod)\ndef method(): pass] PASSED [ 15%]
+tests/test_lexical_binding_authority.py::test_enclosing_bindings_match_native_python[class Inner((base := object)): pass] PASSED [ 20%]
+tests/test_lexical_binding_authority.py::test_enclosing_bindings_match_native_python[value = lambda item=(hidden := 3): item] PASSED [ 25%]
+tests/test_lexical_binding_authority.py::test_enclosing_bindings_match_native_python[values = (item for item in (1, 2))] PASSED [ 30%]
+tests/test_lexical_binding_authority.py::test_enclosing_bindings_match_native_python[def method():\n    internal = 3\n    return internal] PASSED [ 35%]
+tests/test_lexical_binding_authority.py::test_enclosing_bindings_match_native_python[class Inner:\n    internal = 3] PASSED [ 40%]
+tests/test_lexical_binding_authority.py::test_enclosing_bindings_match_native_python[try:\n    pass\nexcept Exception as error:\n    pass] PASSED [ 45%]
+tests/test_lexical_binding_authority.py::test_enclosing_bindings_match_native_python[match value:\n    case {'first': captured, **rest}: pass] PASSED [ 50%]
+tests/test_lexical_binding_authority.py::test_comprehension_ownership_matches_live_function_scope[values = [item for item in (1, 2)]] PASSED [ 55%]
+tests/test_lexical_binding_authority.py::test_comprehension_ownership_matches_live_function_scope[item = 0\nvalues = [item for item in (1, 2)]] PASSED [ 60%]
+tests/test_lexical_binding_authority.py::test_comprehension_ownership_matches_live_function_scope[values = {item for item in (1, 2)}] PASSED [ 65%]
+tests/test_lexical_binding_authority.py::test_comprehension_ownership_matches_live_function_scope[values = {item: item for item in (1, 2)}] PASSED [ 70%]
+tests/test_lexical_binding_authority.py::test_comprehension_ownership_matches_live_function_scope[values = [(last := item) for item in (1, 2)]] PASSED [ 75%]
+tests/test_lexical_binding_authority.py::test_comprehension_ownership_matches_live_function_scope[values = [lambda default=(last := item): default for item in (1, 2)]] PASSED [ 80%]
+tests/test_lexical_binding_authority.py::test_comprehension_ownership_matches_live_function_scope[values = [lambda: (internal := item) for item in (1, 2)]] PASSED [ 85%]
+tests/test_lexical_binding_authority.py::test_function_local_projection_uses_shared_header_bindings PASSED [ 90%]
+tests/test_unique_identity_index.py::test_source_index_rejects_forced_target_handle_collision PASSED [ 95%]
+tests/test_unique_identity_index.py::test_source_index_rejects_forced_file_handle_collision PASSED [100%]
+
+======================= 20 passed, 7 deselected in 0.18s =======================
+	Command being timed: "timeout --signal=TERM --kill-after=3s 60s taskset -c 0 /home/ts/wt/openhcs-generated-inputs-installed-parent-20261001/.venv/bin/python -I -B -c import sys; sys.path.insert(0,"/home/ts/wt/nra-r1-preparation-owner-357-20261001"); import pytest; raise SystemExit(pytest.main(["-v","-o","addopts=","-p","no:cacheprovider","--basetemp=/home/ts/.cache/agent-scratch/nra-r1-function-scope-357-20261001/pytest-lexical","tests/test_lexical_binding_authority.py","tests/test_unique_identity_index.py::test_source_index_rejects_forced_target_handle_collision","tests/test_unique_identity_index.py::test_source_index_rejects_forced_file_handle_collision","-k","enclosing_bindings or comprehension_ownership or function_local_projection or source_index_rejects_forced"]))"
+	User time (seconds): 2.78
+	System time (seconds): 0.11
+	Percent of CPU this job got: 99%
+	Elapsed (wall clock) time (h:mm:ss or m:ss): 0:02.90
+	Average shared text size (kbytes): 0
+	Average unshared data size (kbytes): 0
+	Average stack size (kbytes): 0
+	Average total size (kbytes): 0
+	Maximum resident set size (kbytes): 85072
+	Average resident set size (kbytes): 0
+	Major (requiring I/O) page faults: 0
+	Minor (reclaiming a frame) page faults: 24891
+	Voluntary context switches: 30
+	Involuntary context switches: 16
+	Swaps: 0
+	File system inputs: 56
+	File system outputs: 64
+	Socket messages sent: 0
+	Socket messages received: 0
+	Signals delivered: 0
+	Page size (bytes): 4096
+	Exit status: 0

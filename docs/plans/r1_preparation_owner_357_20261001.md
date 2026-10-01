@@ -158,3 +158,25 @@ duplication is recorded: the two composed function capabilities independently
 rescan the same lexical body bindings (4393 calls each). It requires source-scope
 owner reuse with lifecycle/proof behavior, not another cache authority or guard
 waiver. This profile/review checkpoint adds no production fix or new test pass.
+
+## Shared determining function scope
+
+Sourcefbee396 extends the existing source-bound ancestor to own one original
+lexical binding determination per function event, supplied through cooperative
+context hooks to the independent presentation/check capabilities. Repeated leaf
+calls/event overrides and copied unsafe postlude name-stack lifecycle are deleted;
+the existing owning stack ancestor now protects both traversal and postlude.
+No cache, store, roster, copied algorithm or proof/AST-admission waiver is added.
+BindingCensus supplies only a new declaration/hook, participates before/after C3
+and demonstrates real nested/async ordering, freshness and exception restoration.
+
+The [source receipt](../validation/r1_preparation_owner_357_20261001/function-scope-reuse/README.md)
+and [freeze](../validation/r1_preparation_owner_357_20261001/function-scope-reuse/freeze-manifest.json)
+retain the red two-determination experiment,79 distinct current source passes
+(12 new), identical complete component signatures and exact bounds/cleanup.
+Single-sample component timing is essentially flat; no complete R1 speedup is
+claimed. Original parent failure and baseline-equal native proof failure remain
+retained. Class syntax facet binding requests remain independently owned.
+Parent retains original160/165/512MiB complete qualification and installed gate;
+global85-detector/FULL remains separately unqualified. Source development remains
+active, not terminated by a fixed submission count or renamed a global pass.

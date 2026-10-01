@@ -1,5 +1,11 @@
 # Source checkpoint and retained evidence
 
+Latest source migration:
+[shared function-scope preparation](function-scope-reuse/README.md), sourcefbee396.
+79 distinct current source cases pass, including12 new cooperative capability
+cases. Full R1 and installed/global acceptance remain unqualified; prior original
+failure is retained below. No identical full attempt was repeated.
+
 Latest terminal qualification/profile:
 [publication/preparation cost and unresolved ownership](publication-profile/README.md).
 Original full-context18910a5 R1 FAILED at160s; no production changes in this
