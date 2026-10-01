@@ -1,0 +1,206 @@
+============================= test session starts ==============================
+platform linux -- Python 3.12.3, pytest-8.3.5, pluggy-1.6.0 -- /home/ts/wt/openhcs-generated-inputs-installed-parent-20261001/.venv/bin/python
+rootdir: /home/ts/wt/nra-r1-preparation-owner-357-20261001
+configfile: pyproject.toml
+collecting ... collected 14 items / 10 deselected / 4 selected
+
+tests/test_cooperative_semantic_preparation.py::test_same_node_capability_composes_in_both_mro_orders[True-CensusBeforeProjection] FAILED [ 25%]
+tests/test_cooperative_semantic_preparation.py::test_same_node_capability_composes_in_both_mro_orders[True-CensusAfterProjection] FAILED [ 50%]
+tests/test_cooperative_semantic_preparation.py::test_same_node_capability_composes_in_both_mro_orders[False-CensusBeforeProjection] FAILED [ 75%]
+tests/test_cooperative_semantic_preparation.py::test_same_node_capability_composes_in_both_mro_orders[False-CensusAfterProjection] FAILED [100%]
+
+=================================== FAILURES ===================================
+_ test_same_node_capability_composes_in_both_mro_orders[True-CensusBeforeProjection] _
+
+tmp_path = PosixPath('/home/ts/.cache/agent-scratch/nra-r1-same-node-357-20261001/pytest-before/test_same_node_capability_comp0')
+visitor_type = <class 'test_cooperative_semantic_preparation.CensusBeforeProjection'>
+include_presentations = True
+
+    @pytest.mark.parametrize("visitor_type", (CensusBeforeProjection, CensusAfterProjection))
+    @pytest.mark.parametrize("include_presentations", (True, False))
+    def test_same_node_capability_composes_in_both_mro_orders(
+        tmp_path, visitor_type, include_presentations
+    ):
+        source = """\
+    class Example:
+        def target(self, value: Value):
+            projected = {'left': isinstance(value.count, int), 'right': 'name'}
+            annotated: dict = {'left': isinstance(value.count, int), 'right': 'name'}
+            plain = consume(value)
+            uninitialized: int
+            def nested():
+                local = consume(value)
+                return
+            return {'left': isinstance(value.count, int), 'right': 'name'}
+    """
+        module = SourceModule(tmp_path / "case.py", "case", source).parse()
+        independent = _ProjectionVisitor(
+            module, include_presentations=include_presentations
+        )
+        independent.visit(module.module)
+>       visitor = visitor_type(module, include_presentations=include_presentations)
+E       TypeError: StatementCensus.__init__() got an unexpected keyword argument 'include_presentations'
+
+tests/test_cooperative_semantic_preparation.py:184: TypeError
+_ test_same_node_capability_composes_in_both_mro_orders[True-CensusAfterProjection] _
+
+tmp_path = PosixPath('/home/ts/.cache/agent-scratch/nra-r1-same-node-357-20261001/pytest-before/test_same_node_capability_comp1')
+visitor_type = <class 'test_cooperative_semantic_preparation.CensusAfterProjection'>
+include_presentations = True
+
+    @pytest.mark.parametrize("visitor_type", (CensusBeforeProjection, CensusAfterProjection))
+    @pytest.mark.parametrize("include_presentations", (True, False))
+    def test_same_node_capability_composes_in_both_mro_orders(
+        tmp_path, visitor_type, include_presentations
+    ):
+        source = """\
+    class Example:
+        def target(self, value: Value):
+            projected = {'left': isinstance(value.count, int), 'right': 'name'}
+            annotated: dict = {'left': isinstance(value.count, int), 'right': 'name'}
+            plain = consume(value)
+            uninitialized: int
+            def nested():
+                local = consume(value)
+                return
+            return {'left': isinstance(value.count, int), 'right': 'name'}
+    """
+        module = SourceModule(tmp_path / "case.py", "case", source).parse()
+        independent = _ProjectionVisitor(
+            module, include_presentations=include_presentations
+        )
+        independent.visit(module.module)
+        visitor = visitor_type(module, include_presentations=include_presentations)
+        visitor.visit(module.module)
+        target = module.module.body[0].body[0]
+        nested = target.body[4]
+>       assert visitor.statements == Counter(
+            {
+                ("Example.target", id(node)): 1
+                for node in (*target.body[:4], target.body[-1])
+            }
+        ) + Counter({("Example.target.nested", id(node)): 1 for node in nested.body})
+E       AssertionError: assert Counter() == Counter({('Ex...02591696): 1})
+E         
+E         Right contains 7 more items:
+E         {('Example.target', 139861302593936): 1,
+E          ('Example.target', 139861302595344): 1,
+E          ('Example.target', 139861302597264): 1,
+E          ('Example.target', 139861302602256): 1,
+E          ('Example.target', 139861302602960): 1,...
+E         
+E         ...Full output truncated (16 lines hidden), use '-vv' to show
+
+tests/test_cooperative_semantic_preparation.py:188: AssertionError
+_ test_same_node_capability_composes_in_both_mro_orders[False-CensusBeforeProjection] _
+
+tmp_path = PosixPath('/home/ts/.cache/agent-scratch/nra-r1-same-node-357-20261001/pytest-before/test_same_node_capability_comp2')
+visitor_type = <class 'test_cooperative_semantic_preparation.CensusBeforeProjection'>
+include_presentations = False
+
+    @pytest.mark.parametrize("visitor_type", (CensusBeforeProjection, CensusAfterProjection))
+    @pytest.mark.parametrize("include_presentations", (True, False))
+    def test_same_node_capability_composes_in_both_mro_orders(
+        tmp_path, visitor_type, include_presentations
+    ):
+        source = """\
+    class Example:
+        def target(self, value: Value):
+            projected = {'left': isinstance(value.count, int), 'right': 'name'}
+            annotated: dict = {'left': isinstance(value.count, int), 'right': 'name'}
+            plain = consume(value)
+            uninitialized: int
+            def nested():
+                local = consume(value)
+                return
+            return {'left': isinstance(value.count, int), 'right': 'name'}
+    """
+        module = SourceModule(tmp_path / "case.py", "case", source).parse()
+        independent = _ProjectionVisitor(
+            module, include_presentations=include_presentations
+        )
+        independent.visit(module.module)
+>       visitor = visitor_type(module, include_presentations=include_presentations)
+E       TypeError: StatementCensus.__init__() got an unexpected keyword argument 'include_presentations'
+
+tests/test_cooperative_semantic_preparation.py:184: TypeError
+_ test_same_node_capability_composes_in_both_mro_orders[False-CensusAfterProjection] _
+
+tmp_path = PosixPath('/home/ts/.cache/agent-scratch/nra-r1-same-node-357-20261001/pytest-before/test_same_node_capability_comp3')
+visitor_type = <class 'test_cooperative_semantic_preparation.CensusAfterProjection'>
+include_presentations = False
+
+    @pytest.mark.parametrize("visitor_type", (CensusBeforeProjection, CensusAfterProjection))
+    @pytest.mark.parametrize("include_presentations", (True, False))
+    def test_same_node_capability_composes_in_both_mro_orders(
+        tmp_path, visitor_type, include_presentations
+    ):
+        source = """\
+    class Example:
+        def target(self, value: Value):
+            projected = {'left': isinstance(value.count, int), 'right': 'name'}
+            annotated: dict = {'left': isinstance(value.count, int), 'right': 'name'}
+            plain = consume(value)
+            uninitialized: int
+            def nested():
+                local = consume(value)
+                return
+            return {'left': isinstance(value.count, int), 'right': 'name'}
+    """
+        module = SourceModule(tmp_path / "case.py", "case", source).parse()
+        independent = _ProjectionVisitor(
+            module, include_presentations=include_presentations
+        )
+        independent.visit(module.module)
+        visitor = visitor_type(module, include_presentations=include_presentations)
+        visitor.visit(module.module)
+        target = module.module.body[0].body[0]
+        nested = target.body[4]
+>       assert visitor.statements == Counter(
+            {
+                ("Example.target", id(node)): 1
+                for node in (*target.body[:4], target.body[-1])
+            }
+        ) + Counter({("Example.target.nested", id(node)): 1 for node in nested.body})
+E       AssertionError: assert Counter() == Counter({('Ex...02508176): 1})
+E         
+E         Right contains 7 more items:
+E         {('Example.target', 139861302496656): 1,
+E          ('Example.target', 139861302497296): 1,
+E          ('Example.target', 139861302503376): 1,
+E          ('Example.target', 139861302506896): 1,
+E          ('Example.target', 139861302506960): 1,...
+E         
+E         ...Full output truncated (16 lines hidden), use '-vv' to show
+
+tests/test_cooperative_semantic_preparation.py:188: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_cooperative_semantic_preparation.py::test_same_node_capability_composes_in_both_mro_orders[True-CensusBeforeProjection]
+FAILED tests/test_cooperative_semantic_preparation.py::test_same_node_capability_composes_in_both_mro_orders[True-CensusAfterProjection]
+FAILED tests/test_cooperative_semantic_preparation.py::test_same_node_capability_composes_in_both_mro_orders[False-CensusBeforeProjection]
+FAILED tests/test_cooperative_semantic_preparation.py::test_same_node_capability_composes_in_both_mro_orders[False-CensusAfterProjection]
+======================= 4 failed, 10 deselected in 0.19s =======================
+Command exited with non-zero status 1
+	Command being timed: "timeout --signal=TERM --kill-after=3s 60s taskset -c 0 /home/ts/wt/openhcs-generated-inputs-installed-parent-20261001/.venv/bin/python -I -B -c import sys; sys.path.insert(0,"/home/ts/wt/nra-r1-preparation-owner-357-20261001"); import pytest; raise SystemExit(pytest.main(["-v","-o","addopts=","-p","no:cacheprovider","--basetemp=/home/ts/.cache/agent-scratch/nra-r1-same-node-357-20261001/pytest-before","tests/test_cooperative_semantic_preparation.py","-k","same_node"]))"
+	User time (seconds): 2.59
+	System time (seconds): 0.11
+	Percent of CPU this job got: 99%
+	Elapsed (wall clock) time (h:mm:ss or m:ss): 0:02.72
+	Average shared text size (kbytes): 0
+	Average unshared data size (kbytes): 0
+	Average stack size (kbytes): 0
+	Average total size (kbytes): 0
+	Maximum resident set size (kbytes): 86036
+	Average resident set size (kbytes): 0
+	Major (requiring I/O) page faults: 2
+	Minor (reclaiming a frame) page faults: 25575
+	Voluntary context switches: 30
+	Involuntary context switches: 434
+	Swaps: 0
+	File system inputs: 280
+	File system outputs: 32
+	Socket messages sent: 0
+	Socket messages received: 0
+	Signals delivered: 0
+	Page size (bytes): 4096
+	Exit status: 1

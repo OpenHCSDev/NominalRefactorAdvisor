@@ -133,3 +133,16 @@ acceptance. Global85detector/FULL remains separately unqualified. No native/UI,
 science replay, install, lock, provider, download or other-owner source change.
 Owned19MiB scratch removed after handle/process proof and evidence preservation;
 the parent's original terminal cache address was neither reused nor removed.
+
+## Authorized same-node follow-through
+
+At predecessor c6ec13f the new independent same-node experiment demonstrated
+that projection handlers bypassed downstream Assign/AnnAssign/Return hooks,
+although earlier Call-only extension evidence passed. Source19f21b6 repairs
+this in the existing shared traversal owner, preserves local suppression and
+single traversal, and removes the bypassing helper. No confirmed installed
+regression is asserted. The [follow-through receipt](../validation/r1_preparation_owner_357_20261001/same-node-followthrough/README.md)
+and its separate freeze manifest retain both failing experiments, 47 distinct
+passing current source cases (7 new), unchanged original component signatures,
+resource bounds and cleanup. Original failure evidence remains unchanged;
+parent's installed run and full qualification remain untouched.

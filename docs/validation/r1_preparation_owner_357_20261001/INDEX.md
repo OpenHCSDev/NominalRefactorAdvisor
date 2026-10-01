@@ -1,5 +1,10 @@
 # Source checkpoint and retained evidence
 
+Current authorized follow-through:
+[same-node cooperative receipt](same-node-followthrough/README.md), source19f21b6.
+The original checkpoint/results below remain historical evidence, not overwritten
+or retrospectively qualified by the follow-through.
+
 Source owner Schrodinger/Codex; integration and original R0/R1/installed
 qualification parent. Draft https://github.com/OpenHCSDev/NominalRefactorAdvisor/pull/16.
 Production source checkpoint `2ae2309967904e0195f0d8e75b9b9988c736a52a`;

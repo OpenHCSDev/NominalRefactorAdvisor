@@ -1,0 +1,67 @@
+============================= test session starts ==============================
+platform linux -- Python 3.12.3, pytest-8.3.5, pluggy-1.6.0 -- /home/ts/wt/openhcs-generated-inputs-installed-parent-20261001/.venv/bin/python
+rootdir: /home/ts/wt/nra-r1-preparation-owner-357-20261001
+configfile: pyproject.toml
+collecting ... collected 36 items
+
+tests/test_cooperative_semantic_preparation.py::test_composed_facts_equal_independent_capabilities[] PASSED [  2%]
+tests/test_cooperative_semantic_preparation.py::test_composed_facts_equal_independent_capabilities[\nisinstance = lambda *args: True\n] PASSED [  5%]
+tests/test_cooperative_semantic_preparation.py::test_composed_facts_equal_independent_capabilities[\ntype = lambda value: int\n] PASSED [  8%]
+tests/test_cooperative_semantic_preparation.py::test_compact_family_does_not_reenter_independent_check_collection PASSED [ 11%]
+tests/test_cooperative_semantic_preparation.py::test_new_capability_is_only_a_declaration_and_cooperative_hook PASSED [ 13%]
+tests/test_cooperative_semantic_preparation.py::test_same_node_capability_composes_in_both_mro_orders[True-CensusBeforeProjection] PASSED [ 16%]
+tests/test_cooperative_semantic_preparation.py::test_same_node_capability_composes_in_both_mro_orders[True-CensusAfterProjection] PASSED [ 19%]
+tests/test_cooperative_semantic_preparation.py::test_same_node_capability_composes_in_both_mro_orders[False-CensusBeforeProjection] PASSED [ 22%]
+tests/test_cooperative_semantic_preparation.py::test_same_node_capability_composes_in_both_mro_orders[False-CensusAfterProjection] PASSED [ 25%]
+tests/test_cooperative_semantic_preparation.py::test_same_node_exception_unwinds_projection_policy_and_scope[result = {'left': consume(value), 'right': 'name'}] PASSED [ 27%]
+tests/test_cooperative_semantic_preparation.py::test_same_node_exception_unwinds_projection_policy_and_scope[result: dict = {'left': consume(value), 'right': 'name'}] PASSED [ 30%]
+tests/test_cooperative_semantic_preparation.py::test_same_node_exception_unwinds_projection_policy_and_scope[return {'left': consume(value), 'right': 'name'}] PASSED [ 33%]
+tests/test_cooperative_semantic_preparation.py::test_exception_unwinds_both_capabilities_and_shared_owner PASSED [ 36%]
+tests/test_cooperative_semantic_preparation.py::test_presentation_short_circuit_does_not_hide_another_capability[result = {'left': isinstance(value.count, int), 'right': 'name'}] PASSED [ 38%]
+tests/test_cooperative_semantic_preparation.py::test_presentation_short_circuit_does_not_hide_another_capability[result: dict = {'left': isinstance(value.count, int), 'right': 'name'}] PASSED [ 41%]
+tests/test_cooperative_semantic_preparation.py::test_presentation_short_circuit_does_not_hide_another_capability[return {'left': isinstance(value.count, int), 'right': 'name'}] PASSED [ 44%]
+tests/test_cooperative_semantic_preparation.py::test_context_only_family_keeps_its_existing_no_checks_contract PASSED [ 47%]
+tests/test_projection_shard_publication.py::test_full_family_is_published_once_per_shard[False-False-False] PASSED [ 50%]
+tests/test_projection_shard_publication.py::test_full_family_is_published_once_per_shard[False-False-True] PASSED [ 52%]
+tests/test_projection_shard_publication.py::test_full_family_is_published_once_per_shard[False-True-False] PASSED [ 55%]
+tests/test_projection_shard_publication.py::test_full_family_is_published_once_per_shard[False-True-True] PASSED [ 58%]
+tests/test_projection_shard_publication.py::test_full_family_is_published_once_per_shard[True-False-False] PASSED [ 61%]
+tests/test_projection_shard_publication.py::test_full_family_is_published_once_per_shard[True-False-True] PASSED [ 63%]
+tests/test_projection_shard_publication.py::test_full_family_is_published_once_per_shard[True-True-False] PASSED [ 66%]
+tests/test_projection_shard_publication.py::test_full_family_is_published_once_per_shard[True-True-True] PASSED [ 69%]
+tests/test_projection_shard_publication.py::test_list_collection_and_batch_share_the_same_publication PASSED [ 72%]
+tests/test_projection_shard_publication.py::test_incomplete_publication_keeps_all_facts_in_memory PASSED [ 75%]
+tests/test_raw_record_detectors.py::test_mapping_reads_match_schema_but_only_actual_decode_descends PASSED [ 77%]
+tests/test_raw_record_detectors.py::test_unmodeled_shapes_aggregate_same_keys_and_ignore_small_dynamic_reads PASSED [ 80%]
+tests/test_raw_record_detectors.py::test_redundant_checks_resolve_declared_self_parameters_and_keep_unknowns PASSED [ 83%]
+tests/test_raw_record_detectors.py::test_detector_ids_are_derived_and_registered PASSED [ 86%]
+tests/test_raw_record_detectors.py::test_cross_module_schema_and_annotated_owner_use_complete_context PASSED [ 88%]
+tests/test_source_projection_owner.py::test_source_projection_retains_actual_parsed_owner_without_compact_ast_debt PASSED [ 91%]
+tests/test_source_projection_owner.py::test_another_revision_reusing_ast_cannot_relabel_existing_source_observations PASSED [ 94%]
+tests/test_source_projection_owner.py::test_reparsed_source_owns_distinct_canonical_read_nodes PASSED [ 97%]
+tests/test_source_projection_owner.py::test_pickle_preserves_shared_module_node_identity_inside_source_projection PASSED [100%]
+
+============================== 36 passed in 3.62s ==============================
+	Command being timed: "timeout --signal=TERM --kill-after=3s 60s taskset -c 0 /home/ts/wt/openhcs-generated-inputs-installed-parent-20261001/.venv/bin/python -I -B -c import sys; sys.path.insert(0,"/home/ts/wt/nra-r1-preparation-owner-357-20261001"); import pytest; raise SystemExit(pytest.main(["-v","-o","addopts=","-p","no:cacheprovider","--basetemp=/home/ts/.cache/agent-scratch/nra-r1-same-node-357-20261001/pytest-after","tests/test_cooperative_semantic_preparation.py","tests/test_projection_shard_publication.py","tests/test_raw_record_detectors.py","tests/test_source_projection_owner.py"]))"
+	User time (seconds): 5.38
+	System time (seconds): 0.61
+	Percent of CPU this job got: 94%
+	Elapsed (wall clock) time (h:mm:ss or m:ss): 0:06.33
+	Average shared text size (kbytes): 0
+	Average unshared data size (kbytes): 0
+	Average stack size (kbytes): 0
+	Average total size (kbytes): 0
+	Maximum resident set size (kbytes): 90072
+	Average resident set size (kbytes): 0
+	Major (requiring I/O) page faults: 0
+	Minor (reclaiming a frame) page faults: 102685
+	Voluntary context switches: 60
+	Involuntary context switches: 1078
+	Swaps: 0
+	File system inputs: 696
+	File system outputs: 400
+	Socket messages sent: 0
+	Socket messages received: 0
+	Signals delivered: 0
+	Page size (bytes): 4096
+	Exit status: 0
