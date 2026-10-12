@@ -16,7 +16,7 @@ from typing import (
     TypeVar,
 )
 
-from metaclass_registry import AutoRegisterMeta
+from metaclass_registry import AutoRegisterMeta, DuplicateRegistryKeyError
 
 from .assignment_projection import SingleAssignmentAndValueNameProjection
 from .ast_projection import (
@@ -123,6 +123,10 @@ class AutoRegisterClassAuthority:
                 self.native_metaclass.declaration(name, (base,), {key_attribute: key})
                 for name, key in native_entries
             )
+        except DuplicateRegistryKeyError as error:
+            raise ValueError(
+                "Requested native registration does not preserve source entries"
+            ) from error
         except (
             ValueError,
             TypeError,
