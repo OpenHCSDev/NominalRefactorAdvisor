@@ -23,16 +23,21 @@ def _registered_families() -> dict[type, dict[object, type]]:
     ):
         importlib.import_module(module.name)
     families: dict[type, dict[object, type]] = {}
-    seen: set[type] = set()
+    seen: set[int] = set()
     pending: list[type] = [object]
     while pending:
         cls = pending.pop()
-        if cls in seen:
+        # Other tests declare unhashable classes; identity is enough here.
+        if id(cls) in seen:
             continue
-        seen.add(cls)
+        seen.add(id(cls))
         pending.extend(type.__subclasses__(cls))
         registry = vars(cls).get("__registry__")
-        if isinstance(cls, AutoRegisterMeta) and registry is not None:
+        if (
+            isinstance(cls, AutoRegisterMeta)
+            and registry is not None
+            and cls.__module__.startswith(nominal_refactor_advisor.__name__)
+        ):
             families[cls] = dict(dict.items(registry))
     return families
 

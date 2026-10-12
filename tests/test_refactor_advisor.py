@@ -17,6 +17,7 @@ from typing import cast
 from unittest.mock import Mock
 
 import pytest
+from metaclass_registry import DuplicateRegistryKeyError
 
 from registry_test_sources import _type_keyed_behavior_projection_source
 from native_use_test_support import (
@@ -26886,11 +26887,11 @@ def test_type_keyed_descent_rejects_inherited_registry_key_overwrite(
     module_path = tmp_path / "pkg/mod.py"
     _write_module(tmp_path, "pkg/mod.py", source)
     namespace: dict[str, object] = {}
-    exec(compile(source, module_path.as_posix(), "exec"), namespace)
-    event = namespace["NamedEvent"]()
-    assert namespace["render_event"](event) == "replacement"
+    # The registry refuses the second class at its declaration; the key keeps its owner.
+    with pytest.raises(DuplicateRegistryKeyError, match="Replacement"):
+        exec(compile(source, module_path.as_posix(), "exec"), namespace)
     assert namespace["EventProjection"].__registry__[namespace["NamedEvent"]] is (
-        namespace["Replacement"]
+        namespace["NamedEventProjection"]
     )
 
     snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
