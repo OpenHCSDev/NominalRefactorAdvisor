@@ -101,6 +101,34 @@ class View:
     )
 
 
+def test_class_receivers_do_not_borrow_instance_properties():
+    parsed = SourceModule(
+        Path("pkg/views.py"),
+        "pkg.views",
+        """
+from typing import ClassVar
+class View:
+    background: ClassVar[bool] = False
+    @property
+    def ready(self) -> bool:
+        return True
+    @classmethod
+    def query(cls, instance: View):
+        return not cls.background, not cls.ready, not instance.ready
+""",
+    ).parse()
+    repository = SourceProductFlowRepository.from_modules((parsed,))
+    attributes = [
+        node.operand
+        for node in ast.walk(parsed.module)
+        if isinstance(node, ast.UnaryOp)
+    ]
+    assert [
+        repository.declared_boolean_inversion("pkg.views.View.query", attribute)
+        for attribute in attributes
+    ] == [True, False, True]
+
+
 def test_lambda_and_comprehension_rebinding_remain_unresolved():
     for expression in (
         "lambda member: not member.ready",

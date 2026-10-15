@@ -1814,7 +1814,7 @@ class SourceProductFlowRepository(RepositoryModuleBindingProof, ProductFlowRepos
     def function_parameter_type_name(
         self, symbol: str, reference: ast.Name
     ) -> str | None:
-        """Join a stable instance parameter or implicit receiver to its owner."""
+        """Join a stable parameter or implicit receiver to its nominal owner."""
         admitted = self._parameter_bindings(symbol, reference)
         if admitted is None:
             return None
@@ -1834,25 +1834,46 @@ class SourceProductFlowRepository(RepositoryModuleBindingProof, ProductFlowRepos
             return None
         return f"{context.module_name}.{declaration.owner_class_qualname}"
 
+    def function_class_parameter_type_name(
+        self, symbol: str, reference: ast.Name
+    ) -> str | None:
+        """Keep class objects distinct when selecting class versus instance members."""
+        admitted = self._parameter_bindings(symbol, reference)
+        if admitted is None:
+            return None
+        context, bindings = admitted
+        declared_type = bindings.class_type_name_for_reference(reference.id)
+        if declared_type is not None:
+            return declared_type
+        declaration = context.declaration
+        assert declaration is not None
+        if (
+            declaration.binding_kind.receiver_access
+            is not CompactDescriptorAccess.CLASS
+        ):
+            return None
+        if reference.id != declaration.nominal_receiver_name:
+            return None
+        return self.function_parameter_type_name(symbol, reference)
+
     def declared_boolean_inversion(
         self, symbol: str, attribute: ast.Attribute
     ) -> bool | None:
         """A bound public bool query or ClassVar[bool], not arbitrary truthiness."""
         receiver = attribute.value
         if isinstance(receiver, ast.Name):
+            class_type = self.function_class_parameter_type_name(symbol, receiver)
+            if class_type:
+                return self.public_boolean_class_member(class_type, attribute.attr)
             instance_type = self.function_parameter_type_name(symbol, receiver)
-            if instance_type:
-                return self.public_boolean_property(instance_type, attribute.attr)
-            admitted = self._parameter_bindings(symbol, receiver)
-            if admitted is None:
-                return None
-            class_type = admitted[1].class_type_name_for_reference(receiver.id)
             return (
-                self.public_boolean_class_member(class_type, attribute.attr)
-                if class_type
+                self.public_boolean_property(instance_type, attribute.attr)
+                if instance_type
                 else None
             )
         if isinstance(receiver, ast.Attribute) and isinstance(receiver.value, ast.Name):
+            if self.function_class_parameter_type_name(symbol, receiver.value):
+                return None
             instance_type = self.function_parameter_type_name(symbol, receiver.value)
             field_type = (
                 self.receiver_field_type_name(instance_type, receiver.attr)
