@@ -1761,6 +1761,33 @@ class SourceProductFlowRepository(RepositoryModuleBindingProof, ProductFlowRepos
         ]
         return (module, classes[0]) if len(classes) == 1 else None
 
+    def _class_sources_for_lookup(
+        self, symbol: str
+    ) -> Iterator[tuple[CompactIndexedClass, ParsedModule, ast.ClassDef]]:
+        for declaration in self.class_index.mro_authority.lookup_prefix(symbol):
+            source = self._class_source(declaration.symbol)
+            if source is None:
+                return
+            yield declaration, *source
+
+    def _boolean_annotation(
+        self,
+        module: ParsedModule,
+        annotation: ast.AST | None,
+        *,
+        line: int,
+        class_names: frozenset[str],
+    ) -> bool | None:
+        if annotation is None:
+            return None
+        reference = NOMINAL_ANNOTATION_SOURCE_AUTHORITY.reference_or_none(annotation)
+        if reference is None:
+            return None
+        witness = self.reference_or_builtin_witness_at(
+            module, reference, line=line, preceding_class_bound_names=class_names
+        )
+        return None if witness is None else witness.qualified_name == "builtins.bool"
+
     def _parameter_bindings(
         self, symbol: str, reference: ast.Name
     ) -> tuple[CompactFlowContext, FunctionNominalParameterBindingAuthority] | None:
@@ -1891,11 +1918,7 @@ class SourceProductFlowRepository(RepositoryModuleBindingProof, ProductFlowRepos
         """ClassVar[bool] is a declared class capability, unlike a raw instance field."""
         if name.startswith("_"):
             return False
-        for owner in self.class_index.mro_authority.lookup_prefix(symbol):
-            source = self._class_source(owner.symbol)
-            if source is None:
-                return None
-            module, node = source
+        for owner, module, node in self._class_sources_for_lookup(symbol):
             member = next(
                 (
                     member
@@ -1926,31 +1949,14 @@ class SourceProductFlowRepository(RepositoryModuleBindingProof, ProductFlowRepos
                 return None
             if wrapper.qualified_name != "typing.ClassVar":
                 return False
-            boolean = NOMINAL_ANNOTATION_SOURCE_AUTHORITY.reference_or_none(
-                annotation.slice
-            )
-            if boolean is None:
-                return None
-            value_type = self.reference_or_builtin_witness_at(
-                module,
-                boolean,
-                line=member.line,
-                preceding_class_bound_names=class_names,
-            )
-            return (
-                None
-                if value_type is None
-                else value_type.qualified_name == "builtins.bool"
+            return self._boolean_annotation(
+                module, annotation.slice, line=member.line, class_names=class_names
             )
         return None
 
     def receiver_field_type_name(self, symbol: str, field_name: str) -> str | None:
         """A nominal receiver-field type, stopping at opaque writes or ancestry."""
-        for owner in self.class_index.mro_authority.lookup_prefix(symbol):
-            source = self._class_source(owner.symbol)
-            if source is None:
-                return None
-            module, node = source
+        for owner, module, node in self._class_sources_for_lookup(symbol):
             bindings = ModuleNominalBindingAuthority(module)
             for member in owner.direct_member_declarations:
                 if member.name == field_name:
@@ -2000,11 +2006,7 @@ class SourceProductFlowRepository(RepositoryModuleBindingProof, ProductFlowRepos
         """
         if name.startswith("_"):
             return False
-        for owner in self.class_index.mro_authority.lookup_prefix(symbol):
-            source = self._class_source(owner.symbol)
-            if source is None:
-                return None
-            module, node = source
+        for owner, module, node in self._class_sources_for_lookup(symbol):
             if name in owner.direct_declared_member_names:
                 return False
             methods = [
@@ -2031,18 +2033,9 @@ class SourceProductFlowRepository(RepositoryModuleBindingProof, ProductFlowRepos
                 return None
             if descriptor.qualified_name != "builtins.property":
                 return False
-            annotation = NOMINAL_ANNOTATION_SOURCE_AUTHORITY.reference_or_none(
-                method.returns
+            return self._boolean_annotation(
+                module, method.returns, line=method.lineno, class_names=class_names
             )
-            if annotation is None:
-                return None
-            result = self.reference_or_builtin_witness_at(
-                module,
-                annotation,
-                line=method.lineno,
-                preceding_class_bound_names=class_names,
-            )
-            return None if result is None else result.qualified_name == "builtins.bool"
         return None
 
     def product_projection_for_module(
