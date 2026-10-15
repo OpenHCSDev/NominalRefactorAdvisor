@@ -1766,7 +1766,7 @@ class SourceProductFlowRepository(RepositoryModuleBindingProof, ProductFlowRepos
     ) -> tuple[CompactFlowContext, FunctionNominalParameterBindingAuthority] | None:
         """Admit a reference in the exact captured function body, including nested defs."""
         context = self.flow_context_for_symbol(symbol)
-        if context is None:
+        if context is None or not self.contains_module(context.module_name):
             return None
         declaration = context.declaration
         if declaration is None:
