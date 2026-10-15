@@ -77,6 +77,7 @@ from .product_flow import (
     CurrentClassMemberMethodReference,
     SourceProductFlowProjection,
 )
+from .source_geometry import SourceByteSpan
 from .value_expression import LexicalValueReference
 
 
@@ -1804,10 +1805,7 @@ class SourceProductFlowRepository(RepositoryModuleBindingProof, ProductFlowRepos
             current = parent
         if current not in function.body:
             return None
-        start = min(
-            [function.lineno, *(node.lineno for node in function.decorator_list)]
-        )
-        if start != declaration.line or function.end_lineno != declaration.end_line:
+        if SourceByteSpan.require_node(function) != declaration.source_span:
             return None
         return context, FunctionNominalParameterBindingAuthority(
             ModuleNominalBindingAuthority(module), function
@@ -1828,8 +1826,8 @@ class SourceProductFlowRepository(RepositoryModuleBindingProof, ProductFlowRepos
         declared_type = bindings.type_name_for_reference(name)
         if declared_type is not None:
             return declared_type
-        if declaration.signature_decorator_hazard:
-            return None
+        # Call-signature promotion safety is not nominal receiver ownership:
+        # a property getter still receives its declared owning instance.
         if name != declaration.nominal_receiver_name:
             return None
         if name in LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(function.body):

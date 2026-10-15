@@ -78,6 +78,29 @@ class Colours:
         )
 
 
+def test_property_getter_keeps_nominal_receiver_ownership():
+    parsed = SourceModule(
+        Path("pkg/views.py"),
+        "pkg.views",
+        """
+class View:
+    @property
+    def order(self):
+        return self.form if self.form is not None else None
+""",
+    ).parse()
+    repository = SourceProductFlowRepository.from_modules((parsed,))
+    reference = next(
+        node
+        for node in ast.walk(parsed.module)
+        if isinstance(node, ast.Name) and node.id == "self"
+    )
+    assert (
+        repository.function_parameter_type_name("pkg.views.View.order", reference)
+        == "pkg.views.View"
+    )
+
+
 def test_lambda_and_comprehension_rebinding_remain_unresolved():
     for expression in (
         "lambda member: not member.ready",

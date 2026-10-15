@@ -305,6 +305,13 @@ unsupported nested scopes and non-body references remain unresolved. Private or
 raw fields are not public property queries. ``ClassMroAuthority.lookup_prefix``
 retains the known single-base declaration prefix when a later opaque ancestor
 prevents closing C3; it does not strengthen the native runtime proof.
+``class_type_name_for_reference`` keeps ``type[C]`` separate from instance
+annotations. ``declared_boolean_inversion`` also recognizes a public
+``ClassVar[bool]`` on a bound class parameter, including nested functions and
+inherited declarations; raw instance attributes remain probes. Wrappers and
+boolean types are proved through qualified imports/builtin bindings, never
+through member spellings. External declarations must be supplied as source;
+these queries neither import nor execute the inspected application.
 
 ``ModuleLexicalDependencyProjection.name_surfaces`` retains both original-source
 references and names parsed from quoted annotations. The direct-source view and
