@@ -8,7 +8,7 @@ from abc import (
     ABC,
     abstractmethod,
 )
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from enum import StrEnum
 from functools import cached_property
@@ -611,6 +611,28 @@ class LexicalScopeBindingAuthority:
         for node in nodes:
             collector.visit(node)
         return frozenset(collector.bound_names)
+
+    @staticmethod
+    def enclosing_comprehensions(
+        reference: ast.AST,
+        boundary: ast.AST,
+        parents: Mapping[ast.AST, ast.AST],
+    ) -> tuple[ast.ListComp | ast.SetComp | ast.DictComp | ast.GeneratorExp, ...]:
+        """Nearest lexical frames, excluding their outer-evaluated first iterable."""
+        ancestry = [reference]
+        while ancestry[-1] is not boundary:
+            parent = parents.get(ancestry[-1])
+            if parent is None:
+                return ()
+            ancestry.append(parent)
+        return tuple(
+            node
+            for node in ancestry
+            if isinstance(
+                node, (ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)
+            )
+            and node.generators[0].iter not in ancestry
+        )
 
     @staticmethod
     def argument_names(

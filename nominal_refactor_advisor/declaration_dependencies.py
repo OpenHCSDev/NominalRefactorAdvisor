@@ -694,17 +694,7 @@ class _DeclarationDependencyCollector(
         remaining: list[ast.comprehension],
         result_expressions: tuple[ast.expr, ...],
     ) -> None:
-        local_names = {
-            name
-            for generator in node.generators
-            for name in _store_names(generator.target)
-        }
-        scope = FunctionBindingProjection(
-            node=node,
-            local_names=frozenset(local_names),
-            global_names=frozenset(),
-            nonlocal_names=frozenset(),
-        )
+        scope = FunctionBindingProjection.from_comprehension(node)
         with self._scope(scope):
             for condition in first.ifs:
                 self.visit(condition)

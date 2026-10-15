@@ -75,6 +75,7 @@ from .lexical_bindings import (
     ImportBoundNameProjection,
     LEXICAL_SCOPE_BINDING_AUTHORITY,
 )
+from .lexical_scopes import FunctionBindingProjection
 from .native_declarations import (
     ClassNamespaceDeclaration,
     DataclassRuntimeDeclaration as DataclassRuntimeDeclaration,
@@ -2908,20 +2909,60 @@ class ModuleNominalBindingAuthority:
         envelope = NOMINAL_ANNOTATION_SOURCE_AUTHORITY.subscript_or_none(annotation)
         if envelope is None:
             return None
-        root = nominal_reference_root_name(envelope.value)
-        if root in class_bound_names:
-            return None
-        factory = self.qualified_name_at(envelope.value, line=line)
-        if isinstance(envelope.value, ast.Name) and envelope.value.id == "type":
-            if self.snapshot_before(line).resolves_unshadowed_builtin(
-                "type", preceding_class_bound_names=class_bound_names
-            ):
-                factory = "builtins.type"
-        if factory != "builtins.type":
+        if (
+            self._annotation_factory_name_at(
+                envelope.value, line=line, class_bound_names=class_bound_names
+            )
+            != "builtins.type"
+        ):
             return None
         return self.nominal_annotation_name_at(
             envelope.slice, line=line, class_bound_names=class_bound_names
         )
+
+    def _annotation_factory_name_at(
+        self, reference: ast.AST, *, line: int, class_bound_names: frozenset[str]
+    ) -> str | None:
+        parts = AstExpressionProjection.attribute_chain(reference)
+        if parts is None or parts[0] in class_bound_names:
+            return None
+        resolved = self.snapshot_before(line).reference_for(parts)
+        return resolved.qualified_name if resolved.root_binding is not None else None
+
+    def iterated_class_annotation_name_at(
+        self,
+        annotation: ast.AST,
+        *,
+        line: int,
+        class_bound_names: frozenset[str] = frozenset(),
+    ) -> str | None:
+        """One represented class in a declared tuple, not guessed iterable flow."""
+        envelope = NOMINAL_ANNOTATION_SOURCE_AUTHORITY.subscript_or_none(annotation)
+        if envelope is None:
+            return None
+        factory = self._annotation_factory_name_at(
+            envelope.value, line=line, class_bound_names=class_bound_names
+        )
+        if factory not in ("builtins.tuple", "typing.Tuple"):
+            return None
+        items = (
+            envelope.slice.elts
+            if isinstance(envelope.slice, ast.Tuple)
+            else [envelope.slice]
+        )
+        if (
+            len(items) == 2
+            and isinstance(items[-1], ast.Constant)
+            and items[-1].value is Ellipsis
+        ):
+            items = items[:1]
+        types = {
+            self.class_annotation_name_at(
+                item, line=line, class_bound_names=class_bound_names
+            )
+            for item in items
+        }
+        return next(iter(types)) if len(types) == 1 else None
 
     def _direct_nominal_bindings(
         self,
@@ -3044,8 +3085,64 @@ class FunctionNominalParameterBindingAuthority:
 
         return self.stable_type_names_by_parameter.get(parameter_name)
 
+    def comprehension_owner_for_reference(
+        self, reference: ast.Name
+    ) -> ast.ListComp | ast.SetComp | ast.DictComp | ast.GeneratorExp | None:
+        parents = module_syntax_index(
+            self.module_bindings.parsed_module.module
+        ).parent_by_node
+        return next(
+            (
+                node
+                for node in LEXICAL_SCOPE_BINDING_AUTHORITY.enclosing_comprehensions(
+                    reference, self.function, parents
+                )
+                if reference.id
+                in FunctionBindingProjection.from_comprehension(node).local_names
+            ),
+            None,
+        )
+
+    def comprehension_iterable_for_reference(
+        self, reference: ast.Name
+    ) -> ast.expr | None:
+        """The exact target's iterable; rebinding/unpacking/async remain open."""
+        owner = self.comprehension_owner_for_reference(reference)
+        if owner is None or reference.id in LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(
+            (owner,)
+        ):
+            return None
+        generators = [
+            generator
+            for generator in owner.generators
+            if reference.id
+            in LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names((generator.target,))
+        ]
+        if len(generators) != 1:
+            return None
+        generator = generators[0]
+        if generator.is_async or not isinstance(generator.target, ast.Name):
+            return None
+        return generator.iter
+
+    def runtime_bound_names_for_reference(self, reference: ast.Name) -> frozenset[str]:
+        """Names which prevent a runtime reference proving a module/builtin binding."""
+        names = set(self.class_bound_names)
+        names.update(LEXICAL_SCOPE_BINDING_AUTHORITY.argument_names(self.function))
+        names.update(LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(self.function.body))
+        parents = module_syntax_index(
+            self.module_bindings.parsed_module.module
+        ).parent_by_node
+        for scope in LEXICAL_SCOPE_BINDING_AUTHORITY.enclosing_comprehensions(
+            reference, self.function, parents
+        ):
+            names.update(
+                FunctionBindingProjection.from_comprehension(scope).local_names
+            )
+        return frozenset(names)
+
     @cached_property
-    def receiver_field_type_names(self) -> dict[str, str | None]:
+    def receiver_field_annotations(self) -> dict[str, ast.AST | None]:
         """Constructor assignments, retaining unresolved writes as explicit entries.
 
         Nominal source evidence only; not a proof of runtime object integrity.
@@ -3072,14 +3169,27 @@ class FunctionNominalParameterBindingAuthority:
                 if statement.targets == [target]:
                     value = statement.value
             writes[target.attr].append(value)
-        result: dict[str, str | None] = {}
+        result: dict[str, ast.AST | None] = {}
         for name, values in writes.items():
             result[name] = None
             if rebound or self.function.decorator_list:
                 continue
             if len(values) == 1 and isinstance(values[0], ast.Name):
-                result[name] = self.type_name_for_reference(values[0].id)
+                result[name] = self.stable_parameter_annotations.get(values[0].id)
         return result
+
+    @property
+    def receiver_field_type_names(self) -> dict[str, str | None]:
+        return {
+            name: None
+            if annotation is None
+            else self.module_bindings.nominal_annotation_name_at(
+                annotation,
+                line=self.function.lineno,
+                class_bound_names=self.class_bound_names,
+            )
+            for name, annotation in self.receiver_field_annotations.items()
+        }
 
     def type_name_for_receiver_field(self, field_name: str) -> str | None:
         """Return the declared type of one stable parameter-to-field assignment."""

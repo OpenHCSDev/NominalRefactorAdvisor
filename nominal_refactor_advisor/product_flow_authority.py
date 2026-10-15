@@ -5,6 +5,7 @@ from __future__ import annotations
 import ast
 from abc import ABC, abstractmethod
 from collections.abc import (
+    Callable,
     Iterator,
     Mapping,
     Sequence,
@@ -1817,17 +1818,7 @@ class SourceProductFlowRepository(RepositoryModuleBindingProof, ProductFlowRepos
             if isinstance(parent, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 function = parent
                 break
-            if isinstance(
-                parent,
-                (
-                    ast.Lambda,
-                    ast.ClassDef,
-                    ast.ListComp,
-                    ast.SetComp,
-                    ast.DictComp,
-                    ast.GeneratorExp,
-                ),
-            ):
+            if isinstance(parent, (ast.Lambda, ast.ClassDef)):
                 return None
             current = parent
         if current not in function.body:
@@ -1850,6 +1841,8 @@ class SourceProductFlowRepository(RepositoryModuleBindingProof, ProductFlowRepos
         assert declaration is not None
         function = bindings.function
         name = reference.id
+        if bindings.comprehension_owner_for_reference(reference) is not None:
+            return None
         declared_type = bindings.type_name_for_reference(name)
         if declared_type is not None:
             return declared_type
@@ -1869,6 +1862,8 @@ class SourceProductFlowRepository(RepositoryModuleBindingProof, ProductFlowRepos
         if admitted is None:
             return None
         context, bindings = admitted
+        if bindings.comprehension_owner_for_reference(reference) is not None:
+            return self._comprehension_class_type_name(symbol, reference, bindings)
         declared_type = bindings.class_type_name_for_reference(reference.id)
         if declared_type is not None:
             return declared_type
@@ -1882,6 +1877,63 @@ class SourceProductFlowRepository(RepositoryModuleBindingProof, ProductFlowRepos
         if reference.id != declaration.nominal_receiver_name:
             return None
         return self.function_parameter_type_name(symbol, reference)
+
+    def _comprehension_class_type_name(
+        self,
+        symbol: str,
+        reference: ast.Name,
+        bindings: FunctionNominalParameterBindingAuthority,
+    ) -> str | None:
+        expression = bindings.comprehension_iterable_for_reference(reference)
+        if isinstance(expression, ast.Call):
+            # Python's builtin dict.fromkeys preserves its iterable's key types.
+            # A merely same-named user callable supplies no such evidence.
+            call = expression
+            if (
+                not isinstance(call.func, ast.Attribute)
+                or call.func.attr != "fromkeys"
+                or not isinstance(call.func.value, ast.Name)
+                or len(call.args) not in (1, 2)
+                or call.keywords
+                or any(isinstance(argument, ast.Starred) for argument in call.args)
+            ):
+                return None
+            receiver = call.func.value
+            witness = self.reference_or_builtin_witness_at(
+                bindings.module_bindings.parsed_module,
+                receiver,
+                line=receiver.lineno,
+                preceding_class_bound_names=bindings.runtime_bound_names_for_reference(
+                    receiver
+                ),
+            )
+            if witness is None or witness.qualified_name != "builtins.dict":
+                return None
+            expression = call.args[0]
+        if isinstance(expression, ast.Name):
+            if bindings.comprehension_owner_for_reference(expression) is not None:
+                return None
+            annotation = bindings.stable_parameter_annotations.get(expression.id)
+            return (
+                None
+                if annotation is None
+                else bindings.module_bindings.iterated_class_annotation_name_at(
+                    annotation,
+                    line=bindings.function.lineno,
+                    class_bound_names=bindings.class_bound_names,
+                )
+            )
+        if isinstance(expression, ast.Attribute) and isinstance(
+            expression.value, ast.Name
+        ):
+            receiver_type = self.function_parameter_type_name(symbol, expression.value)
+            if receiver_type is not None:
+                return self._project_receiver_field(
+                    receiver_type,
+                    expression.attr,
+                    ModuleNominalBindingAuthority.iterated_class_annotation_name_at,
+                )
+        return None
 
     def declared_boolean_inversion(
         self, symbol: str, attribute: ast.Attribute
@@ -1956,6 +2008,14 @@ class SourceProductFlowRepository(RepositoryModuleBindingProof, ProductFlowRepos
 
     def receiver_field_type_name(self, symbol: str, field_name: str) -> str | None:
         """A nominal receiver-field type, stopping at opaque writes or ancestry."""
+        return self._project_receiver_field(
+            symbol, field_name, ModuleNominalBindingAuthority.nominal_annotation_name_at
+        )
+
+    def _project_receiver_field(
+        self, symbol: str, field_name: str, project: Callable[..., str | None]
+    ) -> str | None:
+        """One field/constructor/ancestry lookup shared by annotation projections."""
         for owner, module, node in self._class_sources_for_lookup(symbol):
             bindings = ModuleNominalBindingAuthority(module)
             for member in owner.direct_member_declarations:
@@ -1973,7 +2033,8 @@ class SourceProductFlowRepository(RepositoryModuleBindingProof, ProductFlowRepos
                     return (
                         None
                         if annotation is None
-                        else bindings.nominal_annotation_name_at(
+                        else project(
+                            bindings,
                             annotation,
                             line=member.line,
                             class_bound_names=LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(
@@ -1992,11 +2053,22 @@ class SourceProductFlowRepository(RepositoryModuleBindingProof, ProductFlowRepos
             if len(constructors) > 1:
                 return None
             if constructors:
-                fields = FunctionNominalParameterBindingAuthority(
+                parameters = FunctionNominalParameterBindingAuthority(
                     bindings, constructors[0]
-                ).receiver_field_type_names
+                )
+                fields = parameters.receiver_field_annotations
                 if field_name in fields:
-                    return fields[field_name]
+                    annotation = fields[field_name]
+                    return (
+                        None
+                        if annotation is None
+                        else project(
+                            bindings,
+                            annotation,
+                            line=constructors[0].lineno,
+                            class_bound_names=parameters.class_bound_names,
+                        )
+                    )
         return None
 
     def public_boolean_property(self, symbol: str, name: str) -> bool | None:
