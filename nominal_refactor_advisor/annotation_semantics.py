@@ -64,24 +64,27 @@ class NominalAnnotationSourceAuthority:
         cls,
         annotation: ast.AST,
     ) -> ast.Name | ast.Attribute | None:
-        if isinstance(annotation, ast.Name | ast.Attribute):
-            reference = annotation
-        elif isinstance(annotation, ast.Constant) and isinstance(
-            annotation.value,
-            str,
-        ):
-            try:
-                reference = ast.parse(annotation.value, mode="eval").body
-            except SyntaxError:
-                return None
-        else:
-            return None
+        reference = cls.expression_or_none(annotation)
         return (
             reference
             if isinstance(reference, ast.Name | ast.Attribute)
             and cls.reference_parts(reference) is not None
             else None
         )
+
+    @staticmethod
+    def expression_or_none(annotation: ast.AST) -> ast.AST | None:
+        if isinstance(annotation, ast.Constant) and isinstance(annotation.value, str):
+            try:
+                return ast.parse(annotation.value, mode="eval").body
+            except SyntaxError:
+                return None
+        return annotation
+
+    @classmethod
+    def subscript_or_none(cls, annotation: ast.AST) -> ast.Subscript | None:
+        expression = cls.expression_or_none(annotation)
+        return expression if isinstance(expression, ast.Subscript) else None
 
     def reference_parts_or_none(
         self,

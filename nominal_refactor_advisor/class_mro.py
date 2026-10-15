@@ -133,19 +133,21 @@ class ClassMroAuthority:
         resolution = self.resolve(symbol)
         if resolution.mro_type is not None:
             return resolution.mro_type.declarations
-        if {
-            ClassMroViolation.CYCLIC_BASES,
-            ClassMroViolation.INCONSISTENT_C3,
-        }.intersection(resolution.violations):
+        if isinstance(resolution, OpenClassMro) and resolution.violation in (
+            ClassMroViolation.CYCLIC_HIERARCHY,
+            ClassMroViolation.INCONSISTENT_HIERARCHY,
+        ):
             return ()
         prefix = []
         pending = set()
         while symbol not in pending:
             pending.add(symbol)
             declaration = self.classes_by_symbol.get(symbol)
-            if declaration is None or not self._creation_is_static(declaration):
+            if declaration is None:
                 break
             prefix.append(declaration)
+            if not self._creation_is_static(declaration):
+                break
             if not declaration.base_references_are_complete:
                 break
             if (

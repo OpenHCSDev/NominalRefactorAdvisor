@@ -1760,10 +1760,10 @@ class SourceProductFlowRepository(RepositoryModuleBindingProof, ProductFlowRepos
         ]
         return (module, classes[0]) if len(classes) == 1 else None
 
-    def function_parameter_type_name(
+    def _parameter_bindings(
         self, symbol: str, reference: ast.Name
-    ) -> str | None:
-        """Join a stable parameter or implicit receiver to its nominal owner."""
+    ) -> tuple[CompactFlowContext, FunctionNominalParameterBindingAuthority] | None:
+        """Admit a reference in the exact captured function body, including nested defs."""
         context = self.flow_context_for_symbol(symbol)
         if context is None:
             return None
@@ -1780,30 +1780,20 @@ class SourceProductFlowRepository(RepositoryModuleBindingProof, ProductFlowRepos
         )
         if module is None:
             return None
-        function = next(
-            (
-                function
-                for qualname, function in module_syntax_index(
-                    module.module
-                ).named_functions
-                if qualname == declaration.qualname
-            ),
-            None,
-        )
-        if function is None:
-            return None
         syntax = module_syntax_index(module.module)
         current: ast.AST = reference
-        while (parent := syntax.parent_by_node.get(current)) is not function:
+        while True:
+            parent = syntax.parent_by_node.get(current)
             if parent is None:
                 return None
+            if isinstance(parent, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                function = parent
+                break
             if isinstance(
                 parent,
                 (
                     ast.Lambda,
                     ast.ClassDef,
-                    ast.FunctionDef,
-                    ast.AsyncFunctionDef,
                     ast.ListComp,
                     ast.SetComp,
                     ast.DictComp,
@@ -1814,9 +1804,26 @@ class SourceProductFlowRepository(RepositoryModuleBindingProof, ProductFlowRepos
             current = parent
         if current not in function.body:
             return None
-        bindings = FunctionNominalParameterBindingAuthority(
+        start = min(
+            [function.lineno, *(node.lineno for node in function.decorator_list)]
+        )
+        if start != declaration.line or function.end_lineno != declaration.end_line:
+            return None
+        return context, FunctionNominalParameterBindingAuthority(
             ModuleNominalBindingAuthority(module), function
         )
+
+    def function_parameter_type_name(
+        self, symbol: str, reference: ast.Name
+    ) -> str | None:
+        """Join a stable instance parameter or implicit receiver to its owner."""
+        admitted = self._parameter_bindings(symbol, reference)
+        if admitted is None:
+            return None
+        context, bindings = admitted
+        declaration = context.declaration
+        assert declaration is not None
+        function = bindings.function
         name = reference.id
         declared_type = bindings.type_name_for_reference(name)
         if declared_type is not None:
@@ -1828,6 +1835,95 @@ class SourceProductFlowRepository(RepositoryModuleBindingProof, ProductFlowRepos
         if name in LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(function.body):
             return None
         return f"{context.module_name}.{declaration.owner_class_qualname}"
+
+    def declared_boolean_inversion(
+        self, symbol: str, attribute: ast.Attribute
+    ) -> bool | None:
+        """A bound public bool query or ClassVar[bool], not arbitrary truthiness."""
+        receiver = attribute.value
+        if isinstance(receiver, ast.Name):
+            instance_type = self.function_parameter_type_name(symbol, receiver)
+            if instance_type:
+                return self.public_boolean_property(instance_type, attribute.attr)
+            admitted = self._parameter_bindings(symbol, receiver)
+            if admitted is None:
+                return None
+            class_type = admitted[1].class_type_name_for_reference(receiver.id)
+            return (
+                self.public_boolean_class_member(class_type, attribute.attr)
+                if class_type
+                else None
+            )
+        if isinstance(receiver, ast.Attribute) and isinstance(receiver.value, ast.Name):
+            instance_type = self.function_parameter_type_name(symbol, receiver.value)
+            field_type = (
+                self.receiver_field_type_name(instance_type, receiver.attr)
+                if instance_type
+                else None
+            )
+            return (
+                self.public_boolean_property(field_type, attribute.attr)
+                if field_type
+                else None
+            )
+        return None
+
+    def public_boolean_class_member(self, symbol: str, name: str) -> bool | None:
+        """ClassVar[bool] is a declared class capability, unlike a raw instance field."""
+        if name.startswith("_"):
+            return False
+        for owner in self.class_index.mro_authority.lookup_prefix(symbol):
+            source = self._class_source(owner.symbol)
+            if source is None:
+                return None
+            module, node = source
+            member = next(
+                (
+                    member
+                    for member in owner.direct_member_declarations
+                    if member.name == name
+                ),
+                None,
+            )
+            if member is None:
+                if name in owner.method_names:
+                    return False
+                continue
+            if member.annotation_expression is None:
+                return False
+            annotation = NOMINAL_ANNOTATION_SOURCE_AUTHORITY.subscript_or_none(
+                ast.parse(member.annotation_expression, mode="eval").body
+            )
+            if annotation is None:
+                return False
+            class_names = LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(node.body)
+            wrapper = self.reference_or_builtin_witness_at(
+                module,
+                annotation.value,
+                line=member.line,
+                preceding_class_bound_names=class_names,
+            )
+            if wrapper is None:
+                return None
+            if wrapper.qualified_name != "typing.ClassVar":
+                return False
+            boolean = NOMINAL_ANNOTATION_SOURCE_AUTHORITY.reference_or_none(
+                annotation.slice
+            )
+            if boolean is None:
+                return None
+            value_type = self.reference_or_builtin_witness_at(
+                module,
+                boolean,
+                line=member.line,
+                preceding_class_bound_names=class_names,
+            )
+            return (
+                None
+                if value_type is None
+                else value_type.qualified_name == "builtins.bool"
+            )
+        return None
 
     def receiver_field_type_name(self, symbol: str, field_name: str) -> str | None:
         """A nominal receiver-field type, stopping at opaque writes or ancestry."""

@@ -2897,6 +2897,32 @@ class ModuleNominalBindingAuthority:
             return None
         return self.qualified_name_at(reference, line=line)
 
+    def class_annotation_name_at(
+        self,
+        annotation: ast.AST,
+        *,
+        line: int,
+        class_bound_names: frozenset[str] = frozenset(),
+    ) -> str | None:
+        """Resolve type[C] separately from an instance annotation C."""
+        envelope = NOMINAL_ANNOTATION_SOURCE_AUTHORITY.subscript_or_none(annotation)
+        if envelope is None:
+            return None
+        root = nominal_reference_root_name(envelope.value)
+        if root in class_bound_names:
+            return None
+        factory = self.qualified_name_at(envelope.value, line=line)
+        if isinstance(envelope.value, ast.Name) and envelope.value.id == "type":
+            if self.snapshot_before(line).resolves_unshadowed_builtin(
+                "type", preceding_class_bound_names=class_bound_names
+            ):
+                factory = "builtins.type"
+        if factory != "builtins.type":
+            return None
+        return self.nominal_annotation_name_at(
+            envelope.slice, line=line, class_bound_names=class_bound_names
+        )
+
     def _direct_nominal_bindings(
         self,
         statement: ast.stmt,
@@ -2954,36 +2980,64 @@ class FunctionNominalParameterBindingAuthority:
     function: ast.FunctionDef | ast.AsyncFunctionDef
 
     @cached_property
-    def stable_type_names_by_parameter(self) -> dict[str, str]:
-        """Project nominal parameter types whose bindings remain unchanged."""
-
-        rebound_names = LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(self.function.body)
-        parent = module_syntax_index(
-            self.module_bindings.parsed_module.module
-        ).parent_by_node.get(self.function)
-        class_names = (
-            ClassNamespaceExecutionEvidence.from_class(parent).binding_names
-            if isinstance(parent, ast.ClassDef)
-            else frozenset()
-        )
+    def stable_parameter_annotations(self) -> dict[str, ast.AST]:
+        rebound = LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(self.function.body)
         return {
-            parameter.arg: type_name
+            parameter.arg: parameter.annotation
             for parameter in (
                 *self.function.args.posonlyargs,
                 *self.function.args.args,
                 *self.function.args.kwonlyargs,
             )
-            if parameter.arg not in rebound_names
-            if parameter.annotation is not None
+            if parameter.arg not in rebound and parameter.annotation is not None
+        }
+
+    @cached_property
+    def class_bound_names(self) -> frozenset[str]:
+        parents = module_syntax_index(
+            self.module_bindings.parsed_module.module
+        ).parent_by_node
+        names: set[str] = set()
+        current: ast.AST = self.function
+        while (parent := parents.get(current)) is not None:
+            if isinstance(parent, ast.ClassDef):
+                names.update(
+                    ClassNamespaceExecutionEvidence.from_class(parent).binding_names
+                )
+            elif isinstance(parent, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                names.update(LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(parent.body))
+                names.update(LEXICAL_SCOPE_BINDING_AUTHORITY.argument_names(parent))
+            current = parent
+        return frozenset(names)
+
+    @cached_property
+    def stable_type_names_by_parameter(self) -> dict[str, str]:
+        """Project nominal instance types whose bindings remain unchanged."""
+        return {
+            name: type_name
+            for name, annotation in self.stable_parameter_annotations.items()
             if (
                 type_name := self.module_bindings.nominal_annotation_name_at(
-                    parameter.annotation,
+                    annotation,
                     line=self.function.lineno,
-                    class_bound_names=class_names,
+                    class_bound_names=self.class_bound_names,
                 )
             )
             is not None
         }
+
+    def class_type_name_for_reference(self, parameter_name: str) -> str | None:
+        """The represented class of a stable type[C] parameter, never an instance."""
+        annotation = self.stable_parameter_annotations.get(parameter_name)
+        return (
+            None
+            if annotation is None
+            else self.module_bindings.class_annotation_name_at(
+                annotation,
+                line=self.function.lineno,
+                class_bound_names=self.class_bound_names,
+            )
+        )
 
     def type_name_for_reference(self, parameter_name: str) -> str | None:
         """Return the declared nominal type unless the parameter is rebound."""
