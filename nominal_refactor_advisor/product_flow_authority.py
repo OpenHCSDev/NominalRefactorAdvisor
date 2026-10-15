@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 from abc import ABC, abstractmethod
 from collections.abc import (
     Iterator,
@@ -16,7 +17,8 @@ from typing import (
     cast,
 )
 
-from .ast_tools import CollectedFamily, ParsedModule
+from .annotation_semantics import NOMINAL_ANNOTATION_SOURCE_AUTHORITY
+from .ast_tools import CollectedFamily, ParsedModule, module_syntax_index
 from .call_binding import (
     CallValueT,
     CompactCallBinding,
@@ -38,6 +40,8 @@ from .class_index import (
     CompactProductAuthority,
     CompactPublicNameExposure,
     CompactRepositoryPublicExposureIndex,
+    FunctionNominalParameterBindingAuthority,
+    ModuleNominalBindingAuthority,
     RepositoryModuleBindingProof,
     build_compact_class_family_index,
 )
@@ -46,6 +50,7 @@ from .collection_algebra import (
     UniqueIdentityIndexAuthority,
 )
 from .descriptor_algebra import AliasProperty
+from .lexical_bindings import LEXICAL_SCOPE_BINDING_AUTHORITY
 from .product_flow import (
     CompactBindingResolverABC,
     CompactBindingVisit,
@@ -1736,6 +1741,194 @@ class CompactProductFlowRepository(ProductFlowRepository):
 @dataclass(frozen=True)
 class SourceProductFlowRepository(RepositoryModuleBindingProof, ProductFlowRepository):
     """Derive flow queries and runtime capture from the same original source task."""
+
+    def _class_source(self, symbol: str) -> tuple[ParsedModule, ast.ClassDef] | None:
+        declaration = self.class_index.class_for(symbol)
+        if declaration is None or not self.contains_module(declaration.module_name):
+            return None
+        module = next(
+            module
+            for module in self.modules
+            if module.module_name == declaration.module_name
+        )
+        classes = [
+            node
+            for _, node in module_syntax_index(module.module).indexed_nodes_of_type(
+                ast.ClassDef
+            )
+            if node.lineno == declaration.line
+        ]
+        return (module, classes[0]) if len(classes) == 1 else None
+
+    def function_parameter_type_name(
+        self, symbol: str, reference: ast.Name
+    ) -> str | None:
+        """Join a stable parameter or implicit receiver to its nominal owner."""
+        context = self.flow_context_for_symbol(symbol)
+        if context is None:
+            return None
+        declaration = context.declaration
+        if declaration is None:
+            return None
+        module = next(
+            (
+                module
+                for module in self.modules
+                if module.module_name == context.module_name
+            ),
+            None,
+        )
+        if module is None:
+            return None
+        function = next(
+            (
+                function
+                for qualname, function in module_syntax_index(
+                    module.module
+                ).named_functions
+                if qualname == declaration.qualname
+            ),
+            None,
+        )
+        if function is None:
+            return None
+        syntax = module_syntax_index(module.module)
+        current: ast.AST = reference
+        while (parent := syntax.parent_by_node.get(current)) is not function:
+            if parent is None:
+                return None
+            if isinstance(
+                parent,
+                (
+                    ast.Lambda,
+                    ast.ClassDef,
+                    ast.FunctionDef,
+                    ast.AsyncFunctionDef,
+                    ast.ListComp,
+                    ast.SetComp,
+                    ast.DictComp,
+                    ast.GeneratorExp,
+                ),
+            ):
+                return None
+            current = parent
+        if current not in function.body:
+            return None
+        bindings = FunctionNominalParameterBindingAuthority(
+            ModuleNominalBindingAuthority(module), function
+        )
+        name = reference.id
+        declared_type = bindings.type_name_for_reference(name)
+        if declared_type is not None:
+            return declared_type
+        if declaration.signature_decorator_hazard:
+            return None
+        if name != declaration.nominal_receiver_name:
+            return None
+        if name in LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(function.body):
+            return None
+        return f"{context.module_name}.{declaration.owner_class_qualname}"
+
+    def receiver_field_type_name(self, symbol: str, field_name: str) -> str | None:
+        """A nominal receiver-field type, stopping at opaque writes or ancestry."""
+        for owner in self.class_index.mro_authority.lookup_prefix(symbol):
+            source = self._class_source(owner.symbol)
+            if source is None:
+                return None
+            module, node = source
+            bindings = ModuleNominalBindingAuthority(module)
+            for member in owner.direct_member_declarations:
+                if member.name == field_name:
+                    annotation = next(
+                        (
+                            statement.annotation
+                            for statement in node.body
+                            if isinstance(statement, ast.AnnAssign)
+                            and isinstance(statement.target, ast.Name)
+                            and statement.target.id == field_name
+                        ),
+                        None,
+                    )
+                    return (
+                        None
+                        if annotation is None
+                        else bindings.nominal_annotation_name_at(
+                            annotation,
+                            line=member.line,
+                            class_bound_names=LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(
+                                node.body
+                            ),
+                        )
+                    )
+            if field_name in owner.method_names:
+                return None
+            constructors = [
+                method
+                for method in node.body
+                if isinstance(method, (ast.FunctionDef, ast.AsyncFunctionDef))
+                and method.name == "__init__"
+            ]
+            if len(constructors) > 1:
+                return None
+            if constructors:
+                fields = FunctionNominalParameterBindingAuthority(
+                    bindings, constructors[0]
+                ).receiver_field_type_names
+                if field_name in fields:
+                    return fields[field_name]
+        return None
+
+    def public_boolean_property(self, symbol: str, name: str) -> bool | None:
+        """True for a bound public property -> bool; None means unresolved lookup.
+
+        Raw fields/private attributes return False. No inspected code is run.
+        """
+        if name.startswith("_"):
+            return False
+        for owner in self.class_index.mro_authority.lookup_prefix(symbol):
+            source = self._class_source(owner.symbol)
+            if source is None:
+                return None
+            module, node = source
+            if name in owner.direct_declared_member_names:
+                return False
+            methods = [
+                method
+                for method in node.body
+                if isinstance(method, (ast.FunctionDef, ast.AsyncFunctionDef))
+                and method.name == name
+            ]
+            if not methods:
+                continue
+            if len(methods) != 1:
+                return None
+            method = methods[0]
+            if len(method.decorator_list) != 1:
+                return False
+            class_names = LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(node.body)
+            descriptor = self.reference_or_builtin_witness_at(
+                module,
+                method.decorator_list[0],
+                line=method.lineno,
+                preceding_class_bound_names=class_names,
+            )
+            if descriptor is None:
+                return None
+            if descriptor.qualified_name != "builtins.property":
+                return False
+            annotation = NOMINAL_ANNOTATION_SOURCE_AUTHORITY.reference_or_none(
+                method.returns
+            )
+            if annotation is None:
+                return None
+            result = self.reference_or_builtin_witness_at(
+                module,
+                annotation,
+                line=method.lineno,
+                preceding_class_bound_names=class_names,
+            )
+            return None if result is None else result.qualified_name == "builtins.bool"
+        return None
 
     def product_projection_for_module(
         self, module_name: str

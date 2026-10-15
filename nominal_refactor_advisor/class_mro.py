@@ -123,16 +123,53 @@ class ClassMroAuthority:
         self._resolutions[symbol] = resolution
         return resolution
 
+    def lookup_prefix(self, symbol: str) -> tuple[CompactIndexedClass, ...]:
+        """Known declaration prefix before an opaque or branching base.
+
+        A single direct base guarantees the next declaration even when a later
+        ancestor prevents closing the full C3 order. Never guess past that point.
+        This does not strengthen an OpenClassMro into a runtime proof.
+        """
+        resolution = self.resolve(symbol)
+        if resolution.mro_type is not None:
+            return resolution.mro_type.declarations
+        if {
+            ClassMroViolation.CYCLIC_BASES,
+            ClassMroViolation.INCONSISTENT_C3,
+        }.intersection(resolution.violations):
+            return ()
+        prefix = []
+        pending = set()
+        while symbol not in pending:
+            pending.add(symbol)
+            declaration = self.classes_by_symbol.get(symbol)
+            if declaration is None or not self._creation_is_static(declaration):
+                break
+            prefix.append(declaration)
+            if not declaration.base_references_are_complete:
+                break
+            if (
+                declaration.direct_base_count != 1
+                or len(declaration.resolved_base_symbols) != 1
+            ):
+                break
+            symbol = declaration.resolved_base_symbols[0]
+        return tuple(prefix)
+
+    @staticmethod
+    def _creation_is_static(declaration: CompactIndexedClass) -> bool:
+        return (
+            declaration.mro_bases_are_static
+            and not declaration.class_keyword_names
+            and declaration.class_decorators_are_promotion_safe
+            and not declaration.has_class_creation_hook
+        )
+
     def _derive(self, symbol: str, pending: frozenset[str]) -> ClassMroResolution:
         declaration = self.classes_by_symbol.get(symbol)
         if declaration is None:
             return OpenClassMro(symbol, ClassMroViolation.MISSING_DECLARATION)
-        if (
-            not declaration.mro_bases_are_static
-            or declaration.class_keyword_names
-            or not declaration.class_decorators_are_promotion_safe
-            or declaration.has_class_creation_hook
-        ):
+        if not self._creation_is_static(declaration):
             return OpenClassMro(symbol, ClassMroViolation.DYNAMIC_CLASS_DECLARATION)
         native_bases = tuple(
             (

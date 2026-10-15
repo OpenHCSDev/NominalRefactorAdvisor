@@ -293,6 +293,19 @@ name-presence check and batches snapshot traversal through the DSL. A plan may
 establish an exact destination import before requesting descent; the later
 stage re-proves the reference against that projected source.
 
+``FunctionNominalParameterBindingAuthority.receiver_field_type_names`` derives
+constructor assignments from stable declared parameter bindings. An unresolved
+write remains an explicit ``None`` entry; conditional/repeated writes, receiver
+or parameter rebinding and decorated constructors cannot invent a type.
+``type_name_for_receiver_field`` queries that projection.
+``SourceProductFlowRepository`` joins these bindings through
+``function_parameter_type_name``, ``receiver_field_type_name`` and
+``public_boolean_property``. Parameter queries take the actual source reference;
+unsupported nested scopes and non-body references remain unresolved. Private or
+raw fields are not public property queries. ``ClassMroAuthority.lookup_prefix``
+retains the known single-base declaration prefix when a later opaque ancestor
+prevents closing C3; it does not strengthen the native runtime proof.
+
 ``ModuleLexicalDependencyProjection.name_surfaces`` retains both original-source
 references and names parsed from quoted annotations. The direct-source view and
 dependency-name sets derive from this collection. ``DeclarationDependencyUse``

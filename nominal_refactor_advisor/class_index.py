@@ -2885,11 +2885,15 @@ class ModuleNominalBindingAuthority:
         annotation: ast.AST,
         *,
         line: int,
+        class_bound_names: frozenset[str] = frozenset(),
     ) -> str | None:
         """Resolve a single nominal annotation through its declaration-time binding."""
 
         reference = NOMINAL_ANNOTATION_SOURCE_AUTHORITY.reference_or_none(annotation)
-        if reference is None:
+        if (
+            reference is None
+            or nominal_reference_root_name(reference) in class_bound_names
+        ):
             return None
         return self.qualified_name_at(reference, line=line)
 
@@ -2954,6 +2958,14 @@ class FunctionNominalParameterBindingAuthority:
         """Project nominal parameter types whose bindings remain unchanged."""
 
         rebound_names = LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(self.function.body)
+        parent = module_syntax_index(
+            self.module_bindings.parsed_module.module
+        ).parent_by_node.get(self.function)
+        class_names = (
+            ClassNamespaceExecutionEvidence.from_class(parent).binding_names
+            if isinstance(parent, ast.ClassDef)
+            else frozenset()
+        )
         return {
             parameter.arg: type_name
             for parameter in (
@@ -2967,6 +2979,7 @@ class FunctionNominalParameterBindingAuthority:
                 type_name := self.module_bindings.nominal_annotation_name_at(
                     parameter.annotation,
                     line=self.function.lineno,
+                    class_bound_names=class_names,
                 )
             )
             is not None
@@ -2976,6 +2989,47 @@ class FunctionNominalParameterBindingAuthority:
         """Return the declared nominal type unless the parameter is rebound."""
 
         return self.stable_type_names_by_parameter.get(parameter_name)
+
+    @cached_property
+    def receiver_field_type_names(self) -> dict[str, str | None]:
+        """Constructor assignments, retaining unresolved writes as explicit entries.
+
+        Nominal source evidence only; not a proof of runtime object integrity.
+        """
+        positional = (*self.function.args.posonlyargs, *self.function.args.args)
+        if self.function.name != "__init__" or not positional:
+            return {}
+        receiver = positional[0].arg
+        rebound = receiver in LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(
+            self.function.body
+        )
+        syntax = module_syntax_index(self.module_bindings.parsed_module.module)
+        writes: dict[str, list[ast.AST | None]] = defaultdict(list)
+        for index, target in syntax.indexed_nodes_of_type(ast.Attribute):
+            if self.function not in syntax.ancestor_nodes(index):
+                continue
+            if not isinstance(target.ctx, (ast.Store, ast.Del)):
+                continue
+            if not isinstance(target.value, ast.Name) or target.value.id != receiver:
+                continue
+            statement = syntax.parent_node(index)
+            value = None
+            if statement in self.function.body and isinstance(statement, ast.Assign):
+                if statement.targets == [target]:
+                    value = statement.value
+            writes[target.attr].append(value)
+        result: dict[str, str | None] = {}
+        for name, values in writes.items():
+            result[name] = None
+            if rebound or self.function.decorator_list:
+                continue
+            if len(values) == 1 and isinstance(values[0], ast.Name):
+                result[name] = self.type_name_for_reference(values[0].id)
+        return result
+
+    def type_name_for_receiver_field(self, field_name: str) -> str | None:
+        """Return the declared type of one stable parameter-to-field assignment."""
+        return self.receiver_field_type_names.get(field_name)
 
 
 def nominal_reference_root(reference: ast.AST) -> ast.Name | None:
@@ -4441,66 +4495,6 @@ def _compact_projection_reference(
             return ast.unparse(node), None
         return ".".join(parts), parts[0]
     return None
-
-
-def _compact_self_assignment(
-    statement: ast.stmt,
-) -> tuple[str, ast.AST | None] | None:
-    target: ast.AST | None = None
-    value: ast.AST | None = None
-    if isinstance(statement, ast.Assign) and len(statement.targets) == 1:
-        target = statement.targets[0]
-        value = statement.value
-    elif isinstance(statement, ast.AnnAssign):
-        target = statement.target
-        value = statement.value
-    if not (
-        isinstance(target, ast.Attribute)
-        and isinstance(target.value, ast.Name)
-        and target.value.id == "self"
-    ):
-        return None
-    return target.attr, value
-
-
-def _compact_class_field_type_map(
-    node: ast.ClassDef,
-) -> tuple[tuple[str, str], ...]:
-    nominal_fields: dict[str, str] = {}
-    for statement in node.body:
-        if isinstance(statement, ast.AnnAssign) and isinstance(
-            statement.target, ast.Name
-        ):
-            if not CLASSVAR_ANNOTATION_AUTHORITY.matches(statement.annotation):
-                nominal_fields.setdefault(
-                    statement.target.id,
-                    ast.unparse(statement.annotation),
-                )
-            continue
-        if not isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            continue
-        if statement.name != "__init__":
-            continue
-        parameter_annotations = {
-            argument.arg: ast.unparse(argument.annotation)
-            for argument in (
-                *statement.args.posonlyargs,
-                *statement.args.args,
-                *statement.args.kwonlyargs,
-            )
-            if argument.annotation is not None
-        }
-        for inner in statement.body:
-            assignment = _compact_self_assignment(inner)
-            if assignment is None:
-                continue
-            field_name, value = assignment
-            if isinstance(value, ast.Name) and value.id in parameter_annotations:
-                nominal_fields.setdefault(
-                    field_name,
-                    parameter_annotations[value.id],
-                )
-    return sorted_tuple(nominal_fields.items())
 
 
 class _CompactClassMethodSemanticSkeletonNormalizer(ast.NodeTransformer):
