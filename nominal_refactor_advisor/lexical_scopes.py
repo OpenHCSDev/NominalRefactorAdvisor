@@ -145,6 +145,15 @@ class FunctionBindingProjection(ScopeBindingProjection, LexicalScopeABC):
             nodes, (LEXICAL_SCOPE_BINDING_AUTHORITY.argument_names(node)), node=node
         )
 
+    @classmethod
+    def from_comprehension(
+        cls, node: ast.ListComp | ast.SetComp | ast.DictComp | ast.GeneratorExp
+    ) -> FunctionBindingProjection:
+        """All generator targets belong to the comprehension's local frame."""
+        return cls.from_nodes(
+            (generator.target for generator in node.generators), node=node
+        )
+
 
 class TypeParameterScope(FunctionBindingProjection):
     """PEP 695 annotation scopes retain access to their enclosing class namespace."""

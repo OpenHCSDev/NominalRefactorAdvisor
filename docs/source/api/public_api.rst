@@ -293,6 +293,37 @@ name-presence check and batches snapshot traversal through the DSL. A plan may
 establish an exact destination import before requesting descent; the later
 stage re-proves the reference against that projected source.
 
+``FunctionNominalParameterBindingAuthority.receiver_field_annotations`` owns
+constructor assignment evidence; ``receiver_field_type_names`` derives nominal
+instance types from those same annotations, not a second field-binding store. An unresolved
+write remains an explicit ``None`` entry; conditional/repeated writes, receiver
+or parameter rebinding and decorated constructors cannot invent a type.
+``type_name_for_receiver_field`` queries that projection.
+``SourceProductFlowRepository`` joins these bindings through
+``function_parameter_type_name``, ``receiver_field_type_name`` and
+``public_boolean_property``. Parameter queries take the actual source reference;
+unsupported nested scopes and non-body references remain unresolved. Private or
+raw fields are not public property queries. ``ClassMroAuthority.lookup_prefix``
+retains the known single-base declaration prefix when a later opaque ancestor
+prevents closing C3; it does not strengthen the native runtime proof.
+``class_type_name_for_reference`` keeps ``type[C]`` separate from instance
+annotations. ``declared_boolean_inversion`` also recognizes a public
+``ClassVar[bool]`` on a bound class parameter, including nested functions and
+inherited declarations; raw instance attributes remain probes. Wrappers and
+boolean types are proved through qualified imports/builtin bindings, never
+through member spellings. External declarations must be supplied as source;
+these queries neither import nor execute the inspected application.
+
+Comprehension class bindings use ``FunctionBindingProjection.from_comprehension``
+for the same target ownership as declaration dependency traversal. The first
+iterable executes outside that frame. A declared tuple of one represented class,
+including a receiver field or constructor-assigned field, supplies its element
+binding directly or through a proved builtin ``dict.fromkeys`` call. All four
+comprehension forms share this path. Shadowed names, repeated/unpacked targets,
+async iteration, heterogeneous/nullable class tuples, unknown iterable forms and
+lambda bindings remain unresolved. This is nominal source evidence, not runtime
+object integrity or arbitrary iterator-return inference.
+
 ``ModuleLexicalDependencyProjection.name_surfaces`` retains both original-source
 references and names parsed from quoted annotations. The direct-source view and
 dependency-name sets derive from this collection. ``DeclarationDependencyUse``
