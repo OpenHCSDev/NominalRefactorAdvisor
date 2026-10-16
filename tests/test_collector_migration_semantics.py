@@ -233,10 +233,10 @@ def test_cli_preserves_stable_imported_collector_alias(
         capture_output=True,
         text=True,
     )
-    assert result.returncode == 0, result.stdout + result.stderr
-    assert json.loads(result.stdout)["applied"]
-    assert (
-        "def _candidate_items(self, modules, config):\n        return acquire"
-        not in path.read_text()
-    )
+    assert result.returncode == 1
+    payload = json.loads(result.stdout)
+    assert payload["preflight_failed"]
+    assert not payload["applied"]
+    assert "unproved_execution_effects" in result.stdout
+    assert path.read_text() == source
     assert subprocess.check_output([sys.executable, str(path)], text=True) == before

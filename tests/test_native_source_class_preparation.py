@@ -130,9 +130,13 @@ def test_selection_is_not_driven_by_supplied_conditions(condition_kind):
     )
     entry = environment.class_entry(root)
     assert type(entry) is AutoRegisterClassEntry
-    with pytest.raises(ValueError):
-        _ = entry.frame
-    assert "frame" not in vars(entry)
+    # The exact type_prepare operation needs no callback-behavior premise.
+    # This preparation proof is not a metaclass construction/result proof.
+    _ = entry.frame
+    with pytest.raises(
+        ValueError, match="External source interference remains unproved"
+    ):
+        _ = entry.completed
 
 
 @pytest.mark.parametrize("wrong", (type, int, object))

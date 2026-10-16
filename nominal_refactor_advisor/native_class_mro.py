@@ -9,6 +9,7 @@ from collections.abc import (
 
 from dataclasses import dataclass
 from functools import lru_cache
+from types import FunctionType
 from typing import (
     ClassVar,
     Generic,
@@ -59,6 +60,42 @@ class NativeClassMroDeclaration(NativeDeclaration, ClassNamespaceDeclaration):
                 "Native preparation does not select the exact type descriptor"
             )
 
+    def python_constructor(self, *, start_after: type | None = None) -> FunctionType:
+        """Select current Python __new__ through actual ordinary metaclass lookup.
+
+        A constructor's implicit class cell belongs to the selected MRO owner,
+        not necessarily the invoked metaclass. This supplies current operand
+        provenance, not super lookup, invocation or constructor effects.
+        """
+        if type(self.declaration) is not type:
+            raise ValueError("Native metaclass invocation has unproved metameta hooks")
+        owner = self.member_owner("__new__", start_after=start_after)
+        if owner is None:
+            raise ValueError("Native metaclass has no selected constructor")
+        descriptor = self.stored_namespace(owner)["__new__"]
+        if (
+            type(descriptor) is not staticmethod
+            or type(descriptor.__func__) is not FunctionType
+        ):
+            raise ValueError("Native metaclass has no exact Python constructor source")
+        function = descriptor.__func__
+        freevars = function.__code__.co_freevars
+        if freevars:
+            if freevars != ("__class__",):
+                raise ValueError("Native constructor closure roles remain unproved")
+            closure = function.__closure__
+            if closure is None or len(closure) != 1:
+                raise ValueError("Native constructor has no exact class-cell binding")
+            try:
+                declaration = closure[0].cell_contents
+            except ValueError as error:
+                raise ValueError("Native constructor class cell is empty") from error
+            if declaration is not owner:
+                raise ValueError(
+                    "Native constructor class cell differs from its selected MRO owner"
+                )
+        return function
+
     @classmethod
     def stored_namespace(cls, declaration: type) -> Mapping[str, object]:
         namespace = cls._native_namespace(declaration)
@@ -81,13 +118,22 @@ class NativeClassMroDeclaration(NativeDeclaration, ClassNamespaceDeclaration):
     def member_binding_names(self) -> frozenset[str]:
         return frozenset(self.stored_namespace(self.declaration))
 
-    def member_owner(self, name: str) -> type | None:
+    def member_owner(
+        self, name: str, *, start_after: type | None = None
+    ) -> type | None:
+        """Select current stored C3 members; descriptor execution remains unproved."""
+        if type(name) is not str:
+            raise ValueError("Lookup requires an exact native member name")
+        mro = self.native_mro(self.declaration)
+        if start_after is not None:
+            starts = tuple(
+                index for index, owner in enumerate(mro) if owner is start_after
+            )
+            if len(starts) != 1:
+                raise ValueError("Native MRO lookup start owner is absent or ambiguous")
+            mro = mro[starts[0] + 1 :]
         return next(
-            (
-                owner
-                for owner in self.native_mro(self.declaration)
-                if name in self.stored_namespace(owner)
-            ),
+            (owner for owner in mro if name in self.stored_namespace(owner)),
             None,
         )
 

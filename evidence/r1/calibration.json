@@ -1,0 +1,84 @@
+{
+  "nra_baseline": "1119ca6",
+  "nra_implementation": "8c71ebd326293ae7259003c4687e5463c2b7b077",
+  "comms_head": "a7346153c56d693ecf7f0b8106cd274022ca0fba",
+  "production_python_files": 192,
+  "baseline_detector_count": 79,
+  "current_coverage": {
+    "mode": "exact_cache",
+    "analyzed_detector_count": 81,
+    "omitted_detector_count": 0,
+    "complete": true,
+    "reason": "validated_cache_covers_the_complete_requested_detector_roster"
+  },
+  "raw_access_counts": {
+    "literal_subscript_reads": 748,
+    "literal_get_reads": 355
+  },
+  "prototype": {
+    "nra_findings": 6,
+    "sqlite_column_reads": 321,
+    "sqlite_modules": 32
+  },
+  "baseline_finding_counts": [
+    {
+      "detector_id": "repeated_builder_calls",
+      "count": 1
+    },
+    {
+      "detector_id": "semantic_mirror_without_descent",
+      "count": 11
+    }
+  ],
+  "current_finding_counts": [
+    {
+      "detector_id": "redundant_type_check",
+      "count": 61
+    },
+    {
+      "detector_id": "repeated_builder_calls",
+      "count": 1
+    },
+    {
+      "detector_id": "semantic_mirror_without_descent",
+      "count": 25
+    },
+    {
+      "detector_id": "unmodeled_record_shape",
+      "count": 93
+    }
+  ],
+  "baseline_wall_seconds": 44.11,
+  "current_wall_seconds": 50.06,
+  "wall_increase_percent": 13.49,
+  "baseline_scan_seconds": 30.021,
+  "current_scan_seconds": 33.484,
+  "baseline_analysis_seconds": 27.945,
+  "current_analysis_seconds": 31.4,
+  "current_projections": [
+    {
+      "projection_kind": "branch_literal",
+      "count": 1992
+    },
+    {
+      "projection_kind": "call_literal",
+      "count": 364
+    },
+    {
+      "projection_kind": "collection_literal",
+      "count": 42
+    },
+    {
+      "projection_kind": "mapping_literal",
+      "count": 135
+    },
+    {
+      "projection_kind": "mapping_read",
+      "count": 188
+    },
+    {
+      "projection_kind": "match_literal",
+      "count": 1
+    }
+  ]
+}

@@ -19,7 +19,12 @@ from typing import (
 )
 
 from .annotation_semantics import NOMINAL_ANNOTATION_SOURCE_AUTHORITY
-from .ast_tools import CollectedFamily, ParsedModule, module_syntax_index
+from .ast_tools import (
+    CollectedFamily,
+    ParsedModule,
+    ParsedModuleSourceProjection,
+    module_syntax_index,
+)
 from .call_binding import (
     CallValueT,
     CompactCallBinding,
@@ -52,6 +57,9 @@ from .collection_algebra import (
 )
 from .descriptor_algebra import AliasProperty
 from .lexical_bindings import LEXICAL_SCOPE_BINDING_AUTHORITY
+from .native_declarations import NativeDeclaration
+from .native_compilation import NativePythonCompilation
+from .source_identity import source_path_text
 from .product_flow import (
     CompactBindingResolverABC,
     CompactBindingVisit,
@@ -75,10 +83,12 @@ from .product_flow import (
     CompactProductFlowModuleProjectionFamily,
     CompactValueOriginResolution,
     CompactValueUse,
+    CompactVariableAnnotationTarget,
     CurrentClassMemberMethodReference,
     SourceProductFlowProjection,
 )
 from .source_geometry import SourceByteSpan
+from .scan_cache import ScanCache
 from .value_expression import LexicalValueReference
 
 
@@ -875,6 +885,17 @@ class ProductFlowRepository(
             CompactFunctionTargetResolutionViolation.MISSING_DECLARATION,
         )
 
+    def _annotation_mutation_resolution(
+        self,
+        context: CompactFlowContext,
+        mutation: CompactMutation[CompactVariableAnnotationTarget],
+    ) -> CompactCallTargetResolution:
+        """Exclude only a proved compiler-owned annotation namespace write."""
+
+        if context.flow.entry_annotation_namespace_is_active(mutation):
+            return self._non_definition_resolution()
+        return super()._annotation_mutation_resolution(context, mutation)
+
     def _binding_mutation_resolution(
         self,
         context: CompactFlowContext,
@@ -1038,6 +1059,7 @@ class ProductFlowRepository(
         )
 
     @cached_property
+    @ScanCache.scope()
     def product_authorities_by_symbol(self) -> dict[str, CompactProductAuthority]:
         """Exhaust all evidence for survivors; stop once every candidate is rejected."""
         remaining = dict(self.declared_product_authorities_by_symbol)
@@ -1052,6 +1074,7 @@ class ProductFlowRepository(
         return remaining
 
     @cached_property
+    @ScanCache.scope()
     def product_runtime_failures_by_authority_symbol(
         self,
     ) -> CompactProductRuntimeFailureIndex:
@@ -2109,6 +2132,65 @@ class SourceProductFlowRepository(RepositoryModuleBindingProof, ProductFlowRepos
                 module, method.returns, line=method.lineno, class_names=class_names
             )
         return None
+
+    def require_native_source_dependency(self, declaration: NativeDeclaration) -> None:
+        """Reconcile native source with the complete current projected module set."""
+        compilation = NativePythonCompilation.from_native_declaration(declaration)
+        if compilation is None:
+            return  # Native type immutability was proved by its compiler authority.
+        candidates = tuple(
+            module
+            for module in self.modules
+            if source_path_text(module.file_path)
+            == source_path_text(compilation.file_path)
+        )
+        if not candidates:
+            return  # External native source remains covered by its explicit entry premise.
+        if len(candidates) != 1:
+            raise ValueError("Native source dependency has ambiguous projected owners")
+        module = candidates[0]
+        if module.source != compilation.source:
+            raise ValueError(
+                "Native source dependency differs from the projected source state"
+            )
+
+    def projected_with_source_projection(
+        self, projection: ParsedModuleSourceProjection
+    ) -> Self:
+        """Retain module-local proofs only for exact unchanged source owners."""
+        self.require_module_owners(projection.modules)
+        projected = type(self).from_modules(projection.projected_modules)
+        for original, current in zip(
+            self.modules, projection.projected_existing_modules, strict=True
+        ):
+            if current is not original:
+                continue
+            module_id = id(original)
+            source = self._source_projections.get(module_id)
+            execution = self._native_executions.get(module_id)
+            if source is not None:
+                if source.module is not original:
+                    raise ValueError(
+                        "Retained source projection belongs to a different parsed owner"
+                    )
+                projected._source_projections[module_id] = source
+            if execution is not None:
+                if source is None or execution.source is not source:
+                    raise ValueError(
+                        "Retained native execution belongs to a different source projection"
+                    )
+                projected._native_executions[module_id] = execution
+        return projected
+
+    def require_module_owners(self, modules: tuple[ParsedModule, ...]) -> None:
+        """Authenticate the exact parsed owners represented by this repository."""
+        if len(modules) != len(self.modules) or any(
+            supplied is not owned
+            for supplied, owned in zip(modules, self.modules, strict=True)
+        ):
+            raise ValueError(
+                "Product-flow repository belongs to different parsed module owners"
+            )
 
     def product_projection_for_module(
         self, module_name: str

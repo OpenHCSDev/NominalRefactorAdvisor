@@ -145,8 +145,8 @@ def test_registry_factoring_no_longer_acquires_a_fictitious_rent_obligation(
         migration_type=AutoRegisterClassRegistryConcept,
         guard_suite=ArchitectureGuardSuite(),
     ).run()
-    assert report.stop_reason is CodemodWorkflowStopReason.ACHIEVED
-    assert report.stages
-    assert report.replay_sequence.documents
+    assert report.stop_reason is CodemodWorkflowStopReason.UNPROVED_TRAJECTORY
+    assert report.stages == ()
+    assert report.replay_sequence.documents == ()
     assert report.trajectory_proof.unjustified_debt_terminals == ()
     assert source_path.read_text() == source

@@ -13,6 +13,9 @@ from nominal_refactor_advisor.codemod import (
 )
 from nominal_refactor_advisor.manual_registry import DirectManualRegistryComponent
 from nominal_refactor_advisor.source_index import build_source_index
+from native_use_test_support import (
+    simulate_with_rendered_registry_creator_support,
+)
 from test_registry_destination_admission import _manual_source
 from test_registry_key_equivalence import _parsed
 
@@ -40,14 +43,12 @@ def test_registry_destination_is_explicit_and_preserves_plain_mapping(
     snapshot = CodemodSourceSnapshot.from_indexed_sources(
         build_source_index([parsed], ()), {parsed.file_path: source}
     )
-    result = (
-        RefactorRecipe("one-registry-declaration")
-        .with_operation(
-            ConvertManualRegistryToAutoregisterOperation(
-                target=SourceRewriteTarget(file_path=parsed.file_path, qualname="Alpha")
-            )
-        )
-        .simulate(snapshot)
+    result = simulate_with_rendered_registry_creator_support(
+        ConvertManualRegistryToAutoregisterOperation(
+            target=SourceRewriteTarget(file_path=parsed.file_path, qualname="Alpha")
+        ),
+        snapshot,
+        recipe_id="one-registry-declaration",
     )
     assert result.is_clean
     runtime = ModuleType("authored_registry_destination")
@@ -63,7 +64,7 @@ def test_registry_destination_is_explicit_and_preserves_plain_mapping(
 
 @pytest.mark.parametrize("existing_base", (False, True))
 @pytest.mark.parametrize("placement", ("before", "between", "after"))
-def test_empty_registry_binding_keeps_its_original_observation_point(
+def test_registry_membership_observation_requires_execution_proof(
     existing_base, placement
 ):
     source = _manual_source("'alpha'", dictionary=False, compact=False)
@@ -82,19 +83,10 @@ def test_empty_registry_binding_keeps_its_original_observation_point(
     snapshot = CodemodSourceSnapshot.from_indexed_sources(
         build_source_index([parsed], ()), {parsed.file_path: source}
     )
-    result = (
-        RefactorRecipe("preserve-binding-point")
-        .with_operation(
-            ConvertManualRegistryToAutoregisterOperation(
-                target=SourceRewriteTarget(file_path=parsed.file_path, qualname="Alpha")
-            )
-        )
-        .simulate(snapshot)
+    operation = ConvertManualRegistryToAutoregisterOperation(
+        target=SourceRewriteTarget(file_path=parsed.file_path, qualname="Alpha")
     )
-    assert result.is_clean
-    after = ModuleType("authored_binding_after")
-    exec(result.simulation.rewritten_sources[parsed.file_path], after.__dict__)
-    assert type(after.REGISTRY) is dict
-    assert after.REGISTRY == {"alpha": after.Alpha, "beta": after.Beta}
-    assert after.Alpha.saw_registry is before.Alpha.saw_registry
-    assert after.Beta.saw_registry is before.Beta.saw_registry
+    with pytest.raises(ValueError, match="unproved_execution_effects"):
+        operation.source_edits_from_snapshot(snapshot)
+    assert before.Alpha.saw_registry is (placement == "before")
+    assert before.Beta.saw_registry is (placement != "after")

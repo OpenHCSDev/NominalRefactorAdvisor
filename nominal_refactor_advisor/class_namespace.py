@@ -260,8 +260,92 @@ class AssignmentSourceEffect(ClassNamespaceEffect):
     node: ast.Assign | ast.AnnAssign | ast.NamedExpr
     application_event_types = (CompactEvaluatedResult,)
 
+    def require_operation(
+        self,
+        environment: NativeReferenceEnvironment,
+        operation: SourceFlowOperation,
+    ) -> None:
+        """Admit the retained evaluation boundary; operands own their effects.
+
+        The evaluated result proves that the right-hand side reached its original
+        disposition.  Calls, subscriptions, attribute access and overloaded
+        expressions are separate source-effect sites and remain independently
+        closed.  Requiring the result's object identity here would incorrectly
+        turn an opaque but effect-free name load into an execution effect.
+        """
+        source = environment.source
+        if (
+            operation.node is not self.node
+            or not isinstance(operation.event, CompactEvaluatedResult)
+            or source.event_operation(operation.event) is not operation
+        ):
+            raise ValueError("Assignment requires its original evaluated result")
+
     def require_closed(self, environment: NativeReferenceEnvironment) -> None:
-        environment.require_assignment(self.node)
+        del environment
+        raise ValueError("Assignment requires its original evaluation operation")
+
+
+class AugmentedAssignmentSourceEffect(ClassNamespaceEffect):
+    """Place the unproved in-place operation after its retained target and RHS reads."""
+
+    node: ast.AugAssign
+
+    def application_operations(
+        self,
+        site: SourceEffectSite,
+        source: SourceProductFlowProjection,
+    ) -> tuple[SourceFlowOperation, ...]:
+        del site
+        operations = tuple(
+            operation
+            for operation in source.operations_by_node.get(self.node.target, ())
+            if isinstance(operation.event, CompactMutation)
+        )
+        if len(operations) != 1:
+            raise ValueError(
+                "Augmented assignment requires one original target mutation"
+            )
+        return operations
+
+    def require_closed(self, environment: NativeReferenceEnvironment) -> None:
+        del environment
+        raise ValueError("Augmented assignment execution remains unproved")
+
+
+class AugmentedTargetReadEffect(ClassNamespaceEffect, ABC):
+    """Place terminal target access at its retained pre-RHS read operation."""
+
+    application_event_types = (CompactCallableReferenceUse,)
+
+    def application_operations(
+        self,
+        site: SourceEffectSite,
+        source: SourceProductFlowProjection,
+    ) -> tuple[SourceFlowOperation, ...]:
+        del site
+        operations = tuple(
+            operation
+            for operation in source.operations_by_node.get(self.node, ())
+            if isinstance(operation.event, self.application_event_types)
+        )
+        if len(operations) != 1:
+            raise ValueError("Augmented target read has no original operation")
+        return operations
+
+
+class AugmentedReferenceAccessEffect(
+    AugmentedTargetReadEffect,
+    ReferenceAccessEffect,
+):
+    """Terminal attribute access in an augmented-assignment target."""
+
+
+class AugmentedSubscriptionEffect(
+    AugmentedTargetReadEffect,
+    SubscriptionClassNamespaceEffect,
+):
+    """Terminal item access in an augmented-assignment target."""
 
 
 class ReturnSourceEffect(ClassNamespaceEffect):
@@ -619,6 +703,13 @@ class _ClassNamespaceEffectProjection(ast.NodeVisitor):
         self._record_effect(AssignmentSourceEffect, node)
 
     visit_NamedExpr = visit_Assign
+
+    def visit_AugAssign(self, node: ast.AugAssign) -> None:
+        if isinstance(node.target, ast.Attribute):
+            self._record_effect(AugmentedReferenceAccessEffect, node.target)
+        elif isinstance(node.target, ast.Subscript):
+            self._record_effect(AugmentedSubscriptionEffect, node.target)
+        self._record_effect(AugmentedAssignmentSourceEffect, node)
 
     def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
         if node.value is not None:

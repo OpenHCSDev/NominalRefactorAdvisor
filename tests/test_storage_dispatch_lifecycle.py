@@ -74,7 +74,7 @@ def test_storage_failure_is_not_published_as_completed(source):
     environment = execution(source)
     statement = environment.module.module.body[-1]
     target = (
-        statement
+        statement.target
         if isinstance(statement, ast.AugAssign)
         else statement.targets[0]
     )

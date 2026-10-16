@@ -151,8 +151,25 @@ def test_document_compiler_supplies_one_context_authority_to_every_operation(
     assert len(observed_contexts) == 2
     assert observed_contexts[0] is observed_contexts[1]
     assert observed_contexts[0].execution_snapshot() is observed_contexts[0]
-    assert observed_contexts[0].module_node_cache is snapshot.module_node_cache
-    assert observed_contexts[0].ast_target_node_cache is snapshot.ast_target_node_cache
+    context = observed_contexts[0]
+    assert context.product_flow_repository is snapshot.product_flow_repository
+    assert len(context.parsed_modules) == len(snapshot.parsed_modules)
+    assert all(
+        current is original
+        for current, original in zip(
+            context.parsed_modules, snapshot.parsed_modules, strict=True
+        )
+    )
+    assert context.module_node_cache.keys() == snapshot.module_node_cache.keys()
+    assert all(
+        node is snapshot.module_node_cache[path]
+        for path, node in context.module_node_cache.items()
+    )
+    assert context.ast_target_node_cache.keys() == snapshot.ast_target_node_cache.keys()
+    assert all(
+        node is snapshot.ast_target_node_cache[target]
+        for target, node in context.ast_target_node_cache.items()
+    )
 
 
 def test_source_path_resolution_fails_closed_on_suffix_ambiguity() -> None:

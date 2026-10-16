@@ -10,9 +10,11 @@ import pytest
 from nominal_refactor_advisor.native_compilation import (
     NativeCallMarker,
     NativeCallOperandOrder,
+    NativeCallOperandRole,
     NativeCallValue,
     NativeCreationBackend,
     NativeGlobalValue,
+    NativeGlobalLoadForm,
     NativeOperandStack,
     NativePrimitiveOperation,
     NativePythonCompilation,
@@ -89,6 +91,22 @@ def test_declared_call_layout_composes_and_splits_original_slots(order):
     assert composed[order.marker_index] is marker
     split_callee, split_marker = order.split(composed)
     assert split_callee is callee and split_marker is marker
+
+
+@pytest.mark.parametrize("order", tuple(NativeCallOperandOrder))
+@pytest.mark.parametrize("form", tuple(NativeGlobalLoadForm))
+def test_global_load_form_projects_declared_roles_in_backend_order(order, form):
+    compilation = NativePythonCompilation("payload = unknown()\n", "roles.py")
+    receipt = value_store(compilation, ast.parse(compilation.source).body[0])
+    callee, marker = receipt.value.callee, receipt.value.argument_slot
+
+    projected = order.compose_roles(form.value, callee, marker)
+
+    assert len(projected) == len(form.value)
+    assert tuple(role for role in order.value if role in form.value) == tuple(
+        NativeCallOperandRole.CALLEE if slot is callee else NativeCallOperandRole.MARKER
+        for slot in projected
+    )
 
 
 def test_function_global_load_observation_does_not_claim_source_activation():

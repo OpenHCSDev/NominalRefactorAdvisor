@@ -44,6 +44,8 @@ from nominal_refactor_advisor.product_flow_authority import SourceProductFlowRep
 from nominal_refactor_advisor.source_entry import ImportedSourceModuleEntryPremise
 from nominal_refactor_advisor.finding_recipe_actions import FindingRecipeActionKey
 from nominal_refactor_advisor.models import FindingSpec, PatternId, SourceLocation
+from nominal_refactor_advisor.source_identity import source_path_text
+from native_use_test_support import with_rendered_registry_creator_support
 
 SOURCE = """padding = None
 REGISTRY = {}
@@ -76,10 +78,11 @@ class RegistryEntryCompiler(RefactorRecipeOperationCompiler):
 
 def conversion(tmp_path, source=SOURCE, *, compiler=CodemodSourceSnapshot, later=()):
     path = tmp_path / "registry.py"
-    path.write_text(source)
-    snapshot = compiler.from_source_mapping({str(path): source})
+    path.write_bytes(source.encode())
+    file_path = source_path_text(path)
+    snapshot = compiler.from_source_mapping({file_path: source})
     operation = ConvertManualRegistryToAutoregisterOperation(
-        target=SourceRewriteTarget(file_path=str(path), qualname="Alpha")
+        target=SourceRewriteTarget(file_path=file_path, qualname="Alpha")
     )
     document = CodemodPlanDocument(
         recipes=(RefactorRecipe("registry", operations=(operation, *later)),)
@@ -123,8 +126,9 @@ def candidate_reports(simulation):
 
 
 def require_preview_only(path, original, simulation):
-    assert simulation.simulation.rewritten_sources[str(path)]
-    assert simulation.unified_diff({str(path): original})
+    file_path = source_path_text(path)
+    assert simulation.simulation.rewritten_sources[file_path]
+    assert simulation.unified_diff({file_path: original})
     assert not simulation.is_clean
     for require_clean in (True, False):
         with pytest.raises(ValueError):
@@ -144,7 +148,9 @@ def test_native_candidate_controls_remain_preview_without_behavior_proof(
         else SOURCE
     )
     path, operation, simulation = conversion(tmp_path, source)
-    candidate = simulation.required_after_snapshot.sources_by_file_path[str(path)]
+    candidate = simulation.required_after_snapshot.sources_by_file_path[
+        source_path_text(path)
+    ]
     assert native_outcome(source) == {"keys": ["alpha", "beta"]}
     assert native_outcome(candidate) == (
         {"error": "TypeError"} if wrong_creator else {"keys": ["alpha", "beta"]}
@@ -167,6 +173,19 @@ def test_captured_generated_creator_identity_is_not_behavior_invariance(tmp_path
     require_preview_only(path, SOURCE, simulation)
 
 
+def test_declared_candidate_behavior_allows_the_exact_rendered_conversion(tmp_path):
+    path, operation, preview = conversion(tmp_path)
+    supported = with_rendered_registry_creator_support(operation, preview)
+    file_path = source_path_text(path)
+    snapshot = CodemodSourceSnapshot.from_source_mapping({file_path: SOURCE})
+    simulation = RefactorRecipe("registry", operations=(supported,)).simulate(snapshot)
+
+    assert simulation.is_clean
+    assert native_outcome(simulation.simulation.rewritten_sources[file_path]) == {
+        "keys": ["alpha", "beta"]
+    }
+
+
 def test_candidate_gate_observes_later_edit_in_complete_document(tmp_path):
     path = tmp_path / "registry.py"
     patch = PatchTargetOperation(
@@ -176,7 +195,9 @@ def test_candidate_gate_observes_later_edit_in_complete_document(tmp_path):
         ),
     )
     path, operation, simulation = conversion(tmp_path, later=(patch,))
-    candidate = simulation.required_after_snapshot.sources_by_file_path[str(path)]
+    candidate = simulation.required_after_snapshot.sources_by_file_path[
+        source_path_text(path)
+    ]
     assert "AutoRegisterMeta = int" in candidate
     assert native_outcome(SOURCE) == {"keys": ["alpha", "beta"]}
     assert native_outcome(candidate) == {"error": "TypeError"}
@@ -240,7 +261,9 @@ def test_known_wrong_creator_retains_structured_reproof_diagnostic(tmp_path):
     assert report.message == str(refusal.value)
     assert report.detail.causes[0].message == str(refusal.value)
     assert native_outcome(source) == {"keys": ["alpha", "beta"]}
-    candidate = simulation.required_after_snapshot.sources_by_file_path[str(path)]
+    candidate = simulation.required_after_snapshot.sources_by_file_path[
+        source_path_text(path)
+    ]
     assert native_outcome(candidate) == {"error": "TypeError"}
     require_preview_only(path, source, simulation)
 

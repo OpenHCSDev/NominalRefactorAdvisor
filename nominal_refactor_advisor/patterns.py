@@ -313,6 +313,39 @@ class PatternId(IntEnum):
         ),
     )
 
+    SOURCE_BACKED_DISPATCH_LEAD = _pattern(
+        stable_id=22,
+        display_name="Source-Backed Dispatch Ownership Lead (Domain OPEN)",
+        required_relation=(
+            "Selected original source tests compare literals against one syntactic "
+            "axis within a lexical decision context. Intended family, closed "
+            "membership, behavior and safe migration remain OPEN."
+        ),
+        witness_capabilities=(CapabilityTag.PROVENANCE,),
+    )
+
+    SOURCE_BACKED_CONDITION_LEAD = _pattern(
+        stable_id=23,
+        display_name="Source-Backed Condition Factoring Lead (Domain OPEN)",
+        required_relation=(
+            "One original decision test contains four or more direct boolean terms. "
+            "Whether terms share an owner, are independent predicates, or should "
+            "remain in order is a semantic decision, not established by length."
+        ),
+        witness_capabilities=(CapabilityTag.PROVENANCE,),
+    )
+
+    SOURCE_BACKED_ROSTER_LEAD = _pattern(
+        stable_id=24,
+        display_name="Source-Backed Repeated Literal Roster Lead (Domain OPEN)",
+        required_relation=(
+            "Two original literal containers repeat the same ordered values or "
+            "set members in one module. A common authority, membership relation, "
+            "external format and safe replacement remain OPEN."
+        ),
+        witness_capabilities=(CapabilityTag.PROVENANCE,),
+    )
+
     def __new__(
         cls,
         stable_id: int,

@@ -709,8 +709,13 @@ class DetectorRegistrySignature:
     detector_types: tuple[DetectorTypeSignature, ...]
 
     @classmethod
-    def current(cls) -> "DetectorRegistrySignature":
-        return cls.from_detector_types(IssueDetector.registered_detector_types())
+    def current(
+        cls, *, detector_types: tuple[type[IssueDetector], ...] | None = None
+    ) -> "DetectorRegistrySignature":
+        """Resolve omitted/full and explicit rosters before caching their signatures."""
+        if detector_types is None:
+            detector_types = IssueDetector.registered_detector_types()
+        return cls.from_detector_types(detector_types)
 
     @classmethod
     @ScanCache.cached
@@ -801,6 +806,7 @@ class AnalysisCacheIdentity(AnalysisCacheEntryContext):
         source_policy: PythonSourcePathPolicy | None = None,
         source_signature_cache: "SourceFileSignatureCache | None" = None,
         report_roots: tuple[Path, ...] = (),
+        detector_types: tuple[type[IssueDetector], ...] | None = None,
     ) -> "AnalysisCacheIdentity":
         source_paths = python_source_paths_for_roots(
             roots,
@@ -812,6 +818,7 @@ class AnalysisCacheIdentity(AnalysisCacheEntryContext):
             config,
             source_signature_cache=source_signature_cache,
             report_roots=report_roots,
+            detector_types=detector_types,
         )
 
     @classmethod
@@ -823,6 +830,7 @@ class AnalysisCacheIdentity(AnalysisCacheEntryContext):
         *,
         source_signature_cache: "SourceFileSignatureCache | None" = None,
         report_roots: tuple[Path, ...] = (),
+        detector_types: tuple[type[IssueDetector], ...] | None = None,
     ) -> "AnalysisCacheIdentity":
         """Build an exact cache identity from an already discovered source set."""
 
@@ -840,7 +848,9 @@ class AnalysisCacheIdentity(AnalysisCacheEntryContext):
         )
         return cls(
             config=config,
-            detector_registry=DetectorRegistrySignature.current(),
+            detector_registry=DetectorRegistrySignature.current(
+                detector_types=detector_types
+            ),
             python_version=(sys.version_info.major, sys.version_info.minor),
             roots=semantic_root_labels(roots),
             source_files=source_files,
@@ -859,10 +869,13 @@ class AnalysisCacheIdentity(AnalysisCacheEntryContext):
         config: DetectorConfig,
         *,
         report_roots: tuple[Path, ...] = (),
+        detector_types: tuple[type[IssueDetector], ...] | None = None,
     ) -> "AnalysisCacheIdentity":
         return cls(
             config=config,
-            detector_registry=DetectorRegistrySignature.current(),
+            detector_registry=DetectorRegistrySignature.current(
+                detector_types=detector_types
+            ),
             python_version=(sys.version_info.major, sys.version_info.minor),
             roots=semantic_root_labels(roots),
             source_files=tuple(

@@ -100,6 +100,39 @@ class InjectiveTypeRegistryProof:
         )
 
     @classmethod
+    def from_partially_resolved_key_entries(
+        cls,
+        *,
+        key_axis_name: str,
+        key_entries: Iterable[tuple[Hashable, str, tuple[str, ...]]],
+        registered_type_names: Iterable[str],
+        unresolved_type_names: Iterable[str],
+        reverse_lookup_names: Iterable[str] = (),
+        consumer_symbols: Iterable[str] = (),
+    ) -> "InjectiveTypeRegistryProof | None":
+        """Retain only a decisive counterexample from an incomplete key family.
+
+        Unresolved types cannot establish either injectivity or missing keys. A
+        duplicate among the resolved types is nevertheless sufficient to
+        disprove injectivity for the complete family.
+        """
+
+        registered = frozenset(registered_type_names)
+        unresolved = frozenset(unresolved_type_names)
+        if not unresolved <= registered:
+            raise ValueError("Unresolved registry types must belong to the family")
+        proof = cls.from_key_entries(
+            key_axis_name=key_axis_name,
+            key_entries=key_entries,
+            registered_type_names=registered - unresolved,
+            reverse_lookup_names=reverse_lookup_names,
+            consumer_symbols=consumer_symbols,
+        )
+        if unresolved and proof.is_injective:
+            return None
+        return proof
+
+    @classmethod
     def from_type_map(
         cls,
         *,

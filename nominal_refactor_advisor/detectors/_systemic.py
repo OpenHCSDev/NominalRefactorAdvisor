@@ -933,9 +933,9 @@ class ResidualClosedAxisIndirectionDetector(
     candidate_collector = staticmethod(_residual_closed_axis_indirection_candidates)
     finding_spec = high_confidence_spec(
         PatternId.NOMINAL_STRATEGY_FAMILY,
-        "Enum-keyed table with residual branching should become a nominal strategy family",
-        "A function that indexes an enum-keyed table and still branches on the same enum axis is not using the table as an authority. The table is a degenerate projection over behavior that still lives in branches. The stronger normal form is an ABC-backed strategy family keyed by the enum, with `AutoRegisterMeta` owning import-time registration and any table-like views derived from the family.",
-        "metaclass-registry-backed nominal strategy family instead of enum table plus residual branching",
+        "Enum-keyed table and residual branches suggest scattered case ownership",
+        "A function indexes an enum-keyed table and also branches on that axis. For behavior-bearing cases, prefer a public ABC with shared algorithms on the parent and case-owned declarations, data and hooks on concrete subclasses; derive consumers and any needed registration from that family rather than retain another enum-to-handler roster. Compose independently meaningful capabilities through inheritance only after checking MRO, construction and substitutability. If the sites only encode values or an external vocabulary, establish that distinct role before recommending a hierarchy. This source observation does not prove case binding, callable effects, complete coverage or rewrite equivalence; preserve unmatched cases, branch priority and unknown-input behavior in a staged migration.",
+        "class-owned polymorphic behavior instead of independently maintained tables and case branches, where the domain contract supports it",
         "same function indexes an enum-keyed table and branches on that enum axis",
         (
             CapabilityTag.AUTHORITATIVE_DISPATCH,
@@ -1371,9 +1371,9 @@ class ExternalEnumCaseRecoveryDetector(
     )
     finding_spec = high_confidence_spec(
         PatternId.CLOSED_FAMILY_DISPATCH,
-        "External enum case recovery should move to its nominal owner",
-        "A function outside an enum declaration recovers multiple cases from that closed axis. The enum or a keyed strategy family should own those case semantics so consumers query behavior instead of rediscovering member identity.",
-        "one nominal owner for closed-axis behavior with consumers deriving its result",
+        "External enum case recovery suggests class-owned polymorphic behavior",
+        "Functions outside an enum declaration inspect multiple declared cases. For behavior-bearing cases, prefer a public ABC whose concrete subclasses own their related declarations, data and behavior, with common algorithms inherited from the parent. Consumers should invoke that contract rather than inspect tags or maintain parallel tables; moving the same switch into a shared Enum method does not achieve this. A value-only enum or external wire vocabulary needs a separately justified role, not an automatic subclass conversion. Trace existing classes and alternative owners, then plan the complete consumer migration; this observation alone proves neither runtime binding nor a required hierarchy, complete coverage or behavioral equivalence.",
+        "a shared public contract with case-owned behavior rather than repeated member interpretation, subject to the domain decision",
         "multiple declared enum members are inspected outside their nominal owner",
         (
             CapabilityTag.AUTHORITATIVE_DISPATCH,
@@ -2162,31 +2162,42 @@ def _compact_keyed_registry_axis_facts(
                 is not None
             }
         )
-        try:
-            key_entries = tuple(
-                (
-                    member.resolve_mapping_key(mapping_key_authority, descendant),
-                    member.expression,
-                    (_compact_registry_class_display_name(descendant, class_index),),
+        key_entries = []
+        unresolved_type_names = set()
+        for descendant in concrete_descendants:
+            descendant_name = _compact_registry_class_display_name(
+                descendant,
+                class_index,
+            )
+            try:
+                member = class_index.direct_or_absent_value_declaration(
+                    descendant.symbol, registry_key_attr_name
                 )
+                if member is None:
+                    continue
+                key_entries.append(
+                    (
+                        member.resolve_mapping_key(
+                            mapping_key_authority,
+                            descendant,
+                        ),
+                        member.expression,
+                        (descendant_name,),
+                    )
+                )
+            except (KeyError, ValueError):
+                unresolved_type_names.add(descendant_name)
+        injectivity_proof = InjectiveTypeRegistryProof.from_partially_resolved_key_entries(
+            key_axis_name=key_type_name,
+            key_entries=key_entries,
+            registered_type_names=tuple(
+                _compact_registry_class_display_name(descendant, class_index)
                 for descendant in concrete_descendants
-                for member in (
-                    descendant.direct_value_writes_by_name[registry_key_attr_name],
-                )
-            )
-        except (KeyError, ValueError):
-            injectivity_proof = None
-        else:
-            injectivity_proof = InjectiveTypeRegistryProof.from_key_entries(
-                key_axis_name=key_type_name,
-                key_entries=key_entries,
-                registered_type_names=tuple(
-                    _compact_registry_class_display_name(descendant, class_index)
-                    for descendant in concrete_descendants
-                ),
-                reverse_lookup_names=indexed_class.keyed_registry_reverse_lookup_method_names,
-                consumer_symbols=consumer_symbols,
-            )
+            ),
+            unresolved_type_names=unresolved_type_names,
+            reverse_lookup_names=indexed_class.keyed_registry_reverse_lookup_method_names,
+            consumer_symbols=consumer_symbols,
+        )
         facts.append(
             KeyedRegistryAxisFact(
                 file_path=indexed_class.file_path,

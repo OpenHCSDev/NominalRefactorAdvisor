@@ -16,6 +16,7 @@ import pytest
 
 from nominal_refactor_advisor.native_compilation import (
     ExactNativeClassCapture,
+    GeneratedClassNativeFrameOrigin,
     ModuleNativeFrameOrigin,
     NativeClassCaptureResolverABC,
     NativeCreationBackend,
@@ -166,9 +167,7 @@ def test_nested_and_repeated_source_owners_are_not_joined_by_name(monkeypatch):
     sys.version_info < (3, 12), reason="Native type parameters require Python 3.12+"
 )
 @pytest.mark.parametrize("qualified", (False, True), ids=("bare", "qualified"))
-def test_generic_capture_keeps_body_without_guessing_creator_frame(
-    monkeypatch, qualified
-):
+def test_generic_capture_keeps_exact_generated_creator_frame(monkeypatch, qualified):
     decorator = "builtins.property" if qualified else "property"
     source = (
         "import builtins\n"
@@ -179,12 +178,34 @@ def test_generic_capture_keeps_body_without_guessing_creator_frame(
     _, code, inventory, (receipt,) = _compile_case(monkeypatch, source)
     namespace, (invocation,) = _execute(code)
     _assert_native_capture(receipt, inventory, invocation)
-    assert isinstance(receipt.builder.frame, OpenNativeFrameOrigin)
+    origin = receipt.builder.frame
+    assert isinstance(origin, GeneratedClassNativeFrameOrigin)
+    assert receipt.creation.frame is origin
+    assert origin.activation.frame is origin.execution.creation.frame
     assert (
-        receipt.builder.frame.reason is NativeExecutionUnavailable.UNJOINED_FRAME_ORIGIN
+        origin.activation.instruction_offset
+        > origin.execution.creation.instruction_offset
     )
     assert invocation.caller_code is not code
     assert namespace["Target"]().value == 7
+
+
+@pytest.mark.skipif(
+    sys.version_info < (3, 14), reason="Exact generated class-wrapper backend"
+)
+def test_generated_class_frame_exposes_only_original_synthetic_binding(monkeypatch):
+    source = "class Target[T]: pass\n"
+    _, _, _, (receipt,) = _compile_case(monkeypatch, source)
+    origin = receipt.creation.frame
+    assert isinstance(origin, GeneratedClassNativeFrameOrigin)
+    (binding,) = origin.bindings
+    assert binding.value in receipt.prologue.values
+    assert origin.class_closure_declaration(binding.value).declaration is tuple
+    with pytest.raises(ValueError, match="no unique compiler-owned declaration"):
+        origin.class_closure_declaration(replace(binding.value))
+    duplicate = replace(origin, bindings=(*origin.bindings, binding))
+    with pytest.raises(ValueError, match="no unique compiler-owned declaration"):
+        duplicate.class_closure_declaration(binding.value)
 
 
 @pytest.mark.skipif(
@@ -266,9 +287,12 @@ def test_generic_creator_and_body_capture_before_base_rebinding(monkeypatch):
     assert creator_builtins is before
     assert invocation.body.__builtins__ is before
     assert namespace["Target"].value[0] == "before"
-    # Creation provenance does not yet prove invocation or the implicit Generic
-    # base protocol. In particular this is not a source-parent frame join.
-    assert isinstance(receipt.builder.frame, OpenNativeFrameOrigin)
+    # The wrapper creation and its immediate activation are exact, but remain
+    # distinct from a source-parent frame and prove no implicit-base protocol.
+    origin = receipt.builder.frame
+    assert isinstance(origin, GeneratedClassNativeFrameOrigin)
+    assert receipt.creation.frame is origin
+    assert origin.activation.frame is origin.execution.creation.frame
     assert invocation.caller_code is not code
 
 

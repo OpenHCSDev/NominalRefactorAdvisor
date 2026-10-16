@@ -28,7 +28,11 @@ from typing import ClassVar, Generic, Self, TypeAlias, TypeVar, cast
 from metaclass_registry import AutoRegisterMeta
 
 from .annotation_semantics import NOMINAL_ANNOTATION_SOURCE_AUTHORITY
-from .codemod_native_requirements import NativeUseRequirement
+from .codemod_native_requirements import (
+    NativeDefinitionUseRequirement,
+    DeclaredNativeUseInvariants,
+    NativeUseRequirement,
+)
 from .codemod_mapping_observation import (
     RequireDictionaryCopyMappingOperation as RequireDictionaryCopyMappingOperation,
 )
@@ -3337,6 +3341,15 @@ class DeriveAutoregisterInstanceViewOperation(
             authority_node.name,
         )
         component.require_destination_key_compatibility(component.authority)
+        authority_target = ResolvedClassTarget(
+            target=authority_digest,
+            node=component.authority_node,
+        )
+        authority_replacements = self.authority_replacements(
+            authority_target,
+            component,
+            snapshot.sources_by_file_path,
+        )
         component.require_original_entry_values(
             snapshot.module_binding_proof.native_reference_environment(
                 snapshot.parsed_module_for_source_path(source_path)
@@ -3347,21 +3360,13 @@ class DeriveAutoregisterInstanceViewOperation(
             source_path=source_path,
             class_names=component.class_names,
         )
-        authority_target = ResolvedClassTarget(
-            target=authority_digest,
-            node=component.authority_node,
-        )
         return (
             *self.registry_key_declaration_replacements(
                 concrete_targets,
                 component.entries,
                 component.registry_key_attribute,
             ),
-            *self.authority_replacements(
-                authority_target,
-                component,
-                snapshot.sources_by_file_path,
-            ),
+            *authority_replacements,
             self.assignment_replacement(source_path, component),
         )
 
@@ -3507,14 +3512,21 @@ class ConvertManualRegistryToAutoregisterOperation(
 ):
     """Derive and convert one direct registry component from an anchor class."""
 
+    supported_execution: DeclaredNativeUseInvariants = codemod_payload_field(
+        PayloadRecordValueCodec(DeclaredNativeUseInvariants),
+        default_factory=DeclaredNativeUseInvariants,
+    )
+
     def simulation_reports(
         self, simulation: CodemodPlanDocumentSimulation
     ) -> tuple[CodemodOperationPreflightReport, ...]:
         """Keep rendered candidates with unproved creator uses out of application."""
         return self.required_reproof(
             lambda: tuple(
-                requirement.inspect().preflight_report()
-                for requirement in self.candidate_native_use_requirements(simulation)
+                resolution.preflight_report()
+                for resolution in self.supported_execution.resolve(
+                    self.candidate_native_use_requirements(simulation)
+                )
             )
         )
 
@@ -3575,11 +3587,12 @@ class ConvertManualRegistryToAutoregisterOperation(
             snapshot.parsed_module_for_source_path(targets.file_path)
         )
         return (
-            NativeUseRequirement(
+            NativeDefinitionUseRequirement(
                 type(self),
                 authority.metaclass_operand,
                 (authority.native_metaclass,),
                 environment,
+                source_state=snapshot.product_flow_repository,
             ),
         )
 
@@ -4810,7 +4823,6 @@ class SourceReprovedLineWitnessFindingRecipeSynthesizer(
             operation = type(self).operation_type(
                 target=SourceRewriteTarget(target_id=target_ids[0]),
             )
-            operation.source_edits(context)
             recipe = RefactorRecipe(
                 recipe_id=f"{finding.stable_id}-{operation.operation_key()}",
                 reason=finding.summary,

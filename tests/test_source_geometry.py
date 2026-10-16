@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import ast
 
+import pytest
+
 from nominal_refactor_advisor.source_geometry import (
     SourceByteSpan,
     SourceCommentLineIndex,
@@ -53,3 +55,52 @@ def test_source_comment_line_index_uses_tokens_instead_of_hash_characters() -> N
     assert index.intersects(module.body[0]) is False
     assert index.intersects(module.body[1]) is True
     assert index.intersects(module.body[2]) is False
+
+
+@pytest.mark.parametrize(
+    "source",
+    (
+        "@(\n    identity\n)\ndef Target(): pass\n",
+        "@(\n    identity\n)\nclass Target: pass\n",
+        "@(é @ β)\nclass Target: pass\n",
+    ),
+)
+def test_generic_declaration_geometry_recovers_exact_decorator_marker(source):
+    from nominal_refactor_advisor.codemod_source_edits import (
+        SourceNodeDecoratorPolicy,
+        SourceNodeSpan,
+        SourceTextGeometry,
+    )
+
+    declaration = ast.parse(source).body[0]
+    generic = SourceLineSegmentAuthority(source)
+    editor = SourceTextGeometry(source)
+    assert generic.decorated_node_start_line(declaration) == 1
+    assert (
+        editor.node_start_line(
+            SourceNodeSpan(declaration, SourceNodeDecoratorPolicy.INCLUDE)
+        )
+        == 1
+    )
+    assert (
+        editor.node_start_line(
+            SourceNodeSpan(declaration, SourceNodeDecoratorPolicy.EXCLUDE)
+        )
+        == declaration.lineno
+    )
+
+
+def test_native_compilation_and_editor_inherit_generic_geometry_contract():
+    from nominal_refactor_advisor.codemod_source_edits import SourceTextGeometry
+    from nominal_refactor_advisor.native_compilation import NativePythonCompilation
+
+    for consumer in (SourceTextGeometry, NativePythonCompilation):
+        assert consumer.iter_tokens is SourceLineSegmentAuthority.iter_tokens
+        assert consumer.tokens is SourceLineSegmentAuthority.tokens
+        assert (
+            consumer.decorated_node_start_line
+            is SourceLineSegmentAuthority.decorated_node_start_line
+        )
+    compilation = NativePythonCompilation("value = 1\n", "source.py")
+    assert compilation.source == "value = 1\n"
+    assert compilation.file_path == "source.py"

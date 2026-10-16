@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ast
 import marshal
+import tokenize
 from abc import ABC, abstractmethod
 from collections.abc import (
     Callable,
@@ -61,13 +62,17 @@ from .lexical_bindings import (
 from .native_class_mro import NativeClassMroDeclaration
 from .native_declarations import (
     NativeDeclaration,
+    NativeDictionaryKey,
     NativeScalar,
     NativeConstantContentsABC,
     NativeScalarValueABC,
     NativeTypeDeclaration,
 )
 from .scan_cache import ScanCache
-from .source_geometry import SourceByteSpan
+from .source_geometry import (
+    SourceByteSpan,
+    SourceLineSegmentAuthority,
+)
 from .source_identity import (
     python_source_cache_signature,
     source_path_text,
@@ -237,6 +242,11 @@ class NativeFrameOriginResolverABC(ABC, Generic[NativeResolutionT]):
     ) -> NativeResolutionT:
         raise NotImplementedError
 
+    def _generated_class_frame_origin_resolution(
+        self, origin: GeneratedClassNativeFrameOrigin
+    ) -> NativeResolutionT:
+        raise ValueError("Generated class frame has no admitted source owner")
+
     @abstractmethod
     def _open_frame_origin_resolution(
         self, origin: OpenNativeFrameOrigin
@@ -265,6 +275,11 @@ class NativeFrameOrigin(ABC):
 
     def is_body_of(self, execution: NativeFunctionExecution) -> bool:
         return False
+
+    def class_closure_declaration(
+        self, value: NativeClassClosureValue
+    ) -> NativeTypeDeclaration:
+        raise ValueError("Native class closure has no compiler-owned declaration")
 
     @abstractmethod
     def resolve(
@@ -298,6 +313,41 @@ class SourceNativeFrameOrigin(NativeFrameOrigin):
         self, resolver: NativeFrameOriginResolverABC[NativeResolutionT]
     ) -> NativeResolutionT:
         return resolver._source_frame_origin_resolution(self)
+
+
+@dataclass(frozen=True)
+class GeneratedClassNativeFrameOrigin(NativeFrameOrigin):
+    """An exact compiler-generated class wrapper and its immediate activation.
+
+    The wrapper remains distinct from every explicit source frame. Its creator
+    can be admitted only by the matching class entry that owns the builder and
+    body captures inside this wrapper.
+    """
+
+    execution: CreatedNativeFunctionExecution
+    activation: NativeCaptureSite
+    bindings: tuple[NativeGeneratedFrameBinding, ...]
+
+    @property
+    def compilation(self) -> NativeCompilationIdentity:
+        return self.execution.compilation
+
+    def resolve(
+        self, resolver: NativeFrameOriginResolverABC[NativeResolutionT]
+    ) -> NativeResolutionT:
+        return resolver._generated_class_frame_origin_resolution(self)
+
+    def class_closure_declaration(
+        self, value: NativeClassClosureValue
+    ) -> NativeTypeDeclaration:
+        declarations = tuple(
+            binding.declaration for binding in self.bindings if binding.value is value
+        )
+        if len(declarations) != 1:
+            raise ValueError(
+                "Native class closure has no unique compiler-owned declaration"
+            )
+        return declarations[0]
 
 
 @dataclass(frozen=True)
@@ -374,6 +424,11 @@ class NativeValueResolverABC(ABC, Generic[NativeResolutionT]):
         self, value: NativeFunctionValue
     ) -> NativeResolutionT:
         return self._typed_native_value_resolution(value)
+
+    def _class_closure_native_value_resolution(
+        self, value: NativeClassClosureValue
+    ) -> NativeResolutionT:
+        return self._unproved_native_value_resolution(value)
 
     def _attribute_native_value_resolution(
         self, value: NativeAttributeValue
@@ -458,6 +513,38 @@ class NativeCallSlotABC(ABC):
         self, order: NativeCallOperandOrder, operands: tuple[NativeCallSlotABC, ...]
     ) -> tuple[NativeProducedValue, NativeCallSlotABC]:
         raise NotImplementedError
+
+
+class NativeCallOperandRole(IntEnum):
+    """Semantic positions in the native call-prefix product."""
+
+    CALLEE = 0
+    MARKER = 1
+
+    def select(
+        self, operands: tuple[NativeProducedValue, NativeCallMarker]
+    ) -> NativeCallSlotABC:
+        return operands[self.value]
+
+
+class NativeGlobalLoadForm(Enum):
+    """Exact LOAD_GLOBAL products, independent of backend slot ordering."""
+
+    VALUE = (NativeCallOperandRole.CALLEE,)
+    CALL_PREFIX = (
+        NativeCallOperandRole.CALLEE,
+        NativeCallOperandRole.MARKER,
+    )
+
+    @classmethod
+    def from_instruction(cls, instruction: dis.Instruction) -> Self:
+        output_arity = dis.stack_effect(instruction.opcode, instruction.arg)
+        try:
+            return next(form for form in cls if len(form.value) == output_arity)
+        except StopIteration:
+            raise ValueError(
+                "Native global load has an unsupported output arity"
+            ) from None
 
 
 @dataclass(frozen=True)
@@ -899,6 +986,15 @@ class NativeReadValue(NativeProducedValue):
         cls.place_read(stack, stack.emit(value, instruction), instruction)
 
 
+class NativeClassClosureValue(NativeReadValue):
+    """A class-body closure read whose value requires its actual frame proof."""
+
+    def resolve(
+        self, resolver: NativeValueResolverABC[NativeResolutionT]
+    ) -> NativeResolutionT:
+        return resolver._class_closure_native_value_resolution(self)
+
+
 class NativeNameValue(NativeReadValue):
     def resolve(
         self, resolver: NativeValueResolverABC[NativeResolutionT]
@@ -995,17 +1091,14 @@ class NativeGlobalValue(NativeReadValue):
         value: NativeProducedValue,
         instruction: dis.Instruction,
     ) -> None:
-        outputs = dis.stack_effect(instruction.opcode, instruction.arg)
-        if outputs == 1:
-            super().place_read(stack, value, instruction)
-        elif outputs == 2:
-            stack.stack.extend(
-                stack.backend.call_operand_order.compose(
-                    value, NativeCallMarker.from_instruction(instruction)
-                )
+        form = NativeGlobalLoadForm.from_instruction(instruction)
+        stack.stack.extend(
+            stack.backend.call_operand_order.compose_roles(
+                form.value,
+                value,
+                NativeCallMarker.from_instruction(instruction),
             )
-        else:
-            raise ValueError("Native global load has an unsupported output arity")
+        )
 
     @classmethod
     def read_inputs(
@@ -1283,18 +1376,37 @@ class NativeCallMarker(NativeCallSlotABC):
 class NativeCallOperandOrder(Enum):
     """Compiler-owned NULL layout; operand declarations own the object form."""
 
-    NULL_CALLEE = (1, 0)
-    CALLEE_NULL = (0, 1)
+    NULL_CALLEE = (
+        NativeCallOperandRole.MARKER,
+        NativeCallOperandRole.CALLEE,
+    )
+    CALLEE_NULL = (
+        NativeCallOperandRole.CALLEE,
+        NativeCallOperandRole.MARKER,
+    )
+
+    @property
+    def callee_index(self) -> int:
+        return self.value.index(NativeCallOperandRole.CALLEE)
+
+    @property
+    def marker_index(self) -> int:
+        return self.value.index(NativeCallOperandRole.MARKER)
 
     def compose(
         self, callee: NativeProducedValue, marker: NativeCallMarker
     ) -> tuple[NativeProducedValue | NativeCallMarker, ...]:
-        roles = (callee, marker)
-        return roles[self.callee_index], roles[self.marker_index]
+        return self.compose_roles(tuple(NativeCallOperandRole), callee, marker)
 
-    def __init__(self, callee_index: int, marker_index: int) -> None:
-        self.callee_index = callee_index
-        self.marker_index = marker_index
+    def compose_roles(
+        self,
+        retained_roles: tuple[NativeCallOperandRole, ...],
+        callee: NativeProducedValue,
+        marker: NativeCallMarker,
+    ) -> tuple[NativeCallSlotABC, ...]:
+        operands = (callee, marker)
+        retained = frozenset(retained_roles)
+        return tuple(role.select(operands) for role in self.value if role in retained)
 
     def split(
         self, operands: tuple[NativeCallSlotABC, ...]
@@ -1603,7 +1715,7 @@ class NativePrimitiveOperation(Enum):
     LOAD_LOCALS = (auto(), NativeOperandStack.locals_value)
     LOAD_DEREF = (auto(), NativeReadValue.capture)
     LOAD_CLASSDEREF = (auto(), NativeReadValue.capture)
-    LOAD_FROM_DICT_OR_DEREF = (auto(), NativeReadValue.capture)
+    LOAD_FROM_DICT_OR_DEREF = (auto(), NativeClassClosureValue.capture)
     STORE_NAME = (
         auto(),
         NativeOperandStack.store,
@@ -1693,6 +1805,12 @@ class NativePrimitiveOperation(Enum):
     def require_deletion(self) -> None:
         if not self.deletes_binding:
             raise ValueError("Native binding is not a deletion")
+
+    def require_instruction(self, instruction: dis.Instruction) -> None:
+        if instruction.opcode != dis.opmap[self.name]:
+            raise ValueError(
+                "Native instruction differs from its declared primitive operation"
+            )
 
     def capture(
         self, stack: NativeOperandStack, instruction: dis.Instruction
@@ -2550,6 +2668,7 @@ class NativeCreationInventory(NativeScopeInventoryABC):
         self,
         compilation: NativeCompilationIdentity,
         selected: tuple[NativeCodeEmission, ...],
+        generated_class_frames: tuple[NativeGeneratedClassFrame, ...] = (),
     ) -> None:
         """One code-identity authority joins both creator and executing-frame receipts."""
         owners = {id(emission): emission for emission in selected}
@@ -2557,32 +2676,68 @@ class NativeCreationInventory(NativeScopeInventoryABC):
             owners.values(),
             lambda emission: id(emission.code),
         )
+        generated_by_code = (
+            UniqueIdentityIndexAuthority.declaration_multiplicity_by_handle(
+                generated_class_frames,
+                lambda frame: id(frame.owner.code),
+            )
+        )
         self.frame_origins = {id(self.root_code): ModuleNativeFrameOrigin(compilation)}
+        bound: set[int] = set()
+        binding: set[int] = set()
+
+        def bind(emission: NativeCodeEmission) -> None:
+            identity = id(emission)
+            if identity in bound:
+                return
+            if identity in binding:
+                raise ValueError("Native emission ownership contains a cycle")
+            binding.add(identity)
+            emission.binding = NativeEmissionBinding(
+                emission, origin_for(id(emission.containing_code))
+            )
+            binding.remove(identity)
+            bound.add(identity)
 
         def origin_for(identity: int) -> NativeFrameOrigin:
             if identity not in self.frame_origins:
-                owner = by_code.unambiguous_declarations_by_handle.get(identity)
-                self.frame_origins[identity] = (
-                    OpenNativeFrameOrigin(
+                if identity in by_code.unambiguous_declarations_by_handle:
+                    owner = by_code.unambiguous_declarations_by_handle[identity]
+                    bind(owner)
+                    self.frame_origins[identity] = SourceNativeFrameOrigin(
+                        cast(ExactNativeFunctionExecution, owner.receipt)
+                    )
+                elif identity in generated_by_code.unambiguous_declarations_by_handle:
+                    frame = generated_by_code.unambiguous_declarations_by_handle[
+                        identity
+                    ]
+                    bind(frame.owner)
+                    execution = frame.owner.receipt
+                    if not isinstance(execution, CreatedNativeFunctionExecution):
+                        raise ValueError(
+                            "Generated class frame lacks its original function creation"
+                        )
+                    self.frame_origins[identity] = GeneratedClassNativeFrameOrigin(
+                        execution,
+                        NativeCaptureSite(
+                            frame.owner.frame_origin, frame.activation.offset
+                        ),
+                        frame.bindings,
+                    )
+                else:
+                    self.frame_origins[identity] = OpenNativeFrameOrigin(
                         compilation,
                         (
                             NativeExecutionUnavailable.AMBIGUOUS_SOURCE_SPAN
                             if identity in by_code.ambiguous_handles
+                            or identity in generated_by_code.ambiguous_handles
                             else NativeExecutionUnavailable.UNJOINED_FRAME_ORIGIN
                         ),
                     )
-                    if owner is None
-                    else SourceNativeFrameOrigin(
-                        cast(ExactNativeFunctionExecution, owner.receipt)
-                    )
-                )
             return self.frame_origins[identity]
 
         for emission in self.emissions:
-            emission.binding = NativeEmissionBinding(
-                emission,
-                origin_for(id(emission.containing_code)),
-            )
+            bind(emission)
         self.scopes = tuple(
             observation.publish(origin_for(id(observation.code)))
             for observation in self.observations
@@ -2604,8 +2759,14 @@ class NativeCreationInventory(NativeScopeInventoryABC):
                 key = (emission.source_span, id(emission.containing_code))
                 emissions.setdefault(key, []).append(emission)
         captures: dict[
-            SourceByteSpan, tuple[NativeInstructionSite, NativeCodeEmission]
+            SourceByteSpan,
+            tuple[NativeInstructionSite, NativeCodeEmission, NativeClassPrologue],
         ] = {}
+        generated_class_frames: list[NativeGeneratedClassFrame] = []
+        emitted_code = UniqueIdentityIndexAuthority.declaration_multiplicity_by_handle(
+            self.emissions,
+            lambda emission: id(emission.code),
+        )
         results: dict[SourceByteSpan, NativeClassCapture] = {}
         for span, sites in builders.items():
             if len(sites) != 1:
@@ -2626,18 +2787,35 @@ class NativeCreationInventory(NativeScopeInventoryABC):
                     compilation, span, NativeExecutionUnavailable.NO_OBSERVED_CREATION
                 )
                 continue
-            captures[span] = (builder, body)
+            prologue = backend.class_prologue(self.prefixes[id(body.code)])
+            captures[span] = (builder, body, prologue)
+            containing_code_identity = id(body.containing_code)
+            if (
+                containing_code_identity
+                in emitted_code.unambiguous_declarations_by_handle
+            ):
+                owner = emitted_code.unambiguous_declarations_by_handle[
+                    containing_code_identity
+                ]
+                try:
+                    frame = backend.generated_class_frame(owner, body, span, prologue)
+                except ValueError:
+                    pass
+                else:
+                    generated_class_frames.append(frame)
         self.bind_frame_origins(
-            compilation, (*selected, *(body for _, body in captures.values()))
+            compilation,
+            (*selected, *(body for _, body, _ in captures.values())),
+            tuple(generated_class_frames),
         )
-        for span, (builder, body) in captures.items():
+        for span, (builder, body, prologue) in captures.items():
             origin = body.frame_origin
             results[span] = ExactNativeClassCapture(
                 compilation,
                 span,
                 cast(ExactNativeFunctionExecution, body.receipt),
                 NativeCaptureSite(origin, builder.instruction.offset),
-                backend.class_prologue(self.prefixes[id(body.code)]),
+                prologue,
             )
         return results
 
@@ -2917,6 +3095,23 @@ class NativeCodeEmission:
     @cached_property
     def source_span(self) -> SourceByteSpan | None:
         return NativeInstructionSite(self.containing_code, self.load).source_span
+
+
+@dataclass(frozen=True)
+class NativeGeneratedClassFrame:
+    """Transient proof inputs for one compiler-generated class wrapper frame."""
+
+    owner: NativeCodeEmission
+    activation: dis.Instruction
+    bindings: tuple[NativeGeneratedFrameBinding, ...]
+
+
+@dataclass(frozen=True)
+class NativeGeneratedFrameBinding:
+    """One exact generated-frame value with its compiler-owned declaration."""
+
+    value: NativeClassClosureValue
+    declaration: NativeTypeDeclaration
 
 
 @dataclass(frozen=True)
@@ -3300,10 +3495,31 @@ class NativeCreationBackend(ABC, metaclass=AutoRegisterMeta):
             self.require_static_type_release(owner)
         return owners
 
+    def require_type_query(self, declaration: NativeDeclaration) -> None:
+        """Require the one-operand type primitive, not dynamic type construction."""
+        raise ValueError("Native one-operand type query remains unproved")
+
+    def require_descriptor_wrapping(self, declaration: NativeDeclaration) -> None:
+        """Require a supported native wrapper over independently proved metadata."""
+        raise ValueError("Native descriptor wrapping remains unproved")
+
+    def require_dictionary_class_lookup(self, declaration_type: type) -> None:
+        """Require exact-dict membership for an independently admitted class key."""
+        raise ValueError("Native dictionary class-key lookup remains unproved")
+
     def require_invocation(
         self, prelude: list[dis.Instruction], call: dis.Instruction
     ) -> None:
         raise ValueError("Native call protocol remains unproved")
+
+    def generated_class_frame(
+        self,
+        emission: NativeCodeEmission,
+        body: NativeCodeEmission,
+        source_span: SourceByteSpan,
+        prologue: NativeClassPrologue,
+    ) -> NativeGeneratedClassFrame:
+        raise ValueError("Generated class wrapper activation remains unproved")
 
     @property
     def call_operand_order(self) -> NativeCallOperandOrder:
@@ -3388,9 +3604,31 @@ class NativeCreationBackend(ABC, metaclass=AutoRegisterMeta):
         """Require exact dictionary setter behavior under exact scalar-key admission."""
         raise ValueError("Native dictionary item storage remains unproved")
 
+    def require_dictionary_key(self, key: object) -> NativeDictionaryKey:
+        """Compose exact primitive contents or an admitted static-type identity.
+
+        Primitive entry evidence is independent of compiler creation support.
+        Static keys additionally require this backend's immutable native MRO
+        proof. Validation supplies neither storage nor invocation effects.
+        """
+        if NativeScalarValueABC.supports_scalar(key):
+            return cast(NativeDictionaryKey, key)
+        try:
+            self.require_static_type_mro(key)
+        except ValueError as error:
+            raise ValueError(
+                "Native dictionary lookup requires an exact scalar key or "
+                "immutable static type"
+            ) from error
+        return cast(NativeDictionaryKey, key)
+
+    def require_dictionary_store(self, key: NativeDictionaryKey) -> None:
+        """Require native storage and temporary-key release for an admitted key."""
+        raise ValueError("Native dictionary item storage remains unproved")
+
     def class_construction_fields(
         self,
-        names: frozenset[NativeScalar],
+        names: frozenset[NativeDictionaryKey],
     ) -> tuple[CPythonClassConstructionField, ...]:
         """Select native construction obligations; actual values discharge them."""
         raise ValueError("Native class construction namespace remains unproved")
@@ -3981,6 +4219,10 @@ class CPythonClassConstructionField(StrEnum):
 
 class CPythonClassConstruction(NativeCreationBackend):
 
+    descriptor_wrappers: ClassVar[tuple[NativeDeclaration, ...]] = tuple(
+        NativeDeclaration(native) for native in (classmethod, property, staticmethod)
+    )
+
     # These exact native getters implement ordinary attribute lookup. The
     # declaration is about lookup behavior, not membership in a scalar domain.
     # No analyzed instance, descriptor or user-defined getter is invoked.
@@ -3989,6 +4231,25 @@ class CPythonClassConstruction(NativeCreationBackend):
         for owner in (object, str, int, bool, tuple, list, dict)
     )
     abstract_member_marker = "__isabstractmethod__"
+
+    def require_type_query(self, declaration: NativeDeclaration) -> None:
+        # type(x) reads Py_TYPE(x); unlike three-operand type(), it neither
+        # performs attribute lookup nor invokes construction or instance hooks.
+        if declaration.declaration is not type:
+            raise ValueError("Type query does not select the exact native primitive")
+        self.require_static_type_release(type)
+
+    def require_descriptor_wrapping(self, declaration: NativeDeclaration) -> None:
+        if declaration not in self.descriptor_wrappers:
+            raise ValueError("Descriptor wrapping has no supported native contract")
+        self.require_static_type_mro(declaration.declaration)
+
+    def require_dictionary_class_lookup(self, declaration_type: type) -> None:
+        # Every resident key has the shared dictionary-key contract. Exact
+        # static type objects use ordinary native identity hash/equality; the
+        # caller independently proves original exact-dictionary contents.
+        self.require_static_type_mro(declaration_type)
+        self.require_static_type_release(dict)
 
     def require_nonabstract_member_type(self, value_type: type) -> None:
         self.require_static_type_mro(value_type)
@@ -4021,7 +4282,7 @@ class CPythonClassConstruction(NativeCreationBackend):
 
     def class_construction_fields(
         self,
-        names: frozenset[NativeScalar],
+        names: frozenset[NativeDictionaryKey],
     ) -> tuple[CPythonClassConstructionField, ...]:
         return tuple(
             requirement
@@ -4216,7 +4477,18 @@ class CPythonContainerConstruction(NativeCreationBackend):
         """
         if not NativeScalarValueABC.supports_scalar(key):
             raise ValueError("Native dictionary stores require an exact scalar key")
-        self.require_inert_instance_release(type(key))
+        self.require_dictionary_store(key)
+
+    def require_dictionary_store(self, key: NativeDictionaryKey) -> None:
+        """Native exact-dict insertion over independently admitted key protocols.
+
+        CPython dict lookup uses hash, pointer identity, then rich comparison
+        (Objects/dictobject.c, 3.11.11 and 3.14.6). Exact primitive and static type
+        keys cannot invoke Python hooks even across hash collisions. Prior-value
+        and temporary-receiver release retain their separate cut obligations.
+        """
+        self.require_dictionary_key(key)
+        self.require_object_release(key)
 
 
 class CPythonTypingConstruction(NativeCreationBackend):
@@ -4258,6 +4530,49 @@ class CPython311CreationBackend(
     application_prelude = (PrepareNativeDefinitionApplication,)
 
     call_operand_order = NativeCallOperandOrder.NULL_CALLEE
+
+
+class CPythonGeneratedClassBinding(StrEnum):
+    """Compiler-owned class-body closure fields and their exact native types."""
+
+    TYPE_PARAMETERS = ("__type_params__", tuple)
+
+    declaration: NativeTypeDeclaration
+
+    def __new__(cls, name: str, declaration: type) -> Self:
+        member = str.__new__(cls, name)
+        member._value_ = name
+        member.declaration = NativeTypeDeclaration(declaration)
+        return member
+
+    def bind(
+        self,
+        wrapper: NativeCodeEmission,
+        body: NativeCodeEmission,
+        prologue: NativeClassPrologue,
+    ) -> NativeGeneratedFrameBinding:
+        if not isinstance(prologue, ExactNativeClassPrologue):
+            raise ValueError("Generated class binding requires an exact body prologue")
+        matches = tuple(
+            binding.value
+            for binding in prologue.bindings
+            if binding.name == self.value
+            and isinstance(binding.value, NativeClassClosureValue)
+            and binding.value.name in wrapper.code.co_cellvars
+            and binding.value.name in body.code.co_freevars
+        )
+        if len(matches) != 1:
+            raise ValueError(
+                "Generated class binding has no unique compiler-owned closure"
+            )
+        value = matches[0]
+        if any(
+            binding.name == value.name
+            and binding.instruction_offset < value.instruction_offset
+            for binding in prologue.bindings
+        ):
+            raise ValueError("Generated class closure is shadowed in its body prologue")
+        return NativeGeneratedFrameBinding(value, self.declaration)
 
 
 class CPython314CreationBackend(
@@ -4306,20 +4621,94 @@ class CPython314CreationBackend(
     def proves_body(self, emission: NativeCodeEmission) -> bool:
         return any(event.arg == self.annotate_flag for event in emission.attachments)
 
+    def generated_class_frame(
+        self,
+        emission: NativeCodeEmission,
+        body: NativeCodeEmission,
+        source_span: SourceByteSpan,
+        prologue: NativeClassPrologue,
+    ) -> NativeGeneratedClassFrame:
+        """Admit CPython 3.14's immediate generated class-wrapper call."""
+        if (
+            emission.source_span != source_span
+            or emission.creation is None
+            or body.containing_code is not emission.code
+        ):
+            raise ValueError("Generated class wrapper differs from its class range")
+        boundary = max(
+            (emission.creation, *emission.attachments), key=attrgetter("offset")
+        )
+        instructions = tuple(self.instructions(emission.containing_code))
+        boundary_index = next(
+            (
+                index
+                for index, instruction in enumerate(instructions)
+                if instruction.offset == boundary.offset
+            ),
+            None,
+        )
+        if boundary_index is None or boundary_index + 2 >= len(instructions):
+            raise ValueError("Generated class wrapper has no immediate activation")
+        marker, call = instructions[boundary_index + 1 : boundary_index + 3]
+        NativePrimitiveOperation.PUSH_NULL.require_instruction(marker)
+        NativePrimitiveOperation.CALL.require_instruction(call)
+        if (
+            NativeInstructionSite.span_for(marker) != source_span
+            or NativeInstructionSite.span_for(call) != source_span
+        ):
+            raise ValueError("Generated class wrapper call protocol differs")
+        self.require_invocation([], call)
+        if call.arg != 0:
+            raise ValueError("Generated class wrapper requires zero arguments")
+        return NativeGeneratedClassFrame(
+            emission,
+            call,
+            tuple(
+                declaration.bind(emission, body, prologue)
+                for declaration in CPythonGeneratedClassBinding
+            ),
+        )
+
 
 @dataclass(frozen=True)
-class NativePythonCompilation:
+class NativePythonCompilation(SourceLineSegmentAuthority):
     """Lazily project original module context without importing or executing it.
 
     Only compact receipts are cached; native executable code is transient.
     """
 
-    source: str
     file_path: str
 
     @ScanCache.cached
+    def _definition_start_line(self, span: SourceByteSpan) -> int:
+        """Pure original-source geometry; no mutable AST or current-code verdict retained."""
+        definitions = tuple(
+            node
+            for node in ast.walk(ast.parse(self.source))
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and SourceByteSpan.require_node(node) == span
+        )
+        if len(definitions) != 1:
+            raise ValueError("Native body has no unique function source declaration")
+        return self.decorated_node_start_line(definitions[0])
+
+    def function_source_span(self, function: FunctionType) -> SourceByteSpan:
+        """Rejoin actual current code to immutable source geometry, without exposing AST."""
+        if type(function) is not FunctionType:
+            raise ValueError("Python implementation requires an exact function")
+        code = function.__code__
+        return self._function_source_span(
+            NativeCreationBackend.current().code_contents(code),
+            code.co_filename,
+            code.co_firstlineno,
+        )
+
+    @ScanCache.cached
     def _function_source_span(
-        self, code_contents: tuple[bytes, tuple[int, ...]], filename: str
+        self,
+        code_contents: tuple[bytes, tuple[int, ...]],
+        filename: str,
+        first_line: int,
     ) -> SourceByteSpan:
         """Cache source correspondence by complete code contents within one scan.
 
@@ -4334,7 +4723,11 @@ class NativePythonCompilation:
         matches = tuple(
             emission
             for emission in emissions
-            if backend.code_contents(emission.code) == code_contents
+            # The first line is a necessary native code-identity condition,
+            # not correspondence proof. Unsupported constants in unrelated
+            # sibling bodies must not prevent proving this operation's body.
+            if emission.code.co_firstlineno == first_line
+            and backend.code_contents(emission.code) == code_contents
         )
         if len(matches) != 1:
             raise ValueError("Python implementation differs from compiled source")
@@ -4354,20 +4747,27 @@ class NativePythonCompilation:
     def function_definition(
         self, function: FunctionType
     ) -> ast.FunctionDef | ast.AsyncFunctionDef:
-        """Match current code contents, not function identity or runtime behavior.
+        """Match current code, then expose fresh positioned syntax for its body only.
 
         Defaults, closure values, globals, activation and effects need independent
-        evidence. A fresh syntax tree prevents callers from modifying cached proof.
+        evidence. Neither executable code nor mutable syntax is retained by this query.
         """
-        if type(function) is not FunctionType:
-            raise ValueError("Python implementation requires an exact function")
-        code = function.__code__
-        span = self._function_source_span(
-            NativeCreationBackend.current().code_contents(code), code.co_filename
+        span = self.function_source_span(function)
+        start_line_index = self._definition_start_line(span) - 1
+        window = SourceByteSpan(
+            start_line_index=start_line_index,
+            end_line_index=span.end_line_index,
+            start_byte=0,
+            end_byte=span.end_byte,
         )
+        source = window.segment(self.lines)
+        if span.start_byte:
+            source = "if True:\n" + source
+        parsed = ast.parse(source)
+        ast.increment_lineno(parsed, start_line_index - bool(span.start_byte))
         definitions = tuple(
             node
-            for node in ast.walk(ast.parse(self.source))
+            for node in ast.walk(parsed)
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
             and SourceByteSpan.require_node(node) == span
         )
@@ -4376,17 +4776,57 @@ class NativePythonCompilation:
         return definitions[0]
 
     @classmethod
+    def from_native_declaration(cls, declaration: NativeDeclaration) -> Self | None:
+        """Current Python source, or an independently immutable native type.
+
+        Mutable class construction is not admitted by its qualification label.
+        Its selected constructor and reachable dependencies need their own proof.
+        """
+        native = declaration.declaration
+        if type(native) is FunctionType:
+            return cls.from_function(native)
+        NativeCreationBackend.current().require_static_type_mro(native)
+        return None
+
+    @classmethod
     def from_function(cls, function: FunctionType) -> Self:
-        """Read the complete defining source without invoking the function."""
+        """Authenticate physical candidates, not loader callbacks or activation."""
         if type(function) is not FunctionType:
             raise ValueError("Python implementation requires an exact function")
-        try:
-            lines, _ = inspect.findsource(function)
-        except (OSError, TypeError, IndexError) as error:
-            raise ValueError(
-                "Python implementation has no inspectable source"
-            ) from error
-        return cls("".join(lines), function.__code__.co_filename)
+        namespace = function.__globals__
+        backend = NativeCreationBackend.current()
+        for key in namespace:
+            backend.require_dictionary_key(key)
+        module_file = namespace["__file__"] if "__file__" in namespace else None
+        if module_file is not None and type(module_file) is not str:
+            raise ValueError("Python source path requires an exact native string")
+        filename = function.__code__.co_filename
+        paths = dict.fromkeys(
+            (filename,) if module_file is None else (filename, module_file)
+        )
+        matches = []
+        rejection = None
+        for path in paths:
+            try:
+                with tokenize.open(path) as stream:
+                    source = stream.read()
+            except (OSError, UnicodeError, SyntaxError):
+                continue
+            compilation = cls(source, filename)
+            try:
+                _ = compilation.function_source_span(function)
+            except (ValueError, SyntaxError) as error:
+                rejection = error
+                continue
+            if compilation not in matches:
+                matches.append(compilation)
+        if not matches:
+            if rejection is not None:
+                raise rejection
+            raise ValueError("Python implementation has no inspectable physical source")
+        if len(matches) != 1:
+            raise ValueError("Python implementation has ambiguous physical source")
+        return matches[0]
 
     @property
     def module_annotation_setup(self) -> NativeValueStore | None:

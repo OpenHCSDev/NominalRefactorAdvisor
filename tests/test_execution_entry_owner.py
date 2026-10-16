@@ -172,7 +172,7 @@ def test_explicit_cached_module_association_closes_import_not_arbitrary_executio
     assert execution.initial is initial
 
 
-def test_explicit_dataclasses_import_does_not_admit_decorator_invocation():
+def test_explicit_dataclasses_import_admits_the_proved_decorator_invocation():
     parsed = module(
         "from dataclasses import dataclass\n@dataclass\n"
         "class Product:\n    left: object\n    right: object\n"
@@ -184,8 +184,7 @@ def test_explicit_dataclasses_import_does_not_admit_decorator_invocation():
     )
     execution = SourceModuleExecution(entry)
     execution.require_import(parsed.module.body[0])
-    with pytest.raises(ValueError, match="Class decorator result remains unproved"):
-        execution.require_class_creation(parsed.module.body[-1])
+    execution.require_class_creation(parsed.module.body[-1])
 
 
 def test_explicit_module_admission_preserves_source_registration_collision_guard():

@@ -8,6 +8,7 @@ import pytest
 
 from nominal_refactor_advisor.ast_tools import ParsedModule
 from nominal_refactor_advisor.codemod import (
+    CodemodPlanDocument,
     CodemodSourceSnapshot,
     ConvertManualRegistryToAutoregisterOperation,
     DeriveAutoregisterInstanceViewOperation,
@@ -15,6 +16,7 @@ from nominal_refactor_advisor.codemod import (
     SourceRewriteTarget,
 )
 from nominal_refactor_advisor.source_index import build_source_index
+from native_use_test_support import with_rendered_registry_creator_support
 
 _PLAIN = """REGISTRY = {}
 class Alpha:
@@ -86,7 +88,13 @@ def _execute(source: str) -> ModuleType:
     return module
 
 
-def _simulate(source: str, operation_type: type, anchor: str):
+def _simulate(
+    source: str,
+    operation_type: type,
+    anchor: str,
+    *,
+    support_rendered_creator: bool = False,
+):
     parsed = ParsedModule(
         Path("/repo/registry_policy_fixture.py"),
         "registry_policy_fixture",
@@ -97,15 +105,16 @@ def _simulate(source: str, operation_type: type, anchor: str):
     snapshot = CodemodSourceSnapshot.from_indexed_sources(
         build_source_index([parsed], ()), {parsed.file_path: source}
     )
-    result = (
-        RefactorRecipe("native-policy-integrity")
-        .with_operation(
-            operation_type(
-                target=SourceRewriteTarget(file_path=parsed.file_path, qualname=anchor)
-            )
-        )
-        .simulate(snapshot)
+    operation = operation_type(
+        target=SourceRewriteTarget(file_path=parsed.file_path, qualname=anchor)
     )
+    recipe = RefactorRecipe("native-policy-integrity").with_operation(operation)
+    result = CodemodPlanDocument(recipes=(recipe,)).simulate(snapshot)
+    if support_rendered_creator:
+        assert isinstance(operation, ConvertManualRegistryToAutoregisterOperation)
+        operation = with_rendered_registry_creator_support(operation, result)
+        recipe = RefactorRecipe("native-policy-integrity").with_operation(operation)
+        result = CodemodPlanDocument(recipes=(recipe,)).simulate(snapshot)
     # Post-render refusals obey the same admission contract as source preflight.
     result.preflight_report.require_clean()
     return result, parsed.file_path
@@ -122,7 +131,10 @@ def test_plain_native_registration_still_converts():
     before = _execute(_PLAIN)
     _assert_direct_registry(before)
     result, path = _simulate(
-        _PLAIN, ConvertManualRegistryToAutoregisterOperation, "Alpha"
+        _PLAIN,
+        ConvertManualRegistryToAutoregisterOperation,
+        "Alpha",
+        support_rendered_creator=True,
     )
     assert result.is_clean
     _assert_direct_registry(_execute(result.simulation.rewritten_sources[path]))
@@ -258,7 +270,10 @@ def test_registration_motion_keeps_independent_storage_observations_valid(prefix
     source = prefix + "REGISTRY['alpha']=Alpha\nREGISTRY['beta']=Beta\n"
     before = _execute(source)
     result, path = _simulate(
-        source, ConvertManualRegistryToAutoregisterOperation, "Alpha"
+        source,
+        ConvertManualRegistryToAutoregisterOperation,
+        "Alpha",
+        support_rendered_creator=True,
     )
     assert result.is_clean
     after = _execute(result.simulation.rewritten_sources[path])

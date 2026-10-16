@@ -85,11 +85,24 @@ def test_closed_nonproduct_target_does_not_invalidate_a_product(tail: str) -> No
 
 
 def test_augmented_receiver_resolution_uses_the_actual_captured_class_object() -> None:
-    module = _module(
-        "Product.counter = 1\n"
-        "Other.counter = 10\n"
+    source = (
+        "from dataclasses import dataclass\n"
+        "@dataclass\n"
+        "class Product:\n"
+        "    left: object\n"
+        "    right: object\n"
+        "    counter = 1\n"
+        "class Other:\n"
+        "    counter = 10\n"
         "alias = Product\n"
         "alias.counter += (alias := Other).counter\n"
+    )
+    module = ParsedModule(
+        path=Path("product_mutation.py"),
+        module_name="product_mutation",
+        is_package_init=False,
+        module=ast.parse(source),
+        source=source,
     )
     namespace = {}
     exec(module.source, namespace)

@@ -206,14 +206,14 @@ def test_historical_alias_capture_remains_separate_from_later_effect_closure(lat
     result.require_definition_identity(binding.target.owner)
 
 
-def test_plain_function_does_not_silently_admit_a_prior_dataclass_protocol():
+def test_proved_dataclass_prefix_preserves_a_later_plain_function_result():
     environment = execution(
         "from dataclasses import dataclass\n@dataclass\nclass Product:\n"
         "    left: object\n    right: object\ndef chosen(): pass\n"
     )
     _, context, binding = function(environment)
-    with pytest.raises(ValueError, match="unproved"):
-        environment.definition_result(context, binding)
+    result = environment.definition_result(context, binding)
+    result.require_definition_identity(binding.target.owner)
 
 
 @pytest.mark.parametrize("corruption", ("node", "binding", "execution", "owner"))

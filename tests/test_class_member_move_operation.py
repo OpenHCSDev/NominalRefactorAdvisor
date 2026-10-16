@@ -35,14 +35,12 @@ def _write_fixture(root: Path, *, method_body: str = "return cls.label") -> Path
     return _write_module(
         root,
         "pkg/family.py",
-        "from abc import ABC\n"
-        "from typing import ClassVar\n\n"
-        "class Authority(ABC):\n"
-        "    label: ClassVar[str] = 'shared'\n\n"
+        "class Authority:\n"
+        "    label = 'shared'\n\n"
         "    def retained(self) -> str:\n"
         "        return self.label\n\n\n"
-        "class Intermediate(Authority, ABC):\n"
-        "    payload: ClassVar[int] = 3\n\n"
+        "class Intermediate(Authority):\n"
+        "    payload = 3\n\n"
         "    @classmethod\n"
         "    def describe(cls) -> str:\n"
         f"        {method_body}\n\n\n"
@@ -103,12 +101,9 @@ def test_promotes_selected_members_to_existing_ancestor_as_one_operation(
     assert payload["target_qualname"] == "Intermediate"
     assert payload["destination"]["target_qualname"] == "Authority"
     assert payload["member_names"] == ("payload", "describe")
-    assert (
-        "class Authority(ABC):\n    label: ClassVar[str] = 'shared'\n\n    payload: ClassVar[int] = 3"
-        in rewritten
-    )
+    assert "class Authority:\n    label = 'shared'\n\n    payload = 3" in rewritten
     assert "    @classmethod\n    def describe(cls) -> str:" in rewritten
-    assert "class Intermediate(Authority, ABC):\n    pass" in rewritten
+    assert "class Intermediate(Authority):\n    pass" in rewritten
 
     module_path.write_text(rewritten, encoding="utf-8", newline="")
     assert json.loads(_runtime_output(tmp_path)) == ["shared", 3, 3]
@@ -229,7 +224,7 @@ def test_chains_member_promotion_with_intermediate_authority_collapse(
         for stage in payload["stages"]
     )
     assert "class Intermediate" not in rewritten
-    assert "class CanonicalAuthority(ABC):" in rewritten
+    assert "class CanonicalAuthority:" in rewritten
     assert "class Leaf(CanonicalAuthority):" in rewritten
 
     module_path.write_text(rewritten, encoding="utf-8", newline="")
@@ -349,8 +344,8 @@ def test_rejects_class_local_declaration_dependency(tmp_path: Path) -> None:
     module_path = _write_fixture(tmp_path)
     module_path.write_text(
         module_path.read_text(encoding="utf-8").replace(
-            "    payload: ClassVar[int] = 3",
-            "    default_payload = 3\n" "    payload: ClassVar[int] = default_payload",
+            "    payload = 3",
+            "    default_payload = 3\n" "    payload = default_payload",
         ),
         encoding="utf-8",
         newline="",

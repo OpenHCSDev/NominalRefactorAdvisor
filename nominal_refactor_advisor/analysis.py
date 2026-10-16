@@ -1895,6 +1895,7 @@ def analyze_compact_roots_with_cache(
         source_signature_cache=source_signature_cache,
         source_paths=tuple(source_paths),
         report_roots=report_roots,
+        detector_types=detector_types,
     ).cache_identity()
     aggregate_lookup = analysis_cache.load(cache_identity)
     if (
@@ -2917,6 +2918,7 @@ class AnalysisCacheIdentityAuthority:
     source_signature_cache: SourceFileSignatureCache | None = None
     source_paths: tuple[Path, ...] | None = None
     report_roots: tuple[Path, ...] = ()
+    detector_types: tuple[type[IssueDetector], ...] | None = None
 
     def cache_identity(self) -> AnalysisCacheIdentity:
         if self.source_paths is not None:
@@ -2926,6 +2928,7 @@ class AnalysisCacheIdentityAuthority:
                 self.config,
                 source_signature_cache=self.source_signature_cache,
                 report_roots=self.report_roots,
+                detector_types=self.detector_types,
             )
         return AnalysisCacheIdentity.from_roots(
             self.roots,
@@ -2933,6 +2936,7 @@ class AnalysisCacheIdentityAuthority:
             source_policy=self.source_policy,
             source_signature_cache=self.source_signature_cache,
             report_roots=self.report_roots,
+            detector_types=self.detector_types,
         )
 
     def family_identity(

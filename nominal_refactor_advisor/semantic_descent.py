@@ -79,6 +79,7 @@ from .deadline import scan_deadline_checkpoint
 from .enum_semantics import PYTHON_ENUM_BASE_AUTHORITY
 from .export_tools import PYTHON_PUBLIC_EXPORT_ASSIGNMENT
 from .implementation_identity import ImplementationSource, implementation_module_names
+from .lexical_bindings import LEXICAL_SCOPE_BINDING_AUTHORITY
 from .json_reports import (
     DataclassJsonReport,
     SemanticRecord,
@@ -94,6 +95,7 @@ from .models import (
 )
 from .name_algebra import CLASS_NAME_ALGEBRA
 from .python_module_identity import PythonModulePathIdentity
+from .record_checks import DeclaredTypeCheckModule
 from .registry_identity import AutoRegisterClassAuthority, class_name_registry_key
 from .semantic_identity import (
     SemanticIdentifierTokenProjection,
@@ -316,6 +318,11 @@ class PresentationProjectionKind(StrEnum):
         "detector finding",
         PresentationProjectionPolicy.NONE,
     )
+    MAPPING_READ = (
+        "mapping_read",
+        "mapping read",
+        PresentationProjectionPolicy.NONE,
+    )
     MAPPING_LITERAL = (
         "mapping_literal",
         "mapping literal",
@@ -448,7 +455,7 @@ class DescentStatus(StrEnum):
 class SemanticDescentGraphCacheSchema:
     """Nominal schema identity for persisted semantic-descent graph entries."""
 
-    version: int = 12
+    version: int = 13
     digest_size: int = 16
 
 
@@ -1272,6 +1279,61 @@ class PresentationKeyValuePair:
 
 
 @dataclass(frozen=True)
+class MappingReadArgument(ABC):
+    """One literal-key read feeding an original constructor argument."""
+
+    reference_parts: tuple[str, ...]
+    key: str
+
+    @abstractmethod
+    def matches_fields(self, fields: tuple[str, ...]) -> bool:
+        raise NotImplementedError
+
+
+@dataclass(frozen=True)
+class KeywordMappingReadArgument(MappingReadArgument):
+    field_name: str
+
+    def matches_fields(self, fields: tuple[str, ...]) -> bool:
+        return self.key == self.field_name and self.field_name in fields
+
+
+@dataclass(frozen=True)
+class PositionalMappingReadArgument(MappingReadArgument):
+    position: int
+
+    def matches_fields(self, fields: tuple[str, ...]) -> bool:
+        return self.position < len(fields) and fields[self.position] == self.key
+
+
+@dataclass(frozen=True)
+class MappingReadConstructor:
+    reference_parts: tuple[str, ...]
+    arguments: tuple[MappingReadArgument, ...]
+
+    def schema_symbol(
+        self,
+        resolve_class: Callable[[tuple[str, ...]], str | None],
+        class_index: SemanticClassFamilyIndex,
+    ) -> str | None:
+        symbol = resolve_class(self.reference_parts)
+        owner = None if symbol is None else class_index.class_for(symbol)
+        declaration = None if owner is None else owner.dataclass_declaration
+        if declaration is None or not declaration.is_standard_dataclass:
+            return None
+        fields = tuple(
+            field.name
+            for field in declaration.fields
+            if field.role.contributes_semantic_field
+        )
+        return (
+            symbol
+            if all(arg.matches_fields(fields) for arg in self.arguments)
+            else None
+        )
+
+
+@dataclass(frozen=True)
 class PresentationProjection(SemanticProjectionReference):
     """Raw syntax projection that may duplicate a semantic fact family."""
 
@@ -1287,6 +1349,21 @@ class PresentationProjection(SemanticProjectionReference):
     class_symbols: tuple[str, ...] = ()
     class_reference_parts: tuple[tuple[str, ...], ...] = ()
     axis_type_names: tuple[str, ...] = ()
+    mapping_read_constructors: tuple[MappingReadConstructor, ...] = ()
+
+    def resolved_read_constructor_symbols(
+        self,
+        resolve_class: Callable[[tuple[str, ...]], str | None],
+        class_index: SemanticClassFamilyIndex,
+    ) -> tuple[str, ...]:
+        return sorted_tuple(
+            {
+                symbol
+                for construction in self.mapping_read_constructors
+                if (symbol := construction.schema_symbol(resolve_class, class_index))
+                is not None
+            }
+        )
 
     @cached_property
     def normalized_tokens(self) -> tuple[str, ...]:
@@ -1401,6 +1478,7 @@ class CompactSemanticModuleProjection(CompactModuleIdentity):
 
     projections: tuple[PresentationProjection, ...]
     class_supplements: tuple[SemanticClassSupplement, ...]
+    type_checks: DeclaredTypeCheckModule
 
 
 @dataclass(frozen=True)
@@ -1964,6 +2042,8 @@ class ClassFamilyLikeMirrorPolicy(SemanticAuthorityMirrorPolicy):
         context: "SemanticAuthorityProjectionResolutionContext",
         candidate: SemanticMirrorEdgeCandidate,
     ) -> bool:
+        if candidate.projection.kind is PresentationProjectionKind.MAPPING_READ:
+            return False
         if candidate.projection.is_public_export_contract:
             return False
         if self.call_projection_is_inadmissible(context, candidate):
@@ -2048,6 +2128,10 @@ class DataclassSchemaMirrorPolicy(MappingSemanticAuthorityMirrorPolicy):
         context: "SemanticAuthorityProjectionResolutionContext",
         candidate: SemanticMirrorEdgeCandidate,
     ) -> bool:
+        if candidate.projection.kind is PresentationProjectionKind.MAPPING_READ:
+            return set(candidate.projection.normalized_tokens) <= {
+                fact.name for fact in candidate.facts
+            }
         names_authority = context.projection_semantics.names_authority(
             candidate.projection,
             candidate.authority,
@@ -2123,6 +2207,20 @@ class DataclassSchemaMirrorPolicy(MappingSemanticAuthorityMirrorPolicy):
         context: "SemanticAuthorityProjectionResolutionContext",
         candidate: SemanticMirrorEdgeCandidate,
     ) -> SemanticAuthorityProjectionResolution:
+        if candidate.projection.kind is PresentationProjectionKind.MAPPING_READ:
+            if candidate.authority.authority_id in candidate.projection.class_symbols:
+                return SemanticAuthorityProjectionResolution.derived(
+                    candidate,
+                    (
+                        AuthorityProofEdge.from_location(
+                            candidate.authority,
+                            candidate.projection.location,
+                            AuthorityProofEdgeKind.OWNS_FIELD_SET,
+                            detail="mapping reads feed the resolved schema constructor's fields",
+                        ),
+                    ),
+                )
+            return SemanticAuthorityProjectionResolution.mirrored(candidate)
         proof_edges = context.dataclass_descent.derivation_proof_edges(
             candidate.projection,
             candidate.authority,
@@ -4214,6 +4312,11 @@ class CompactSemanticModuleProjectionFamily(
             replace(
                 item,
                 projections=(item.projections if demand.include_presentations else ()),
+                type_checks=(
+                    item.type_checks
+                    if demand.include_presentations
+                    else replace(item.type_checks, checks=())
+                ),
             )
             for item in items
             if isinstance(item, cls.item_type)
@@ -4254,6 +4357,9 @@ class CompactSemanticModuleProjectionFamily(
             CompactSemanticModuleProjection(
                 module_name=parsed_module.module_name,
                 file_path=parsed_module.file_path,
+                type_checks=DeclaredTypeCheckModule.collect(
+                    parsed_module, include_checks=include_presentations
+                ),
                 projections=sorted_tuple(
                     (() if visitor is None else visitor.projections),
                     key=lambda item: (
@@ -4415,9 +4521,23 @@ class CompactSemanticDescentRepository:
         module_projection: CompactSemanticModuleProjection,
         projection: PresentationProjection,
     ) -> PresentationProjection:
-        class_symbols = self.resolved_class_symbols(
-            module_name=module_projection.module_name,
-            reference_parts=projection.class_reference_parts,
+        class_symbols = sorted_tuple(
+            set(
+                self.resolved_class_symbols(
+                    module_name=module_projection.module_name,
+                    reference_parts=projection.class_reference_parts,
+                )
+            )
+            | set(
+                projection.resolved_read_constructor_symbols(
+                    lambda parts: self.class_reference_resolver.symbol_for(
+                        module_name=module_projection.module_name,
+                        reference_parts=parts,
+                        allow_unique_unqualified=False,
+                    ),
+                    self.class_index,
+                )
+            )
         )
         key_value_pairs = tuple(
             self.resolved_key_value_pair(module_projection.module_name, pair)
@@ -4484,6 +4604,76 @@ def build_compact_semantic_descent_graph(
         class_projections,
         class_index=class_index,
     ).graph()
+
+
+class MappingReadProjectionCollector(ast.NodeVisitor):
+    """Read sets for one lexical function, with site-local constructor descent.
+
+    Only stable name/attribute subjects are grouped. A constructor is evidence
+    only when every read feeds its declared keyword or positional field; another call in
+    the function cannot excuse a raw consumer. These are source shape leads,
+    not value-flow or domain-equivalence proofs.
+    """
+
+    def __init__(self) -> None:
+        self.reads: dict[str, list[tuple[ast.AST, str, set[MappingReadArgument]]]] = {}
+        self.parents: list[ast.AST] = []
+
+    def visit(self, node: ast.AST) -> None:
+        self.parents.append(node)
+        try:
+            super().visit(node)
+        finally:
+            self.parents.pop()
+
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+        pass
+
+    visit_AsyncFunctionDef = visit_FunctionDef
+    visit_ClassDef = visit_FunctionDef
+    visit_Lambda = visit_FunctionDef
+
+    def visit_Subscript(self, node: ast.Subscript) -> None:
+        if isinstance(node.ctx, ast.Load):
+            self._record(node, node.value, node.slice)
+        self.generic_visit(node)
+
+    def visit_Call(self, node: ast.Call) -> None:
+        if (
+            isinstance(node.func, ast.Attribute)
+            and node.func.attr == "get"
+            and 1 <= len(node.args) <= 2
+            and not node.keywords
+        ):
+            self._record(node, node.func.value, node.args[0])
+        self.generic_visit(node)
+
+    def _record(self, node: ast.AST, subject: ast.AST, key_node: ast.AST) -> None:
+        if (
+            not isinstance(key_node, ast.Constant)
+            or not isinstance(key_node.value, str)
+            or AstExpressionProjection.attribute_chain(subject) is None
+        ):
+            return
+        key = key_node.value
+        constructions: set[MappingReadArgument] = set()
+        for index, ancestor in enumerate(self.parents[:-1]):
+            if not isinstance(ancestor, ast.Call):
+                continue
+            parts = AstExpressionProjection.attribute_chain(ancestor.func)
+            if not parts:
+                continue
+            child = self.parents[index + 1]
+            if isinstance(child, ast.keyword) and child.arg is not None:
+                constructions.add(KeywordMappingReadArgument(parts, key, child.arg))
+            for position, argument in enumerate(ancestor.args):
+                if argument is child:
+                    constructions.add(
+                        PositionalMappingReadArgument(parts, key, position)
+                    )
+        self.reads.setdefault(ast.unparse(subject), []).append(
+            (node, key, constructions)
+        )
 
 
 @dataclass
@@ -4677,6 +4867,89 @@ class _ProjectionVisitor(ClassFunctionStackNodeVisitor):
         )
         try:
             super().visit_FunctionDef(node)
+            if self.include_presentations:
+                collector = MappingReadProjectionCollector()
+                bound_names = LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(
+                    node.body
+                ) | LEXICAL_SCOPE_BINDING_AUTHORITY.argument_names(node)
+                for statement in node.body:
+                    collector.visit(statement)
+                for subject, reads in collector.reads.items():
+                    keys = sorted_tuple({key for _, key, _ in reads})
+                    if len(keys) < 2:
+                        continue
+                    common_references = set.intersection(
+                        *(
+                            {argument.reference_parts for argument in targets}
+                            for _, _, targets in reads
+                        )
+                    )
+                    classmethod_receiver = (
+                        node.args.args[0].arg
+                        if self.class_stack
+                        and node.args.args
+                        and any(
+                            isinstance(d, ast.Name) and d.id == "classmethod"
+                            for d in node.decorator_list
+                        )
+                        else None
+                    )
+                    constructors = tuple(
+                        MappingReadConstructor(
+                            (
+                                tuple(self.class_stack)
+                                if parts == (classmethod_receiver,)
+                                else parts
+                            ),
+                            tuple(
+                                sorted(
+                                    {
+                                        argument
+                                        for _, _, targets in reads
+                                        for argument in targets
+                                        if argument.reference_parts == parts
+                                    },
+                                    key=repr,
+                                )
+                            ),
+                        )
+                        for parts in sorted(common_references)
+                        if parts[0] not in bound_names
+                        or (
+                            parts == (classmethod_receiver,)
+                            and classmethod_receiver
+                            not in LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(
+                                node.body
+                            )
+                        )
+                    )
+                    self.function_stack.append(node.name)
+                    self._append_projection(
+                        node,
+                        PresentationProjectionKind.MAPPING_READ,
+                        f"{node.name}:{subject}",
+                        tuple(
+                            PresentationToken(
+                                key,
+                                PresentationTokenKind.STRING_LITERAL,
+                                PresentationTokenRole.DICT_KEY,
+                            )
+                            for key in keys
+                        ),
+                        mapping_read_constructors=constructors,
+                    )
+                    if self.class_reference_resolver is not None:
+                        projection = self.projections[-1]
+                        self.projections[-1] = replace(
+                            projection,
+                            class_symbols=projection.resolved_read_constructor_symbols(
+                                lambda parts: self.class_reference_resolver.symbol_for_reference(
+                                    ast.parse(".".join(parts), mode="eval").body
+                                ),
+                                self.class_reference_resolver.class_index,
+                            ),
+                        )
+                    self.function_stack.pop()
         finally:
             self.type_scopes.pop()
             if frame is not None:
@@ -4982,6 +5255,7 @@ class _ProjectionVisitor(ClassFunctionStackNodeVisitor):
         class_symbols: tuple[str, ...] = (),
         class_reference_parts: tuple[tuple[str, ...], ...] = (),
         axis_type_names: tuple[str, ...] = (),
+        mapping_read_constructors: tuple[MappingReadConstructor, ...] = (),
     ) -> None:
         line = node.lineno
         projection_id = f"{self.parsed_module.file_path}:{line}:{self.qualname}:{kind.value}:{label}"
@@ -5014,6 +5288,7 @@ class _ProjectionVisitor(ClassFunctionStackNodeVisitor):
                 class_symbols=class_symbols,
                 class_reference_parts=class_reference_parts,
                 axis_type_names=axis_type_names,
+                mapping_read_constructors=mapping_read_constructors,
             )
         )
         if self.owner_construction_stack:

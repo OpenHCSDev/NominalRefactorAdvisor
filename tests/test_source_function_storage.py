@@ -198,8 +198,11 @@ def test_external_noninterference_does_not_supply_native_callback_behavior():
     environment, entry, function = prepared_function(conditions=False)
     with pytest.raises(ValueError, match="explicit entry condition"):
         environment.entry.require_native_behavior(entry)
-    with pytest.raises(ValueError, match="unproved_execution_effects"):
-        function.require_fresh_function_namespace(entry.completion_prefix)
+    # Native namespace preparation and function birth happen before the
+    # metaclass callback; their proof does not establish callback effects.
+    function.require_fresh_function_namespace(entry.completion_prefix)
+    with pytest.raises(ValueError, match="construction over prepared inputs"):
+        _ = entry.completed
 
 
 @pytest.mark.parametrize("external_trace", (False, True))

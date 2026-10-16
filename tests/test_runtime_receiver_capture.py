@@ -139,15 +139,22 @@ def test_duplicate_module_names_do_not_select_a_runtime_activation():
 
 
 @pytest.mark.parametrize(
-    "source",
+    "source,compact_excludes_receiver",
     (
-        "data = {}\ndata['item'] = 1\n",
-        "import builtins\ndata = dict(vars(builtins))\ndata['item'] = 1\n",
-        "from __future__ import annotations\nclass Owner:\n    item: object = None\n",
+        ("data = {}\ndata['item'] = 1\n", False),
+        (
+            "import builtins\ndata = dict(vars(builtins))\ndata['item'] = 1\n",
+            False,
+        ),
+        (
+            "from __future__ import annotations\nclass Owner:\n    item: object = None\n",
+            True,
+        ),
     ),
 )
-def test_proved_dictionary_receiver_excludes_definition_targets_without_admitting_compact_facts(
+def test_only_declared_compiler_annotation_storage_excludes_compact_receivers(
     source,
+    compact_excludes_receiver,
 ):
     subprocess.run([sys.executable, "-c", source], check=True)
     repository = SourceProductFlowRepository.from_modules((module(source),))
@@ -171,10 +178,9 @@ def test_proved_dictionary_receiver_excludes_definition_targets_without_admittin
     assert not mutation.resolve(repository, context).candidate_symbols_within(
         participants
     )
-    assert (
-        mutation.resolve(compact, context).candidate_symbols_within(participants)
-        == participants
-    )
+    assert mutation.resolve(compact, context).candidate_symbols_within(
+        participants
+    ) == (frozenset() if compact_excludes_receiver else participants)
 
 
 @pytest.mark.parametrize("annotation", (False, True))

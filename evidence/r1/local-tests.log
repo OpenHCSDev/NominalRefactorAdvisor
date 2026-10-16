@@ -1,0 +1,8 @@
+R1, cache coverage, preparation (timeout 60; pytest -o addopts="")
+................................................                         [100%]
+48 passed in 55.48s
+
+Semantic descent, architecture, registry (timeout 165; pytest -o addopts="")
+........................................................................ [ 52%]
+.................................................................        [100%]
+137 passed in 87.76s (0:01:27)

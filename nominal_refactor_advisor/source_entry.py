@@ -44,7 +44,7 @@ from .descriptor_algebra import AliasProperty
 from .native_declarations import (
     NativeDeclarationFamily,
     NativeLanguageFeature,
-    NativeScalar,
+    NativeDictionaryKey,
 )
 from .product_flow import (
     CompactFlowContext,
@@ -177,9 +177,9 @@ class SourceModuleEntryPremise(
 
     source: SourceProductFlowProjection
     native_island: InitialNativeIsland
-    bindings: InitVar[dict[NativeScalar, CapturedReferenceResolution]]
+    bindings: InitVar[dict[NativeDictionaryKey, CapturedReferenceResolution]]
     builtins: NamespaceEvidenceABC | OpenCapturedReference
-    initial_entries: Mapping[NativeScalar, CapturedReferenceResolution] = field(
+    initial_entries: Mapping[NativeDictionaryKey, CapturedReferenceResolution] = field(
         init=False, repr=False
     )
 
@@ -224,7 +224,7 @@ class SourceModuleEntryPremise(
 
     def __post_init__(
         self,
-        bindings: dict[NativeScalar, CapturedReferenceResolution],
+        bindings: dict[NativeDictionaryKey, CapturedReferenceResolution],
         declared_operation_conditions: Iterable[DeclaredOperationCompletion],
     ) -> None:
         conditions = tuple(declared_operation_conditions)
@@ -265,7 +265,7 @@ class SourceModuleEntryPremise(
         if initial is not self.initial:
             raise ValueError("Source namespace belongs to a different entry premise")
 
-    def _member(self, key: NativeScalar) -> CapturedReferenceResolution | None:
+    def _member(self, key: NativeDictionaryKey) -> CapturedReferenceResolution | None:
         return self.initial_entries.get(key)
 
 
@@ -308,7 +308,7 @@ class RegisteredSourceModuleEntryPremise(SourceModuleEntryPremise):
 
     def __post_init__(
         self,
-        bindings: dict[NativeScalar, CapturedReferenceResolution],
+        bindings: dict[NativeDictionaryKey, CapturedReferenceResolution],
         declared_operation_conditions: Iterable[DeclaredOperationCompletion],
     ) -> None:
         super().__post_init__(bindings, declared_operation_conditions)
@@ -367,7 +367,7 @@ class ImportedSourceModuleEntryPremise(RegisteredSourceModuleEntryPremise):
         if spec is None:
             raise ValueError("Standard source loader did not establish module entry")
         template = module_from_spec(spec)
-        bindings: dict[NativeScalar, CapturedReferenceResolution] = {
+        bindings: dict[NativeDictionaryKey, CapturedReferenceResolution] = {
             name: NativeTypePremise(type(value))
             for name, value in vars(template).items()
         }

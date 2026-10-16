@@ -1576,14 +1576,6 @@ class SourceTextGeometry(SourceLineSegmentAuthority):
             rationale=rationale,
         )
 
-    def iter_tokens(self) -> Iterator[tokenize.TokenInfo]:
-        """Read source tokens lazily when only a prefix is required."""
-        return tokenize.generate_tokens(io.StringIO(self.source).readline)
-
-    @cached_property
-    def tokens(self) -> tuple[tokenize.TokenInfo, ...]:
-        return tuple(self.iter_tokens())
-
     @cached_property
     def line_offsets(self) -> tuple[int, ...]:
         offsets = []
@@ -1742,22 +1734,13 @@ class SourceTextGeometry(SourceLineSegmentAuthority):
         return self.line_span_offsets(self.node_start_line(span), span.end_line)
 
     def node_start_line(self, span: SourceNodeSpan) -> int:
-        """Recover decorator markers that AST expression positions can omit."""
-
+        """Project the exact generic marker through this span's decorator policy."""
         node = span.node
-        if not (
-            span.decorator_policy.includes_decorators
-            and isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
-            and node.decorator_list
+        if span.decorator_policy.includes_decorators and isinstance(
+            node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
         ):
-            return node.lineno
-        expression_start = self.required_node_offsets(node.decorator_list[0])[0]
-        token_index = bisect_left(self.token_start_offsets, expression_start)
-        for index in range(token_index - 1, -1, -1):
-            token = self.tokens[index]
-            if token.exact_type == tokenize.AT:
-                return token.start[0]
-        raise ValueError("Decorated declaration has no source decorator marker")
+            return self.decorated_node_start_line(node)
+        return node.lineno
 
     def node_line_span(self, span: SourceNodeSpan) -> SourceLineSpan:
         return SourceLineSpan(self.node_start_line(span), span.end_line)

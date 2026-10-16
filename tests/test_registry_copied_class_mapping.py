@@ -252,11 +252,8 @@ def test_original_literal_operands_do_not_admit_nonempty_dictionary_execution():
     component.require_original_entry_values(environment)
     with pytest.raises(CapturedReferenceRejection) as refusal:
         _copy(environment)
-    assert refusal.value.violation is CapturedReferenceViolation.UNPROVED_EFFECTS
-    assert isinstance(refusal.value.__cause__, CapturedReferenceRejection)
-    assert (
-        refusal.value.__cause__.violation is CapturedReferenceViolation.UNPROVED_ACCESS
-    )
+    assert refusal.value.violation is CapturedReferenceViolation.UNPROVED_ACCESS
+    assert isinstance(refusal.value.__cause__, ValueError)
     runtime = authored_runtime(source)
     assert runtime["observed"]["alpha"] is runtime["Alpha"]
     assert runtime["observed"]["beta"] is runtime["Beta"]

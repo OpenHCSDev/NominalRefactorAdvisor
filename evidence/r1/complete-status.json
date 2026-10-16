@@ -1,0 +1,63 @@
+{
+  "findings": [],
+  "plans": [],
+  "finding_payload_mode": "counts_only",
+  "finding_count": 180,
+  "finding_counts": {
+    "by_pattern": [
+      {
+        "pattern_id": 1,
+        "count": 179,
+        "pattern_name": "Nominal Boundary Over Sentinel Simulation"
+      },
+      {
+        "pattern_id": 14,
+        "count": 1,
+        "pattern_name": "Authoritative Projection Schema"
+      }
+    ],
+    "by_detector": [
+      {
+        "detector_id": "redundant_type_check",
+        "count": 61
+      },
+      {
+        "detector_id": "repeated_builder_calls",
+        "count": 1
+      },
+      {
+        "detector_id": "semantic_mirror_without_descent",
+        "count": 25
+      },
+      {
+        "detector_id": "unmodeled_record_shape",
+        "count": 93
+      }
+    ]
+  },
+  "scan_status": {
+    "mode": "exact_cache",
+    "analyzed_detector_count": 81,
+    "omitted_detector_count": 0,
+    "complete": true,
+    "reason": "validated_cache_covers_the_complete_requested_detector_roster"
+  },
+  "active_finding_surface": "raw_findings",
+  "timing": {
+    "parse_seconds": 0.0,
+    "analysis_seconds": 0.282,
+    "planning_seconds": 0.0,
+    "source_index_seconds": 0.0,
+    "analysis_cache_status": "hit",
+    "total_seconds": 0.282
+  },
+  "payload_timing": {
+    "observation_graph_seconds": 0.0,
+    "semantic_descent_graph_seconds": 0.0,
+    "source_snapshot_seconds": 0.0,
+    "source_index_payload_seconds": 0.0,
+    "semantic_refactor_gate_seconds": 0.0,
+    "finding_recipe_plan_seconds": 0.0,
+    "total_seconds": 0.002
+  }
+}

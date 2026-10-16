@@ -4,52 +4,73 @@ from __future__ import annotations
 
 import ast
 import builtins
+import dataclasses
 import sys
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from functools import cached_property
+from pathlib import Path
 from types import CodeType, FunctionType
 from typing import (
+    ClassVar,
     TYPE_CHECKING,
     cast,
 )
 
+from .ast_tools import SourceModule
 from .captured_reference import (
     AdmittedExecutionPrefixABC,
     CapturedReferenceKernel,
+    CapturedNativeObject,
     CapturedReferenceResolution,
     CapturedReferenceViolation,
     CreatedNamespaceDictionary,
     InitialNativeIsland,
     NamespaceContentsABC,
     NamespaceEvidenceABC,
+    NamespaceMemberInventory,
     NativeTypeCapture,
     OpaqueCapturedObjectOperations,
     OpenCapturedReference,
     CompletedSourceOperation,
+    SourceDefinitionApplicationAuthorityABC,
 )
-from .call_binding import CompactCallBinding, CompactFunctionSignature
+from .call_binding import (
+    CompactCallArgument,
+    CompactCallBinding,
+    CompactFunctionParameter,
+    CompactFunctionSignature,
+)
 from .descriptor_algebra import AliasProperty
 from .lexical_bindings import FunctionParameterSource
 from .native_class_mro import NativeClassMroDeclaration
 from .native_compilation import (
+    CPythonClassConstruction,
     NativeCreationBackend,
     NativePythonCompilation,
 )
 from .native_declarations import (
     DataclassRuntimeDeclaration,
+    NativeConstantContentsABC,
     NativeDeclaration,
     NativeDeclarationFamily,
     NativeParameterDefault,
-    NativeScalar,
+    NativeDictionaryKey,
 )
 from .native_subscription import NativeArgumentInspection
 from .product_flow import (
+    CompactBranchPredicateResolverABC,
+    CompactCallableReferenceUse,
     CompactFlowContext,
+    CompactFunctionFlow,
     CompactFunctionCall,
+    compact_function_flow_projection,
     CompactValueUse,
     SourceFlowOperation,
 )
+from .scan_cache import ScanCache
+from .source_geometry import SourceByteSpan
+from .registry_identity import mro_registry_value
 
 if TYPE_CHECKING:
     from .native_reference import NativeReferenceEnvironment
@@ -140,26 +161,18 @@ class NativeCallAuthority(SignatureCallAuthorityABC, NativeDeclarationFamily):
     """One native invocation, retaining its canonical original operation only."""
 
     @property
-    def signature(self) -> CompactFunctionSignature:
-        return CompactFunctionSignature.from_arguments(
-            self.python_definition.args
-        ).with_default_names(
-            frozenset(default.parameter_name for default in self.python_defaults)
-        )
+    def python_source(self) -> NativePythonFunctionSource:
+        return NativePythonFunctionSource.from_function(self.declaration.declaration)
 
-    @property
-    def python_defaults(self) -> tuple[NativeParameterDefault, ...]:
-        return NativeParameterDefault.from_function(self.declaration.declaration)
+    signature = AliasProperty[CompactFunctionSignature]("python_source.signature")
 
-    @property
-    def python_definition(self) -> ast.FunctionDef | ast.AsyncFunctionDef:
-        """Derive Python syntax from the current implementation, never its name."""
-        function = self.declaration.declaration
-        if type(function) is not FunctionType:
-            raise ValueError("Python implementation requires an exact function")
-        return NativePythonCompilation.from_function(function).function_definition(
-            function
-        )
+    python_defaults = AliasProperty[tuple[NativeParameterDefault, ...]](
+        "python_source.defaults"
+    )
+
+    python_definition = AliasProperty[ast.FunctionDef | ast.AsyncFunctionDef](
+        "python_source.definition"
+    )
 
     def __post_init__(self) -> None:
         super().__post_init__()
@@ -234,6 +247,284 @@ class NativeObjectConstruction(
                 raise ValueError("Native object hook differs from the default protocol")
 
 
+class NativeTypeQueryCall(NativeCallAuthority):
+    """One original type(x) operation; construction and unknown operands stay open."""
+
+    native_declarations = (NativeDeclaration(type),)
+
+    @property
+    def operand(self) -> CapturedReferenceResolution:
+        self.require_original_operation()
+        if (
+            len(self.call.arguments.positional) != 1
+            or self.call.arguments.keywords
+            or self.call.arguments.positional[0].is_unpacked
+        ):
+            raise ValueError("Only an exact one-operand type query is supported")
+        return self.environment.kernel._read_use(
+            self.call.arguments.positional[0].value, self.context, frozenset()
+        )
+
+    def require_closed(self) -> None:
+        NativeCreationBackend.current().require_type_query(self.declaration)
+        operand = self.operand
+        operand.require_closed()
+        _ = operand.native_type
+        # The returned type keeps the class, not the consumed operand alive.
+        # Py_TYPE itself has no instance hooks, but argument cleanup may run
+        # destructors. Reuse the actual frame's independent-retention/lifetime
+        # evidence rather than assuming native dispatch makes cleanup inert.
+        operand.require_release_in(self.activation_prefix.endpoint.frame)
+
+    def result(self) -> CapturedReferenceResolution:
+        self.require_closed()
+        return CapturedNativeObject(self.operand.native_type)
+
+
+@dataclass(frozen=True, eq=False)
+class NativePythonFunctionSource:
+    """Current function code joined to its exact compact source-flow declaration."""
+
+    function: FunctionType
+    compilation: NativePythonCompilation
+
+    @property
+    def flow(self) -> CompactFunctionFlow:
+        """Revalidate current code before using the retained body projection."""
+        current_span = self.compilation.function_source_span(self.function)
+        flow = self._flow
+        declaration = flow.owner.declaration
+        if declaration is None or declaration.source_span != current_span:
+            raise ValueError("Native function body changed after source-flow capture")
+        return flow
+
+    @property
+    def signature(self) -> CompactFunctionSignature:
+        """Source parameter structure with the function's current default presence."""
+        return CompactFunctionSignature.from_arguments(
+            self.definition.args
+        ).with_default_names(
+            frozenset(default.parameter_name for default in self.defaults)
+        )
+
+    @property
+    def defaults(self) -> tuple[NativeParameterDefault, ...]:
+        """Current associations, not values reconstructed from source defaults."""
+        _ = self.definition
+        return NativeParameterDefault.from_function(self.function)
+
+    @classmethod
+    def from_function(cls, function: FunctionType) -> NativePythonFunctionSource:
+        if type(function) is not FunctionType:
+            raise ValueError("Native source flow requires an exact Python function")
+        compilation = NativePythonCompilation.from_function(function)
+        code_contents = NativeCreationBackend.current().code_contents(function.__code__)
+        return cls._from_current_function(function, compilation, code_contents)
+
+    @staticmethod
+    @ScanCache.cached
+    def _from_current_function(
+        function: FunctionType,
+        compilation: NativePythonCompilation,
+        code_contents: tuple[bytes, tuple[int, ...]],
+    ) -> NativePythonFunctionSource:
+        if (
+            NativeCreationBackend.current().code_contents(function.__code__)
+            != code_contents
+        ):
+            raise ValueError("Native function code changed during source capture")
+        _ = compilation.function_source_span(function)
+        return NativePythonFunctionSource(function, compilation)
+
+    @property
+    def definition(self) -> ast.FunctionDef | ast.AsyncFunctionDef:
+        """Expose fresh syntax, never mutable AST stored in a completed proof cache."""
+        return self.compilation.function_definition(self.function)
+
+    @cached_property
+    def _flow(self) -> CompactFunctionFlow:
+        parsed = SourceModule.from_source_path(
+            Path(self.compilation.file_path), self.compilation.source
+        ).parse()
+        source_span = self.compilation.function_source_span(self.function)
+        return compact_function_flow_projection(parsed, source_span)
+
+    def require_builtin_at_call(
+        self, authority: CallAuthority, name: str, expected: NativeDeclaration
+    ) -> None:
+        """Join one creator-global lookup to entry facts and revalidate its dependencies."""
+        code = self.function.__code__
+        if name in (*code.co_varnames, *code.co_cellvars, *code.co_freevars):
+            raise ValueError("Native body dependency is not a global/builtin lookup")
+        initial = authority.environment.kernel.initial
+        globals_namespace = initial.namespace_for_storage(self.function.__globals__)
+        prefix = authority.activation_prefix
+        globals_namespace.require_available(authority.environment.kernel, prefix)
+        # Revalidate the relevant mutable binding (including original absence),
+        # never a cached validation receipt. Iteration admits keys before lookup.
+        globals_namespace.require_current_binding(name)
+        captured = authority.environment.kernel._namespace_resolution(
+            globals_namespace, name, prefix, frozenset()
+        )
+        if captured is None:
+            builtins_namespace = initial.namespace_for_storage(
+                self.function.__builtins__
+            )
+            builtins_namespace.require_current_binding(name)
+            captured = authority.environment.kernel._namespace_resolution(
+                builtins_namespace, name, prefix, frozenset()
+            )
+        if captured is None:
+            raise ValueError("Native function dependency lookup remains unproved")
+        captured.require_native((expected,))
+
+
+class NativeMroRegistryLookupCall(NativeCallAuthority):
+    """Current-source nearest-MRO lookup with independently proved mapping operations."""
+
+    native_declarations = (NativeDeclaration(mro_registry_value),)
+
+    def require_lookup_source(self) -> NativePythonFunctionSource:
+        source = NativePythonFunctionSource.from_function(self.declaration.declaration)
+        definition = source.definition
+        if not isinstance(definition, ast.FunctionDef):
+            raise ValueError("MRO registry lookup requires synchronous source")
+        parameters = definition.args
+        if (
+            parameters.posonlyargs
+            or len(parameters.args) != 2
+            or parameters.kwonlyargs
+            or parameters.defaults
+            or parameters.vararg is not None
+            or parameters.kwarg is not None
+        ):
+            raise ValueError(
+                "MRO registry lookup has an unsupported parameter contract"
+            )
+        body = definition.body
+        if (
+            isinstance(body[0], ast.Expr)
+            and isinstance(body[0].value, ast.Constant)
+            and type(body[0].value.value) is str
+        ):
+            body = body[1:]
+        if len(body) != 1 or not isinstance(body[0], ast.Return):
+            raise ValueError("MRO registry lookup has additional source effects")
+        invocation = body[0].value
+        if (
+            not isinstance(invocation, ast.Call)
+            or not isinstance(invocation.func, ast.Name)
+            or invocation.keywords
+            or len(invocation.args) != 2
+            or not isinstance(invocation.args[1], ast.Constant)
+            or invocation.args[1].value is not None
+            or not isinstance(invocation.args[0], ast.GeneratorExp)
+        ):
+            raise ValueError("MRO registry lookup has an unproved next-result contract")
+        generator = invocation.args[0]
+        if len(generator.generators) != 1:
+            raise ValueError("MRO registry lookup has additional generator effects")
+        iteration = generator.generators[0]
+        registry_name, declaration_name = (argument.arg for argument in parameters.args)
+        if (
+            iteration.is_async
+            or not isinstance(iteration.target, ast.Name)
+            or not isinstance(iteration.iter, ast.Attribute)
+            or iteration.iter.attr != "__mro__"
+            or not isinstance(iteration.iter.value, ast.Name)
+            or iteration.iter.value.id != declaration_name
+            or len(iteration.ifs) != 1
+        ):
+            raise ValueError("MRO registry lookup does not iterate its declaration MRO")
+        if iteration.target.id in (registry_name, declaration_name):
+            raise ValueError("MRO registry generator has unproved parameter shadowing")
+        predicate = iteration.ifs[0]
+        element = generator.elt
+        if (
+            not isinstance(predicate, ast.Compare)
+            or not isinstance(predicate.left, ast.Name)
+            or predicate.left.id != iteration.target.id
+            or len(predicate.ops) != 1
+            or not isinstance(predicate.ops[0], ast.In)
+            or len(predicate.comparators) != 1
+            or not isinstance(predicate.comparators[0], ast.Name)
+            or predicate.comparators[0].id != registry_name
+            or not isinstance(element, ast.Subscript)
+            or not isinstance(element.value, ast.Name)
+            or element.value.id != registry_name
+            or not isinstance(element.slice, ast.Name)
+            or element.slice.id != iteration.target.id
+        ):
+            raise ValueError(
+                "MRO registry lookup has unproved mapping or subscription behavior"
+            )
+        source.require_builtin_at_call(
+            self, invocation.func.id, NativeDeclaration(next)
+        )
+        return source
+
+    def lookup_result(self) -> CapturedReferenceResolution:
+        source = self.require_lookup_source()
+        binding = self.bound_arguments
+        registry_name, declaration_name = (
+            argument.arg for argument in source.definition.args.args
+        )
+        values = []
+        for parameter in (registry_name, declaration_name):
+            argument = binding.argument_for(parameter)
+            if argument is None or len(argument.values) != 1:
+                raise ValueError("MRO registry operands are not exactly bound")
+            values.append(
+                self.environment.kernel._read_use(
+                    argument.values[0], self.context, frozenset()
+                )
+            )
+        registry, declaration = values
+        if (
+            not isinstance(declaration, CapturedNativeObject)
+            or type(declaration.value) is not type
+        ):
+            raise ValueError(
+                "MRO registry declaration has no exact static-type operand"
+            )
+        NativeCreationBackend.current().require_dictionary_class_lookup(
+            declaration.value
+        )
+        namespace = registry.dictionary_namespace(self.environment.kernel.initial)
+        if isinstance(namespace, OpenCapturedReference):
+            raise ValueError(
+                "MRO registry mapping storage or key protocols remain unproved"
+            )
+        if registry.native_type is not dict:
+            raise ValueError("MRO registry mapping has non-native protocol hooks")
+        namespace.require_dictionary_contents_current(self.environment.kernel.initial)
+        inventory = NamespaceMemberInventory(
+            self.environment.kernel, namespace, self.activation_prefix
+        )
+        # Validate all resident key protocols before membership/subscription.
+        # Native dictionary equality includes boolean/integer aliases, while
+        # admitted static classes compare by identity. The actual MRO orders
+        # selection, never registry insertion order or analyzer class names.
+        keys = inventory.names
+        for key in keys:
+            namespace.require_key(key)
+            inventory.require_member(key).require_release()
+        for owner in NativeCreationBackend.current().require_static_type_mro(
+            declaration.value
+        ):
+            if owner in keys:
+                return inventory.require_member(owner)
+        return CapturedNativeObject(None)
+
+    def require_closed(self) -> None:
+        self.lookup_result().require_closed()
+
+    def result(self) -> CapturedReferenceResolution:
+        result = self.lookup_result()
+        result.require_closed()
+        return result
+
+
 @dataclass(frozen=True)
 class NativeReturnedClosureFactorySource:
     """Current-source proof of one inert branch returning a fresh closure.
@@ -244,8 +535,25 @@ class NativeReturnedClosureFactorySource:
     cannot destroy an argument. The closure body remains entirely unexecuted.
     """
 
-    function: FunctionType
-    definition: ast.FunctionDef
+    source: NativePythonFunctionSource
+
+    function = AliasProperty[FunctionType]("source.function")
+
+    @property
+    def definition(self) -> ast.FunctionDef:
+        """The source owner rejoins actual code and exposes fresh syntax."""
+        definition = self.source.definition
+        if not isinstance(definition, ast.FunctionDef):
+            raise ValueError("Native closure factory requires a synchronous function")
+        return definition
+
+    @classmethod
+    def from_function(
+        cls, function: FunctionType
+    ) -> NativeReturnedClosureFactorySource:
+        result = cls(NativePythonFunctionSource.from_function(function))
+        _ = result.definition
+        return result
 
     @property
     def body(self) -> tuple[ast.stmt, ...]:
@@ -324,33 +632,287 @@ class NativeReturnedClosureFactorySource:
 
     def require_returned_closure(self, parameter_name: str) -> None:
         """Prove closure creation/retention for the selected declaration parameter."""
-        if parameter_name != self.selected_parameter_name:
-            raise ValueError("Native factory selector differs from its declaration")
-        closure = self.closure_definition
-        fallback = self.body[2]
-        if (
-            not isinstance(fallback, ast.Return)
-            or not isinstance(fallback.value, ast.Call)
-            or fallback.value.keywords
-            or len(fallback.value.args) != 1
-            or not isinstance(fallback.value.func, ast.Name)
-            or fallback.value.func.id != closure.name
-            or not isinstance(fallback.value.args[0], ast.Name)
-            or fallback.value.args[0].id != parameter_name
-        ):
-            raise ValueError(
-                "Native factory fallback differs from its closure protocol"
+        with ScanCache.scope():
+            if parameter_name != self.selected_parameter_name:
+                raise ValueError("Native factory selector differs from its declaration")
+            closure = self.closure_definition
+            fallback = self.body[2]
+            if (
+                not isinstance(fallback, ast.Return)
+                or not isinstance(fallback.value, ast.Call)
+                or fallback.value.keywords
+                or len(fallback.value.args) != 1
+                or not isinstance(fallback.value.func, ast.Name)
+                or fallback.value.func.id != closure.name
+                or not isinstance(fallback.value.args[0], ast.Name)
+                or fallback.value.args[0].id != parameter_name
+            ):
+                raise ValueError(
+                    "Native factory fallback differs from its closure protocol"
+                )
+            parameters = FunctionParameterSource.from_arguments(self.definition.args)
+            parameter_names = frozenset(
+                parameter.argument.arg for parameter in parameters
             )
-        parameters = FunctionParameterSource.from_arguments(self.definition.args)
-        parameter_names = frozenset(parameter.argument.arg for parameter in parameters)
-        retained_parameter_names = parameter_names - {parameter_name}
-        code = self.function.__code__
+            retained_parameter_names = parameter_names - {parameter_name}
+            code = self.function.__code__
+            if (
+                frozenset(code.co_cellvars) != retained_parameter_names
+                or frozenset(self.closure_code.co_freevars) != retained_parameter_names
+                or frozenset(code.co_varnames) != parameter_names | {closure.name}
+            ):
+                raise ValueError(
+                    "Returned closure does not retain the factory parameters"
+                )
+
+
+class NativeDefinitionApplicationAuthorityABC(NativeDeclarationFamily, ABC):
+    """Nominal native semantics for one original definition application."""
+
+    @classmethod
+    def for_application(
+        cls,
+        application: SourceDefinitionApplicationAuthorityABC,
+        callee: CapturedReferenceResolution,
+    ) -> NativeDefinitionApplicationAuthorityABC:
+        authority = cls.select_from_capture(callee)
+        return authority(application)
+
+    @abstractmethod
+    def result(self) -> CapturedReferenceResolution:
+        raise NotImplementedError
+
+    def require_plain_class_base(
+        self,
+        resolver: CapturedReferenceKernel,
+        context: CompactFlowContext,
+        position: CompactFlowPosition,
+    ) -> type:
+        """Require transformation-specific preservation of the class-base protocol."""
+        raise ValueError("Definition application may change the class-base protocol")
+
+
+@dataclass(frozen=True, eq=False)
+class NativeDataclassDefinitionApplicationABC(
+    CompactBranchPredicateResolverABC,
+    ABC,
+):
+    """Current dataclass source proving one in-place class transformation."""
+
+    application: SourceDefinitionApplicationAuthorityABC
+
+    factory_declaration: ClassVar[NativeDeclaration] = (
+        DataclassRuntimeDeclaration.DATACLASS.native_declaration
+    )
+    processor_declaration: ClassVar[NativeDeclaration] = NativeDeclaration(
+        dataclasses._process_class
+    )
+
+    @cached_property
+    def factory_source(self) -> NativeReturnedClosureFactorySource:
+        return NativeReturnedClosureFactorySource.from_function(
+            cast(FunctionType, self.factory_declaration.declaration)
+        )
+
+    @cached_property
+    def processor_source(self) -> NativePythonFunctionSource:
+        return NativePythonFunctionSource.from_function(
+            cast(FunctionType, self.processor_declaration.declaration)
+        )
+
+    @property
+    def factory_parameters(self) -> tuple[CompactFunctionParameter, ...]:
+        return CompactFunctionSignature.from_arguments(
+            self.factory_source.definition.args
+        ).parameters
+
+    @property
+    def processor_parameters(self) -> tuple[CompactFunctionParameter, ...]:
+        declaration = self.processor_source.flow.owner.declaration
+        if declaration is None:
+            raise ValueError("Native dataclass processor has no function declaration")
+        return declaration.signature.parameters
+
+    @property
+    def selector_parameter(self) -> CompactFunctionParameter:
+        name = self.factory_source.selected_parameter_name
+        matches = tuple(
+            parameter for parameter in self.factory_parameters if parameter.name == name
+        )
+        if len(matches) != 1:
+            raise ValueError("Native dataclass selector has no unique parameter")
+        return matches[0]
+
+    @abstractmethod
+    def explicit_parameter_value(
+        self, parameter: CompactFunctionParameter
+    ) -> NativeConstantContentsABC | None:
+        """Return an explicitly supplied factory value or no supplied value."""
+        raise NotImplementedError
+
+    def parameter_value(
+        self, parameter: CompactFunctionParameter
+    ) -> NativeConstantContentsABC:
+        if parameter.name == self.selector_parameter.name:
+            return self.application.argument
+        explicit = self.explicit_parameter_value(parameter)
+        if explicit is not None:
+            return explicit
+        defaults = tuple(
+            default
+            for default in NativeParameterDefault.from_function(
+                cast(FunctionType, self.factory_declaration.declaration)
+            )
+            if default.parameter_name == parameter.name
+        )
+        if len(defaults) != 1:
+            raise ValueError("Native dataclass parameter has no unique default")
+        return defaults[0]
+
+    @staticmethod
+    def _require_boolean(value: NativeConstantContentsABC) -> bool:
+        for expected in (False, True):
+            try:
+                value.require_constant_contents(expected)
+            except ValueError:
+                continue
+            return expected
+        raise ValueError("Native dataclass option is not an exact Boolean")
+
+    def proves_boolean(
+        self,
+        predicate_use: CompactCallableReferenceUse,
+        expected: bool,
+    ) -> bool:
+        binding = self.processor_source.flow.initial_parameter_binding_for_predicate(
+            predicate_use
+        )
+        if binding is None:
+            return False
+        parameter = next(
+            (
+                candidate
+                for candidate in self.factory_parameters
+                if candidate.name == binding.parameter.name
+            ),
+            None,
+        )
+        if parameter is None:
+            return False
+        try:
+            self.parameter_value(parameter).require_constant_contents(expected)
+        except ValueError:
+            return False
+        return True
+
+    def require_factory_processor_call(self) -> None:
+        factory_parameters = self.factory_parameters
+        processor_parameters = self.processor_parameters
+        source = self.factory_source
+        selector = self.selector_parameter
+        source.require_returned_closure(selector.name)
+        closure = source.closure_definition
+        closure_parameters = FunctionParameterSource.from_arguments(closure.args)
         if (
-            frozenset(code.co_cellvars) != retained_parameter_names
-            or frozenset(self.closure_code.co_freevars) != retained_parameter_names
-            or frozenset(code.co_varnames) != parameter_names | {closure.name}
+            len(closure_parameters) != 1
+            or closure_parameters[0].argument.arg != selector.name
+            or len(closure.body) != 1
+            or not isinstance(closure.body[0], ast.Return)
+            or not isinstance(closure.body[0].value, ast.Call)
         ):
-            raise ValueError("Returned closure does not retain the factory parameters")
+            raise ValueError("Native dataclass closure has an unproved call body")
+        call = closure.body[0].value
+        if (
+            call.keywords
+            or not isinstance(call.func, ast.Name)
+            or call.func.id != self.processor_declaration.declaration.__name__
+            or any(not isinstance(argument, ast.Name) for argument in call.args)
+        ):
+            raise ValueError("Native dataclass closure calls another processor")
+        argument_names = tuple(cast(ast.Name, argument).id for argument in call.args)
+        factory_names = tuple(parameter.name for parameter in factory_parameters)
+        processor_names = tuple(parameter.name for parameter in processor_parameters)
+        if argument_names != factory_names or processor_names != factory_names:
+            raise ValueError(
+                "Native dataclass processor binding differs from its factory"
+            )
+        binding = CompactFunctionSignature(processor_parameters).bind(
+            tuple(CompactCallArgument(parameter) for parameter in factory_parameters),
+            (),
+        )
+        if not binding.is_exact or any(
+            bound is None
+            or len(bound.values) != 1
+            or bound.values[0] is not factory_parameter
+            for processor_parameter, factory_parameter in zip(
+                processor_parameters,
+                factory_parameters,
+                strict=True,
+            )
+            for bound in (binding.argument_for(processor_parameter.name),)
+        ):
+            raise ValueError("Native dataclass processor call binding is not exact")
+
+    def require_processor_at_application(self) -> None:
+        environment = self.application.environment
+        namespace = environment.initial.namespace_for_storage(vars(dataclasses))
+        value = NamespaceMemberInventory(
+            environment.kernel,
+            namespace,
+            self.application.application_prefix,
+        ).require_member(self.processor_declaration.declaration.__name__)
+        value.require_native_identity(self.processor_declaration)
+
+    def require_factory_activation(self) -> None:
+        """Require any earlier factory call before using its captured options."""
+
+    def result(self) -> CapturedReferenceResolution:
+        with ScanCache.scope():
+            self.application.require_original_application()
+            self.application.argument.require_definition_application_argument()
+            self.require_factory_activation()
+            self.require_factory_processor_call()
+            self.require_processor_at_application()
+            for parameter in self.factory_parameters:
+                if parameter.name != self.selector_parameter.name:
+                    self._require_boolean(self.parameter_value(parameter))
+            binding = self.processor_source.flow.require_returned_parameter_binding(
+                self.selector_parameter.name,
+                self,
+            )
+            if binding.parameter.name != self.selector_parameter.name:
+                raise ValueError(
+                    "Native dataclass processor returned another parameter"
+                )
+            return self.application.argument
+
+    def require_plain_class_base(
+        self,
+        resolver: CapturedReferenceKernel,
+        context: CompactFlowContext,
+        position: CompactFlowPosition,
+    ) -> type:
+        """Preserve the input class's inheritance protocol for in-place dataclasses."""
+        _ = self.result()
+        return self.application.argument.require_plain_class_base(
+            resolver,
+            context,
+            position,
+        )
+
+
+@dataclass(frozen=True, eq=False)
+class NativeDataclassDefinitionApplication(
+    NativeDataclassDefinitionApplicationABC,
+    NativeDefinitionApplicationAuthorityABC,
+):
+    """Direct ``@dataclass`` application selected by captured function identity."""
+
+    native_declarations = (DataclassRuntimeDeclaration.DATACLASS.native_declaration,)
+
+    def explicit_parameter_value(self, parameter: CompactFunctionParameter) -> None:
+        del parameter
+        return None
 
 
 class NativeDataclassFactoryCall(NativeTypeCapture, NativeCallAuthority):
@@ -364,33 +926,65 @@ class NativeDataclassFactoryCall(NativeTypeCapture, NativeCallAuthority):
     native_declarations = (DataclassRuntimeDeclaration.DATACLASS.native_declaration,)
     native_type = FunctionType
 
+    def definition_application_authority(
+        self, application: SourceDefinitionApplicationAuthorityABC
+    ) -> NativeDefinitionApplicationAuthorityABC:
+        return NativeDataclassFactoryDefinitionApplication(application, self)
+
     def require_closed(self) -> None:
-        binding = self.bound_arguments
-        declaration = self.python_definition
-        if not isinstance(declaration, ast.FunctionDef):
-            raise ValueError(
-                "Native factory requires a synchronous function declaration"
-            )
-        # The native protocol distinguishes its first positional input by None.
-        # Its spelling, default, and remaining options belong to the declaration.
-        parameter = FunctionParameterSource.from_arguments(declaration.args)[0]
-        argument = binding.argument_for(parameter.argument.arg)
+        with ScanCache.scope():
+            binding = self.bound_arguments
+            declaration = self.python_definition
+            if not isinstance(declaration, ast.FunctionDef):
+                raise ValueError(
+                    "Native factory requires a synchronous function declaration"
+                )
+            # The native protocol distinguishes its first positional input by None.
+            # Its spelling, default, and remaining options belong to the declaration.
+            parameter = FunctionParameterSource.from_arguments(declaration.args)[0]
+            argument = binding.argument_for(parameter.argument.arg)
+            if argument is None:
+                defaults = tuple(
+                    default
+                    for default in self.python_defaults
+                    if default.parameter_name == parameter.argument.arg
+                )
+                if len(defaults) != 1:
+                    raise ValueError(
+                        "Native dataclass factory default remains unproved"
+                    )
+                defaults[0].require_constant_contents(None)
+            else:
+                self.environment.kernel._read_use(
+                    argument.values[0], self.context, frozenset()
+                ).require_constant_contents(None)
+            NativeReturnedClosureFactorySource(
+                self.python_source
+            ).require_returned_closure(parameter.argument.arg)
+
+
+@dataclass(frozen=True, eq=False)
+class NativeDataclassFactoryDefinitionApplication(
+    NativeDataclassDefinitionApplicationABC
+):
+    """Application of the exact decorator returned by a dataclass factory call."""
+
+    factory: NativeDataclassFactoryCall
+
+    def require_factory_activation(self) -> None:
+        self.factory.require_closed()
+
+    def explicit_parameter_value(
+        self, parameter: CompactFunctionParameter
+    ) -> NativeConstantContentsABC | None:
+        argument = self.factory.bound_arguments.argument_for(parameter.name)
         if argument is None:
-            defaults = tuple(
-                default
-                for default in self.python_defaults
-                if default.parameter_name == parameter.argument.arg
-            )
-            if len(defaults) != 1:
-                raise ValueError("Native dataclass factory default remains unproved")
-            defaults[0].require_constant_contents(None)
-        else:
-            self.environment.kernel._read_use(
-                argument.values[0], self.context, frozenset()
-            ).require_constant_contents(None)
-        NativeReturnedClosureFactorySource(
-            self.declaration.declaration, declaration
-        ).require_returned_closure(parameter.argument.arg)
+            return None
+        if len(argument.values) != 1:
+            raise ValueError("Native dataclass option has no unique source argument")
+        return self.factory.environment.kernel._read_use(
+            argument.values[0], self.factory.context, frozenset()
+        )
 
 
 class NativeDescriptorArgumentABC(ABC):
@@ -406,9 +1000,7 @@ class NativeDescriptorResult(
 ):
     """Native descriptor creation and installation, without runtime identity."""
 
-    native_declarations = tuple(
-        NativeDeclaration(native) for native in (classmethod, property, staticmethod)
-    )
+    native_declarations = CPythonClassConstruction.descriptor_wrappers
     violation = CapturedReferenceViolation.UNPROVED_ACCESS
 
     def result(self) -> CapturedReferenceResolution:
@@ -424,6 +1016,7 @@ class NativeDescriptorResult(
 
 class NativeDescriptorCall(NativeDescriptorResult, NativeCallAuthority):
     def require_closed(self) -> None:
+        NativeCreationBackend.current().require_descriptor_wrapping(self.declaration)
         if any(keyword.is_unpacked for keyword in self.call.arguments.keywords):
             raise ValueError("Native keyword expansion remains unproved")
         inspection = NativeArgumentInspection(self.environment)
@@ -504,7 +1097,7 @@ class CopiedNativeNamespace(
         self.require_closed()
         return self
 
-    names = AliasProperty[frozenset[NativeScalar]]("initial_names")
+    names = AliasProperty[frozenset[NativeDictionaryKey]]("initial_names")
 
     @classmethod
     def from_call(
@@ -528,7 +1121,7 @@ class CopiedNativeNamespace(
         return result
 
     @cached_property
-    def initial_names(self) -> frozenset[NativeScalar]:
+    def initial_names(self) -> frozenset[NativeDictionaryKey]:
         self.require_admitted(self.initial)
         return self.kernel.namespace_names(
             self.parent, self.context, self.call.position
@@ -554,7 +1147,7 @@ class CopiedNativeNamespace(
             )
         self.namespace()
 
-    def _member(self, key: NativeScalar) -> CapturedReferenceResolution | None:
+    def _member(self, key: NativeDictionaryKey) -> CapturedReferenceResolution | None:
         for argument in self.call.arguments.keywords:
             if argument.name == key:
                 return self.kernel._read_use(argument.value, self.context, frozenset())

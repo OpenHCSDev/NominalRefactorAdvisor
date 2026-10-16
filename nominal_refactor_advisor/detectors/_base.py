@@ -6312,9 +6312,8 @@ class ModuleCollectedLineWitnessCandidate(LineWitnessCandidate, ABC):
         raise NotImplementedError
 
 
-class WitnessNameAliasMixin(ABC, metaclass=AutoRegisterMeta):
-    __registry_key__ = "witness_name"
-    __skip_if_no_key__ = True
+class WitnessNameAliasMixin(ABC):
+    """Supplies ``witness_name`` to a line witness; the witness's own family registers it."""
 
     @property
     @abstractmethod

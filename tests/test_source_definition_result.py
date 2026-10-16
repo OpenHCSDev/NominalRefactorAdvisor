@@ -202,12 +202,12 @@ def test_creation_result_requires_final_binding_release_admission(previous, admi
             environment.definition_result(context, binding)
 
 
-def test_dataclass_prefix_remains_explicitly_unproved():
+def test_proved_dataclass_prefix_preserves_a_later_plain_definition_result():
     environment = execution(
         "from dataclasses import dataclass\n@dataclass\n"
         "class Product:\n    left: object\n    right: object\n"
         "class Original: pass\n"
     )
     context, binding = definition(environment, -1)
-    with pytest.raises(ValueError, match="unproved_execution_effects"):
-        environment.definition_result(context, binding)
+    result = environment.definition_result(context, binding)
+    result.require_definition_identity(binding.target.owner)

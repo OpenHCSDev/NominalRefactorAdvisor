@@ -114,10 +114,10 @@ def test_source_applications_join_each_original_native_input():
     result.require_closed()
     native = result.creation.native_execution
     applications = native.require_applications()
-    assert result.native_application is applications[-1]
-    assert result.argument.native_application is applications[0]
+    assert result.native_value is applications[-1].operand_in(result.production)
+    assert result.argument.native_value is applications[0].operand_in(result.production)
     assert applications[0].argument is native.require_creation()
-    assert applications[1].argument is result.argument.native_application
+    assert applications[1].argument is applications[0]
 
 
 @pytest.mark.parametrize("warm", (False, True))
@@ -136,13 +136,19 @@ def test_source_application_order_is_revalidated_after_warming(warm, damage):
         result.require_closed()
 
 
-@pytest.mark.parametrize("damage", ("argument", "frame"))
-def test_source_join_rejects_copied_native_argument_or_frame(damage):
+@pytest.mark.parametrize(
+    "damage,message",
+    (
+        ("argument", "compiler predecessor chain"),
+        ("frame", "different frame"),
+    ),
+)
+def test_source_join_rejects_copied_native_argument_or_frame(damage, message):
     _, _, result = decorated()
-    application = result.native_application
+    application = result.creation.native_execution.require_applications()[-1]
     original = getattr(application, damage)
     object.__setattr__(application, damage, copy(original))
-    with pytest.raises(ValueError, match="original implicit argument"):
+    with pytest.raises(ValueError, match=message):
         result.require_closed()
 
 
@@ -152,7 +158,7 @@ def test_observed_implicit_argument_does_not_admit_unknown_decorator():
     creation = SourceCreatedFunctionCapture(env, node)
     application = creation.creation_results[-1]
     assert (
-        application.native_application.argument
+        creation.native_execution.require_applications()[-1].argument
         is creation.native_execution.require_creation()
     )
     with pytest.raises(ValueError):

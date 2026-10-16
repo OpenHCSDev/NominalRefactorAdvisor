@@ -103,8 +103,8 @@ def test_selected_source_projects_actual_evidence(name: str) -> None:
         )
 
 
-def test_unresolved_sources_share_the_native_inherited_projection() -> None:
+def test_initial_parameters_override_the_generic_unresolved_projection() -> None:
     assert (
         OpenCompactBindingMutation.resolve_binding
-        is InitialCompactParameterBinding.resolve_binding
+        is not InitialCompactParameterBinding.resolve_binding
     )
