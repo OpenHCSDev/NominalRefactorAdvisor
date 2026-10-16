@@ -1,0 +1,27 @@
+ 09-09-2026 10:03:41:160 [pid=2914443 tid=2914443] WARN   0:140 unable to load,  liburcu-bp.so.6 
+
+ 09-09-2026 10:03:41:160 [pid=2914443 tid=2914443] WARN   0:140 unable to load,  liburcu-bp.so.1 
+
+ 09-09-2026 10:03:41:160 [pid=2914443 tid=2914443] WARN   0:184 failed to open /proc/driver/nvidia-fs/devcount  error: No such file or directory
+ 09-09-2026 10:03:41:160 [pid=2914443 tid=2914443] NOTICE  cufio-drv:1160 running in compatible mode
+ 09-09-2026 10:03:41:161 [pid=2914443 tid=2914443] WARN   0:81 cannot find json field: properties.gpu_bounce_buffer_slab_config.slab_size_kb 0 3
+ 09-09-2026 10:03:41:161 [pid=2914443 tid=2914443] WARN   0:488 Using legacy GPU bounce buffer configuration
+ 09-09-2026 10:03:41:782 [pid=2914443 tid=2914443] NOTICE  cufio-drv:938 GPU deviceid: 0 ( NVIDIA GeForce RTX 2070 SUPER ) no native GDS - compat mode only
+ 20-09-2026 19:00:46:310 [pid=684767 tid=684767] WARN   0:140 unable to load,  liburcu-bp.so.6 
+
+ 20-09-2026 19:00:46:310 [pid=684767 tid=684767] WARN   0:140 unable to load,  liburcu-bp.so.1 
+
+ 20-09-2026 19:00:46:310 [pid=684767 tid=684767] WARN   0:184 failed to open /proc/driver/nvidia-fs/devcount  error: No such file or directory
+ 20-09-2026 19:00:46:310 [pid=684767 tid=684767] NOTICE  cufio-drv:1160 running in compatible mode
+ 20-09-2026 19:00:46:311 [pid=684767 tid=684767] WARN   0:81 cannot find json field: properties.gpu_bounce_buffer_slab_config.slab_size_kb 0 3
+ 20-09-2026 19:00:46:311 [pid=684767 tid=684767] WARN   0:488 Using legacy GPU bounce buffer configuration
+ 20-09-2026 19:00:46:944 [pid=684767 tid=684767] NOTICE  cufio-drv:938 GPU deviceid: 0 ( NVIDIA GeForce RTX 2070 SUPER ) no native GDS - compat mode only
+ 20-09-2026 19:01:02:411 [pid=695611 tid=695611] WARN   0:140 unable to load,  liburcu-bp.so.6 
+
+ 20-09-2026 19:01:02:411 [pid=695611 tid=695611] WARN   0:140 unable to load,  liburcu-bp.so.1 
+
+ 20-09-2026 19:01:02:411 [pid=695611 tid=695611] WARN   0:184 failed to open /proc/driver/nvidia-fs/devcount  error: No such file or directory
+ 20-09-2026 19:01:02:411 [pid=695611 tid=695611] NOTICE  cufio-drv:1160 running in compatible mode
+ 20-09-2026 19:01:02:411 [pid=695611 tid=695611] WARN   0:81 cannot find json field: properties.gpu_bounce_buffer_slab_config.slab_size_kb 0 3
+ 20-09-2026 19:01:02:411 [pid=695611 tid=695611] WARN   0:488 Using legacy GPU bounce buffer configuration
+ 20-09-2026 19:01:03:10 [pid=695611 tid=695611] NOTICE  cufio-drv:938 GPU deviceid: 0 ( NVIDIA GeForce RTX 2070 SUPER ) no native GDS - compat mode only
