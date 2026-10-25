@@ -75,6 +75,7 @@ from nominal_refactor_advisor.ast_tools import (
     FieldObservationFamily,
     InlineStringLiteralDispatchObservationFamily,
     LiteralKind,
+    Eager,
     ModuleAnnotationEvaluationMode,
     Stringized,
     NumericLiteralDispatchObservationFamily,
@@ -8308,7 +8309,7 @@ def test_symbol_move_rejects_guarded_import_for_eager_annotation(
     monkeypatch.setattr(
         ModuleAnnotationEvaluationMode,
         "runtime_default",
-        classmethod(lambda cls: cls.EAGER),
+        classmethod(lambda cls: Eager),
     )
     source_path = tmp_path / "pkg/source.py"
     destination_path = tmp_path / "pkg/destination.py"
