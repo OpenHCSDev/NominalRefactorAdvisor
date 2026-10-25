@@ -17,6 +17,12 @@ from nominal_refactor_advisor.detectors._base import (
 from nominal_refactor_advisor.registry_identity import AutoRegisterClassAuthority
 
 
+# The slots on type itself; a metaclass descriptor or __getattribute__ cannot
+# intercept them.
+_CLASS_STORAGE = type.__dict__["__dict__"]
+_CLASS_MODULE = type.__dict__["__module__"]
+
+
 def _registered_families() -> dict[type, dict[object, type]]:
     for module in pkgutil.walk_packages(
         nominal_refactor_advisor.__path__, f"{nominal_refactor_advisor.__name__}."
@@ -27,16 +33,17 @@ def _registered_families() -> dict[type, dict[object, type]]:
     pending: list[type] = [object]
     while pending:
         cls = pending.pop()
-        # Other tests declare unhashable classes; identity is enough here.
+        # Other tests declare unhashable classes and metaclasses that refuse
+        # attribute reads, so the walk keys on identity and reads native storage.
         if id(cls) in seen:
             continue
         seen.add(id(cls))
         pending.extend(type.__subclasses__(cls))
-        registry = vars(cls).get("__registry__")
+        registry = _CLASS_STORAGE.__get__(cls).get("__registry__")
         if (
-            isinstance(cls, AutoRegisterMeta)
+            issubclass(type(cls), AutoRegisterMeta)
             and registry is not None
-            and cls.__module__.startswith(nominal_refactor_advisor.__name__)
+            and _CLASS_MODULE.__get__(cls).startswith(nominal_refactor_advisor.__name__)
         ):
             families[cls] = dict(dict.items(registry))
     return families
