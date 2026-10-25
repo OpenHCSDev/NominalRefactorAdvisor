@@ -22,6 +22,9 @@ from collections import Counter
 from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass, field
 from functools import cached_property
+from typing import ClassVar
+
+from metaclass_registry import AutoRegisterMeta
 
 from .ast_tools import ParsedModule, PythonSourcePathPolicy
 from .codemod_runtime import CodemodSourceSnapshot
@@ -57,51 +60,113 @@ class Unknown:
 UNKNOWN = Unknown()
 
 
-@dataclass(frozen=True)
-class Comparison(ABC):
-    """One comparison operator: its answer for two known operands, and the
-    operator that answers its negation exactly, if one does."""
+class Comparison(ABC, metaclass=AutoRegisterMeta):
+    """One Python comparison operator, registered under the ``ast`` node it decodes:
+    its answer for two known operands, and the operator that answers its negation
+    exactly, if one does."""
 
-    apply: Callable[[object, object], object]
-    inverse: type[ast.cmpop] | None = None
+    __registry__: ClassVar[dict[type[ast.cmpop], type[Comparison]]] = {}
+    __registry_key__ = "node"
+    __skip_if_no_key__ = True
+    node: ClassVar[type[ast.cmpop]]
+    inverse: ClassVar[type[ast.cmpop] | None] = None
 
+    @classmethod
+    def of(cls, op: ast.cmpop) -> type[Comparison]:
+        """The boundary: the member decoding one parsed operator."""
+
+        return cls.__registry__[type(op)]
+
+    @staticmethod
     @abstractmethod
-    def evaluated(self, left: object, right: object) -> object:
+    def apply(left: object, right: object) -> object:
+        """The operator applied to two operands."""
+
+    @classmethod
+    @abstractmethod
+    def evaluated(cls, left: object, right: object) -> object:
         """The comparison's value, or UNKNOWN when the operands cannot decide it."""
 
 
-class ValueComparison(Comparison):
+class ValueComparison(Comparison, ABC):
     """Decided by the operands' values; operands it cannot compare are UNKNOWN."""
 
-    def evaluated(self, left: object, right: object) -> object:
+    @classmethod
+    def evaluated(cls, left: object, right: object) -> object:
         try:
-            return self.apply(left, right)
+            return cls.apply(left, right)
         except TypeError:
             return UNKNOWN
 
 
-class IdentityComparison(Comparison):
+class IdentityComparison(Comparison, ABC):
     """``is``/``is not``: decided only between None and bools, which are singletons."""
 
-    def evaluated(self, left: object, right: object) -> object:
+    @classmethod
+    def evaluated(cls, left: object, right: object) -> object:
         if not all(value is None or isinstance(value, bool) for value in (left, right)):
             return UNKNOWN
-        return self.apply(left, right)
+        return cls.apply(left, right)
 
 
-# The boundary: Python's comparison operator node types, decoded once.
-COMPARISONS: dict[type[ast.cmpop], Comparison] = {
-    ast.Eq: ValueComparison(operator.eq),
-    ast.NotEq: ValueComparison(operator.ne),
-    ast.Lt: ValueComparison(operator.lt),
-    ast.LtE: ValueComparison(operator.le),
-    ast.Gt: ValueComparison(operator.gt),
-    ast.GtE: ValueComparison(operator.ge),
-    ast.In: ValueComparison(lambda left, right: left in right, ast.NotIn),
-    ast.NotIn: ValueComparison(lambda left, right: left not in right, ast.In),
-    ast.Is: IdentityComparison(operator.is_, ast.IsNot),
-    ast.IsNot: IdentityComparison(operator.is_not, ast.Is),
-}
+class EqualComparison(ValueComparison):
+    node = ast.Eq
+    apply = staticmethod(operator.eq)
+
+
+class NotEqualComparison(ValueComparison):
+    node = ast.NotEq
+    apply = staticmethod(operator.ne)
+
+
+class LessComparison(ValueComparison):
+    node = ast.Lt
+    apply = staticmethod(operator.lt)
+
+
+class LessEqualComparison(ValueComparison):
+    node = ast.LtE
+    apply = staticmethod(operator.le)
+
+
+class GreaterComparison(ValueComparison):
+    node = ast.Gt
+    apply = staticmethod(operator.gt)
+
+
+class GreaterEqualComparison(ValueComparison):
+    node = ast.GtE
+    apply = staticmethod(operator.ge)
+
+
+class ContainsComparison(ValueComparison):
+    node = ast.In
+    inverse = ast.NotIn
+
+    @staticmethod
+    def apply(left: object, right: object) -> object:
+        return left in right
+
+
+class NotContainsComparison(ValueComparison):
+    node = ast.NotIn
+    inverse = ast.In
+
+    @staticmethod
+    def apply(left: object, right: object) -> object:
+        return left not in right
+
+
+class IsComparison(IdentityComparison):
+    node = ast.Is
+    inverse = ast.IsNot
+    apply = staticmethod(operator.is_)
+
+
+class IsNotComparison(IdentityComparison):
+    node = ast.IsNot
+    inverse = ast.Is
+    apply = staticmethod(operator.is_not)
 
 
 def handback(module: ParsedModule, node: ast.AST, reason: str) -> ValueError:
@@ -182,7 +247,7 @@ def negated(node: ast.expr) -> ast.expr:
     if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.Not):
         return node.operand
     if isinstance(node, ast.Compare) and len(node.ops) == 1:
-        inverse = COMPARISONS[type(node.ops[0])].inverse
+        inverse = Comparison.of(node.ops[0]).inverse
         if inverse is not None:
             return ast.Compare(node.left, [inverse()], list(node.comparators))
     return ast.UnaryOp(ast.Not(), node)
@@ -387,7 +452,7 @@ class Folding:
     @staticmethod
     def evaluated_chain(values: list[object], ops: list[ast.cmpop]) -> object:
         for left, op, right in zip(values, ops, values[1:]):
-            result = COMPARISONS[type(op)].evaluated(left, right)
+            result = Comparison.of(op).evaluated(left, right)
             if result is UNKNOWN:
                 return UNKNOWN
             if not result:
