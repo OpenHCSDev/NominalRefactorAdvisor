@@ -267,56 +267,87 @@ class CompactFunctionBindingKind(StrEnum):
         )
 
 
-class CompactFlowOwnerKind(StrEnum):
+class CompactFlowOwnerKind(ABC):
     """Executable source scopes represented by compact flow facts."""
 
-    MODULE = "module", True, False, False
-    CLASS_BODY = "class_body", False, False, True
-    FUNCTION = "function", False, True, False
-
+    value: str
     is_module_scope: bool
     is_function_scope: bool
     is_class_body_scope: bool
 
-    def documentation_statement(self, statements: list[ast.stmt]) -> ast.Expr | None:
+    @classmethod
+    def documentation_statement(cls, statements: list[ast.stmt]) -> ast.Expr | None:
         """Only the original module/class body entry installs documentation storage."""
-        if (
-            not self.is_function_scope
-            and statements
-            and is_docstring_statement(statements[0])
-        ):
+        if statements and is_docstring_statement(statements[0]):
             return cast(ast.Expr, statements[0])
         return None
 
+    @classmethod
     def visit_assignment_annotation(
-        self,
+        cls,
         visitor: VariableAnnotationVisitorABC,
         node: ast.AnnAssign,
         mode: ModuleAnnotationEvaluationMode,
     ) -> None:
         """Function-local annotations are declarations, never body evaluation."""
-        if not self.is_function_scope:
-            mode.visit_variable_annotation(visitor, node)
+        mode.visit_variable_annotation(visitor, node)
 
-    def __new__(
-        cls,
-        value: str,
-        is_module_scope: bool,
-        is_function_scope: bool,
-        is_class_body_scope: bool,
-    ) -> Self:
-        member = str.__new__(cls, value)
-        member._value_ = value
-        member.is_module_scope = is_module_scope
-        member.is_function_scope = is_function_scope
-        member.is_class_body_scope = is_class_body_scope
-        return member
-
+    @classmethod
     def deferred_binding_resolution(
-        self, bindings: tuple[CompactBindingSource, ...]
+        cls,
+        bindings: tuple[CompactBindingSource, ...],
     ) -> CompactBindingSource:
         """Completed namespaces select their final binding; closures retain alternatives."""
-        if len(bindings) == 1 or not self.is_function_scope:
+        return bindings[-1]
+
+    @classmethod
+    def require_namespace_flow_owner(cls) -> None:
+        raise ValueError("Definition flows must be owned by their declaration")
+
+
+class Module(CompactFlowOwnerKind):
+    value = "module"
+    is_module_scope = True
+    is_function_scope = False
+    is_class_body_scope = False
+
+    @classmethod
+    def require_namespace_flow_owner(cls) -> None:
+        pass
+
+
+class ClassBody(CompactFlowOwnerKind):
+    value = "class_body"
+    is_module_scope = False
+    is_function_scope = False
+    is_class_body_scope = True
+
+
+class Function(CompactFlowOwnerKind):
+    value = "function"
+    is_module_scope = False
+    is_function_scope = True
+    is_class_body_scope = False
+
+    @classmethod
+    def documentation_statement(cls, statements: list[ast.stmt]) -> ast.Expr | None:
+        return None
+
+    @classmethod
+    def visit_assignment_annotation(
+        cls,
+        visitor: VariableAnnotationVisitorABC,
+        node: ast.AnnAssign,
+        mode: ModuleAnnotationEvaluationMode,
+    ) -> None:
+        pass
+
+    @classmethod
+    def deferred_binding_resolution(
+        cls,
+        bindings: tuple[CompactBindingSource, ...],
+    ) -> CompactBindingSource:
+        if len(bindings) == 1:
             return bindings[-1]
         return OpenCompactBindingMutation(
             CompactFunctionTargetResolutionViolation.AMBIGUOUS_DECLARATION
@@ -2672,7 +2703,7 @@ class FlowFrameResolverABC(ABC, Generic[TargetResolutionT]):
 class CompactFlowOwner(ABC):
     """Nominal scope owner, retaining its declaration when it is a function."""
 
-    kind: CompactFlowOwnerKind
+    kind: type[CompactFlowOwnerKind]
     qualname: str
 
     @abstractmethod
@@ -2721,7 +2752,7 @@ class CompactClassDeclaration(CompactDefinitionFlowOwner):
 
     source_span = AliasProperty[SourceByteSpan]("capture.source_span")
 
-    kind = CompactFlowOwnerKind.CLASS_BODY
+    kind = ClassBody
 
     def resolve_frame(
         self,
@@ -2748,7 +2779,7 @@ class CompactClassDeclaration(CompactDefinitionFlowOwner):
 class CompactNamespaceFlowOwner(CompactFlowOwner):
     """A module scope; definition flows retain their actual source declaration."""
 
-    kind: CompactFlowOwnerKind
+    kind: type[CompactFlowOwnerKind]
     qualname: str
 
     def resolve_frame(
@@ -2760,8 +2791,7 @@ class CompactNamespaceFlowOwner(CompactFlowOwner):
         return resolver._namespace_flow_frame(context, position)
 
     def __post_init__(self) -> None:
-        if not self.kind.is_module_scope:
-            raise ValueError("Definition flows must be owned by their declaration")
+        self.kind.require_namespace_flow_owner()
 
     @property
     def declaration(self) -> None:
@@ -2777,7 +2807,7 @@ class CompactFunctionDeclaration(CompactDefinitionFlowOwner):
     decorators: tuple[CompactValueExpression, ...] = ()
     return_annotation_expression: str | None = None
 
-    kind = CompactFlowOwnerKind.FUNCTION
+    kind = Function
 
     qualname = AliasProperty[str]("identity.qualname")
     source_span = AliasProperty[SourceByteSpan]("execution.source_span")
@@ -3433,7 +3463,7 @@ class _DeclarationCollector(ast.NodeVisitor):
     def __init__(self, module: ParsedModule) -> None:
         self.module = module
         self.scope_names: list[str] = []
-        self.scope_kinds: list[CompactFlowOwnerKind] = []
+        self.scope_kinds: list[type[CompactFlowOwnerKind]] = []
         self.function_qualnames: list[str] = []
         self.class_qualnames: list[str] = []
         self.function_contexts: list[_FunctionContext] = []
@@ -3466,7 +3496,7 @@ class _DeclarationCollector(ast.NodeVisitor):
             )
         )
         self.scope_names.append(node.name)
-        self.scope_kinds.append(CompactFlowOwnerKind.CLASS_BODY)
+        self.scope_kinds.append(ClassBody)
         self.class_qualnames.append(qualname)
         self.generic_visit(node)
         self.class_qualnames.pop()
@@ -3523,7 +3553,7 @@ class _DeclarationCollector(ast.NodeVisitor):
             )
         )
         self.scope_names.append(node.name)
-        self.scope_kinds.append(CompactFlowOwnerKind.FUNCTION)
+        self.scope_kinds.append(Function)
         self.function_qualnames.append(qualname)
         self.generic_visit(node)
         self.function_qualnames.pop()
@@ -4622,7 +4652,7 @@ class _ProductFlowCollection(Generic[FlowCollectorT]):
         collectors = [
             (
                 self.collector_type(
-                    owner=CompactNamespaceFlowOwner(CompactFlowOwnerKind.MODULE, ""),
+                    owner=CompactNamespaceFlowOwner(Module, ""),
                     definition_owners=definition_owners,
                     module_identity=parsed_module.module_path_identity,
                     annotation_mode=annotation_mode,

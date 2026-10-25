@@ -17,7 +17,9 @@ from nominal_refactor_advisor.product_flow import (
     CompactFunctionBindingKind,
     CompactFunctionSignature,
     CompactFlowOwner,
-    CompactFlowOwnerKind,
+    ClassBody,
+    Function,
+    Module,
     CompactFunctionTargetResolutionViolation,
     CompactMutationKind,
     CompactNamespaceFlowOwner,
@@ -422,7 +424,7 @@ def test_product_flow_projection_preserves_complete_construction_forwarding_cont
     wrapper = next(
         flow
         for flow in projection.flows
-        if flow.owner.kind is CompactFlowOwnerKind.FUNCTION
+        if flow.owner.kind is Function
         and flow.owner.qualname == "wrapper"
     )
     construction_call, consumer_call = wrapper.calls
@@ -718,7 +720,7 @@ def test_function_declaration_is_the_flow_owner_and_module_view_is_derived() -> 
     flow = next(flow for flow in projection.flows if flow.owner.qualname == "run")
     assert flow.owner is declaration
     assert flow.owner.declaration is declaration
-    assert flow.owner.kind is CompactFlowOwnerKind.FUNCTION
+    assert flow.owner.kind is Function
     assert flow.owner.qualname == declaration.identity.qualname
     assert "function_declarations" not in {field.name for field in fields(projection)}
     namespace_flows = tuple(
@@ -735,12 +737,12 @@ def test_function_declaration_is_the_flow_owner_and_module_view_is_derived() -> 
 def test_function_flow_ownership_requires_a_declaration() -> None:
     with pytest.raises(TypeError):
         CompactFlowOwner()
-    for kind in (CompactFlowOwnerKind.FUNCTION, CompactFlowOwnerKind.CLASS_BODY):
+    for kind in (Function, ClassBody):
         with pytest.raises(ValueError, match="owned by their declaration"):
             CompactNamespaceFlowOwner(kind, "Owner")
-    owner = CompactNamespaceFlowOwner(CompactFlowOwnerKind.MODULE, "")
+    owner = CompactNamespaceFlowOwner(Module, "")
     assert owner.declaration is None
-    assert owner.kind is CompactFlowOwnerKind.MODULE
+    assert owner.kind is Module
     assert owner.qualname == ""
 
 
