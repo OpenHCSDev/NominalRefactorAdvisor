@@ -559,7 +559,8 @@ from .codemod_source_edits import (
     SourceLineSpan as SourceLineSpan,
 )
 from .codemod_source_edits import (
-    Exclude,
+    Exclude as Exclude,
+    Include as Include,
     SourceNodeDecoratorPolicy as SourceNodeDecoratorPolicy,
 )
 from .codemod_source_edits import (
