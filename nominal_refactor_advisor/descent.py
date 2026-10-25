@@ -527,8 +527,6 @@ class Rewrite:
         default_factory=lambda: defaultdict(list)
     )
     methods: dict[str, list[str]] = field(default_factory=lambda: defaultdict(list))
-    used_members: dict[str, set[str]] = field(default_factory=lambda: defaultdict(set))
-    annotations_in: set[str] = field(default_factory=set)
     imports: dict[str, set[tuple[str, str]]] = field(
         default_factory=lambda: defaultdict(set)
     )
@@ -1038,11 +1036,9 @@ class Enumerated(Rewritten, ABC):
             )
         if isinstance(parent, ast.Attribute) and parent.attr in members:
             rewrite.replace(module, parent, members[parent.attr])
-            rewrite.used_members[module.file_path].add(members[parent.attr])
             return
         if in_annotation:
             rewrite.replace(module, node, f"type[{root}]")
-            rewrite.annotations_in.add(module.file_path)
             return
         if isinstance(parent, ast.alias | ast.ImportFrom):
             return
@@ -1070,25 +1066,29 @@ class Enumerated(Rewritten, ABC):
         aliases: dict[ParsedModule, ModuleNames],
         enum: EnumDeclaration,
         root_module: ParsedModule,
-        root: str,
     ) -> None:
-        """Imports of the enum expand to the classes now named in its place."""
+        """Imports of the enum expand to the classes the rewrite now reads there.
 
+        Derived from the rewritten text: a class the root module declares, which the
+        importer loads now and did not load before, is one the rewrite put there.
+        """
+
+        declared = {
+            statement.name
+            for statement in ast.parse(rewrite.rewritten_source(root_module)).body
+            if isinstance(statement, ast.ClassDef)
+        }
         for module, names in aliases.items():
-            used = tuple(sorted(rewrite.used_members[module.file_path]))
-            needs_root = (
-                module is not root_module
-                and not names.root
-                and module.file_path in rewrite.annotations_in
-            )
-            added = used + ((root,) if needs_root else ())
+            loaded = _loaded_names(ast.parse(rewrite.rewritten_source(module)))
+            added = tuple(sorted(declared & loaded - _loaded_names(module.module)))
             replaced = {
-                local: added for local in names.direct if module is not enum.module
+                local: tuple(sorted({local, *added}))
+                for local in names.direct
+                if module is not enum.module
             }
             if names.reexported and added:
                 rewrite.ensure_import(module, root_module.module_name, added)
             rewrite.prune_imports(module, replaced, names.exported)
-
 
 class Cases(Enumerated, ABC):
     """Input form: an enum read through member comparisons and member data."""
@@ -1394,7 +1394,7 @@ class Fold(Cases, ABC):
             self.rewrite_reads(rewrite, module, names, enum, holder, handled)
         rewrite.delete_statement(enum.module, enum.node)
         answer.require_complete()
-        self.rebind_imports(rewrite, aliases, enum, holder.module, holder.name)
+        self.rebind_imports(rewrite, aliases, enum, holder.module)
         return rewrite
 
     def family(self, enum: EnumDeclaration, holder: Holder) -> Family:
@@ -1843,7 +1843,6 @@ class Fold(Cases, ABC):
         member = class_name(argument.attr)
         geometry = rewrite.geometry(module)
         rewrite.replace(module, call.func, member)
-        rewrite.used_members[module.file_path].add(member)
         if index > 0:
             start = geometry.required_node_offsets(call.args[index - 1])[1]
             end = geometry.required_node_offsets(argument)[1]
@@ -2239,7 +2238,7 @@ class KeyedMirror(Mirror, Keyed, Enumerated, Descent):
         aliases = self.aliases(snapshot, enum, keyed.module, keyed.root)
         for module, names in aliases.items():
             self.mirror_reads(rewrite, module, names, enum, keyed, handled)
-        self.rebind_imports(rewrite, aliases, enum, keyed.module, keyed.root)
+        self.rebind_imports(rewrite, aliases, enum, keyed.module)
         return rewrite
 
     def iterate_family(

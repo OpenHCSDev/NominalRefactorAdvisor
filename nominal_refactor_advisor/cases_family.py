@@ -793,16 +793,7 @@ class CasesFamily(Cases, Descent):
         self.rewrite_called(rewrite, snapshot, model, handled)
         answer.require_complete()
         rewrite.ensure_import(enum.module, Case.__module__, (Case.__name__,))
-        for module, names in aliases.items():
-            used = tuple(sorted(rewrite.used_members[module.file_path]))
-            replaced = {
-                local: tuple(sorted({local, *used}))
-                for local in names.direct
-                if module is not enum.module and used
-            }
-            if names.reexported and used:
-                rewrite.ensure_import(module, enum.module.module_name, used)
-            rewrite.prune_imports(module, replaced, names.exported)
+        self.rebind_imports(rewrite, aliases, enum, enum.module)
         return rewrite
 
     # -- the enum read as a family -------------------------------------------------
@@ -1662,8 +1653,6 @@ class CasesFamily(Cases, Descent):
                         f"{member_class} is already bound in this module",
                     )
                 rewrite.replace(module, parent, member_class)
-                if module is not model.enum.module:
-                    rewrite.used_members[module.file_path].add(member_class)
                 handled.add(id(parent))
                 continue
             if id(node) in annotations:
@@ -1672,7 +1661,6 @@ class CasesFamily(Cases, Descent):
                 ):
                     continue
                 rewrite.replace(module, node, f"type[{node.id}]")
-                rewrite.annotations_in.add(module.file_path)
                 continue
             if self.iterated(node, parent):
                 rewrite.replace(module, node, f"{node.id}.__subclasses__()")
