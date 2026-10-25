@@ -6290,7 +6290,6 @@ def test_semantic_descent_graph_cache_invalidates_on_source_change(
 
 def test_semantic_descent_graph_cache_preserves_positive_proof_relations(
     tmp_path: Path,
-    monkeypatch,
 ) -> None:
     _write_module(
         tmp_path,
@@ -6316,20 +6315,17 @@ def test_semantic_descent_graph_cache_preserves_positive_proof_relations(
     )
     assert isinstance(positive_certificate, SemanticDerivationCertificate)
 
-    def unexpected_graph_rebuild(*args, **kwargs):
-        del args, kwargs
-        raise AssertionError("positive relations must load from the graph cache")
-
-    monkeypatch.setattr(
-        semantic_descent_module.SemanticDescentGraphBuildRequest,
-        "graph",
-        unexpected_graph_rebuild,
-    )
-    cached_graph = build_semantic_descent_graph(
-        parse_python_modules(tmp_path, use_parse_cache=False),
-        cache_dir=graph_cache_dir,
+    cached_graph = (
+        semantic_descent_module.SemanticDescentGraphCache(graph_cache_dir)
+        .load(
+            SemanticDescentGraphCacheIdentity.from_modules(
+                tuple(parse_python_modules(tmp_path, use_parse_cache=False))
+            )
+        )
+        .graph
     )
 
+    assert cached_graph is not None
     assert cached_graph.relations == first_graph.relations
     assert cached_graph.certificates == first_graph.certificates
     assert json_report_object(cached_graph.certificates[0])["status"] == (

@@ -80,6 +80,7 @@ from .deadline import scan_deadline_checkpoint
 from .enum_semantics import PYTHON_ENUM_BASE_AUTHORITY
 from .export_tools import PYTHON_PUBLIC_EXPORT_ASSIGNMENT
 from .implementation_identity import ImplementationSource, implementation_module_names
+from .scan_cache import ScanCache
 from .lexical_bindings import LEXICAL_SCOPE_BINDING_AUTHORITY
 from .json_reports import (
     DataclassJsonReport,
@@ -503,7 +504,7 @@ class SemanticDescentImplementationSignature:
         )
 
     @staticmethod
-    @lru_cache(maxsize=None)
+    @ScanCache.cached
     def module_names() -> tuple[str, ...]:
         """Derive every persisted graph producer from executable declarations."""
 
