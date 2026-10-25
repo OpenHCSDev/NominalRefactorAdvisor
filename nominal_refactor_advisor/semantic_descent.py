@@ -52,6 +52,7 @@ from .cache_checkout import (
     rebase_checkout_path,
 )
 from .cache_paths import default_semantic_descent_cache_dir
+from .case_root import Case
 from .class_index import (
     ClassDeclaration,
     ClassFamilyIndex,
@@ -209,10 +210,9 @@ class SemanticFactKind(StrEnum):
     FINDING_EVIDENCE = "finding_evidence"
 
 
-class AuthorityClaimStatus(ABC):
+class AuthorityClaimStatus(Case):
     """Resolution state for an agent- or detector-authored authority claim."""
 
-    value: str
     is_actionable: bool
     _minimum_authorities: int
     _maximum_authorities: int | None
