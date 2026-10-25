@@ -28,6 +28,7 @@ from nominal_refactor_advisor.codemod import (
     SourceRewriteTarget,
 )
 from nominal_refactor_advisor.codemod_runtime import CodemodSourceSnapshot
+from nominal_refactor_advisor.declared_root import DeclaredRoot
 from nominal_refactor_advisor.descent import CasesFold, Descent
 from nominal_refactor_advisor.detectors import (
     DetectorConfig,
@@ -978,3 +979,30 @@ def test_cases_family_hands_back_an_enum_call_that_may_pass_a_member_through(
 
     with pytest.raises(ValueError, match=r"also passes a member through"):
         operation.source_edits_from_snapshot(snapshot)
+
+
+@pytest.mark.parametrize(
+    ("declaration", "refusal"),
+    [
+        (('decoder = "member_named"', 'decoder = "membr_named"'), "not a classmethod"),
+        (('value = "declared_name"', 'value = "declared_nam"'), "is not declared"),
+        (('root = "family:Root"', 'root = "family:words"'), "is not a class"),
+    ],
+    ids=["misspelled-decoder", "undeclared-value", "root-not-a-class"],
+)
+def test_declared_root_refuses_names_its_root_does_not_carry(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    declaration: tuple[str, str],
+    refusal: str,
+) -> None:
+    declared, misdeclared = declaration
+    assert DERIVED_PYPROJECT.count(declared) == 1
+    (tmp_path / "pyproject.toml").write_text(
+        DERIVED_PYPROJECT.replace(declared, misdeclared)
+    )
+    (tmp_path / "family.py").write_text(DERIVED_ROOT_SOURCE)
+    monkeypatch.syspath_prepend(tmp_path)
+
+    with pytest.raises(ValueError, match=refusal):
+        DeclaredRoot.declared_for(tmp_path / "kind.py")
