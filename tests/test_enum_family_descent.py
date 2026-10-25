@@ -925,19 +925,56 @@ def test_cases_family_refuses_a_member_read_through_a_receiver(tmp_path: Path) -
     )
 
 
-def test_cases_family_hands_back_an_enum_call_that_may_pass_a_member_through(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+
+DECODED_FROM_TEXT = "def decoded(text: str) -> Kind:\n    return Kind(text)\n"
+
+
+def _decoded_by(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, decoder: str
+) -> tuple[CodemodSourceSnapshot, CasesFamily]:
+    assert DERIVED_ENUM_SOURCE.count(DECODED_FROM_TEXT) == 1
     snapshot = _derived_staged(
-        tmp_path,
-        monkeypatch,
-        DERIVED_ENUM_SOURCE.replace(
-            "def decoded(text: str) -> Kind:", "def decoded(text: Kind) -> Kind:"
-        ),
+        tmp_path, monkeypatch, DERIVED_ENUM_SOURCE.replace(DECODED_FROM_TEXT, decoder)
     )
-    operation = CasesFamily(
+    return snapshot, CasesFamily(
         target=_target(snapshot, "kind.Kind"), rationale="", names=()
     )
+
+
+def test_cases_family_decodes_a_value_captured_from_a_text_mapping(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    snapshot, operation = _decoded_by(
+        tmp_path,
+        monkeypatch,
+        "def decoded(row: dict[str, str]) -> Kind:\n"
+        "    match row:\n"
+        '        case {"kind": text}:\n'
+        "            return Kind(text)\n"
+        "    raise ValueError(row)\n",
+    )
+
+    simulation = _simulated(snapshot, operation)
+
+    assert simulation.is_clean is True
+    family = simulation.simulation.rewritten_sources[(tmp_path / "kind.py").as_posix()]
+    assert "return Kind.member_named(text)" in family
+
+
+@pytest.mark.parametrize(
+    "decoder",
+    [
+        "def decoded(text: Kind) -> Kind:\n    return Kind(text)\n",
+        "def decoded(row: dict) -> Kind:\n    return Kind(row['kind'])\n",
+    ],
+    ids=["member-parameter", "untyped-subscript"],
+)
+def test_cases_family_hands_back_an_enum_call_that_may_pass_a_member_through(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, decoder: str
+) -> None:
+    """Enum(x) also passes a member through; the decoder is declared for values."""
+
+    snapshot, operation = _decoded_by(tmp_path, monkeypatch, decoder)
 
     with pytest.raises(ValueError, match=r"also passes a member through"):
         operation.source_edits_from_snapshot(snapshot)

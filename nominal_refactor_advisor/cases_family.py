@@ -30,7 +30,7 @@ from typing import ClassVar
 
 from metaclass_registry import AutoRegisterMeta
 
-from .ast_tools import ParsedModule, PythonSourcePathPolicy
+from .ast_tools import AstParentIndex, ParsedModule, PythonSourcePathPolicy
 from .codemod_runtime import CodemodSourceSnapshot
 from .descent import (
     Answers,
@@ -368,15 +368,11 @@ def member_type(root: str, source: str) -> str:
 
     tree = ast.parse(source, mode="eval")
     lines = SourceLines(source)
-    parents = {
-        id(child): parent
-        for parent in ast.walk(tree)
-        for child in ast.iter_child_nodes(parent)
-    }
+    parents = AstParentIndex(tree).parent_by_node
     replacements: list[tuple[int, int, str]] = []
     for part in type_positions(tree.body):
         if is_name(part, [root]):
-            parent = parents.get(id(part))
+            parent = parents.get(part)
             if isinstance(parent, ast.Subscript) and is_name(parent.value, ["type"]):
                 continue
             replacements.append((*lines.offsets(part), f"type[{root}]"))
@@ -1361,11 +1357,7 @@ class CasesFamily(Cases, Descent):
         properties now methods become calls."""
 
         renames: dict[int, str] = {}
-        parents = {
-            id(child): parent
-            for parent in ast.walk(function)
-            for child in ast.iter_child_nodes(parent)
-        }
+        parents = AstParentIndex(function).parent_by_node
         for statement in function.body:
             for node in ast.walk(statement):
                 if isinstance(node, ast.Attribute) and isinstance(node.ctx, ast.Load):
@@ -1379,7 +1371,7 @@ class CasesFamily(Cases, Descent):
                         continue
                     if receiver is not None and is_name(node.value, [receiver]):
                         name = model.attribute_name(node.attr)
-                        parent = parents.get(id(node))
+                        parent = parents.get(node)
                         called = name in model.called and not (
                             isinstance(parent, ast.Call) and parent.func is node
                         )
@@ -1392,7 +1384,7 @@ class CasesFamily(Cases, Descent):
                     and node.id == receiver
                     and id(node) not in renames
                 ):
-                    parent = parents.get(id(node))
+                    parent = parents.get(node)
                     if is_classmethod and self.iterated(node, parent):
                         renames[id(node)] = f"{model.root}.__subclasses__()"
                     elif not is_classmethod and isinstance(node.ctx, ast.Load):
@@ -1695,11 +1687,7 @@ class CasesFamily(Cases, Descent):
     ) -> None:
         """Member references, annotations and iteration; the root keeps the enum's name."""
 
-        parents = {
-            id(child): parent
-            for parent in ast.walk(module.module)
-            for child in ast.iter_child_nodes(parent)
-        }
+        parents = AstParentIndex(module.module).parent_by_node
         annotations = {
             id(node): annotation
             for annotated in ast.walk(module.module)
@@ -1729,7 +1717,7 @@ class CasesFamily(Cases, Descent):
                 continue
             if not is_name(node, local_names):
                 continue
-            parent = parents.get(id(node))
+            parent = parents.get(node)
             if (
                 isinstance(parent, ast.Attribute)
                 and parent.attr in model.class_names
@@ -1817,11 +1805,7 @@ class CasesFamily(Cases, Descent):
                         f"{node.name} also declares one of {sorted(model.called)}",
                     )
         for module in snapshot.parsed_modules:
-            parents = {
-                id(child): parent
-                for parent in ast.walk(module.module)
-                for child in ast.iter_child_nodes(parent)
-            }
+            parents = AstParentIndex(module.module).parent_by_node
             for node in ast.walk(module.module):
                 if (
                     isinstance(node, ast.Attribute)
@@ -1829,7 +1813,7 @@ class CasesFamily(Cases, Descent):
                     and isinstance(node.ctx, ast.Load)
                     and id(node) not in handled
                 ):
-                    parent = parents.get(id(node))
+                    parent = parents.get(node)
                     if isinstance(parent, ast.Call) and parent.func is node:
                         raise handback(module, node, f"{node.attr} is already called")
                     end = rewrite.geometry(module).required_node_offsets(node)[1]
@@ -1838,40 +1822,67 @@ class CasesFamily(Cases, Descent):
 
 
 def provably_text(
-    argument: ast.expr, call: ast.Call, parents: dict[int, ast.AST]
+    argument: ast.expr, call: ast.Call, parents: dict[ast.AST, ast.AST]
 ) -> bool:
-    """``argument`` is a string literal, or a parameter of the enclosing function
-    annotated ``str``: a value, never a member."""
+    """``argument`` is a string literal or a name declared ``str``: a value, never
+    a member."""
 
     if isinstance(argument, ast.Constant):
         return isinstance(argument.value, str)
-    if not isinstance(argument, ast.Name):
-        return False
-    scope = enclosing_function(call, parents)
-    if scope is None:
-        return False
-    arguments = scope.args
-    return any(
-        parameter.arg == argument.id
-        and parameter.annotation is not None
-        and is_name(parameter.annotation, ["str"])
-        for parameter in (
-            *arguments.posonlyargs,
-            *arguments.args,
-            *arguments.kwonlyargs,
-        )
+    return isinstance(argument, ast.Name) and is_name(
+        declared_type(argument.id, call, parents), ["str"]
     )
 
 
-def enclosing_function(
-    node: ast.AST, parents: dict[int, ast.AST]
-) -> ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda | None:
-    parent = parents.get(id(node))
-    if parent is None or isinstance(
-        parent, ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda
-    ):
-        return parent
-    return enclosing_function(parent, parents)
+def declared_type(
+    name: str, node: ast.AST, parents: dict[ast.AST, ast.AST]
+) -> ast.expr | None:
+    """The type ``name`` is declared with where ``node`` reads it: a parameter's
+    annotation, or the value type of the mapping a ``match`` captured it from."""
+
+    parent = parents.get(node)
+    if parent is None:
+        return None
+    if isinstance(parent, ast.match_case):
+        subject = parents.get(parent)
+        captured = isinstance(subject, ast.Match) and any(
+            isinstance(pattern, ast.MatchMapping)
+            and any(
+                isinstance(value, ast.MatchAs)
+                and value.pattern is None
+                and value.name == name
+                for value in pattern.patterns
+            )
+            for pattern in ast.walk(parent.pattern)
+        )
+        if captured and isinstance(subject.subject, ast.Name):
+            return mapping_value_type(
+                declared_type(subject.subject.id, subject, parents)
+            )
+    if isinstance(parent, ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda):
+        arguments = parent.args
+        return next(
+            (
+                parameter.annotation
+                for parameter in (
+                    *arguments.posonlyargs,
+                    *arguments.args,
+                    *arguments.kwonlyargs,
+                )
+                if parameter.arg == name
+            ),
+            None,
+        )
+    return declared_type(name, parent, parents)
+
+
+def mapping_value_type(annotation: ast.expr | None) -> ast.expr | None:
+    match annotation:
+        case ast.Subscript(
+            value=ast.Name(id="dict" | "Mapping"), slice=ast.Tuple(elts=[_, value])
+        ):
+            return value
+    return None
 
 
 TYPE_WRAPPERS = frozenset(
@@ -2526,18 +2537,15 @@ class Block(Site):
                 *self.function.args.kwonlyargs,
             )
         }
-        parents = {
-            id(child): parent
-            for statement in statements
-            for parent in ast.walk(statement)
-            for child in ast.iter_child_nodes(parent)
-        }
+        parents = AstParentIndex(
+            ast.Module(body=list(statements), type_ignores=[])
+        ).parent_by_node
         for statement in statements:
             for node in ast.walk(statement):
                 if isinstance(node, ast.Attribute) and self.field_read(node.value):
                     renames[id(node)] = f"cls.{model.attribute_name(node.attr)}"
                 elif self.field_read(node):
-                    parent = parents.get(id(node))
+                    parent = parents.get(node)
                     if not (
                         isinstance(parent, ast.Attribute) and id(parent) in renames
                     ):
@@ -2559,7 +2567,7 @@ class Block(Site):
                     )
                     arguments.setdefault(node.attr, f"{self.receiver}.{node.attr}")
                 elif is_name(node, [self.receiver]):
-                    parent = parents.get(id(node))
+                    parent = parents.get(node)
                     if not (
                         isinstance(parent, ast.Attribute)
                         and (id(parent) in renames or self.field_read(parent))

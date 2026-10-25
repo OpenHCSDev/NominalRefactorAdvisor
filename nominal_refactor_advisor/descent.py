@@ -22,7 +22,7 @@ from dataclasses import dataclass, field
 from functools import cached_property
 from pathlib import Path
 
-from .ast_tools import ParsedModule, PythonSourcePathPolicy
+from .ast_tools import AstParentIndex, ParsedModule, PythonSourcePathPolicy
 from .class_index import CompactModuleClassProjectionFamily
 from .codemod_architecture_guards import (
     ArchitectureGuardRule,
@@ -1733,11 +1733,7 @@ class Fold(Cases, ABC):
             if module is enum.module
             else set()
         )
-        parents = {
-            id(child): parent
-            for parent in ast.walk(module.module)
-            for child in ast.iter_child_nodes(parent)
-        }
+        parents = AstParentIndex(module.module).parent_by_node
         annotations = {
             id(node)
             for annotated in ast.walk(module.module)
@@ -1794,7 +1790,7 @@ class Fold(Cases, ABC):
                 and node.id in names.enum
                 and id(node) not in handled
             ):
-                parent = parents.get(id(node))
+                parent = parents.get(node)
                 if id(parent) not in handled:
                     self.enum_read(
                         rewrite,
@@ -1858,7 +1854,7 @@ class Fold(Cases, ABC):
     @staticmethod
     def implied_instance_check(
         node: ast.Assert,
-        parents: dict[int, ast.AST],
+        parents: dict[ast.AST, ast.AST],
         holder_names: frozenset[str],
         field_name: str,
     ) -> bool:
@@ -1873,7 +1869,7 @@ class Fold(Cases, ABC):
             and _is_any_name(test.args[1], holder_names)
         ):
             return False
-        block = getattr(parents.get(id(node)), "body", [])
+        block = getattr(parents.get(node), "body", [])
         position = next(
             (index for index, statement in enumerate(block) if statement is node), None
         )
@@ -2275,11 +2271,7 @@ class KeyedMirror(Mirror, Keyed, Enumerated, Descent):
         keyed: KeyedMap,
         handled: set[int],
     ) -> None:
-        parents = {
-            id(child): parent
-            for parent in ast.walk(module.module)
-            for child in ast.iter_child_nodes(parent)
-        }
+        parents = AstParentIndex(module.module).parent_by_node
         annotations = {
             id(node)
             for annotated in ast.walk(module.module)
@@ -2304,7 +2296,7 @@ class KeyedMirror(Mirror, Keyed, Enumerated, Descent):
                     rewrite,
                     module,
                     node,
-                    parents.get(id(node)),
+                    parents.get(node),
                     id(node) in annotations,
                     keyed.values,
                     keyed.root,
