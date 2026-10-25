@@ -35,6 +35,7 @@ from metaclass_registry import AutoRegisterMeta
 
 from .ast_projection import AstExpressionProjection, AstNameFamily
 from .cache_paths import ParseCacheDirectory, default_parse_cache_dir
+from .case_root import Case
 from .collection_algebra import (
     UniqueIdentityIndexAuthority,
     sorted_tuple,
@@ -1271,10 +1272,9 @@ class VariableAnnotationVisitorABC(ABC):
         raise NotImplementedError
 
 
-class ModuleAnnotationEvaluationMode(ABC):
+class ModuleAnnotationEvaluationMode(Case):
     """Runtime representation policy for annotations declared by one module."""
 
-    value: str
     native_features: tuple[NativeLanguageFeature, ...]
     stores_variable_annotations_at_definition: bool
     annotations_execute_at_declaration: bool
