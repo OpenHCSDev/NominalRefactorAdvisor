@@ -32,6 +32,7 @@ from .cache_checkout import (
     rebase_checkout_path,
     semantic_root_labels,
 )
+from .case_root import Case
 from .detectors import (
     CompactModuleProjectionDetectorMixin,
     DetectorConfig,
@@ -124,126 +125,141 @@ class AnalyzeAndStoreMissingCacheResult(AnalysisCacheResolutionPolicyABC):
         return authority.analyze_and_store_miss()
 
 
-class AnalysisCacheStatus(StrEnum):
+class AnalysisCacheStatus(Case):
     """Observable result of consulting the persistent finding cache."""
 
-    DISABLED = (
-        "disabled",
-        False,
-        False,
-        True,
-        AnalyzeWithoutCachePersistence(),
-    )
-    HIT = ("hit", True, False, False, ReuseCompleteCacheResult())
-    PARTIAL = (
-        "partial",
-        False,
-        True,
-        False,
-        AnalyzeAndStoreMissingCacheResult(),
-    )
-    MISS = (
-        "miss",
-        False,
-        False,
-        False,
-        AnalyzeAndStoreMissingCacheResult(),
-    )
-
-    def __new__(
-        cls,
-        value: str,
-        is_hit: bool,
-        is_partial: bool,
-        is_disabled: bool,
-        resolution_policy: AnalysisCacheResolutionPolicyABC,
-    ) -> "AnalysisCacheStatus":
-        member = str.__new__(cls, value)
-        member._value_ = value
-        member._is_hit = is_hit
-        member._is_partial = is_partial
-        member._is_disabled = is_disabled
-        member._resolution_policy = resolution_policy
-        return member
-
-    @property
-    def is_hit(self) -> bool:
-        """Whether cached findings completely satisfy the request."""
-
-        return self._is_hit
-
-    @property
-    def is_partial(self) -> bool:
-        """Whether only an evidence-local subset was reused."""
-
-        return self._is_partial
-
-    @property
-    def is_disabled(self) -> bool:
-        """Whether persistence is unavailable for this request."""
-
-        return self._is_disabled
-
-    @property
-    def has_reused_findings(self) -> bool:
-        """Whether this result contains any findings loaded from cache."""
-
-        return self.is_hit or self.is_partial
-
-    @property
-    def can_reuse_findings(self) -> bool:
-        """Whether projection identities can resolve persistent findings."""
-
-        return not self.is_disabled
+    is_hit: bool
+    is_partial: bool
+    is_disabled: bool
+    _resolution_policy: AnalysisCacheResolutionPolicyABC
+    has_reused_findings: bool
+    can_reuse_findings: bool
 
     @classmethod
-    def from_reused_item_count(cls, reused_item_count: int) -> "AnalysisCacheStatus":
+    def from_reused_item_count(
+        cls,
+        reused_item_count: int,
+    ) -> "type[AnalysisCacheStatus]":
         """Classify an analysis that reused zero or more cache shards."""
-
-        return cls.PARTIAL if reused_item_count else cls.MISS
+        return Partial if reused_item_count else Miss
 
     @classmethod
     def from_reuse_coverage(
         cls,
         reused_item_count: int,
         requested_item_count: int,
-    ) -> "AnalysisCacheStatus":
+    ) -> "type[AnalysisCacheStatus]":
         """Classify cache coverage over a bounded request."""
-
         if reused_item_count == requested_item_count:
-            return cls.HIT
+            return Hit
         return cls.from_reused_item_count(reused_item_count)
 
     @classmethod
     def combine(
         cls,
-        statuses: Iterable["AnalysisCacheStatus"],
-    ) -> "AnalysisCacheStatus":
+        statuses: Iterable["type[AnalysisCacheStatus]"],
+    ) -> "type[AnalysisCacheStatus]":
         """Combine independently resolved cache results into one status."""
-
         statuses = tuple(statuses)
         if statuses and all(status.is_hit for status in statuses):
-            return cls.HIT
+            return Hit
         if any(status.has_reused_findings for status in statuses):
-            return cls.PARTIAL
+            return Partial
         if statuses and all(status.is_disabled for status in statuses):
-            return cls.DISABLED
-        return cls.MISS
+            return Disabled
+        return Miss
 
-    def after_analysis(self, reused_item_count: int) -> "AnalysisCacheStatus":
+    @classmethod
+    def after_analysis(cls, reused_item_count: int) -> "type[AnalysisCacheStatus]":
         """Resolve the final status after missing work has been analysed."""
+        return cls
 
-        if self.has_reused_findings or self.is_disabled:
-            return self
-        return self.from_reused_item_count(reused_item_count)
-
+    @classmethod
     def resolve(
-        self,
+        cls,
         authority: AnalysisCacheResolutionABC[AnalysisCacheResolutionT],
     ) -> AnalysisCacheResolutionT:
         """Execute this member's declared cache-resolution policy."""
+        return cls._resolution_policy.resolve(authority)
 
-        return self._resolution_policy.resolve(authority)
+    @classmethod
+    def require_exact_identity(
+        cls,
+        cache_identity: AnalysisCacheIdentity | None,
+    ) -> None:
+        raise ValueError(
+            "An exact cache result requires its validated request identity"
+        )
+
+    @classmethod
+    def require_summary_payload(
+        cls,
+        payload: AnalysisFindingSummaryCachePayload | None,
+    ) -> None:
+        if payload is not None:
+            raise ValueError("A summary cache hit requires its validated payload")
+
+
+class Disabled(AnalysisCacheStatus):
+    value = "disabled"
+    is_hit = False
+    is_partial = False
+    is_disabled = True
+    _resolution_policy = AnalyzeWithoutCachePersistence()
+    has_reused_findings = False
+    can_reuse_findings = False
+
+
+class Hit(AnalysisCacheStatus):
+    value = "hit"
+    is_hit = True
+    is_partial = False
+    is_disabled = False
+    _resolution_policy = ReuseCompleteCacheResult()
+    has_reused_findings = True
+    can_reuse_findings = True
+
+    @classmethod
+    def require_exact_identity(
+        cls,
+        cache_identity: AnalysisCacheIdentity | None,
+    ) -> None:
+        if cache_identity is None:
+            raise ValueError(
+                "An exact cache result requires its validated request identity"
+            )
+
+    @classmethod
+    def require_summary_payload(
+        cls,
+        payload: AnalysisFindingSummaryCachePayload | None,
+    ) -> None:
+        if payload is None:
+            raise ValueError("A summary cache hit requires its validated payload")
+
+
+class Partial(AnalysisCacheStatus):
+    value = "partial"
+    is_hit = False
+    is_partial = True
+    is_disabled = False
+    _resolution_policy = AnalyzeAndStoreMissingCacheResult()
+    has_reused_findings = True
+    can_reuse_findings = True
+
+
+class Miss(AnalysisCacheStatus):
+    value = "miss"
+    is_hit = False
+    is_partial = False
+    is_disabled = False
+    _resolution_policy = AnalyzeAndStoreMissingCacheResult()
+    has_reused_findings = False
+    can_reuse_findings = True
+
+    @classmethod
+    def after_analysis(cls, reused_item_count: int) -> "type[AnalysisCacheStatus]":
+        return cls.from_reused_item_count(reused_item_count)
 
 
 class AnalysisLatestPointerPolicy(StrEnum):
@@ -257,7 +273,7 @@ class AnalysisLatestPointerPolicy(StrEnum):
 class AnalysisCacheLookup:
     """Result of consulting the persistent finding cache."""
 
-    status: AnalysisCacheStatus
+    status: type[AnalysisCacheStatus]
     findings: tuple[RefactorFinding, ...]
 
 
@@ -265,12 +281,12 @@ class AnalysisCacheLookup:
 class PerModuleDetectorBundleLookup:
     """Aligned detector-bundle results loaded from one module cache container."""
 
-    status: AnalysisCacheStatus
+    status: type[AnalysisCacheStatus]
     findings_by_bundle: tuple[tuple[RefactorFinding, ...] | None, ...]
 
 
 def analysis_cache_lookup(
-    status: AnalysisCacheStatus,
+    status: type[AnalysisCacheStatus],
     findings: tuple[RefactorFinding, ...] = (),
 ) -> AnalysisCacheLookup:
     """Build the canonical cache lookup record for one status."""
@@ -326,7 +342,7 @@ class CachedFindingPayloadShape:
 class AnalysisFindingSummaryLookup:
     """Result of consulting the count-only analysis summary cache."""
 
-    status: AnalysisCacheStatus
+    status: type[AnalysisCacheStatus]
     payload: AnalysisFindingSummaryCachePayload | None = None
 
     @property
@@ -335,8 +351,7 @@ class AnalysisFindingSummaryLookup:
         return None if self.payload is None else self.payload.summary
 
     def __post_init__(self) -> None:
-        if self.status.is_hit != (self.payload is not None):
-            raise ValueError("A summary cache hit requires its validated payload")
+        self.status.require_summary_payload(self.payload)
 
 
 class ReprCacheTokenMixin:
@@ -380,7 +395,7 @@ class AnalysisExecutionPlanCacheIdentity(ReprCacheTokenMixin):
 class AnalysisExecutionPlanLookup:
     """Result of consulting the execution-plan cache."""
 
-    status: AnalysisCacheStatus
+    status: type[AnalysisCacheStatus]
     plan: RefactorExecutionPlanReport | None = None
 
 
@@ -396,8 +411,8 @@ class AnalysisFindingSummaryCachePayload:
         requested_identity: AnalysisCacheIdentity,
     ) -> AnalysisFindingSummaryLookup:
         if self.identity != requested_identity:
-            return AnalysisFindingSummaryLookup(AnalysisCacheStatus.MISS)
-        return AnalysisFindingSummaryLookup(AnalysisCacheStatus.HIT, self)
+            return AnalysisFindingSummaryLookup(Miss)
+        return AnalysisFindingSummaryLookup(Hit, self)
 
 
 @dataclass(frozen=True)
@@ -412,9 +427,9 @@ class AnalysisExecutionPlanCachePayload:
         requested_identity: AnalysisExecutionPlanCacheIdentity,
     ) -> AnalysisExecutionPlanLookup:
         if self.identity != requested_identity:
-            return AnalysisExecutionPlanLookup(AnalysisCacheStatus.MISS)
+            return AnalysisExecutionPlanLookup(Miss)
         return AnalysisExecutionPlanLookup(
-            AnalysisCacheStatus.HIT,
+            Hit,
             self.execution_plan,
         )
 
@@ -1247,7 +1262,7 @@ class AnalysisFindingCacheEntryPayload(FindingCachePayloadValidationMixin):
         requested_identity: AnalysisCacheEntryIdentity,
     ) -> AnalysisCacheLookup:
         return analysis_cache_lookup(
-            AnalysisCacheStatus.HIT,
+            Hit,
             _rebase_findings(
                 self.findings,
                 self.identity.presentation_roots,
@@ -1287,7 +1302,7 @@ class PerModuleDetectorFindingCachePayload:
     ) -> PerModuleDetectorBundleLookup:
         if self.identity != requested_identity:
             return PerModuleDetectorBundleLookup(
-                AnalysisCacheStatus.MISS,
+                Miss,
                 tuple(None for _registry in requested_registries),
             )
         bundles_by_registry = {
@@ -1344,7 +1359,7 @@ class AnalysisPartialFindingCachePayload(FindingCachePayloadValidationMixin):
         requested_identity: AnalysisCacheIdentity,
     ) -> AnalysisCacheLookup:
         return analysis_cache_lookup(
-            AnalysisCacheStatus.PARTIAL,
+            Partial,
             _rebase_findings(
                 self.findings,
                 self.identity.presentation_roots,
@@ -1870,14 +1885,14 @@ class AnalysisFindingCache:
     def load(self, identity: AnalysisCacheEntryIdentity) -> AnalysisCacheLookup:
         storage = self.storage()
         if storage is None:
-            return analysis_cache_lookup(AnalysisCacheStatus.DISABLED)
+            return analysis_cache_lookup(Disabled)
         payload = storage.load_finding_payload(storage.entry_path(identity), identity)
         if payload is None:
-            return analysis_cache_lookup(AnalysisCacheStatus.MISS)
+            return analysis_cache_lookup(Miss)
         try:
             return payload.lookup(identity)
         except CacheCheckoutPathError:
-            return analysis_cache_lookup(AnalysisCacheStatus.MISS)
+            return analysis_cache_lookup(Miss)
 
     def load_per_module_detector_bundles(
         self,
@@ -1889,7 +1904,7 @@ class AnalysisFindingCache:
         storage = self.storage()
         if storage is None:
             return PerModuleDetectorBundleLookup(
-                AnalysisCacheStatus.DISABLED,
+                Disabled,
                 tuple(None for _registry in detector_registries),
             )
         payload = storage.load_typed_payload(
@@ -1898,14 +1913,14 @@ class AnalysisFindingCache:
         )
         if payload is None:
             return PerModuleDetectorBundleLookup(
-                AnalysisCacheStatus.MISS,
+                Miss,
                 tuple(None for _registry in detector_registries),
             )
         try:
             return payload.lookup(identity, detector_registries)
         except CacheCheckoutPathError:
             return PerModuleDetectorBundleLookup(
-                AnalysisCacheStatus.MISS,
+                Miss,
                 tuple(None for _registry in detector_registries),
             )
 
@@ -2033,13 +2048,13 @@ class AnalysisFindingCache:
     ) -> AnalysisFindingSummaryLookup:
         storage = self.storage()
         if storage is None:
-            return AnalysisFindingSummaryLookup(AnalysisCacheStatus.DISABLED)
+            return AnalysisFindingSummaryLookup(Disabled)
         payload = storage.load_typed_payload(
             storage.summary_path(identity),
             AnalysisFindingSummaryCachePayload,
         )
         if payload is None:
-            return AnalysisFindingSummaryLookup(AnalysisCacheStatus.MISS)
+            return AnalysisFindingSummaryLookup(Miss)
         return payload.lookup(identity)
 
     def load_execution_plan(
@@ -2048,13 +2063,13 @@ class AnalysisFindingCache:
     ) -> AnalysisExecutionPlanLookup:
         storage = self.storage()
         if storage is None:
-            return AnalysisExecutionPlanLookup(AnalysisCacheStatus.DISABLED)
+            return AnalysisExecutionPlanLookup(Disabled)
         payload = storage.load_typed_payload(
             storage.execution_plan_path(identity),
             AnalysisExecutionPlanCachePayload,
         )
         if payload is None:
-            return AnalysisExecutionPlanLookup(AnalysisCacheStatus.MISS)
+            return AnalysisExecutionPlanLookup(Miss)
         return payload.lookup(identity)
 
     def store_execution_plan(
@@ -2081,18 +2096,18 @@ class AnalysisFindingCache:
     ) -> AnalysisCacheLookup:
         storage = self.storage()
         if storage is None:
-            return analysis_cache_lookup(AnalysisCacheStatus.DISABLED)
+            return analysis_cache_lookup(Disabled)
         payload = storage.load_partial_finding_payload(
             storage.partial_path(identity),
             identity,
             previous_identity,
         )
         if payload is None:
-            return analysis_cache_lookup(AnalysisCacheStatus.MISS)
+            return analysis_cache_lookup(Miss)
         try:
             return payload.lookup(identity)
         except CacheCheckoutPathError:
-            return analysis_cache_lookup(AnalysisCacheStatus.MISS)
+            return analysis_cache_lookup(Miss)
 
     def store_partial(
         self,

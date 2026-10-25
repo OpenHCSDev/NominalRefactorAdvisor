@@ -51,7 +51,7 @@ from .codemod_statement_source import StatementDeletionSource, StatementSource
 from .codemod_source_edits import (
     PhysicalSourceEdit,
     SourceInsertion,
-    SourceNodeDecoratorPolicy,
+    Include,
     SourceNodeSpan,
     SourceSpanDeletion,
     SourceSpanReplacement,
@@ -1029,7 +1029,7 @@ class ExistingDataclassFieldAuthorityTargets:
         ).node_line_span(
             SourceNodeSpan(
                 self.authority.node,
-                SourceNodeDecoratorPolicy.INCLUDE,
+                Include,
             )
         )
 
@@ -1371,7 +1371,7 @@ class ClassMemberPromotionStatement(ABC):
 
     @property
     def source_span(self) -> SourceNodeSpan:
-        return SourceNodeSpan(self.statement, SourceNodeDecoratorPolicy.INCLUDE)
+        return SourceNodeSpan(self.statement, Include)
 
     @property
     def end_line(self) -> int:

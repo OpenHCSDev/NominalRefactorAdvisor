@@ -12,7 +12,7 @@ from nominal_refactor_advisor.ast_tools import parse_python_modules
 from nominal_refactor_advisor.codemod import (
     CodemodPlanSequence,
     CodemodSourceSnapshot,
-    DescendTypeKeyedBehaviorProjectionOperation,
+    TypedMirror,
     PatchTargetOperation,
     RefactorRecipe,
     ReplaceFunctionBodyOperation,
@@ -46,7 +46,7 @@ def _subject(tmp_path, source=None):
     snapshot = CodemodSourceSnapshot.from_modules(
         parse_python_modules(tmp_path, use_parse_cache=False)
     )
-    operation = DescendTypeKeyedBehaviorProjectionOperation(
+    operation = TypedMirror(
         target=SourceRewriteTarget(file_path=str(path), qualname="EventProjection")
     )
     return path, snapshot, operation

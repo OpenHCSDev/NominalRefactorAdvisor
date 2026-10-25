@@ -13,6 +13,9 @@ from .analysis_cache import (
     AnalysisCacheIdentity,
     AnalysisCacheStatus,
     AnalysisCacheStorage,
+    Disabled,
+    Hit,
+    Miss,
 )
 from .ast_tools import (
     ParsedModule,
@@ -180,7 +183,7 @@ class CodemodSourceContextCacheEntry:
 class CodemodSourceContextCacheLookup:
     """Result of consulting the codemod source-context cache."""
 
-    status: AnalysisCacheStatus
+    status: type[AnalysisCacheStatus]
     context: CodemodSourceContext | None = None
 
 
@@ -195,20 +198,20 @@ class CodemodSourceContextCache:
         identity: AnalysisCacheIdentity | None,
     ) -> CodemodSourceContextCacheLookup:
         if identity is None:
-            return CodemodSourceContextCacheLookup(AnalysisCacheStatus.DISABLED)
+            return CodemodSourceContextCacheLookup(Disabled)
         storage = self.storage()
         if storage is None:
-            return CodemodSourceContextCacheLookup(AnalysisCacheStatus.DISABLED)
+            return CodemodSourceContextCacheLookup(Disabled)
         entry = storage.load_typed_payload(
             self.context_path(storage, identity),
             CodemodSourceContextCacheEntry,
         )
         if entry is None:
-            return CodemodSourceContextCacheLookup(AnalysisCacheStatus.MISS)
+            return CodemodSourceContextCacheLookup(Miss)
         context = entry.context_for(identity)
         if context is None:
-            return CodemodSourceContextCacheLookup(AnalysisCacheStatus.MISS)
-        return CodemodSourceContextCacheLookup(AnalysisCacheStatus.HIT, context)
+            return CodemodSourceContextCacheLookup(Miss)
+        return CodemodSourceContextCacheLookup(Hit, context)
 
     def store(
         self,

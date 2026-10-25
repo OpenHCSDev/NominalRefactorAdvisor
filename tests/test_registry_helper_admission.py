@@ -11,7 +11,7 @@ from nominal_refactor_advisor.ast_tools import ParsedModule, parse_python_module
 from nominal_refactor_advisor.codemod import (
     CodemodPlanSequence,
     CodemodSourceSnapshot,
-    DescendTypeKeyedBehaviorProjectionOperation,
+    TypedMirror,
     SourceRewriteTarget,
 )
 from nominal_refactor_advisor.codemod_preflight import CodemodOperationPreflightError
@@ -43,7 +43,7 @@ def test_counterfeit_helper_is_not_implicitly_admitted(tmp_path, monkeypatch) ->
     )
     plan = CodemodPlanSequence.from_operations(
         (
-            DescendTypeKeyedBehaviorProjectionOperation(
+            TypedMirror(
                 target=SourceRewriteTarget(
                     file_path=str(path), qualname="EventProjection"
                 )
@@ -83,7 +83,7 @@ def test_requirements_retain_exact_native_reads_and_declaration_owners() -> None
     parsed, method, snapshot = _helper_method_source(
         _type_keyed_behavior_projection_source()
     )
-    operation = DescendTypeKeyedBehaviorProjectionOperation(
+    operation = TypedMirror(
         target=SourceRewriteTarget(
             file_path=parsed.file_path, qualname="EventProjection"
         )

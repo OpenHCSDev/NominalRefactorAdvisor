@@ -160,8 +160,8 @@ class ModuleMoveObstacle:
     def for_annotation_evaluation(
         cls,
         *,
-        source_mode: ModuleAnnotationEvaluationMode,
-        destination_mode: ModuleAnnotationEvaluationMode,
+        source_mode: type[ModuleAnnotationEvaluationMode],
+        destination_mode: type[ModuleAnnotationEvaluationMode],
         annotation_count: int,
     ) -> ModuleMoveObstacle:
         is_preserved = annotation_count == 0 or source_mode is destination_mode
@@ -184,8 +184,8 @@ class ModuleMoveDependencyReport(DataclassJsonReport):
     source_local_dependencies: tuple[ModuleMoveSourceLocalDependency, ...]
     destination_dependency_names: tuple[str, ...]
     destination_insertion_line: int
-    source_annotation_evaluation_mode: ModuleAnnotationEvaluationMode
-    destination_annotation_evaluation_mode: ModuleAnnotationEvaluationMode
+    source_annotation_evaluation_mode: type[ModuleAnnotationEvaluationMode]
+    destination_annotation_evaluation_mode: type[ModuleAnnotationEvaluationMode]
     moved_annotation_count: int
     obstacles: tuple[ModuleMoveObstacle, ...] = json_report_field(included=False)
 

@@ -4,6 +4,13 @@ import ast
 
 import pytest
 
+from nominal_refactor_advisor.codemod_source_edits import (
+    Exclude,
+    Include,
+    SourceNodeSpan,
+    SourceTextGeometry,
+)
+from nominal_refactor_advisor.native_compilation import NativePythonCompilation
 from nominal_refactor_advisor.source_geometry import (
     SourceByteSpan,
     SourceCommentLineIndex,
@@ -66,34 +73,25 @@ def test_source_comment_line_index_uses_tokens_instead_of_hash_characters() -> N
     ),
 )
 def test_generic_declaration_geometry_recovers_exact_decorator_marker(source):
-    from nominal_refactor_advisor.codemod_source_edits import (
-        SourceNodeDecoratorPolicy,
-        SourceNodeSpan,
-        SourceTextGeometry,
-    )
-
     declaration = ast.parse(source).body[0]
     generic = SourceLineSegmentAuthority(source)
     editor = SourceTextGeometry(source)
     assert generic.decorated_node_start_line(declaration) == 1
     assert (
         editor.node_start_line(
-            SourceNodeSpan(declaration, SourceNodeDecoratorPolicy.INCLUDE)
+            SourceNodeSpan(declaration, Include)
         )
         == 1
     )
     assert (
         editor.node_start_line(
-            SourceNodeSpan(declaration, SourceNodeDecoratorPolicy.EXCLUDE)
+            SourceNodeSpan(declaration, Exclude)
         )
         == declaration.lineno
     )
 
 
 def test_native_compilation_and_editor_inherit_generic_geometry_contract():
-    from nominal_refactor_advisor.codemod_source_edits import SourceTextGeometry
-    from nominal_refactor_advisor.native_compilation import NativePythonCompilation
-
     for consumer in (SourceTextGeometry, NativePythonCompilation):
         assert consumer.iter_tokens is SourceLineSegmentAuthority.iter_tokens
         assert consumer.tokens is SourceLineSegmentAuthority.tokens

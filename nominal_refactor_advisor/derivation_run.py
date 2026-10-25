@@ -17,6 +17,7 @@ from enum import StrEnum
 from pathlib import PurePosixPath
 from typing import ClassVar, Self, TypeVar
 
+from .case_root import Case
 from .json_reports import (
     SemanticRecord,
     json_report_object,
@@ -588,24 +589,52 @@ class DerivationExclusion(SemanticRecord):
         )
 
 
-class EnumerationDecisionKind(StrEnum):
+class EnumerationDecisionKind(Case):
     """Result of the three-way derivation audit for one enumeration site."""
 
-    GENUINE_AUTHORITY = "genuine_authority"
-    REPLICA = "replica"
-    NAMED_DIVERGENCE = "named_divergence"
+    requires_determining_authority: bool
+    requires_named_divergence: bool
 
-    @property
-    def requires_determining_authority(self) -> bool:
-        """Return whether another authority determines this site's values."""
+    @classmethod
+    def require_determining_authority(cls, determining_authority: str | None) -> None:
+        if determining_authority is None:
+            raise ValueError(f"{cls.value} requires a determining authority")
 
-        return self is not EnumerationDecisionKind.GENUINE_AUTHORITY
+    @classmethod
+    def require_divergence_identity(cls, divergence_identity: str | None) -> None:
+        if divergence_identity is not None:
+            label = cls.value.replace("_", " ")
+            raise ValueError(f"a {label} cannot name a divergence")
 
-    @property
-    def requires_named_divergence(self) -> bool:
-        """Return whether the site's difference needs an explicit domain name."""
 
-        return self is EnumerationDecisionKind.NAMED_DIVERGENCE
+class GenuineAuthority(EnumerationDecisionKind):
+    value = "genuine_authority"
+    requires_determining_authority = False
+    requires_named_divergence = False
+
+    @classmethod
+    def require_determining_authority(cls, determining_authority: str | None) -> None:
+        if determining_authority is not None:
+            raise ValueError(
+                "a genuine authority cannot name another determining authority"
+            )
+
+
+class Replica(EnumerationDecisionKind):
+    value = "replica"
+    requires_determining_authority = True
+    requires_named_divergence = False
+
+
+class NamedDivergence(EnumerationDecisionKind):
+    value = "named_divergence"
+    requires_determining_authority = True
+    requires_named_divergence = True
+
+    @classmethod
+    def require_divergence_identity(cls, divergence_identity: str | None) -> None:
+        if divergence_identity is None:
+            raise ValueError("named_divergence requires a divergence identity")
 
 
 @dataclass(frozen=True, order=True)
@@ -613,7 +642,7 @@ class EnumerationDecision(SemanticRecord):
     """Auditable authority, derivation, or divergence decision for one site."""
 
     site: str
-    kind: EnumerationDecisionKind
+    kind: type[EnumerationDecisionKind]
     determining_authority: str | None
     resolution: str
     divergence_identity: str | None = None
@@ -631,19 +660,8 @@ class EnumerationDecision(SemanticRecord):
                 self.divergence_identity,
                 "EnumerationDecision.divergence_identity",
             )
-        if self.kind.requires_determining_authority:
-            if self.determining_authority is None:
-                raise ValueError(f"{self.kind.value} requires a determining authority")
-        elif self.determining_authority is not None:
-            raise ValueError(
-                "a genuine authority cannot name another determining authority"
-            )
-        if self.kind.requires_named_divergence:
-            if self.divergence_identity is None:
-                raise ValueError("named_divergence requires a divergence identity")
-        elif self.divergence_identity is not None:
-            label = self.kind.value.replace("_", " ")
-            raise ValueError(f"a {label} cannot name a divergence")
+        self.kind.require_determining_authority(self.determining_authority)
+        self.kind.require_divergence_identity(self.divergence_identity)
 
 
 @dataclass(frozen=True)

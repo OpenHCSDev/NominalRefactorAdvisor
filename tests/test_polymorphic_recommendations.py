@@ -2,6 +2,8 @@
 
 from pathlib import Path
 
+import pytest
+
 from nominal_refactor_advisor.ast_tools import SourceModule
 from nominal_refactor_advisor.detectors import (
     DetectorConfig,
@@ -68,6 +70,56 @@ def incomplete(status):
     assert "shared Enum method" in finding.why
     assert "required hierarchy" in finding.why
     assert finding.certification is CertificationLevel.STRONG_HEURISTIC
+
+
+_HELD_RULE = '''
+from enum import Enum
+class Rule(Enum):
+    LOOSE = ("loose", False)
+    STRICT = ("strict", True)
+    def __init__(self, label, rejects):
+        self.label = label
+        self.rejects = rejects
+class Checker:
+    rule: Rule
+'''
+
+
+def test_member_data_read_through_the_readers_own_field_decides_every_case():
+    rows = findings(ExternalEnumCaseRecoveryDetector(), _HELD_RULE + '''
+    def check(self, value):
+        if self.rule.rejects:
+            return value
+        return None
+''')
+    finding, = rows
+    assert finding.metrics.plan_literal_cases == ("Rule.LOOSE", "Rule.STRICT")
+    assert finding.evidence[1].symbol == "Checker.check"
+
+
+@pytest.mark.parametrize(
+    "consumer",
+    (
+        # Same field name on a class that never annotated it with Rule.
+        '''
+class Unrelated:
+    def check(self, value):
+        if self.rule.rejects:
+            return value
+        return None
+''',
+        # The field is Rule's, but the read is not through the method's receiver.
+        '''
+class Peer(Checker):
+    def check(self, other):
+        if other.rule.rejects:
+            return other
+        return None
+''',
+    ),
+)
+def test_member_data_reads_join_only_through_the_receivers_class(consumer):
+    assert findings(ExternalEnumCaseRecoveryDetector(), _HELD_RULE + consumer) == []
 
 
 def test_value_only_enum_and_derived_membership_does_not_nominate_dispatch():

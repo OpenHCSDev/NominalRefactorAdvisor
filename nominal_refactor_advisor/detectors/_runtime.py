@@ -55,13 +55,13 @@ from ..enum_keyed_query import (
     EnumKeyedDerivedMapFacadeModuleProjectionFamily,
 )
 from ..codemod import (
-    EnumKeyedDerivedMapFacadeFindingRecipeSynthesizer,
+    KeyedMirrorFindingRecipeSynthesizer,
     ManualClassRegistrationFindingRecipeSynthesizer,
     NumericLiteralDispatchFindingRecipeSynthesizer,
     ParallelMirroredLeafFamilyFindingRecipeSynthesizer,
     RepeatedBuilderCallFindingRecipeSynthesizer,
     SemanticMirrorFindingRecipeEvaluator,
-    TypeKeyedBehaviorProjectionFindingRecipeSynthesizer,
+    TypedMirrorFindingRecipeSynthesizer,
 )
 from ..collection_algebra import sorted_tuple
 from ..models import (
@@ -2294,7 +2294,7 @@ class ParallelMirroredLeafFamilyDetector(
 class TypeKeyedBehaviorProjectionDetector(
     CompactClassRepositoryCandidateDetector[TypeKeyedBehaviorProjectionComponent],
     SsotAuthorityBoundaryDetector,
-    TypeKeyedBehaviorProjectionFindingRecipeSynthesizer,
+    TypedMirrorFindingRecipeSynthesizer,
 ):
     finding_spec = high_confidence_spec(
         PatternId.TYPE_NAMESPACE_INJECTION,
@@ -2348,14 +2348,14 @@ class TypeKeyedBehaviorProjectionDetector(
 class EnumKeyedDerivedMapFacadeDetector(
     CompactMultiProjectionCandidateDetector[EnumKeyedDerivedMapFacadeComponent],
     SsotAuthorityBoundaryDetector,
-    EnumKeyedDerivedMapFacadeFindingRecipeSynthesizer,
+    KeyedMirrorFindingRecipeSynthesizer,
 ):
     finding_spec = high_confidence_spec(
         PatternId.NOMINAL_BOUNDARY,
-        "Enum-keyed query facade should descend to its nominal key",
-        "A class-owned derived map exposes lookup behavior keyed by an enum while callers and a reverse query interpret the enum identity externally.",
-        "key-facing query behavior owned by the enum and backed by the existing derived map",
-        "a typed derived map, reverse query, and direct indexed consumer prove the displaced query surface",
+        "Enum keying a map onto a class family restates that family",
+        "A class-owned map pairs each enum member with a class while callers and a reverse query read classes back through the enum.",
+        "the class family itself: indexing becomes the class, reverse queries iterate the family, the enum and map are deleted",
+        "a typed derived map, reverse query, and direct indexed consumer prove the enum mirrors the family",
         (
             CapabilityTag.NOMINAL_IDENTITY,
             CapabilityTag.SHARED_TYPE_NAMESPACE,

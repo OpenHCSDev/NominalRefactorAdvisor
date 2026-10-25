@@ -30,7 +30,7 @@ class ScanTiming(DataclassJsonReport):
     analysis_seconds: float = 0.0
     planning_seconds: float = 0.0
     source_index_seconds: float = 0.0
-    analysis_cache_status: AnalysisCacheStatus | None = None
+    analysis_cache_status: type[AnalysisCacheStatus] | None = None
 
     @json_report_property()
     def total_seconds(self) -> float:

@@ -559,6 +559,8 @@ from .codemod_source_edits import (
     SourceLineSpan as SourceLineSpan,
 )
 from .codemod_source_edits import (
+    Exclude as Exclude,
+    Include as Include,
     SourceNodeDecoratorPolicy as SourceNodeDecoratorPolicy,
 )
 from .codemod_source_edits import (
@@ -680,9 +682,10 @@ from .planner import (
     build_refactor_execution_plan_from_groups,
 )
 from .projection_descent_codemod import (
-    DescendEnumKeyedDerivedMapFacadeOperation as DescendEnumKeyedDerivedMapFacadeOperation,
-    DescendTypeKeyedBehaviorProjectionOperation as DescendTypeKeyedBehaviorProjectionOperation,
+    TypedMirror as TypedMirror,
 )
+from .cases_family import CasesFamily
+from .descent import CasesFold, Descent, KeyedMirror
 from .registry_identity import (
     AUTOREGISTER_CONFIGURATION_ATTRIBUTE_NAMES,
     AUTOREGISTER_META_NAME,
@@ -820,8 +823,8 @@ class ReplaceTargetOperation(SourceReprovedOperation):
         default=(),
     )
 
-    decorator_policy: ClassVar[SourceNodeDecoratorPolicy] = (
-        SourceNodeDecoratorPolicy.EXCLUDE
+    decorator_policy: ClassVar[type[SourceNodeDecoratorPolicy]] = (
+        Exclude
     )
 
     @cached_property
@@ -7134,109 +7137,121 @@ class ParallelMirroredLeafFamilyFindingRecipeSynthesizer(
         )
 
 
-class TypeKeyedBehaviorProjectionFindingRecipeSynthesizer(
+class DescentFindingRecipeSynthesizer(
     FindingEvidenceActionKeysMixin,
     FindingRecipeSynthesizer,
+    ABC,
+):
+    """Re-prove a descent on the class the finding's authority evidence names.
+
+    ``descent_types`` are end states in preference order; each one's own proof
+    admits or refuses the class, and the first admitted becomes the recipe. A
+    refusal that lists questions is a handback: the same operation becomes
+    executable once its ``names`` answer them.
+    """
+
+    descent_types: ClassVar[tuple[type[Descent], ...]]
+    recipe_reason: ClassVar[str]
+
+    def target_evidence(
+        self, finding: RefactorFinding, authority: SourceLocation
+    ) -> SourceLocation:
+        """The class the descent rewrites; by default the authority itself."""
+
+        return authority
+
+    def evaluate_recipe_for_finding(
+        self,
+        finding: RefactorFinding,
+        context: CodemodSelectorContext | None = None,
+    ) -> FindingRecipeEvaluation:
+        keys = "/".join(descent.operation_key() for descent in self.descent_types)
+        if context is None:
+            return self.rejected_evaluation(f"{keys} requires source context")
+        authority_location = finding.authority_evidence
+        if authority_location is None:
+            return self.rejected_evaluation(f"{keys} finding lacks authority evidence")
+        try:
+            authority = context.required_class_target_for_authority_evidence(
+                authority_location
+            )
+            target = context.required_class_target_for_authority_evidence(
+                self.target_evidence(finding, authority_location)
+            )
+        except (CodemodOperationPreflightError, ValueError) as error:
+            return self.rejected_evaluation(str(error))
+        refusals: list[str] = []
+        for descent_type in self.descent_types:
+            operation = descent_type(
+                target=SourceRewriteTarget(target_id=target.target_id),
+                rationale="",
+            )
+            try:
+                operation.synthesis_proof(context.execution_snapshot())
+            except (CodemodOperationPreflightError, ValueError) as error:
+                refusals.append(f"{descent_type.operation_key()}: {error}")
+                continue
+            return self.executable_evaluation(
+                RefactorRecipe(
+                    recipe_id=f"{finding.stable_id}-{descent_type.operation_key()}",
+                    reason=self.recipe_reason,
+                )
+                .with_authority_claim(AstTargetAuthorityClaim.from_target(authority))
+                .with_operation(operation)
+            )
+        return self.rejected_evaluation("; ".join(refusals))
+
+
+class TypedMirrorFindingRecipeSynthesizer(
+    DescentFindingRecipeSynthesizer,
     ClassFamilyAuthorityConcept,
 ):
-    """Descend behavior only when current source closes the projection family."""
+    """Behavior keyed by a family's own classes descends onto those classes."""
 
-    def evaluate_recipe_for_finding(
-        self,
-        finding: RefactorFinding,
-        context: CodemodSelectorContext | None = None,
-    ) -> FindingRecipeEvaluation:
-        if context is None:
-            return self.rejected_evaluation(
-                "type-keyed behavior descent requires source context"
-            )
+    descent_types = (TypedMirror,)
+    recipe_reason = (
+        "Move behavior from the external type-keyed projection onto "
+        "the nominal hierarchy that already owns its dispatch."
+    )
+
+    def target_evidence(
+        self, finding: RefactorFinding, authority: SourceLocation
+    ) -> SourceLocation:
+        """The projection root the finding's first evidence names."""
+
         if not finding.evidence:
-            return self.rejected_evaluation(
-                "type-keyed behavior finding lacks projection-root evidence"
-            )
-        authority_location = finding.authority_evidence
-        if authority_location is None:
-            return self.rejected_evaluation(
-                "type-keyed behavior finding lacks nominal authority evidence"
-            )
-        try:
-            projection_target = context.required_class_target_for_authority_evidence(
-                finding.evidence[0]
-            )
-            authority_target = context.required_class_target_for_authority_evidence(
-                authority_location
-            )
-            operation = DescendTypeKeyedBehaviorProjectionOperation(
-                target=SourceRewriteTarget(target_id=projection_target.target_id),
-                rationale="",
-            )
-        except (CodemodOperationPreflightError, ValueError) as error:
-            return self.rejected_evaluation(str(error))
-        recipe = (
-            RefactorRecipe(
-                recipe_id=f"{finding.stable_id}-descend-type-keyed-behavior",
-                reason=(
-                    "Move behavior from the external type-keyed projection onto "
-                    "the nominal hierarchy that already owns its dispatch."
-                ),
-            )
-            .with_authority_claim(AstTargetAuthorityClaim.from_target(authority_target))
-            .with_operation(operation)
-        )
-        return self.executable_evaluation(recipe)
+            raise ValueError("typed_mirror finding lacks projection-root evidence")
+        return finding.evidence[0]
 
 
-class EnumKeyedDerivedMapFacadeFindingRecipeSynthesizer(
-    PrimaryEvidenceActionKeysMixin,
-    FindingRecipeSynthesizer,
-    DerivedProjectionConcept,
+class KeyedMirrorFindingRecipeSynthesizer(
+    DescentFindingRecipeSynthesizer,
+    ClassFamilyAuthorityConcept,
 ):
-    """Move source-proved key-facing queries to their enum declaration."""
+    """An enum keying one map onto a family is the family restated: delete it."""
 
-    def evaluate_recipe_for_finding(
-        self,
-        finding: RefactorFinding,
-        context: CodemodSelectorContext | None = None,
-    ) -> FindingRecipeEvaluation:
-        if context is None:
-            return self.rejected_evaluation(
-                "enum-keyed facade descent requires source context"
-            )
-        if not finding.evidence:
-            return self.rejected_evaluation(
-                "enum-keyed facade finding lacks map-owner evidence"
-            )
-        authority_location = finding.authority_evidence
-        if authority_location is None:
-            return self.rejected_evaluation(
-                "enum-keyed facade finding lacks enum authority evidence"
-            )
-        try:
-            reverse_method_target = context.required_target_for_evidence(
-                finding.evidence[0],
-                node_kind=AstTargetNodeKind.METHOD,
-            )
-            enum_target = context.required_class_target_for_authority_evidence(
-                authority_location
-            )
-            operation = DescendEnumKeyedDerivedMapFacadeOperation(
-                target=SourceRewriteTarget(target_id=reverse_method_target.target_id),
-                rationale="",
-            )
-            operation.source_edits_from_snapshot(context.execution_snapshot())
-        except (CodemodOperationPreflightError, ValueError) as error:
-            return self.rejected_evaluation(str(error))
-        return self.executable_evaluation(
-            RefactorRecipe(
-                recipe_id=f"{finding.stable_id}-descend-enum-keyed-facade",
-                reason=(
-                    "Move key-facing map queries onto the enum that owns the "
-                    "queried identity."
-                ),
-            )
-            .with_authority_claim(AstTargetAuthorityClaim.from_target(enum_target))
-            .with_operation(operation)
-        )
+    descent_types = (KeyedMirror,)
+    recipe_reason = (
+        "Delete the enum and its map; the class family they restate answers "
+        "every lookup and reverse query."
+    )
+
+
+class CasesFindingRecipeSynthesizer(
+    DescentFindingRecipeSynthesizer,
+    ClassFamilyAuthorityConcept,
+):
+    """An enum branched on outside itself becomes a class family.
+
+    Held by one class and data only, it folds into that holder's family; an
+    enum that declares behaviour becomes the family itself.
+    """
+
+    descent_types = (CasesFold, CasesFamily)
+    recipe_reason = (
+        "Members become subclasses and each branch on them becomes one "
+        "override per class it decides."
+    )
 
 
 class InheritedAutoRegisterConfigBoilerplateFindingRecipeSynthesizer(

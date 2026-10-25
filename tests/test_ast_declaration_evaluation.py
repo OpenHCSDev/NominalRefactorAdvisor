@@ -3,8 +3,11 @@ from __future__ import annotations
 import ast
 
 from nominal_refactor_advisor.ast_tools import (
+    Eager,
     EagerNameLoadCollector,
+    Lazy,
     ModuleAnnotationEvaluationMode,
+    Stringized,
 )
 
 
@@ -48,7 +51,7 @@ def test_module_annotation_evaluation_mode_distinguishes_runtime_policies() -> N
     ) is ModuleAnnotationEvaluationMode.runtime_default()
     assert ModuleAnnotationEvaluationMode.from_module(
         ast.parse("from __future__ import annotations\n\nvalue: ValueType\n")
-    ) is ModuleAnnotationEvaluationMode.STRINGIZED
-    assert ModuleAnnotationEvaluationMode.EAGER.annotations_execute_at_declaration
-    assert not ModuleAnnotationEvaluationMode.LAZY.annotations_execute_at_declaration
-    assert not ModuleAnnotationEvaluationMode.STRINGIZED.annotations_execute_at_declaration
+    ) is Stringized
+    assert Eager.annotations_execute_at_declaration
+    assert not Lazy.annotations_execute_at_declaration
+    assert not Stringized.annotations_execute_at_declaration

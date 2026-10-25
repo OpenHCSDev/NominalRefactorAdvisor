@@ -33,6 +33,7 @@ from typing import (
     cast,
 )
 
+from .case_root import CaseMeta
 from .descriptor_algebra import AliasProperty
 
 JsonScalar: TypeAlias = str | int | float | bool | None
@@ -86,6 +87,12 @@ class JsonReportValueProjection:
         return value.value
 
     @project.register
+    def _project_case(self, value: CaseMeta) -> str:
+        """A case class of a folded family projects as the value it carries."""
+
+        return value.value
+
+    @project.register
     def _project_tuple(self, value: tuple) -> tuple[JsonValue, ...]:
         return tuple(self.project(item) for item in value)
 
@@ -102,13 +109,23 @@ class JsonReportValueProjection:
             }
         )
 
-    @staticmethod
-    def mapping_key(key: object) -> str:
-        if isinstance(key, StrEnum):
-            return key.value
-        if isinstance(key, str):
-            return key
-        raise TypeError("JSON report mappings require string or StrEnum keys")
+    @singledispatchmethod
+    def mapping_key(self, key: object) -> str:
+        raise TypeError(
+            "JSON report mappings require string, StrEnum or case class keys"
+        )
+
+    @mapping_key.register
+    def _string_key(self, key: str) -> str:
+        return key
+
+    @mapping_key.register
+    def _enum_key(self, key: StrEnum) -> str:
+        return key.value
+
+    @mapping_key.register
+    def _case_key(self, key: CaseMeta) -> str:
+        return key.value
 
     @project.register
     def _project_report(self, value: JsonReport) -> JsonObject:

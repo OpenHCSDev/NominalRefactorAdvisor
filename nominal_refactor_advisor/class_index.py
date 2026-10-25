@@ -1989,6 +1989,15 @@ class CompactClosedAxisBranchFact:
 
 
 @dataclass(frozen=True)
+class CompactReceiverFieldBranchRead:
+    """``receiver.field_name.attribute`` reads in one method's branch tests."""
+
+    field_name: str
+    branch_site_count: int
+    attribute_names: tuple[str, ...]
+
+
+@dataclass(frozen=True)
 class CompactQualifiedSourceLocation(CompactSourceLocation):
     """Qualified source position shared by compact structural observations."""
 
@@ -1998,6 +2007,7 @@ class CompactQualifiedSourceLocation(CompactSourceLocation):
 @dataclass(frozen=True)
 class CompactClosedAxisBranchFunction(CompactQualifiedSourceLocation):
     axes: tuple[CompactClosedAxisBranchFact, ...]
+    receiver_field_reads: tuple[CompactReceiverFieldBranchRead, ...]
 
 
 @dataclass(frozen=True)
@@ -5132,18 +5142,86 @@ def _named_functions(
     return named_function_nodes(module)
 
 
-def _enum_member_refs_by_key_type(node: ast.AST) -> dict[str, tuple[str, ...]]:
-    refs: dict[str, set[str]] = defaultdict(set)
-    for subnode in ast.walk(node):
-        parts = AstExpressionProjection.attribute_chain(subnode)
-        if parts is None or len(parts) < 2:
-            continue
-        key_type_name = parts[-2]
-        refs[key_type_name].add(f"{key_type_name}.{parts[-1]}")
-    return {
-        key_type_name: sorted_tuple(case_names)
-        for key_type_name, case_names in refs.items()
-    }
+@dataclass
+class _BranchReferenceTally(ABC):
+    """Per-function branch-site counts for one projection of attribute chains."""
+
+    fact_type: ClassVar[type]
+    site_counts: dict[int, dict[str, int]] = field(
+        default_factory=lambda: defaultdict(lambda: defaultdict(int))
+    )
+    names: dict[int, dict[str, set[str]]] = field(
+        default_factory=lambda: defaultdict(lambda: defaultdict(set))
+    )
+
+    @abstractmethod
+    def reference(
+        self, parts: tuple[str, ...], receiver: str | None
+    ) -> tuple[str, str] | None:
+        """The key and name one attribute chain contributes, if any."""
+
+    def add(
+        self,
+        function_id: int,
+        branch: Iterable[ast.AST],
+        receiver: str | None,
+    ) -> None:
+        """Count one branch site whose tests and patterns are ``branch``."""
+
+        names_by_key: dict[str, set[str]] = defaultdict(set)
+        for node in branch:
+            for subnode in ast.walk(node):
+                parts = AstExpressionProjection.attribute_chain(subnode)
+                reference = None if parts is None else self.reference(parts, receiver)
+                if reference is not None:
+                    names_by_key[reference[0]].add(reference[1])
+        for key, names in names_by_key.items():
+            self.site_counts[function_id][key] += 1
+            self.names[function_id][key].update(names)
+
+    def facts(self, function_id: int) -> tuple:
+        return tuple(
+            self.fact_type(key, site_count, sorted_tuple(self.names[function_id][key]))
+            for key, site_count in sorted(self.site_counts[function_id].items())
+        )
+
+
+class _EnumMemberBranchTally(_BranchReferenceTally):
+    """``Key.CASE`` references, keyed by the chain's penultimate name."""
+
+    fact_type = CompactClosedAxisBranchFact
+
+    def reference(
+        self, parts: tuple[str, ...], receiver: str | None
+    ) -> tuple[str, str] | None:
+        if len(parts) < 2:
+            return None
+        return parts[-2], f"{parts[-2]}.{parts[-1]}"
+
+
+class _ReceiverFieldBranchTally(_BranchReferenceTally):
+    """``receiver.field.attribute`` reads, keyed by the receiver's field."""
+
+    fact_type = CompactReceiverFieldBranchRead
+
+    def reference(
+        self, parts: tuple[str, ...], receiver: str | None
+    ) -> tuple[str, str] | None:
+        if receiver is None or len(parts) != 3 or parts[0] != receiver:
+            return None
+        return parts[1], parts[2]
+
+
+def _method_receiver(function: ast.FunctionDef | ast.AsyncFunctionDef) -> str | None:
+    """The first positional parameter, which binds the receiver of a method."""
+
+    if any(
+        AstExpressionProjection.attribute_chain(decorator) == ("staticmethod",)
+        for decorator in function.decorator_list
+    ):
+        return None
+    positional = (*function.args.posonlyargs, *function.args.args)
+    return positional[0].arg if positional else None
 
 
 def _direct_class_assignments(node: ast.ClassDef) -> dict[str, ast.AST | None]:
@@ -5534,12 +5612,12 @@ def _compact_class_syntax_facets(
         for active_function_ids in active_function_ids_by_scope
     )
     scope_qualnames = tuple(".".join(scope.names) for scope in syntax_index.scopes)
-    branch_site_counts_by_function_id: dict[int, dict[str, int]] = defaultdict(
-        lambda: defaultdict(int)
-    )
-    case_names_by_function_and_key: dict[int, dict[str, set[str]]] = defaultdict(
-        lambda: defaultdict(set)
-    )
+    enum_member_tally = _EnumMemberBranchTally()
+    receiver_field_tally = _ReceiverFieldBranchTally()
+    receivers_by_function_id = {
+        id(function): _method_receiver(function)
+        for _qualname, function in syntax_index.named_functions
+    }
     exact_type_guards: list[CompactExactTypeGuard] = []
     indices_by_type = syntax_index.node_indices_by_type
 
@@ -5560,12 +5638,11 @@ def _compact_class_syntax_facets(
             continue
         active_function_id = active_function_ids[-1]
         node = syntax_index.depth_first_nodes[node_index]
-        for key_type_name, case_names in _enum_member_refs_by_key_type(
-            node.test
-        ).items():
-            branch_site_counts_by_function_id[active_function_id][key_type_name] += 1
-            case_names_by_function_and_key[active_function_id][key_type_name].update(
-                case_names
+        for tally in (enum_member_tally, receiver_field_tally):
+            tally.add(
+                active_function_id,
+                (node.test,),
+                receivers_by_function_id[active_function_id],
             )
 
     for node_index in indices_by_type.get(ast.Match, ()):
@@ -5576,21 +5653,17 @@ def _compact_class_syntax_facets(
             continue
         active_function_id = active_function_ids[-1]
         node = syntax_index.depth_first_nodes[node_index]
-        refs_by_key: dict[str, set[str]] = defaultdict(set)
-        for case in node.cases:
-            for key_type_name, case_names in _enum_member_refs_by_key_type(
-                case.pattern
-            ).items():
-                refs_by_key[key_type_name].update(case_names)
-            if case.guard is not None:
-                for key_type_name, case_names in _enum_member_refs_by_key_type(
-                    case.guard
-                ).items():
-                    refs_by_key[key_type_name].update(case_names)
-        for key_type_name, case_names in refs_by_key.items():
-            branch_site_counts_by_function_id[active_function_id][key_type_name] += 1
-            case_names_by_function_and_key[active_function_id][key_type_name].update(
-                case_names
+        branch = tuple(
+            part
+            for case in node.cases
+            for part in (case.pattern, case.guard)
+            if part is not None
+        )
+        for tally in (enum_member_tally, receiver_field_tally):
+            tally.add(
+                active_function_id,
+                branch,
+                receivers_by_function_id[active_function_id],
             )
 
     for node_index in merge(
@@ -5644,19 +5717,7 @@ def _compact_class_syntax_facets(
     autoregister_index = _compact_autoregister_reference_projection(builders)
     closed_axis_functions: list[CompactClosedAxisBranchFunction] = []
     for qualname, function in syntax_index.named_functions:
-        function_id = id(function)
-        axes = tuple(
-            CompactClosedAxisBranchFact(
-                key_type_name=key_type_name,
-                branch_site_count=branch_site_count,
-                case_names=sorted_tuple(
-                    case_names_by_function_and_key[function_id][key_type_name]
-                ),
-            )
-            for key_type_name, branch_site_count in sorted(
-                branch_site_counts_by_function_id[function_id].items()
-            )
-        )
+        axes = enum_member_tally.facts(id(function))
         if axes:
             closed_axis_functions.append(
                 CompactClosedAxisBranchFunction(
@@ -5664,6 +5725,7 @@ def _compact_class_syntax_facets(
                     line=function.lineno,
                     qualname=qualname,
                     axes=axes,
+                    receiver_field_reads=receiver_field_tally.facts(id(function)),
                 )
             )
     return CompactClassSyntaxFacets(

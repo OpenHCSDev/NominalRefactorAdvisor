@@ -119,7 +119,7 @@ class ExactDataclassFieldSemantics:
         binding_snapshot: ModuleNominalBindingSnapshot,
         class_bound_names: frozenset[str],
         comment_lines: SourceCommentLineIndex,
-        annotation_mode: ModuleAnnotationEvaluationMode,
+        annotation_mode: type[ModuleAnnotationEvaluationMode],
     ) -> "ExactDataclassFieldSemantics":
         if not isinstance(statement.target, ast.Name) or statement.value is not None:
             raise ValueError("Promoted dataclass fields must be default-free names")
@@ -364,7 +364,7 @@ class ExactDataclassFieldAuthorityComponentBuilder:
         binding_snapshot: ModuleNominalBindingSnapshot,
         source_segments: SourceLineSegmentAuthority,
         comment_lines: SourceCommentLineIndex,
-        annotation_mode: ModuleAnnotationEvaluationMode,
+        annotation_mode: type[ModuleAnnotationEvaluationMode],
     ) -> ExactDataclassFieldParticipant:
         node = indexed_class.node
         declaration = indexed_class.dataclass_declaration

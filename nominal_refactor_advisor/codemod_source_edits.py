@@ -26,7 +26,6 @@ from dataclasses import (
     dataclass,
     replace,
 )
-from enum import StrEnum
 from functools import cached_property
 from itertools import pairwise
 from pathlib import Path
@@ -38,6 +37,7 @@ from typing import (
     cast,
 )
 
+from .case_root import Case
 from .codemod_paths import SourceCreationPathAuthority as SourceCreationPathAuthority
 from .codemod_payload import (
     CodemodPayloadRecord,
@@ -74,34 +74,51 @@ if TYPE_CHECKING:
     from .codemod_selection_context import CodemodSelectorContext
 
 
-class SourceNodeDecoratorPolicy(StrEnum):
+class SourceNodeDecoratorPolicy(Case):
     """Whether source node spans include decorators."""
 
-    EXCLUDE = ("exclude", False)
-    INCLUDE = ("include", True)
+    includes_decorators: bool
 
+    @classmethod
     def validate_replacement(
-        self, node: ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef
+        cls,
+        node: ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef,
     ) -> None:
         """Require authored decorators to belong to the selected source region."""
-        if node.decorator_list and not self.includes_decorators:
+        if node.decorator_list:
             raise ValueError(
                 "Replacement decorators require a decorator-inclusive source region"
             )
 
-    def __new__(
-        cls,
-        value: str,
-        includes_decorators: bool,
-    ) -> "SourceNodeDecoratorPolicy":
-        member = str.__new__(cls, value)
-        member._value_ = value
-        member._includes_decorators = includes_decorators
-        return member
+    @classmethod
+    def start_line(cls, node: ast.stmt) -> int:
+        return node.lineno
 
-    @property
-    def includes_decorators(self) -> bool:
-        return self._includes_decorators
+
+class Exclude(SourceNodeDecoratorPolicy):
+    value = "exclude"
+    includes_decorators = False
+
+
+class Include(SourceNodeDecoratorPolicy):
+    value = "include"
+    includes_decorators = True
+
+    @classmethod
+    def validate_replacement(
+        cls,
+        node: ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef,
+    ) -> None:
+        pass
+
+    @classmethod
+    def start_line(cls, node: ast.stmt) -> int:
+        if isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
+            decorator_lines = tuple(
+                decorator.lineno for decorator in node.decorator_list
+            )
+            return min((*decorator_lines, node.lineno))
+        return node.lineno
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -741,7 +758,7 @@ class SourceSpanDeletion(SourceSpanEdit):
             ).node_line_span(
                 SourceNodeSpan(
                     target_node,
-                    SourceNodeDecoratorPolicy.INCLUDE,
+                    Include,
                 )
             )
             if isinstance(target_node, ast.stmt)
@@ -803,7 +820,7 @@ class SourceSpanDeletion(SourceSpanEdit):
             statement_span=SourceTextGeometry(source).node_line_span(
                 SourceNodeSpan(
                     statement,
-                    SourceNodeDecoratorPolicy.INCLUDE,
+                    Include,
                 )
             ),
             rationale=rationale,
@@ -1310,19 +1327,11 @@ class SourceNodeSpan:
     """AST envelope; SourceTextGeometry resolves exact decorated source bounds."""
 
     node: ast.stmt
-    decorator_policy: SourceNodeDecoratorPolicy = SourceNodeDecoratorPolicy.EXCLUDE
+    decorator_policy: type[SourceNodeDecoratorPolicy] = Exclude
 
     @property
     def start_line(self) -> int:
-        if self.decorator_policy.includes_decorators and isinstance(
-            self.node,
-            (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef),
-        ):
-            decorator_lines = tuple(
-                decorator.lineno for decorator in self.node.decorator_list
-            )
-            return min((*decorator_lines, self.node.lineno))
-        return self.node.lineno
+        return self.decorator_policy.start_line(self.node)
 
     @property
     def end_line(self) -> int:

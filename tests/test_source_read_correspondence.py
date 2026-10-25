@@ -12,7 +12,7 @@ from nominal_refactor_advisor.codemod import (
     CodemodPlanDocument,
     CodemodPlanSequence,
     CreateFileOperation,
-    DescendTypeKeyedBehaviorProjectionOperation,
+    TypedMirror,
     CodemodSourceSnapshot,
     ConvertManualRegistryToAutoregisterOperation,
     RefactorRecipe,
@@ -107,7 +107,7 @@ def join(
 
 def requirement(env, node):
     return NativeUseRequirement(
-        DescendTypeKeyedBehaviorProjectionOperation,
+        TypedMirror,
         node,
         (NativeDeclaration(object),),
         env,

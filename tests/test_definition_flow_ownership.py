@@ -10,14 +10,15 @@ import pytest
 
 from nominal_refactor_advisor.ast_tools import ParsedModule
 from nominal_refactor_advisor.product_flow import (
+    ClassBody,
     CompactClassDeclaration,
     CompactControlBranchKind,
     CompactDefinitionFlowOwner,
     CompactDefinitionTarget,
-    CompactFlowOwnerKind,
     CompactFunctionDeclaration,
     CompactMutationKind,
     CompactNamespaceFlowOwner,
+    Module,
     compact_product_flow_projection,
 )
 from nominal_refactor_advisor.source_geometry import SourceByteSpan
@@ -73,7 +74,7 @@ def test_repeated_class_names_have_distinct_exact_source_owners():
         assert first != second
         assert first.source_span != second.source_span
         assert isinstance(first, CompactClassDeclaration)
-        assert first.kind is CompactFlowOwnerKind.CLASS_BODY
+        assert first.kind is ClassBody
     expected = {
         SourceByteSpan.require_node(node)
         for node in ast.walk(ast.parse(source))
@@ -182,7 +183,7 @@ def test_function_and_class_targets_share_existing_declaration_owners():
 
 def test_definition_target_rejects_module_namespace_as_body_owner():
     ((_, mutation),) = _definitions(_projection("class Owner: pass\n"))
-    module_owner = CompactNamespaceFlowOwner(CompactFlowOwnerKind.MODULE, "")
+    module_owner = CompactNamespaceFlowOwner(Module, "")
     with pytest.raises((TypeError, ValueError)):
         replace(mutation.target, owner=module_owner)
 

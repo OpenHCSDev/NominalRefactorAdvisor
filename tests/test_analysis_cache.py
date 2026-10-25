@@ -38,6 +38,10 @@ from nominal_refactor_advisor.analysis_cache import (
     AnalysisCacheIdentity,
     AnalysisCacheResolutionABC,
     AnalysisCacheStatus,
+    Disabled,
+    Hit,
+    Miss,
+    Partial,
     AnalysisCacheStorage,
     AnalysisFindingCacheChunkStreamHeader,
     AnalysisFindingCacheEntryPayload,
@@ -150,45 +154,45 @@ def assert_no_calls(function):
 @pytest.mark.parametrize(
     ("statuses", "expected"),
     (
-        ((), AnalysisCacheStatus.MISS),
-        ((AnalysisCacheStatus.HIT,), AnalysisCacheStatus.HIT),
+        ((), Miss),
+        ((Hit,), Hit),
         (
-            (AnalysisCacheStatus.HIT, AnalysisCacheStatus.HIT),
-            AnalysisCacheStatus.HIT,
+            (Hit, Hit),
+            Hit,
         ),
         (
-            (AnalysisCacheStatus.HIT, AnalysisCacheStatus.MISS),
-            AnalysisCacheStatus.PARTIAL,
+            (Hit, Miss),
+            Partial,
         ),
         (
-            (AnalysisCacheStatus.PARTIAL, AnalysisCacheStatus.MISS),
-            AnalysisCacheStatus.PARTIAL,
+            (Partial, Miss),
+            Partial,
         ),
         (
-            (AnalysisCacheStatus.DISABLED, AnalysisCacheStatus.DISABLED),
-            AnalysisCacheStatus.DISABLED,
+            (Disabled, Disabled),
+            Disabled,
         ),
         (
-            (AnalysisCacheStatus.DISABLED, AnalysisCacheStatus.MISS),
-            AnalysisCacheStatus.MISS,
+            (Disabled, Miss),
+            Miss,
         ),
     ),
 )
 def test_analysis_cache_status_owns_combination_algebra(
-    statuses: tuple[AnalysisCacheStatus, ...],
-    expected: AnalysisCacheStatus,
+    statuses: tuple[type[AnalysisCacheStatus], ...],
+    expected: type[AnalysisCacheStatus],
 ) -> None:
     assert AnalysisCacheStatus.combine(statuses) is expected
 
 
 def test_analysis_cache_status_owns_post_analysis_classification() -> None:
-    assert AnalysisCacheStatus.from_reuse_coverage(0, 0) is AnalysisCacheStatus.HIT
-    assert AnalysisCacheStatus.MISS.after_analysis(0) is AnalysisCacheStatus.MISS
-    assert AnalysisCacheStatus.MISS.after_analysis(1) is AnalysisCacheStatus.PARTIAL
-    assert AnalysisCacheStatus.HIT.after_analysis(0) is AnalysisCacheStatus.HIT
-    assert AnalysisCacheStatus.PARTIAL.after_analysis(0) is AnalysisCacheStatus.PARTIAL
-    assert AnalysisCacheStatus.DISABLED.after_analysis(1) is (
-        AnalysisCacheStatus.DISABLED
+    assert AnalysisCacheStatus.from_reuse_coverage(0, 0) is Hit
+    assert Miss.after_analysis(0) is Miss
+    assert Miss.after_analysis(1) is Partial
+    assert Hit.after_analysis(0) is Hit
+    assert Partial.after_analysis(0) is Partial
+    assert Disabled.after_analysis(1) is (
+        Disabled
     )
 
 
@@ -207,14 +211,14 @@ class _CacheResolutionFixture(AnalysisCacheResolutionABC[str]):
 @pytest.mark.parametrize(
     ("status", "expected"),
     (
-        (AnalysisCacheStatus.DISABLED, "uncached"),
-        (AnalysisCacheStatus.HIT, "cached"),
-        (AnalysisCacheStatus.PARTIAL, "stored"),
-        (AnalysisCacheStatus.MISS, "stored"),
+        (Disabled, "uncached"),
+        (Hit, "cached"),
+        (Partial, "stored"),
+        (Miss, "stored"),
     ),
 )
 def test_analysis_cache_status_members_own_resolution_policy(
-    status: AnalysisCacheStatus,
+    status: type[AnalysisCacheStatus],
     expected: str,
 ) -> None:
     assert status.resolve(_CacheResolutionFixture()) == expected
@@ -234,14 +238,14 @@ def test_codemod_source_context_cache_preserves_its_nominal_entry(
     context = CodemodSourceContext.from_modules(modules)
     cache = CodemodSourceContextCache(tmp_path / "cache")
 
-    assert cache.load(identity).status is AnalysisCacheStatus.MISS
+    assert cache.load(identity).status is Miss
     cache.store(identity, context)
     lookup = cache.load(identity)
     cache_path = cache.context_path(cache.storage(), identity)
     with cache_path.open("rb") as handle:
         persisted_entry = pickle.load(handle)
 
-    assert lookup.status is AnalysisCacheStatus.HIT
+    assert lookup.status is Hit
     assert lookup.context is not None
     assert lookup.context.sources_by_file_path == context.sources_by_file_path
     assert lookup.context.class_family_index.classes_by_symbol.keys() == (
@@ -258,7 +262,7 @@ def test_codemod_source_context_cache_preserves_its_nominal_entry(
             handle,
             protocol=pickle.HIGHEST_PROTOCOL,
         )
-    assert cache.load(identity).status is AnalysisCacheStatus.MISS
+    assert cache.load(identity).status is Miss
 
 
 def _empty_semantic_descent_graph(authority_name: str = "") -> SemanticDescentGraph:
@@ -546,8 +550,8 @@ def test_module_detector_shard_cache_reuses_exact_focused_findings(
             if detector_type is FocusedShardDetector:
                 del IssueDetector.__registry__[registry_key]
 
-    assert cold.cache_status is AnalysisCacheStatus.MISS
-    assert warm.cache_status is AnalysisCacheStatus.HIT
+    assert cold.cache_status is Miss
+    assert warm.cache_status is Hit
     assert FocusedShardDetector.call_count == 1
 
 
@@ -627,8 +631,8 @@ def test_module_detector_cache_reuses_unchanged_implementation_bundle(
             if detector_type in registered_test_detectors:
                 del IssueDetector.__registry__[registry_key]
 
-    assert cold.cache_status is AnalysisCacheStatus.MISS
-    assert partial.cache_status is AnalysisCacheStatus.PARTIAL
+    assert cold.cache_status is Miss
+    assert partial.cache_status is Partial
     assert calls == {"stable": 1, "first": 1, "second": 1}
     assert {item.detector_id for item in cold.findings} == {
         "stable_bundle_detector",
@@ -1105,8 +1109,8 @@ def test_equivalent_checkouts_reuse_graph_and_detector_caches_with_rebased_paths
             if detector_type is RelocatableCacheDetector:
                 del IssueDetector.__registry__[registry_key]
 
-    assert first.cache_status is AnalysisCacheStatus.MISS
-    assert second.cache_status is AnalysisCacheStatus.HIT
+    assert first.cache_status is Miss
+    assert second.cache_status is Hit
     assert detector_calls == 1
     assert second.findings[0].evidence[0].file_path == source_b.as_posix()
 
@@ -1306,7 +1310,7 @@ def test_relocatable_caches_reject_path_escape_and_ambiguous_roots(
     )
     cache.store(identity, [escaped_finding])
 
-    assert cache.load(identity).status is AnalysisCacheStatus.MISS
+    assert cache.load(identity).status is Miss
 
 
 def test_checkout_cache_identity_accepts_cwd_relative_file_root(
@@ -1531,7 +1535,7 @@ def test_analysis_cache_reuses_semantic_identity_after_comment_only_change(
         DetectorConfig(),
         analysis_cache_dir=cache_dir,
     )
-    assert first_result.cache_status is AnalysisCacheStatus.MISS
+    assert first_result.cache_status is Miss
     assert CountingSemanticCacheDetector.call_count == 1
 
     module_path.write_text(
@@ -1544,7 +1548,7 @@ def test_analysis_cache_reuses_semantic_identity_after_comment_only_change(
         analysis_cache_dir=cache_dir,
     )
 
-    assert second_result.cache_status is AnalysisCacheStatus.HIT
+    assert second_result.cache_status is Hit
     assert CountingSemanticCacheDetector.call_count == 1
 
 
@@ -1557,7 +1561,7 @@ def test_analysis_cache_rebuild_lease_waits_for_exact_cache_entry(
     identity = AnalysisCacheIdentity.from_roots((package_root,), DetectorConfig())
     cache = AnalysisFindingCache(tmp_path / ".nra-cache" / "analysis")
 
-    def wait_for_cached_lease() -> tuple[bool, AnalysisCacheStatus | None]:
+    def wait_for_cached_lease() -> tuple[bool, type[AnalysisCacheStatus] | None]:
         with cache.rebuild_lease(identity, poll_interval_seconds=0.01) as lease:
             cached_status = (
                 None if lease.cached_lookup is None else lease.cached_lookup.status
@@ -1572,7 +1576,7 @@ def test_analysis_cache_rebuild_lease_waits_for_exact_cache_entry(
             assert not future.done()
             cache.store(identity, [])
 
-    assert future.result(timeout=1.0) == (False, AnalysisCacheStatus.HIT)
+    assert future.result(timeout=1.0) == (False, Hit)
 
 
 def test_analysis_cache_rejects_malformed_finding_evidence(
@@ -1603,7 +1607,7 @@ def test_analysis_cache_rejects_malformed_finding_evidence(
         {"identity": identity, "findings": [finding]},
     )
 
-    assert cache.load(identity).status is AnalysisCacheStatus.MISS
+    assert cache.load(identity).status is Miss
     with pytest.raises(TypeError, match="non-SourceLocation evidence"):
         cache.store(identity, [finding])
 
@@ -1679,8 +1683,8 @@ def test_cross_module_candidate_detector_reuses_contextual_global_cache(
         analysis_cache_dir=cache_dir,
     )
 
-    assert first_result.cache_status is AnalysisCacheStatus.MISS
-    assert second_result.cache_status is AnalysisCacheStatus.PARTIAL
+    assert first_result.cache_status is Miss
+    assert second_result.cache_status is Partial
     assert candidate_calls == 2
     assert finding_calls == 2
 
@@ -1774,7 +1778,7 @@ def test_contextual_global_graph_detectors_share_semantic_descent_graph(
     finally:
         unregister_test_detectors()
 
-    assert result.cache_status is AnalysisCacheStatus.MISS
+    assert result.cache_status is Miss
     assert graph_build_count == 1
     assert len(graph_ids) == 2
     assert len(set(graph_ids)) == 1
@@ -1992,7 +1996,7 @@ def test_uncached_analysis_preserves_cached_repo_graph_source(
         ),
     )
 
-    assert result.cache_status is AnalysisCacheStatus.DISABLED
+    assert result.cache_status is Disabled
     assert result.findings == []
     assert observed_authority_names == [("RepoAuthority",)]
 
@@ -2078,8 +2082,8 @@ def test_global_detector_shard_survives_detector_registry_expansion(
     finally:
         unregister_test_detectors()
 
-    assert first_result.cache_status is AnalysisCacheStatus.MISS
-    assert second_result.cache_status is AnalysisCacheStatus.PARTIAL
+    assert first_result.cache_status is Miss
+    assert second_result.cache_status is Partial
     assert global_calls == 1
     assert local_calls == 1
     assert [finding.summary for finding in second_result.findings] == ["stable global"]
@@ -2776,7 +2780,7 @@ def test_uncached_compact_analysis_skips_persistent_content_identities(
         detector_types=(systemic_detectors.RepeatedConcreteTypeCaseAnalysisDetector,),
     )
 
-    assert result.cache_status is AnalysisCacheStatus.DISABLED
+    assert result.cache_status is Disabled
 
 
 def test_source_local_detector_requests_ast_fallback_for_carrier_syntax(
@@ -3760,7 +3764,7 @@ def test_compact_root_analysis_matches_full_ast_and_reuses_aggregate_cache(
     assert [json_report_object(finding) for finding in cold.findings] == [
         json_report_object(finding) for finding in expected
     ]
-    assert cold.cache_status is AnalysisCacheStatus.MISS
+    assert cold.cache_status is Miss
     assert cold.projection_count > 0
 
     with assert_no_calls(ast_tools_module.PythonModuleRootParser.for_root):
@@ -3770,7 +3774,7 @@ def test_compact_root_analysis_matches_full_ast_and_reuses_aggregate_cache(
             analysis_cache_dir=analysis_cache_dir,
         )
 
-    assert warm.cache_status is AnalysisCacheStatus.HIT
+    assert warm.cache_status is Hit
     assert warm.findings == cold.findings
     assert warm.projection_count == 0
 
@@ -3817,7 +3821,7 @@ def test_compact_incremental_analysis_reuses_consolidated_family_signatures(
             analysis_cache_dir=analysis_cache_dir,
         )
 
-    assert incremental.cache_status is AnalysisCacheStatus.PARTIAL
+    assert incremental.cache_status is Partial
     assert incremental.findings == cold.findings
 
 
@@ -3842,7 +3846,7 @@ def test_single_file_rebuild_does_not_start_idle_projection_workers(tmp_path):
             analysis_cache_dir=analysis_cache_dir,
             parse_workers=16,
         )
-    assert incremental.cache_status is AnalysisCacheStatus.PARTIAL
+    assert incremental.cache_status is Partial
     expected = analyze_compact_roots_with_cache((package_root,), use_parse_cache=False)
     assert incremental.findings == expected.findings
 
@@ -4116,7 +4120,7 @@ def test_compact_global_detector_shards_reuse_across_report_targets(
         report_scope=second_scope,
     )
 
-    assert second.cache_status is AnalysisCacheStatus.PARTIAL
+    assert second.cache_status is Partial
     assert second.findings == second_scope.filter_findings(all_findings)
     assert first.projection_count > second.projection_count
 
@@ -6226,7 +6230,7 @@ def test_compact_analysis_returns_semantic_graph_on_cold_and_aggregate_hits(
 
     assert cold.semantic_descent_graph is not None
     assert cold.semantic_descent_graph.certificates
-    assert warm.cache_status is AnalysisCacheStatus.HIT
+    assert warm.cache_status is Hit
     assert warm.semantic_descent_graph == cold.semantic_descent_graph
     assert warm.findings == cold.findings
 
@@ -6639,7 +6643,7 @@ def test_partial_cache_omits_changed_compact_global_semantic_findings(
     ).result()
 
     assert partial_result is not None
-    assert partial_result.cache_status is AnalysisCacheStatus.PARTIAL
+    assert partial_result.cache_status is Partial
     mirror_findings = tuple(
         finding
         for finding in partial_result.findings
@@ -6734,7 +6738,7 @@ def test_compact_semantic_detector_does_not_materialize_legacy_graph_cache(
     ).result()
 
     assert partial_result is not None
-    assert partial_result.cache_status is AnalysisCacheStatus.PARTIAL
+    assert partial_result.cache_status is Partial
     assert not any(
         finding.detector_id == "semantic_mirror_without_descent"
         and "`STEP_TABLE` mirrors `Step`" in finding.title
@@ -6799,7 +6803,7 @@ def test_partial_cache_omits_changed_compact_semantic_projection(
     ).result()
 
     assert partial_result is not None
-    assert partial_result.cache_status is AnalysisCacheStatus.PARTIAL
+    assert partial_result.cache_status is Partial
     mirror_findings = tuple(
         finding
         for finding in partial_result.findings

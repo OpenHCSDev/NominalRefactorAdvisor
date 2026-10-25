@@ -100,7 +100,7 @@ class ClassNamespaceEffect(ABC):
 
     def executes_at_definition(
         self,
-        annotation_mode: ModuleAnnotationEvaluationMode,
+        annotation_mode: type[ModuleAnnotationEvaluationMode],
     ) -> bool:
         return (
             self.use.binding_phase(
@@ -364,7 +364,7 @@ class AnnotationStorageEffect(ItemWriteEffect):
     node: ast.AnnAssign
 
     def executes_at_definition(
-        self, annotation_mode: ModuleAnnotationEvaluationMode
+        self, annotation_mode: type[ModuleAnnotationEvaluationMode]
     ) -> bool:
         return (
             annotation_mode.stores_variable_annotations_at_definition

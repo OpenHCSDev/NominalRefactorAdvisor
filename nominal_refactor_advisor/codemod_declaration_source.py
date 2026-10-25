@@ -28,11 +28,11 @@ from .ast_tools import (
     is_docstring_statement,
 )
 from .codemod_source_edits import (
+    Include,
     NominalSourceEdit,
     PhysicalSourceEditConflictError,
     SourceEditWindowABC,
     SourceLineSpan,
-    SourceNodeDecoratorPolicy,
     SourceNodeSpan,
     SourceTextGeometry,
     SourceTextMutation,
@@ -189,7 +189,7 @@ class NamedDeclarationSourceAuthority:
         """Own the complete declaration, including every decorator marker."""
 
         return self.geometry.node_line_span(
-            SourceNodeSpan(self.node, SourceNodeDecoratorPolicy.INCLUDE)
+            SourceNodeSpan(self.node, Include)
         )
 
     @cached_property
@@ -480,7 +480,7 @@ class ClassBodySourceAuthority(ClassSourceAuthority):
         if first_method is None:
             return self.body_end_offset
         insertion_line = self.geometry.node_start_line(
-            SourceNodeSpan(first_method, SourceNodeDecoratorPolicy.INCLUDE)
+            SourceNodeSpan(first_method, Include)
         )
         source_lines = self.geometry.lines
         method_indent = self.indentation
@@ -744,7 +744,7 @@ class FunctionAliasSourceAuthority(FunctionRegionSourceAuthority):
         )
         if reference is None or reference.attribute_path:
             raise ValueError("Function alias requires one implementation name")
-        node_span = SourceNodeSpan(self.node, SourceNodeDecoratorPolicy.INCLUDE)
+        node_span = SourceNodeSpan(self.node, Include)
         span = SourceTextSpan(*self.geometry.node_span_offsets(node_span))
         if self.geometry.span_contains_comment(span):
             raise ValueError("Function alias would discard comments")
@@ -768,7 +768,7 @@ class DeclarationDecoratorsSourceAuthority(DeclarationRegionSourceAuthority):
 
     def replacement(self, decorators_source: str, /) -> SourceTextSpanReplacement:
         first_line = self.geometry.node_start_line(
-            SourceNodeSpan(self.node, SourceNodeDecoratorPolicy.INCLUDE)
+            SourceNodeSpan(self.node, Include)
         )
         span = SourceTextSpan(
             self.geometry.line_offsets[first_line - 1],
@@ -862,7 +862,7 @@ class FunctionSuiteSourceAuthority(FunctionRegionSourceAuthority, ABC):
         first_statement_line = self.geometry.node_start_line(
             SourceNodeSpan(
                 self.node.body[0],
-                SourceNodeDecoratorPolicy.INCLUDE,
+                Include,
             )
         )
         header_source = self.geometry.lines[header_line - 1]
@@ -947,7 +947,7 @@ class FunctionBodyPrefixSourceAuthority(FunctionSuiteSourceAuthority):
             first_statement_line = self.geometry.node_start_line(
                 SourceNodeSpan(
                     self.node.body[0],
-                    SourceNodeDecoratorPolicy.INCLUDE,
+                    Include,
                 )
             )
             insertion = self.geometry.line_offsets[first_statement_line - 1]

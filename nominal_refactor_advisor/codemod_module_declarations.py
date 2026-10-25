@@ -50,7 +50,7 @@ from .codemod_imports import (
     RequestedImportStatement as RequestedImportStatement,
 )
 from .codemod_source_edits import (
-    SourceNodeDecoratorPolicy,
+    Include,
     SourceNodeSpan,
     SourceSpanDeletion,
     SourceTextGeometry,
@@ -689,7 +689,7 @@ class SourceTopLevelDeclaration(
     def source_span(self) -> SourceNodeSpan:
         return SourceNodeSpan(
             self.node,
-            decorator_policy=SourceNodeDecoratorPolicy.INCLUDE,
+            decorator_policy=Include,
         )
 
 

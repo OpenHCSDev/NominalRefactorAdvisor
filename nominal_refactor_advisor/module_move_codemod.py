@@ -751,7 +751,7 @@ class NewModuleSymbolMoveOperationABC(ModuleSymbolMoveOperation, ABC):
         annotation_mode = ModuleAnnotationEvaluationMode.from_module(
             context.module_nodes_by_file_path[source_path]
         )
-        return annotation_mode.new_module_prelude
+        return annotation_mode.new_module_prelude()
 
     def source_edits_from_snapshot(
         self,

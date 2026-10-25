@@ -12,7 +12,7 @@ from nominal_refactor_advisor.analysis import analyze_modules
 from nominal_refactor_advisor.codemod import (
     CodemodPlanDocument,
     CodemodSourceSnapshot,
-    DescendTypeKeyedBehaviorProjectionOperation,
+    TypedMirror,
     MappingSemanticMirrorRecipeStrategy,
     RefactorRecipe,
     SemanticDescentRecipeEvaluation,
@@ -96,7 +96,7 @@ def test_actual_synthesis_retains_proposal_and_all_typed_native_obligations(subj
     assert record.proposal_preflight is record.evaluation.preflight
     assert not record.proposal_preflight.is_clean
     (operation,) = record.proposal.operations
-    assert isinstance(operation, DescendTypeKeyedBehaviorProjectionOperation)
+    assert isinstance(operation, TypedMirror)
     assert operation.target.target_id
     assert operation.supported_execution == DeclaredNativeUseInvariants()
     requirements = operation.native_use_requirements(snapshot)
@@ -195,7 +195,7 @@ def test_shared_gate_retains_actual_failed_authority_report_once(subject, monkey
     monkeypatch.setattr(RefactorRecipe, "preflight_reports", observe)
     result = ExecutableRecipeEvaluation(
         executable_recipe=proposal,
-        evaluation_declaration_type=DescendTypeKeyedBehaviorProjectionOperation,
+        evaluation_declaration_type=TypedMirror,
     ).gated_by_recipe_preflight(snapshot)
     assert isinstance(result, RejectedRecipeProposalEvaluation)
     assert result.proposal is proposal
@@ -214,7 +214,7 @@ def test_semantic_descent_preserves_authority_and_explicit_candidate(subject):
     proposal = _enrich(plan.records[0].proposal, snapshot)
     evaluation = SemanticDescentRecipeEvaluation(
         executable_recipe=proposal,
-        evaluation_declaration_type=DescendTypeKeyedBehaviorProjectionOperation,
+        evaluation_declaration_type=TypedMirror,
         strategy_type=MappingSemanticMirrorRecipeStrategy,
     )
     assert proposal.effective_authority_claims(snapshot)
