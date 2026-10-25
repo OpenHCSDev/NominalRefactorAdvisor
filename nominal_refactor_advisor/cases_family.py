@@ -1465,16 +1465,36 @@ class CasesFamily(Cases, Descent):
         if statements:
             rewrite.require_import(module, source, name)
             return
-        anchor = next(
+        # Ruff's order: from-imports by module, after plain imports.
+        from_imports = [
             statement
             for statement in module.module.body
-            if isinstance(statement, ast.Import | ast.ImportFrom)
-            and not (
-                isinstance(statement, ast.ImportFrom)
-                and statement.module == "__future__"
+            if isinstance(statement, ast.ImportFrom)
+            and statement.level == 0
+            and statement.module != "__future__"
+        ]
+        earlier = [
+            statement
+            for statement in from_imports
+            if (statement.module or "").lower() < source.lower()
+        ]
+        geometry = rewrite.geometry(module)
+        if earlier:
+            offset = geometry.line_offsets[earlier[-1].end_lineno]
+        else:
+            anchor = next(
+                iter(from_imports),
+                next(
+                    statement
+                    for statement in module.module.body
+                    if isinstance(statement, ast.Import | ast.ImportFrom)
+                    and not (
+                        isinstance(statement, ast.ImportFrom)
+                        and statement.module == "__future__"
+                    )
+                ),
             )
-        )
-        offset = rewrite.geometry(module).line_offsets[anchor.lineno - 1]
+            offset = geometry.line_offsets[anchor.lineno - 1]
         rewrite.span(module, offset, offset, f"from {source} import {name}\n")
 
 

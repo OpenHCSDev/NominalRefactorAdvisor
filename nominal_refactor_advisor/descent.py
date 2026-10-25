@@ -113,6 +113,13 @@ def class_name(member_name: str) -> str:
     return "".join(part.capitalize() for part in member_name.split("_"))
 
 
+def alias_order(name: str) -> tuple[int, str]:
+    """Ruff's order-by-type: CONSTANTS, then Classes, then other names, each caseless."""
+
+    rank = 0 if len(name) > 1 and name.isupper() else 1 if name[:1].isupper() else 2
+    return rank, name.lower()
+
+
 @dataclass(frozen=True)
 class Member:
     """One enum member: its declaration and the expression each ``__new__`` field takes."""
@@ -618,6 +625,9 @@ class Rewrite:
                 elif local in remaining or local not in original:
                     aliases.append(alias)
             aliases.extend(ast.alias(name) for name in required)
+            authored = [alias.name for alias in statement.names]
+            if authored == sorted(authored, key=alias_order):
+                aliases.sort(key=lambda alias: alias_order(alias.name))
             if [ast.dump(alias) for alias in aliases] == [
                 ast.dump(alias) for alias in statement.names
             ]:

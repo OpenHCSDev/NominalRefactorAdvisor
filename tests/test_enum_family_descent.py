@@ -5,7 +5,8 @@ declares behaviour, into a class family.
 The fixtures are copies (CasesFold) or verbatim excerpts (CasesFamily) of NRA source
 at the commits named in each fixture, so the replay does not depend on NRA's current
 source. Comparison ignores docstrings and formatting: both sides are unparsed,
-docstrings dropped, empty and ``...`` bodies read as ``pass``, then Black-formatted.
+docstrings dropped, empty and ``...`` bodies read as ``pass``, from-import names
+read in sorted order, then Black-formatted.
 """
 
 from __future__ import annotations
@@ -48,6 +49,8 @@ FAMILY_NAMES = ("require_exact_identity", "require_summary_payload")
 def _normalized(source: str) -> str:
     tree = ast.parse(source)
     for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom):
+            node.names.sort(key=lambda alias: alias.name)
         body = getattr(node, "body", None)
         if not isinstance(body, list):
             continue
@@ -391,4 +394,30 @@ def test_cases_family_gives_each_independent_if_its_own_method(tmp_path: Path) -
     assert str(refusal.value) == (
         f"handback: 2 name(s) needed, 0 given: [0] {module}:26: {prompt}; "
         f"[1] {module}:31: {prompt}"
+    )
+
+
+def test_cases_family_keeps_sorted_imports_sorted(tmp_path: Path) -> None:
+    (tmp_path / "need.py").write_text(ELIF_ENUM_SOURCE)
+    (tmp_path / "reader.py").write_text(
+        "from need import Holder, Need, helper\n\n"
+        "assert Need.REQUIRED.required\n"
+        "assert Holder and helper\n"
+    )
+    (tmp_path / "need.py").write_text(
+        (tmp_path / "need.py").read_text() + "\n\ndef helper() -> None:\n    pass\n"
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path), ())
+    operation = CasesFamily(
+        target=_target(snapshot, "need.Need"), rationale="", names=("check_reference",)
+    )
+
+    simulation = _simulated(snapshot, operation)
+
+    assert simulation.is_clean is True
+    rewritten = simulation.simulation.rewritten_sources
+    family = rewritten[(tmp_path / "need.py").as_posix()]
+    assert family.index("from abc import ABC\n") < family.index("from dataclasses")
+    assert rewritten[(tmp_path / "reader.py").as_posix()].startswith(
+        "from need import (\n    Holder,\n    Required,\n    helper,\n)\n"
     )
