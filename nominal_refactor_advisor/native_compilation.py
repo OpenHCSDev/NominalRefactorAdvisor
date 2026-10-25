@@ -4196,7 +4196,9 @@ class CPythonClassConstructionField(StrEnum):
     SLOTS = "__slots__"
     CLASS_CELL = "__classcell__"
     CLASS_DICTIONARY_CELL = "__classdictcell__"
-    DOCUMENTATION = "__doc__", _require_documentation, "\ud800"
+    # A lone surrogate, which no text encoding accepts. Built by chr so type checkers
+    # infer str: mypy 2.3 crashes writing the literal '\ud800' to its UTF-8 cache.
+    DOCUMENTATION = "__doc__", _require_documentation, chr(0xD800)
 
     @cached_property
     def native_active(self) -> bool:
