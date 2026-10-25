@@ -20,6 +20,7 @@ import ast
 import builtins
 import operator
 import textwrap
+import tokenize
 from abc import ABC, abstractmethod
 from collections import Counter
 from collections.abc import Callable, Iterable, Iterator
@@ -32,6 +33,7 @@ from metaclass_registry import AutoRegisterMeta
 
 from .ast_tools import AstParentIndex, ParsedModule, PythonSourcePathPolicy
 from .codemod_runtime import CodemodSourceSnapshot
+from .codemod_source_edits import SourceTextGeometry, SourceTextSpanReplacement
 from .descent import (
     Answers,
     Cases,
@@ -661,6 +663,93 @@ def signature(
     ]
 
 
+
+def authored_header(
+    module: ParsedModule,
+    function: ast.FunctionDef,
+    first: str | None,
+    annotation_text: Callable[[ast.expr], str],
+) -> list[str]:
+    """``function``'s own ``def`` header lines, as its author laid them out, with
+    the receiver renamed to ``first`` and each annotation rendered by
+    ``annotation_text``."""
+
+    geometry = SourceTextGeometry(module.source)
+    start = geometry.required_node_offsets(function)[0]
+    arguments = function.args
+    receiver = (
+        None
+        if first is None
+        else next(iter([*arguments.posonlyargs, *arguments.args]), None)
+    )
+    renamed = (
+        []
+        if receiver is None or receiver.arg == first
+        else [
+            SourceTextSpanReplacement.from_offsets(
+                start_offset=geometry.required_node_offsets(receiver)[0],
+                end_offset=geometry.required_node_offsets(receiver)[0]
+                + len(receiver.arg),
+                replacement_source=first,
+            )
+        ]
+    )
+    annotations = [
+        annotation
+        for annotation in (
+            *(
+                argument.annotation
+                for argument in (
+                    *arguments.posonlyargs,
+                    *arguments.args,
+                    arguments.vararg,
+                    *arguments.kwonlyargs,
+                    arguments.kwarg,
+                )
+                if argument is not None
+            ),
+            function.returns,
+        )
+        if annotation is not None
+    ]
+    retyped = [
+        SourceTextSpanReplacement.from_offsets(
+            start_offset=geometry.required_node_offsets(annotation)[0],
+            end_offset=geometry.required_node_offsets(annotation)[1],
+            replacement_source=annotation_text(annotation),
+        )
+        for annotation in annotations
+        if annotation_text(annotation) != segment(module, annotation)
+    ]
+    text = geometry.source_with_replacements_in_span(
+        start, header_end(module.source, start), [*renamed, *retyped]
+    )
+    head, *rest = text.split("\n")
+    indent = " " * function.col_offset
+    return [head, *(line.removeprefix(indent) for line in rest)]
+
+
+def header_end(source: str, start: int) -> int:
+    """The offset just past the colon closing the ``def`` header at ``start``."""
+
+    depth = 0
+    lines = source[start:].splitlines(keepends=True)
+    line_offsets = [0]
+    for line in lines:
+        line_offsets.append(line_offsets[-1] + len(line))
+    for token in tokenize.generate_tokens(iter(lines).__next__):
+        if token.type != tokenize.OP:
+            continue
+        if token.string in "([{":
+            depth += 1
+        elif token.string in ")]}":
+            depth -= 1
+        elif token.string == ":" and depth == 0:
+            row, column = token.end
+            return start + line_offsets[row - 1] + column
+    raise ValueError("def header has no closing colon")
+
+
 @dataclass(frozen=True)
 class Datum:
     """One attribute every member class declares: its name, annotation and store."""
@@ -1266,14 +1355,27 @@ class CasesFamily(Cases, Descent):
             if function.returns is None
             else member_type(model.root, segment(module, function.returns))
         )
+        authored = authored_header(
+            module,
+            function,
+            first,
+            lambda node: member_type(model.root, segment(module, node)),
+        )
         header = [
             *header_decorator,
-            *signature(
-                function.name,
-                parameters,
-                returns,
-                "    ",
-                model.declared.line_length,
+            *(
+                authored
+                if all(
+                    len(f"    {line}") <= model.declared.line_length
+                    for line in authored
+                )
+                else signature(
+                    function.name,
+                    parameters,
+                    returns,
+                    "    ",
+                    model.declared.line_length,
+                )
             ),
         ]
         statements = body_without_docstring(function.body)

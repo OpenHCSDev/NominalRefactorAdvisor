@@ -978,3 +978,37 @@ def test_cases_family_hands_back_an_enum_call_that_may_pass_a_member_through(
 
     with pytest.raises(ValueError, match=r"also passes a member through"):
         operation.source_edits_from_snapshot(snapshot)
+
+
+def test_cases_family_keeps_the_authored_header_of_a_moved_method(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    authored = "    def label(self) -> str:\n        return self.value.lower()\n"
+    assert DERIVED_ENUM_SOURCE.count(authored) == 1
+    snapshot = _derived_staged(
+        tmp_path,
+        monkeypatch,
+        DERIVED_ENUM_SOURCE.replace(
+            authored,
+            "    def label(\n"
+            '        self, other: Kind, *, prefix: str = "",\n'
+            '        suffix: str = "",\n'
+            "    ) -> str:\n"
+            "        return prefix + self.value.lower() + suffix\n",
+        ),
+    )
+    operation = CasesFamily(
+        target=_target(snapshot, "kind.Kind"), rationale="", names=()
+    )
+
+    simulation = _simulated(snapshot, operation)
+
+    assert simulation.is_clean is True
+    family = simulation.simulation.rewritten_sources[(tmp_path / "kind.py").as_posix()]
+    assert (
+        "    @classmethod\n"
+        "    def label(\n"
+        '        cls, other: type[Kind], *, prefix: str = "",\n'
+        '        suffix: str = "",\n'
+        "    ) -> str:\n"
+    ) in family
