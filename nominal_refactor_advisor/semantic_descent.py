@@ -209,49 +209,68 @@ class SemanticFactKind(StrEnum):
     FINDING_EVIDENCE = "finding_evidence"
 
 
-class AuthorityClaimStatus(StrEnum):
+class AuthorityClaimStatus(ABC):
     """Resolution state for an agent- or detector-authored authority claim."""
 
-    def __new__(
-        cls,
-        value: str,
-        is_actionable: bool,
-        minimum_authorities: int,
-        maximum_authorities: int | None,
-    ) -> "AuthorityClaimStatus":
-        member = str.__new__(cls, value)
-        member._value_ = value
-        member._is_actionable = is_actionable
-        member._minimum_authorities = minimum_authorities
-        member._maximum_authorities = maximum_authorities
-        return member
+    value: str
+    is_actionable: bool
+    _minimum_authorities: int
+    _maximum_authorities: int | None
+    requires_discovery: bool
 
-    RESOLVED = ("resolved", True, 1, 1)
-    AMBIGUOUS = ("ambiguous", False, 2, None)
-    UNRESOLVED = ("unresolved", False, 0, 0)
-    DECLARED = ("declared", True, 1, 1)
-
-    @property
-    def is_actionable(self) -> bool:
-        return self._is_actionable
-
-    @property
-    def requires_discovery(self) -> bool:
-        return not self.is_actionable
-
-    def accepts_authority_count(self, authority_count: int) -> bool:
-        return authority_count >= self._minimum_authorities and (
-            self._maximum_authorities is None
-            or authority_count <= self._maximum_authorities
+    @classmethod
+    def accepts_authority_count(cls, authority_count: int) -> bool:
+        return authority_count >= cls._minimum_authorities and (
+            cls._maximum_authorities is None
+            or authority_count <= cls._maximum_authorities
         )
 
     @classmethod
-    def from_authority_count(cls, authority_count: int) -> "AuthorityClaimStatus":
+    def from_authority_count(cls, authority_count: int) -> "type[AuthorityClaimStatus]":
         if authority_count < 1:
             raise ValueError("proved authority resolution requires a proof edge")
         if authority_count == 1:
-            return cls.RESOLVED
-        return cls.AMBIGUOUS
+            return Resolved
+        return Ambiguous
+
+    @classmethod
+    def require_discovery_shape(cls, has_discovery: bool) -> None:
+        if has_discovery is not cls.requires_discovery:
+            raise ValueError(
+                f"{cls.value} authority resolution discovery shape is invalid"
+            )
+
+
+class Resolved(AuthorityClaimStatus):
+    value = "resolved"
+    is_actionable = True
+    _minimum_authorities = 1
+    _maximum_authorities = 1
+    requires_discovery = False
+
+
+class Ambiguous(AuthorityClaimStatus):
+    value = "ambiguous"
+    is_actionable = False
+    _minimum_authorities = 2
+    _maximum_authorities = None
+    requires_discovery = True
+
+
+class Unresolved(AuthorityClaimStatus):
+    value = "unresolved"
+    is_actionable = False
+    _minimum_authorities = 0
+    _maximum_authorities = 0
+    requires_discovery = True
+
+
+class Declared(AuthorityClaimStatus):
+    value = "declared"
+    is_actionable = True
+    _minimum_authorities = 1
+    _maximum_authorities = 1
+    requires_discovery = False
 
 
 class AuthorityClaimProvenance(StrEnum):
@@ -1024,7 +1043,7 @@ class AuthorityClaimResolution(DataclassJsonReport):
     """Resolved, ambiguous, declared, or unresolved authority claim."""
 
     claim: AuthorityClaim
-    status: AuthorityClaimStatus
+    status: type[AuthorityClaimStatus]
     proof_edges: tuple[AuthorityProofEdge, ...] = ()
     discovery_required: AuthorityDiscoveryRequired | None = None
 
@@ -1040,10 +1059,7 @@ class AuthorityClaimResolution(DataclassJsonReport):
                 f"{authority_count} proved authority identity or identities"
             )
         has_discovery = self.discovery_required is not None
-        if has_discovery is not self.status.requires_discovery:
-            raise ValueError(
-                f"{self.status.value} authority resolution discovery shape is invalid"
-            )
+        self.status.require_discovery_shape(has_discovery)
 
     @classmethod
     def from_proof_edges(
@@ -1091,7 +1107,7 @@ class AuthorityClaimResolution(DataclassJsonReport):
         )
         return cls(
             claim=claim,
-            status=AuthorityClaimStatus.DECLARED,
+            status=Declared,
             proof_edges=(proof,),
         )
 
@@ -1106,7 +1122,7 @@ class AuthorityClaimResolution(DataclassJsonReport):
     ) -> "AuthorityClaimResolution":
         return cls(
             claim=claim,
-            status=AuthorityClaimStatus.UNRESOLVED,
+            status=Unresolved,
             discovery_required=AuthorityDiscoveryRequired(
                 claimed_symbol=claim.claimed_symbol,
                 searched_symbols=searched_symbols,

@@ -56,7 +56,10 @@ from nominal_refactor_advisor.patterns import PatternId
 from nominal_refactor_advisor.semantic_descent import (
     AuthorityClaim,
     AuthorityClaimResolution,
-    AuthorityClaimStatus,
+    Ambiguous,
+    Declared,
+    Resolved,
+    Unresolved,
     AuthorityClaimProvenance,
     AuthorityDiscoveryRequired,
     AuthorityProofEdge,
@@ -191,10 +194,10 @@ def test_metric_declarations_own_finding_backed_fact_projection() -> None:
 
 
 def test_authority_claim_status_owns_actionability_and_resolution_shape() -> None:
-    assert AuthorityClaimStatus.RESOLVED.is_actionable is True
-    assert AuthorityClaimStatus.DECLARED.is_actionable is True
-    assert AuthorityClaimStatus.AMBIGUOUS.requires_discovery is True
-    assert AuthorityClaimStatus.UNRESOLVED.requires_discovery is True
+    assert Resolved.is_actionable is True
+    assert Declared.is_actionable is True
+    assert Ambiguous.requires_discovery is True
+    assert Unresolved.requires_discovery is True
 
     claim = AuthorityClaim(claimed_symbol="AlphaAuthority")
     proof_edges = tuple(
@@ -222,14 +225,14 @@ def test_authority_claim_status_owns_actionability_and_resolution_shape() -> Non
         ambiguity_reason="not used for a unique authority",
     )
 
-    assert resolution.status is AuthorityClaimStatus.RESOLVED
+    assert resolution.status is Resolved
     assert resolution.proof_edges == proof_edges
     assert resolution.discovery_required is None
 
     with pytest.raises(ValueError, match="ambiguous authority resolution"):
         AuthorityClaimResolution(
             claim=claim,
-            status=AuthorityClaimStatus.AMBIGUOUS,
+            status=Ambiguous,
             proof_edges=proof_edges,
             discovery_required=AuthorityDiscoveryRequired(
                 claimed_symbol=claim.claimed_symbol,
