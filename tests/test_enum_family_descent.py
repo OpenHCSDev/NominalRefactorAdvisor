@@ -470,3 +470,96 @@ def test_cases_family_inlines_lambda_data_into_its_only_caller(tmp_path: Path) -
         "Loud": [],
         "Mute": ["pass"],
     }
+
+
+def test_cases_family_moves_a_returning_branch_with_the_rest_of_its_function(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "tail.py").write_text(
+        ELIF_ENUM_SOURCE.replace(
+            """    def check(self) -> None:
+        if self.need.required:
+            if self.reference is None:
+                raise ValueError("missing")
+        elif self.reference is not None:
+            raise ValueError("unexpected")
+""",
+            """    def label(self) -> str:
+        if self.need.required:
+            return "required"
+        return "free"
+""",
+        )
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path), ())
+    operation = CasesFamily(
+        target=_target(snapshot, "tail.Need"), rationale="", names=("label",)
+    )
+
+    simulation = _simulated(snapshot, operation)
+
+    assert simulation.is_clean is True
+    (source,) = simulation.simulation.rewritten_sources.values()
+    tree = ast.parse(source)
+    bodies = {
+        (node.name, function.name): [ast.unparse(line) for line in function.body]
+        for node in tree.body
+        if isinstance(node, ast.ClassDef)
+        for function in node.body
+        if isinstance(function, ast.FunctionDef) and function.name == "label"
+    }
+    assert bodies == {
+        ("Need", "label"): ["return 'required'"],
+        ("Forbidden", "label"): ["return 'free'"],
+        ("Holder", "label"): ["return self.need.label()"],
+    }
+
+
+def test_cases_family_follows_a_re_export_to_the_enum(tmp_path: Path) -> None:
+    (tmp_path / "need.py").write_text(ELIF_ENUM_SOURCE)
+    (tmp_path / "hub.py").write_text(
+        "from need import Need as Need\n\nassert Need.FORBIDDEN.value\n"
+    )
+    (tmp_path / "reader.py").write_text(
+        "from hub import Need\n\nassert Need.REQUIRED.required\n"
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path), ())
+    operation = CasesFamily(
+        target=_target(snapshot, "need.Need"), rationale="", names=("check_reference",)
+    )
+
+    simulation = _simulated(snapshot, operation)
+
+    assert simulation.is_clean is True
+    rewritten = simulation.simulation.rewritten_sources
+    assert rewritten[(tmp_path / "hub.py").as_posix()] == (
+        "from need import (\n    Forbidden,\n    Need as Need,\n)\n\n"
+        "assert Forbidden.value\n"
+    )
+    assert rewritten[(tmp_path / "reader.py").as_posix()] == (
+        "from need import Required\n\nassert Required.required\n"
+    )
+
+
+def test_cases_family_hands_back_an_enum_imported_inside_a_function(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "need.py").write_text(ELIF_ENUM_SOURCE)
+    (tmp_path / "reader.py").write_text(
+        "def read() -> bool:\n"
+        "    from need import Need\n\n"
+        "    return Need.REQUIRED.required\n"
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path), ())
+
+    with pytest.raises(ValueError) as refusal:
+        CasesFamily(
+            target=_target(snapshot, "need.Need"),
+            rationale="",
+            names=("check_reference",),
+        ).source_edits_from_snapshot(snapshot)
+
+    assert str(refusal.value) == (
+        f"handback: {(tmp_path / 'reader.py').as_posix()}:2: enum imported inside "
+        "a function; hoist it to module scope"
+    )

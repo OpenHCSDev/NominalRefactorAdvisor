@@ -538,6 +538,68 @@ class Rewrite:
     def require_import(self, module: ParsedModule, source: str, name: str) -> None:
         self.imports[module.file_path].add((source, name))
 
+    def ensure_import(
+        self, module: ParsedModule, source: str, names: tuple[str, ...]
+    ) -> None:
+        """Extend the module's absolute from-import of ``source``, or add one."""
+
+        statements = [
+            statement
+            for statement in module.module.body
+            if isinstance(statement, ast.ImportFrom)
+            and statement.module == source
+            and statement.level == 0
+        ]
+        bound = {
+            alias.name
+            for statement in statements
+            for alias in statement.names
+            if alias.asname is None
+        }
+        missing = sorted(set(names) - bound, key=alias_order)
+        if not missing:
+            return
+        if statements:
+            for name in missing:
+                self.require_import(module, source, name)
+            return
+        # Ruff's order: from-imports by module, after plain imports.
+        from_imports = [
+            statement
+            for statement in module.module.body
+            if isinstance(statement, ast.ImportFrom)
+            and statement.level == 0
+            and statement.module != "__future__"
+        ]
+        earlier = [
+            statement
+            for statement in from_imports
+            if (statement.module or "").lower() < source.lower()
+        ]
+        geometry = self.geometry(module)
+        if earlier:
+            offset = geometry.line_offsets[earlier[-1].end_lineno]
+        else:
+            anchor = next(
+                iter(from_imports),
+                next(
+                    statement
+                    for statement in module.module.body
+                    if isinstance(statement, ast.Import | ast.ImportFrom)
+                    and not (
+                        isinstance(statement, ast.ImportFrom)
+                        and statement.module == "__future__"
+                    )
+                ),
+            )
+            offset = geometry.line_offsets[anchor.lineno - 1]
+        self.span(
+            module,
+            offset,
+            offset,
+            ImportFromSource(source, tuple(ast.alias(name) for name in missing)).source,
+        )
+
     def geometry(self, module: ParsedModule) -> SourceTextGeometry:
         return SourceTextGeometry(module.source)
 
@@ -598,12 +660,16 @@ class Rewrite:
         )
 
     def prune_imports(
-        self, module: ParsedModule, replaced: dict[str, tuple[str, ...]]
+        self,
+        module: ParsedModule,
+        replaced: dict[str, tuple[str, ...]],
+        exported: frozenset[str],
     ) -> None:
-        """Rewrite from-imports: ``replaced`` aliases expand, names this rewrite unused go."""
+        """Rewrite from-imports: ``replaced`` aliases expand, names this rewrite unused
+        go, except ``exported`` names other modules import through this one."""
 
         original = _loaded_names(module.module)
-        remaining = _loaded_names(ast.parse(self.rewritten_source(module)))
+        remaining = _loaded_names(ast.parse(self.rewritten_source(module))) | exported
         for statement in module.module.body:
             if not isinstance(statement, ast.ImportFrom):
                 continue
@@ -619,8 +685,11 @@ class Rewrite:
             for alias in statement.names:
                 local = alias.asname or alias.name
                 if local in replaced:
+                    # The local itself keeps its authored alias (``X as X`` re-exports).
                     aliases.extend(
-                        ast.alias(name) for name in replaced[local] if name in remaining
+                        alias if name == local else ast.alias(name)
+                        for name in replaced[local]
+                        if name in remaining
                     )
                 elif local in remaining or local not in original:
                     aliases.append(alias)
@@ -787,16 +856,51 @@ class Enumerated(Rewritten, ABC):
             )
         }
         root_symbol = f"{root_module.module_name}.{root}"
+        imports = {
+            module.file_path: (
+                ()
+                if module.file_path not in projections
+                else projections[module.file_path].import_aliases
+            )
+            for module in snapshot.parsed_modules
+        }
+        # A module that binds the enum re-exports it: its name is the enum too.
+        enum_symbols = {enum.symbol}
+        root_symbols = {root_symbol}
+        grew = True
+        while grew:
+            grew = False
+            for module in snapshot.parsed_modules:
+                for local, symbol in imports[module.file_path]:
+                    for known in (enum_symbols, root_symbols):
+                        exported = f"{module.module_name}.{local}"
+                        if symbol in known and exported not in known:
+                            known.add(exported)
+                            grew = True
+        self.refuse_scoped_imports(snapshot, enum_symbols | root_symbols)
+        imported_symbols = {
+            symbol for aliases in imports.values() for _local, symbol in aliases
+        }
         found: dict[ParsedModule, ModuleNames] = {}
         for module in snapshot.parsed_modules:
-            projection = projections.get(module.file_path)
-            imported = () if projection is None else projection.import_aliases
+            imported = imports[module.file_path]
             names = ModuleNames(
                 enum=frozenset(
-                    local for local, symbol in imported if symbol == enum.symbol
+                    local for local, symbol in imported if symbol in enum_symbols
                 ),
                 root=frozenset(
-                    local for local, symbol in imported if symbol == root_symbol
+                    local for local, symbol in imported if symbol in root_symbols
+                ),
+                reexported=frozenset(
+                    local
+                    for local, symbol in imported
+                    if symbol in enum_symbols and symbol != enum.symbol
+                ),
+                exported=frozenset(
+                    local
+                    for local, symbol in imported
+                    if symbol in enum_symbols | root_symbols
+                    and f"{module.module_name}.{local}" in imported_symbols
                 ),
             )
             if module is enum.module:
@@ -804,6 +908,28 @@ class Enumerated(Rewritten, ABC):
             if names.enum or names.root:
                 found[module] = names
         return found
+
+    @staticmethod
+    def refuse_scoped_imports(
+        snapshot: CodemodSourceSnapshot, symbols: set[str]
+    ) -> None:
+        """An import of the enum inside a function binds a name no rewrite sees."""
+
+        for module in snapshot.parsed_modules:
+            for scope in ast.walk(module.module):
+                if not isinstance(scope, ast.FunctionDef | ast.AsyncFunctionDef):
+                    continue
+                for node in ast.walk(scope):
+                    if not isinstance(node, ast.ImportFrom):
+                        continue
+                    source = module.module_path_identity.resolve_import_from_module(
+                        imported_module=node.module, level=node.level
+                    )
+                    if any(f"{source}.{alias.name}" in symbols for alias in node.names):
+                        raise ValueError(
+                            f"handback: {module.file_path}:{node.lineno}: enum "
+                            "imported inside a function; hoist it to module scope"
+                        )
 
     def enum_read(
         self,
@@ -868,12 +994,13 @@ class Enumerated(Rewritten, ABC):
                 and not names.root
                 and module.file_path in rewrite.annotations_in
             )
+            added = used + ((root,) if needs_root else ())
             replaced = {
-                local: used + ((root,) if needs_root else ())
-                for local in names.enum
-                if module is not enum.module
+                local: added for local in names.direct if module is not enum.module
             }
-            rewrite.prune_imports(module, replaced)
+            if names.reexported and added:
+                rewrite.ensure_import(module, root_module.module_name, added)
+            rewrite.prune_imports(module, replaced, names.exported)
 
 
 class Cases(Enumerated, ABC):
@@ -1675,10 +1802,22 @@ class Fold(Cases, ABC):
 
 @dataclass(frozen=True)
 class ModuleNames:
-    """Local names one module binds to the enum and to the family root."""
+    """Local names one module binds to the enum and to the family root.
+
+    ``reexported`` arrive through another module's name; ``exported`` are names
+    another module imports through this one, so they stay bound here.
+    """
 
     enum: frozenset[str]
     root: frozenset[str]
+    reexported: frozenset[str] = frozenset()
+    exported: frozenset[str] = frozenset()
+
+    @property
+    def direct(self) -> frozenset[str]:
+        """Enum locals imported from the enum's own module."""
+
+        return self.enum - self.reexported
 
 
 def _is_any_name(node: ast.AST, names: Iterable[str]) -> bool:

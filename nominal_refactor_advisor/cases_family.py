@@ -666,15 +666,17 @@ class CasesFamily(Cases, Descent):
             self.rewrite_reads(rewrite, module, names, model, handled)
         self.rewrite_called(rewrite, snapshot, model, handled)
         answer.require_complete()
-        self.ensure_import(rewrite, enum.module, "abc", "ABC")
+        rewrite.ensure_import(enum.module, "abc", ("ABC",))
         for module, names in aliases.items():
             used = tuple(sorted(rewrite.used_members[module.file_path]))
             replaced = {
                 local: tuple(sorted({local, *used}))
-                for local in names.enum
+                for local in names.direct
                 if module is not enum.module and used
             }
-            rewrite.prune_imports(module, replaced)
+            if names.reexported and used:
+                rewrite.ensure_import(module, enum.module.module_name, used)
+            rewrite.prune_imports(module, replaced, names.exported)
         return rewrite
 
     # -- the enum read as a family -------------------------------------------------
@@ -1364,7 +1366,9 @@ class CasesFamily(Cases, Descent):
                 and reads(body[end]) == held_field
             ):
                 end += 1
-            # A returning run moves whole: its ifs end the function together.
+            # A returning run moves whole with the rest of the function, which
+            # only runs when the run did not return: together they are one
+            # decision. A guard keeps the rest on its class as the tail method.
             # Otherwise each if decides its own fact and becomes its own method,
             # so no override repeats a sibling's answer to another decision.
             returning = any(
@@ -1372,6 +1376,8 @@ class CasesFamily(Cases, Descent):
                 for statement in body[index:end]
                 for node in ast.walk(statement)
             )
+            if returning and not Site.guards(body, index, end):
+                end = len(body)
             for start, stop in (
                 [(index, end)]
                 if returning
@@ -1585,59 +1591,6 @@ class CasesFamily(Cases, Descent):
                     rewrite.span(module, end, end, "()")
                     handled.add(id(node))
 
-    def ensure_import(
-        self, rewrite: Rewrite, module: ParsedModule, source: str, name: str
-    ) -> None:
-        """Extend the module's absolute from-import of ``source``, or add one."""
-
-        statements = [
-            statement
-            for statement in module.module.body
-            if isinstance(statement, ast.ImportFrom)
-            and statement.module == source
-            and statement.level == 0
-        ]
-        if any(
-            alias.name == name and alias.asname is None
-            for statement in statements
-            for alias in statement.names
-        ):
-            return
-        if statements:
-            rewrite.require_import(module, source, name)
-            return
-        # Ruff's order: from-imports by module, after plain imports.
-        from_imports = [
-            statement
-            for statement in module.module.body
-            if isinstance(statement, ast.ImportFrom)
-            and statement.level == 0
-            and statement.module != "__future__"
-        ]
-        earlier = [
-            statement
-            for statement in from_imports
-            if (statement.module or "").lower() < source.lower()
-        ]
-        geometry = rewrite.geometry(module)
-        if earlier:
-            offset = geometry.line_offsets[earlier[-1].end_lineno]
-        else:
-            anchor = next(
-                iter(from_imports),
-                next(
-                    statement
-                    for statement in module.module.body
-                    if isinstance(statement, ast.Import | ast.ImportFrom)
-                    and not (
-                        isinstance(statement, ast.ImportFrom)
-                        and statement.module == "__future__"
-                    )
-                ),
-            )
-            offset = geometry.line_offsets[anchor.lineno - 1]
-        rewrite.span(module, offset, offset, f"from {source} import {name}\n")
-
 
 def literal_value(expression: ast.expr) -> object:
     try:
@@ -1708,18 +1661,9 @@ class Site:
         start: int,
         end: int,
     ) -> Site:
-        """A lone ``if ...: return`` with statements after it is a guard; else a block."""
+        """A guard, or a block."""
 
-        statement = body[start]
-        if (
-            end == start + 1
-            and end < len(body)
-            and isinstance(statement, ast.If)
-            and not statement.orelse
-            and len(statement.body) == 1
-            and isinstance(statement.body[0], ast.Return)
-            and literal_value(statement.body[0].value or ast.Constant(None)) is None
-        ):
+        if cls.guards(body, start, end):
             return Guard(
                 module, owner, function, receiver, field_name, fields, body, start, end
             )
@@ -1727,13 +1671,24 @@ class Site:
             module, owner, function, receiver, field_name, fields, body, start, end
         )
 
+    @staticmethod
+    def guards(body: list[ast.stmt], start: int, end: int) -> bool:
+        """A lone ``if ...: return`` with statements after it."""
+
+        statement = body[start]
+        return (
+            end == start + 1
+            and end < len(body)
+            and isinstance(statement, ast.If)
+            and not statement.orelse
+            and len(statement.body) == 1
+            and isinstance(statement.body[0], ast.Return)
+            and literal_value(statement.body[0].value or ast.Constant(None)) is None
+        )
+
     @property
     def statements(self) -> list[ast.stmt]:
         return self.body[self.start : self.end]
-
-    @property
-    def is_last(self) -> bool:
-        return self.end == len(self.body)
 
     @property
     def node(self) -> ast.stmt:
@@ -1847,8 +1802,6 @@ class Block(Site):
             for statement in statements
             for node in ast.walk(statement)
         )
-        if returns and not self.is_last:
-            raise handback(module, self.node, "branch returns before the function ends")
         if stored_names(statements) & loaded_names(self.body[self.end :]):
             raise handback(
                 module, self.node, "branch binds a name the function reads after it"
@@ -2078,8 +2031,8 @@ class Guard(Site):
             None,
         )
         if callable_name is None:
-            family.ensure_import(
-                rewrite, model.enum.module, "collections.abc", "Callable"
+            rewrite.ensure_import(
+                model.enum.module, "collections.abc", ("Callable",)
             )
             callable_name = "Callable"
         header = [
