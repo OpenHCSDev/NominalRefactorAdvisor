@@ -63,7 +63,7 @@ class ImportBlockInsertionPointABC(ABC):
     @property
     @abstractmethod
     def leading_import_statements(self) -> tuple[ImportStatement, ...]:
-        """Return the contiguous imports governed by this insertion point."""
+        """Return the imports governed by this insertion point, in source order."""
 
         raise NotImplementedError
 
@@ -93,14 +93,6 @@ class ImportBlockInsertionPointABC(ABC):
             len(self.leading_import_statements),
         )
 
-    def line_number_for_insertion_index(self, insertion_index: int) -> int:
-        """Return the source anchor following the preceding import family."""
-
-        if insertion_index == 0:
-            return self.initial_line_number
-        previous = self.leading_import_statements[insertion_index - 1]
-        return (previous.end_lineno or previous.lineno) + 1
-
     @property
     def previous_import_statement(self) -> ImportStatement | None:
         """Return the final governed import, when one exists."""
@@ -112,28 +104,23 @@ class ImportBlockInsertionPointABC(ABC):
         self,
         *,
         source: str,
-        insertion_index: int,
+        slot: "ImportInsertionSlot",
         additions: tuple["RequestedImportStatement", ...],
     ) -> str:
         """Render additions with any required following group boundary."""
 
         existing_imports = self.leading_import_statements
-        previous_statement = (
-            existing_imports[insertion_index - 1] if insertion_index else None
-        )
         inserted_source = RequestedImportBlock(additions).source_after(
-            previous_statement
+            slot.previous_statement(self)
         )
         if (
-            insertion_index < len(existing_imports)
+            slot.index < len(existing_imports)
             and additions[-1].source_group
-            is not RequestedImportStatement(
-                existing_imports[insertion_index]
-            ).source_group
+            is not RequestedImportStatement(existing_imports[slot.index]).source_group
         ):
             spacing = DestinationInsertionSpacing.from_source(
                 source,
-                self.line_number_for_insertion_index(insertion_index),
+                slot.line_number(self),
                 inserted_source_is_import_block=True,
             )
             inserted_source += "\n" * max(
@@ -145,21 +132,88 @@ class ImportBlockInsertionPointABC(ABC):
     def grouped_additions(
         self,
         additions: tuple["RequestedImportStatement", ...],
-    ) -> tuple[tuple[int, tuple["RequestedImportStatement", ...]], ...]:
-        """Group additions by their derived insertion index."""
+    ) -> tuple[
+        tuple["ImportInsertionSlot", tuple["RequestedImportStatement", ...]], ...
+    ]:
+        """Group additions by the slot each lands in, in source order."""
 
-        additions_by_insertion_index: dict[
-            int,
+        additions_by_slot: dict[
+            ImportInsertionSlot,
             list[RequestedImportStatement],
         ] = defaultdict(list)
         for addition in additions:
-            additions_by_insertion_index[self.insertion_index_for(addition)].append(
-                addition
+            slot = ImportInsertionSlot.of(
+                self, self.insertion_index_for(addition), addition
             )
+            additions_by_slot[slot].append(addition)
         return tuple(
-            (insertion_index, tuple(additions_by_insertion_index[insertion_index]))
-            for insertion_index in sorted(additions_by_insertion_index)
+            (slot, tuple(additions_by_slot[slot]))
+            for slot in sorted(
+                additions_by_slot, key=lambda slot: slot.line_number(self)
+            )
         )
+
+
+@dataclass(frozen=True)
+class ImportInsertionSlot(ABC):
+    """Where one group of additions lands in an import block: before the existing
+    import at ``index``, the first whose family sorts after them, either ending the
+    preceding import's family or starting the next import's."""
+
+    index: int
+
+    @staticmethod
+    def of(
+        point: ImportBlockInsertionPointABC,
+        index: int,
+        addition: "RequestedImportStatement",
+    ) -> "ImportInsertionSlot":
+        imports = point.leading_import_statements
+        if (
+            index < len(imports)
+            and RequestedImportStatement(imports[index], scope=point.scope).source_group
+            is addition.source_group
+        ):
+            return StartOfNextFamily(index)
+        return AfterPreviousImport(index)
+
+    @abstractmethod
+    def line_number(self, point: ImportBlockInsertionPointABC) -> int:
+        """Return the source line the additions are inserted before."""
+
+    @abstractmethod
+    def previous_statement(
+        self, point: ImportBlockInsertionPointABC
+    ) -> ImportStatement | None:
+        """Return the import the additions follow, for their leading group boundary."""
+
+
+class AfterPreviousImport(ImportInsertionSlot):
+    """After the preceding import: the additions end its family or open their own."""
+
+    def line_number(self, point: ImportBlockInsertionPointABC) -> int:
+        if self.index == 0:
+            return point.initial_line_number
+        previous = point.leading_import_statements[self.index - 1]
+        return (previous.end_lineno or previous.lineno) + 1
+
+    def previous_statement(
+        self, point: ImportBlockInsertionPointABC
+    ) -> ImportStatement | None:
+        return point.leading_import_statements[self.index - 1] if self.index else None
+
+
+class StartOfNextFamily(ImportInsertionSlot):
+    """Directly before the next import, whose family the additions belong to and now
+    begin, so the boundary before that family stays where it is."""
+
+    def line_number(self, point: ImportBlockInsertionPointABC) -> int:
+        return point.leading_import_statements[self.index].lineno
+
+    def previous_statement(
+        self, point: ImportBlockInsertionPointABC
+    ) -> ImportStatement | None:
+        return None
 
 
 @dataclass(frozen=True)
@@ -202,13 +256,17 @@ class ModuleImportInsertionPoint(ImportBlockInsertionPointABC):
         body = self.module.body
         if not body:
             return ()
-        index = self._first_statement_index_after_docstring(body)
+        guards = TypeCheckingGuardProjection.from_module(self.module).guards
         imports: list[ast.Import | ast.ImportFrom] = []
-        while index < len(body) and isinstance(
-            body[index], (ast.Import, ast.ImportFrom)
-        ):
-            imports.append(body[index])
-            index += 1
+        for statement in body[self._first_statement_index_after_docstring(body) :]:
+            match statement:
+                case ast.Import() | ast.ImportFrom():
+                    imports.append(statement)
+                case ast.If() if any(statement is guard for guard in guards):
+                    # A type-checking guard inside the block; its imports go on past it.
+                    continue
+                case _:
+                    break
         return tuple(imports)
 
     @staticmethod
@@ -832,13 +890,11 @@ class ModuleImportMutation(KeyedSourceEditCoalescence):
             self._runtime_import_group_insertion(
                 source=source,
                 insertion_point=insertion_point,
-                insertion_index=insertion_index,
+                slot=slot,
                 additions=indexed_additions,
                 existing_imports=existing_imports,
             )
-            for insertion_index, indexed_additions in insertion_point.grouped_additions(
-                additions
-            )
+            for slot, indexed_additions in insertion_point.grouped_additions(additions)
         )
 
     def _runtime_import_group_insertion(
@@ -846,16 +902,14 @@ class ModuleImportMutation(KeyedSourceEditCoalescence):
         *,
         source: str,
         insertion_point: ModuleImportInsertionPoint,
-        insertion_index: int,
+        slot: ImportInsertionSlot,
         additions: tuple[RequestedImportStatement, ...],
         existing_imports: tuple[ast.Import | ast.ImportFrom, ...],
     ) -> SourceInsertion:
-        insertion_line = insertion_point.line_number_for_insertion_index(
-            insertion_index
-        )
+        insertion_line = slot.line_number(insertion_point)
         inserted_source = insertion_point.source_for_insertion(
             source=source,
-            insertion_index=insertion_index,
+            slot=slot,
             additions=additions,
         )
         spacing = DestinationInsertionSpacing.from_source(
@@ -863,7 +917,7 @@ class ModuleImportMutation(KeyedSourceEditCoalescence):
             insertion_line,
             inserted_source_is_import_block=True,
         )
-        if insertion_index == len(existing_imports):
+        if slot.index == len(existing_imports):
             inserted_source += spacing.trailing_separator
         return SourceInsertion(
             file_path=self.file_path,
@@ -886,13 +940,11 @@ class ModuleImportMutation(KeyedSourceEditCoalescence):
             self._guarded_import_group_insertion(
                 source=source,
                 insertion_point=insertion_point,
-                insertion_index=insertion_index,
+                slot=slot,
                 additions=indexed_additions,
                 existing_imports=existing_imports,
             )
-            for insertion_index, indexed_additions in insertion_point.grouped_additions(
-                additions
-            )
+            for slot, indexed_additions in insertion_point.grouped_additions(additions)
         )
 
     def _guarded_import_group_insertion(
@@ -900,19 +952,17 @@ class ModuleImportMutation(KeyedSourceEditCoalescence):
         *,
         source: str,
         insertion_point: TypeCheckingGuardImportInsertionPoint,
-        insertion_index: int,
+        slot: ImportInsertionSlot,
         additions: tuple[RequestedImportStatement, ...],
         existing_imports: tuple[ImportStatement, ...],
     ) -> SourceInsertion:
-        insertion_line = insertion_point.line_number_for_insertion_index(
-            insertion_index
-        )
+        insertion_line = slot.line_number(insertion_point)
         inserted_source = insertion_point.source_for_insertion(
             source=source,
-            insertion_index=insertion_index,
+            slot=slot,
             additions=additions,
         )
-        if insertion_index == len(existing_imports):
+        if slot.index == len(existing_imports):
             if len(existing_imports) < len(insertion_point.guard.body):
                 inserted_source += "\n"
         return SourceInsertion(
