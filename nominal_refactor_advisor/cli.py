@@ -51,10 +51,10 @@ from .analysis import (
 from .analysis_cache import (
     AnalysisCacheIdentity,
     AnalysisCacheStatus,
-    Hit,
     AnalysisExecutionPlanCacheIdentity,
     AnalysisFindingCache,
     AnalysisFindingSummaryCachePayload,
+    Hit,
 )
 from .ast_tools import (
     ParsedModule,

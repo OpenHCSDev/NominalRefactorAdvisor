@@ -92,12 +92,12 @@ from nominal_refactor_advisor.ast_tools import (
 )
 from nominal_refactor_advisor.analysis_cache import (
     AnalysisCacheIdentity,
-    Hit,
-    Miss,
-    Partial,
     AnalysisExecutionPlanCacheIdentity,
     AnalysisFindingCache,
     DetectorSemanticEngineSignature,
+    Hit,
+    Miss,
+    Partial,
 )
 from nominal_refactor_advisor.calibration import (
     format_calibration_markdown,

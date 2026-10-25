@@ -18,12 +18,12 @@ from nominal_refactor_advisor.analysis import (
 from nominal_refactor_advisor.analysis_cache import (
     AnalysisCacheIdentity,
     AnalysisCacheStatus,
-    Hit,
-    Miss,
-    Partial,
     AnalysisFindingCache,
     AnalysisFindingSummaryCachePayload,
     AnalysisFindingSummaryLookup,
+    Hit,
+    Miss,
+    Partial,
 )
 from nominal_refactor_advisor.detectors import DetectorConfig
 from nominal_refactor_advisor.finding_counts import FindingSummary

@@ -32,6 +32,7 @@ from .cache_checkout import (
     rebase_checkout_path,
     semantic_root_labels,
 )
+from .case_root import Case
 from .detectors import (
     CompactModuleProjectionDetectorMixin,
     DetectorConfig,
@@ -124,10 +125,9 @@ class AnalyzeAndStoreMissingCacheResult(AnalysisCacheResolutionPolicyABC):
         return authority.analyze_and_store_miss()
 
 
-class AnalysisCacheStatus(ABC):
+class AnalysisCacheStatus(Case):
     """Observable result of consulting the persistent finding cache."""
 
-    value: str
     is_hit: bool
     is_partial: bool
     is_disabled: bool
