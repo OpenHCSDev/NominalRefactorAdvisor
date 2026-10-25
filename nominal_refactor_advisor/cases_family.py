@@ -1223,9 +1223,30 @@ class CasesFamily(Cases, Descent):
                 and reads(body[end]) == held_field
             ):
                 end += 1
-            yield Site.decoded(
-                module, owner, function, receiver, held_field, fields, body, index, end
+            # A returning run moves whole: its ifs end the function together.
+            # Otherwise each if decides its own fact and becomes its own method,
+            # so no override repeats a sibling's answer to another decision.
+            returning = any(
+                isinstance(node, ast.Return)
+                for statement in body[index:end]
+                for node in ast.walk(statement)
             )
+            for start, stop in (
+                [(index, end)]
+                if returning
+                else [(position, position + 1) for position in range(index, end)]
+            ):
+                yield Site.decoded(
+                    module,
+                    owner,
+                    function,
+                    receiver,
+                    held_field,
+                    fields,
+                    body,
+                    start,
+                    stop,
+                )
             index = end
 
     # -- the family source ---------------------------------------------------------
@@ -1781,10 +1802,15 @@ class Block(Site):
         generic, _ends = Folding(
             module, rewrite, lambda node: UNKNOWN, renames, booleans
         ).block(statements)
-        call = f"{self.receiver}.{self.field_name}.{self.method}({', '.join(arguments.values())})"
-        self.replace_statements(
-            rewrite, statements, ("return " if returns else "") + call + "\n", handled
+        prefix = ("return " if returns else "") + (
+            f"{self.receiver}.{self.field_name}.{self.method}("
         )
+        call = f"{prefix}{', '.join(arguments.values())})"
+        if statements[0].col_offset + len(call) > 88:
+            call = "\n".join(
+                [prefix, *(f"    {argument}," for argument in arguments.values()), ")"]
+            )
+        self.replace_statements(rewrite, statements, call + "\n", handled)
         return MethodBodies(self.method, header, bodies, generic)
 
 

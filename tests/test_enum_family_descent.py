@@ -365,3 +365,30 @@ def test_cases_family_turns_a_decided_away_elif_into_an_if(tmp_path: Path) -> No
         )
     )
     assert "elif" not in ast.get_source_segment(source, forbidden)
+
+
+def test_cases_family_gives_each_independent_if_its_own_method(tmp_path: Path) -> None:
+    (tmp_path / "pair.py").write_text(
+        ELIF_ENUM_SOURCE.replace(
+            """            raise ValueError("unexpected")
+""",
+            """            raise ValueError("unexpected")
+        if self.need.required:
+            if self.reference == "":
+                raise ValueError("empty")
+""",
+        )
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path), ())
+
+    with pytest.raises(ValueError) as refusal:
+        CasesFamily(
+            target=_target(snapshot, "pair.Need"), rationale="", names=()
+        ).source_edits_from_snapshot(snapshot)
+
+    prompt = "name of the method this branch becomes on the family"
+    module = (tmp_path / "pair.py").as_posix()
+    assert str(refusal.value) == (
+        f"handback: 2 name(s) needed, 0 given: [0] {module}:26: {prompt}; "
+        f"[1] {module}:31: {prompt}"
+    )
