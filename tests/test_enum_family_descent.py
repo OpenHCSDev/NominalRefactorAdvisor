@@ -719,3 +719,27 @@ def test_cases_family_leaves_annotated_metadata_values(tmp_path: Path) -> None:
         'def choose(tier: Annotated[type[Tier], "Tier help text", Standard]) -> str:'
         in family
     )
+
+
+def test_cases_family_refuses_a_member_read_through_a_receiver(tmp_path: Path) -> None:
+    (tmp_path / "need.py").write_text(ELIF_ENUM_SOURCE)
+    (tmp_path / "reader.py").write_text(
+        "from need import Need\n\n\n"
+        "def required(kind: type[Need] = Need) -> bool:\n"
+        "    return kind.REQUIRED.required\n"
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path), ())
+    operation = CasesFamily(
+        target=_target(snapshot, "need.Need"), rationale="", names=("check_reference",)
+    )
+
+    simulation = _simulated(snapshot, operation)
+
+    (violation,) = json_report_object(simulation)["architecture_guard_report"][
+        "violations"
+    ]
+    assert simulation.is_clean is False
+    assert (violation["file_path"], violation["qualname"]) == (
+        (tmp_path / "reader.py").as_posix(),
+        "required",
+    )
