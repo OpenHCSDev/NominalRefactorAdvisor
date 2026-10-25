@@ -627,7 +627,7 @@ class Rewrite:
             )
             source = ImportFromSource(
                 ImportFromModuleName.from_node(statement).source, tuple(aliases)
-            ).source.rstrip("\n")
+            ).source
             self.span(module, start, end, source)
 
     def edits(self, rationale: str) -> tuple[NominalSourceEdit, ...]:
