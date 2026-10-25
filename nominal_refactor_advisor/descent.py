@@ -33,10 +33,9 @@ from .codemod_source_edits import (
     SourceNodeDecoratorPolicy,
     SourceNodeSpan,
     SourceTextGeometry,
-    SourceTextSpan,
     SourceTextSpanReplacement,
 )
-from .lexical_bindings import ImportFromModuleName, LEXICAL_SCOPE_BINDING_AUTHORITY
+from .lexical_bindings import LEXICAL_SCOPE_BINDING_AUTHORITY, ImportFromModuleName
 from .semantic_descent import AuthorityClaim, SemanticAuthorityKind
 
 
@@ -597,7 +596,7 @@ class Rewrite:
                 raise ValueError(
                     f"{file_path} has no from-import to extend with {sorted(missing)}"
                 )
-        for file_path, replacements in self.replacements.items():
+        for file_path in self.replacements:
             module = self.module_at(file_path)
             ast.parse(self.rewritten_source(module), filename=file_path)
         return tuple(
@@ -628,6 +627,7 @@ def _loaded_names(tree: ast.AST) -> frozenset[str]:
     )
 
 
+@dataclass(frozen=True, kw_only=True)
 class Descent(RepositorySourceReprovedOperation, ABC):
     """Re-prove from current source where a restated fact goes, then move it there."""
 
@@ -697,22 +697,224 @@ class Holder:
         return self.field.target.id
 
 
+class Outcome(ABC):
+    """What one family class does where a descended branch decided it."""
+
+    @abstractmethod
+    def source(
+        self, branch: Branch, rewrite: Rewrite, family: Family, class_name: str
+    ) -> str:
+        raise NotImplementedError
+
+
+class Abstract(Outcome):
+    """An abstract root whose children disagree declares the method abstract."""
+
+    def source(
+        self, branch: Branch, rewrite: Rewrite, family: Family, class_name: str
+    ) -> str:
+        return f"@abstractmethod\n{branch.signature()}\n    ...\n"
+
+
+@dataclass(eq=False)
+class Arm(Outcome):
+    """One guarded arm of the chain."""
+
+    node: ast.If
+    guard: Guard
+
+    def source(
+        self, branch: Branch, rewrite: Rewrite, family: Family, class_name: str
+    ) -> str:
+        return branch.body_source(rewrite, family, class_name, self.node.body)
+
+
+@dataclass(eq=False)
+class Tail(Outcome):
+    """The fall-through after every arm."""
+
+    statements: list[ast.stmt]
+
+    def source(
+        self, branch: Branch, rewrite: Rewrite, family: Family, class_name: str
+    ) -> str:
+        return branch.tail_source(rewrite, family, class_name)
+
+
 @dataclass
-class Branch:
+class Branch(ABC):
     """A guard chain read off one function: the arms, then the fall-through tail."""
 
     module: ParsedModule
     function: ast.FunctionDef
     subject: str
-    prelude: ast.Assign | None
-    arms: list[tuple[ast.If, Guard]]
-    tail: list[ast.stmt]
+    arms: list[Arm]
+    tail: Tail
     root: str
     owner: ast.ClassDef
 
+    def outcome(self, family: Family, leaf: str) -> Outcome:
+        return next(
+            (arm for arm in self.arms if arm.guard.decide(family, leaf)), self.tail
+        )
+
+    def members_in(
+        self, family: Family, arm: Arm, members: Iterable[str]
+    ) -> tuple[str, ...]:
+        return tuple(
+            member for member in members if self.outcome(family, member) is arm
+        )
+
     @property
-    def in_family(self) -> bool:
-        return self.prelude is None and self.subject == "self"
+    def method_name(self) -> str:
+        return self.function.name
+
+    @property
+    def parameters(self) -> list[str]:
+        return [argument.arg for argument in self.function.args.args[1:]]
+
+    def signature(self) -> str:
+        return _signature(self.method_name, self.function, self.receiver_arguments())
+
+    def receiver_arguments(self) -> list[str]:
+        return []
+
+    def renames(
+        self, statements: list[ast.stmt], renamed: set[int]
+    ) -> list[tuple[ast.AST, str]]:
+        return []
+
+    def body_source(
+        self,
+        rewrite: Rewrite,
+        family: Family,
+        class_name: str,
+        statements: list[ast.stmt],
+    ) -> str:
+        renames: list[tuple[ast.AST, str]] = [
+            (node, f"self.{forwarded}")
+            for statement in statements
+            for node in ast.walk(statement)
+            if isinstance(node, ast.Attribute)
+            and _is_name(node.value, self.subject)
+            and (forwarded := family.forwarded_field(class_name, node.attr))
+        ]
+        renames += self.renames(statements, {id(node.value) for node, _ in renames})
+        body = rewrite.statements_source(self.module, statements, renames)
+        return f"{self.signature()}\n" + textwrap.indent(body, "    ")
+
+    def tail_source(self, rewrite: Rewrite, family: Family, class_name: str) -> str:
+        return self.body_source(rewrite, family, class_name, self.tail.statements)
+
+    @abstractmethod
+    def install(
+        self,
+        rewrite: Rewrite,
+        family: Family,
+        holder: Holder,
+        placed: dict[str, Outcome],
+        indent: str,
+    ) -> dict[str, Outcome]:
+        """Rewrite the function itself; return the placements still to insert."""
+
+
+class InFamily(Branch):
+    """A holder method branching on its own member: its placement replaces it.
+
+    The chain is rooted at the holder, so the holder always takes a placement:
+    the shared outcome, the tail, or the abstract declaration.
+    """
+
+    def install(
+        self,
+        rewrite: Rewrite,
+        family: Family,
+        holder: Holder,
+        placed: dict[str, Outcome],
+        indent: str,
+    ) -> dict[str, Outcome]:
+        source = placed.pop(holder.name).source(self, rewrite, family, holder.name)
+        rewrite.replace(
+            self.module, self.function, textwrap.indent(source, indent).strip()
+        )
+        return placed
+
+
+@dataclass
+class External(Branch):
+    """Another class's function branching on the family: its arms move onto it.
+
+    The function keeps its fall-through as the tail method; it now calls the
+    descended method on its subject, which calls the tail back where it falls through.
+    """
+
+    prelude: ast.Assign = field(kw_only=True)
+    method: str = field(kw_only=True)
+    receiver: str = field(kw_only=True)
+    tail_method: str = field(kw_only=True)
+
+    @property
+    def method_name(self) -> str:
+        return self.method
+
+    def receiver_arguments(self) -> list[str]:
+        return [f"{self.receiver}: {self.owner.name}"]
+
+    def renames(
+        self, statements: list[ast.stmt], renamed: set[int]
+    ) -> list[tuple[ast.AST, str]]:
+        names = {self.subject: "self", "self": self.receiver}
+        return [
+            (node, names[node.id])
+            for statement in statements
+            for node in ast.walk(statement)
+            if isinstance(node, ast.Name)
+            and node.id in names
+            and id(node) not in renamed
+        ]
+
+    def tail_source(self, rewrite: Rewrite, family: Family, class_name: str) -> str:
+        call = f"{self.receiver}.{self.tail_method}({', '.join(self.parameters)})"
+        return f"{self.signature()}\n    return {call}\n"
+
+    def install(
+        self,
+        rewrite: Rewrite,
+        family: Family,
+        holder: Holder,
+        placed: dict[str, Outcome],
+        indent: str,
+    ) -> dict[str, Outcome]:
+        geometry = rewrite.geometry(self.module)
+        start = geometry.line_offsets[self.prelude.lineno - 1]
+        end = geometry.node_span_offsets(SourceNodeSpan(self.function))[1]
+        subject = ast.get_source_segment(self.module.source, self.prelude.value)
+        call = f"return {subject}.{self.method}(self, {', '.join(self.parameters)})"
+        tail = (
+            _signature(self.tail_method, self.function, [])
+            + "\n"
+            + textwrap.indent(
+                rewrite.statements_source(self.module, self.tail.statements), "    "
+            )
+        )
+        body_indent = " " * self.function.body[0].col_offset
+        rewrite.span(
+            self.module,
+            start,
+            end,
+            f"{body_indent}{call}\n\n" + textwrap.indent(tail, indent).rstrip("\n"),
+        )
+        return placed
+
+
+def _signature(name: str, function: ast.FunctionDef, leading: list[str]) -> str:
+    arguments = [
+        "self",
+        *leading,
+        *(ast.unparse(argument) for argument in function.args.args[1:]),
+    ]
+    returns = "" if function.returns is None else f" -> {ast.unparse(function.returns)}"
+    return f"def {name}({', '.join(arguments)}){returns}:"
 
 
 class Fold(Cases, ABC):
@@ -767,12 +969,12 @@ class Fold(Cases, ABC):
         answer = Answers(self.names)
         aliases = self.aliases(snapshot, enum, holder)
         family = self.family(enum, holder)
-        branches = self.branches(snapshot, enum, holder, family, aliases)
+        branches = self.branches(snapshot, enum, holder, family, aliases, answer)
         handled: set[int] = set()
         groups = self.groups(enum, holder, family, branches, answer)
         for branch in branches:
             handled.update(id(node) for node in ast.walk(branch.function))
-            self.descend(rewrite, family, holder, branch, answer)
+            self.descend(rewrite, family, holder, branch)
         self.fold_holder(rewrite, enum, holder, family, groups, branches)
         for module, names in aliases.items():
             self.rewrite_reads(rewrite, module, names, enum, holder, handled)
@@ -858,6 +1060,7 @@ class Fold(Cases, ABC):
         holder: Holder,
         family: Family,
         aliases: dict[ParsedModule, ModuleNames],
+        answer: Answers,
     ) -> list[Branch]:
         """Every production function whose ``if`` reads the enum, as a guard chain."""
 
@@ -876,7 +1079,9 @@ class Fold(Cases, ABC):
                         function, enum, holder
                     ):
                         found.append(
-                            self.branch(module, owner, function, enum, holder, family)
+                            self.branch(
+                                module, owner, function, enum, holder, family, answer
+                            )
                         )
         return found
 
@@ -888,7 +1093,13 @@ class Fold(Cases, ABC):
         enum: EnumDeclaration,
         holder: Holder,
         family: Family,
+        answer: Answers,
     ) -> Branch:
+        """The holder's own method descends in place; any other function is external.
+
+        This is the boundary decoder from a function body to the branch family.
+        """
+
         site = f"{module.file_path}:{function.lineno}"
         body = list(function.body)
         if (
@@ -898,45 +1109,69 @@ class Fold(Cases, ABC):
         ):
             body = body[1:]
         if owner.name == holder.name:
-            subject, prelude, root = "self", None, holder.name
-        else:
-            prelude = body.pop(0) if body and isinstance(body[0], ast.Assign) else None
-            if (
-                prelude is None
-                or len(prelude.targets) != 1
-                or not isinstance(prelude.targets[0], ast.Name)
-            ):
-                raise ValueError(
-                    f"handback: {site}: branch subject is not one assigned name"
-                )
-            subject = prelude.targets[0].id
-            root = self.subject_type(owner, prelude.value, family, site)
-        arms: list[tuple[ast.If, Guard]] = []
+            arms = self.arms(site, function, body, "self", holder, enum)
+            return InFamily(
+                module, function, "self", arms, Tail(body), holder.name, owner
+            )
+        prelude = body.pop(0) if body and isinstance(body[0], ast.Assign) else None
+        if (
+            prelude is None
+            or len(prelude.targets) != 1
+            or not isinstance(prelude.targets[0], ast.Name)
+        ):
+            raise ValueError(
+                f"handback: {site}: branch subject is not one assigned name"
+            )
+        subject = prelude.targets[0].id
+        root = self.subject_type(owner, prelude.value, family, site)
+        arms = self.arms(site, function, body, subject, holder, enum)
+        if subject in _loaded_names(ast.Module(body=body, type_ignores=[])):
+            raise ValueError(f"handback: {site}: fall-through reads the branch subject")
+        return External(
+            module,
+            function,
+            subject,
+            arms,
+            Tail(body),
+            root,
+            owner,
+            prelude=prelude,
+            method=answer(MethodName(module, function)),
+            receiver=answer(ReceiverName(module, function)),
+            tail_method=answer(TailName(module, function)),
+        )
+
+    @staticmethod
+    def arms(
+        site: str,
+        function: ast.FunctionDef,
+        body: list[ast.stmt],
+        subject: str,
+        holder: Holder,
+        enum: EnumDeclaration,
+    ) -> list[Arm]:
+        """Pop the leading returning ``if`` arms off ``body``, leaving the tail."""
+
+        arms: list[Arm] = []
         while body and isinstance(body[0], ast.If):
-            arm = body.pop(0)
-            if arm.orelse or not isinstance(arm.body[-1], ast.Return):
+            node = body.pop(0)
+            if node.orelse or not isinstance(node.body[-1], ast.Return):
                 raise ValueError(
-                    f"handback: {site}: arm at line {arm.lineno} does not return"
+                    f"handback: {site}: arm at line {node.lineno} does not return"
                 )
             arms.append(
-                (arm, Guard.decoded(arm.test, subject, holder.field_name, enum))
+                Arm(node, Guard.decoded(node.test, subject, holder.field_name, enum))
             )
         if not arms or not body or not isinstance(body[-1], ast.Return):
             raise ValueError(
                 f"handback: {site}: branch is not arms then a returning tail"
             )
-        if not (
-            owner.name == holder.name
-            or subject not in _loaded_names(ast.Module(body=body, type_ignores=[]))
-        ):
-            raise ValueError(f"handback: {site}: fall-through reads the branch subject")
         bound = LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(function.body) - {subject}
-        for arm, _guard in arms:
-            if bound & _loaded_names(arm):
-                raise ValueError(
-                    f"handback: {site}: arm reads a local bound in the function"
-                )
-        return Branch(module, function, subject, prelude, arms, body, root, owner)
+        if any(bound & _loaded_names(arm.node) for arm in arms):
+            raise ValueError(
+                f"handback: {site}: arm reads a local bound in the function"
+            )
+        return arms
 
     @staticmethod
     def subject_type(
@@ -957,21 +1192,6 @@ class Fold(Cases, ABC):
                     return statement.returns.id
         raise ValueError(f"handback: {site}: branch subject's family is not declared")
 
-    def outcomes(self, family: Family, branch: Branch) -> dict[str, int]:
-        """Each leaf's arm index, or -1 for the fall-through tail."""
-
-        return {
-            leaf: next(
-                (
-                    index
-                    for index, (_arm, guard) in enumerate(branch.arms)
-                    if guard.decide(family, leaf)
-                ),
-                -1,
-            )
-            for leaf in family.leaves(branch.root)
-        }
-
     def groups(
         self,
         enum: EnumDeclaration,
@@ -980,21 +1200,20 @@ class Fold(Cases, ABC):
         branches: list[Branch],
         answer: Answers,
     ) -> dict[str, tuple[str, ...]]:
-        """New parents for members that share a non-default arm."""
+        """New parents for members decided into one shared arm."""
 
-        partitions = []
-        for branch in branches:
-            outcomes = self.outcomes(family, branch)
-            by_arm: dict[int, list[str]] = defaultdict(list)
-            for member in enum.members:
-                arm = outcomes.get(member.class_name, -1)
-                if arm >= 0:
-                    by_arm[arm].append(member.class_name)
-            shared = {
-                arm: tuple(names) for arm, names in by_arm.items() if len(names) > 1
-            }
-            if shared:
-                partitions.append((branch, shared))
+        members = [member.class_name for member in enum.members]
+        partitions = [
+            (branch, shared)
+            for branch in branches
+            if (
+                shared := [
+                    (arm, decided)
+                    for arm in branch.arms
+                    if len(decided := branch.members_in(family, arm, members)) > 1
+                ]
+            )
+        ]
         if len(partitions) > 1:
             raise ValueError(
                 "handback: several branches partition the members; composing their "
@@ -1002,168 +1221,66 @@ class Fold(Cases, ABC):
             )
         groups: dict[str, tuple[str, ...]] = {}
         for branch, shared in partitions:
-            for arm, members in sorted(shared.items()):
-                name = answer(GroupName(branch.module, branch.arms[arm][0], members))
+            for arm, decided in shared:
+                name = answer(GroupName(branch.module, arm.node, decided))
                 if name in family.classes:
                     raise ValueError(f"{name} is already declared in the module")
-                groups[name] = members
+                groups[name] = decided
                 family.classes[name] = FamilyClass(name, (holder.name,))
-                for member in members:
+                for member in decided:
                     family.classes[member].bases = (name,)
         return groups
 
     def descend(
-        self,
-        rewrite: Rewrite,
-        family: Family,
-        holder: Holder,
-        branch: Branch,
-        answer: Answers,
+        self, rewrite: Rewrite, family: Family, holder: Holder, branch: Branch
     ) -> None:
-        module = branch.module
-        function = branch.function
-        if branch.in_family:
-            method, receiver, tail = function.name, None, None
-        else:
-            method = answer(MethodName(module, function))
-            receiver = answer(ReceiverName(module, function))
-            tail = answer(TailName(module, function))
-        outcomes = self.outcomes(family, branch)
-        placed = self.placed(family, branch.root, outcomes, inherited=None)
-        indent = " " * function.col_offset
-        for placed_name, outcome in placed.items():
-            source = textwrap.indent(
-                self.override(
-                    rewrite,
-                    family,
-                    branch,
-                    placed_name,
-                    outcome,
-                    method,
-                    receiver,
-                    tail,
-                ),
-                indent,
+        outcomes = {
+            leaf: branch.outcome(family, leaf) for leaf in family.leaves(branch.root)
+        }
+        placed = self.placed(family, branch.root, outcomes, branch.tail, None)
+        indent = " " * branch.function.col_offset
+        remaining = branch.install(rewrite, family, holder, placed, indent)
+        for class_name, outcome in remaining.items():
+            rewrite.methods[class_name].append(
+                textwrap.indent(
+                    outcome.source(branch, rewrite, family, class_name), indent
+                )
             )
-            if branch.in_family and placed_name == holder.name:
-                rewrite.replace(module, function, source.lstrip().rstrip("\n"))
-            else:
-                rewrite.methods[placed_name].append(source)
-        if branch.in_family:
-            if holder.name not in placed:
-                rewrite.delete_statement(module, function)
-            return
-        geometry = rewrite.geometry(module)
-        first = branch.prelude
-        start = geometry.line_offsets[first.lineno - 1]
-        end = geometry.node_span_offsets(SourceNodeSpan(function))[1]
-        parameters = [argument.arg for argument in function.args.args[1:]]
-        call = (
-            f"return {ast.get_source_segment(module.source, first.value)}"
-            f".{method}(self, {', '.join(parameters)})"
-        )
-        body_indent = " " * function.body[0].col_offset
-        signature = self.signature(tail, function, None)
-        tail_source = (
-            signature
-            + "\n"
-            + textwrap.indent(rewrite.statements_source(module, branch.tail), "    ")
-        )
-        rewrite.span(
-            module,
-            start,
-            end,
-            f"{body_indent}{call}\n\n"
-            + textwrap.indent(tail_source, indent).rstrip("\n"),
-        )
 
     def placed(
         self,
         family: Family,
         name: str,
-        outcomes: dict[str, int],
-        inherited: int | None,
-    ) -> dict[str, int | None]:
-        """Override placement: one per class whose leaves agree, defaulting to the tail.
+        outcomes: dict[str, Outcome],
+        tail: Tail,
+        inherited: Outcome | None,
+    ) -> dict[str, Outcome]:
+        """One override per class whose leaves agree; a mixed class takes the tail.
 
-        ``None`` marks an abstract declaration on an abstract root.
+        An abstract root with mixed leaves declares the method abstract instead.
+        ``inherited`` is what the class inherits, ``None`` at the chain's root.
         """
 
-        leaves = family.leaves(name)
-        under = {outcomes[leaf] for leaf in leaves}
+        under = {outcomes[leaf] for leaf in family.leaves(name)}
         if len(under) == 1:
             outcome = under.pop()
-            return {} if outcome == inherited else {name: outcome}
-        placed: dict[str, int | None] = {}
+            return {} if outcome is inherited else {name: outcome}
+        placed: dict[str, Outcome] = {}
+        default: Outcome | None
         if inherited is None and family.classes[name].is_abstract:
-            placed[name] = None
+            placed[name] = Abstract()
             default = None
-        elif -1 in under:
-            default = -1
-            if default != inherited:
-                placed[name] = default
+        elif tail in under:
+            default = tail
+            if tail is not inherited:
+                placed[name] = tail
         else:
             raise ValueError(
                 f"handback: {name}'s classes take different arms and none falls through"
             )
         for child in family.children(name):
-            placed.update(self.placed(family, child, outcomes, default))
+            placed.update(self.placed(family, child, outcomes, tail, default))
         return placed
-
-    def signature(
-        self, name: str, function: ast.FunctionDef, receiver: tuple[str, str] | None
-    ) -> str:
-        arguments = [ast.unparse(argument) for argument in function.args.args[1:]]
-        if receiver is not None:
-            arguments.insert(0, f"{receiver[0]}: {receiver[1]}")
-        returns = (
-            "" if function.returns is None else f" -> {ast.unparse(function.returns)}"
-        )
-        return f"def {name}(self, {', '.join(arguments)}){returns}:".replace(
-            "(self, )", "(self)"
-        )
-
-    def override(
-        self,
-        rewrite: Rewrite,
-        family: Family,
-        branch: Branch,
-        class_name: str,
-        outcome: int | None,
-        method: str,
-        receiver: str | None,
-        tail: str | None,
-    ) -> str:
-        receiver_type = None if receiver is None else (receiver, branch.owner.name)
-        signature = self.signature(method, branch.function, receiver_type)
-        if outcome is None:
-            return f"@abstractmethod\n{signature}\n    ...\n"
-        if outcome == -1 and not branch.in_family:
-            parameters = [argument.arg for argument in branch.function.args.args[1:]]
-            return (
-                f"{signature}\n    return {receiver}.{tail}({', '.join(parameters)})\n"
-            )
-        statements = branch.tail if outcome == -1 else branch.arms[outcome][0].body
-        renames: list[tuple[ast.AST, str]] = []
-        for statement in statements:
-            for node in ast.walk(statement):
-                if (
-                    isinstance(node, ast.Attribute)
-                    and _is_name(node.value, branch.subject)
-                    and (forwarded := family.forwarded_field(class_name, node.attr))
-                ):
-                    renames.append((node, f"self.{forwarded}"))
-        renamed = {id(node.value) for node, _source in renames}
-        if not branch.in_family:
-            for statement in statements:
-                for node in ast.walk(statement):
-                    if isinstance(node, ast.Name) and id(node) not in renamed:
-                        if node.id == branch.subject:
-                            renames.append((node, "self"))
-                        elif node.id == "self":
-                            renames.append((node, receiver or "self"))
-        body = rewrite.statements_source(branch.module, statements, renames)
-        return f"{signature}\n" + textwrap.indent(body, "    ")
 
     def fold_holder(
         self,
