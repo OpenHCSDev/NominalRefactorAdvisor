@@ -5,6 +5,7 @@ from __future__ import annotations
 import ast
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field, fields, is_dataclass
+from functools import cached_property
 import hashlib
 from pathlib import Path
 import sys
@@ -48,10 +49,7 @@ class ImplementationSource:
 def implementation_module_names(values: Iterable[object]) -> tuple[str, ...]:
     """Return transitive module owners reachable from declared runtime values."""
 
-    declared_values = tuple(values)
-    return _ImplementationDependencyTraversal.for_values(declared_values).collect(
-        declared_values
-    )
+    return _scope_dependency_graph().module_names(tuple(values))
 
 
 def declaration_implementation_module_names(
@@ -69,64 +67,88 @@ def _declaration_implementation_module_names(
     return implementation_module_names(declaration_tuple)
 
 
-@dataclass
-class _ImplementationDependencyTraversal:
-    """Walk executable declarations once within their nominal package roots."""
+@ScanCache.cached
+def _scope_dependency_graph() -> _ImplementationDependencyGraph:
+    """One graph per invocation; outside a scope each query builds its own."""
 
-    expansion_roots: frozenset[str]
-    _module_names: set[str] = field(default_factory=set, init=False)
-    _seen_value_ids: set[int] = field(default_factory=set, init=False)
+    return _ImplementationDependencyGraph()
 
-    @classmethod
-    def for_values(
-        cls,
-        values: tuple[object, ...],
-    ) -> "_ImplementationDependencyTraversal":
-        return cls(
-            frozenset(
-                module_name.partition(".")[0]
-                for value in values
-                if (module_name := _module_name(value)) is not None
-            )
-        )
 
-    def collect(self, values: Iterable[object]) -> tuple[str, ...]:
-        for value in values:
-            self._visit(value)
-        return tuple(sorted(self._module_names))
+class _ImplementationDependencyNode:
+    """One value's own module owners and outgoing declaration edges."""
 
-    def _visit(self, value: object) -> None:
-        value_id = id(value)
-        if value_id in self._seen_value_ids:
-            return
-        self._seen_value_ids.add(value_id)
-
+    def __init__(self, value: object) -> None:
+        # Held so the value's id stays unique while the graph lives.
+        self.value = value
         module_name = _module_name(value)
-        if module_name is not None:
-            self._module_names.add(module_name)
-        expands_dependencies = (
-            module_name is None or module_name.partition(".")[0] in self.expansion_roots
-        )
-
-        if isinstance(value, type) and expands_dependencies:
-            for owner in value.__mro__:
-                for declared_value in tuple(vars(owner).values()):
-                    self._visit(declared_value)
-        elif is_dataclass(value) and not isinstance(value, type):
-            self._module_names.add(type(value).__module__)
-            self._visit(type(value))
-            for declared_field in fields(value):
-                self._visit(getattr(value, declared_field.name))
+        self.package_root = None if module_name is None else module_name.partition(".")[0]
+        module_names = [] if module_name is None else [module_name]
+        edges: list[object] = []
+        if is_dataclass(value) and not isinstance(value, type):
+            module_names.append(type(value).__module__)
+            edges.append(type(value))
+            edges.extend(
+                getattr(value, declared_field.name) for declared_field in fields(value)
+            )
         elif callable(value) and module_name is None:
-            self._module_names.add(type(value).__module__)
+            module_names.append(type(value).__module__)
+        edges.extend(get_args(value))
+        edges.extend(_descriptor_dependencies(value))
+        self.module_names = tuple(module_names)
+        self.edges = tuple(edges)
 
-        for generic_argument in get_args(value):
-            self._visit(generic_argument)
-        for dependency in _descriptor_dependencies(value):
-            self._visit(dependency)
-        if expands_dependencies:
-            for dependency in _callable_dependencies(value):
-                self._visit(dependency)
+    @cached_property
+    def expanded_edges(self) -> tuple[object, ...]:
+        """Edges followed only inside a query's own nominal package roots."""
+
+        value = self.value
+        declared_values = (
+            tuple(
+                declared_value
+                for owner in value.__mro__
+                for declared_value in tuple(vars(owner).values())
+            )
+            if isinstance(value, type)
+            else ()
+        )
+        return (*declared_values, *_callable_dependencies(value))
+
+    def expands_within(self, expansion_roots: frozenset[str]) -> bool:
+        return self.package_root is None or self.package_root in expansion_roots
+
+
+@dataclass
+class _ImplementationDependencyGraph:
+    """Each value's edges, computed once; every query walks the shared graph."""
+
+    _nodes: dict[int, _ImplementationDependencyNode] = field(default_factory=dict)
+
+    def node(self, value: object) -> _ImplementationDependencyNode:
+        node = self._nodes.get(id(value))
+        if node is None:
+            node = self._nodes[id(value)] = _ImplementationDependencyNode(value)
+        return node
+
+    def module_names(self, values: tuple[object, ...]) -> tuple[str, ...]:
+        expansion_roots = frozenset(
+            root
+            for value in values
+            if (root := self.node(value).package_root) is not None
+        )
+        module_names: set[str] = set()
+        seen_value_ids: set[int] = set()
+        pending = list(values)
+        while pending:
+            value = pending.pop()
+            if id(value) in seen_value_ids:
+                continue
+            seen_value_ids.add(id(value))
+            node = self.node(value)
+            module_names.update(node.module_names)
+            pending.extend(node.edges)
+            if node.expands_within(expansion_roots):
+                pending.extend(node.expanded_edges)
+        return tuple(sorted(module_names))
 
 
 def _module_name(value: object) -> str | None:
