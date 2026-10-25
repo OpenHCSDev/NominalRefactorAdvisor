@@ -25,6 +25,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 TABLE = "[tool.nominal-refactor-advisor.family-root]"
+BLACK_DEFAULT_LINE_LENGTH = 88
 
 
 class ValueCarrier(ABC):
@@ -70,6 +71,7 @@ class DeclaredRoot:
     value: str
     decoder: str
     carrier: ValueCarrier
+    line_length: int
 
     @classmethod
     def declared_for(cls, path: Path) -> DeclaredRoot:
@@ -88,13 +90,27 @@ class DeclaredRoot:
                 f"handback: {path}: declare a family root: no pyproject.toml"
                 f" above it to hold {TABLE}"
             )
-        match tomllib.loads(pyproject.read_text()):
+        declared = tomllib.loads(pyproject.read_text())
+        match declared:
             case {"tool": {"nominal-refactor-advisor": {"family-root": dict(table)}}}:
-                return cls.decoded(pyproject, table)
+                return cls.decoded(pyproject, table, cls.line_length_of(declared))
         raise ValueError(f"handback: {pyproject}: declare a family root in {TABLE}")
 
+    @staticmethod
+    def line_length_of(declared: dict[str, object]) -> int:
+        """The line length the repository's formatter declares; Black's default else."""
+
+        match declared:
+            case {"tool": {"ruff": {"line-length": int(length)}}}:
+                return length
+            case {"tool": {"black": {"line-length": int(length)}}}:
+                return length
+        return BLACK_DEFAULT_LINE_LENGTH
+
     @classmethod
-    def decoded(cls, pyproject: Path, table: dict[str, object]) -> DeclaredRoot:
+    def decoded(
+        cls, pyproject: Path, table: dict[str, object], line_length: int
+    ) -> DeclaredRoot:
         match table:
             case {
                 "root": str(root),
@@ -113,6 +129,7 @@ class DeclaredRoot:
                     value,
                     decoder,
                     cls.carrier_of(pyproject, rest.get("derived-value")),
+                    line_length,
                 )
         raise ValueError(
             f"{pyproject}: {TABLE} takes root, value and decoder strings and an"

@@ -47,7 +47,6 @@ from .descent import (
 from .declared_root import DeclaredRoot
 from .semantic_descent import AuthorityClaim, SemanticAuthorityKind
 
-LINE_LENGTH = 88
 ITERATING_CALLS = frozenset({"tuple", "list", "set", "frozenset", "sorted"})
 BOOLEAN_CALLS = frozenset({"isinstance", "issubclass", "bool", "callable", "hasattr"})
 
@@ -647,13 +646,17 @@ def segment(module: ParsedModule, node: ast.expr) -> str:
 
 
 def signature(
-    name: str, parameters: list[str], returns: str | None, indent: str
+    name: str,
+    parameters: list[str],
+    returns: str | None,
+    indent: str,
+    line_length: int,
 ) -> list[str]:
     """``def`` header lines, exploded one parameter per line past the line length."""
 
     suffix = "" if returns is None else f" -> {returns}"
     line = f"def {name}({', '.join(parameters)}){suffix}:"
-    if len(indent) + len(line) <= LINE_LENGTH:
+    if len(indent) + len(line) <= line_length:
         return [line]
     return [
         f"def {name}(",
@@ -1269,7 +1272,13 @@ class CasesFamily(Cases, Descent):
         )
         header = [
             *header_decorator,
-            *signature(function.name, parameters, returns, "    "),
+            *signature(
+                function.name,
+                parameters,
+                returns,
+                "    ",
+                model.declared.line_length,
+            ),
         ]
         statements = body_without_docstring(function.body)
         documentation = docstring(function.body)
@@ -1753,7 +1762,16 @@ class CasesFamily(Cases, Descent):
                 and not isinstance(parent.args[0], ast.Starred)
                 and not parent.keywords
             ):
-                # An enum call decodes a value; the declared root's decoder does now.
+                # An enum call decodes a value and passes a member through; the
+                # declared decoder is only declared for values.
+                if not provably_text(parent.args[0], parent, parents):
+                    raise handback(
+                        module,
+                        parent,
+                        f"{node.id}(...) also passes a member through, and"
+                        f" {model.declared.decoder} is declared for values: decode"
+                        " the argument once where it enters",
+                    )
                 rewrite.replace(module, node, f"{node.id}.{model.declared.decoder}")
                 continue
             if isinstance(parent, ast.Call) and (
@@ -1817,6 +1835,43 @@ class CasesFamily(Cases, Descent):
                     end = rewrite.geometry(module).required_node_offsets(node)[1]
                     rewrite.span(module, end, end, "()")
                     handled.add(id(node))
+
+
+def provably_text(
+    argument: ast.expr, call: ast.Call, parents: dict[int, ast.AST]
+) -> bool:
+    """``argument`` is a string literal, or a parameter of the enclosing function
+    annotated ``str``: a value, never a member."""
+
+    if isinstance(argument, ast.Constant):
+        return isinstance(argument.value, str)
+    if not isinstance(argument, ast.Name):
+        return False
+    scope = enclosing_function(call, parents)
+    if scope is None:
+        return False
+    arguments = scope.args
+    return any(
+        parameter.arg == argument.id
+        and parameter.annotation is not None
+        and is_name(parameter.annotation, ["str"])
+        for parameter in (
+            *arguments.posonlyargs,
+            *arguments.args,
+            *arguments.kwonlyargs,
+        )
+    )
+
+
+def enclosing_function(
+    node: ast.AST, parents: dict[int, ast.AST]
+) -> ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda | None:
+    parent = parents.get(id(node))
+    if parent is None or isinstance(
+        parent, ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda
+    ):
+        return parent
+    return enclosing_function(parent, parents)
 
 
 TYPE_WRAPPERS = frozenset(
@@ -2563,6 +2618,7 @@ class Block(Site):
                 ],
                 family_returns,
                 "    ",
+                model.declared.line_length,
             ),
         ]
         booleans = boolean_names | {
@@ -2686,6 +2742,7 @@ class Guard(Site):
                 ["cls", f"{self.callback}: {callable_name}[[], {returns}]"],
                 returns,
                 "    ",
+                model.declared.line_length,
             ),
         ]
         tail_source = rewrite.statements_source(module, rest)
@@ -2701,6 +2758,7 @@ class Guard(Site):
                         else ast.unparse(self.function.returns)
                     ),
                     indent,
+                    model.declared.line_length,
                 )
             )
             + "\n"

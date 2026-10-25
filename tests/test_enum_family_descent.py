@@ -923,3 +923,21 @@ def test_cases_family_refuses_a_member_read_through_a_receiver(tmp_path: Path) -
         (tmp_path / "reader.py").as_posix(),
         "required",
     )
+
+
+def test_cases_family_hands_back_an_enum_call_that_may_pass_a_member_through(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    snapshot = _derived_staged(
+        tmp_path,
+        monkeypatch,
+        DERIVED_ENUM_SOURCE.replace(
+            "def decoded(text: str) -> Kind:", "def decoded(text: Kind) -> Kind:"
+        ),
+    )
+    operation = CasesFamily(
+        target=_target(snapshot, "kind.Kind"), rationale="", names=()
+    )
+
+    with pytest.raises(ValueError, match=r"also passes a member through"):
+        operation.source_edits_from_snapshot(snapshot)
