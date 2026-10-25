@@ -306,3 +306,62 @@ def test_cases_family_keeps_the_unfolded_body_when_members_would_share_an_overri
     ]
     assert overriders == ["Shape"]
     assert "if given is not cls.flagged:" in source
+
+
+ELIF_ENUM_SOURCE = """from dataclasses import dataclass
+from enum import StrEnum
+
+
+class Need(StrEnum):
+    def __new__(cls, value: str, required: bool) -> "Need":
+        member = str.__new__(cls, value)
+        member._value_ = value
+        member._required = required
+        return member
+
+    REQUIRED = ("required", True)
+    FORBIDDEN = ("forbidden", False)
+
+    @property
+    def required(self) -> bool:
+        return self._required
+
+
+@dataclass
+class Holder:
+    need: Need
+    reference: str | None
+
+    def check(self) -> None:
+        if self.need.required:
+            if self.reference is None:
+                raise ValueError("missing")
+        elif self.reference is not None:
+            raise ValueError("unexpected")
+"""
+
+
+def test_cases_family_turns_a_decided_away_elif_into_an_if(tmp_path: Path) -> None:
+    (tmp_path / "need.py").write_text(ELIF_ENUM_SOURCE)
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path), ())
+    operation = CasesFamily(
+        target=_target(snapshot, "need.Need"), rationale="", names=("check_reference",)
+    )
+
+    simulation = _simulated(snapshot, operation)
+
+    assert simulation.is_clean is True
+    (source,) = simulation.simulation.rewritten_sources.values()
+    tree = ast.parse(source)
+    (forbidden,) = (
+        node
+        for node in tree.body
+        if isinstance(node, ast.ClassDef)
+        and node.name in {"Required", "Forbidden"}
+        and any(
+            isinstance(statement, ast.FunctionDef)
+            and statement.name == "check_reference"
+            for statement in node.body
+        )
+    )
+    assert "elif" not in ast.get_source_segment(source, forbidden)

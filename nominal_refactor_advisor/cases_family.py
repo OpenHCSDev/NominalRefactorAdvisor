@@ -363,10 +363,11 @@ class Folding:
         test = self.truth(statement.test)
         if isinstance(test, ast.Constant):
             chosen = statement.body if test.value else statement.orelse
+            if not test.value and len(chosen) == 1 and isinstance(chosen[0], ast.If):
+                # An ``elif`` node's source starts at ``elif``: never slice it.
+                return self.chain(chosen[0], keyword)
             if keyword == "if":
                 return self.block(chosen)
-            if not test.value and len(chosen) == 1 and isinstance(chosen[0], ast.If):
-                return self.chain(chosen[0], "elif")
             lines, ends = self.block(chosen)
             return (["else:", *indented(lines)], ends) if lines else ([], False)
         body, body_ends = self.block(statement.body)
