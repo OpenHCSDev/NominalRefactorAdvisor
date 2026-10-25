@@ -12,10 +12,10 @@ from pathlib import Path
 from .analysis_cache import (
     AnalysisCacheIdentity,
     AnalysisCacheStatus,
+    AnalysisCacheStorage,
     Disabled,
     Hit,
     Miss,
-    AnalysisCacheStorage,
 )
 from .ast_tools import (
     ParsedModule,
