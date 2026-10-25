@@ -36,6 +36,9 @@ docs = [
 [tool.setuptools.packages.find]
 include = ["nominal_refactor_advisor*"]
 
+[tool.setuptools.package-data]
+nominal_refactor_advisor = ["py.typed"]
+
 [tool.black]
 line-length = 88
 target-version = ["py311"]
