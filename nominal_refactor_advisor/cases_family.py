@@ -8,7 +8,10 @@ into its tests. Branches on member data outside the enum become calls of a new
 family method; the names for those methods are questions the caller answers.
 
 Members are classes, so identity (``status is Hit``), hashing and pickling keep
-their meaning; ``value`` stays a class attribute so wire names survive.
+their meaning. The root the family inherits is the target repository's own
+declaration (``DeclaredRoot``): it names the attribute members carry their wire
+value in and the classmethod that decodes one, so ``X(value)`` becomes
+``X.<decoder>(value)`` and wire names survive.
 """
 
 from __future__ import annotations
@@ -22,12 +25,12 @@ from collections import Counter
 from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass, field
 from functools import cached_property
+from pathlib import Path
 from typing import ClassVar
 
 from metaclass_registry import AutoRegisterMeta
 
-from .ast_tools import ParsedModule, PythonSourcePathPolicy
-from .case_root import Case, CaseMeta
+from .ast_tools import AstParentIndex, ParsedModule, PythonSourcePathPolicy
 from .codemod_runtime import CodemodSourceSnapshot
 from .descent import (
     Answers,
@@ -41,9 +44,9 @@ from .descent import (
     Rewrite,
     TailName,
 )
+from .declared_root import DeclaredRoot
 from .semantic_descent import AuthorityClaim, SemanticAuthorityKind
 
-LINE_LENGTH = 88
 ITERATING_CALLS = frozenset({"tuple", "list", "set", "frozenset", "sorted"})
 BOOLEAN_CALLS = frozenset({"isinstance", "issubclass", "bool", "callable", "hasattr"})
 
@@ -365,15 +368,11 @@ def member_type(root: str, source: str) -> str:
 
     tree = ast.parse(source, mode="eval")
     lines = SourceLines(source)
-    parents = {
-        id(child): parent
-        for parent in ast.walk(tree)
-        for child in ast.iter_child_nodes(parent)
-    }
+    parents = AstParentIndex(tree).parent_by_node
     replacements: list[tuple[int, int, str]] = []
     for part in type_positions(tree.body):
         if is_name(part, [root]):
-            parent = parents.get(id(part))
+            parent = parents.get(part)
             if isinstance(parent, ast.Subscript) and is_name(parent.value, ["type"]):
                 continue
             replacements.append((*lines.offsets(part), f"type[{root}]"))
@@ -643,13 +642,17 @@ def segment(module: ParsedModule, node: ast.expr) -> str:
 
 
 def signature(
-    name: str, parameters: list[str], returns: str | None, indent: str
+    name: str,
+    parameters: list[str],
+    returns: str | None,
+    indent: str,
+    line_length: int,
 ) -> list[str]:
     """``def`` header lines, exploded one parameter per line past the line length."""
 
     suffix = "" if returns is None else f" -> {returns}"
     line = f"def {name}({', '.join(parameters)}){suffix}:"
-    if len(indent) + len(line) <= LINE_LENGTH:
+    if len(indent) + len(line) <= line_length:
         return [line]
     return [
         f"def {name}(",
@@ -718,6 +721,7 @@ class CaseModel:
     """The enum read as a family: per-member data, literals and folded properties."""
 
     enum: EnumDeclaration
+    declared: DeclaredRoot
     data: list[Datum]
     expressions: dict[str, dict[str, ast.expr]]
     literals: dict[str, dict[str, object]]
@@ -747,6 +751,16 @@ class CaseModel:
             for name in (*(datum.name for datum in self.data), *self.folded)
             if all(name in self.literals[member.name] for member in self.members)
         )
+
+    @property
+    def decided_reads(self) -> frozenset[str]:
+        """The attribute names a read of a decided datum spells: its own, or the
+        stored field it forwards (``value``, when the root carries it elsewhere)."""
+
+        decided = self.decided_names
+        return decided | {
+            stored for stored, name in self.forwarded.items() if name in decided
+        }
 
     def attribute_name(self, attribute: str) -> str:
         return self.forwarded.get(attribute, attribute)
@@ -781,20 +795,59 @@ class CasesFamily(Cases, Descent):
         answer = Answers(self.names)
         aliases = self.aliases(snapshot, enum, enum.module, enum.name)
         self.require_free_class_names(model)
+        base = self.root_base(model)
         methods = [self.method(model, rewrite, function) for function in enum.methods]
         handled: set[int] = {id(node) for node in ast.walk(enum.node)}
         for site in self.sites(snapshot, model, aliases, answer):
             methods.append(site.install(self, model, rewrite, answer, handled))
         rewrite.replace(
-            enum.module, enum.node, self.family_source(model, rewrite, methods)
+            enum.module, enum.node, self.family_source(model, rewrite, methods, base)
         )
         for module, names in aliases.items():
             self.rewrite_reads(rewrite, module, names, model, handled)
+        ValueReads(model, snapshot, aliases).rewrite(rewrite, handled)
         self.rewrite_called(rewrite, snapshot, model, handled)
         answer.require_complete()
-        rewrite.ensure_import(enum.module, Case.__module__, (Case.__name__,))
+        if self.imported_root(model) is None:
+            rewrite.ensure_import(
+                enum.module, model.declared.module, (model.declared.name,)
+            )
         self.rebind_imports(rewrite, aliases, enum, enum.module)
         return rewrite
+
+    @staticmethod
+    def imported_root(model: CaseModel) -> str | None:
+        """The local name the enum's module binds the declared root to, if any."""
+
+        declared = model.declared
+        module = model.enum.module
+        if module.module_name == declared.module:
+            return declared.name
+        for statement in module.module.body:
+            if not isinstance(statement, ast.ImportFrom):
+                continue
+            source = module.module_path_identity.resolve_import_from_module(
+                imported_module=statement.module, level=statement.level
+            )
+            for alias in statement.names:
+                if source == declared.module and alias.name == declared.name:
+                    return alias.asname or alias.name
+        return None
+
+    def root_base(self, model: CaseModel) -> str:
+        """The declared root as the family's module names it once imported."""
+
+        local = self.imported_root(model)
+        if local is not None:
+            return local
+        if model.declared.name in module_bound_names(model.enum.module.module):
+            raise handback(
+                model.enum.module,
+                model.enum.node,
+                f"{model.declared.name}, the declared family root, is already"
+                " bound here",
+            )
+        return model.declared.name
 
     # -- the enum read as a family -------------------------------------------------
 
@@ -802,6 +855,7 @@ class CasesFamily(Cases, Descent):
         self, enum: EnumDeclaration, snapshot: CodemodSourceSnapshot
     ) -> CaseModel:
         module = enum.module
+        declared = DeclaredRoot.declared_for(Path(module.file_path))
         if enum.node.decorator_list or enum.node.keywords:
             raise handback(
                 module,
@@ -827,7 +881,7 @@ class CasesFamily(Cases, Descent):
                 for argument in member.arguments
             ):
                 raise handback(module, statement, "enum member is not a value tuple")
-        data, expressions = self.data(enum)
+        data, expressions = self.data(enum, declared)
         literals = {
             member.name: {
                 name: value
@@ -837,6 +891,15 @@ class CasesFamily(Cases, Descent):
             for member in enum.members
         }
         forwarded = self.forwarded(enum, data)
+        if declared.value != "value":
+            if "value" in forwarded:
+                raise handback(
+                    module,
+                    enum.node,
+                    f"property {forwarded['value']} forwards value, which"
+                    f" {declared.name} carries as {declared.value}",
+                )
+            forwarded["value"] = declared.value
         data = [
             Datum(
                 forwarded.get(datum.stored, datum.name), datum.annotation, datum.stored
@@ -848,7 +911,9 @@ class CasesFamily(Cases, Descent):
                 forwarded.get(name, name): value
                 for name, value in literals[member.name].items()
             }
-        model = CaseModel(enum, data, expressions, literals, {}, forwarded, frozenset())
+        model = CaseModel(
+            enum, declared, data, expressions, literals, {}, forwarded, frozenset()
+        )
         self.fold_properties(model)
         model.called = frozenset(
             function.name
@@ -916,7 +981,7 @@ class CasesFamily(Cases, Descent):
         return inlined
 
     def data(
-        self, enum: EnumDeclaration
+        self, enum: EnumDeclaration, declared: DeclaredRoot
     ) -> tuple[list[Datum], dict[str, dict[str, ast.expr]]]:
         """``value`` then each field ``__new__`` stores, with every member's expression."""
 
@@ -931,7 +996,7 @@ class CasesFamily(Cases, Descent):
                     module,
                     member.node,
                     f"member {member.name}'s value is not a string literal;"
-                    f" {Case.__name__} carries a str value",
+                    f" {declared.name} carries a str {declared.value}",
                 )
         annotations = {
             statement.target.id: ast.unparse(statement.annotation)
@@ -1203,7 +1268,13 @@ class CasesFamily(Cases, Descent):
         )
         header = [
             *header_decorator,
-            *signature(function.name, parameters, returns, "    "),
+            *signature(
+                function.name,
+                parameters,
+                returns,
+                "    ",
+                model.declared.line_length,
+            ),
         ]
         statements = body_without_docstring(function.body)
         documentation = docstring(function.body)
@@ -1286,11 +1357,7 @@ class CasesFamily(Cases, Descent):
         properties now methods become calls."""
 
         renames: dict[int, str] = {}
-        parents = {
-            id(child): parent
-            for parent in ast.walk(function)
-            for child in ast.iter_child_nodes(parent)
-        }
+        parents = AstParentIndex(function).parent_by_node
         for statement in function.body:
             for node in ast.walk(statement):
                 if isinstance(node, ast.Attribute) and isinstance(node.ctx, ast.Load):
@@ -1304,7 +1371,7 @@ class CasesFamily(Cases, Descent):
                         continue
                     if receiver is not None and is_name(node.value, [receiver]):
                         name = model.attribute_name(node.attr)
-                        parent = parents.get(id(node))
+                        parent = parents.get(node)
                         called = name in model.called and not (
                             isinstance(parent, ast.Call) and parent.func is node
                         )
@@ -1317,7 +1384,7 @@ class CasesFamily(Cases, Descent):
                     and node.id == receiver
                     and id(node) not in renames
                 ):
-                    parent = parents.get(id(node))
+                    parent = parents.get(node)
                     if is_classmethod and self.iterated(node, parent):
                         renames[id(node)] = f"{model.root}.__subclasses__()"
                     elif not is_classmethod and isinstance(node.ctx, ast.Load):
@@ -1330,9 +1397,7 @@ class CasesFamily(Cases, Descent):
                         and isinstance(parent, ast.Call)
                         and parent.func is node
                     ):
-                        raise handback(
-                            model.enum.module, node, "enum looked up by value"
-                        )
+                        renames[id(node)] = f"cls.{model.declared.decoder}"
         return renames
 
     @staticmethod
@@ -1382,7 +1447,7 @@ class CasesFamily(Cases, Descent):
         """Every production block whose tests read member data through a field."""
 
         found: list[Site] = []
-        decided = model.decided_names
+        decided = model.decided_reads
         for module in sorted(aliases, key=lambda module: module.file_path):
             if PythonSourcePathPolicy.is_test_path(module.path):
                 continue
@@ -1529,18 +1594,23 @@ class CasesFamily(Cases, Descent):
     # -- the family source ---------------------------------------------------------
 
     def family_source(
-        self, model: CaseModel, rewrite: Rewrite, methods: list[MethodBodies | None]
+        self,
+        model: CaseModel,
+        rewrite: Rewrite,
+        methods: list[MethodBodies | None],
+        base: str,
     ) -> str:
         enum = model.enum
         module = enum.module
         rewrite_methods = [method for method in methods if method is not None]
         documentation = docstring(enum.node.body)
-        root: list[str] = [f"class {model.root}({Case.__name__}):"]
+        declared = model.declared
+        root: list[str] = [f"class {model.root}({base}):"]
         annotated = [
             *(
                 (datum.name, datum.annotation)
                 for datum in model.data
-                if datum.name not in CaseMeta.__annotations__
+                if datum.name != declared.value
             ),
             *model.folded.items(),
         ]
@@ -1563,12 +1633,22 @@ class CasesFamily(Cases, Descent):
             root.append("")
             root.extend(method.source(method.root_body(model.members), True))
         if len(root) == 1:
-            # Case declares ``value``; a root with nothing else of its own is empty.
+            # The declared root carries the value; a root with nothing else is empty.
             root.append("    pass")
         classes = ["\n".join(root)]
         for member in model.members:
-            lines = [f"class {member.class_name}({model.root}):"]
+            value = member.arguments[0]
+            assert isinstance(value, ast.Constant) and isinstance(value.value, str)
+            keywords, carried = declared.carrier.member(
+                declared.value, member.class_name, value.value, segment(module, value)
+            )
+            lines = [
+                f"class {member.class_name}({', '.join([model.root, *keywords])}):",
+                *indented(carried),
+            ]
             for datum in model.data:
+                if datum.name == declared.value:
+                    continue
                 expression = model.expressions[member.name][datum.stored]
                 lines.extend(indented(self.assignment(module, datum.name, expression)))
             for name in model.folded:
@@ -1578,6 +1658,8 @@ class CasesFamily(Cases, Descent):
                 if body is not None:
                     lines.append("")
                     lines.extend(method.source(body, False))
+            if len(lines) == 1:
+                lines.append("    pass")
             classes.append("\n".join(lines))
         return "\n\n\n".join(classes)
 
@@ -1605,11 +1687,7 @@ class CasesFamily(Cases, Descent):
     ) -> None:
         """Member references, annotations and iteration; the root keeps the enum's name."""
 
-        parents = {
-            id(child): parent
-            for parent in ast.walk(module.module)
-            for child in ast.iter_child_nodes(parent)
-        }
+        parents = AstParentIndex(module.module).parent_by_node
         annotations = {
             id(node): annotation
             for annotated in ast.walk(module.module)
@@ -1639,7 +1717,7 @@ class CasesFamily(Cases, Descent):
                 continue
             if not is_name(node, local_names):
                 continue
-            parent = parents.get(id(node))
+            parent = parents.get(node)
             if (
                 isinstance(parent, ast.Attribute)
                 and parent.attr in model.class_names
@@ -1664,6 +1742,25 @@ class CasesFamily(Cases, Descent):
                 continue
             if self.iterated(node, parent):
                 rewrite.replace(module, node, f"{node.id}.__subclasses__()")
+                continue
+            if (
+                isinstance(parent, ast.Call)
+                and parent.func is node
+                and len(parent.args) == 1
+                and not isinstance(parent.args[0], ast.Starred)
+                and not parent.keywords
+            ):
+                # An enum call decodes a value and passes a member through; the
+                # declared decoder is only declared for values.
+                if not provably_text(parent.args[0], parent, parents):
+                    raise handback(
+                        module,
+                        parent,
+                        f"{node.id}(...) also passes a member through, and"
+                        f" {model.declared.decoder} is declared for values: decode"
+                        " the argument once where it enters",
+                    )
+                rewrite.replace(module, node, f"{node.id}.{model.declared.decoder}")
                 continue
             if isinstance(parent, ast.Call) and (
                 parent.func is node
@@ -1708,11 +1805,7 @@ class CasesFamily(Cases, Descent):
                         f"{node.name} also declares one of {sorted(model.called)}",
                     )
         for module in snapshot.parsed_modules:
-            parents = {
-                id(child): parent
-                for parent in ast.walk(module.module)
-                for child in ast.iter_child_nodes(parent)
-            }
+            parents = AstParentIndex(module.module).parent_by_node
             for node in ast.walk(module.module):
                 if (
                     isinstance(node, ast.Attribute)
@@ -1720,11 +1813,494 @@ class CasesFamily(Cases, Descent):
                     and isinstance(node.ctx, ast.Load)
                     and id(node) not in handled
                 ):
-                    parent = parents.get(id(node))
+                    parent = parents.get(node)
                     if isinstance(parent, ast.Call) and parent.func is node:
                         raise handback(module, node, f"{node.attr} is already called")
                     end = rewrite.geometry(module).required_node_offsets(node)[1]
                     rewrite.span(module, end, end, "()")
+                    handled.add(id(node))
+
+
+def provably_text(
+    argument: ast.expr, call: ast.Call, parents: dict[ast.AST, ast.AST]
+) -> bool:
+    """``argument`` is a string literal or a name declared ``str``: a value, never
+    a member."""
+
+    if isinstance(argument, ast.Constant):
+        return isinstance(argument.value, str)
+    return isinstance(argument, ast.Name) and is_name(
+        declared_type(argument.id, call, parents), ["str"]
+    )
+
+
+def declared_type(
+    name: str, node: ast.AST, parents: dict[ast.AST, ast.AST]
+) -> ast.expr | None:
+    """The type ``name`` is declared with where ``node`` reads it: a parameter's
+    annotation, or the value type of the mapping a ``match`` captured it from."""
+
+    parent = parents.get(node)
+    if parent is None:
+        return None
+    if isinstance(parent, ast.match_case):
+        subject = parents.get(parent)
+        captured = isinstance(subject, ast.Match) and any(
+            isinstance(pattern, ast.MatchMapping)
+            and any(
+                isinstance(value, ast.MatchAs)
+                and value.pattern is None
+                and value.name == name
+                for value in pattern.patterns
+            )
+            for pattern in ast.walk(parent.pattern)
+        )
+        if captured and isinstance(subject.subject, ast.Name):
+            return mapping_value_type(
+                declared_type(subject.subject.id, subject, parents)
+            )
+    if isinstance(parent, ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda):
+        arguments = parent.args
+        return next(
+            (
+                parameter.annotation
+                for parameter in (
+                    *arguments.posonlyargs,
+                    *arguments.args,
+                    *arguments.kwonlyargs,
+                )
+                if parameter.arg == name
+            ),
+            None,
+        )
+    return declared_type(name, parent, parents)
+
+
+def mapping_value_type(annotation: ast.expr | None) -> ast.expr | None:
+    match annotation:
+        case ast.Subscript(
+            value=ast.Name(id="dict" | "Mapping"), slice=ast.Tuple(elts=[_, value])
+        ):
+            return value
+    return None
+
+
+TYPE_WRAPPERS = frozenset(
+    {"Annotated", "ClassVar", "Final", "Literal", "Optional", "Union", "None"}
+)
+
+
+def held_type(annotation: ast.expr) -> ast.expr:
+    """The type an annotation holds: ``Annotated`` metadata and ``| None`` dropped,
+    a string annotation read as its expression."""
+
+    if isinstance(annotation, ast.Constant) and isinstance(annotation.value, str):
+        try:
+            return held_type(ast.parse(annotation.value, mode="eval").body)
+        except SyntaxError:
+            return annotation
+    if (
+        isinstance(annotation, ast.Subscript)
+        and (
+            is_name(annotation.value, ["Annotated"])
+            or isinstance(annotation.value, ast.Attribute)
+            and annotation.value.attr == "Annotated"
+        )
+        and isinstance(annotation.slice, ast.Tuple)
+        and annotation.slice.elts
+    ):
+        return held_type(annotation.slice.elts[0])
+    if isinstance(annotation, ast.BinOp) and isinstance(annotation.op, ast.BitOr):
+        sides = [
+            side
+            for side in (annotation.left, annotation.right)
+            if not (isinstance(side, ast.Constant) and side.value is None)
+        ]
+        if len(sides) == 1:
+            return held_type(sides[0])
+    return annotation
+
+
+def scope_walk(scope: ast.AST) -> Iterator[ast.AST]:
+    """The nodes of one scope: nested functions are scopes of their own."""
+
+    pending = list(ast.iter_child_nodes(scope))
+    while pending:
+        node = pending.pop()
+        yield node
+        if not isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda):
+            pending.extend(ast.iter_child_nodes(node))
+
+
+def may_carry_value(annotation: ast.expr) -> bool:
+    """Whether a value of this annotation may have a ``value`` attribute of its own:
+    any type it names that is neither a builtin nor a typing wrapper."""
+
+    builtin = set(dir(builtins)) | TYPE_WRAPPERS
+    return any(
+        isinstance(node, ast.Attribute)
+        and node.attr not in builtin
+        or isinstance(node, ast.Name)
+        and node.id not in builtin
+        for node in type_positions(held_type(annotation))
+    )
+
+
+CONTAINERS = frozenset(
+    {"tuple", "list", "set", "frozenset", "Sequence", "Iterable", "Collection"}
+)
+
+
+@dataclass(frozen=True)
+class Typed:
+    """An annotation read in the module that wrote it."""
+
+    module: ParsedModule
+    annotation: ast.expr
+
+
+@dataclass(frozen=True)
+class Scope:
+    """Where a read sits: its innermost function and that function's class."""
+
+    function: ast.FunctionDef | ast.AsyncFunctionDef | None
+    owner: ast.ClassDef | None
+
+
+@dataclass
+class DeclaredTypes:
+    """Static types read from declarations alone: annotations, the receiver, a name
+    bound once, and loops over annotated containers. Anything else is unknown.
+
+    Classes are found by name across the snapshot; a name two classes share is
+    unknown.
+    """
+
+    snapshot: CodemodSourceSnapshot
+
+    @cached_property
+    def classes(self) -> dict[str, list[tuple[ParsedModule, ast.ClassDef]]]:
+        found: dict[str, list[tuple[ParsedModule, ast.ClassDef]]] = {}
+        for module in self.snapshot.parsed_modules:
+            for node in ast.walk(module.module):
+                if isinstance(node, ast.ClassDef):
+                    found.setdefault(node.name, []).append((module, node))
+        return found
+
+    def class_of(self, typed: Typed | None) -> tuple[ParsedModule, ast.ClassDef] | None:
+        if typed is None:
+            return None
+        held = held_type(typed.annotation)
+        if not isinstance(held, ast.Name):
+            return None
+        found = self.classes.get(held.id, [])
+        return found[0] if len(found) == 1 else None
+
+    def field(
+        self, owner: tuple[ParsedModule, ast.ClassDef] | None, name: str, depth: int
+    ) -> Typed | None:
+        if owner is None or depth > 20:
+            return None
+        module, node = owner
+        for statement in node.body:
+            if isinstance(statement, ast.AnnAssign) and is_name(
+                statement.target, [name]
+            ):
+                return Typed(module, statement.annotation)
+        for base in node.bases:
+            found = self.field(self.class_of(Typed(module, base)), name, depth + 1)
+            if found is not None:
+                return found
+        return None
+
+    @staticmethod
+    def element(typed: Typed | None, index: int | None) -> Typed | None:
+        """The element type of a container annotation, by position for a tuple."""
+
+        if typed is None:
+            return None
+        held = held_type(typed.annotation)
+        if not (isinstance(held, ast.Subscript) and is_name(held.value, CONTAINERS)):
+            return None
+        elements = (
+            held.slice.elts if isinstance(held.slice, ast.Tuple) else [held.slice]
+        )
+        if (
+            len(elements) == 2
+            and isinstance(elements[1], ast.Constant)
+            and elements[1].value is Ellipsis
+        ):
+            return Typed(typed.module, elements[0])
+        if is_name(held.value, ["tuple"]):
+            if index is None or index >= len(elements):
+                return None
+            return Typed(typed.module, elements[index])
+        return Typed(typed.module, elements[0]) if len(elements) == 1 else None
+
+    @staticmethod
+    def scopes(module: ParsedModule) -> dict[int, Scope]:
+        found: dict[int, Scope] = {}
+        owners = {
+            id(statement): node
+            for node in ast.walk(module.module)
+            if isinstance(node, ast.ClassDef)
+            for statement in node.body
+        }
+        for function in ast.walk(module.module):
+            if isinstance(function, ast.FunctionDef | ast.AsyncFunctionDef):
+                scope = Scope(function, owners.get(id(function)))
+                for node in scope_walk(function):
+                    found[id(node)] = scope
+        return found
+
+    def of(
+        self, module: ParsedModule, node: ast.expr, scope: Scope, depth: int = 0
+    ) -> Typed | None:
+        if depth > 20:
+            return None
+        if isinstance(node, ast.Attribute):
+            base = self.of(module, node.value, scope, depth + 1)
+            return self.field(self.class_of(base), node.attr, depth + 1)
+        if not isinstance(node, ast.Name) or scope.function is None:
+            return None
+        function = scope.function
+        arguments = [
+            *function.args.posonlyargs,
+            *function.args.args,
+            *function.args.kwonlyargs,
+        ]
+        if (
+            scope.owner is not None
+            and arguments
+            and arguments[0].arg == node.id
+            and "staticmethod" not in decorator_names(function)
+        ):
+            return Typed(module, ast.Name(scope.owner.name, ast.Load()))
+        for argument in arguments:
+            if argument.arg == node.id:
+                return (
+                    None
+                    if argument.annotation is None
+                    else Typed(module, argument.annotation)
+                )
+        bindings = [
+            binding
+            for binding in scope_walk(function)
+            if node.id
+            in stored_names(
+                [binding.target]
+                if isinstance(binding, ast.For | ast.comprehension | ast.AnnAssign)
+                else binding.targets if isinstance(binding, ast.Assign) else []
+            )
+        ]
+        if len(bindings) != 1:
+            return None
+        (binding,) = bindings
+        if isinstance(binding, ast.AnnAssign):
+            return Typed(module, binding.annotation)
+        if isinstance(binding, ast.Assign):
+            if len(binding.targets) != 1:
+                return None
+            target, value = binding.targets[0], binding.value
+            if isinstance(target, ast.Name):
+                return self.of(module, value, scope, depth + 1)
+            if (
+                isinstance(target, ast.Tuple)
+                and isinstance(value, ast.Tuple)
+                and len(target.elts) == len(value.elts)
+            ):
+                for element, source in zip(target.elts, value.elts):
+                    if is_name(element, [node.id]):
+                        return self.of(module, source, scope, depth + 1)
+            return None
+        assert isinstance(binding, ast.For | ast.comprehension)
+        item = self.element(self.of(module, binding.iter, scope, depth + 1), None)
+        if isinstance(binding.target, ast.Name):
+            return item
+        if isinstance(binding.target, ast.Tuple):
+            for index, element in enumerate(binding.target.elts):
+                if is_name(element, [node.id]):
+                    return self.element(item, index)
+        return None
+
+
+@dataclass
+class ValueReads:
+    """Reads of a member's value, renamed to the attribute the declared root carries
+    it in when that is not ``value``.
+
+    A ``.value`` read is a member's when its subject is a member reference, an enum
+    decode, a name a parameter annotated with the enum or a loop over it binds, the
+    receiver's own field declared holding the enum, or any field of that name some
+    class declares holding the enum. That last match is by name (closed world): a
+    field of the same name declared with a type that may carry its own ``value``
+    hands the read back.
+    """
+
+    model: CaseModel
+    snapshot: CodemodSourceSnapshot
+    aliases: dict[ParsedModule, ModuleNames]
+
+    def enum_names(self, module: ParsedModule) -> frozenset[str]:
+        names = self.aliases.get(module)
+        return frozenset() if names is None else names.enum
+
+    def holds_member(self, module: ParsedModule, annotation: ast.expr | None) -> bool:
+        return annotation is not None and is_name(
+            held_type(annotation), self.enum_names(module)
+        )
+
+    @cached_property
+    def declarations(self) -> list[tuple[ParsedModule, ast.ClassDef, ast.AnnAssign]]:
+        return [
+            (module, owner, statement)
+            for module in self.snapshot.parsed_modules
+            for owner in ast.walk(module.module)
+            if isinstance(owner, ast.ClassDef)
+            for statement in owner.body
+            if isinstance(statement, ast.AnnAssign)
+            and isinstance(statement.target, ast.Name)
+        ]
+
+    @cached_property
+    def held_fields(self) -> frozenset[str]:
+        return frozenset(
+            statement.target.id
+            for module, _owner, statement in self.declarations
+            if isinstance(statement.target, ast.Name)
+            and self.holds_member(module, statement.annotation)
+        )
+
+    @cached_property
+    def ambiguous_fields(self) -> frozenset[str]:
+        return frozenset(
+            statement.target.id
+            for module, _owner, statement in self.declarations
+            if isinstance(statement.target, ast.Name)
+            and statement.target.id in self.held_fields
+            and not self.holds_member(module, statement.annotation)
+            and may_carry_value(statement.annotation)
+        )
+
+    def held_subjects(self, module: ParsedModule) -> frozenset[int]:
+        """Nodes of ``module`` that hold a member: typed names and own fields."""
+
+        names = self.enum_names(module)
+        held: set[int] = set()
+        scopes = [
+            node
+            for node in ast.walk(module.module)
+            if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda)
+        ]
+        for scope in [module.module, *scopes]:
+            typed = {
+                argument.arg
+                for argument in (
+                    [
+                        *scope.args.posonlyargs,
+                        *scope.args.args,
+                        *scope.args.kwonlyargs,
+                    ]
+                    if not isinstance(scope, ast.Module)
+                    else []
+                )
+                if self.holds_member(module, argument.annotation)
+            }
+            typed.update(
+                loop.target.id
+                for loop in scope_walk(scope)
+                if isinstance(loop, ast.For | ast.AsyncFor | ast.comprehension)
+                and is_name(loop.iter, names)
+                and isinstance(loop.target, ast.Name)
+            )
+            held.update(
+                id(node)
+                for node in scope_walk(scope)
+                if isinstance(node, ast.Name) and node.id in typed
+            )
+        for owner in ast.walk(module.module):
+            if not isinstance(owner, ast.ClassDef):
+                continue
+            fields = {
+                statement.target.id
+                for statement in owner.body
+                if isinstance(statement, ast.AnnAssign)
+                and isinstance(statement.target, ast.Name)
+                and self.holds_member(module, statement.annotation)
+            }
+            for function in owner.body:
+                if not (
+                    isinstance(function, ast.FunctionDef | ast.AsyncFunctionDef)
+                    and function.args.args
+                    and fields
+                ):
+                    continue
+                receiver = function.args.args[0].arg
+                held.update(
+                    id(node)
+                    for node in ast.walk(function)
+                    if isinstance(node, ast.Attribute)
+                    and node.attr in fields
+                    and is_name(node.value, [receiver])
+                )
+        return frozenset(held)
+
+    @cached_property
+    def types(self) -> DeclaredTypes:
+        return DeclaredTypes(self.snapshot)
+
+    def is_member(
+        self,
+        module: ParsedModule,
+        subject: ast.expr,
+        held: frozenset[int],
+        scope: Scope,
+    ) -> bool:
+        names = self.enum_names(module)
+        if id(subject) in held:
+            return True
+        if isinstance(subject, ast.Call):
+            return is_name(subject.func, names)
+        if not isinstance(subject, ast.Attribute):
+            return False
+        if is_name(subject.value, names):
+            return subject.attr in self.model.class_names
+        if subject.attr not in self.held_fields:
+            return False
+        typed = self.types.of(module, subject, scope)
+        if typed is not None:
+            return self.holds_member(typed.module, typed.annotation)
+        if subject.attr in self.ambiguous_fields:
+            raise handback(
+                module,
+                subject,
+                f"{ast.unparse(subject)}.value: field {subject.attr} is declared"
+                " holding the enum and holding another type that may carry value",
+            )
+        return True
+
+    def rewrite(self, rewrite: Rewrite, handled: set[int]) -> None:
+        attribute = self.model.declared.value
+        if attribute == "value":
+            return
+        for module in self.snapshot.parsed_modules:
+            held = self.held_subjects(module)
+            scopes = DeclaredTypes.scopes(module)
+            for node in ast.walk(module.module):
+                if (
+                    isinstance(node, ast.Attribute)
+                    and node.attr == "value"
+                    and isinstance(node.ctx, ast.Load)
+                    and id(node) not in handled
+                    and self.is_member(
+                        module,
+                        node.value,
+                        held,
+                        scopes.get(id(node), Scope(None, None)),
+                    )
+                ):
+                    end = rewrite.geometry(module).required_node_offsets(node)[1]
+                    rewrite.span(module, end - len("value"), end, attribute)
                     handled.add(id(node))
 
 
@@ -1843,7 +2419,9 @@ class Site:
     def literal(self, model: CaseModel, member: Member) -> Callable[[ast.AST], object]:
         def read(node: ast.AST) -> object:
             if isinstance(node, ast.Attribute) and self.field_read(node.value):
-                return model.literals[member.name].get(node.attr, UNKNOWN)
+                return model.literals[member.name].get(
+                    model.attribute_name(node.attr), UNKNOWN
+                )
             return UNKNOWN
 
         return read
@@ -1875,9 +2453,7 @@ class Site:
             )
         return member_type(model.root, annotation)
 
-    def family_call(
-        self, returns: bool, arguments: list[str], col_offset: int
-    ) -> str:
+    def family_call(self, returns: bool, arguments: list[str], col_offset: int) -> str:
         """The call to the family method; past 88 columns, one argument per line."""
 
         prefix = ("return " if returns else "") + (
@@ -1961,18 +2537,15 @@ class Block(Site):
                 *self.function.args.kwonlyargs,
             )
         }
-        parents = {
-            id(child): parent
-            for statement in statements
-            for parent in ast.walk(statement)
-            for child in ast.iter_child_nodes(parent)
-        }
+        parents = AstParentIndex(
+            ast.Module(body=list(statements), type_ignores=[])
+        ).parent_by_node
         for statement in statements:
             for node in ast.walk(statement):
                 if isinstance(node, ast.Attribute) and self.field_read(node.value):
-                    renames[id(node)] = f"cls.{node.attr}"
+                    renames[id(node)] = f"cls.{model.attribute_name(node.attr)}"
                 elif self.field_read(node):
-                    parent = parents.get(id(node))
+                    parent = parents.get(node)
                     if not (
                         isinstance(parent, ast.Attribute) and id(parent) in renames
                     ):
@@ -1994,7 +2567,7 @@ class Block(Site):
                     )
                     arguments.setdefault(node.attr, f"{self.receiver}.{node.attr}")
                 elif is_name(node, [self.receiver]):
-                    parent = parents.get(id(node))
+                    parent = parents.get(node)
                     if not (
                         isinstance(parent, ast.Attribute)
                         and (id(parent) in renames or self.field_read(parent))
@@ -2053,6 +2626,7 @@ class Block(Site):
                 ],
                 family_returns,
                 "    ",
+                model.declared.line_length,
             ),
         ]
         booleans = boolean_names | {
@@ -2146,7 +2720,7 @@ class Guard(Site):
                 ["return"] if test.value else [f"return {self.callback}()"]
             )
         renames = {
-            id(node): f"cls.{node.attr}"
+            id(node): f"cls.{model.attribute_name(node.attr)}"
             for node in ast.walk(guard.test)
             if isinstance(node, ast.Attribute) and self.field_read(node.value)
         }
@@ -2167,9 +2741,7 @@ class Guard(Site):
             None,
         )
         if callable_name is None:
-            rewrite.ensure_import(
-                model.enum.module, "collections.abc", ("Callable",)
-            )
+            rewrite.ensure_import(model.enum.module, "collections.abc", ("Callable",))
             callable_name = "Callable"
         header = [
             "@classmethod",
@@ -2178,6 +2750,7 @@ class Guard(Site):
                 ["cls", f"{self.callback}: {callable_name}[[], {returns}]"],
                 returns,
                 "    ",
+                model.declared.line_length,
             ),
         ]
         tail_source = rewrite.statements_source(module, rest)
@@ -2193,6 +2766,7 @@ class Guard(Site):
                         else ast.unparse(self.function.returns)
                     ),
                     indent,
+                    model.declared.line_length,
                 )
             )
             + "\n"
