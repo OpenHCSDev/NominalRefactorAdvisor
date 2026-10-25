@@ -11,13 +11,13 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from abc import ABC
 from collections.abc import Callable
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import PurePosixPath
 from typing import ClassVar, Self, TypeVar
 
+from .case_root import Case
 from .json_reports import (
     SemanticRecord,
     json_report_object,
@@ -589,10 +589,9 @@ class DerivationExclusion(SemanticRecord):
         )
 
 
-class EnumerationDecisionKind(ABC):
+class EnumerationDecisionKind(Case):
     """Result of the three-way derivation audit for one enumeration site."""
 
-    value: str
     requires_determining_authority: bool
     requires_named_divergence: bool
 
