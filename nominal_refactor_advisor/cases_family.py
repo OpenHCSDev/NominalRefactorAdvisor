@@ -537,11 +537,15 @@ def outermost(root: ast.AST, renames: dict[int, str]) -> Iterator[ast.AST]:
 
 
 def parameter_sources(
-    arguments: ast.arguments, first: str | None, text: Callable[[ast.expr], str]
+    arguments: ast.arguments,
+    first: str | None,
+    annotation_text: Callable[[ast.expr], str],
+    default_text: Callable[[ast.expr], str],
 ) -> list[str]:
     """Each parameter as Black renders it, the first renamed to ``first``.
 
-    ``text`` renders an annotation or default from its source.
+    ``annotation_text`` renders an annotation, ``default_text`` a default value:
+    a default is a value, never a type to rewrite.
     """
 
     positional = [*arguments.posonlyargs, *arguments.args]
@@ -552,27 +556,45 @@ def parameter_sources(
     sources: list[str] = []
     for index, (argument, default) in enumerate(zip(positional, defaults)):
         name = first if index == 0 and first is not None else argument.arg
-        sources.append(argument_source(name, argument.annotation, default, text))
+        sources.append(
+            argument_source(
+                name, argument.annotation, default, annotation_text, default_text
+            )
+        )
         if index + 1 == len(arguments.posonlyargs):
             sources.append("/")
     if arguments.vararg is not None:
         sources.append(
             "*"
             + argument_source(
-                arguments.vararg.arg, arguments.vararg.annotation, None, text
+                arguments.vararg.arg,
+                arguments.vararg.annotation,
+                None,
+                annotation_text,
+                default_text,
             )
         )
     elif arguments.kwonlyargs:
         sources.append("*")
     for argument, kw_default in zip(arguments.kwonlyargs, arguments.kw_defaults):
         sources.append(
-            argument_source(argument.arg, argument.annotation, kw_default, text)
+            argument_source(
+                argument.arg,
+                argument.annotation,
+                kw_default,
+                annotation_text,
+                default_text,
+            )
         )
     if arguments.kwarg is not None:
         sources.append(
             "**"
             + argument_source(
-                arguments.kwarg.arg, arguments.kwarg.annotation, None, text
+                arguments.kwarg.arg,
+                arguments.kwarg.annotation,
+                None,
+                annotation_text,
+                default_text,
             )
         )
     return sources
@@ -582,12 +604,13 @@ def argument_source(
     name: str,
     annotation: ast.expr | None,
     default: ast.expr | None,
-    text: Callable[[ast.expr], str],
+    annotation_text: Callable[[ast.expr], str],
+    default_text: Callable[[ast.expr], str],
 ) -> str:
     if annotation is None:
-        return name if default is None else f"{name}={text(default)}"
-    source = f"{name}: {text(annotation)}"
-    return source if default is None else f"{source} = {text(default)}"
+        return name if default is None else f"{name}={default_text(default)}"
+    source = f"{name}: {annotation_text(annotation)}"
+    return source if default is None else f"{source} = {default_text(default)}"
 
 
 def segment(module: ParsedModule, node: ast.expr) -> str:
@@ -1158,6 +1181,7 @@ class CasesFamily(Cases, Descent):
             function.args,
             first,
             lambda node: member_type(model.root, segment(module, node)),
+            lambda node: segment(module, node),
         )
         returns = (
             None

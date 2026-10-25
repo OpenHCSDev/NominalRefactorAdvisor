@@ -625,3 +625,26 @@ def test_cases_family_hands_back_a_member_whose_value_is_not_a_string(
         f"handback: {(tmp_path / 'level.py').as_posix()}:5: member LOW's value is "
         "not a string literal; Case carries a str value"
     )
+
+
+def test_cases_family_keeps_a_string_default_a_value(tmp_path: Path) -> None:
+    (tmp_path / "mutation.py").write_text(
+        "from enum import Enum\n\n\n"
+        "class Mutation(Enum):\n"
+        '    INSERT = "INSERT"\n'
+        '    DELETE = "DELETE"\n\n'
+        '    def trigger(self, *, when: str = "") -> str:\n'
+        "        return self.value + when\n"
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path), ())
+    operation = CasesFamily(
+        target=_target(snapshot, "mutation.Mutation"), rationale="", names=()
+    )
+
+    simulation = _simulated(snapshot, operation)
+
+    assert simulation.is_clean is True
+    family = simulation.simulation.rewritten_sources[
+        (tmp_path / "mutation.py").as_posix()
+    ]
+    assert 'def trigger(cls, *, when: str = "") -> str:' in family
