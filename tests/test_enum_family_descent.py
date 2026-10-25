@@ -421,3 +421,52 @@ def test_cases_family_keeps_sorted_imports_sorted(tmp_path: Path) -> None:
     assert rewritten[(tmp_path / "reader.py").as_posix()].startswith(
         "from need import (\n    Holder,\n    Required,\n    helper,\n)\n"
     )
+
+
+LAMBDA_ENUM_SOURCE = """from collections.abc import Callable
+from enum import StrEnum
+
+
+class Echo(StrEnum):
+    def __new__(cls, value: str, say: Callable[[list[str], str], None]) -> "Echo":
+        member = str.__new__(cls, value)
+        member._value_ = value
+        member._say = say
+        return member
+
+    LOUD = ("loud", lambda heard, word: heard.append(word.upper()))
+    MUTE = ("mute", lambda heard, word: None)
+
+    def speak(self, heard: list[str], word: str) -> None:
+        self._say(heard, word)
+"""
+
+
+def test_cases_family_inlines_lambda_data_into_its_only_caller(tmp_path: Path) -> None:
+    (tmp_path / "echo.py").write_text(LAMBDA_ENUM_SOURCE)
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path), ())
+    operation = CasesFamily(
+        target=_target(snapshot, "echo.Echo"), rationale="", names=()
+    )
+
+    simulation = _simulated(snapshot, operation)
+
+    assert simulation.is_clean is True
+    (source,) = simulation.simulation.rewritten_sources.values()
+    assert "_say" not in source
+    tree = ast.parse(source)
+    speak = {
+        node.name: [
+            ast.unparse(statement)
+            for function in node.body
+            if isinstance(function, ast.FunctionDef) and function.name == "speak"
+            for statement in function.body
+        ]
+        for node in tree.body
+        if isinstance(node, ast.ClassDef)
+    }
+    assert speak == {
+        "Echo": ["heard.append(word.upper())"],
+        "Loud": [],
+        "Mute": ["pass"],
+    }

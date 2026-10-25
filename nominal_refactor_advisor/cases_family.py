@@ -183,6 +183,52 @@ def rebuilt(node: ast.AST, renames: dict[int, str]) -> ast.AST:
     return type(node)(**fields)
 
 
+def plain_lambda(node: ast.expr) -> bool:
+    """A lambda of positional names whose body binds no name of its own."""
+
+    return (
+        isinstance(node, ast.Lambda)
+        and not node.args.posonlyargs
+        and node.args.vararg is None
+        and not node.args.kwonlyargs
+        and node.args.kwarg is None
+        and not node.args.defaults
+        and not any(
+            isinstance(
+                part,
+                ast.Lambda
+                | ast.NamedExpr
+                | ast.ListComp
+                | ast.SetComp
+                | ast.DictComp
+                | ast.GeneratorExp,
+            )
+            for part in ast.walk(node.body)
+        )
+    )
+
+
+def applied(function: ast.Lambda, arguments: list[str]) -> str:
+    """``function``'s body with each parameter replaced by its argument's source."""
+
+    bound = {
+        parameter.arg: argument
+        for parameter, argument in zip(function.args.args, arguments)
+    }
+    body = rebuilt(
+        function.body,
+        {
+            id(node): bound[node.id]
+            for node in ast.walk(function.body)
+            if isinstance(node, ast.Name) and node.id in bound
+        },
+    )
+    assert isinstance(body, ast.expr)
+    source = ast.unparse(body)
+    atomic = ast.Name | ast.Attribute | ast.Call | ast.Constant | ast.Subscript
+    return source if isinstance(body, atomic) else f"({source})"
+
+
 def is_boolean(node: ast.expr, boolean_names: frozenset[str]) -> bool:
     """Whether ``node`` evaluates to a ``bool``, read from its syntax alone."""
 
@@ -347,6 +393,16 @@ class Folding:
     def statement(self, statement: ast.stmt) -> tuple[list[str], bool]:
         if isinstance(statement, ast.If) and self.decides(statement):
             return self.chain(statement, "if")
+        if (
+            isinstance(statement, ast.Expr)
+            and id(statement.value) in self.renames
+            and literal_value(
+                ast.parse(self.renames[id(statement.value)], mode="eval").body
+            )
+            is not UNKNOWN
+        ):
+            # An applied lambda that reduced to a constant does nothing here.
+            return [], False
         source = self.rewrite.statements_source(
             self.module,
             [statement],
@@ -492,13 +548,14 @@ class MethodBodies:
     The root takes the body most members share and each other member overrides
     it, unless two members would carry the same override: that copy restates a
     sibling, so the root keeps the unfolded body, reading each member's own data,
-    and no member overrides.
+    and no member overrides. A method that applies inlined data has no unfolded
+    body: that data no longer exists.
     """
 
     name: str
     header: list[str]
     bodies: dict[str, list[str]]
-    generic: list[str]
+    generic: list[str] | None
     docstring: list[str] = field(default_factory=list)
 
     def root_body(self, members: tuple[Member, ...]) -> list[str]:
@@ -509,7 +566,9 @@ class MethodBodies:
             for member in members
             if counts[tuple(self.bodies[member.name])] == most
         )
-        if any(count > 1 for body, count in counts.items() if list(body) != root):
+        if self.generic is not None and any(
+            count > 1 for body, count in counts.items() if list(body) != root
+        ):
             return self.generic
         return root
 
@@ -539,6 +598,7 @@ class CaseModel:
     folded: dict[str, str | None]
     forwarded: dict[str, str]
     called: frozenset[str]
+    inlined: dict[str, dict[str, ast.Lambda]] = field(default_factory=dict)
 
     @property
     def root(self) -> str:
@@ -679,7 +739,62 @@ class CasesFamily(Cases, Descent):
             and function.name not in model.folded
             and function.name not in forwarded.values()
         )
+        model.inlined = self.inlined(model, snapshot)
+        model.data = [datum for datum in model.data if datum.name not in model.inlined]
         return model
+
+    @staticmethod
+    def inlined(
+        model: CaseModel, snapshot: CodemodSourceSnapshot
+    ) -> dict[str, dict[str, ast.Lambda]]:
+        """Data every member answers with a lambda, only called by the enum itself.
+
+        Members are classes now, so each call becomes that member's lambda body
+        and the data goes: a stored function beside its one caller restates it.
+        Reads are matched by attribute name.
+        """
+
+        enum_nodes = {id(node) for node in ast.walk(model.enum.node)}
+        inlined: dict[str, dict[str, ast.Lambda]] = {}
+        for datum in model.data:
+            functions = {
+                member.name: model.expressions[member.name][datum.stored]
+                for member in model.members
+            }
+            if not all(map(plain_lambda, functions.values())):
+                continue
+            lambdas = {
+                name: function
+                for name, function in functions.items()
+                if isinstance(function, ast.Lambda)
+            }
+            arities = {len(function.args.args) for function in lambdas.values()}
+            if len(arities) != 1:
+                continue
+            arity = arities.pop()
+            names = {datum.name, datum.stored}
+            if all(
+                id(node) in enum_nodes
+                and (
+                    not isinstance(node.ctx, ast.Load)
+                    or (
+                        isinstance(parent, ast.Call)
+                        and parent.func is node
+                        and len(parent.args) == arity
+                        and not parent.keywords
+                        and not any(
+                            isinstance(argument, ast.Starred)
+                            for argument in parent.args
+                        )
+                    )
+                )
+                for module in snapshot.parsed_modules
+                for parent in ast.walk(module.module)
+                for node in ast.iter_child_nodes(parent)
+                if isinstance(node, ast.Attribute) and node.attr in names
+            ):
+                inlined[datum.name] = lambdas
+        return inlined
 
     def data(
         self, enum: EnumDeclaration
@@ -963,6 +1078,15 @@ class CasesFamily(Cases, Descent):
         renames = self.method_renames(
             model, function, receiver, decorators == ("classmethod",)
         )
+        applications = [
+            node
+            for node in ast.walk(function)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and receiver is not None
+            and is_name(node.func.value, [receiver])
+            and model.attribute_name(node.func.attr) in model.inlined
+        ]
         bodies: dict[str, list[str]] = {}
         for member in model.members:
             folding = Folding(
@@ -977,17 +1101,34 @@ class CasesFamily(Cases, Descent):
                     if receiver is not None and decorators != ("classmethod",)
                     else (lambda node: UNKNOWN)
                 ),
-                renames,
+                renames
+                | {
+                    id(call): applied(
+                        model.inlined[model.attribute_name(call.func.attr)][
+                            member.name
+                        ],
+                        [
+                            ast.unparse(rebuilt(argument, renames))
+                            for argument in call.args
+                        ],
+                    )
+                    for call in applications
+                    if isinstance(call.func, ast.Attribute)
+                },
                 self.boolean_names(function),
             )
             bodies[member.name], _ends = folding.block(statements)
-        generic, _ends = Folding(
-            module,
-            rewrite,
-            lambda node: UNKNOWN,
-            renames,
-            self.boolean_names(function),
-        ).block(statements)
+        generic = (
+            None
+            if applications
+            else Folding(
+                module,
+                rewrite,
+                lambda node: UNKNOWN,
+                renames,
+                self.boolean_names(function),
+            ).block(statements)[0]
+        )
         return MethodBodies(
             function.name,
             header,
@@ -1643,6 +1784,21 @@ class Site:
             )
         return member_type(model.root, annotation)
 
+    def family_call(
+        self, returns: bool, arguments: list[str], col_offset: int
+    ) -> str:
+        """The call to the family method; past 88 columns, one argument per line."""
+
+        prefix = ("return " if returns else "") + (
+            f"{self.receiver}.{self.field_name}.{self.method}("
+        )
+        call = f"{prefix}{', '.join(arguments)})"
+        if col_offset + len(call) <= 88:
+            return call + "\n"
+        return "\n".join(
+            [prefix, *(f"    {argument}," for argument in arguments), ")\n"]
+        )
+
     def replace_statements(
         self,
         rewrite: Rewrite,
@@ -1822,15 +1978,10 @@ class Block(Site):
         generic, _ends = Folding(
             module, rewrite, lambda node: UNKNOWN, renames, booleans
         ).block(statements)
-        prefix = ("return " if returns else "") + (
-            f"{self.receiver}.{self.field_name}.{self.method}("
+        call = self.family_call(
+            returns, list(arguments.values()), statements[0].col_offset
         )
-        call = f"{prefix}{', '.join(arguments.values())})"
-        if statements[0].col_offset + len(call) > 88:
-            call = "\n".join(
-                [prefix, *(f"    {argument}," for argument in arguments.values()), ")"]
-            )
-        self.replace_statements(rewrite, statements, call + "\n", handled)
+        self.replace_statements(rewrite, statements, call, handled)
         return MethodBodies(self.method, header, bodies, generic)
 
 
@@ -1959,7 +2110,9 @@ class Guard(Site):
             + textwrap.indent(tail_source, "    "),
             indent,
         )
-        call = f"return {self.receiver}.{self.field_name}.{self.method}({self.receiver}.{self.tail})\n"
+        call = self.family_call(
+            True, [f"{self.receiver}.{self.tail}"], guard.col_offset
+        )
         geometry = rewrite.geometry(module)
         start = geometry.line_offsets[guard.lineno - 1]
         end = geometry.required_node_offsets(self.function)[1]
