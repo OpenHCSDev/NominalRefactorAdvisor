@@ -33,7 +33,7 @@ from ..class_index import (
 from ..codemod import (
     AutoRegisterExplicitPriorityOrderingFindingRecipeSynthesizer,
     CandidateCollectorBoilerplateFindingRecipeSynthesizer,
-    CasesFoldFindingRecipeSynthesizer,
+    CasesFindingRecipeSynthesizer,
     DeclarativeDetectorClassFindingRecipeSynthesizer,
     DirectBuildFindingRendererFindingRecipeSynthesizer,
     InheritedAutoRegisterConfigBoilerplateFindingRecipeSynthesizer,
@@ -1430,7 +1430,7 @@ def _target_has_external_enum_case_recovery(
 class ExternalEnumCaseRecoveryDetector(
     SemanticMirrorIssueDetector,
     CompactClassRepositoryCandidateDetector[ExternalEnumCaseRecoveryCandidate],
-    CasesFoldFindingRecipeSynthesizer,
+    CasesFindingRecipeSynthesizer,
 ):
     """Find closed enum case semantics recovered outside their declaration."""
 

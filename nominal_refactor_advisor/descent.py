@@ -115,36 +115,60 @@ def class_name(member_name: str) -> str:
 
 @dataclass(frozen=True)
 class Member:
-    """One enum member with the data its declaration supplies."""
+    """One enum member: its declaration and the expression each ``__new__`` field takes."""
 
     name: str
-    data: dict[str, object]
+    node: ast.Assign
+    fields: tuple[tuple[str, ast.expr | None], ...]
 
     @property
     def class_name(self) -> str:
         return class_name(self.name)
 
+    @property
+    def arguments(self) -> tuple[ast.expr, ...]:
+        value = self.node.value
+        return tuple(value.elts) if isinstance(value, ast.Tuple) else (value,)
+
+    @cached_property
+    def data(self) -> dict[str, object]:
+        """The literal each field takes; a fold decides branches on these."""
+
+        return {
+            name: None if expression is None else ast.literal_eval(expression)
+            for name, expression in self.fields
+        }
+
 
 @dataclass(frozen=True)
 class EnumDeclaration:
-    """An enum class decoded once from its declaration."""
+    """An enum class decoded once from its declaration, behaviour included."""
 
     module: ParsedModule
     node: ast.ClassDef
     members: tuple[Member, ...]
+    new: ast.FunctionDef | None
+    methods: tuple[ast.FunctionDef | ast.AsyncFunctionDef, ...]
 
     @classmethod
     def decoded(cls, module: ParsedModule, node: ast.ClassDef) -> EnumDeclaration:
-        data_fields: tuple[tuple[str, object], ...] = ()
+        new = next(
+            (
+                statement
+                for statement in node.body
+                if isinstance(statement, ast.FunctionDef)
+                and statement.name == "__new__"
+            ),
+            None,
+        )
+        methods = tuple(
+            statement
+            for statement in node.body
+            if isinstance(statement, ast.FunctionDef | ast.AsyncFunctionDef)
+            and statement is not new
+        )
+        data_fields = () if new is None else cls._data_fields(new)
         members: list[Member] = []
-        for statement in node.body:
-            if isinstance(statement, ast.FunctionDef) and statement.name == "__new__":
-                data_fields = cls._data_fields(statement)
-            elif isinstance(statement, ast.FunctionDef | ast.AsyncFunctionDef):
-                raise ValueError(
-                    f"enum {node.name} declares method {statement.name!r}; "
-                    "fold moves data, not behaviour"
-                )
         for statement in node.body:
             if not (
                 isinstance(statement, ast.Assign)
@@ -157,7 +181,7 @@ class EnumDeclaration:
                 if isinstance(statement.value, ast.Tuple)
                 else [statement.value]
             )
-            extra = [ast.literal_eval(value) for value in values[1:]]
+            extra = values[1:]
             if len(extra) > len(data_fields):
                 raise ValueError(
                     f"enum member {statement.targets[0].id} has extra data"
@@ -165,22 +189,24 @@ class EnumDeclaration:
             members.append(
                 Member(
                     statement.targets[0].id,
-                    {
-                        name: (extra[index] if index < len(extra) else default)
+                    statement,
+                    tuple(
+                        (name, extra[index] if index < len(extra) else default)
                         for index, (name, default) in enumerate(data_fields)
-                    },
+                    ),
                 )
             )
         if not members:
             raise ValueError(f"enum {node.name} declares no members")
-        return cls(module, node, tuple(members))
+        return cls(module, node, tuple(members), new, methods)
 
     @staticmethod
-    def _data_fields(new: ast.FunctionDef) -> tuple[tuple[str, object], ...]:
+    def _data_fields(new: ast.FunctionDef) -> tuple[tuple[str, ast.expr | None], ...]:
         positional = new.args.args[2:]
-        defaults = [None] * (len(positional) - len(new.args.defaults)) + [
-            ast.literal_eval(default) for default in new.args.defaults
-        ]
+        defaults: list[ast.expr | None] = [None] * (
+            len(positional) - len(new.args.defaults)
+        )
+        defaults.extend(new.args.defaults)
         return tuple(
             (argument.arg, default) for argument, default in zip(positional, defaults)
         )
@@ -199,7 +225,7 @@ class EnumDeclaration:
 
     @property
     def data_fields(self) -> frozenset[str]:
-        return frozenset(self.members[0].data)
+        return frozenset(name for name, _expression in self.members[0].fields)
 
 
 class FamilyClass:
@@ -719,7 +745,21 @@ class Enumerated(Rewritten, ABC):
     """
 
     def enum(self, snapshot: CodemodSourceSnapshot) -> EnumDeclaration:
-        return EnumDeclaration.decoded(*self.target_class(snapshot))
+        return self.admitted(EnumDeclaration.decoded(*self.target_class(snapshot)))
+
+    def admitted(self, enum: EnumDeclaration) -> EnumDeclaration:
+        """The enum, if this end state has a place for everything it declares.
+
+        A fold or mirror deletes the enum and keeps its members and their data;
+        a method would be lost, so it refuses one.
+        """
+
+        if enum.methods:
+            raise ValueError(
+                f"enum {enum.name} declares method {enum.methods[0].name!r}; "
+                "fold moves data, not behaviour"
+            )
+        return enum
 
     def aliases(
         self,

@@ -84,7 +84,7 @@ EXPECTED_EXECUTABLE_CONCEPTS = {
     codemod.KeyedMirrorFindingRecipeSynthesizer: (
         codemod.ClassFamilyAuthorityConcept
     ),
-    codemod.CasesFoldFindingRecipeSynthesizer: (
+    codemod.CasesFindingRecipeSynthesizer: (
         codemod.ClassFamilyAuthorityConcept
     ),
     codemod.RepeatedBuilderCallFindingRecipeSynthesizer: (

@@ -682,6 +682,7 @@ from .planner import (
 from .projection_descent_codemod import (
     TypedMirror as TypedMirror,
 )
+from .cases_family import CasesFamily
 from .descent import CasesFold, Descent, KeyedMirror
 from .registry_identity import (
     AUTOREGISTER_CONFIGURATION_ATTRIBUTE_NAMES,
@@ -7139,13 +7140,15 @@ class DescentFindingRecipeSynthesizer(
     FindingRecipeSynthesizer,
     ABC,
 ):
-    """Re-prove one descent on the class the finding's authority evidence names.
+    """Re-prove a descent on the class the finding's authority evidence names.
 
-    A refusal that lists questions is a handback: the same operation becomes
+    ``descent_types`` are end states in preference order; each one's own proof
+    admits or refuses the class, and the first admitted becomes the recipe. A
+    refusal that lists questions is a handback: the same operation becomes
     executable once its ``names`` answer them.
     """
 
-    descent_type: ClassVar[type[Descent]]
+    descent_types: ClassVar[tuple[type[Descent], ...]]
     recipe_reason: ClassVar[str]
 
     def target_evidence(
@@ -7160,12 +7163,12 @@ class DescentFindingRecipeSynthesizer(
         finding: RefactorFinding,
         context: CodemodSelectorContext | None = None,
     ) -> FindingRecipeEvaluation:
-        key = self.descent_type.operation_key()
+        keys = "/".join(descent.operation_key() for descent in self.descent_types)
         if context is None:
-            return self.rejected_evaluation(f"{key} requires source context")
+            return self.rejected_evaluation(f"{keys} requires source context")
         authority_location = finding.authority_evidence
         if authority_location is None:
-            return self.rejected_evaluation(f"{key} finding lacks authority evidence")
+            return self.rejected_evaluation(f"{keys} finding lacks authority evidence")
         try:
             authority = context.required_class_target_for_authority_evidence(
                 authority_location
@@ -7173,21 +7176,28 @@ class DescentFindingRecipeSynthesizer(
             target = context.required_class_target_for_authority_evidence(
                 self.target_evidence(finding, authority_location)
             )
-            operation = self.descent_type(
+        except (CodemodOperationPreflightError, ValueError) as error:
+            return self.rejected_evaluation(str(error))
+        refusals: list[str] = []
+        for descent_type in self.descent_types:
+            operation = descent_type(
                 target=SourceRewriteTarget(target_id=target.target_id),
                 rationale="",
             )
-            operation.synthesis_proof(context.execution_snapshot())
-        except (CodemodOperationPreflightError, ValueError) as error:
-            return self.rejected_evaluation(str(error))
-        return self.executable_evaluation(
-            RefactorRecipe(
-                recipe_id=f"{finding.stable_id}-{key}",
-                reason=self.recipe_reason,
+            try:
+                operation.synthesis_proof(context.execution_snapshot())
+            except (CodemodOperationPreflightError, ValueError) as error:
+                refusals.append(f"{descent_type.operation_key()}: {error}")
+                continue
+            return self.executable_evaluation(
+                RefactorRecipe(
+                    recipe_id=f"{finding.stable_id}-{descent_type.operation_key()}",
+                    reason=self.recipe_reason,
+                )
+                .with_authority_claim(AstTargetAuthorityClaim.from_target(authority))
+                .with_operation(operation)
             )
-            .with_authority_claim(AstTargetAuthorityClaim.from_target(authority))
-            .with_operation(operation)
-        )
+        return self.rejected_evaluation("; ".join(refusals))
 
 
 class TypedMirrorFindingRecipeSynthesizer(
@@ -7196,7 +7206,7 @@ class TypedMirrorFindingRecipeSynthesizer(
 ):
     """Behavior keyed by a family's own classes descends onto those classes."""
 
-    descent_type = TypedMirror
+    descent_types = (TypedMirror,)
     recipe_reason = (
         "Move behavior from the external type-keyed projection onto "
         "the nominal hierarchy that already owns its dispatch."
@@ -7218,23 +7228,27 @@ class KeyedMirrorFindingRecipeSynthesizer(
 ):
     """An enum keying one map onto a family is the family restated: delete it."""
 
-    descent_type = KeyedMirror
+    descent_types = (KeyedMirror,)
     recipe_reason = (
         "Delete the enum and its map; the class family they restate answers "
         "every lookup and reverse query."
     )
 
 
-class CasesFoldFindingRecipeSynthesizer(
+class CasesFindingRecipeSynthesizer(
     DescentFindingRecipeSynthesizer,
     ClassFamilyAuthorityConcept,
 ):
-    """An enum held by one class and branched on folds into that class's family."""
+    """An enum branched on outside itself becomes a class family.
 
-    descent_type = CasesFold
+    Held by one class and data only, it folds into that holder's family; an
+    enum that declares behaviour becomes the family itself.
+    """
+
+    descent_types = (CasesFold, CasesFamily)
     recipe_reason = (
-        "Fold the enum into its holder: members become subclasses and each "
-        "branch becomes one override per class it decides."
+        "Members become subclasses and each branch on them becomes one "
+        "override per class it decides."
     )
 
 

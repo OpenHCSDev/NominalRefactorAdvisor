@@ -1,7 +1,9 @@
-"""CasesFold replays PR #26 (ClassMroViolation -> OpenClassMro family) from both pre-images.
+"""Descent replays: CasesFold replays PR #26 (ClassMroViolation -> OpenClassMro
+family) from both pre-images; CasesFamily replays AnalysisCacheStatus, an enum that
+declares behaviour, into a class family.
 
-The fixtures are copies of ``class_mro.py`` and ``tests/test_class_mro.py`` at the
-commits named in each fixture, so the replay does not depend on NRA's current
+The fixtures are copies (CasesFold) or verbatim excerpts (CasesFamily) of NRA source
+at the commits named in each fixture, so the replay does not depend on NRA's current
 source. Comparison ignores docstrings and formatting: both sides are unparsed,
 docstrings dropped, empty and ``...`` bodies read as ``pass``, then Black-formatted.
 """
@@ -16,6 +18,7 @@ import black
 import pytest
 
 from nominal_refactor_advisor.ast_tools import parse_python_modules
+from nominal_refactor_advisor.cases_family import CasesFamily
 from nominal_refactor_advisor.codemod import (
     CodemodBackend,
     CodemodPlanDocument,
@@ -24,7 +27,7 @@ from nominal_refactor_advisor.codemod import (
     SourceRewriteTarget,
 )
 from nominal_refactor_advisor.codemod_runtime import CodemodSourceSnapshot
-from nominal_refactor_advisor.descent import CasesFold
+from nominal_refactor_advisor.descent import CasesFold, Descent
 from nominal_refactor_advisor.detectors import (
     DetectorConfig,
     ExternalEnumCaseRecoveryDetector,
@@ -33,6 +36,13 @@ from nominal_refactor_advisor.json_reports import json_report_object
 
 FIXTURES = Path(__file__).parent / "fixtures" / "enum_family"
 ENUM = "nominal_refactor_advisor.class_mro.ClassMroViolation"
+FAMILY_ENUM = "nominal_refactor_advisor.analysis_cache.AnalysisCacheStatus"
+FAMILY_FILES = (
+    ("nominal_refactor_advisor/analysis_cache.py", "analysis_cache"),
+    ("nominal_refactor_advisor/analysis.py", "analysis"),
+    ("tests/test_analysis_cache.py", "analysis_cache_tests"),
+)
+FAMILY_NAMES = ("require_exact_identity", "require_summary_payload")
 
 
 def _normalized(source: str) -> str:
@@ -71,20 +81,20 @@ def _staged(tmp_path: Path, form: str) -> tuple[CodemodSourceSnapshot, Path, Pat
     return snapshot, module, tests
 
 
-def _fold(snapshot: CodemodSourceSnapshot, names: tuple[str, ...]) -> CasesFold:
+def _target(snapshot: CodemodSourceSnapshot, symbol: str) -> SourceRewriteTarget:
     (target,) = (
         target
-        for target in snapshot.source_index.targets_matching_repository_symbol(ENUM)
+        for target in snapshot.source_index.targets_matching_repository_symbol(symbol)
         if target.is_class
     )
-    return CasesFold(
-        target=SourceRewriteTarget(target_id=target.target_id),
-        rationale="",
-        names=names,
-    )
+    return SourceRewriteTarget(target_id=target.target_id)
 
 
-def _simulated(snapshot: CodemodSourceSnapshot, operation: CasesFold):
+def _fold(snapshot: CodemodSourceSnapshot, names: tuple[str, ...]) -> CasesFold:
+    return CasesFold(target=_target(snapshot, ENUM), rationale="", names=names)
+
+
+def _simulated(snapshot: CodemodSourceSnapshot, operation: Descent):
     return CodemodPlanDocument(
         recipes=(RefactorRecipe("fold").with_operation(operation),)
     ).simulate(snapshot, backend=CodemodBackend.AST_SPAN)
@@ -116,9 +126,10 @@ def test_cases_fold_replays_the_class_mro_family(
     assert _normalized(rewritten[tests.as_posix()]) == _normalized(
         (FIXTURES / "class_mro_tests_after.py").read_text()
     )
-    assert RefactorRecipeOperation.from_json_value(
-        json_report_object(operation)
-    ) == operation
+    assert (
+        RefactorRecipeOperation.from_json_value(json_report_object(operation))
+        == operation
+    )
 
 
 def test_cases_fold_hands_back_the_unanswered_parent_name(tmp_path: Path) -> None:
@@ -153,3 +164,87 @@ def test_external_enum_case_recovery_sees_the_pre_images_and_not_the_family(
     assert [evidence.symbol for finding in found for evidence in finding.evidence] == (
         [ENUM, *sites] if sites else []
     )
+
+
+def _family_staged(tmp_path: Path, form: str) -> CodemodSourceSnapshot:
+    (tmp_path / "nominal_refactor_advisor").mkdir()
+    (tmp_path / "nominal_refactor_advisor" / "__init__.py").write_text("")
+    (tmp_path / "tests").mkdir()
+    for path, stem in FAMILY_FILES:
+        shutil.copy(FIXTURES / f"{stem}_{form}.py", tmp_path / path)
+    return CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path), ())
+
+
+def _family(snapshot: CodemodSourceSnapshot, names: tuple[str, ...]) -> CasesFamily:
+    return CasesFamily(target=_target(snapshot, FAMILY_ENUM), rationale="", names=names)
+
+
+def test_cases_family_replays_the_analysis_cache_status_family(
+    tmp_path: Path,
+) -> None:
+    snapshot = _family_staged(tmp_path, "before")
+    operation = _family(snapshot, FAMILY_NAMES)
+
+    simulation = _simulated(snapshot, operation)
+
+    assert simulation.is_clean is True
+    rewritten = simulation.simulation.rewritten_sources
+    for path, stem in FAMILY_FILES:
+        assert _normalized(rewritten[(tmp_path / path).as_posix()]) == _normalized(
+            (FIXTURES / f"{stem}_after.py").read_text()
+        )
+    assert (
+        RefactorRecipeOperation.from_json_value(json_report_object(operation))
+        == operation
+    )
+
+
+def test_cases_family_hands_back_every_unnamed_branch_site(tmp_path: Path) -> None:
+    snapshot = _family_staged(tmp_path, "before")
+
+    with pytest.raises(ValueError) as refusal:
+        _family(snapshot, FAMILY_NAMES[:1]).source_edits_from_snapshot(snapshot)
+
+    package = (tmp_path / "nominal_refactor_advisor").as_posix()
+    prompt = "name of the method this branch becomes on the family"
+    assert str(refusal.value) == (
+        "handback: 2 name(s) needed, 1 given: "
+        f"[0] {package}/analysis.py:27: {prompt}; "
+        f"[1] {package}/analysis_cache.py:222: {prompt}"
+    )
+
+
+def test_cases_fold_refuses_an_enum_that_declares_behaviour(tmp_path: Path) -> None:
+    snapshot = _family_staged(tmp_path, "before")
+    operation = CasesFold(target=_target(snapshot, FAMILY_ENUM), rationale="", names=())
+
+    with pytest.raises(ValueError, match="fold moves data, not behaviour"):
+        operation.source_edits_from_snapshot(snapshot)
+
+
+@pytest.mark.parametrize(
+    ("form", "symbols"),
+    (
+        (
+            "before",
+            [
+                FAMILY_ENUM,
+                "CachedAnalysisResult.exact_cache_identity",
+                "AnalysisFindingSummaryLookup.__post_init__",
+            ],
+        ),
+        ("after", []),
+    ),
+)
+def test_external_enum_case_recovery_sees_the_family_pre_image_only(
+    tmp_path: Path, form: str, symbols: list[str]
+) -> None:
+    _family_staged(tmp_path, form)
+
+    found = ExternalEnumCaseRecoveryDetector().detect(
+        list(parse_python_modules(tmp_path)), DetectorConfig()
+    )
+
+    assert [
+        evidence.symbol for finding in found for evidence in finding.evidence
+    ] == symbols
