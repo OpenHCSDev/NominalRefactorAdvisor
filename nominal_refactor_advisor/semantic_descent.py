@@ -14,7 +14,6 @@ import hashlib
 import os
 import pickle
 import re
-import sys
 import tempfile
 from abc import ABC, abstractmethod
 from collections import Counter
@@ -33,6 +32,7 @@ from typing import ClassVar, Generic, TypeAlias, TypeVar, cast
 
 from metaclass_registry import AutoRegisterMeta
 
+from .interpreter import PythonVersion
 from .assignment_projection import SingleAssignmentAndValueNameProjection
 from .ast_tools import (
     AstExpressionProjection,
@@ -576,7 +576,7 @@ class SemanticDescentGraphCacheIdentity:
 
     schema: SemanticDescentGraphCacheSchema
     implementation: SemanticDescentImplementationSignature
-    python_version: tuple[int, int]
+    python_version: PythonVersion
     modules: tuple[SemanticDescentModuleSignature, ...]
     presentation_roots: tuple[str, ...] = field(
         default=(),
@@ -599,7 +599,7 @@ class SemanticDescentGraphCacheIdentity:
         return cls(
             schema=semantic_descent_graph_cache_schema,
             implementation=SemanticDescentImplementationSignature.current(),
-            python_version=(sys.version_info.major, sys.version_info.minor),
+            python_version=PythonVersion.running(),
             modules=tuple(
                 sorted(
                     (
@@ -630,7 +630,7 @@ class SemanticDescentGraphCacheIdentity:
         return cls(
             schema=semantic_descent_graph_cache_schema,
             implementation=SemanticDescentImplementationSignature.current(),
-            python_version=(sys.version_info.major, sys.version_info.minor),
+            python_version=PythonVersion.running(),
             modules=tuple(
                 sorted(
                     (
@@ -702,7 +702,7 @@ class SemanticDescentGraphCacheFamilyIdentity:
 
     schema: SemanticDescentGraphCacheSchema
     implementation: SemanticDescentImplementationSignature
-    python_version: tuple[int, int]
+    python_version: PythonVersion
     modules: tuple[SemanticDescentModuleFamilySignature, ...]
     presentation_roots: tuple[str, ...] = field(
         default=(),

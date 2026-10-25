@@ -31,7 +31,6 @@ from functools import (
     partial,
 )
 import inspect
-import sys
 from operator import attrgetter
 from types import (
     CodeType,
@@ -48,6 +47,7 @@ from typing import (
 
 from metaclass_registry import AutoRegisterMeta
 
+from .interpreter import CompilerIdentity, InterpreterBuild, PythonVersion
 from .call_binding import CompactKeywordArgument
 from .collection_algebra import (
     IdentityHandleMultiplicityProjection,
@@ -127,7 +127,7 @@ class NativeCompilationIdentity:
 
     file_path: str
     source_digest: str
-    interpreter: tuple[str, str]
+    interpreter: InterpreterBuild
 
 
 @dataclass(frozen=True)
@@ -3452,11 +3452,11 @@ class NativeCreationBackend(ABC, metaclass=AutoRegisterMeta):
     """Compiler-owned role evidence with a shared complete-emission inventory."""
 
     __registry__: ClassVar[
-        dict[tuple[str, tuple[int, int]], type[NativeCreationBackend]]
+        dict[CompilerIdentity, type[NativeCreationBackend]]
     ] = {}
     __registry_key__ = "compiler_identity"
     __skip_if_no_key__ = True
-    compiler_identity: ClassVar[tuple[str, tuple[int, int]]]
+    compiler_identity: ClassVar[CompilerIdentity]
 
     @staticmethod
     def code_contents(code: CodeType) -> tuple[bytes, tuple[int, ...]]:
@@ -3741,7 +3741,7 @@ class NativeCreationBackend(ABC, metaclass=AutoRegisterMeta):
 
     @classmethod
     def current(cls) -> NativeCreationBackend:
-        native_identity = (sys.implementation.name, sys.version_info[:2])
+        native_identity = CompilerIdentity.running()
         return cls.__registry__.get(native_identity, SpanOnlyCreationBackend)()
 
     @abstractmethod
@@ -4276,7 +4276,7 @@ class CPythonClassConstruction(NativeCreationBackend):
         # The actual selected descriptor is inspected, never invoked. The source
         # owner proves metaclass selection, header completion and behavior at its
         # activation; this law supplies no observed namespace or later class result.
-        if self.compiler_identity != (sys.implementation.name, sys.version_info[:2]):
+        if self.compiler_identity != CompilerIdentity.running():
             raise ValueError(
                 "Fresh class namespace requires its actual native interpreter backend"
             )
@@ -4307,10 +4307,7 @@ class CPythonFunctionConstruction(NativeCreationBackend):
     def require_fresh_function_namespace(
         self, compilation: NativeCompilationIdentity
     ) -> None:
-        if compilation.interpreter != (
-            sys.implementation.name,
-            sys.version,
-        ) or self.compiler_identity != (sys.implementation.name, sys.version_info[:2]):
+        if compilation.interpreter != InterpreterBuild.running() or self.compiler_identity != CompilerIdentity.running():
             raise ValueError(
                 "Fresh function namespace requires its actual native interpreter backend"
             )
@@ -4527,7 +4524,7 @@ class CPython311CreationBackend(
     CPythonContainerConstruction,
     CPythonTypingConstruction,
 ):
-    compiler_identity = ("cpython", (3, 11))
+    compiler_identity = CompilerIdentity("cpython", PythonVersion(3, 11))
     attribute_flags = frozenset()
     application_prelude = (PrepareNativeDefinitionApplication,)
 
@@ -4593,7 +4590,7 @@ class CPython314CreationBackend(
     The preserved target is the raw body, before decorators or wrapper calls.
     """
 
-    compiler_identity = ("cpython", (3, 14))
+    compiler_identity = CompilerIdentity("cpython", PythonVersion(3, 14))
     application_prelude = ()
 
     call_operand_order = NativeCallOperandOrder.CALLEE_NULL
@@ -4897,7 +4894,7 @@ class NativePythonCompilation(SourceLineSegmentAuthority):
         return NativeCompilationIdentity(
             self.file_path,
             python_source_cache_signature(self.source),
-            (sys.implementation.name, sys.version),
+            InterpreterBuild.running(),
         )
 
     def compile(self, *, filename: str | None = None) -> CodeType:
