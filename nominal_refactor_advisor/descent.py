@@ -20,6 +20,7 @@ from collections import defaultdict
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass, field
 from functools import cached_property
+from pathlib import Path
 
 from .ast_tools import ParsedModule, PythonSourcePathPolicy
 from .class_index import CompactModuleClassProjectionFamily
@@ -538,17 +539,44 @@ class Rewrite:
     def require_import(self, module: ParsedModule, source: str, name: str) -> None:
         self.imports[module.file_path].add((source, name))
 
+    @staticmethod
+    def import_spelling(module: ParsedModule, source: str) -> ImportFromModuleName:
+        """``source`` spelled as ``module`` spells imports of its own package: relative
+        when it already imports relatively, absolute otherwise."""
+
+        if not any(
+            isinstance(statement, ast.ImportFrom) and statement.level > 0
+            for statement in module.module.body
+        ):
+            return ImportFromModuleName(source)
+        package = module.module_name.split(".")
+        if Path(module.file_path).name != "__init__.py":
+            package = package[:-1]
+        target = source.split(".")
+        if not package or package[0] != target[0]:
+            return ImportFromModuleName(source)
+        shared = 0
+        for own, wanted in zip(package, target):
+            if own != wanted:
+                break
+            shared += 1
+        return ImportFromModuleName(
+            "." * (len(package) - shared + 1) + ".".join(target[shared:])
+        )
+
     def ensure_import(
         self, module: ParsedModule, source: str, names: tuple[str, ...]
     ) -> None:
-        """Extend the module's absolute from-import of ``source``, or add one."""
+        """Extend the module's from-import of ``source``, or add one, spelled as the
+        module spells its own package's imports."""
 
+        spelling = self.import_spelling(module, source)
+        source = spelling.source
         statements = [
             statement
             for statement in module.module.body
             if isinstance(statement, ast.ImportFrom)
-            and statement.module == source
-            and statement.level == 0
+            and ImportFromModuleName.from_node(statement) == spelling
         ]
         bound = {
             alias.name
@@ -563,42 +591,65 @@ class Rewrite:
             for name in missing:
                 self.require_import(module, source, name)
             return
-        # Ruff's order: from-imports by module, after plain imports.
+        # Ruff's order: from-imports by module after plain imports, in sections:
+        # other packages, the module's own package, then relative imports.
         from_imports = [
             statement
             for statement in module.module.body
             if isinstance(statement, ast.ImportFrom)
-            and statement.level == 0
             and statement.module != "__future__"
         ]
+        order = self.import_order(module, spelling)
         earlier = [
             statement
             for statement in from_imports
-            if (statement.module or "").lower() < source.lower()
+            if self.import_order(module, ImportFromModuleName.from_node(statement))
+            < order
         ]
+        later = [statement for statement in from_imports if statement not in earlier]
         geometry = self.geometry(module)
-        if earlier:
+        rendered = ImportFromSource(
+            source, tuple(ast.alias(name) for name in missing)
+        ).source
+        sections = {
+            id(statement): self.import_order(
+                module, ImportFromModuleName.from_node(statement)
+            )[0]
+            for statement in from_imports
+        }
+        if earlier and sections[id(earlier[-1])] == order[0]:
             offset = geometry.line_offsets[earlier[-1].end_lineno]
+        elif later and sections[id(later[0])] == order[0]:
+            offset = geometry.line_offsets[later[0].lineno - 1]
+        elif earlier:
+            offset = geometry.line_offsets[earlier[-1].end_lineno]
+            rendered = "\n" + rendered
+        elif later:
+            offset = geometry.line_offsets[later[0].lineno - 1]
+            rendered += "\n"
         else:
             anchor = next(
-                iter(from_imports),
-                next(
-                    statement
-                    for statement in module.module.body
-                    if isinstance(statement, ast.Import | ast.ImportFrom)
-                    and not (
-                        isinstance(statement, ast.ImportFrom)
-                        and statement.module == "__future__"
-                    )
-                ),
+                statement
+                for statement in module.module.body
+                if isinstance(statement, ast.Import | ast.ImportFrom)
+                and not (
+                    isinstance(statement, ast.ImportFrom)
+                    and statement.module == "__future__"
+                )
             )
             offset = geometry.line_offsets[anchor.lineno - 1]
-        self.span(
-            module,
-            offset,
-            offset,
-            ImportFromSource(source, tuple(ast.alias(name) for name in missing)).source,
-        )
+        self.span(module, offset, offset, rendered)
+
+    @staticmethod
+    def import_order(
+        module: ParsedModule, name: ImportFromModuleName
+    ) -> tuple[int, int, str]:
+        """Ruff's from-import order: section (other packages, the module's own
+        package, relative), then furthest relative level, then module name."""
+
+        own = name.root_module_name == module.module_name.partition(".")[0]
+        section = 2 if name.is_relative else int(own)
+        return section, -name.level, name.module_name.lower()
 
     def geometry(self, module: ParsedModule) -> SourceTextGeometry:
         return SourceTextGeometry(module.source)
@@ -677,8 +728,7 @@ class Rewrite:
             required = sorted(
                 name
                 for source, name in self.imports.get(module.file_path, ())
-                if source == statement.module
-                and statement.level == 0
+                if source == ImportFromModuleName.from_node(statement).source
                 and name
                 not in {alias.asname or alias.name for alias in statement.names}
             )
@@ -713,13 +763,16 @@ class Rewrite:
         for file_path, needed in self.imports.items():
             module = self.module_at(file_path)
             present = {
-                (statement.module, alias.asname or alias.name)
+                (
+                    ImportFromModuleName.from_node(statement).source,
+                    alias.asname or alias.name,
+                )
                 for statement in module.module.body
-                if isinstance(statement, ast.ImportFrom) and statement.level == 0
+                if isinstance(statement, ast.ImportFrom)
                 for alias in statement.names
             }
             if any(
-                source == statement.module
+                source == ImportFromModuleName.from_node(statement).source
                 for source, _name in needed - present
                 for statement in module.module.body
                 if isinstance(statement, ast.ImportFrom)

@@ -27,6 +27,7 @@ from typing import ClassVar
 from metaclass_registry import AutoRegisterMeta
 
 from .ast_tools import ParsedModule, PythonSourcePathPolicy
+from .case_root import Case, CaseMeta
 from .codemod_runtime import CodemodSourceSnapshot
 from .descent import (
     Answers,
@@ -746,7 +747,7 @@ class CasesFamily(Cases, Descent):
             self.rewrite_reads(rewrite, module, names, model, handled)
         self.rewrite_called(rewrite, snapshot, model, handled)
         answer.require_complete()
-        rewrite.ensure_import(enum.module, "abc", ("ABC",))
+        rewrite.ensure_import(enum.module, Case.__module__, (Case.__name__,))
         for module, names in aliases.items():
             used = tuple(sorted(rewrite.used_members[module.file_path]))
             replaced = {
@@ -884,6 +885,18 @@ class CasesFamily(Cases, Descent):
         """``value`` then each field ``__new__`` stores, with every member's expression."""
 
         module = enum.module
+        for member in enum.members:
+            if not (
+                member.arguments
+                and isinstance(member.arguments[0], ast.Constant)
+                and isinstance(member.arguments[0].value, str)
+            ):
+                raise handback(
+                    module,
+                    member.node,
+                    f"member {member.name}'s value is not a string literal;"
+                    f" {Case.__name__} carries a str value",
+                )
         annotations = {
             statement.target.id: ast.unparse(statement.annotation)
             for statement in enum.node.body
@@ -1485,7 +1498,7 @@ class CasesFamily(Cases, Descent):
         module = enum.module
         rewrite_methods = [method for method in methods if method is not None]
         documentation = docstring(enum.node.body)
-        root: list[str] = [f"class {model.root}(ABC):"]
+        root: list[str] = [f"class {model.root}({Case.__name__}):"]
         if documentation is not None:
             root.extend(
                 indented(
@@ -1496,7 +1509,11 @@ class CasesFamily(Cases, Descent):
             )
             root.append("")
         annotated = [
-            *((datum.name, datum.annotation) for datum in model.data),
+            *(
+                (datum.name, datum.annotation)
+                for datum in model.data
+                if datum.name not in CaseMeta.__annotations__
+            ),
             *model.folded.items(),
         ]
         root.extend(

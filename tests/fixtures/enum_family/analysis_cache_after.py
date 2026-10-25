@@ -10,6 +10,8 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Generic, TypeVar
 
+from nominal_refactor_advisor.case_root import Case
+
 
 AnalysisCacheResolutionT = TypeVar("AnalysisCacheResolutionT")
 
@@ -66,10 +68,9 @@ class AnalyzeAndStoreMissingCacheResult(AnalysisCacheResolutionPolicyABC):
         return authority.analyze_and_store_miss()
 
 
-class AnalysisCacheStatus(ABC):
+class AnalysisCacheStatus(Case):
     """Observable result of consulting the persistent finding cache."""
 
-    value: str
     is_hit: bool
     is_partial: bool
     is_disabled: bool

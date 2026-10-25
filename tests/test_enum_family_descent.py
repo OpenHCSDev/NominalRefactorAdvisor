@@ -417,7 +417,10 @@ def test_cases_family_keeps_sorted_imports_sorted(tmp_path: Path) -> None:
     assert simulation.is_clean is True
     rewritten = simulation.simulation.rewritten_sources
     family = rewritten[(tmp_path / "need.py").as_posix()]
-    assert family.index("from abc import ABC\n") < family.index("from dataclasses")
+    assert family.startswith(
+        "from dataclasses import dataclass\n"
+        "from nominal_refactor_advisor.case_root import Case\n"
+    )
     assert rewritten[(tmp_path / "reader.py").as_posix()].startswith(
         "from need import (\n    Holder,\n    Required,\n    helper,\n)\n"
     )
@@ -562,4 +565,63 @@ def test_cases_family_hands_back_an_enum_imported_inside_a_function(
     assert str(refusal.value) == (
         f"handback: {(tmp_path / 'reader.py').as_posix()}:2: enum imported inside "
         "a function; hoist it to module scope"
+    )
+
+
+def test_cases_family_spells_the_case_import_as_its_package_does(
+    tmp_path: Path,
+) -> None:
+    package = tmp_path / "nominal_refactor_advisor"
+    package.mkdir()
+    (package / "__init__.py").write_text("")
+    (package / "helper.py").write_text("THING = 1\n")
+    (package / "need.py").write_text(
+        ELIF_ENUM_SOURCE.replace(
+            "from enum import StrEnum\n",
+            "from enum import StrEnum\n\nfrom .helper import THING\n",
+        )
+        + "\n\nassert THING\n"
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path), ())
+    operation = CasesFamily(
+        target=_target(snapshot, "nominal_refactor_advisor.need.Need"),
+        rationale="",
+        names=("check_reference",),
+    )
+
+    simulation = _simulated(snapshot, operation)
+
+    assert simulation.is_clean is True
+    family = simulation.simulation.rewritten_sources[(package / "need.py").as_posix()]
+    assert family.startswith(
+        "from dataclasses import dataclass\n\n"
+        "from .case_root import Case\n"
+        "from .helper import THING\n"
+    )
+    assert "class Need(Case):\n" in family
+    assert "    value: str\n" not in family
+
+
+def test_cases_family_hands_back_a_member_whose_value_is_not_a_string(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "level.py").write_text(
+        "from enum import IntEnum\n\n\n"
+        "class Level(IntEnum):\n"
+        "    LOW = 1\n"
+        "    HIGH = 2\n\n"
+        "    @property\n"
+        "    def high(self) -> bool:\n"
+        "        return self is Level.HIGH\n"
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path), ())
+
+    with pytest.raises(ValueError) as refusal:
+        CasesFamily(
+            target=_target(snapshot, "level.Level"), rationale="", names=()
+        ).source_edits_from_snapshot(snapshot)
+
+    assert str(refusal.value) == (
+        f"handback: {(tmp_path / 'level.py').as_posix()}:5: member LOW's value is "
+        "not a string literal; Case carries a str value"
     )
