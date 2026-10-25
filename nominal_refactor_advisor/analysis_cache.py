@@ -10,11 +10,11 @@ import hashlib
 import os
 from pathlib import Path
 import pickle
-import sys
 from time import monotonic, sleep, time
 from types import TracebackType
 from typing import BinaryIO, Generic, TypeAlias, TypeVar
 
+from .interpreter import PythonVersion
 from .ast_tools import (
     CollectedFamily,
     ParsedModule,
@@ -792,7 +792,7 @@ class AnalysisCacheEntryContext:
 
     config: DetectorConfig
     detector_registry: DetectorRegistrySignature
-    python_version: tuple[int, int]
+    python_version: PythonVersion
     presentation_roots: tuple[str, ...] = field(
         default=(),
         compare=False,
@@ -866,7 +866,7 @@ class AnalysisCacheIdentity(AnalysisCacheEntryContext):
             detector_registry=DetectorRegistrySignature.current(
                 detector_types=detector_types
             ),
-            python_version=(sys.version_info.major, sys.version_info.minor),
+            python_version=PythonVersion.running(),
             roots=semantic_root_labels(roots),
             source_files=source_files,
             report_filter_roots=tuple(
@@ -891,7 +891,7 @@ class AnalysisCacheIdentity(AnalysisCacheEntryContext):
             detector_registry=DetectorRegistrySignature.current(
                 detector_types=detector_types
             ),
-            python_version=(sys.version_info.major, sys.version_info.minor),
+            python_version=PythonVersion.running(),
             roots=semantic_root_labels(roots),
             source_files=tuple(
                 SourceFileSignature(
@@ -964,7 +964,7 @@ class AnalysisCacheFamilyIdentity(AnalysisCacheEntryContext):
         return cls(
             config=config,
             detector_registry=DetectorRegistrySignature.current(),
-            python_version=(sys.version_info.major, sys.version_info.minor),
+            python_version=PythonVersion.running(),
             roots=semantic_root_labels(roots),
             source_file_paths=tuple(
                 checkout_relative_path(path, roots) for path in source_paths
@@ -1005,7 +1005,7 @@ class PerModuleAnalysisCacheFamilyIdentity(ReprCacheTokenMixin):
     """Stable container identity for independently valid local detector bundles."""
 
     config: DetectorConfig
-    python_version: tuple[int, int]
+    python_version: PythonVersion
     source_file: ModuleSourceSignature
     presentation_roots: tuple[str, ...] = field(
         default=(),
@@ -1031,7 +1031,7 @@ class PerModuleAnalysisCacheFamilyIdentity(ReprCacheTokenMixin):
         )
         return cls(
             config=config,
-            python_version=(sys.version_info.major, sys.version_info.minor),
+            python_version=PythonVersion.running(),
             source_file=ModuleSourceSignature.from_module(module, effective_roots),
             presentation_roots=presentation_root_texts(effective_roots),
         )
@@ -1054,7 +1054,7 @@ class PerModuleAnalysisCacheFamilyIdentity(ReprCacheTokenMixin):
         )
         return cls(
             config=config,
-            python_version=(sys.version_info.major, sys.version_info.minor),
+            python_version=PythonVersion.running(),
             source_file=ModuleSourceSignature(
                 path=checkout_relative_path(path, effective_roots),
                 parsed_import_name=module_name,
@@ -1097,7 +1097,7 @@ class ContextualModuleAnalysisCacheIdentity(
             detector_registry=DetectorRegistrySignature.from_detector_types(
                 (detector_type,)
             ),
-            python_version=(sys.version_info.major, sys.version_info.minor),
+            python_version=PythonVersion.running(),
             source_file=ModuleSourceSignature.from_module(module, effective_roots),
             context_signature=context_signature,
             presentation_roots=presentation_root_texts(effective_roots),
@@ -1129,7 +1129,7 @@ class GlobalDetectorAnalysisCacheIdentity(
             detector_registry=DetectorRegistrySignature.from_detector_types(
                 (detector_type,)
             ),
-            python_version=(sys.version_info.major, sys.version_info.minor),
+            python_version=PythonVersion.running(),
             context_signature=context_signature,
             presentation_roots=presentation_root_texts(presentation_roots),
         )
@@ -1160,7 +1160,7 @@ class GlobalDetectorFamilyAnalysisCacheIdentity(
             detector_registry=DetectorRegistrySignature.from_detector_types(
                 detector_types
             ),
-            python_version=(sys.version_info.major, sys.version_info.minor),
+            python_version=PythonVersion.running(),
             context_signature=context_signature,
             presentation_roots=presentation_root_texts(presentation_roots),
         )

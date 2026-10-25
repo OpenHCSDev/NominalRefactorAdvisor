@@ -33,6 +33,7 @@ from typing import Callable, ClassVar, Generic, TypeAlias, TypeVar, cast
 
 from metaclass_registry import AutoRegisterMeta
 
+from .interpreter import PythonVersion
 from .ast_projection import AstExpressionProjection, AstNameFamily
 from .cache_paths import ParseCacheDirectory, default_parse_cache_dir
 from .case_root import Case
@@ -169,7 +170,7 @@ class AstParseCachePayload:
     mtime_ns: int
     size: int
     source_signature: str
-    python_version: tuple[int, int]
+    python_version: PythonVersion
     module: ast.Module
     semantic_hash: str
 
@@ -185,7 +186,7 @@ class AstParseCachePayload:
             and self.source_signature == source_signature
             and self.mtime_ns == path_stat.st_mtime_ns
             and self.size == path_stat.st_size
-            and self.python_version == (sys.version_info.major, sys.version_info.minor)
+            and self.python_version == PythonVersion.running()
         )
 
 
@@ -304,7 +305,7 @@ class CollectedFamilyContentSignatureIndexPayload:
 
     schema: CollectedFamilyContentSignatureIndexSchema
     family_cache_schema: CollectedFamilyCacheSchema
-    python_version: tuple[int, int]
+    python_version: PythonVersion
     entries: tuple[
         tuple[CollectedFamilyContentSignatureIndexKey, str, str],
         ...,
@@ -319,7 +320,7 @@ class CollectedFamilyCacheIdentity(StoredDataclassState):
     module_name: str
     source_signature: str
     family_schema: CollectedFamilySchemaIdentity
-    python_version: tuple[int, int]
+    python_version: PythonVersion
     schema: CollectedFamilyCacheSchema
 
     @cached_property
@@ -385,7 +386,7 @@ class CollectedFamilyContentSignatureIndex:
             and payload.schema == collected_family_content_signature_index_schema
             and payload.family_cache_schema == collected_family_cache_schema
             and payload.python_version
-            == (sys.version_info.major, sys.version_info.minor)
+            == PythonVersion.running()
         ):
             for key, source_signature, content_signature in payload.entries:
                 if (
@@ -425,7 +426,7 @@ class CollectedFamilyContentSignatureIndex:
         payload = CollectedFamilyContentSignatureIndexPayload(
             schema=collected_family_content_signature_index_schema,
             family_cache_schema=collected_family_cache_schema,
-            python_version=(sys.version_info.major, sys.version_info.minor),
+            python_version=PythonVersion.running(),
             entries=tuple(
                 (key, *entry)
                 for key, entry in sorted(
@@ -643,7 +644,7 @@ def _write_cached_ast(
         mtime_ns=path_stat.st_mtime_ns,
         size=path_stat.st_size,
         source_signature=source_signature,
-        python_version=(sys.version_info.major, sys.version_info.minor),
+        python_version=PythonVersion.running(),
         module=module,
         semantic_hash=semantic_hash,
     )
@@ -2066,7 +2067,7 @@ class CollectedFamilyCacheContext:
             module_name=self.module_name,
             source_signature=self.source_signature,
             family_schema=CollectedFamilySchemaIdentity.from_family(family),
-            python_version=(sys.version_info.major, sys.version_info.minor),
+            python_version=PythonVersion.running(),
             schema=collected_family_cache_schema,
         )
         if not demand_signature:
@@ -2254,7 +2255,7 @@ class CollectedFamilyCacheContext:
                 self.resolved_path_text,
                 self.module_name,
                 self.source_signature,
-                (sys.version_info.major, sys.version_info.minor),
+                PythonVersion.running(),
                 collected_family_cache_schema,
                 family_entries,
             )
