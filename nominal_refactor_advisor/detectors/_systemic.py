@@ -9,8 +9,8 @@ from __future__ import annotations
 import ast
 from abc import ABC
 from collections import defaultdict
-from collections.abc import Iterator, Sequence
-from dataclasses import dataclass
+from collections.abc import Iterable, Iterator, Sequence
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Generic, TypeVar
 
@@ -33,10 +33,10 @@ from ..class_index import (
 from ..codemod import (
     AutoRegisterExplicitPriorityOrderingFindingRecipeSynthesizer,
     CandidateCollectorBoilerplateFindingRecipeSynthesizer,
+    CasesFoldFindingRecipeSynthesizer,
     DeclarativeDetectorClassFindingRecipeSynthesizer,
     DirectBuildFindingRendererFindingRecipeSynthesizer,
     InheritedAutoRegisterConfigBoilerplateFindingRecipeSynthesizer,
-    SemanticMirrorFindingRecipeEvaluator,
 )
 from ..native_syntax import NativePythonSyntaxIndex
 from ..registry_identity import (
@@ -1219,8 +1219,17 @@ class ExternalEnumCaseRecoverySite:
     """One external function recovering cases from an enum declaration."""
 
     function: CompactClosedAxisBranchFunction
-    branch_site_count: int
-    case_names: tuple[str, ...]
+    branch_site_count: int = 0
+    case_names: tuple[str, ...] = ()
+
+    def with_branches(
+        self, branch_site_count: int, case_names: Iterable[str]
+    ) -> ExternalEnumCaseRecoverySite:
+        return replace(
+            self,
+            branch_site_count=self.branch_site_count + branch_site_count,
+            case_names=sorted_tuple({*self.case_names, *case_names}),
+        )
 
     @property
     def evidence(self) -> SourceLocation:
@@ -1248,7 +1257,7 @@ class ExternalEnumCaseRecoveryCandidate:
         return SourceLocation(
             self.enum_class.file_path,
             self.enum_class.line,
-            self.enum_class.qualname,
+            self.enum_class.symbol,
         )
 
     @property
@@ -1278,6 +1287,80 @@ def _unique_direct_enum_classes(
     }
 
 
+def _declared_cases(enum_class: CompactIndexedClass) -> set[str]:
+    return {
+        f"{enum_class.simple_name}.{member_name}"
+        for member_name in enum_class.direct_enum_member_names
+    }
+
+
+def _receiver_field_enum(
+    class_index: CompactClassFamilyIndex,
+    enum_classes: dict[str, CompactIndexedClass],
+    function: CompactClosedAxisBranchFunction,
+    field_name: str,
+) -> CompactIndexedClass | None:
+    """The enum the method's own class (or an ancestor) annotates ``field_name`` with."""
+
+    owner_qualname, _dot, _method = function.qualname.rpartition(".")
+    owner = class_index.symbol_for(
+        file_path=function.file_path, qualname=owner_qualname
+    )
+    if owner is None:
+        return None
+    annotated = {
+        declaration.annotation_expression
+        for symbol in (owner, *class_index.ancestors_by_symbol.get(owner, ()))
+        if (indexed_class := class_index.class_for(symbol)) is not None
+        if (
+            declaration := indexed_class.direct_annotation_writes_by_name.get(
+                field_name
+            )
+        )
+        is not None
+    }
+    if len(annotated) != 1:
+        return None
+    return enum_classes.get(next(iter(annotated)))
+
+
+def _recovered_enum_sites(
+    class_index: CompactClassFamilyIndex,
+    enum_classes: dict[str, CompactIndexedClass],
+    function: CompactClosedAxisBranchFunction,
+) -> dict[str, ExternalEnumCaseRecoverySite]:
+    """Enums one function's branches read, by name, with the cases they decide.
+
+    ``Enum.MEMBER`` references decide the members named. ``self.field.data``, where
+    the method's class annotates ``field`` with the enum, reads member data and so
+    decides every member: the switch moved into the members' data, not out of the
+    reader.
+    """
+
+    sites: dict[str, ExternalEnumCaseRecoverySite] = {}
+    for axis in function.axes:
+        compared = enum_classes.get(axis.key_type_name)
+        if compared is not None:
+            sites[compared.simple_name] = ExternalEnumCaseRecoverySite(
+                function
+            ).with_branches(
+                axis.branch_site_count,
+                set(axis.case_names) & _declared_cases(compared),
+            )
+    for read in function.receiver_field_reads:
+        held = _receiver_field_enum(
+            class_index, enum_classes, function, read.field_name
+        )
+        if held is None or set(read.attribute_names) <= set(
+            held.direct_enum_member_names
+        ):
+            continue
+        sites[held.simple_name] = sites.get(
+            held.simple_name, ExternalEnumCaseRecoverySite(function)
+        ).with_branches(read.branch_site_count, _declared_cases(held))
+    return sites
+
+
 def _external_enum_case_recovery_candidates(
     context: CompactClassRepositoryContext,
     config: DetectorConfig,
@@ -1294,33 +1377,18 @@ def _external_enum_case_recovery_candidates(
         for function in projection.closed_axis_branch_functions:
             if PythonSourcePathPolicy.is_test_path(Path(function.file_path)):
                 continue
-            for axis in function.axes:
-                if axis.key_type_name in keyed_axis_names:
-                    continue
-                enum_class = enum_classes.get(axis.key_type_name)
-                if enum_class is None:
+            for enum_name, site in _recovered_enum_sites(
+                context.class_index, enum_classes, function
+            ).items():
+                enum_class = enum_classes[enum_name]
+                if enum_name in keyed_axis_names or not site.case_names:
                     continue
                 if (
                     function.file_path == enum_class.file_path
                     and function.qualname.startswith(f"{enum_class.qualname}.")
                 ):
                     continue
-                declared_case_names = {
-                    f"{enum_class.simple_name}.{member_name}"
-                    for member_name in enum_class.direct_enum_member_names
-                }
-                case_names = sorted_tuple(
-                    set(axis.case_names).intersection(declared_case_names)
-                )
-                if not case_names:
-                    continue
-                sites_by_enum_name[enum_class.simple_name].append(
-                    ExternalEnumCaseRecoverySite(
-                        function=function,
-                        branch_site_count=axis.branch_site_count,
-                        case_names=case_names,
-                    )
-                )
+                sites_by_enum_name[enum_name].append(site)
     candidates: list[ExternalEnumCaseRecoveryCandidate] = []
     for enum_name, sites in sites_by_enum_name.items():
         case_names = sorted_tuple(
@@ -1362,7 +1430,7 @@ def _target_has_external_enum_case_recovery(
 class ExternalEnumCaseRecoveryDetector(
     SemanticMirrorIssueDetector,
     CompactClassRepositoryCandidateDetector[ExternalEnumCaseRecoveryCandidate],
-    SemanticMirrorFindingRecipeEvaluator,
+    CasesFoldFindingRecipeSynthesizer,
 ):
     """Find closed enum case semantics recovered outside their declaration."""
 

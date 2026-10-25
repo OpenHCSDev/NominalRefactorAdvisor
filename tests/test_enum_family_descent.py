@@ -25,6 +25,10 @@ from nominal_refactor_advisor.codemod import (
 )
 from nominal_refactor_advisor.codemod_runtime import CodemodSourceSnapshot
 from nominal_refactor_advisor.descent import CasesFold
+from nominal_refactor_advisor.detectors import (
+    DetectorConfig,
+    ExternalEnumCaseRecoveryDetector,
+)
 from nominal_refactor_advisor.json_reports import json_report_object
 
 FIXTURES = Path(__file__).parent / "fixtures" / "enum_family"
@@ -126,4 +130,26 @@ def test_cases_fold_hands_back_the_unanswered_parent_name(tmp_path: Path) -> Non
     assert str(refusal.value) == (
         f"handback: 1 name(s) needed, 0 given: [0] {module.as_posix()}:131: name of "
         "the parent shared by CyclicHierarchy, InconsistentHierarchy"
+    )
+
+
+@pytest.mark.parametrize(
+    ("form", "sites"),
+    (
+        ("comparison", ["ClassMroAuthority.lookup_prefix"]),
+        ("flag", ["OpenClassMro.known_prefix"]),
+        ("family", []),
+    ),
+)
+def test_external_enum_case_recovery_sees_the_pre_images_and_not_the_family(
+    tmp_path: Path, form: str, sites: list[str]
+) -> None:
+    _staged(tmp_path, form)
+
+    found = ExternalEnumCaseRecoveryDetector().detect(
+        list(parse_python_modules(tmp_path)), DetectorConfig()
+    )
+
+    assert [evidence.symbol for finding in found for evidence in finding.evidence] == (
+        [ENUM, *sites] if sites else []
     )

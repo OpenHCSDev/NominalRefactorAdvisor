@@ -682,7 +682,7 @@ from .planner import (
 from .projection_descent_codemod import (
     DescendTypeKeyedBehaviorProjectionOperation as DescendTypeKeyedBehaviorProjectionOperation,
 )
-from .descent import Descent, KeyedMirror
+from .descent import CasesFold, Descent, KeyedMirror
 from .registry_identity import (
     AUTOREGISTER_CONFIGURATION_ATTRIBUTE_NAMES,
     AUTOREGISTER_META_NAME,
@@ -7242,6 +7242,19 @@ class KeyedMirrorFindingRecipeSynthesizer(
     recipe_reason = (
         "Delete the enum and its map; the class family they restate answers "
         "every lookup and reverse query."
+    )
+
+
+class CasesFoldFindingRecipeSynthesizer(
+    DescentFindingRecipeSynthesizer,
+    ClassFamilyAuthorityConcept,
+):
+    """An enum held by one class and branched on folds into that class's family."""
+
+    descent_type = CasesFold
+    recipe_reason = (
+        "Fold the enum into its holder: members become subclasses and each "
+        "branch becomes one override per class it decides."
     )
 
 
