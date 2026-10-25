@@ -22,12 +22,15 @@ from nominal_refactor_advisor.derivation_run import (
     EnumerationDecision,
     EnumerationDecisionKind,
     ExclusionEffect,
+    GenuineAuthority,
     IncompleteDerivationRunError,
     IndependentRoleDeclaration,
     KnownDynamicBoundary,
+    NamedDivergence,
     RelationCoverageVerdict,
     RelationEvidenceKind,
     RelationEvidenceRecord,
+    Replica,
     RequiredQuestion,
     RequiredRelationEvidenceBinding,
     RequiredRelationRow,
@@ -291,20 +294,20 @@ def manifest(*, reverse: bool = False) -> DerivationRunManifest:
         enumeration_decisions=(
             EnumerationDecision(
                 site="billing.EXPORTED_TYPES",
-                kind=EnumerationDecisionKind.REPLICA,
+                kind=Replica,
                 determining_authority="billing.Record",
                 resolution="derive the export from nominal record declarations",
             ),
             EnumerationDecision(
                 site="billing.migration_aliases",
-                kind=EnumerationDecisionKind.NAMED_DIVERGENCE,
+                kind=NamedDivergence,
                 determining_authority="billing.Record",
                 resolution="retain the import-boundary alias role",
                 divergence_identity="legacy_wire_alias",
             ),
             EnumerationDecision(
                 site="billing.Record",
-                kind=EnumerationDecisionKind.GENUINE_AUTHORITY,
+                kind=GenuineAuthority,
                 determining_authority=None,
                 resolution="register the domain record family",
             ),
@@ -665,25 +668,25 @@ def test_required_relation_rejects_duplicate_pairs() -> None:
     ("kind", "authority", "divergence", "message"),
     (
         (
-            EnumerationDecisionKind.GENUINE_AUTHORITY,
+            GenuineAuthority,
             "other.Owner",
             None,
             "cannot name another determining authority",
         ),
         (
-            EnumerationDecisionKind.REPLICA,
+            Replica,
             None,
             None,
             "requires a determining authority",
         ),
         (
-            EnumerationDecisionKind.REPLICA,
+            Replica,
             "Owner",
             "possible override",
             "replica cannot name a divergence",
         ),
         (
-            EnumerationDecisionKind.NAMED_DIVERGENCE,
+            NamedDivergence,
             "Owner",
             None,
             "requires a divergence identity",
@@ -691,7 +694,7 @@ def test_required_relation_rejects_duplicate_pairs() -> None:
     ),
 )
 def test_enumeration_decisions_enforce_three_way_receipts(
-    kind: EnumerationDecisionKind,
+    kind: type[EnumerationDecisionKind],
     authority: str | None,
     divergence: str | None,
     message: str,
