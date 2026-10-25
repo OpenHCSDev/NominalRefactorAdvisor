@@ -1007,6 +1007,7 @@ def test_declared_root_refuses_names_its_root_does_not_carry(
     with pytest.raises(ValueError, match=refusal):
         DeclaredRoot.declared_for(tmp_path / "kind.py")
 
+
 def test_cases_family_keeps_the_authored_header_of_a_moved_method(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
