@@ -37,6 +37,7 @@ from typing import (
     cast,
 )
 
+from .case_root import Case
 from .codemod_paths import SourceCreationPathAuthority as SourceCreationPathAuthority
 from .codemod_payload import (
     CodemodPayloadRecord,
@@ -73,10 +74,9 @@ if TYPE_CHECKING:
     from .codemod_selection_context import CodemodSelectorContext
 
 
-class SourceNodeDecoratorPolicy(ABC):
+class SourceNodeDecoratorPolicy(Case):
     """Whether source node spans include decorators."""
 
-    value: str
     includes_decorators: bool
 
     @classmethod
