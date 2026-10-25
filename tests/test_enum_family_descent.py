@@ -36,6 +36,7 @@ from nominal_refactor_advisor.detectors import (
 from nominal_refactor_advisor.json_reports import json_report_object
 
 FIXTURES = Path(__file__).parent / "fixtures" / "enum_family"
+PYPROJECT = Path(__file__).parents[1] / "pyproject.toml"
 ENUM = "nominal_refactor_advisor.class_mro.ClassMroViolation"
 FAMILY_ENUM = "nominal_refactor_advisor.analysis_cache.AnalysisCacheStatus"
 FAMILY_FILES = (
@@ -44,6 +45,13 @@ FAMILY_FILES = (
     ("tests/test_analysis_cache.py", "analysis_cache_tests"),
 )
 FAMILY_NAMES = ("require_exact_identity", "require_summary_payload")
+
+
+@pytest.fixture(autouse=True)
+def _declared_case_root(tmp_path: Path) -> None:
+    """Each staged tree is a repository declaring NRA's own family root."""
+
+    shutil.copy(PYPROJECT, tmp_path / "pyproject.toml")
 
 
 def _normalized(source: str) -> str:
@@ -671,7 +679,9 @@ def test_cases_family_root_with_only_methods_has_one_blank_line_after_its_docstr
     family = simulation.simulation.rewritten_sources[
         (tmp_path / "mutation.py").as_posix()
     ]
-    assert 'class Mutation(Case):\n    """Row events."""\n\n    @classmethod\n' in family
+    assert (
+        'class Mutation(Case):\n    """Row events."""\n\n    @classmethod\n' in family
+    )
 
 
 def test_cases_family_root_with_nothing_of_its_own_passes(tmp_path: Path) -> None:
@@ -709,7 +719,9 @@ def test_cases_family_leaves_annotated_metadata_values(tmp_path: Path) -> None:
         "    return tier.label\n"
     )
     snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path), ())
-    operation = CasesFamily(target=_target(snapshot, "tier.Tier"), rationale="", names=())
+    operation = CasesFamily(
+        target=_target(snapshot, "tier.Tier"), rationale="", names=()
+    )
 
     simulation = _simulated(snapshot, operation)
 
@@ -718,4 +730,147 @@ def test_cases_family_leaves_annotated_metadata_values(tmp_path: Path) -> None:
     assert (
         'def choose(tier: Annotated[type[Tier], "Tier help text", Standard]) -> str:'
         in family
+    )
+
+
+def test_cases_family_hands_back_without_a_declared_family_root(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "pyproject.toml").write_text('[project]\nname = "plain"\n')
+    (tmp_path / "reason.py").write_text(
+        "from enum import StrEnum\n\n\n"
+        "class Reason(StrEnum):\n"
+        '    OBSERVER = "observer"\n'
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path), ())
+
+    with pytest.raises(ValueError) as refusal:
+        CasesFamily(
+            target=_target(snapshot, "reason.Reason"), rationale="", names=()
+        ).source_edits_from_snapshot(snapshot)
+
+    assert str(refusal.value) == (
+        f"handback: {tmp_path / 'pyproject.toml'}: declare a family root in"
+        " [tool.nominal-refactor-advisor.family-root]"
+    )
+
+
+DERIVED_ROOT_SOURCE = """import re
+
+
+def words(stem: str) -> str:
+    return re.sub(r"([a-z0-9])([A-Z])", r"\\1_\\2", stem).lower()
+
+
+class Root:
+    declared_name: str
+
+    def __init_subclass__(cls, *, declared_name: str | None = None) -> None:
+        if Root not in cls.__bases__:
+            cls.declared_name = declared_name or words(cls.__name__)
+
+    @classmethod
+    def member_named(cls, name: object) -> type:
+        (member,) = (m for m in cls.__subclasses__() if m.declared_name == name)
+        return member
+"""
+
+DERIVED_PYPROJECT = """[tool.nominal-refactor-advisor.family-root]
+root = "family:Root"
+value = "declared_name"
+decoder = "member_named"
+derived-value = "family:words"
+"""
+
+DERIVED_ENUM_SOURCE = """from dataclasses import dataclass
+from enum import StrEnum
+
+
+class Kind(StrEnum):
+    INSERT = "INSERT"
+    PLAIN_OBSERVER = "plain_observer"
+
+    def label(self) -> str:
+        return self.value.lower()
+
+
+@dataclass
+class Holder:
+    kind: Kind
+
+    def wire(self) -> str:
+        return self.kind.value
+
+
+def decoded(text: str) -> Kind:
+    return Kind(text)
+
+
+def names() -> list[str]:
+    return [kind.value for kind in Kind]
+
+
+def spelled(kind: Kind) -> str:
+    return kind.value + Kind.INSERT.value
+"""
+
+
+def _derived_staged(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, source: str):
+    (tmp_path / "pyproject.toml").write_text(DERIVED_PYPROJECT)
+    (tmp_path / "family.py").write_text(DERIVED_ROOT_SOURCE)
+    (tmp_path / "kind.py").write_text(source)
+    monkeypatch.syspath_prepend(tmp_path)
+    return CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path), ())
+
+
+def test_cases_family_carries_values_through_the_declared_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    snapshot = _derived_staged(tmp_path, monkeypatch, DERIVED_ENUM_SOURCE)
+    operation = CasesFamily(
+        target=_target(snapshot, "kind.Kind"), rationale="", names=()
+    )
+
+    simulation = _simulated(snapshot, operation)
+
+    assert simulation.is_clean is True
+    family = simulation.simulation.rewritten_sources[(tmp_path / "kind.py").as_posix()]
+    assert family.startswith(
+        "from dataclasses import dataclass\nfrom family import Root\n"
+    )
+    assert "class Kind(Root):\n" in family
+    assert 'class Insert(Kind, declared_name="INSERT"):\n    pass\n' in family
+    assert "class PlainObserver(Kind):\n    pass\n" in family
+    assert "return cls.declared_name.lower()" in family
+    assert "return self.kind.declared_name" in family
+    assert "return Kind.member_named(text)" in family
+    assert "[kind.declared_name for kind in Kind.__subclasses__()]" in family
+    assert "return kind.declared_name + Insert.declared_name" in family
+    namespace: dict[str, object] = {}
+    exec(compile(family, "kind.py", "exec"), namespace)
+    assert namespace["decoded"]("plain_observer") is namespace["PlainObserver"]
+    assert namespace["names"]() == ["INSERT", "plain_observer"]
+    assert namespace["Holder"](namespace["Insert"]).wire() == "INSERT"
+
+
+def test_cases_family_hands_back_a_value_read_through_an_ambiguous_field(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    snapshot = _derived_staged(
+        tmp_path,
+        monkeypatch,
+        DERIVED_ENUM_SOURCE
+        + "\n\nclass Other:\n    kind: Holder\n\n\n"
+        + "def read(thing: Other) -> str:\n    return thing.kind.value\n",
+    )
+
+    with pytest.raises(ValueError) as refusal:
+        CasesFamily(
+            target=_target(snapshot, "kind.Kind"), rationale="", names=()
+        ).source_edits_from_snapshot(snapshot)
+
+    assert str(refusal.value) == (
+        f"handback: {(tmp_path / 'kind.py').as_posix()}:38: thing.kind.value: field"
+        " kind is declared holding the enum and holding another type that may carry"
+        " value"
     )

@@ -47,3 +47,8 @@ target-version = ["py311"]
 pythonpath = ["."]
 testpaths = ["tests"]
 addopts = ["-n", "auto", "--maxprocesses=8", "--dist=worksteal"]
+
+[tool.nominal-refactor-advisor.family-root]
+root = "nominal_refactor_advisor.case_root:Case"
+value = "value"
+decoder = "of"
