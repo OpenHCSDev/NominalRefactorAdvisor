@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import (
     Generic,
+    Self,
     TYPE_CHECKING,
     TypeVar,
 )
@@ -67,11 +68,22 @@ class DeclarationMroType(ABCMeta, Generic[MroDeclarationT]):
 
 
 class ClassMroViolation(StrEnum):
+    """Why a class's MRO stays open. A violation of the hierarchy itself also stops
+    the single-base walk, which would otherwise read declarations past it."""
+
+    stops_prefix_walk: bool
+
+    def __new__(cls, value: str, stops_prefix_walk: bool = False) -> Self:
+        member = str.__new__(cls, value)
+        member._value_ = value
+        member.stops_prefix_walk = stops_prefix_walk
+        return member
+
     MISSING_DECLARATION = "missing_declaration"
     UNRESOLVED_BASES = "unresolved_bases"
     DYNAMIC_CLASS_DECLARATION = "dynamic_class_declaration"
-    CYCLIC_HIERARCHY = "cyclic_hierarchy"
-    INCONSISTENT_HIERARCHY = "inconsistent_hierarchy"
+    CYCLIC_HIERARCHY = "cyclic_hierarchy", True
+    INCONSISTENT_HIERARCHY = "inconsistent_hierarchy", True
 
 
 @dataclass(frozen=True)
@@ -83,6 +95,12 @@ class ClassMroResolution(ABC):
     def mro_type(self) -> DeclarationMroType[CompactIndexedClass] | None:
         raise NotImplementedError
 
+    @abstractmethod
+    def known_prefix(
+        self, authority: ClassMroAuthority, symbol: str
+    ) -> tuple[CompactIndexedClass, ...]:
+        """The declarations of ``symbol``'s MRO known before any opaque base."""
+
 
 @dataclass(frozen=True)
 class ResolvedClassMro(ClassMroResolution):
@@ -92,6 +110,11 @@ class ResolvedClassMro(ClassMroResolution):
     def mro_type(self) -> DeclarationMroType[CompactIndexedClass]:
         return self.declaration_type
 
+    def known_prefix(
+        self, authority: ClassMroAuthority, symbol: str
+    ) -> tuple[CompactIndexedClass, ...]:
+        return self.declaration_type.declarations
+
 
 @dataclass(frozen=True)
 class OpenClassMro(ClassMroResolution):
@@ -100,6 +123,14 @@ class OpenClassMro(ClassMroResolution):
     @property
     def mro_type(self) -> None:
         return None
+
+    def known_prefix(
+        self, authority: ClassMroAuthority, symbol: str
+    ) -> tuple[CompactIndexedClass, ...]:
+        # class_symbol is where the MRO opened, an ancestor of symbol or symbol itself
+        if self.violation.stops_prefix_walk:
+            return ()
+        return authority.single_base_prefix(symbol)
 
 
 @dataclass(frozen=True)
@@ -130,14 +161,10 @@ class ClassMroAuthority:
         ancestor prevents closing the full C3 order. Never guess past that point.
         This does not strengthen an OpenClassMro into a runtime proof.
         """
-        resolution = self.resolve(symbol)
-        if resolution.mro_type is not None:
-            return resolution.mro_type.declarations
-        if isinstance(resolution, OpenClassMro) and resolution.violation in (
-            ClassMroViolation.CYCLIC_HIERARCHY,
-            ClassMroViolation.INCONSISTENT_HIERARCHY,
-        ):
-            return ()
+        return self.resolve(symbol).known_prefix(self, symbol)
+
+    def single_base_prefix(self, symbol: str) -> tuple[CompactIndexedClass, ...]:
+        """The declarations reached from ``symbol`` through single static bases."""
         prefix = []
         pending = set()
         while symbol not in pending:

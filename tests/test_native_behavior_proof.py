@@ -518,13 +518,17 @@ def test_original_constructor_metadata_uses_current_default_owner(monkeypatch):
         ).python_constructor()
     )
     before = source.signature
+    (defaulted,) = (
+        index
+        for index, parameter in enumerate(before.parameters)
+        if parameter.has_default
+    )
     with monkeypatch.context() as mutation:
         mutation.setattr(function, "__defaults__", None)
         current = entry.constructor_source.signature
-        assert not current.parameters[-1].has_default
+        assert not current.parameters[defaulted].has_default
         assert source.defaults == ()
-        assert before.parameters[-1].has_default
         with pytest.raises(ValueError, match="over prepared inputs remains unproved"):
             _ = entry.construction_admission
-    assert entry.constructor_source.signature.parameters[-1].has_default
+    assert entry.constructor_source.signature.parameters[defaulted].has_default
     assert not environment.entry.operation_conditions
