@@ -18,6 +18,7 @@ keyword named by ``value``. A repository that declares nothing gets a handback.
 from __future__ import annotations
 
 import importlib
+import inspect
 import tomllib
 from abc import ABC, abstractmethod
 from collections.abc import Callable
@@ -123,6 +124,7 @@ class DeclaredRoot:
                     raise ValueError(
                         f"{pyproject}: {TABLE} root {root!r} must be a top-level class"
                     )
+                cls.require_root(pyproject, root, value, decoder)
                 return cls(
                     module,
                     name,
@@ -142,22 +144,61 @@ class DeclaredRoot:
             case None:
                 return AssignedValue()
             case str(reference):
-                module, qualname = cls.reference(pyproject, reference)
-                try:
-                    found: object = importlib.import_module(module)
-                    for part in qualname.split("."):
-                        found = getattr(found, part)
-                except (ImportError, AttributeError) as missing:
-                    raise ValueError(
-                        f"{pyproject}: {TABLE} derived-value {reference!r} is not"
-                        f" importable here: {missing}"
-                    ) from None
+                found = cls.imported(pyproject, "derived-value", reference)
                 if not callable(found):
                     raise ValueError(
                         f"{pyproject}: {TABLE} derived-value {reference!r} is not callable"
                     )
                 return DerivedValue(found)
         raise ValueError(f"{pyproject}: {TABLE} derived-value must be a string")
+
+    @classmethod
+    def require_root(
+        cls, pyproject: Path, reference: str, value: str, decoder: str
+    ) -> None:
+        """The root is a class carrying ``decoder`` as a classmethod, and ``value``
+        is declared on its MRO or its metaclass's: the two names every rewritten
+        read relies on."""
+
+        root = cls.imported(pyproject, "root", reference)
+        if not isinstance(root, type):
+            raise ValueError(f"{pyproject}: {TABLE} root {reference!r} is not a class")
+        if not any(
+            value in vars(declaring) or value in inspect.get_annotations(declaring)
+            for declaring in (*root.__mro__, *type(root).__mro__)
+        ):
+            raise ValueError(
+                f"{pyproject}: {TABLE} value {value!r} is not declared on {reference}"
+            )
+        if not isinstance(
+            next(
+                (
+                    vars(declaring)[decoder]
+                    for declaring in root.__mro__
+                    if decoder in vars(declaring)
+                ),
+                None,
+            ),
+            classmethod,
+        ):
+            raise ValueError(
+                f"{pyproject}: {TABLE} decoder {decoder!r} is not a classmethod"
+                f" of {reference}"
+            )
+
+    @classmethod
+    def imported(cls, pyproject: Path, key: str, reference: str) -> object:
+        module, qualname = cls.reference(pyproject, reference)
+        try:
+            found: object = importlib.import_module(module)
+            for part in qualname.split("."):
+                found = getattr(found, part)
+        except (ImportError, AttributeError) as missing:
+            raise ValueError(
+                f"{pyproject}: {TABLE} {key} {reference!r} is not importable here:"
+                f" {missing}"
+            ) from None
+        return found
 
     @staticmethod
     def reference(pyproject: Path, reference: str) -> tuple[str, str]:
