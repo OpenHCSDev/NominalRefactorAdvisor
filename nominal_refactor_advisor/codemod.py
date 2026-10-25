@@ -680,7 +680,7 @@ from .planner import (
     build_refactor_execution_plan_from_groups,
 )
 from .projection_descent_codemod import (
-    DescendTypeKeyedBehaviorProjectionOperation as DescendTypeKeyedBehaviorProjectionOperation,
+    TypedMirror as TypedMirror,
 )
 from .descent import CasesFold, Descent, KeyedMirror
 from .registry_identity import (
@@ -7166,7 +7166,7 @@ class TypeKeyedBehaviorProjectionFindingRecipeSynthesizer(
             authority_target = context.required_class_target_for_authority_evidence(
                 authority_location
             )
-            operation = DescendTypeKeyedBehaviorProjectionOperation(
+            operation = TypedMirror(
                 target=SourceRewriteTarget(target_id=projection_target.target_id),
                 rationale="",
             )

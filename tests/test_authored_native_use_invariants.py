@@ -14,7 +14,7 @@ import pytest
 from nominal_refactor_advisor.ast_tools import ParsedModule
 from nominal_refactor_advisor.captured_reference import OpenCapturedReference
 from nominal_refactor_advisor.codemod import (
-    DescendTypeKeyedBehaviorProjectionOperation,
+    TypedMirror,
     PromoteClassMembersToAncestorOperation,
 )
 from nominal_refactor_advisor.codemod_native_requirements import (
@@ -40,7 +40,7 @@ def _module(source, *, path="/repo/native_invariant_probe.py"):
 
 
 def _requirement(
-    module, *, expected=property, operation=DescendTypeKeyedBehaviorProjectionOperation
+    module, *, expected=property, operation=TypedMirror
 ):
     environment = SourceModuleExecution.from_module(module)
     statement = module.module.body[-1]
@@ -168,7 +168,7 @@ def test_subset_acceptance_does_not_leak_to_other_uses_or_environments():
     environment = SourceModuleExecution.from_module(module)
     requirements = tuple(
         NativeUseRequirement(
-            DescendTypeKeyedBehaviorProjectionOperation,
+            TypedMirror,
             statement.value,
             (NativeDeclaration(property),),
             environment,

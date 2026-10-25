@@ -487,7 +487,7 @@ class _TypeKeyedBehaviorSourceDerivation:
     projection_root: IndexedClass
     lookup_method: ast.FunctionDef
     facades: tuple[_TypeKeyedBehaviorFacade, ...]
-    operation: DescendTypeKeyedBehaviorProjectionOperation
+    operation: TypedMirror
 
     lookup_method_name = AliasProperty[str]("lookup_method.name")
     rationale = AliasProperty[str]("operation.rationale")
@@ -539,7 +539,7 @@ class _TypeKeyedBehaviorSourceDerivation:
         snapshot: CodemodSourceSnapshot,
         projection_root_symbol: str,
         *,
-        operation: DescendTypeKeyedBehaviorProjectionOperation,
+        operation: TypedMirror,
     ) -> "_TypeKeyedBehaviorSourceDerivation":
         projections = CompactModuleClassProjectionFamily.collect_modules(
             snapshot.parsed_modules
@@ -1174,7 +1174,7 @@ class _TypeKeyedBehaviorSourceDerivation:
 
 
 @dataclass(frozen=True, kw_only=True)
-class DescendTypeKeyedBehaviorProjectionOperation(RepositorySourceReprovedOperation):
+class TypedMirror(RepositorySourceReprovedOperation):
     """Re-prove and descend external type-keyed behavior onto nominal types."""
 
     supported_execution: DeclaredNativeUseInvariants = codemod_payload_field(

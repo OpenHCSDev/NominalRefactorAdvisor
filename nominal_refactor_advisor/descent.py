@@ -664,19 +664,15 @@ class Descent(RepositorySourceReprovedOperation, ABC):
         OptionalStringArrayPayloadValueCodec(), default=()
     )
 
-    def source_edits_from_snapshot(
-        self, snapshot: CodemodSourceSnapshot
-    ) -> tuple[NominalSourceEdit, ...]:
-        return self.rewrite(snapshot).edits(self.rationale)
-
     def current_source_authority_claims(
         self, context: CodemodSelectorContext
     ) -> tuple[AuthorityClaim, ...]:
         return self.claims(context.execution_snapshot())
 
-    @abstractmethod
-    def rewrite(self, snapshot: CodemodSourceSnapshot) -> Rewrite:
-        raise NotImplementedError
+    def synthesis_proof(self, snapshot: CodemodSourceSnapshot) -> None:
+        """What must hold before a finding becomes this descent's recipe."""
+
+        self.source_edits_from_snapshot(snapshot)
 
     @abstractmethod
     def claims(self, snapshot: CodemodSourceSnapshot) -> tuple[AuthorityClaim, ...]:
@@ -702,7 +698,20 @@ class Descent(RepositorySourceReprovedOperation, ABC):
         )
 
 
-class Enumerated(Descent, ABC):
+class Rewritten(Descent, ABC):
+    """A descent whose edits are one ``Rewrite`` of the current source."""
+
+    def source_edits_from_snapshot(
+        self, snapshot: CodemodSourceSnapshot
+    ) -> tuple[NominalSourceEdit, ...]:
+        return self.rewrite(snapshot).edits(self.rationale)
+
+    @abstractmethod
+    def rewrite(self, snapshot: CodemodSourceSnapshot) -> Rewrite:
+        raise NotImplementedError
+
+
+class Enumerated(Rewritten, ABC):
     """Input forms that read one enum; every end state deletes it.
 
     Member references become the class each member maps to, enum annotations
@@ -1785,14 +1794,72 @@ class Keyed(Enumerated, ABC):
         )
 
 
-class Mirror(Descent, ABC):
-    """End state: the enum restates an existing family 1:1, so the family replaces it.
+@dataclass(frozen=True)
+class FamilyRoot:
+    """The top-level class whose family a mirrored map restates."""
 
-    The family's closed set is read from the hierarchy by a ``family()``
-    classmethod on the root, never from a roster.
+    file_path: str
+    qualname: str
+
+
+class Mirror(Descent, ABC):
+    """End state: a map keyed one to one by a family restates it; the family replaces it."""
+
+    def claims(self, snapshot: CodemodSourceSnapshot) -> tuple[AuthorityClaim, ...]:
+        root = self.family_root(snapshot)
+        return (
+            AuthorityClaim(
+                claimed_symbol=root.qualname,
+                authority_kind=SemanticAuthorityKind.CLASS_FAMILY,
+                file_path=root.file_path,
+                qualname=root.qualname,
+            ),
+        )
+
+    @abstractmethod
+    def family_root(self, snapshot: CodemodSourceSnapshot) -> FamilyRoot:
+        raise NotImplementedError
+
+
+def _scope_names(
+    scope: ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda,
+) -> frozenset[str]:
+    arguments = scope.args
+    parameters = {
+        argument.arg
+        for argument in (
+            *arguments.posonlyargs,
+            *arguments.args,
+            *arguments.kwonlyargs,
+            *(argument for argument in (arguments.vararg, arguments.kwarg) if argument),
+        )
+    }
+    body = scope.body if isinstance(scope.body, list) else [scope.body]
+    return frozenset(parameters) | LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(body)
+
+
+def _postponed_annotations(module: ParsedModule) -> bool:
+    return any(
+        isinstance(statement, ast.ImportFrom)
+        and statement.module == "__future__"
+        and any(alias.name == "annotations" for alias in statement.names)
+        for statement in module.module.body
+    )
+
+
+class KeyedMirror(Mirror, Keyed, Enumerated, Descent):
+    """An enum whose one map pairs each member with a class of one family.
+
+    The map, its enum and its key are the family restated: indexing the map
+    becomes the key itself, and reverse queries iterate the family, read from
+    the hierarchy by a ``family()`` classmethod on the root, never a roster.
     """
 
     family_method = "family"
+
+    def family_root(self, snapshot: CodemodSourceSnapshot) -> FamilyRoot:
+        keyed = self.keyed(snapshot, self.enum(snapshot))
+        return FamilyRoot(keyed.module.file_path, keyed.root)
 
     def mirrored(
         self,
@@ -1865,52 +1932,6 @@ class Mirror(Descent, ABC):
         end = rewrite.geometry(module).required_node_offsets(root)[1]
         rewrite.span(
             module, end, end, "\n\n" + textwrap.indent(source, indent).rstrip("\n")
-        )
-
-
-def _scope_names(
-    scope: ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda,
-) -> frozenset[str]:
-    arguments = scope.args
-    parameters = {
-        argument.arg
-        for argument in (
-            *arguments.posonlyargs,
-            *arguments.args,
-            *arguments.kwonlyargs,
-            *(argument for argument in (arguments.vararg, arguments.kwarg) if argument),
-        )
-    }
-    body = scope.body if isinstance(scope.body, list) else [scope.body]
-    return frozenset(parameters) | LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(body)
-
-
-def _postponed_annotations(module: ParsedModule) -> bool:
-    return any(
-        isinstance(statement, ast.ImportFrom)
-        and statement.module == "__future__"
-        and any(alias.name == "annotations" for alias in statement.names)
-        for statement in module.module.body
-    )
-
-
-class KeyedMirror(Mirror, Keyed, Enumerated, Descent):
-    """An enum whose one map pairs each member with a class of one family.
-
-    The map, its enum and its key are the family restated: indexing the map
-    becomes the key itself, and reverse queries iterate the family.
-    """
-
-    def claims(self, snapshot: CodemodSourceSnapshot) -> tuple[AuthorityClaim, ...]:
-        enum = self.enum(snapshot)
-        keyed = self.keyed(snapshot, enum)
-        return (
-            AuthorityClaim(
-                claimed_symbol=keyed.root,
-                authority_kind=SemanticAuthorityKind.CLASS_FAMILY,
-                file_path=keyed.module.file_path,
-                qualname=keyed.root,
-            ),
         )
 
     def rewrite(self, snapshot: CodemodSourceSnapshot) -> Rewrite:

@@ -194,7 +194,7 @@ from nominal_refactor_advisor.codemod import (
     DeleteTargetOperation,
     DeriveAutoregisterInstanceViewOperation,
     DeriveCandidateCollectorOperation,
-    DescendTypeKeyedBehaviorProjectionOperation,
+    TypedMirror,
     DispatchToPolymorphismOperation,
     EnsureImportOperation,
     DeclareCandidateFindingRendererOperation,
@@ -26724,7 +26724,7 @@ def _authored_fixture_descent(snapshot, module_path):
     These fixtures retain native classmethod/type and the real registry helper.
     Other source/destination hazards remain independently checked below.
     """
-    operation = DescendTypeKeyedBehaviorProjectionOperation(
+    operation = TypedMirror(
         target=SourceRewriteTarget(
             file_path=module_path.as_posix(), qualname="EventProjection"
         )
@@ -26774,7 +26774,7 @@ def test_type_keyed_behavior_recipe_descends_behavior_and_consumers(
     assert plan.records[0].recipe is None
     assert plan.records[0].candidate_recipes == ()
     (operation,) = proposal.operations
-    assert isinstance(operation, DescendTypeKeyedBehaviorProjectionOperation)
+    assert isinstance(operation, TypedMirror)
     operation = _with_fixture_native_invariants(operation, snapshot)
     assert (
         RefactorRecipeOperation.from_json_value(json_report_object(operation))
