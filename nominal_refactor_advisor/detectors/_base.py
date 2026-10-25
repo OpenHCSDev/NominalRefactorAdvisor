@@ -423,6 +423,10 @@ class DetectorConfig:
         "Minimum manual registration sites before surfacing a class-registration finding.",
     )
     min_reflective_selector_values: int = 2
+    min_repeated_module_expression_sites: int = detector_config_option(
+        3,
+        "Minimum sites of one pure module-attribute expression before surfacing a value-owner lead.",
+    )
     min_repeated_local_regex_literals: int = detector_config_option(
         3,
         "Minimum shared substantial regex literals before surfacing a local syntax-authority finding.",

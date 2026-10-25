@@ -2962,6 +2962,20 @@ class ModuleSyntaxIndex:
             self.depth_first_nodes[index] for index in reversed(ancestor_indices)
         )
 
+    def lexical_symbol(self, node_index: int) -> str:
+        """Dotted class and function owners of one indexed node, or `<module>`."""
+
+        return (
+            ".".join(
+                ancestor.name
+                for ancestor in self.ancestor_nodes(node_index)
+                if isinstance(
+                    ancestor, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)
+                )
+            )
+            or "<module>"
+        )
+
     @classmethod
     def build(cls, module: ast.Module) -> "ModuleSyntaxIndex":
         nodes: list[ast.AST] = []

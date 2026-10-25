@@ -362,6 +362,17 @@ class BuilderCallShape(FunctionBodyCallLikeShape):
 
 
 @dataclass(frozen=True)
+class ModuleExpressionShape:
+    """One maximal expression computed only from imported-module attributes."""
+
+    file_path: str
+    lineno: int
+    symbol: str
+    expression_key: str
+    expression_text: str
+
+
+@dataclass(frozen=True)
 class RegistrationShape:
     """Normalized record for one recovered manual registration site."""
 
