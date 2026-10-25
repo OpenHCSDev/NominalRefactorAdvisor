@@ -1523,15 +1523,6 @@ class CasesFamily(Cases, Descent):
         rewrite_methods = [method for method in methods if method is not None]
         documentation = docstring(enum.node.body)
         root: list[str] = [f"class {model.root}({Case.__name__}):"]
-        if documentation is not None:
-            root.extend(
-                indented(
-                    rewrite.statements_source(module, [documentation])
-                    .rstrip("\n")
-                    .split("\n")
-                )
-            )
-            root.append("")
         annotated = [
             *(
                 (datum.name, datum.annotation)
@@ -1540,6 +1531,17 @@ class CasesFamily(Cases, Descent):
             ),
             *model.folded.items(),
         ]
+        if documentation is not None:
+            root.extend(
+                indented(
+                    rewrite.statements_source(module, [documentation])
+                    .rstrip("\n")
+                    .split("\n")
+                )
+            )
+            # Annotations follow after a blank line; each method brings its own.
+            if annotated:
+                root.append("")
         root.extend(
             f"    {name}: {member_type(model.root, annotation or 'object')}"
             for name, annotation in annotated

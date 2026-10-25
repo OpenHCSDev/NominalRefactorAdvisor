@@ -648,3 +648,27 @@ def test_cases_family_keeps_a_string_default_a_value(tmp_path: Path) -> None:
         (tmp_path / "mutation.py").as_posix()
     ]
     assert 'def trigger(cls, *, when: str = "") -> str:' in family
+
+
+def test_cases_family_root_with_only_methods_has_one_blank_line_after_its_docstring(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "mutation.py").write_text(
+        "from enum import Enum\n\n\n"
+        "class Mutation(Enum):\n"
+        '    """Row events."""\n\n'
+        '    INSERT = "INSERT"\n\n'
+        "    def trigger(self) -> str:\n"
+        "        return self.value\n"
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path), ())
+    operation = CasesFamily(
+        target=_target(snapshot, "mutation.Mutation"), rationale="", names=()
+    )
+
+    simulation = _simulated(snapshot, operation)
+
+    family = simulation.simulation.rewritten_sources[
+        (tmp_path / "mutation.py").as_posix()
+    ]
+    assert 'class Mutation(Case):\n    """Row events."""\n\n    @classmethod\n' in family
