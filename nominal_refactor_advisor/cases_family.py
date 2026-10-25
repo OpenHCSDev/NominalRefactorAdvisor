@@ -486,21 +486,36 @@ class Datum:
 
 @dataclass
 class MethodBodies:
-    """One family method: its header and each member's body, root taking the most shared."""
+    """One family method: its header, each member's folded body and the unfolded one.
+
+    The root takes the body most members share and each other member overrides
+    it, unless two members would carry the same override: that copy restates a
+    sibling, so the root keeps the unfolded body, reading each member's own data,
+    and no member overrides.
+    """
 
     name: str
     header: list[str]
     bodies: dict[str, list[str]]
+    generic: list[str]
     docstring: list[str] = field(default_factory=list)
 
     def root_body(self, members: tuple[Member, ...]) -> list[str]:
         counts = Counter(tuple(self.bodies[member.name]) for member in members)
         most = max(counts.values())
-        return next(
+        root = next(
             self.bodies[member.name]
             for member in members
             if counts[tuple(self.bodies[member.name])] == most
         )
+        if any(count > 1 for body, count in counts.items() if list(body) != root):
+            return self.generic
+        return root
+
+    def override(self, member: Member, members: tuple[Member, ...]) -> list[str] | None:
+        root = self.root_body(members)
+        body = self.bodies[member.name]
+        return None if root is self.generic or body == root else body
 
     def source(self, body: list[str], with_docstring: bool) -> list[str]:
         lines = [
@@ -965,10 +980,18 @@ class CasesFamily(Cases, Descent):
                 self.boolean_names(function),
             )
             bodies[member.name], _ends = folding.block(statements)
+        generic, _ends = Folding(
+            module,
+            rewrite,
+            lambda node: UNKNOWN,
+            renames,
+            self.boolean_names(function),
+        ).block(statements)
         return MethodBodies(
             function.name,
             header,
             bodies,
+            generic,
             (
                 []
                 if documentation is None
@@ -1243,8 +1266,8 @@ class CasesFamily(Cases, Descent):
             for name in model.folded:
                 lines.append(f"    {name} = {model.literals[member.name][name]!r}")
             for method in rewrite_methods:
-                body = method.bodies[member.name]
-                if body != method.root_body(model.members):
+                body = method.override(member, model.members)
+                if body is not None:
                     lines.append("")
                     lines.extend(method.source(body, False))
             classes.append("\n".join(lines))
@@ -1745,26 +1768,23 @@ class Block(Site):
                 "    ",
             ),
         ]
+        booleans = boolean_names | {
+            name for name, annotation in parameters.items() if annotation == "bool"
+        }
         bodies: dict[str, list[str]] = {}
         for member in model.members:
             folding = Folding(
-                module,
-                rewrite,
-                self.literal(model, member),
-                renames,
-                boolean_names
-                | {
-                    name
-                    for name, annotation in parameters.items()
-                    if annotation == "bool"
-                },
+                module, rewrite, self.literal(model, member), renames, booleans
             )
             bodies[member.name], _ends = folding.block(statements)
+        generic, _ends = Folding(
+            module, rewrite, lambda node: UNKNOWN, renames, booleans
+        ).block(statements)
         call = f"{self.receiver}.{self.field_name}.{self.method}({', '.join(arguments.values())})"
         self.replace_statements(
             rewrite, statements, ("return " if returns else "") + call + "\n", handled
         )
-        return MethodBodies(self.method, header, bodies)
+        return MethodBodies(self.method, header, bodies, generic)
 
 
 @dataclass
@@ -1838,6 +1858,16 @@ class Guard(Site):
             bodies[member.name] = (
                 ["return"] if test.value else [f"return {self.callback}()"]
             )
+        renames = {
+            id(node): f"cls.{node.attr}"
+            for node in ast.walk(guard.test)
+            if isinstance(node, ast.Attribute) and self.field_read(node.value)
+        }
+        generic = [
+            f"if {ast.unparse(rebuilt(guard.test, renames))}:",
+            "    return",
+            f"return {self.callback}()",
+        ]
         callable_name = next(
             (
                 alias.asname or alias.name
@@ -1897,4 +1927,4 @@ class Guard(Site):
             for statement in self.body[self.start :]
             for node in ast.walk(statement)
         )
-        return MethodBodies(self.method, header, bodies)
+        return MethodBodies(self.method, header, bodies, generic)

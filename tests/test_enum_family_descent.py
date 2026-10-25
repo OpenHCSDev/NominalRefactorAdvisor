@@ -248,3 +248,61 @@ def test_external_enum_case_recovery_sees_the_family_pre_image_only(
     assert [
         evidence.symbol for finding in found for evidence in finding.evidence
     ] == symbols
+
+
+SPLIT_ENUM_SOURCE = """from dataclasses import dataclass
+from enum import StrEnum
+
+
+class Shape(StrEnum):
+    def __new__(cls, value: str, flagged: bool) -> "Shape":
+        member = str.__new__(cls, value)
+        member._value_ = value
+        member._flagged = flagged
+        return member
+
+    FIRST = ("first", True)
+    SECOND = ("second", True)
+    THIRD = ("third", False)
+    FOURTH = ("fourth", False)
+
+    @property
+    def flagged(self) -> bool:
+        return self._flagged
+
+
+@dataclass
+class Holder:
+    shape: Shape
+
+    def check(self, given: bool) -> None:
+        if given is not self.shape.flagged:
+            raise ValueError("shape")
+"""
+
+
+def test_cases_family_keeps_the_unfolded_body_when_members_would_share_an_override(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "split.py").write_text(SPLIT_ENUM_SOURCE)
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path), ())
+    operation = CasesFamily(
+        target=_target(snapshot, "split.Shape"), rationale="", names=("check_shape",)
+    )
+
+    simulation = _simulated(snapshot, operation)
+
+    assert simulation.is_clean is True
+    (source,) = simulation.simulation.rewritten_sources.values()
+    tree = ast.parse(source)
+    overriders = [
+        node.name
+        for node in tree.body
+        if isinstance(node, ast.ClassDef)
+        and any(
+            isinstance(statement, ast.FunctionDef) and statement.name == "check_shape"
+            for statement in node.body
+        )
+    ]
+    assert overriders == ["Shape"]
+    assert "if given is not cls.flagged:" in source
