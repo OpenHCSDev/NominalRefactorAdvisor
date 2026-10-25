@@ -6,7 +6,11 @@ from types import CodeType
 
 import pytest
 
-from nominal_refactor_advisor.ast_tools import ModuleAnnotationEvaluationMode
+from nominal_refactor_advisor.ast_tools import (
+    Lazy,
+    ModuleAnnotationEvaluationMode,
+    Stringized,
+)
 from nominal_refactor_advisor.class_namespace import (
     AnnotationStorageEffect,
     AssignmentSourceEffect,
@@ -55,7 +59,7 @@ def test_annotation_does_not_invent_a_rhs_assignment(value):
     assert len(annotation_effects(source)) == 1
 
 
-@pytest.mark.parametrize("mode", tuple(ModuleAnnotationEvaluationMode))
+@pytest.mark.parametrize("mode", tuple(ModuleAnnotationEvaluationMode.__subclasses__()))
 def test_annotation_storage_is_separate_from_annotation_expression_evaluation(mode):
     (effect,) = annotation_effects("item: object = None\n")
     assert (
@@ -63,13 +67,13 @@ def test_annotation_storage_is_separate_from_annotation_expression_evaluation(mo
         is mode.stores_variable_annotations_at_definition
     )
     assert (
-        ModuleAnnotationEvaluationMode.STRINGIZED.stores_variable_annotations_at_definition
+        Stringized.stores_variable_annotations_at_definition
     )
     assert (
-        not ModuleAnnotationEvaluationMode.STRINGIZED.annotations_execute_at_declaration
+        not Stringized.annotations_execute_at_declaration
     )
     assert (
-        not ModuleAnnotationEvaluationMode.LAZY.stores_variable_annotations_at_definition
+        not Lazy.stores_variable_annotations_at_definition
     )
 
 

@@ -76,6 +76,7 @@ from nominal_refactor_advisor.ast_tools import (
     InlineStringLiteralDispatchObservationFamily,
     LiteralKind,
     ModuleAnnotationEvaluationMode,
+    Stringized,
     NumericLiteralDispatchObservationFamily,
     RegistrationShapeSpec,
     RegistrationShapeFamily,
@@ -8661,12 +8662,12 @@ def test_module_move_rejects_annotation_evaluation_mode_changes(
 
     report = operation.dependency_report(snapshot)
     expected_source_mode = (
-        ModuleAnnotationEvaluationMode.STRINGIZED
+        Stringized
         if source_future
         else ModuleAnnotationEvaluationMode.runtime_default()
     )
     expected_destination_mode = (
-        ModuleAnnotationEvaluationMode.STRINGIZED
+        Stringized
         if destination_future
         else ModuleAnnotationEvaluationMode.runtime_default()
     )

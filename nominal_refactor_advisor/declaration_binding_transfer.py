@@ -31,7 +31,7 @@ class DeclarationModuleBindingEnvironment:
     scope: ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef
 
     @cached_property
-    def annotation_mode(self) -> ModuleAnnotationEvaluationMode:
+    def annotation_mode(self) -> type[ModuleAnnotationEvaluationMode]:
         return ModuleAnnotationEvaluationMode.from_module(self.module.module)
 
     @cached_property

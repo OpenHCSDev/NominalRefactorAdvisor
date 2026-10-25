@@ -1271,71 +1271,93 @@ class VariableAnnotationVisitorABC(ABC):
         raise NotImplementedError
 
 
-class ModuleAnnotationEvaluationMode(StrEnum):
+class ModuleAnnotationEvaluationMode(ABC):
     """Runtime representation policy for annotations declared by one module."""
 
-    EAGER = (
-        "eager",
-        (),
-        True,
-        lambda visitor, node: visitor.visit_eager_variable_annotation(node),
-    )
-    LAZY = ("lazy", (), False, lambda visitor, node: None)
-    STRINGIZED = (
-        "stringized",
-        (NativeLanguageFeature(__future__.annotations),),
-        True,
-        lambda visitor, node: visitor.visit_stringized_variable_annotation(node),
-    )
+    value: str
+    native_features: tuple[NativeLanguageFeature, ...]
+    stores_variable_annotations_at_definition: bool
+    annotations_execute_at_declaration: bool
 
-    def __new__(
-        cls,
-        value: str,
-        native_features: tuple[NativeLanguageFeature, ...],
-        stores_variable_annotations_at_definition: bool,
-        variable_annotation_visitor: Callable[
-            [VariableAnnotationVisitorABC, ast.AnnAssign], None
-        ],
-    ) -> "ModuleAnnotationEvaluationMode":
-        member = str.__new__(cls, value)
-        member._value_ = value
-        member.native_features = native_features
-        member.stores_variable_annotations_at_definition = (
-            stores_variable_annotations_at_definition
-        )
-        member._variable_annotation_visitor = variable_annotation_visitor
-        return member
-
+    @classmethod
     def visit_variable_annotation(
-        self, visitor: VariableAnnotationVisitorABC, node: ast.AnnAssign
+        cls,
+        visitor: VariableAnnotationVisitorABC,
+        node: ast.AnnAssign,
     ) -> None:
-        self._variable_annotation_visitor(visitor, node)
+        visitor.visit_eager_variable_annotation(node)
 
-    @property
-    def new_module_prelude(self) -> str:
+    @classmethod
+    def new_module_prelude(cls) -> str:
         """Derive source that preserves this policy from its native declarations."""
-        return "".join(feature.import_source for feature in self.native_features)
+        return "".join(feature.import_source for feature in cls.native_features)
 
     @classmethod
-    def runtime_default(cls) -> "ModuleAnnotationEvaluationMode":
+    def runtime_default(cls) -> "type[ModuleAnnotationEvaluationMode]":
         """Return the annotation policy of the running Python language version."""
-
-        return cls.LAZY if sys.version_info >= (3, 14) else cls.EAGER
+        return Lazy if sys.version_info >= (3, 14) else Eager
 
     @classmethod
-    def from_module(cls, module: ast.Module) -> "ModuleAnnotationEvaluationMode":
+    def from_module(cls, module: ast.Module) -> "type[ModuleAnnotationEvaluationMode]":
         return next(
             (
                 mode
-                for mode in cls
+                for mode in ModuleAnnotationEvaluationMode.__subclasses__()
                 if any(feature.imported_by(module) for feature in mode.native_features)
             ),
             cls.runtime_default(),
         )
 
-    @property
-    def annotations_execute_at_declaration(self) -> bool:
-        return self is self.EAGER
+    @classmethod
+    def require_complete_eager_annotations(
+        cls,
+        require_resolved_references: Callable[[], None],
+    ) -> None:
+        return
+
+
+class Eager(ModuleAnnotationEvaluationMode):
+    value = "eager"
+    native_features = ()
+    stores_variable_annotations_at_definition = True
+    annotations_execute_at_declaration = True
+
+    @classmethod
+    def require_complete_eager_annotations(
+        cls,
+        require_resolved_references: Callable[[], None],
+    ) -> None:
+        return require_resolved_references()
+
+
+class Lazy(ModuleAnnotationEvaluationMode):
+    value = "lazy"
+    native_features = ()
+    stores_variable_annotations_at_definition = False
+    annotations_execute_at_declaration = False
+
+    @classmethod
+    def visit_variable_annotation(
+        cls,
+        visitor: VariableAnnotationVisitorABC,
+        node: ast.AnnAssign,
+    ) -> None:
+        pass
+
+
+class Stringized(ModuleAnnotationEvaluationMode):
+    value = "stringized"
+    native_features = (NativeLanguageFeature(__future__.annotations),)
+    stores_variable_annotations_at_definition = True
+    annotations_execute_at_declaration = False
+
+    @classmethod
+    def visit_variable_annotation(
+        cls,
+        visitor: VariableAnnotationVisitorABC,
+        node: ast.AnnAssign,
+    ) -> None:
+        visitor.visit_stringized_variable_annotation(node)
 
 
 class EagerFunctionAnnotationVisitor(FunctionAnnotationVisitor):
@@ -1351,7 +1373,7 @@ class EagerNameLoadCollector(EagerFunctionAnnotationVisitor):
     def __init__(
         self,
         name: str,
-        annotation_mode: ModuleAnnotationEvaluationMode,
+        annotation_mode: type[ModuleAnnotationEvaluationMode],
     ) -> None:
         self.name = name
         self.annotation_mode = annotation_mode

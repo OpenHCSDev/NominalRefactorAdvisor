@@ -13,6 +13,7 @@ import pytest
 from nominal_refactor_advisor.ast_tools import (
     ModuleAnnotationEvaluationMode,
     ParsedModule,
+    Stringized,
 )
 from nominal_refactor_advisor.captured_reference import (
     CapturedNativeObject,
@@ -167,10 +168,10 @@ def test_counterfeit_module_name_does_not_supply_native_future_association(
 
 
 def test_stringized_mode_uses_native_declaration_for_syntax() -> None:
-    mode = ModuleAnnotationEvaluationMode.STRINGIZED
+    mode = Stringized
     (feature,) = mode.native_features
     assert feature.declaration is __future__.annotations
-    assert mode.new_module_prelude == feature.import_source
+    assert mode.new_module_prelude() == feature.import_source
     assert (
         ModuleAnnotationEvaluationMode.from_module(
             ast.parse("from __future__ import annotations as selected")

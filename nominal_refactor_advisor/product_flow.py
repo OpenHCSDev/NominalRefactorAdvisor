@@ -287,7 +287,7 @@ class CompactFlowOwnerKind(ABC):
         cls,
         visitor: VariableAnnotationVisitorABC,
         node: ast.AnnAssign,
-        mode: ModuleAnnotationEvaluationMode,
+        mode: type[ModuleAnnotationEvaluationMode],
     ) -> None:
         """Function-local annotations are declarations, never body evaluation."""
         mode.visit_variable_annotation(visitor, node)
@@ -338,7 +338,7 @@ class Function(CompactFlowOwnerKind):
         cls,
         visitor: VariableAnnotationVisitorABC,
         node: ast.AnnAssign,
-        mode: ModuleAnnotationEvaluationMode,
+        mode: type[ModuleAnnotationEvaluationMode],
     ) -> None:
         pass
 
@@ -4037,7 +4037,7 @@ class _CompactFlowCollector(
             CompactDefinitionFlowOwner,
         ],
         module_identity: PythonModulePathIdentity,
-        annotation_mode: ModuleAnnotationEvaluationMode,
+        annotation_mode: type[ModuleAnnotationEvaluationMode],
         lexical_scope_qualnames: tuple[str, ...],
         current_class_qualname: str | None,
         current_class_receiver_name: str | None,
@@ -4612,7 +4612,7 @@ class _ProductFlowCollection(Generic[FlowCollectorT]):
         return declarations
 
     @cached_property
-    def annotation_mode(self) -> ModuleAnnotationEvaluationMode:
+    def annotation_mode(self) -> type[ModuleAnnotationEvaluationMode]:
         return ModuleAnnotationEvaluationMode.from_module(self.parsed_module.module)
 
     def _function_collector(

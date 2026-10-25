@@ -236,7 +236,7 @@ class DeclarationAuthorityModuleReferenceProof:
     binding_closure: DeclarationAuthorityRenameBindingClosure
     binding_authority: ModuleNominalBindingAuthority
     lexical_dependencies: ModuleLexicalDependencyProjection
-    annotation_mode: ModuleAnnotationEvaluationMode
+    annotation_mode: type[ModuleAnnotationEvaluationMode]
 
     @cached_property
     def final_binding_is_renamed(self) -> bool:
@@ -305,8 +305,11 @@ class DeclarationAuthorityModuleReferenceProof:
         )
 
     def require_complete_eager_annotations(self) -> None:
-        if not self.annotation_mode.annotations_execute_at_declaration:
-            return
+        return self.annotation_mode.require_complete_eager_annotations(
+            self.require_resolved_eager_annotation_references,
+        )
+
+    def require_resolved_eager_annotation_references(self) -> None:
         for surface in self.lexical_dependencies.direct_annotation_name_surfaces:
             reference = surface.reference
             if (
