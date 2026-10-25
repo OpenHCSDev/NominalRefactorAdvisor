@@ -680,9 +680,9 @@ from .planner import (
     build_refactor_execution_plan_from_groups,
 )
 from .projection_descent_codemod import (
-    DescendEnumKeyedDerivedMapFacadeOperation as DescendEnumKeyedDerivedMapFacadeOperation,
     DescendTypeKeyedBehaviorProjectionOperation as DescendTypeKeyedBehaviorProjectionOperation,
 )
+from .descent import Descent, KeyedMirror
 from .registry_identity import (
     AUTOREGISTER_CONFIGURATION_ATTRIBUTE_NAMES,
     AUTOREGISTER_META_NAME,
@@ -7186,41 +7186,37 @@ class TypeKeyedBehaviorProjectionFindingRecipeSynthesizer(
         return self.executable_evaluation(recipe)
 
 
-class EnumKeyedDerivedMapFacadeFindingRecipeSynthesizer(
+class DescentFindingRecipeSynthesizer(
     PrimaryEvidenceActionKeysMixin,
     FindingRecipeSynthesizer,
-    DerivedProjectionConcept,
+    ABC,
 ):
-    """Move source-proved key-facing queries to their enum declaration."""
+    """Re-prove one descent on the class the finding's authority evidence names.
+
+    A refusal that lists questions is a handback: the same operation becomes
+    executable once its ``names`` answer them.
+    """
+
+    descent_type: ClassVar[type[Descent]]
+    recipe_reason: ClassVar[str]
 
     def evaluate_recipe_for_finding(
         self,
         finding: RefactorFinding,
         context: CodemodSelectorContext | None = None,
     ) -> FindingRecipeEvaluation:
+        key = self.descent_type.operation_key()
         if context is None:
-            return self.rejected_evaluation(
-                "enum-keyed facade descent requires source context"
-            )
-        if not finding.evidence:
-            return self.rejected_evaluation(
-                "enum-keyed facade finding lacks map-owner evidence"
-            )
+            return self.rejected_evaluation(f"{key} requires source context")
         authority_location = finding.authority_evidence
         if authority_location is None:
-            return self.rejected_evaluation(
-                "enum-keyed facade finding lacks enum authority evidence"
-            )
+            return self.rejected_evaluation(f"{key} finding lacks authority evidence")
         try:
-            reverse_method_target = context.required_target_for_evidence(
-                finding.evidence[0],
-                node_kind=AstTargetNodeKind.METHOD,
-            )
-            enum_target = context.required_class_target_for_authority_evidence(
+            target = context.required_class_target_for_authority_evidence(
                 authority_location
             )
-            operation = DescendEnumKeyedDerivedMapFacadeOperation(
-                target=SourceRewriteTarget(target_id=reverse_method_target.target_id),
+            operation = self.descent_type(
+                target=SourceRewriteTarget(target_id=target.target_id),
                 rationale="",
             )
             operation.source_edits_from_snapshot(context.execution_snapshot())
@@ -7228,15 +7224,25 @@ class EnumKeyedDerivedMapFacadeFindingRecipeSynthesizer(
             return self.rejected_evaluation(str(error))
         return self.executable_evaluation(
             RefactorRecipe(
-                recipe_id=f"{finding.stable_id}-descend-enum-keyed-facade",
-                reason=(
-                    "Move key-facing map queries onto the enum that owns the "
-                    "queried identity."
-                ),
+                recipe_id=f"{finding.stable_id}-{key}",
+                reason=self.recipe_reason,
             )
-            .with_authority_claim(AstTargetAuthorityClaim.from_target(enum_target))
+            .with_authority_claim(AstTargetAuthorityClaim.from_target(target))
             .with_operation(operation)
         )
+
+
+class KeyedMirrorFindingRecipeSynthesizer(
+    DescentFindingRecipeSynthesizer,
+    ClassFamilyAuthorityConcept,
+):
+    """An enum keying one map onto a family is the family restated: delete it."""
+
+    descent_type = KeyedMirror
+    recipe_reason = (
+        "Delete the enum and its map; the class family they restate answers "
+        "every lookup and reverse query."
+    )
 
 
 class InheritedAutoRegisterConfigBoilerplateFindingRecipeSynthesizer(

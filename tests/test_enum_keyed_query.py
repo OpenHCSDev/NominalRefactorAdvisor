@@ -10,10 +10,10 @@ from nominal_refactor_advisor.ast_tools import parse_python_modules
 from nominal_refactor_advisor.codemod import (
     CodemodBackend,
     CodemodSourceSnapshot,
-    DescendEnumKeyedDerivedMapFacadeOperation,
     FindingRecipeSynthesisStatus,
     RefactorRecipeOperation,
 )
+from nominal_refactor_advisor.descent import KeyedMirror
 from nominal_refactor_advisor.detectors._base import DetectorConfig
 from nominal_refactor_advisor.detectors._runtime import (
     EnumKeyedDerivedMapFacadeDetector,
@@ -167,7 +167,7 @@ def test_enum_keyed_facade_compact_cache_preserves_exact_finding(
     assert warm.findings == cold.findings
 
 
-def test_enum_keyed_facade_recipe_moves_queries_and_preserves_behavior(
+def test_keyed_mirror_deletes_enum_and_map_and_preserves_behavior(
     tmp_path: Path,
 ) -> None:
     source = _enum_keyed_facade_source()
@@ -183,38 +183,34 @@ def test_enum_keyed_facade_recipe_moves_queries_and_preserves_behavior(
     assert len(findings) == 1
     assert plan.records[0].status is FindingRecipeSynthesisStatus.EXECUTABLE_CANDIDATE
     operation = plan.document.recipes[0].operations[0]
-    assert isinstance(operation, DescendEnumKeyedDerivedMapFacadeOperation)
-    assert set(json_report_object(operation)) == {"operation", "target_id", "rationale"}
-    assert isinstance(
-        RefactorRecipeOperation.from_json_value(json_report_object(operation)),
-        DescendEnumKeyedDerivedMapFacadeOperation,
+    assert isinstance(operation, KeyedMirror)
+    assert (
+        RefactorRecipeOperation.from_json_value(json_report_object(operation))
+        == operation
     )
     simulation = plan.simulate(snapshot, backend=CodemodBackend.AST_SPAN)
     assert simulation.is_clean is True
     rewritten = simulation.simulation.rewritten_sources[module_path.as_posix()]
-    assert "def handler_type(self) -> type[Handler]:" in rewritten
-    assert "return HandlerCatalog.handler_types_by_mode()[self]" in rewritten
-    assert "Mode.modes_for_handler_name(name)" in rewritten
-    assert "mode.handler_type.__name__" in rewritten
-    catalog_source = rewritten.split("class HandlerCatalog:", maxsplit=1)[1]
-    assert "def modes_for_handler_name" not in catalog_source
+    assert "class Mode" not in rewritten
+    assert "handler_types_by_mode" not in rewritten
+    assert "StrEnum" not in rewritten
+    assert "def handler_name(mode: type[Handler]) -> str:" in rewritten
+    assert "return mode.__name__" in rewritten
+    assert "for handler_type in Handler.family()" in rewritten
 
-    original_namespace: dict[str, object] = {}
-    rewritten_namespace: dict[str, object] = {}
-    exec(compile(source, module_path.as_posix(), "exec"), original_namespace)
-    exec(compile(rewritten, module_path.as_posix(), "exec"), rewritten_namespace)
-    for mode_name in ("FAST", "SAFE"):
-        original_mode = original_namespace["Mode"][mode_name]
-        rewritten_mode = rewritten_namespace["Mode"][mode_name]
-        assert original_namespace["handler_name"](original_mode) == rewritten_namespace[
+    original: dict[str, object] = {}
+    mirrored: dict[str, object] = {}
+    exec(compile(source, module_path.as_posix(), "exec"), original)
+    exec(compile(rewritten, module_path.as_posix(), "exec"), mirrored)
+    mirror = {"FAST": mirrored["Handler"], "SAFE": mirrored["AlternateHandler"]}
+    for mode_name, handler_type in mirror.items():
+        assert original["handler_name"](original["Mode"][mode_name]) == mirrored[
             "handler_name"
-        ](rewritten_mode)
+        ](handler_type)
     for handler_name in ("Handler", "AlternateHandler", "Missing"):
         assert tuple(
-            mode.value for mode in original_namespace["modes_for_name"](handler_name)
-        ) == tuple(
-            mode.value for mode in rewritten_namespace["modes_for_name"](handler_name)
-        )
+            mirror[mode.name] for mode in original["modes_for_name"](handler_name)
+        ) == mirrored["modes_for_name"](handler_name)
 
     rewritten_modules = tuple(
         module.with_source(rewritten) if module.path == module_path else module
@@ -330,14 +326,29 @@ def test_enum_keyed_facade_derives_aliased_binding_exclusion(
     assert not findings
 
 
-def test_enum_keyed_facade_recipe_rejects_noncall_method_reference(
+@pytest.mark.parametrize(
+    ("appended", "reason"),
+    (
+        (
+            "\nMAP_QUERY = HandlerCatalog.handler_types_by_mode\n",
+            "read outside an index or reverse query",
+        ),
+        (
+            "\n\ndef shadowed_query(Mode, name: str):\n    return Mode.FAST\n",
+            "Mode is rebound in this scope",
+        ),
+        (
+            "\n\nclass ThirdHandler(Handler):\n    pass\n",
+            "do not mirror Handler's family",
+        ),
+    ),
+)
+def test_keyed_mirror_refuses_reads_the_family_cannot_answer(
     tmp_path: Path,
+    appended: str,
+    reason: str,
 ) -> None:
-    source = (
-        _enum_keyed_facade_source()
-        + "\nMODE_QUERY = HandlerCatalog.modes_for_handler_name\n"
-    )
-    _write_package_module(tmp_path, source)
+    _write_package_module(tmp_path, _enum_keyed_facade_source() + appended)
     modules, findings = _findings(tmp_path)
     snapshot = CodemodSourceSnapshot.from_modules(modules, findings)
 
@@ -350,30 +361,7 @@ def test_enum_keyed_facade_recipe_rejects_noncall_method_reference(
     assert (
         plan.records[0].status is FindingRecipeSynthesisStatus.REJECTED_BY_SAFETY_CHECK
     )
-    assert "cannot be rewritten nominally" in plan.records[0].reason
-
-
-def test_enum_keyed_facade_recipe_rejects_shadowed_enum_replacement(
-    tmp_path: Path,
-) -> None:
-    source = (
-        _enum_keyed_facade_source() + "\n\ndef shadowed_query(Mode, name: str):\n"
-        "    return HandlerCatalog.modes_for_handler_name(name)\n"
-    )
-    _write_package_module(tmp_path, source)
-    modules, findings = _findings(tmp_path)
-    snapshot = CodemodSourceSnapshot.from_modules(modules, findings)
-
-    plan = snapshot.plan_from_findings(
-        findings,
-        detector_ids=("enum_keyed_derived_map_facade",),
-    )
-
-    assert len(findings) == 1
-    assert (
-        plan.records[0].status is FindingRecipeSynthesisStatus.REJECTED_BY_SAFETY_CHECK
-    )
-    assert "cannot be rewritten nominally" in plan.records[0].reason
+    assert reason in plan.records[0].reason
 
 
 def test_enum_keyed_facade_rejects_non_value_map_slice(tmp_path: Path) -> None:
@@ -388,44 +376,14 @@ def test_enum_keyed_facade_rejects_non_value_map_slice(tmp_path: Path) -> None:
     assert not findings
 
 
-def test_enum_keyed_facade_recipes_batch_independent_owner_relations(
+@pytest.mark.parametrize("value_name", ("fallback_type", "handler_type"))
+def test_keyed_mirror_refuses_an_enum_keying_two_maps(
     tmp_path: Path,
-) -> None:
-    module_path = _write_package_module(
-        tmp_path,
-        _with_second_facade(_enum_keyed_facade_source()),
-    )
-    modules, findings = _findings(tmp_path)
-    snapshot = CodemodSourceSnapshot.from_modules(modules, findings)
-
-    plan = snapshot.plan_from_findings(
-        findings,
-        detector_ids=("enum_keyed_derived_map_facade",),
-    )
-
-    assert len(findings) == 2
-    assert all(
-        record.status is FindingRecipeSynthesisStatus.EXECUTABLE_CANDIDATE
-        for record in plan.records
-    )
-    simulation = plan.simulate(snapshot, backend=CodemodBackend.AST_SPAN)
-    assert simulation.is_clean is True
-    rewritten = simulation.simulation.rewritten_sources[module_path.as_posix()]
-    assert rewritten.count("def handler_type(") == 1
-    assert rewritten.count("def fallback_type(") == 1
-    assert "mode.handler_type.__name__" in rewritten
-    assert "mode.fallback_type.__name__" in rewritten
-
-
-def test_enum_keyed_facade_batch_rejects_competing_member_derivations(
-    tmp_path: Path,
+    value_name: str,
 ) -> None:
     _write_package_module(
         tmp_path,
-        _with_second_facade(
-            _enum_keyed_facade_source(),
-            value_name="handler_type",
-        ),
+        _with_second_facade(_enum_keyed_facade_source(), value_name=value_name),
     )
     modules, findings = _findings(tmp_path)
     snapshot = CodemodSourceSnapshot.from_modules(modules, findings)
@@ -437,6 +395,7 @@ def test_enum_keyed_facade_batch_rejects_competing_member_derivations(
 
     assert len(findings) == 2
     assert all(
-        record.status is FindingRecipeSynthesisStatus.CONFLICTING_TRAJECTORY_BRANCHES
+        record.status is FindingRecipeSynthesisStatus.REJECTED_BY_SAFETY_CHECK
+        and "Mode keys 2 proven map(s)" in record.reason
         for record in plan.records
     )

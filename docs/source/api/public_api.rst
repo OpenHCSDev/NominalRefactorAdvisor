@@ -814,9 +814,16 @@ Identical insertions for one name merge; conflicting sources or collisions with
 existing direct members fail. Inherited members may be overridden. The operation
 does not establish behavioural equivalence of a new or overriding member.
 See :ref:`adding-cohesive-class-members` for a method and alias inserted together.
-``EnumKeyedQueryMemberInsertion`` owns canonical name ordering for the separate,
-source-proved generated enum-query family, allowing independent query recipes
-to compose to identical source. Authored insertions do not use that policy.
+
+``descent`` owns the operations that delete an enum restating a class family.
+Each leaf composes one input form (``Cases``: member comparisons and member
+data; ``Keyed``: one classmethod map from members to classes) with one end
+state (``Fold``: the enum's sole holder becomes the family and its members its
+subclasses; ``Mirror``: an existing family replaces the enum). ``CasesFold``
+and ``KeyedMirror`` are the leaves the operation codec names. A step whose
+answer the source does not state, such as the name of a new parent class, is a
+question: the operation refuses until ``names`` answers every question, and the
+refusal lists each one at its file:line.
 
 ``codemod_assignment_operations`` owns module and named-scope assignment
 replacement. Its operations share ``AssignmentReplacementOperationABC`` and

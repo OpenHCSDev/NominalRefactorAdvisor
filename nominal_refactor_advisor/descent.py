@@ -35,6 +35,10 @@ from .codemod_source_edits import (
     SourceTextGeometry,
     SourceTextSpanReplacement,
 )
+from .enum_keyed_query import (
+    EnumKeyedDerivedMapFacadeComponent,
+    EnumKeyedDerivedMapFacadeComponentBuilder,
+)
 from .lexical_bindings import LEXICAL_SCOPE_BINDING_AUTHORITY, ImportFromModuleName
 from .semantic_descent import AuthorityClaim, SemanticAuthorityKind
 
@@ -252,6 +256,31 @@ class Family:
             if not parents:
                 return
             name = parents[0]
+
+    @classmethod
+    def declared(cls, module: ParsedModule, root: str) -> Family:
+        """Every top-level class of ``module``, under ``root``."""
+
+        return cls(
+            {
+                statement.name: FamilyClass(
+                    statement.name,
+                    tuple(ast.unparse(base) for base in statement.bases),
+                    statement,
+                )
+                for statement in module.module.body
+                if isinstance(statement, ast.ClassDef)
+            },
+            root,
+        )
+
+    def preorder(self, name: str) -> tuple[str, ...]:
+        """``name`` then its descendants, depth first in declaration order."""
+
+        return (
+            name,
+            *(found for child in self.children(name) for found in self.preorder(child)),
+        )
 
     def children(self, name: str) -> tuple[str, ...]:
         return tuple(
@@ -673,11 +702,123 @@ class Descent(RepositorySourceReprovedOperation, ABC):
         )
 
 
-class Cases(Descent, ABC):
-    """Input form: an enum read through member comparisons and member data."""
+class Enumerated(Descent, ABC):
+    """Input forms that read one enum; every end state deletes it.
+
+    Member references become the class each member maps to, enum annotations
+    become ``type[root]``, and imports of the enum expand to the classes used.
+    """
 
     def enum(self, snapshot: CodemodSourceSnapshot) -> EnumDeclaration:
         return EnumDeclaration.decoded(*self.target_class(snapshot))
+
+    def aliases(
+        self,
+        snapshot: CodemodSourceSnapshot,
+        enum: EnumDeclaration,
+        root_module: ParsedModule,
+        root: str,
+    ) -> dict[ParsedModule, ModuleNames]:
+        """Each module that binds the enum or the root, with the local names it uses."""
+
+        projections = {
+            projection.file_path: projection
+            for projection in CompactModuleClassProjectionFamily.collect_modules(
+                snapshot.parsed_modules
+            )
+        }
+        root_symbol = f"{root_module.module_name}.{root}"
+        found: dict[ParsedModule, ModuleNames] = {}
+        for module in snapshot.parsed_modules:
+            projection = projections.get(module.file_path)
+            imported = () if projection is None else projection.import_aliases
+            names = ModuleNames(
+                enum=frozenset(
+                    local for local, symbol in imported if symbol == enum.symbol
+                ),
+                root=frozenset(
+                    local for local, symbol in imported if symbol == root_symbol
+                ),
+            )
+            if module is enum.module:
+                names = ModuleNames(frozenset({enum.name}), frozenset({root}))
+            if names.enum or names.root:
+                found[module] = names
+        return found
+
+    def enum_read(
+        self,
+        rewrite: Rewrite,
+        module: ParsedModule,
+        node: ast.Name,
+        parent: ast.AST | None,
+        in_annotation: bool,
+        members: dict[str, str],
+        root: str,
+        shadowed: frozenset[int],
+    ) -> None:
+        """One load of the enum's name: a member, an annotation, or a handback."""
+
+        if id(node) in shadowed:
+            raise ValueError(
+                f"handback: {module.file_path}:{node.lineno}: {node.id} is rebound "
+                "in this scope, not the enum"
+            )
+        if isinstance(parent, ast.Attribute) and parent.attr in members:
+            rewrite.replace(module, parent, members[parent.attr])
+            rewrite.used_members[module.file_path].add(members[parent.attr])
+            return
+        if in_annotation:
+            rewrite.replace(module, node, f"type[{root}]")
+            rewrite.annotations_in.add(module.file_path)
+            return
+        if isinstance(parent, ast.alias | ast.ImportFrom):
+            return
+        raise ValueError(
+            f"handback: {module.file_path}:{node.lineno}: enum read as "
+            f"{ast.unparse(parent) if parent is not None else node.id!r}"
+        )
+
+    @staticmethod
+    def shadowed(module: ParsedModule, names: frozenset[str]) -> frozenset[int]:
+        """Loads of an enum name inside a function that binds that name itself."""
+
+        return frozenset(
+            id(node)
+            for scope in ast.walk(module.module)
+            if isinstance(scope, ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda)
+            and names & _scope_names(scope)
+            for node in ast.walk(scope)
+            if isinstance(node, ast.Name) and node.id in names
+        )
+
+    def rebind_imports(
+        self,
+        rewrite: Rewrite,
+        aliases: dict[ParsedModule, ModuleNames],
+        enum: EnumDeclaration,
+        root_module: ParsedModule,
+        root: str,
+    ) -> None:
+        """Imports of the enum expand to the classes now named in its place."""
+
+        for module, names in aliases.items():
+            used = tuple(sorted(rewrite.used_members[module.file_path]))
+            needs_root = (
+                module is not root_module
+                and not names.root
+                and module.file_path in rewrite.annotations_in
+            )
+            replaced = {
+                local: used + ((root,) if needs_root else ())
+                for local in names.enum
+                if module is not enum.module
+            }
+            rewrite.prune_imports(module, replaced)
+
+
+class Cases(Enumerated, ABC):
+    """Input form: an enum read through member comparisons and member data."""
 
 
 @dataclass
@@ -967,7 +1108,7 @@ class Fold(Cases, ABC):
         holder = self.holder(snapshot, enum)
         rewrite = Rewrite(snapshot)
         answer = Answers(self.names)
-        aliases = self.aliases(snapshot, enum, holder)
+        aliases = self.aliases(snapshot, enum, holder.module, holder.name)
         family = self.family(enum, holder)
         branches = self.branches(snapshot, enum, holder, family, aliases, answer)
         handled: set[int] = set()
@@ -980,61 +1121,11 @@ class Fold(Cases, ABC):
             self.rewrite_reads(rewrite, module, names, enum, holder, handled)
         rewrite.delete_statement(enum.module, enum.node)
         answer.require_complete()
-        for module, names in aliases.items():
-            used = tuple(sorted(rewrite.used_members[module.file_path]))
-            needs_holder = (
-                module is not holder.module
-                and not names.holder
-                and module.file_path in rewrite.annotations_in
-            )
-            replaced = {
-                local: used + ((holder.name,) if needs_holder else ())
-                for local in names.enum
-                if module is not enum.module
-            }
-            rewrite.prune_imports(module, replaced)
+        self.rebind_imports(rewrite, aliases, enum, holder.module, holder.name)
         return rewrite
 
-    def aliases(
-        self, snapshot: CodemodSourceSnapshot, enum: EnumDeclaration, holder: Holder
-    ) -> dict[ParsedModule, ModuleNames]:
-        """Each module that binds the enum or holder, with the local names it uses."""
-
-        projections = {
-            projection.file_path: projection
-            for projection in CompactModuleClassProjectionFamily.collect_modules(
-                snapshot.parsed_modules
-            )
-        }
-        holder_symbol = f"{holder.module.module_name}.{holder.name}"
-        found: dict[ParsedModule, ModuleNames] = {}
-        for module in snapshot.parsed_modules:
-            projection = projections.get(module.file_path)
-            imported = () if projection is None else projection.import_aliases
-            names = ModuleNames(
-                enum=frozenset(
-                    local for local, symbol in imported if symbol == enum.symbol
-                ),
-                holder=frozenset(
-                    local for local, symbol in imported if symbol == holder_symbol
-                ),
-            )
-            if module is enum.module:
-                names = ModuleNames(frozenset({enum.name}), frozenset({holder.name}))
-            if names.enum or names.holder:
-                found[module] = names
-        return found
-
     def family(self, enum: EnumDeclaration, holder: Holder) -> Family:
-        classes = {
-            statement.name: FamilyClass(
-                statement.name,
-                tuple(ast.unparse(base) for base in statement.bases),
-                statement,
-            )
-            for statement in enum.module.module.body
-            if isinstance(statement, ast.ClassDef)
-        }
+        classes = Family.declared(enum.module, holder.name).classes
         if any(holder.name in family_class.bases for family_class in classes.values()):
             raise ValueError(f"{holder.name} already has subclasses")
         for member in enum.members:
@@ -1387,6 +1478,8 @@ class Fold(Cases, ABC):
         )
         enum_typed = _enum_typed_names(module.module, names.enum)
         is_test = PythonSourcePathPolicy.is_test_path(module.path)
+        members = {member.name: member.class_name for member in enum.members}
+        shadowed = self.shadowed(module, names.enum)
         for node in ast.walk(module.module):
             if (
                 id(node) in enum_nodes
@@ -1394,14 +1487,14 @@ class Fold(Cases, ABC):
                 or id(node) in handled
             ):
                 continue
-            if isinstance(node, ast.Call) and _is_any_name(node.func, names.holder):
+            if isinstance(node, ast.Call) and _is_any_name(node.func, names.root):
                 self.construction(rewrite, module, node, names, enum)
                 handled.update(
                     id(child) for argument in node.args for child in ast.walk(argument)
                 )
                 continue
             if isinstance(node, ast.Assert) and self.implied_instance_check(
-                node, parents, names.holder, holder.field_name
+                node, parents, names.root, holder.field_name
             ):
                 rewrite.delete_statement(module, node)
                 continue
@@ -1429,26 +1522,18 @@ class Fold(Cases, ABC):
                 and id(node) not in handled
             ):
                 parent = parents.get(id(node))
-                if (
-                    isinstance(parent, ast.Attribute)
-                    and parent.attr in enum.members_by_name
-                ):
-                    if id(parent) not in handled:
-                        rewrite.replace(module, parent, class_name(parent.attr))
-                        rewrite.used_members[module.file_path].add(
-                            class_name(parent.attr)
-                        )
-                    continue
-                if id(node) in annotations:
-                    rewrite.replace(module, node, f"type[{holder.name}]")
-                    rewrite.annotations_in.add(module.file_path)
-                    continue
-                if isinstance(parent, ast.alias | ast.ImportFrom):
-                    continue
-                raise ValueError(
-                    f"handback: {module.file_path}:{node.lineno}: enum read as "
-                    f"{ast.unparse(parent) if parent is not None else node.id!r}"
-                )
+                if id(parent) not in handled:
+                    self.enum_read(
+                        rewrite,
+                        module,
+                        node,
+                        parent,
+                        id(node) in annotations,
+                        members,
+                        holder.name,
+                        shadowed,
+                    )
+                continue
             if (
                 isinstance(node, ast.Attribute)
                 and node.attr == holder.field_name
@@ -1531,10 +1616,10 @@ class Fold(Cases, ABC):
 
 @dataclass(frozen=True)
 class ModuleNames:
-    """Local names one module binds to the enum and to its holder."""
+    """Local names one module binds to the enum and to the family root."""
 
     enum: frozenset[str]
-    holder: frozenset[str]
+    root: frozenset[str]
 
 
 def _is_any_name(node: ast.AST, names: Iterable[str]) -> bool:
@@ -1576,6 +1661,359 @@ def _reads_enum(
         if isinstance(statement, ast.If)
         for node in ast.walk(statement.test)
     )
+
+
+@dataclass
+class KeyedMap:
+    """A classmethod map from each enum member to one class, with its queries."""
+
+    module: ParsedModule
+    owner: ast.ClassDef
+    method: ast.FunctionDef
+    values: dict[str, str]
+    root: str
+    components: tuple[EnumKeyedDerivedMapFacadeComponent, ...]
+
+    @property
+    def site(self) -> str:
+        return f"{self.module.file_path}:{self.method.lineno}"
+
+    def reverse_queries(self) -> Iterator[tuple[ast.FunctionDef, str, str]]:
+        """Each reverse query with its key and value variable names."""
+
+        for component in self.components:
+            for statement in self.owner.body:
+                if (
+                    isinstance(statement, ast.FunctionDef)
+                    and statement.name == component.reverse_method_name
+                ):
+                    yield (
+                        statement,
+                        component.key_variable_name,
+                        component.value_variable_name,
+                    )
+
+    def consumers(self) -> Iterator[ast.Subscript]:
+        """``Owner.map()[key]`` reads, located where the component found them."""
+
+        found = {
+            (consumer.line, consumer.column)
+            for component in self.components
+            for consumer in component.consumers
+        }
+        for node in ast.walk(self.module.module):
+            if (
+                isinstance(node, ast.Subscript)
+                and (node.lineno, node.col_offset) in found
+            ):
+                yield node
+
+
+class Keyed(Enumerated, ABC):
+    """Input form: an enum whose members key one classmethod map onto classes."""
+
+    def keyed(self, snapshot: CodemodSourceSnapshot, enum: EnumDeclaration) -> KeyedMap:
+        components = tuple(
+            component
+            for component in EnumKeyedDerivedMapFacadeComponentBuilder(
+                enum.module, snapshot.parsed_modules
+            ).proven_components()
+            if component.enum_symbol == enum.symbol
+        )
+        maps = {
+            (component.map_owner_symbol, component.map_method_name)
+            for component in components
+        }
+        if len(maps) != 1:
+            raise ValueError(
+                f"{enum.name} keys {len(maps)} proven map(s); a mirror needs exactly one"
+            )
+        component = components[0]
+        owner = next(
+            statement
+            for statement in enum.module.module.body
+            if isinstance(statement, ast.ClassDef)
+            and f"{enum.module.module_name}.{statement.name}"
+            == component.map_owner_symbol
+        )
+        method = next(
+            statement
+            for statement in owner.body
+            if isinstance(statement, ast.FunctionDef)
+            and statement.name == component.map_method_name
+        )
+        site = f"{enum.module.file_path}:{method.lineno}"
+        body = [
+            statement
+            for statement in method.body
+            if not (
+                isinstance(statement, ast.Expr)
+                and isinstance(statement.value, ast.Constant)
+            )
+        ]
+        literal = (
+            body[0].value
+            if len(body) == 1 and isinstance(body[0], ast.Return)
+            else None
+        )
+        if not isinstance(literal, ast.Dict) or None in literal.keys:
+            raise ValueError(f"{site}: map is not one returned dict literal")
+        values: dict[str, str] = {}
+        for key, value in zip(literal.keys, literal.values, strict=True):
+            members = _member_refs(key, enum)
+            if members is None or len(members) != 1 or not isinstance(value, ast.Name):
+                raise ValueError(
+                    f"{site}: map entry {ast.unparse(key)!r} is not member: class"
+                )
+            values[next(iter(members))] = value.id
+        value_annotation = ast.parse(
+            component.value_annotation_source, mode="eval"
+        ).body
+        if not (
+            isinstance(value_annotation, ast.Subscript)
+            and _is_name(value_annotation.value, "type")
+            and isinstance(value_annotation.slice, ast.Name)
+        ):
+            raise ValueError(f"{site}: map values are not declared as type[Root]")
+        return KeyedMap(
+            enum.module,
+            owner,
+            method,
+            values,
+            value_annotation.slice.id,
+            components,
+        )
+
+
+class Mirror(Descent, ABC):
+    """End state: the enum restates an existing family 1:1, so the family replaces it.
+
+    The family's closed set is read from the hierarchy by a ``family()``
+    classmethod on the root, never from a roster.
+    """
+
+    family_method = "family"
+
+    def mirrored(
+        self,
+        snapshot: CodemodSourceSnapshot,
+        module: ParsedModule,
+        root: str,
+        values: Iterable[str],
+        site: str,
+    ) -> Family:
+        """The root's family, required to equal ``values`` in declaration order."""
+
+        family = Family.declared(module, root)
+        order = family.preorder(root)
+        if tuple(values) != order:
+            raise ValueError(
+                f"handback: {site}: values {tuple(values)} do not mirror {root}'s "
+                f"family {order} one to one in declaration order"
+            )
+        if any(family.classes[name].method(self.family_method) for name in order):
+            raise ValueError(f"{root}'s family already declares {self.family_method}()")
+        symbols = {f"{module.module_name}.{name}" for name in order}
+        modules = {other.file_path: other for other in snapshot.parsed_modules}
+        for projection in CompactModuleClassProjectionFamily.collect_modules(
+            snapshot.parsed_modules
+        ):
+            local = {
+                name for name, symbol in projection.import_aliases if symbol in symbols
+            }
+            if local and any(
+                isinstance(statement, ast.ClassDef)
+                and any(_is_any_name(base, local) for base in statement.bases)
+                for statement in ast.walk(modules[projection.file_path].module)
+            ):
+                raise ValueError(
+                    f"handback: {projection.file_path}: subclasses {root}'s family "
+                    "outside its module; the closed set is not module-local"
+                )
+        return family
+
+    def emit_family(
+        self, rewrite: Rewrite, module: ParsedModule, root: ast.ClassDef
+    ) -> None:
+        indent = " " * root.body[0].col_offset
+        returns = f"tuple[type[{root.name}], ...]"
+        if not _postponed_annotations(module):
+            returns = f'"{returns}"'
+        source = (
+            f"@classmethod\n"
+            f"def {self.family_method}(cls) -> {returns}:\n"
+            f"    return (\n"
+            f"        cls,\n"
+            f"        *(\n"
+            f"            member\n"
+            f"            for subclass in cls.__subclasses__()\n"
+            f"            for member in subclass.{self.family_method}()\n"
+            f"        ),\n"
+            f"    )\n"
+        )
+        body = [
+            statement
+            for statement in root.body
+            if not (
+                isinstance(statement, ast.Expr)
+                and isinstance(statement.value, ast.Constant)
+            )
+        ]
+        if len(body) == 1 and isinstance(body[0], ast.Pass):
+            rewrite.replace(module, body[0], textwrap.indent(source, indent).strip())
+            return
+        end = rewrite.geometry(module).required_node_offsets(root)[1]
+        rewrite.span(
+            module, end, end, "\n\n" + textwrap.indent(source, indent).rstrip("\n")
+        )
+
+
+def _scope_names(
+    scope: ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda,
+) -> frozenset[str]:
+    arguments = scope.args
+    parameters = {
+        argument.arg
+        for argument in (
+            *arguments.posonlyargs,
+            *arguments.args,
+            *arguments.kwonlyargs,
+            *(argument for argument in (arguments.vararg, arguments.kwarg) if argument),
+        )
+    }
+    body = scope.body if isinstance(scope.body, list) else [scope.body]
+    return frozenset(parameters) | LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(body)
+
+
+def _postponed_annotations(module: ParsedModule) -> bool:
+    return any(
+        isinstance(statement, ast.ImportFrom)
+        and statement.module == "__future__"
+        and any(alias.name == "annotations" for alias in statement.names)
+        for statement in module.module.body
+    )
+
+
+class KeyedMirror(Mirror, Keyed, Enumerated, Descent):
+    """An enum whose one map pairs each member with a class of one family.
+
+    The map, its enum and its key are the family restated: indexing the map
+    becomes the key itself, and reverse queries iterate the family.
+    """
+
+    def claims(self, snapshot: CodemodSourceSnapshot) -> tuple[AuthorityClaim, ...]:
+        enum = self.enum(snapshot)
+        keyed = self.keyed(snapshot, enum)
+        return (
+            AuthorityClaim(
+                claimed_symbol=keyed.root,
+                authority_kind=SemanticAuthorityKind.CLASS_FAMILY,
+                file_path=keyed.module.file_path,
+                qualname=keyed.root,
+            ),
+        )
+
+    def rewrite(self, snapshot: CodemodSourceSnapshot) -> Rewrite:
+        enum = self.enum(snapshot)
+        keyed = self.keyed(snapshot, enum)
+        if set(keyed.values) != set(enum.members_by_name):
+            raise ValueError(
+                f"{keyed.site}: map does not key every member of {enum.name}"
+            )
+        family = self.mirrored(
+            snapshot, keyed.module, keyed.root, keyed.values.values(), keyed.site
+        )
+        rewrite = Rewrite(snapshot)
+        handled = {id(node) for node in ast.walk(enum.node)}
+        handled.update(id(node) for node in ast.walk(keyed.method))
+        rewrite.delete_statement(keyed.module, keyed.method)
+        rewrite.delete_statement(enum.module, enum.node)
+        for subscript in keyed.consumers():
+            rewrite.replace(
+                keyed.module,
+                subscript,
+                ast.get_source_segment(keyed.module.source, subscript.slice),
+            )
+            handled.update(id(node) for node in ast.walk(subscript.value))
+        for method, key, value in keyed.reverse_queries():
+            self.iterate_family(rewrite, keyed, method, key, value, handled)
+        root = family.classes[keyed.root].node
+        self.emit_family(rewrite, keyed.module, root)
+        aliases = self.aliases(snapshot, enum, keyed.module, keyed.root)
+        for module, names in aliases.items():
+            self.mirror_reads(rewrite, module, names, enum, keyed, handled)
+        self.rebind_imports(rewrite, aliases, enum, keyed.module, keyed.root)
+        return rewrite
+
+    def iterate_family(
+        self,
+        rewrite: Rewrite,
+        keyed: KeyedMap,
+        method: ast.FunctionDef,
+        key: str,
+        value: str,
+        handled: set[int],
+    ) -> None:
+        """``(k for k, v in cls.map().items() if p(v))`` iterates the family as ``v``."""
+
+        generator = next(
+            node for node in ast.walk(method) if isinstance(node, ast.GeneratorExp)
+        )
+        loop = generator.generators[0]
+        rewrite.replace(keyed.module, loop.target, value)
+        rewrite.replace(keyed.module, loop.iter, f"{keyed.root}.{self.family_method}()")
+        for node in (
+            generator.elt,
+            *(child for test in loop.ifs for child in ast.walk(test)),
+        ):
+            if isinstance(node, ast.Name) and node.id == key:
+                rewrite.replace(keyed.module, node, value)
+        handled.update(id(node) for node in ast.walk(generator))
+
+    def mirror_reads(
+        self,
+        rewrite: Rewrite,
+        module: ParsedModule,
+        names: ModuleNames,
+        enum: EnumDeclaration,
+        keyed: KeyedMap,
+        handled: set[int],
+    ) -> None:
+        parents = {
+            id(child): parent
+            for parent in ast.walk(module.module)
+            for child in ast.iter_child_nodes(parent)
+        }
+        annotations = {
+            id(node)
+            for annotated in ast.walk(module.module)
+            for annotation in _annotations(annotated)
+            for node in ast.walk(annotation)
+        }
+        shadowed = self.shadowed(module, names.enum)
+        for node in ast.walk(module.module):
+            if id(node) in handled:
+                continue
+            if (
+                isinstance(node, ast.Attribute)
+                and node.attr == keyed.method.name
+                and isinstance(node.ctx, ast.Load)
+            ):
+                raise ValueError(
+                    f"handback: {module.file_path}:{node.lineno}: map "
+                    f"{keyed.method.name} read outside an index or reverse query"
+                )
+            if isinstance(node, ast.Name) and node.id in names.enum:
+                self.enum_read(
+                    rewrite,
+                    module,
+                    node,
+                    parents.get(id(node)),
+                    id(node) in annotations,
+                    keyed.values,
+                    keyed.root,
+                    shadowed,
+                )
 
 
 class CasesFold(Fold, Cases, Descent):

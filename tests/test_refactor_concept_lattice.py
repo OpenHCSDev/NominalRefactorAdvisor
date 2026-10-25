@@ -81,8 +81,8 @@ EXPECTED_EXECUTABLE_CONCEPTS = {
     codemod.DirectBuildFindingRendererFindingRecipeSynthesizer: (
         codemod.ClassFamilyAuthorityConcept
     ),
-    codemod.EnumKeyedDerivedMapFacadeFindingRecipeSynthesizer: (
-        codemod.DerivedProjectionConcept
+    codemod.KeyedMirrorFindingRecipeSynthesizer: (
+        codemod.ClassFamilyAuthorityConcept
     ),
     codemod.RepeatedBuilderCallFindingRecipeSynthesizer: (
         codemod.ConstructorKwargCollapseConcept
