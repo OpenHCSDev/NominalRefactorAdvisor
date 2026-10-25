@@ -24,6 +24,11 @@ from pathlib import Path
 
 from .ast_tools import ParsedModule, PythonSourcePathPolicy
 from .class_index import CompactModuleClassProjectionFamily
+from .codemod_architecture_guards import (
+    ArchitectureGuardRule,
+    ArchitectureGuardTargetScope,
+    ForbiddenAttributeArchitectureGuardConstraint,
+)
 from .codemod_imports import ImportFromSource
 from .codemod_payload import OptionalStringArrayPayloadValueCodec, codemod_payload_field
 from .codemod_reproof import RepositorySourceReprovedOperation
@@ -878,6 +883,35 @@ class Enumerated(Rewritten, ABC):
 
     def enum(self, snapshot: CodemodSourceSnapshot) -> EnumDeclaration:
         return self.admitted(EnumDeclaration.decoded(*self.target_class(snapshot)))
+
+    def current_source_architecture_guard_rules(
+        self, context: CodemodSelectorContext
+    ) -> tuple[ArchitectureGuardRule, ...]:
+        """Every end state deletes the members: no module that binds the enum reads one.
+
+        The rewrite finds readers through the enum's own name; this proves the rest,
+        such as ``cls.MEMBER`` through a receiver bound to the enum.
+        """
+
+        snapshot = context.execution_snapshot()
+        enum = self.enum(snapshot)
+        readers = self.aliases(snapshot, enum, enum.module, enum.name)
+        return (
+            *super().current_source_architecture_guard_rules(context),
+            ArchitectureGuardRule(
+                rule_id=f"{enum.symbol}.members-deleted",
+                constraints=(
+                    ForbiddenAttributeArchitectureGuardConstraint(
+                        names=tuple(member.name for member in enum.members)
+                    ),
+                ),
+                scopes=tuple(
+                    ArchitectureGuardTargetScope(file_path=module.file_path)
+                    for module in sorted(readers, key=lambda module: module.file_path)
+                ),
+                reason=f"{enum.name} is deleted; its members are classes now",
+            ),
+        )
 
     def admitted(self, enum: EnumDeclaration) -> EnumDeclaration:
         """The enum, if this end state has a place for everything it declares.
