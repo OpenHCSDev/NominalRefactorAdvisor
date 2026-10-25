@@ -345,6 +345,16 @@ class PatternId(IntEnum):
         ),
         witness_capabilities=(CapabilityTag.PROVENANCE,),
     )
+    SOURCE_BACKED_MODULE_EXPRESSION_LEAD = _pattern(
+        stable_id=25,
+        display_name="Source-Backed Repeated Module Expression Lead (Owner OPEN)",
+        required_relation=(
+            "One expression computed only from imported-module attributes and "
+            "constants is written out at several sites. Whether one declaration "
+            "should own the value, and where, remains OPEN."
+        ),
+        witness_capabilities=(CapabilityTag.PROVENANCE,),
+    )
 
     def __new__(
         cls,

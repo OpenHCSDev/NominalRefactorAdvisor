@@ -8,6 +8,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Callable, ClassVar, Generic, TypeVar
 
+from .class_index import module_import_names
 from .export_tools import PublicExportPolicy, derive_public_exports
 from .registry_identity import DEFAULT_REGISTRY_KEY_ATTRIBUTE, class_name_registry_key
 from .native_syntax import NativePythonSyntaxIndex
@@ -18,6 +19,7 @@ from .observation_shapes import (
     FieldObservation,
     LiteralDispatchObservation,
     LiteralKind,
+    ModuleExpressionShape,
     RegistrationShape,
     SentinelTypeObservation,
 )
@@ -922,6 +924,102 @@ class NumericLiteralDispatchObservationFamily(TypedLiteralObservationFamily):
 class InlineStringLiteralDispatchObservationFamily(TypedLiteralObservationFamily):
     spec_root = InlineStringLiteralDispatchObservationSpec
     literal_kind = spec_root.literal_kind
+
+
+def _reads_only_modules(node: ast.AST, module_names: frozenset[str]) -> bool:
+    """Whether an expression is computed from imported modules and constants only."""
+
+    match node:
+        case ast.Constant():
+            return True
+        case ast.Name(id=name, ctx=ast.Load()):
+            return name in module_names
+        case ast.Attribute(value=value, ctx=ast.Load()):
+            return _reads_only_modules(value, module_names)
+        case ast.Subscript(value=value, slice=index, ctx=ast.Load()):
+            return _reads_only_modules(value, module_names) and _is_constant_index(
+                index
+            )
+        case ast.Tuple(elts=elements, ctx=ast.Load()):
+            return all(_reads_only_modules(item, module_names) for item in elements)
+        case ast.Compare(left=left, comparators=comparators):
+            return all(
+                _reads_only_modules(item, module_names)
+                for item in (left, *comparators)
+            )
+    return False
+
+
+def _is_constant_index(index: ast.AST) -> bool:
+    match index:
+        case ast.Constant():
+            return True
+        case ast.Slice(lower=lower, upper=upper, step=step):
+            return all(
+                bound is None or isinstance(bound, ast.Constant)
+                for bound in (lower, upper, step)
+            )
+        case ast.Tuple(elts=elements):
+            return all(isinstance(item, ast.Constant) for item in elements)
+    return False
+
+
+def _module_expression_shapes(
+    parsed_module: ParsedModule,
+) -> list[ModuleExpressionShape]:
+    """Collect maximal pure module-attribute expressions; a bare `mod.name` is not one.
+
+    A lone attribute needs two reads (`sys.version_info.major`); a tuple,
+    subscript or comparison needs one. A callee and a subscript's index or
+    type argument (`tuple[ast.expr, ...]`) are not values.
+    """
+
+    module_names = module_import_names(parsed_module)
+    if not module_names:
+        return []
+    index = module_syntax_index(parsed_module.module)
+    shapes: list[ModuleExpressionShape] = []
+    for node_index, node in sorted(
+        (
+            *index.indexed_nodes_of_type(ast.Tuple),
+            *index.indexed_nodes_of_type(ast.Attribute),
+            *index.indexed_nodes_of_type(ast.Subscript),
+            *index.indexed_nodes_of_type(ast.Compare),
+        )
+    ):
+        attribute_reads = sum(
+            isinstance(item, ast.Attribute) for item in ast.walk(node)
+        )
+        if attribute_reads < (2 if isinstance(node, ast.Attribute) else 1):
+            continue
+        if not _reads_only_modules(node, module_names):
+            continue
+        parent = index.parent_node(node_index)
+        match parent:
+            case ast.Call(func=callee) if callee is node:
+                continue
+            case ast.Subscript(slice=argument) if argument is node:
+                continue
+        if parent is not None and _reads_only_modules(parent, module_names):
+            continue
+        shapes.append(
+            ModuleExpressionShape(
+                file_path=parsed_module.file_path,
+                lineno=node.lineno,
+                symbol=index.lexical_symbol(node_index),
+                expression_key=ast.dump(node, include_attributes=False),
+                expression_text=ast.unparse(node),
+            )
+        )
+    return shapes
+
+
+class ModuleExpressionShapeFamily(ShapeFamily[ModuleExpressionShape]):
+    item_type = ModuleExpressionShape
+
+    @classmethod
+    def collect(cls, parsed_module: ParsedModule) -> list[ModuleExpressionShape]:
+        return _module_expression_shapes(parsed_module)
 
 
 class RegistrationShapeFamily(

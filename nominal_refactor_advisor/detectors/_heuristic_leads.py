@@ -5,20 +5,19 @@ from __future__ import annotations
 import ast
 from collections import defaultdict
 
-from ..ast_tools import ModuleSyntaxIndex, ParsedModule, module_syntax_index
+from ..ast_tools import ParsedModule, module_syntax_index
 from ..models import RefactorFinding, SourceLocation
+from ..observation_families import ModuleExpressionShapeFamily
+from ..observation_shapes import ModuleExpressionShape
 from ..patterns import PatternId
 from ..taxonomy import CapabilityTag, ObservationTag
-from ._base import DetectorConfig, PerModuleIssueDetector, finding_spec_template
-
-
-def _lexical_symbol(index: ModuleSyntaxIndex, node_index: int) -> str:
-    owners = (
-        ancestor.name
-        for ancestor in index.ancestor_nodes(node_index)
-        if isinstance(ancestor, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef))
-    )
-    return ".".join(owners) or "<module>"
+from ._base import (
+    CANDIDATE_COLLECTION_AUTHORITY,
+    CompactGroupedShapeIssueDetector,
+    DetectorConfig,
+    PerModuleIssueDetector,
+    finding_spec_template,
+)
 
 
 class LongConditionFactoringLeadDetector(PerModuleIssueDetector):
@@ -48,7 +47,7 @@ class LongConditionFactoringLeadDetector(PerModuleIssueDetector):
             test = node.test
             if not isinstance(test, ast.BoolOp) or len(test.values) < 4:
                 continue
-            symbol = _lexical_symbol(index, node_index)
+            symbol = index.lexical_symbol(node_index)
             original_terms = tuple(
                 ast.get_source_segment(module.source, term) or ast.unparse(term)
                 for term in test.values
@@ -107,7 +106,7 @@ class RepeatedLiteralRosterLeadDetector(PerModuleIssueDetector):
             kind = type(node).__name__
             groups[(kind, literals)].append(
                 SourceLocation(
-                    module.file_path, node.lineno, _lexical_symbol(index, node_index)
+                    module.file_path, node.lineno, index.lexical_symbol(node_index)
                 )
             )
         findings: list[RefactorFinding] = []
@@ -124,3 +123,52 @@ class RepeatedLiteralRosterLeadDetector(PerModuleIssueDetector):
                 )
             )
         return findings
+
+
+class RepeatedModuleExpressionLeadDetector(
+    CompactGroupedShapeIssueDetector[ModuleExpressionShape, str]
+):
+    """Find one module-attribute expression written out across modules."""
+
+    module_projection_family = ModuleExpressionShapeFamily
+    compact_report_context_requires_target_projection = True
+    finding_spec = finding_spec_template(
+        PatternId.SOURCE_BACKED_MODULE_EXPRESSION_LEAD,
+        "Repeated module expression raises a value-owner question",
+        "An expression computed only from imported modules and constants, written out at several sites, restates one value each time. Inspect what the value means at each site before declaring one owner for it.",
+        "exact source expression repetition only; owner, meaning and migration recipe OPEN",
+        "one maximal expression over imported-module attributes and constants at or above the configured site count across the scanned modules",
+        (CapabilityTag.PROVENANCE,),
+        (ObservationTag.PARTIAL_VIEW,),
+    )
+
+    def _collect_shapes(
+        self, modules: list[ParsedModule], config: DetectorConfig
+    ) -> list[ModuleExpressionShape]:
+        return [
+            shape
+            for module in modules
+            for shape in CANDIDATE_COLLECTION_AUTHORITY.typed_family_items(
+                module, ModuleExpressionShapeFamily, ModuleExpressionShape
+            )
+        ]
+
+    def _group_key(self, shape: ModuleExpressionShape) -> str:
+        return shape.expression_key
+
+    def _finding_from_group(
+        self, shapes: tuple[ModuleExpressionShape, ...], config: DetectorConfig
+    ) -> RefactorFinding | None:
+        if len(shapes) < config.min_repeated_module_expression_sites:
+            return None
+        sites = sorted(shapes, key=lambda shape: (shape.file_path, shape.lineno))
+        modules = {shape.file_path for shape in sites}
+        return self.build_finding(
+            f"`{sites[0].expression_text}` is written out at {len(sites)} sites in "
+            f"{len(modules)} module(s); whether one declaration should own this "
+            "value, and what each site means by it, remains OPEN.",
+            tuple(
+                SourceLocation(shape.file_path, shape.lineno, shape.symbol)
+                for shape in sites
+            ),
+        )

@@ -2778,16 +2778,21 @@ def module_public_export_contract(
 class CompactNominalBindingKind(StrEnum):
     """Kinds of exact module bindings and their exported-alias behavior."""
 
-    IMPORT = "import", True
-    LOCAL_DECLARATION = "local_declaration", False
-    BUILTIN = "builtin", False
+    MODULE_IMPORT = "module_import", True, True
+    NAME_IMPORT = "name_import", True, False
+    LOCAL_DECLARATION = "local_declaration", False, False
+    BUILTIN = "builtin", False, False
 
     projects_as_import_alias: bool
+    binds_module: bool
 
-    def __new__(cls, value: str, projects_as_import_alias: bool) -> Self:
+    def __new__(
+        cls, value: str, projects_as_import_alias: bool, binds_module: bool
+    ) -> Self:
         member = str.__new__(cls, value)
         member._value_ = value
         member.projects_as_import_alias = projects_as_import_alias
+        member.binds_module = binds_module
         return member
 
 
@@ -3002,10 +3007,16 @@ class ModuleNominalBindingAuthority:
         preceding_bindings: dict[str, CompactNominalBinding],
     ) -> dict[str, CompactNominalBinding]:
         if isinstance(statement, ast.Import | ast.ImportFrom):
+            # `import x` always binds a module; `from x import y` may bind anything.
+            kind = (
+                CompactNominalBindingKind.MODULE_IMPORT
+                if isinstance(statement, ast.Import)
+                else CompactNominalBindingKind.NAME_IMPORT
+            )
             return {
                 origin.bound_name: CompactNominalBinding(
                     qualified_name=origin.qualified_name,
-                    kind=CompactNominalBindingKind.IMPORT,
+                    kind=kind,
                 )
                 for origin in ImportBoundNameProjection(statement).origins(
                     self.parsed_module.module_path_identity
@@ -3623,9 +3634,11 @@ def _module_nominal_binding_snapshots(
 
 
 @lru_cache(maxsize=None)
-def _module_import_aliases(parsed_module: ParsedModule) -> dict[str, str]:
+def _module_import_bindings(
+    parsed_module: ParsedModule,
+) -> dict[str, CompactNominalBinding]:
     return {
-        local_name: binding.qualified_name
+        local_name: binding
         for local_name, binding in _module_nominal_binding_snapshots(
             ModuleNominalBindingAuthority(parsed_module),
             (),
@@ -3634,6 +3647,23 @@ def _module_import_aliases(parsed_module: ParsedModule) -> dict[str, str]:
         )[None].bindings_by_name.items()
         if binding.kind.projects_as_import_alias
     }
+
+
+def _module_import_aliases(parsed_module: ParsedModule) -> dict[str, str]:
+    return {
+        local_name: binding.qualified_name
+        for local_name, binding in _module_import_bindings(parsed_module).items()
+    }
+
+
+def module_import_names(parsed_module: ParsedModule) -> frozenset[str]:
+    """Names the module's final bindings resolve to an imported module."""
+
+    return frozenset(
+        local_name
+        for local_name, binding in _module_import_bindings(parsed_module).items()
+        if binding.kind.binds_module
+    )
 
 
 def module_star_import_origins(

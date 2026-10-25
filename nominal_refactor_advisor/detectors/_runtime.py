@@ -2646,12 +2646,7 @@ class StringLiteralDispatchOwnershipLeadDetector(PerModuleIssueDetector):
             if len(literal_cases) < max(2, config.min_string_cases):
                 continue
             assert axis_expression is not None
-            owners = tuple(
-                ancestor.name
-                for ancestor in index.ancestor_nodes(node_index)
-                if isinstance(ancestor, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef))
-            )
-            symbol = ".".join(owners) or "<module>"
+            symbol = index.lexical_symbol(node_index)
             chain_else = tuple(current.orelse)
             trailing = _following_original_statements(parent, root)
             evidence = tuple(
@@ -2718,7 +2713,7 @@ class GuardedStringCaseOwnershipLeadDetector(PerModuleIssueDetector):
         # Preserve original whole tests and roots even though only selected
         # direct conjuncts are recognized; this is not an exhaustive inventory.
         groups: dict[
-            tuple[ast.AST, tuple[str, ...], str],
+            tuple[ast.AST, str, str],
             list[_OriginalGuardedStringCase],
         ] = defaultdict(list)
         for node_index, node in index.indexed_nodes_of_type(ast.If):
@@ -2727,11 +2722,7 @@ class GuardedStringCaseOwnershipLeadDetector(PerModuleIssueDetector):
             )
             comparisons = node.test.values if is_guarded else (node.test,)
             ancestors = index.ancestor_nodes(node_index)
-            owners = tuple(
-                ancestor.name
-                for ancestor in ancestors
-                if isinstance(ancestor, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef))
-            )
+            symbol = index.lexical_symbol(node_index)
             owner = next(
                 (
                     ancestor
@@ -2761,7 +2752,7 @@ class GuardedStringCaseOwnershipLeadDetector(PerModuleIssueDetector):
             if len(matches) != 1:
                 continue
             fingerprint, expression, literal_case = matches[0]
-            groups[(owner, owners, fingerprint)].append(
+            groups[(owner, symbol, fingerprint)].append(
                 _OriginalGuardedStringCase(
                     node.lineno,
                     root.lineno,
@@ -2773,14 +2764,13 @@ class GuardedStringCaseOwnershipLeadDetector(PerModuleIssueDetector):
                 )
             )
         findings: list[RefactorFinding] = []
-        for (_owner, owners, _fingerprint), entries in groups.items():
+        for (_owner, symbol, _fingerprint), entries in groups.items():
             if not any(entry.is_guarded for entry in entries):
                 continue
             if len({entry.literal_case for entry in entries}) < max(
                 2, config.min_string_cases
             ):
                 continue
-            symbol = ".".join(owners) or "<module>"
             ordered = sorted(entries, key=lambda entry: entry.line)
             evidence = tuple(entry.location(module, symbol) for entry in ordered)
             cases = tuple(entry.literal_case for entry in ordered)
