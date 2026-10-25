@@ -51,6 +51,7 @@ from .call_binding import (
     ExactCompactCallBinding as ExactCompactCallBinding,
     ViolatedCompactCallBinding as ViolatedCompactCallBinding,
 )
+from .case_root import Case
 from .collection_algebra import UniqueIdentityIndexAuthority
 from .descriptor_algebra import AliasProperty
 from .lexical_bindings import (
@@ -267,10 +268,9 @@ class CompactFunctionBindingKind(StrEnum):
         )
 
 
-class CompactFlowOwnerKind(ABC):
+class CompactFlowOwnerKind(Case):
     """Executable source scopes represented by compact flow facts."""
 
-    value: str
     is_module_scope: bool
     is_function_scope: bool
     is_class_body_scope: bool

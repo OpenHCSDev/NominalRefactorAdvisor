@@ -10,15 +10,15 @@ import pytest
 
 from nominal_refactor_advisor.ast_tools import ParsedModule
 from nominal_refactor_advisor.product_flow import (
+    ClassBody,
     CompactClassDeclaration,
     CompactControlBranchKind,
     CompactDefinitionFlowOwner,
     CompactDefinitionTarget,
-    ClassBody,
-    Module,
     CompactFunctionDeclaration,
     CompactMutationKind,
     CompactNamespaceFlowOwner,
+    Module,
     compact_product_flow_projection,
 )
 from nominal_refactor_advisor.source_geometry import SourceByteSpan
