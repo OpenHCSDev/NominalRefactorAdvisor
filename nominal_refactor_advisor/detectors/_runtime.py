@@ -61,7 +61,7 @@ from ..codemod import (
     ParallelMirroredLeafFamilyFindingRecipeSynthesizer,
     RepeatedBuilderCallFindingRecipeSynthesizer,
     SemanticMirrorFindingRecipeEvaluator,
-    TypeKeyedBehaviorProjectionFindingRecipeSynthesizer,
+    TypedMirrorFindingRecipeSynthesizer,
 )
 from ..collection_algebra import sorted_tuple
 from ..models import (
@@ -2294,7 +2294,7 @@ class ParallelMirroredLeafFamilyDetector(
 class TypeKeyedBehaviorProjectionDetector(
     CompactClassRepositoryCandidateDetector[TypeKeyedBehaviorProjectionComponent],
     SsotAuthorityBoundaryDetector,
-    TypeKeyedBehaviorProjectionFindingRecipeSynthesizer,
+    TypedMirrorFindingRecipeSynthesizer,
 ):
     finding_spec = high_confidence_spec(
         PatternId.TYPE_NAMESPACE_INJECTION,

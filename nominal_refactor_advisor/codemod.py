@@ -7134,60 +7134,8 @@ class ParallelMirroredLeafFamilyFindingRecipeSynthesizer(
         )
 
 
-class TypeKeyedBehaviorProjectionFindingRecipeSynthesizer(
-    FindingEvidenceActionKeysMixin,
-    FindingRecipeSynthesizer,
-    ClassFamilyAuthorityConcept,
-):
-    """Descend behavior only when current source closes the projection family."""
-
-    def evaluate_recipe_for_finding(
-        self,
-        finding: RefactorFinding,
-        context: CodemodSelectorContext | None = None,
-    ) -> FindingRecipeEvaluation:
-        if context is None:
-            return self.rejected_evaluation(
-                "type-keyed behavior descent requires source context"
-            )
-        if not finding.evidence:
-            return self.rejected_evaluation(
-                "type-keyed behavior finding lacks projection-root evidence"
-            )
-        authority_location = finding.authority_evidence
-        if authority_location is None:
-            return self.rejected_evaluation(
-                "type-keyed behavior finding lacks nominal authority evidence"
-            )
-        try:
-            projection_target = context.required_class_target_for_authority_evidence(
-                finding.evidence[0]
-            )
-            authority_target = context.required_class_target_for_authority_evidence(
-                authority_location
-            )
-            operation = TypedMirror(
-                target=SourceRewriteTarget(target_id=projection_target.target_id),
-                rationale="",
-            )
-        except (CodemodOperationPreflightError, ValueError) as error:
-            return self.rejected_evaluation(str(error))
-        recipe = (
-            RefactorRecipe(
-                recipe_id=f"{finding.stable_id}-descend-type-keyed-behavior",
-                reason=(
-                    "Move behavior from the external type-keyed projection onto "
-                    "the nominal hierarchy that already owns its dispatch."
-                ),
-            )
-            .with_authority_claim(AstTargetAuthorityClaim.from_target(authority_target))
-            .with_operation(operation)
-        )
-        return self.executable_evaluation(recipe)
-
-
 class DescentFindingRecipeSynthesizer(
-    PrimaryEvidenceActionKeysMixin,
+    FindingEvidenceActionKeysMixin,
     FindingRecipeSynthesizer,
     ABC,
 ):
@@ -7199,6 +7147,13 @@ class DescentFindingRecipeSynthesizer(
 
     descent_type: ClassVar[type[Descent]]
     recipe_reason: ClassVar[str]
+
+    def target_evidence(
+        self, finding: RefactorFinding, authority: SourceLocation
+    ) -> SourceLocation:
+        """The class the descent rewrites; by default the authority itself."""
+
+        return authority
 
     def evaluate_recipe_for_finding(
         self,
@@ -7212,14 +7167,17 @@ class DescentFindingRecipeSynthesizer(
         if authority_location is None:
             return self.rejected_evaluation(f"{key} finding lacks authority evidence")
         try:
-            target = context.required_class_target_for_authority_evidence(
+            authority = context.required_class_target_for_authority_evidence(
                 authority_location
+            )
+            target = context.required_class_target_for_authority_evidence(
+                self.target_evidence(finding, authority_location)
             )
             operation = self.descent_type(
                 target=SourceRewriteTarget(target_id=target.target_id),
                 rationale="",
             )
-            operation.source_edits_from_snapshot(context.execution_snapshot())
+            operation.synthesis_proof(context.execution_snapshot())
         except (CodemodOperationPreflightError, ValueError) as error:
             return self.rejected_evaluation(str(error))
         return self.executable_evaluation(
@@ -7227,9 +7185,31 @@ class DescentFindingRecipeSynthesizer(
                 recipe_id=f"{finding.stable_id}-{key}",
                 reason=self.recipe_reason,
             )
-            .with_authority_claim(AstTargetAuthorityClaim.from_target(target))
+            .with_authority_claim(AstTargetAuthorityClaim.from_target(authority))
             .with_operation(operation)
         )
+
+
+class TypedMirrorFindingRecipeSynthesizer(
+    DescentFindingRecipeSynthesizer,
+    ClassFamilyAuthorityConcept,
+):
+    """Behavior keyed by a family's own classes descends onto those classes."""
+
+    descent_type = TypedMirror
+    recipe_reason = (
+        "Move behavior from the external type-keyed projection onto "
+        "the nominal hierarchy that already owns its dispatch."
+    )
+
+    def target_evidence(
+        self, finding: RefactorFinding, authority: SourceLocation
+    ) -> SourceLocation:
+        """The projection root the finding's first evidence names."""
+
+        if not finding.evidence:
+            raise ValueError("typed_mirror finding lacks projection-root evidence")
+        return finding.evidence[0]
 
 
 class KeyedMirrorFindingRecipeSynthesizer(

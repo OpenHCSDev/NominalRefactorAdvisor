@@ -6,6 +6,7 @@ import ast
 import copy
 import re
 import textwrap
+from abc import ABC
 from collections import defaultdict
 from collections.abc import (
     Callable,
@@ -13,7 +14,7 @@ from collections.abc import (
     Mapping,
 )
 from dataclasses import dataclass
-from functools import cached_property, partial
+from functools import cached_property
 from typing import cast
 
 from nominal_refactor_advisor.class_index import ClassMethodPromotionSafetyProfile
@@ -23,8 +24,6 @@ from nominal_refactor_advisor.declaration_binding_transfer import (
 )
 
 from .ast_tools import (
-    AstParentIndex,
-    ModuleAnnotationEvaluationMode,
     ParsedModule,
     statements_without_docstring,
 )
@@ -38,9 +37,6 @@ from .class_index import (
 )
 from .codemod_declaration_source import (
     ClassBodySourceAuthority,
-    ClassMemberInsertion,
-    ClassMemberSource,
-    PythonExpressionSourceFormatter,
 )
 from .codemod_imports import ImportFromSource
 from .codemod_native_requirements import (
@@ -55,8 +51,8 @@ from .codemod_preflight import (
     CodemodOperationPreflightError,
     CodemodOperationPreflightReport,
 )
+from .descent import Descent, FamilyRoot, Mirror
 from .descriptor_algebra import AliasProperty
-from .codemod_reproof import RepositorySourceReprovedOperation
 from .codemod_runtime import CodemodSourceSnapshot
 from .codemod_selection_context import CodemodSelectorContext
 from .codemod_source_edits import (
@@ -77,11 +73,6 @@ from .registry_identity import (
     REGISTRY_ATTRIBUTE_NAME,
     mro_registry_value,
 )
-from .semantic_descent import (
-    AuthorityClaim,
-    SemanticAuthorityKind,
-)
-from .source_index import AstTargetNodeKind
 from .type_keyed_behavior import (
     TypeKeyedBehaviorProjectionComponent,
     TypeKeyedBehaviorProjectionComponentBuilder,
@@ -1174,8 +1165,8 @@ class _TypeKeyedBehaviorSourceDerivation:
 
 
 @dataclass(frozen=True, kw_only=True)
-class TypedMirror(RepositorySourceReprovedOperation):
-    """Re-prove and descend external type-keyed behavior onto nominal types."""
+class Typed(Descent, ABC):
+    """Input: behavior in a projection keyed by the family's own classes."""
 
     supported_execution: DeclaredNativeUseInvariants = codemod_payload_field(
         PayloadRecordValueCodec(DeclaredNativeUseInvariants),
@@ -1208,26 +1199,6 @@ class TypedMirror(RepositorySourceReprovedOperation):
         derivation.require_native_uses()
         return derivation
 
-    def source_edits_from_snapshot(
-        self,
-        snapshot: CodemodSourceSnapshot,
-    ) -> tuple[NominalSourceEdit, ...]:
-        return self.required_derivation(snapshot).source_edits()
-
-    def current_source_authority_claims(
-        self,
-        context: CodemodSelectorContext,
-    ) -> tuple[AuthorityClaim, ...]:
-        component = self.required_derivation(context.execution_snapshot()).component
-        return (
-            AuthorityClaim(
-                claimed_symbol=component.target_root.simple_name,
-                authority_kind=SemanticAuthorityKind.CLASS_FAMILY,
-                file_path=component.target_root.file_path,
-                qualname=component.target_root.qualname,
-            ),
-        )
-
     def source_derivation(
         self,
         snapshot: CodemodSourceSnapshot,
@@ -1240,3 +1211,23 @@ class TypedMirror(RepositorySourceReprovedOperation):
             snapshot.source_index.symbol_for_target(target),
             operation=self,
         )
+
+
+@dataclass(frozen=True, kw_only=True)
+class TypedMirror(Mirror, Typed, Descent):
+    """A type-keyed projection restates its family: its behavior descends onto it."""
+
+    def synthesis_proof(self, snapshot: CodemodSourceSnapshot) -> None:
+        """Unmet native uses stay preflight requirements, not a refusal."""
+
+        self.source_derivation(snapshot)
+
+    def source_edits_from_snapshot(
+        self,
+        snapshot: CodemodSourceSnapshot,
+    ) -> tuple[NominalSourceEdit, ...]:
+        return self.required_derivation(snapshot).source_edits()
+
+    def family_root(self, snapshot: CodemodSourceSnapshot) -> FamilyRoot:
+        root = self.required_derivation(snapshot).component.target_root
+        return FamilyRoot(root.file_path, root.qualname)
