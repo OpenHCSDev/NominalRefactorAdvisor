@@ -9,20 +9,22 @@ on:
 
 jobs:
   python-boundary-tests:
-    name: python-boundary-tests (${{ matrix.python-version }}, ${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
+    name: python-boundary-tests (${{ matrix.python-version }}, shard ${{ matrix.shard }})
+    runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
+        python-version: ["3.11", "3.14"]
+        # One runner has 4 cores; the suite needs about 3,000 CPU-seconds.
+        # The shard count in the pytest step is len(shard).
+        shard: [0, 1, 2, 3]
         include:
           # 3.11 has no sys.monitoring, so coverage falls back to settrace and
           # doubles the suite; 3.14 traces through sys.monitoring at about 2%.
           - python-version: "3.11"
-            os: ubuntu-latest
             coverage: ""
           - python-version: "3.14"
-            os: ubuntu-latest
-            coverage: "--cov=nominal_refactor_advisor --cov-report=term-missing"
+            coverage: "--cov=nominal_refactor_advisor --cov-report="
 
     steps:
       - name: Checkout
@@ -39,13 +41,13 @@ jobs:
           pip install -e ".[dev]"
 
       - name: Run test suite
-        run: python -m pytest tests/ ${{ matrix.coverage }} --tb=short --durations=40
+        run: python -m pytest tests/ --shard ${{ matrix.shard }}/4 ${{ matrix.coverage }} --tb=short --durations=20
 
       - name: Upload coverage artifact
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: coverage-python-${{ matrix.python-version }}-${{ matrix.os }}
+          name: coverage-python-${{ matrix.python-version }}-shard-${{ matrix.shard }}
           path: .coverage
           if-no-files-found: ignore
           retention-days: 1

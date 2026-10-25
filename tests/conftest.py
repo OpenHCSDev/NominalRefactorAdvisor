@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import ast
+import hashlib
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from collections.abc import Iterator
@@ -13,6 +14,32 @@ import pytest
 from nominal_refactor_advisor.ast_tools import ParsedModule
 from nominal_refactor_advisor.detectors import _base as collector_runtime
 from nominal_refactor_advisor.source_geometry import read_source_text
+
+
+def pytest_addoption(parser: pytest.Parser) -> None:
+    parser.addoption(
+        "--shard",
+        metavar="I/N",
+        help="Run only shard I of N, chosen by a stable hash of each test id.",
+    )
+
+
+def pytest_collection_modifyitems(
+    config: pytest.Config, items: list[pytest.Item]
+) -> None:
+    shard = config.getoption("--shard")
+    if shard is None:
+        return
+    index, count = (int(part) for part in shard.split("/"))
+    kept: list[pytest.Item] = []
+    deselected: list[pytest.Item] = []
+    for item in items:
+        digest = hashlib.sha256(item.nodeid.encode()).digest()
+        (kept if int.from_bytes(digest[:8]) % count == index else deselected).append(
+            item
+        )
+    config.hook.pytest_deselected(items=deselected)
+    items[:] = kept
 
 
 @pytest.fixture(scope="session")
