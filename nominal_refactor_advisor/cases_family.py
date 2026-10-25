@@ -17,6 +17,7 @@ import ast
 import builtins
 import operator
 import textwrap
+from abc import ABC, abstractmethod
 from collections import Counter
 from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass, field
@@ -41,26 +42,6 @@ from .semantic_descent import AuthorityClaim, SemanticAuthorityKind
 LINE_LENGTH = 88
 ITERATING_CALLS = frozenset({"tuple", "list", "set", "frozenset", "sorted"})
 BOOLEAN_CALLS = frozenset({"isinstance", "issubclass", "bool", "callable", "hasattr"})
-COMPARISONS: dict[type[ast.cmpop], Callable[[object, object], object]] = {
-    ast.Eq: operator.eq,
-    ast.NotEq: operator.ne,
-    ast.Lt: operator.lt,
-    ast.LtE: operator.le,
-    ast.Gt: operator.gt,
-    ast.GtE: operator.ge,
-    ast.In: lambda left, right: left in right,
-    ast.NotIn: lambda left, right: left not in right,
-}
-IDENTITIES: dict[type[ast.cmpop], Callable[[object, object], object]] = {
-    ast.Is: operator.is_,
-    ast.IsNot: operator.is_not,
-}
-INVERSE: dict[type[ast.cmpop], type[ast.cmpop]] = {
-    ast.Is: ast.IsNot,
-    ast.IsNot: ast.Is,
-    ast.In: ast.NotIn,
-    ast.NotIn: ast.In,
-}
 
 
 class CallbackName(Question):
@@ -74,6 +55,53 @@ class Unknown:
 
 
 UNKNOWN = Unknown()
+
+
+@dataclass(frozen=True)
+class Comparison(ABC):
+    """One comparison operator: its answer for two known operands, and the
+    operator that answers its negation exactly, if one does."""
+
+    apply: Callable[[object, object], object]
+    inverse: type[ast.cmpop] | None = None
+
+    @abstractmethod
+    def evaluated(self, left: object, right: object) -> object:
+        """The comparison's value, or UNKNOWN when the operands cannot decide it."""
+
+
+class ValueComparison(Comparison):
+    """Decided by the operands' values; operands it cannot compare are UNKNOWN."""
+
+    def evaluated(self, left: object, right: object) -> object:
+        try:
+            return self.apply(left, right)
+        except TypeError:
+            return UNKNOWN
+
+
+class IdentityComparison(Comparison):
+    """``is``/``is not``: decided only between None and bools, which are singletons."""
+
+    def evaluated(self, left: object, right: object) -> object:
+        if not all(value is None or isinstance(value, bool) for value in (left, right)):
+            return UNKNOWN
+        return self.apply(left, right)
+
+
+# The boundary: Python's comparison operator node types, decoded once.
+COMPARISONS: dict[type[ast.cmpop], Comparison] = {
+    ast.Eq: ValueComparison(operator.eq),
+    ast.NotEq: ValueComparison(operator.ne),
+    ast.Lt: ValueComparison(operator.lt),
+    ast.LtE: ValueComparison(operator.le),
+    ast.Gt: ValueComparison(operator.gt),
+    ast.GtE: ValueComparison(operator.ge),
+    ast.In: ValueComparison(lambda left, right: left in right, ast.NotIn),
+    ast.NotIn: ValueComparison(lambda left, right: left not in right, ast.In),
+    ast.Is: IdentityComparison(operator.is_, ast.IsNot),
+    ast.IsNot: IdentityComparison(operator.is_not, ast.Is),
+}
 
 
 def handback(module: ParsedModule, node: ast.AST, reason: str) -> ValueError:
@@ -153,14 +181,10 @@ def negated(node: ast.expr) -> ast.expr:
         return ast.Constant(not node.value)
     if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.Not):
         return node.operand
-    if (
-        isinstance(node, ast.Compare)
-        and len(node.ops) == 1
-        and type(node.ops[0]) in INVERSE
-    ):
-        return ast.Compare(
-            node.left, [INVERSE[type(node.ops[0])]()], list(node.comparators)
-        )
+    if isinstance(node, ast.Compare) and len(node.ops) == 1:
+        inverse = COMPARISONS[type(node.ops[0])].inverse
+        if inverse is not None:
+            return ast.Compare(node.left, [inverse()], list(node.comparators))
     return ast.UnaryOp(ast.Not(), node)
 
 
@@ -363,18 +387,9 @@ class Folding:
     @staticmethod
     def evaluated_chain(values: list[object], ops: list[ast.cmpop]) -> object:
         for left, op, right in zip(values, ops, values[1:]):
-            if type(op) in IDENTITIES:
-                if not (
-                    (left is None or isinstance(left, bool))
-                    and (right is None or isinstance(right, bool))
-                ):
-                    return UNKNOWN
-                result = IDENTITIES[type(op)](left, right)
-            else:
-                try:
-                    result = COMPARISONS[type(op)](left, right)
-                except TypeError:
-                    return UNKNOWN
+            result = COMPARISONS[type(op)].evaluated(left, right)
+            if result is UNKNOWN:
+                return UNKNOWN
             if not result:
                 return False
         return True
