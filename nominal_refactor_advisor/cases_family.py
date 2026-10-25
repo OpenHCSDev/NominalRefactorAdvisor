@@ -796,7 +796,7 @@ class CasesFamily(Cases, Descent):
         answer = Answers(self.names)
         aliases = self.aliases(snapshot, enum, enum.module, enum.name)
         self.require_free_class_names(model)
-        base = self.root_base(model, rewrite)
+        base = self.root_base(model)
         methods = [self.method(model, rewrite, function) for function in enum.methods]
         handled: set[int] = {id(node) for node in ast.walk(enum.node)}
         for site in self.sites(snapshot, model, aliases, answer):
@@ -809,6 +809,10 @@ class CasesFamily(Cases, Descent):
         ValueReads(model, snapshot, aliases).rewrite(rewrite, handled)
         self.rewrite_called(rewrite, snapshot, model, handled)
         answer.require_complete()
+        if self.imported_root(model) is None:
+            rewrite.ensure_import(
+                enum.module, model.declared.module, (model.declared.name,)
+            )
         for module, names in aliases.items():
             used = tuple(sorted(rewrite.used_members[module.file_path]))
             replaced = {
@@ -822,8 +826,8 @@ class CasesFamily(Cases, Descent):
         return rewrite
 
     @staticmethod
-    def root_base(model: CaseModel, rewrite: Rewrite) -> str:
-        """The declared root as the enum's module names it, imported if it is not."""
+    def imported_root(model: CaseModel) -> str | None:
+        """The local name the enum's module binds the declared root to, if any."""
 
         declared = model.declared
         module = model.enum.module
@@ -838,14 +842,22 @@ class CasesFamily(Cases, Descent):
             for alias in statement.names:
                 if source == declared.module and alias.name == declared.name:
                     return alias.asname or alias.name
-        if declared.name in module_bound_names(module.module):
+        return None
+
+    def root_base(self, model: CaseModel) -> str:
+        """The declared root as the family's module names it once imported."""
+
+        local = self.imported_root(model)
+        if local is not None:
+            return local
+        if model.declared.name in module_bound_names(model.enum.module.module):
             raise handback(
-                module,
+                model.enum.module,
                 model.enum.node,
-                f"{declared.name}, the declared family root, is already bound here",
+                f"{model.declared.name}, the declared family root, is already"
+                " bound here",
             )
-        rewrite.ensure_import(module, declared.module, (declared.name,))
-        return declared.name
+        return model.declared.name
 
     # -- the enum read as a family -------------------------------------------------
 
@@ -1880,6 +1892,184 @@ def may_carry_value(annotation: ast.expr) -> bool:
     )
 
 
+CONTAINERS = frozenset(
+    {"tuple", "list", "set", "frozenset", "Sequence", "Iterable", "Collection"}
+)
+
+
+@dataclass(frozen=True)
+class Typed:
+    """An annotation read in the module that wrote it."""
+
+    module: ParsedModule
+    annotation: ast.expr
+
+
+@dataclass(frozen=True)
+class Scope:
+    """Where a read sits: its innermost function and that function's class."""
+
+    function: ast.FunctionDef | ast.AsyncFunctionDef | None
+    owner: ast.ClassDef | None
+
+
+@dataclass
+class DeclaredTypes:
+    """Static types read from declarations alone: annotations, the receiver, a name
+    bound once, and loops over annotated containers. Anything else is unknown.
+
+    Classes are found by name across the snapshot; a name two classes share is
+    unknown.
+    """
+
+    snapshot: CodemodSourceSnapshot
+
+    @cached_property
+    def classes(self) -> dict[str, list[tuple[ParsedModule, ast.ClassDef]]]:
+        found: dict[str, list[tuple[ParsedModule, ast.ClassDef]]] = {}
+        for module in self.snapshot.parsed_modules:
+            for node in ast.walk(module.module):
+                if isinstance(node, ast.ClassDef):
+                    found.setdefault(node.name, []).append((module, node))
+        return found
+
+    def class_of(self, typed: Typed | None) -> tuple[ParsedModule, ast.ClassDef] | None:
+        if typed is None:
+            return None
+        held = held_type(typed.annotation)
+        if not isinstance(held, ast.Name):
+            return None
+        found = self.classes.get(held.id, [])
+        return found[0] if len(found) == 1 else None
+
+    def field(
+        self, owner: tuple[ParsedModule, ast.ClassDef] | None, name: str, depth: int
+    ) -> Typed | None:
+        if owner is None or depth > 20:
+            return None
+        module, node = owner
+        for statement in node.body:
+            if isinstance(statement, ast.AnnAssign) and is_name(
+                statement.target, [name]
+            ):
+                return Typed(module, statement.annotation)
+        for base in node.bases:
+            found = self.field(self.class_of(Typed(module, base)), name, depth + 1)
+            if found is not None:
+                return found
+        return None
+
+    @staticmethod
+    def element(typed: Typed | None, index: int | None) -> Typed | None:
+        """The element type of a container annotation, by position for a tuple."""
+
+        if typed is None:
+            return None
+        held = held_type(typed.annotation)
+        if not (isinstance(held, ast.Subscript) and is_name(held.value, CONTAINERS)):
+            return None
+        elements = (
+            held.slice.elts if isinstance(held.slice, ast.Tuple) else [held.slice]
+        )
+        if (
+            len(elements) == 2
+            and isinstance(elements[1], ast.Constant)
+            and elements[1].value is Ellipsis
+        ):
+            return Typed(typed.module, elements[0])
+        if is_name(held.value, ["tuple"]):
+            if index is None or index >= len(elements):
+                return None
+            return Typed(typed.module, elements[index])
+        return Typed(typed.module, elements[0]) if len(elements) == 1 else None
+
+    @staticmethod
+    def scopes(module: ParsedModule) -> dict[int, Scope]:
+        found: dict[int, Scope] = {}
+        owners = {
+            id(statement): node
+            for node in ast.walk(module.module)
+            if isinstance(node, ast.ClassDef)
+            for statement in node.body
+        }
+        for function in ast.walk(module.module):
+            if isinstance(function, ast.FunctionDef | ast.AsyncFunctionDef):
+                scope = Scope(function, owners.get(id(function)))
+                for node in scope_walk(function):
+                    found[id(node)] = scope
+        return found
+
+    def of(
+        self, module: ParsedModule, node: ast.expr, scope: Scope, depth: int = 0
+    ) -> Typed | None:
+        if depth > 20:
+            return None
+        if isinstance(node, ast.Attribute):
+            base = self.of(module, node.value, scope, depth + 1)
+            return self.field(self.class_of(base), node.attr, depth + 1)
+        if not isinstance(node, ast.Name) or scope.function is None:
+            return None
+        function = scope.function
+        arguments = [
+            *function.args.posonlyargs,
+            *function.args.args,
+            *function.args.kwonlyargs,
+        ]
+        if (
+            scope.owner is not None
+            and arguments
+            and arguments[0].arg == node.id
+            and "staticmethod" not in decorator_names(function)
+        ):
+            return Typed(module, ast.Name(scope.owner.name, ast.Load()))
+        for argument in arguments:
+            if argument.arg == node.id:
+                return (
+                    None
+                    if argument.annotation is None
+                    else Typed(module, argument.annotation)
+                )
+        bindings = [
+            binding
+            for binding in scope_walk(function)
+            if node.id
+            in stored_names(
+                [binding.target]
+                if isinstance(binding, ast.For | ast.comprehension | ast.AnnAssign)
+                else binding.targets if isinstance(binding, ast.Assign) else []
+            )
+        ]
+        if len(bindings) != 1:
+            return None
+        (binding,) = bindings
+        if isinstance(binding, ast.AnnAssign):
+            return Typed(module, binding.annotation)
+        if isinstance(binding, ast.Assign):
+            if len(binding.targets) != 1:
+                return None
+            target, value = binding.targets[0], binding.value
+            if isinstance(target, ast.Name):
+                return self.of(module, value, scope, depth + 1)
+            if (
+                isinstance(target, ast.Tuple)
+                and isinstance(value, ast.Tuple)
+                and len(target.elts) == len(value.elts)
+            ):
+                for element, source in zip(target.elts, value.elts):
+                    if is_name(element, [node.id]):
+                        return self.of(module, source, scope, depth + 1)
+            return None
+        assert isinstance(binding, ast.For | ast.comprehension)
+        item = self.element(self.of(module, binding.iter, scope, depth + 1), None)
+        if isinstance(binding.target, ast.Name):
+            return item
+        if isinstance(binding.target, ast.Tuple):
+            for index, element in enumerate(binding.target.elts):
+                if is_name(element, [node.id]):
+                    return self.element(item, index)
+        return None
+
+
 @dataclass
 class ValueReads:
     """Reads of a member's value, renamed to the attribute the declared root carries
@@ -2001,8 +2191,16 @@ class ValueReads:
                 )
         return frozenset(held)
 
+    @cached_property
+    def types(self) -> DeclaredTypes:
+        return DeclaredTypes(self.snapshot)
+
     def is_member(
-        self, module: ParsedModule, subject: ast.expr, held: frozenset[int]
+        self,
+        module: ParsedModule,
+        subject: ast.expr,
+        held: frozenset[int],
+        scope: Scope,
     ) -> bool:
         names = self.enum_names(module)
         if id(subject) in held:
@@ -2015,6 +2213,9 @@ class ValueReads:
             return subject.attr in self.model.class_names
         if subject.attr not in self.held_fields:
             return False
+        typed = self.types.of(module, subject, scope)
+        if typed is not None:
+            return self.holds_member(typed.module, typed.annotation)
         if subject.attr in self.ambiguous_fields:
             raise handback(
                 module,
@@ -2030,13 +2231,19 @@ class ValueReads:
             return
         for module in self.snapshot.parsed_modules:
             held = self.held_subjects(module)
+            scopes = DeclaredTypes.scopes(module)
             for node in ast.walk(module.module):
                 if (
                     isinstance(node, ast.Attribute)
                     and node.attr == "value"
                     and isinstance(node.ctx, ast.Load)
                     and id(node) not in handled
-                    and self.is_member(module, node.value, held)
+                    and self.is_member(
+                        module,
+                        node.value,
+                        held,
+                        scopes.get(id(node), Scope(None, None)),
+                    )
                 ):
                     end = rewrite.geometry(module).required_node_offsets(node)[1]
                     rewrite.span(module, end - len("value"), end, attribute)

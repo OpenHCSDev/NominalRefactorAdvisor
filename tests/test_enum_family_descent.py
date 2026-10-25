@@ -861,7 +861,7 @@ def test_cases_family_hands_back_a_value_read_through_an_ambiguous_field(
         monkeypatch,
         DERIVED_ENUM_SOURCE
         + "\n\nclass Other:\n    kind: Holder\n\n\n"
-        + "def read(thing: Other) -> str:\n    return thing.kind.value\n",
+        + "def read(thing) -> str:\n    return thing.kind.value\n",
     )
 
     with pytest.raises(ValueError) as refusal:
@@ -874,3 +874,28 @@ def test_cases_family_hands_back_a_value_read_through_an_ambiguous_field(
         " kind is declared holding the enum and holding another type that may carry"
         " value"
     )
+
+
+def test_cases_family_reads_a_typed_field_by_its_declared_type(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    snapshot = _derived_staged(
+        tmp_path,
+        monkeypatch,
+        DERIVED_ENUM_SOURCE
+        + "\n\nclass Other:\n    kind: Holder\n    pairs: tuple[tuple[str, Holder], ...]\n\n"
+        + "    def read(self) -> str:\n        return self.kind.value\n\n"
+        + "    def wires(self) -> list[str]:\n"
+        + "        pairs, other = self.pairs, self\n"
+        + "        return [holder.kind.value for _name, holder in pairs]\n",
+    )
+
+    simulation = _simulated(
+        snapshot,
+        CasesFamily(target=_target(snapshot, "kind.Kind"), rationale="", names=()),
+    )
+
+    assert simulation.is_clean is True
+    family = simulation.simulation.rewritten_sources[(tmp_path / "kind.py").as_posix()]
+    assert "        return self.kind.value\n" in family
+    assert "[holder.kind.declared_name for _name, holder in pairs]" in family
