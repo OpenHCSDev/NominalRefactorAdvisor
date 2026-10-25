@@ -51,6 +51,7 @@ from .analysis import (
 from .analysis_cache import (
     AnalysisCacheIdentity,
     AnalysisCacheStatus,
+    Hit,
     AnalysisExecutionPlanCacheIdentity,
     AnalysisFindingCache,
     AnalysisFindingSummaryCachePayload,
@@ -3796,7 +3797,7 @@ def _main_without_deadline(invocation: CliArguments) -> int:
                     timing = ScanTiming(
                         parse_seconds=0.0,
                         analysis_seconds=analysis_seconds,
-                        analysis_cache_status=AnalysisCacheStatus.HIT,
+                        analysis_cache_status=Hit,
                     )
                     print(
                         json.dumps(
@@ -3866,7 +3867,7 @@ def _main_without_deadline(invocation: CliArguments) -> int:
             parse_elapsed = 0.0
             analysis_elapsed = 0.0
             findings = []
-            module_cache_statuses: list[AnalysisCacheStatus] = []
+            module_cache_statuses: list[type[AnalysisCacheStatus]] = []
             seen_report_paths: set[Path] = set()
             for report_root in path_scope.report_roots:
                 normalized_report_path = report_root.resolve()

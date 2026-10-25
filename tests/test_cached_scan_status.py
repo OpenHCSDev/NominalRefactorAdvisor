@@ -18,6 +18,9 @@ from nominal_refactor_advisor.analysis import (
 from nominal_refactor_advisor.analysis_cache import (
     AnalysisCacheIdentity,
     AnalysisCacheStatus,
+    Hit,
+    Miss,
+    Partial,
     AnalysisFindingCache,
     AnalysisFindingSummaryCachePayload,
     AnalysisFindingSummaryLookup,
@@ -134,7 +137,7 @@ def test_exact_status_and_summary_derive_the_validated_roster(tmp_path, monkeypa
         raise AssertionError("The validated identity already owns its roster")
 
     monkeypatch.setattr(cli, "default_detector_types_for_analysis", forbidden)
-    result = CachedAnalysisResult([], AnalysisCacheStatus.HIT, identity)
+    result = CachedAnalysisResult([], Hit, identity)
     status = cli.JsonScanStatus.exact_cache(result.exact_cache_identity)
     assert status.analyzed_detector_count == 2
     assert status.mode is cli.JsonScanMode.exact_cache
@@ -144,12 +147,12 @@ def test_exact_status_and_summary_derive_the_validated_roster(tmp_path, monkeypa
     assert report["scan_status"]["mode"] == "exact_cache"
 
 
-@pytest.mark.parametrize("status", tuple(AnalysisCacheStatus))
+@pytest.mark.parametrize("status", tuple(AnalysisCacheStatus.__subclasses__()))
 def test_exact_identity_does_not_relabel_partial_shard_reuse(tmp_path, status):
     package, _source = source_tree(tmp_path)
     identity = AnalysisCacheIdentity.from_roots((package,), DetectorConfig())
     result = CachedAnalysisResult([], status, identity)
-    if status is AnalysisCacheStatus.HIT:
+    if status is Hit:
         assert result.exact_cache_identity is identity
     else:
         with pytest.raises(ValueError, match="exact cache result"):
@@ -158,9 +161,9 @@ def test_exact_identity_does_not_relabel_partial_shard_reuse(tmp_path, status):
 
 def test_exact_hit_requires_its_identity_and_summary_payload():
     with pytest.raises(ValueError, match="exact cache result"):
-        _ = CachedAnalysisResult([], AnalysisCacheStatus.HIT).exact_cache_identity
+        _ = CachedAnalysisResult([], Hit).exact_cache_identity
     with pytest.raises(ValueError, match="validated payload"):
-        AnalysisFindingSummaryLookup(AnalysisCacheStatus.HIT)
+        AnalysisFindingSummaryLookup(Hit)
 
 
 def test_summary_fast_path_retains_identity_and_partial_isolation(tmp_path):
@@ -199,15 +202,15 @@ def test_summary_fast_path_retains_identity_and_partial_isolation(tmp_path):
     current = AnalysisCacheIdentity.from_roots(request.roots, request.config)
     assert current != original
     cache.store_partial(current, original, [finding])
-    assert cache.load_partial(current, original).status is AnalysisCacheStatus.PARTIAL
-    assert cache.load(current).status is AnalysisCacheStatus.MISS
+    assert cache.load_partial(current, original).status is Partial
+    assert cache.load(current).status is Miss
     assert cache.load_summary(current).payload is None
     assert authority.summary_result() is None
     assert authority.result() is None
     partial = FastCachedPathAnalysisAuthority(
         replace(request, reuse_policy=FastCacheReusePolicy.EVIDENCE_LOCAL_PARTIAL)
     ).result()
-    assert partial is not None and partial.cache_status is AnalysisCacheStatus.PARTIAL
+    assert partial is not None and partial.cache_status is Partial
     assert partial.findings == [finding]
     with pytest.raises(ValueError, match="exact cache result"):
         _ = partial.exact_cache_identity
@@ -241,7 +244,7 @@ def test_exact_findings_and_summary_share_identity_invalidation(tmp_path, change
     assert original.cache_token != changed.cache_token
     cache = AnalysisFindingCache(tmp_path / "cache")
     cache.store(original, [])
-    assert cache.load(original).status is AnalysisCacheStatus.HIT
+    assert cache.load(original).status is Hit
     assert cache.load_summary(original).payload is not None
-    assert cache.load(changed).status is AnalysisCacheStatus.MISS
+    assert cache.load(changed).status is Miss
     assert cache.load_summary(changed).payload is None

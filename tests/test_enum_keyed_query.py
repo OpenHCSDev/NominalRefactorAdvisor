@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 
 from nominal_refactor_advisor.analysis import analyze_compact_roots_with_cache
-from nominal_refactor_advisor.analysis_cache import AnalysisCacheStatus
+from nominal_refactor_advisor.analysis_cache import Hit
 from nominal_refactor_advisor.ast_tools import parse_python_modules
 from nominal_refactor_advisor.codemod import (
     CodemodBackend,
@@ -163,7 +163,7 @@ def test_enum_keyed_facade_compact_cache_preserves_exact_finding(
     )
 
     assert len(cold.findings) == 1
-    assert warm.cache_status is AnalysisCacheStatus.HIT
+    assert warm.cache_status is Hit
     assert warm.findings == cold.findings
 
 

@@ -27,6 +27,10 @@ from .analysis_cache import (
     AnalysisCacheIdentity,
     AnalysisCacheResolutionABC,
     AnalysisCacheStatus,
+    Disabled,
+    Hit,
+    Miss,
+    Partial,
     AnalysisFindingCache,
     AnalysisFindingSummaryCachePayload,
     AnalysisLatestPointerPolicy,
@@ -1825,7 +1829,7 @@ class CompactPathAnalysisResult:
     """Exact streamed findings and split preparation/analysis timings."""
 
     findings: list[RefactorFinding]
-    cache_status: AnalysisCacheStatus
+    cache_status: type[AnalysisCacheStatus]
     cache_identity: AnalysisCacheIdentity
     preparation_seconds: float
     analysis_seconds: float
@@ -2893,7 +2897,7 @@ class CachedAnalysisResult:
     """Detector findings plus the persistent cache status used to produce them."""
 
     findings: list[RefactorFinding]
-    cache_status: AnalysisCacheStatus
+    cache_status: type[AnalysisCacheStatus]
     cache_identity: AnalysisCacheIdentity | None = None
     previous_cache_identity: AnalysisCacheIdentity | None = None
     previous_findings: tuple[RefactorFinding, ...] = ()
@@ -2901,10 +2905,7 @@ class CachedAnalysisResult:
     @property
     def exact_cache_identity(self) -> AnalysisCacheIdentity:
         """Require exact request reuse, separately from partial shard reuse."""
-        if not self.cache_status.is_hit or self.cache_identity is None:
-            raise ValueError(
-                "An exact cache result requires its validated request identity"
-            )
+        self.cache_status.require_exact_identity(self.cache_identity)
         return self.cache_identity
 
 
@@ -3005,7 +3006,7 @@ class AnalysisCacheResolutionAuthority(
             ).result()
             return CachedAnalysisResult(
                 result.findings,
-                AnalysisCacheStatus.DISABLED,
+                Disabled,
             )
         return CachedAnalysisResult(
             analyze_modules(
@@ -3014,7 +3015,7 @@ class AnalysisCacheResolutionAuthority(
                 analysis_workers=self._analysis_workers,
                 semantic_descent_source=self._semantic_descent_source,
             ),
-            AnalysisCacheStatus.DISABLED,
+            Disabled,
         )
 
     def analyze_and_store_miss(self) -> CachedAnalysisResult:
@@ -3055,7 +3056,7 @@ class AnalysisCacheResolutionAuthority(
                 )
                 return CachedAnalysisResult(
                     findings,
-                    AnalysisCacheStatus.HIT,
+                    Hit,
                     cache_identity=cache_identity,
                 )
             incremental_result = IncrementalAnalysisCacheResolver(
@@ -3083,7 +3084,7 @@ class AnalysisCacheResolutionAuthority(
             if rebuild_lease.cached_lookup is not None:
                 return CachedAnalysisResult(
                     list(rebuild_lease.cached_lookup.findings),
-                    AnalysisCacheStatus.HIT,
+                    Hit,
                     cache_identity=cache_identity,
                 )
             semantic_cache_lookup = analysis_cache.load(semantic_cache_identity)
@@ -3093,7 +3094,7 @@ class AnalysisCacheResolutionAuthority(
                     analysis_cache.store(cache_identity, findings)
                 return CachedAnalysisResult(
                     findings,
-                    AnalysisCacheStatus.HIT,
+                    Hit,
                     cache_identity=cache_identity,
                 )
             incremental_result = IncrementalAnalysisCacheResolver(
@@ -3140,7 +3141,7 @@ class IncrementalAnalysisResult:
     """Exact detector findings plus the shard-cache reuse status."""
 
     findings: list[RefactorFinding]
-    cache_status: AnalysisCacheStatus
+    cache_status: type[AnalysisCacheStatus]
 
 
 @ScanCache.scope()
@@ -3175,7 +3176,7 @@ def analyze_module_detector_types_with_cache(
                 if bundle_findings is not None
                 for finding in bundle_findings
             ],
-            AnalysisCacheStatus.HIT,
+            Hit,
         )
     new_findings = analyze_detector_types(
         [module],
@@ -3266,8 +3267,8 @@ class IncrementalAnalysisCacheResolver:
 
     @staticmethod
     def _combined_cache_status(
-        *cache_statuses: AnalysisCacheStatus,
-    ) -> AnalysisCacheStatus:
+        *cache_statuses: type[AnalysisCacheStatus],
+    ) -> type[AnalysisCacheStatus]:
         return AnalysisCacheStatus.combine(cache_statuses)
 
     def _per_module_findings(self) -> IncrementalAnalysisResult:
@@ -3275,7 +3276,7 @@ class IncrementalAnalysisCacheResolver:
             DetectorCacheGranularity.PER_MODULE
         )
         if not detector_types:
-            return IncrementalAnalysisResult([], AnalysisCacheStatus.MISS)
+            return IncrementalAnalysisResult([], Miss)
 
         findings: list[RefactorFinding] = []
         hit_count = 0
@@ -3390,7 +3391,7 @@ class IncrementalAnalysisCacheResolver:
             DetectorCacheGranularity.CONTEXTUAL_MODULE
         )
         if not detector_types:
-            return IncrementalAnalysisResult([], AnalysisCacheStatus.MISS)
+            return IncrementalAnalysisResult([], Miss)
 
         findings: list[RefactorFinding] = []
         hit_count = 0
@@ -3454,7 +3455,7 @@ class IncrementalAnalysisCacheResolver:
             DetectorCacheGranularity.GLOBAL
         )
         if not detector_types:
-            return IncrementalAnalysisResult([], AnalysisCacheStatus.MISS)
+            return IncrementalAnalysisResult([], Miss)
 
         findings: list[RefactorFinding] = []
         hit_count = 0
@@ -3503,7 +3504,7 @@ class IncrementalAnalysisCacheResolver:
             DetectorCacheGranularity.CONTEXTUAL_GLOBAL
         )
         if not detector_types:
-            return IncrementalAnalysisResult([], AnalysisCacheStatus.MISS)
+            return IncrementalAnalysisResult([], Miss)
 
         findings: list[RefactorFinding] = []
         hit_count = 0
@@ -3704,7 +3705,7 @@ def load_analysis_cache_for_roots(
 
     config = config or DetectorConfig()
     if analysis_cache_dir is None:
-        return CachedAnalysisResult([], AnalysisCacheStatus.DISABLED)
+        return CachedAnalysisResult([], Disabled)
     identity_authority = AnalysisCacheIdentityAuthority(
         roots,
         config,
@@ -3886,7 +3887,7 @@ class FastCachedPathAnalysisAuthority:
         if partial_cache_lookup.status.is_partial:
             return CachedAnalysisResult(
                 list(partial_cache_lookup.findings),
-                AnalysisCacheStatus.PARTIAL,
+                Partial,
                 cache_identity=cache_result.cache_identity,
                 previous_cache_identity=cache_result.previous_cache_identity,
                 previous_findings=cache_result.previous_findings,
@@ -3934,7 +3935,7 @@ class FastCachedPathAnalysisAuthority:
         )
         return CachedAnalysisResult(
             findings,
-            AnalysisCacheStatus.PARTIAL,
+            Partial,
             cache_identity=cache_result.cache_identity,
             previous_cache_identity=cache_result.previous_cache_identity,
             previous_findings=cache_result.previous_findings,

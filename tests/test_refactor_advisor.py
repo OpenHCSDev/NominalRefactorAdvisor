@@ -91,7 +91,9 @@ from nominal_refactor_advisor.ast_tools import (
 )
 from nominal_refactor_advisor.analysis_cache import (
     AnalysisCacheIdentity,
-    AnalysisCacheStatus,
+    Hit,
+    Miss,
+    Partial,
     AnalysisExecutionPlanCacheIdentity,
     AnalysisFindingCache,
     DetectorSemanticEngineSignature,
@@ -12206,7 +12208,7 @@ def test_analysis_finding_cache_invalidates_after_source_change(tmp_path: Path) 
     cache.store(first_identity, [finding])
 
     first_lookup = cache.load(first_identity)
-    assert first_lookup.status is AnalysisCacheStatus.HIT
+    assert first_lookup.status is Hit
     assert first_lookup.findings == (finding,)
 
     module_path.write_text(
@@ -12216,7 +12218,7 @@ def test_analysis_finding_cache_invalidates_after_source_change(tmp_path: Path) 
 
     assert changed_identity != first_identity
     changed_lookup = cache.load(changed_identity)
-    assert changed_lookup.status is AnalysisCacheStatus.MISS
+    assert changed_lookup.status is Miss
     assert changed_lookup.findings == ()
 
 
@@ -12271,7 +12273,7 @@ def test_analysis_cache_stores_count_summary_sidecar(tmp_path: Path) -> None:
     cache.store(identity, [finding])
     summary_lookup = cache.load_summary(identity)
 
-    assert summary_lookup.status is AnalysisCacheStatus.HIT
+    assert summary_lookup.status is Hit
     assert summary_lookup.summary is not None
     assert summary_lookup.summary.finding_count == 1
     assert summary_lookup.summary.pattern_counts[0].pattern_id == (
@@ -12326,7 +12328,7 @@ def test_analysis_cache_stores_execution_plan_sidecar(tmp_path: Path) -> None:
     cache.store_execution_plan(plan_identity, execution_plan)
     lookup = cache.load_execution_plan(plan_identity)
 
-    assert lookup.status is AnalysisCacheStatus.HIT
+    assert lookup.status is Hit
     assert lookup.plan == execution_plan
 
 
@@ -12447,7 +12449,7 @@ def test_analysis_cache_reuses_unchanged_per_module_detector_shards(
         DetectorConfig(),
         analysis_cache_dir=cache_dir,
     )
-    assert first_result.cache_status is AnalysisCacheStatus.MISS
+    assert first_result.cache_status is Miss
     assert local_calls == {"a.py": 1, "b.py": 1}
     assert global_calls == 1
 
@@ -12461,7 +12463,7 @@ def test_analysis_cache_reuses_unchanged_per_module_detector_shards(
         DetectorConfig(),
         analysis_cache_dir=cache_dir,
     )
-    assert changed_result.cache_status is AnalysisCacheStatus.PARTIAL
+    assert changed_result.cache_status is Partial
     assert local_calls == {"a.py": 1, "b.py": 2}
     assert global_calls == 2
 
@@ -12472,7 +12474,7 @@ def test_analysis_cache_reuses_unchanged_per_module_detector_shards(
         DetectorConfig(),
         analysis_cache_dir=cache_dir,
     )
-    assert hit_result.cache_status is AnalysisCacheStatus.HIT
+    assert hit_result.cache_status is Hit
     assert local_calls == {"a.py": 1, "b.py": 2}
     assert global_calls == 2
 
@@ -12612,7 +12614,7 @@ def test_focused_analysis_schedules_local_detectors_only_for_report_modules(
         ),
     )
 
-    assert cached_result.cache_status is AnalysisCacheStatus.HIT
+    assert cached_result.cache_status is Hit
     assert local_calls == []
     assert contextual_calls == []
     assert global_calls == []
@@ -12823,8 +12825,8 @@ def test_fast_cache_evidence_local_partial_reuses_unchanged_findings_when_reques
 
     assert fast_result is not None
     assert second_fast_result is not None
-    assert fast_result.cache_status is AnalysisCacheStatus.PARTIAL
-    assert second_fast_result.cache_status is AnalysisCacheStatus.PARTIAL
+    assert fast_result.cache_status is Partial
+    assert second_fast_result.cache_status is Partial
     assert {finding.summary for finding in first_findings} == {
         "global a.py",
         "global b.py",
@@ -12916,7 +12918,7 @@ def test_fast_partial_cache_does_not_poison_exact_cache(
     exact_findings = analyze_paths((root,), DetectorConfig(), cache_dir=cache_dir)
 
     assert fast_result is not None
-    assert fast_result.cache_status is AnalysisCacheStatus.PARTIAL
+    assert fast_result.cache_status is Partial
     assert {finding.summary for finding in first_findings} == {"a.py:1", "b.py:1"}
     assert {finding.summary for finding in fast_result.findings} == {"a.py:1"}
     assert {finding.summary for finding in exact_findings} == {"a.py:1", "b.py:2"}
@@ -24942,7 +24944,7 @@ def test_json_payload_exposes_timing_when_supplied(tmp_path: Path) -> None:
         timing=ScanTiming(
             parse_seconds=0.1,
             analysis_seconds=0.2,
-            analysis_cache_status=AnalysisCacheStatus.HIT,
+            analysis_cache_status=Hit,
         ),
     ).build()
     timing = cast(dict[str, object], payload["timing"])
