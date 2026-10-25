@@ -672,3 +672,50 @@ def test_cases_family_root_with_only_methods_has_one_blank_line_after_its_docstr
         (tmp_path / "mutation.py").as_posix()
     ]
     assert 'class Mutation(Case):\n    """Row events."""\n\n    @classmethod\n' in family
+
+
+def test_cases_family_root_with_nothing_of_its_own_passes(tmp_path: Path) -> None:
+    (tmp_path / "reason.py").write_text(
+        "from enum import StrEnum\n\n\n"
+        "class Reason(StrEnum):\n"
+        '    OBSERVER = "observer"\n\n\n'
+        "assert Reason.OBSERVER.value\n"
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path), ())
+    operation = CasesFamily(
+        target=_target(snapshot, "reason.Reason"), rationale="", names=()
+    )
+
+    simulation = _simulated(snapshot, operation)
+
+    assert simulation.is_clean is True
+    family = simulation.simulation.rewritten_sources[
+        (tmp_path / "reason.py").as_posix()
+    ]
+    assert "class Reason(Case):\n    pass\n" in family
+    assert "class Observer(Reason):\n" in family
+
+
+def test_cases_family_leaves_annotated_metadata_values(tmp_path: Path) -> None:
+    (tmp_path / "tier.py").write_text(
+        "from enum import StrEnum\n"
+        "from typing import Annotated\n\n\n"
+        "class Tier(StrEnum):\n"
+        '    STANDARD = "standard"\n\n'
+        "    @property\n"
+        "    def label(self) -> str:\n"
+        "        return self.value\n\n\n"
+        'def choose(tier: Annotated[Tier, "Tier help text", Tier.STANDARD]) -> str:\n'
+        "    return tier.label\n"
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path), ())
+    operation = CasesFamily(target=_target(snapshot, "tier.Tier"), rationale="", names=())
+
+    simulation = _simulated(snapshot, operation)
+
+    assert simulation.is_clean is True
+    family = simulation.simulation.rewritten_sources[(tmp_path / "tier.py").as_posix()]
+    assert (
+        'def choose(tier: Annotated[type[Tier], "Tier help text", Standard]) -> str:'
+        in family
+    )

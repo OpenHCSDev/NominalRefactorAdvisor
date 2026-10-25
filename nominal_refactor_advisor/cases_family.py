@@ -335,6 +335,28 @@ def is_boolean(node: ast.expr, boolean_names: frozenset[str]) -> bool:
     return isinstance(node, ast.Call) and is_name(node.func, BOOLEAN_CALLS)
 
 
+def type_positions(annotation: ast.expr) -> Iterator[ast.AST]:
+    """The nodes of ``annotation`` in type position: ``Annotated`` metadata are values."""
+
+    pending: list[ast.AST] = [annotation]
+    while pending:
+        node = pending.pop()
+        yield node
+        if (
+            isinstance(node, ast.Subscript)
+            and (
+                is_name(node.value, ["Annotated"])
+                or isinstance(node.value, ast.Attribute)
+                and node.value.attr == "Annotated"
+            )
+            and isinstance(node.slice, ast.Tuple)
+            and node.slice.elts
+        ):
+            pending.extend((node.value, node.slice.elts[0]))
+        else:
+            pending.extend(ast.iter_child_nodes(node))
+
+
 def member_type(root: str, source: str) -> str:
     """Annotation ``source`` with ``root``, a type of members, read as ``type[root]``.
 
@@ -349,7 +371,7 @@ def member_type(root: str, source: str) -> str:
         for child in ast.iter_child_nodes(parent)
     }
     replacements: list[tuple[int, int, str]] = []
-    for part in ast.walk(tree):
+    for part in type_positions(tree.body):
         if is_name(part, [root]):
             parent = parents.get(id(part))
             if isinstance(parent, ast.Subscript) and is_name(parent.value, ["type"]):
@@ -1549,6 +1571,9 @@ class CasesFamily(Cases, Descent):
         for method in rewrite_methods:
             root.append("")
             root.extend(method.source(method.root_body(model.members), True))
+        if len(root) == 1:
+            # Case declares ``value``; a root with nothing else of its own is empty.
+            root.append("    pass")
         classes = ["\n".join(root)]
         for member in model.members:
             lines = [f"class {member.class_name}({model.root}):"]
@@ -1598,7 +1623,7 @@ class CasesFamily(Cases, Descent):
             id(node): annotation
             for annotated in ast.walk(module.module)
             for annotation in annotations_of(annotated)
-            for node in ast.walk(annotation)
+            for node in type_positions(annotation)
         }
         bound = module_bound_names(module.module)
         local_names = set(names.enum)
