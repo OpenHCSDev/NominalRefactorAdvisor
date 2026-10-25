@@ -8,7 +8,6 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import (
     Generic,
-    Self,
     TYPE_CHECKING,
     TypeVar,
 )
@@ -67,25 +66,6 @@ class DeclarationMroType(ABCMeta, Generic[MroDeclarationT]):
         )
 
 
-class ClassMroViolation(StrEnum):
-    """Why a class's MRO stays open. A violation of the hierarchy itself also stops
-    the single-base walk, which would otherwise read declarations past it."""
-
-    stops_prefix_walk: bool
-
-    def __new__(cls, value: str, stops_prefix_walk: bool = False) -> Self:
-        member = str.__new__(cls, value)
-        member._value_ = value
-        member.stops_prefix_walk = stops_prefix_walk
-        return member
-
-    MISSING_DECLARATION = "missing_declaration"
-    UNRESOLVED_BASES = "unresolved_bases"
-    DYNAMIC_CLASS_DECLARATION = "dynamic_class_declaration"
-    CYCLIC_HIERARCHY = "cyclic_hierarchy", True
-    INCONSISTENT_HIERARCHY = "inconsistent_hierarchy", True
-
-
 @dataclass(frozen=True)
 class ClassMroResolution(ABC):
     class_symbol: str
@@ -117,8 +97,9 @@ class ResolvedClassMro(ClassMroResolution):
 
 
 @dataclass(frozen=True)
-class OpenClassMro(ClassMroResolution):
-    violation: ClassMroViolation
+class OpenClassMro(ClassMroResolution, ABC):
+    """A class whose MRO stays open; each subclass is why. ``class_symbol`` is the class
+    where it opened: the requested class or one of its ancestors."""
 
     @property
     def mro_type(self) -> None:
@@ -127,10 +108,36 @@ class OpenClassMro(ClassMroResolution):
     def known_prefix(
         self, authority: ClassMroAuthority, symbol: str
     ) -> tuple[CompactIndexedClass, ...]:
-        # class_symbol is where the MRO opened, an ancestor of symbol or symbol itself
-        if self.violation.stops_prefix_walk:
-            return ()
         return authority.single_base_prefix(symbol)
+
+
+class MissingDeclaration(OpenClassMro):
+    """No declaration of the class is indexed."""
+
+
+class UnresolvedBases(OpenClassMro):
+    """A base reference names no indexed class."""
+
+
+class DynamicClassDeclaration(OpenClassMro):
+    """Class creation runs code: dynamic bases, keywords, a decorator or a creation hook."""
+
+
+class HierarchyViolation(OpenClassMro):
+    """The hierarchy itself admits no MRO, so no walk reads declarations past it."""
+
+    def known_prefix(
+        self, authority: ClassMroAuthority, symbol: str
+    ) -> tuple[CompactIndexedClass, ...]:
+        return ()
+
+
+class CyclicHierarchy(HierarchyViolation):
+    """A class is among its own ancestors."""
+
+
+class InconsistentHierarchy(HierarchyViolation):
+    """C3 linearization finds no consistent order."""
 
 
 @dataclass(frozen=True)
@@ -149,7 +156,7 @@ class ClassMroAuthority:
         if symbol in self._resolutions:
             return self._resolutions[symbol]
         if symbol in pending:
-            return OpenClassMro(symbol, ClassMroViolation.CYCLIC_HIERARCHY)
+            return CyclicHierarchy(symbol)
         resolution = self._derive(symbol, pending | {symbol})
         self._resolutions[symbol] = resolution
         return resolution
@@ -197,9 +204,9 @@ class ClassMroAuthority:
     def _derive(self, symbol: str, pending: frozenset[str]) -> ClassMroResolution:
         declaration = self.classes_by_symbol.get(symbol)
         if declaration is None:
-            return OpenClassMro(symbol, ClassMroViolation.MISSING_DECLARATION)
+            return MissingDeclaration(symbol)
         if not self._creation_is_static(declaration):
-            return OpenClassMro(symbol, ClassMroViolation.DYNAMIC_CLASS_DECLARATION)
+            return DynamicClassDeclaration(symbol)
         native_bases = tuple(
             (
                 None
@@ -217,7 +224,7 @@ class ClassMroAuthority:
                 for reference in declaration.base_references
             )
         ):
-            return OpenClassMro(symbol, ClassMroViolation.UNRESOLVED_BASES)
+            return UnresolvedBases(symbol)
         source_bases = iter(declaration.resolved_base_symbols)
         bases = []
         for native_base in native_bases:
@@ -232,5 +239,5 @@ class ClassMroAuthority:
         try:
             projected = DeclarationMroType.from_declaration(declaration, tuple(bases))
         except TypeError:
-            return OpenClassMro(symbol, ClassMroViolation.INCONSISTENT_HIERARCHY)
+            return InconsistentHierarchy(symbol)
         return ResolvedClassMro(symbol, projected)

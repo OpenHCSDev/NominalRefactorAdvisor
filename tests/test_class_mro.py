@@ -14,7 +14,11 @@ from nominal_refactor_advisor.class_index import (
 )
 from nominal_refactor_advisor.class_mro import (
     ClassMroAuthority,
-    ClassMroViolation,
+    CyclicHierarchy,
+    DynamicClassDeclaration,
+    InconsistentHierarchy,
+    MissingDeclaration,
+    UnresolvedBases,
     OpenClassMro,
 )
 
@@ -66,91 +70,85 @@ def test_static_mro_agrees_with_python(source: str) -> None:
 @pytest.mark.parametrize(
     "source,violation",
     (
-        ("class Leaf(Unknown): pass\n", ClassMroViolation.UNRESOLVED_BASES),
+        ("class Leaf(Unknown): pass\n", UnresolvedBases),
         (
             "object = factory()\nclass Leaf(object): pass\n",
-            ClassMroViolation.UNRESOLVED_BASES,
+            UnresolvedBases,
         ),
         (
             "from unknown import *\nclass Leaf(object): pass\n",
-            ClassMroViolation.UNRESOLVED_BASES,
+            UnresolvedBases,
         ),
         (
             "class Root: pass\nclass Leaf(Root[int]): pass\n",
-            ClassMroViolation.DYNAMIC_CLASS_DECLARATION,
+            DynamicClassDeclaration,
         ),
-        ("class Leaf(factory()): pass\n", ClassMroViolation.DYNAMIC_CLASS_DECLARATION),
+        ("class Leaf(factory()): pass\n", DynamicClassDeclaration),
         (
             "class Leaf(metaclass=Meta): pass\n",
-            ClassMroViolation.DYNAMIC_CLASS_DECLARATION,
+            DynamicClassDeclaration,
         ),
-        ("@decorate\nclass Leaf: pass\n", ClassMroViolation.DYNAMIC_CLASS_DECLARATION),
+        ("@decorate\nclass Leaf: pass\n", DynamicClassDeclaration),
         (
             "class Root:\n def __init_subclass__(cls): raise RuntimeError\nclass Leaf(Root): pass\n",
-            ClassMroViolation.DYNAMIC_CLASS_DECLARATION,
+            DynamicClassDeclaration,
         ),
         (
             "class Root: pass\nclass Leaf(Root, Root): pass\n",
-            ClassMroViolation.INCONSISTENT_HIERARCHY,
+            InconsistentHierarchy,
         ),
         (
             "class X: pass\nclass Y: pass\nclass A(X,Y): pass\nclass B(Y,X): pass\nclass Leaf(A,B): pass\n",
-            ClassMroViolation.INCONSISTENT_HIERARCHY,
+            InconsistentHierarchy,
         ),
         (
             "class Root(Leaf): pass\nclass Leaf(Root): pass\n",
-            ClassMroViolation.UNRESOLVED_BASES,
+            UnresolvedBases,
         ),
         (
             "class Root: pass\nclass Leaf(Root): pass\nclass Root: pass\n",
-            ClassMroViolation.UNRESOLVED_BASES,
+            UnresolvedBases,
         ),
     ),
 )
 def test_unproved_hierarchies_remain_open(
-    source: str, violation: ClassMroViolation
+    source: str, violation: type[OpenClassMro]
 ) -> None:
     resolution = _authority(source).resolve("probe.Leaf")
-    assert isinstance(resolution, OpenClassMro)
-    assert resolution.violation is violation
+    assert type(resolution) is violation
     assert resolution.mro_type is None
 
 
 def test_missing_declaration_is_explicit() -> None:
     resolution = _authority("").resolve("probe.Missing")
-    assert isinstance(resolution, OpenClassMro)
-    assert resolution.violation is ClassMroViolation.MISSING_DECLARATION
+    assert type(resolution) is MissingDeclaration
 
 
 def test_cyclic_imported_hierarchy_is_explicit() -> None:
     resolution = _authority(
         "from probe import Leaf\n" "class Root(Leaf): pass\n" "class Leaf(Root): pass\n"
     ).resolve("probe.Leaf")
-    assert isinstance(resolution, OpenClassMro)
-    assert resolution.violation is ClassMroViolation.CYCLIC_HIERARCHY
+    assert type(resolution) is CyclicHierarchy
 
 
 @pytest.mark.parametrize("base", ("abc.ABC", "builtins.object"))
 def test_standard_base_spelling_requires_an_actual_binding(base: str) -> None:
     resolution = _authority(f"class Leaf({base}): pass\n").resolve("probe.Leaf")
-    assert isinstance(resolution, OpenClassMro)
-    assert resolution.violation is ClassMroViolation.UNRESOLVED_BASES
+    assert type(resolution) is UnresolvedBases
 
 
 def test_assigned_class_creation_hook_remains_open() -> None:
     resolution = _authority(
         "class Root:\n __init_subclass__ = hook\n" "class Leaf(Root): pass\n"
     ).resolve("probe.Leaf")
-    assert isinstance(resolution, OpenClassMro)
-    assert resolution.violation is ClassMroViolation.DYNAMIC_CLASS_DECLARATION
+    assert type(resolution) is DynamicClassDeclaration
 
 
 def test_imported_base_does_not_resolve_to_overwritten_local_name() -> None:
     resolution = _authority(
         "class Root: pass\n" "from external import Root\n" "class Leaf(Root): pass\n"
     ).resolve("probe.Leaf")
-    assert isinstance(resolution, OpenClassMro)
-    assert resolution.violation is ClassMroViolation.UNRESOLVED_BASES
+    assert type(resolution) is UnresolvedBases
 
 
 def test_repository_bodies_are_not_executed() -> None:
