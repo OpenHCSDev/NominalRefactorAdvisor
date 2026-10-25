@@ -97,9 +97,9 @@ class ClassMroResolution(ABC):
 
     @abstractmethod
     def known_prefix(
-        self, authority: ClassMroAuthority
+        self, authority: ClassMroAuthority, symbol: str
     ) -> tuple[CompactIndexedClass, ...]:
-        """The declarations of this class's MRO known before any opaque base."""
+        """The declarations of ``symbol``'s MRO known before any opaque base."""
 
 
 @dataclass(frozen=True)
@@ -111,7 +111,7 @@ class ResolvedClassMro(ClassMroResolution):
         return self.declaration_type
 
     def known_prefix(
-        self, authority: ClassMroAuthority
+        self, authority: ClassMroAuthority, symbol: str
     ) -> tuple[CompactIndexedClass, ...]:
         return self.declaration_type.declarations
 
@@ -125,11 +125,12 @@ class OpenClassMro(ClassMroResolution):
         return None
 
     def known_prefix(
-        self, authority: ClassMroAuthority
+        self, authority: ClassMroAuthority, symbol: str
     ) -> tuple[CompactIndexedClass, ...]:
+        # class_symbol is where the MRO opened, an ancestor of symbol or symbol itself
         if self.violation.stops_prefix_walk:
             return ()
-        return authority.single_base_prefix(self.class_symbol)
+        return authority.single_base_prefix(symbol)
 
 
 @dataclass(frozen=True)
@@ -160,7 +161,7 @@ class ClassMroAuthority:
         ancestor prevents closing the full C3 order. Never guess past that point.
         This does not strengthen an OpenClassMro into a runtime proof.
         """
-        return self.resolve(symbol).known_prefix(self)
+        return self.resolve(symbol).known_prefix(self, symbol)
 
     def single_base_prefix(self, symbol: str) -> tuple[CompactIndexedClass, ...]:
         """The declarations reached from ``symbol`` through single static bases."""
