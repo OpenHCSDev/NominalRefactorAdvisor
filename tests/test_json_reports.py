@@ -36,6 +36,6 @@ def test_json_report_rejects_non_wire_mapping_keys() -> None:
 
     with pytest.raises(
         TypeError,
-        match="JSON report mappings require string or StrEnum keys",
+        match="JSON report mappings require string, StrEnum or case class keys",
     ):
         json_report_object(report)

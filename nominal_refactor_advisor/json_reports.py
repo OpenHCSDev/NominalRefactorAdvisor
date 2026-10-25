@@ -86,6 +86,12 @@ class JsonReportValueProjection:
         return value.value
 
     @project.register
+    def _project_case(self, value: type) -> str:
+        """A case class of a family (an enum turned family) projects as its ``value``."""
+
+        return value.value
+
+    @project.register
     def _project_tuple(self, value: tuple) -> tuple[JsonValue, ...]:
         return tuple(self.project(item) for item in value)
 
@@ -104,11 +110,13 @@ class JsonReportValueProjection:
 
     @staticmethod
     def mapping_key(key: object) -> str:
-        if isinstance(key, StrEnum):
+        if isinstance(key, StrEnum | type):
             return key.value
         if isinstance(key, str):
             return key
-        raise TypeError("JSON report mappings require string or StrEnum keys")
+        raise TypeError(
+            "JSON report mappings require string, StrEnum or case class keys"
+        )
 
     @project.register
     def _project_report(self, value: JsonReport) -> JsonObject:
