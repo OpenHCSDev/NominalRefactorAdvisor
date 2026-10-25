@@ -56,8 +56,8 @@ from .descriptor_algebra import AliasProperty
 from .codemod_runtime import CodemodSourceSnapshot
 from .codemod_selection_context import CodemodSelectorContext
 from .codemod_source_edits import (
+    Include,
     NominalSourceEdit,
-    SourceNodeDecoratorPolicy,
     SourceNodeSpan,
     SourceTextGeometry,
     SourceTextSpan,
@@ -267,7 +267,7 @@ class _TypeKeyedBehaviorMethodDescent:
         geometry = SourceTextGeometry(source)
         method_span = SourceNodeSpan(
             self.projection_method,
-            SourceNodeDecoratorPolicy.INCLUDE,
+            Include,
         )
         method_start, method_end = geometry.node_span_offsets(method_span)
         parameter_span = geometry.function_parameter_span(self.projection_method)
@@ -821,7 +821,7 @@ class _TypeKeyedBehaviorSourceDerivation:
             offsets = geometry.node_span_offsets(
                 SourceNodeSpan(
                     indexed_class.node,
-                    SourceNodeDecoratorPolicy.INCLUDE,
+                    Include,
                 )
             )
             trailing_separator = re.match(

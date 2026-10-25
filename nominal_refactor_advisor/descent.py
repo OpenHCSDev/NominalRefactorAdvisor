@@ -29,8 +29,8 @@ from .codemod_reproof import RepositorySourceReprovedOperation
 from .codemod_runtime import CodemodSourceSnapshot
 from .codemod_selection_context import CodemodSelectorContext
 from .codemod_source_edits import (
+    Include,
     NominalSourceEdit,
-    SourceNodeDecoratorPolicy,
     SourceNodeSpan,
     SourceTextGeometry,
     SourceTextSpanReplacement,
@@ -620,11 +620,11 @@ class Rewrite:
         geometry = self.geometry(module)
         start = geometry.line_offsets[node.lineno - 1]
         end = geometry.node_span_offsets(
-            SourceNodeSpan(node, SourceNodeDecoratorPolicy.INCLUDE)
+            SourceNodeSpan(node, Include)
         )[1]
         trailing = re.match(r"[ \t]*\r?\n(?:[ \t]*\r?\n)*", geometry.source[end:])
         decorated_start = geometry.node_span_offsets(
-            SourceNodeSpan(node, SourceNodeDecoratorPolicy.INCLUDE)
+            SourceNodeSpan(node, Include)
         )[0]
         start = geometry.line_offsets[
             geometry.line_number_for_offset(decorated_start) - 1

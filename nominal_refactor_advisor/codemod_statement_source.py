@@ -16,7 +16,7 @@ from .assignment_projection import (
 from .ast_tools import is_docstring_statement
 from .codemod_source_edits import (
     SourceNodeSpan,
-    SourceNodeDecoratorPolicy,
+    Include,
     SourceTextGeometry,
     SourceTextSpan,
     SourceTextSpanReplacement,
@@ -99,7 +99,7 @@ class StatementDeletionSource(StatementScopeSource):
             run = tuple(group)
             first_index, first = run[0]
             last_index, last = run[-1]
-            first_span = SourceNodeSpan(first, SourceNodeDecoratorPolicy.INCLUDE)
+            first_span = SourceNodeSpan(first, Include)
             first_line = self.node_start_line(first_span)
             start = self.line_offsets[first_line - 1] + SourceByteSpan.character_column(
                 self.lines[first_line - 1], first.col_offset
@@ -216,7 +216,7 @@ class StatementSource(SourceTextGeometry):
     node: ast.stmt
 
     def member_source(self, indentation: str) -> str:
-        span = SourceNodeSpan(self.node, SourceNodeDecoratorPolicy.INCLUDE)
+        span = SourceNodeSpan(self.node, Include)
         first_line = self.node_start_line(span)
         original_line = self.lines[first_line - 1]
         original_indentation = original_line[

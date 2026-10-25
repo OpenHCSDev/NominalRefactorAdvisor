@@ -12,9 +12,9 @@ from nominal_refactor_advisor.codemod import (
     RefactorRecipeOperation,
     ReplaceDeclarationDecoratorsOperation,
     ReplaceTargetOperation,
-    SourceNodeDecoratorPolicy,
     SourceRewriteTarget,
 )
+from nominal_refactor_advisor.codemod_source_edits import Include
 
 
 @pytest.mark.parametrize(
@@ -75,7 +75,7 @@ def test_nominal_policy_controls_both_payload_and_complete_decorator_geometry(
         )
 
         class DecoratorInclusivePolicy:
-            decorator_policy = SourceNodeDecoratorPolicy.INCLUDE
+            decorator_policy = Include
 
         class DecoratorInclusiveProbeOperation(
             DecoratorInclusivePolicy, ReplaceTargetOperation

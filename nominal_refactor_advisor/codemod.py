@@ -559,6 +559,7 @@ from .codemod_source_edits import (
     SourceLineSpan as SourceLineSpan,
 )
 from .codemod_source_edits import (
+    Exclude,
     SourceNodeDecoratorPolicy as SourceNodeDecoratorPolicy,
 )
 from .codemod_source_edits import (
@@ -821,8 +822,8 @@ class ReplaceTargetOperation(SourceReprovedOperation):
         default=(),
     )
 
-    decorator_policy: ClassVar[SourceNodeDecoratorPolicy] = (
-        SourceNodeDecoratorPolicy.EXCLUDE
+    decorator_policy: ClassVar[type[SourceNodeDecoratorPolicy]] = (
+        Exclude
     )
 
     @cached_property

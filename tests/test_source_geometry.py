@@ -5,7 +5,8 @@ import ast
 import pytest
 
 from nominal_refactor_advisor.codemod_source_edits import (
-    SourceNodeDecoratorPolicy,
+    Exclude,
+    Include,
     SourceNodeSpan,
     SourceTextGeometry,
 )
@@ -78,13 +79,13 @@ def test_generic_declaration_geometry_recovers_exact_decorator_marker(source):
     assert generic.decorated_node_start_line(declaration) == 1
     assert (
         editor.node_start_line(
-            SourceNodeSpan(declaration, SourceNodeDecoratorPolicy.INCLUDE)
+            SourceNodeSpan(declaration, Include)
         )
         == 1
     )
     assert (
         editor.node_start_line(
-            SourceNodeSpan(declaration, SourceNodeDecoratorPolicy.EXCLUDE)
+            SourceNodeSpan(declaration, Exclude)
         )
         == declaration.lineno
     )

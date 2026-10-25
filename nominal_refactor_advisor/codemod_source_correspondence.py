@@ -17,7 +17,7 @@ from .codemod_runtime import CodemodDocumentSimulationCarrier
 from .codemod_selector_models import SourceRewriteTarget
 
 from .codemod_source_edits import (
-    SourceNodeDecoratorPolicy,
+    Include,
     SourceNodeSpan,
     SourceRetainedSpanIndex,
     SourceTargetEditor,
@@ -199,7 +199,7 @@ class SourceClassSuiteCorrespondence(SourceDocumentCorrespondence):
     ) -> SourceTextSpan:
         return SourceTextSpan(
             *geometry.node_span_offsets(
-                SourceNodeSpan(statement, SourceNodeDecoratorPolicy.INCLUDE)
+                SourceNodeSpan(statement, Include)
             )
         )
 
