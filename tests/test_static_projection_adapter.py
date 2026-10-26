@@ -9,6 +9,8 @@ from pathlib import Path
 
 import pytest
 
+import static_projection_fixture  # noqa: F401  (the projector must be loaded)
+import static_projection_reexport  # noqa: F401
 from nominal_refactor_advisor.analysis import analyze_path
 from nominal_refactor_advisor.ast_tools import parse_python_modules
 from nominal_refactor_advisor.codemod import (
@@ -25,31 +27,31 @@ from nominal_refactor_advisor.detectors._runtime import (
 from nominal_refactor_advisor.json_reports import json_report_object
 from nominal_refactor_advisor.source_index import AstTargetNodeKind
 
-PROJECTOR = "nominal_refactor_advisor.ast_projection.AstExpressionProjection"
+PROJECTOR = "static_projection_fixture.LegacyExpressionProjection"
 FAMILY = "nominal_refactor_advisor.ast_projection.ExpressionReference"
 DETECTOR_ID = "static_projection_adapter_call"
-SOURCE = '''\
+SOURCE = """\
 import ast
 
-from nominal_refactor_advisor.ast_projection import AstExpressionProjection
+from static_projection_fixture import LegacyExpressionProjection
 
 
 def names(source):
     return [
         (
-            AstExpressionProjection.terminal_name(node),
-            AstExpressionProjection.qualified_name(node),
+            LegacyExpressionProjection.terminal_name(node),
+            LegacyExpressionProjection.qualified_name(node),
         )
         for node in ast.walk(ast.parse(source))
     ]
 
 
 def nested(node):
-    return AstExpressionProjection.identifier(node or None)
+    return LegacyExpressionProjection.identifier(node or None)
 
 
 print(names("a.b[c]\\nx\\nf()"), nested(ast.parse("x", mode="eval").body))
-'''
+"""
 
 
 def _operation(path: Path) -> ProjectStaticCallsToAdapterOperation:
@@ -71,7 +73,11 @@ def _simulate(tmp_path: Path, operation: ProjectStaticCallsToAdapterOperation):
 
 
 def _run(path: Path) -> str:
-    environment = {**os.environ, "PYTHONPATH": str(Path(__file__).parent.parent)}
+    here = Path(__file__).parent
+    environment = {
+        **os.environ,
+        "PYTHONPATH": os.pathsep.join((str(here.parent), str(here))),
+    }
     return subprocess.check_output(
         [sys.executable, str(path)], text=True, env=environment
     )
@@ -87,7 +93,7 @@ def test_calls_become_property_reads_and_run_identically(tmp_path: Path) -> None
     after = path.read_text(encoding="utf-8")
     assert "ExpressionReference.decoded(node).terminal_name" in after
     assert "ExpressionReference.decoded(node or None).identifier" in after
-    assert "AstExpressionProjection" not in after
+    assert "LegacyExpressionProjection" not in after
     assert "import ExpressionReference" in after
     assert _run(path) == expected
 
@@ -95,11 +101,11 @@ def test_calls_become_property_reads_and_run_identically(tmp_path: Path) -> None
 def test_nested_calls_rewrite_together(tmp_path: Path) -> None:
     path = tmp_path / "probe.py"
     path.write_text(
-        "from nominal_refactor_advisor.ast_projection import AstExpressionProjection as P\n"
-        "from nominal_refactor_advisor.ast_projection import AstExpressionProjection\n\n\n"
+        "from static_projection_fixture import LegacyExpressionProjection as P\n"
+        "from static_projection_fixture import LegacyExpressionProjection\n\n\n"
         "def f(node):\n"
-        "    return AstExpressionProjection.qualified_name(\n"
-        "        AstExpressionProjection.identifier(node) and node\n"
+        "    return LegacyExpressionProjection.qualified_name(\n"
+        "        LegacyExpressionProjection.identifier(node) and node\n"
         "    )\n",
         encoding="utf-8",
     )
@@ -115,9 +121,9 @@ def test_nested_calls_rewrite_together(tmp_path: Path) -> None:
 def test_a_rebound_projector_name_is_not_rewritten(tmp_path: Path) -> None:
     path = tmp_path / "probe.py"
     path.write_text(
-        "from nominal_refactor_advisor.ast_projection import AstExpressionProjection\n\n\n"
-        "def f(AstExpressionProjection, node):\n"
-        "    return AstExpressionProjection.identifier(node)\n",
+        "from static_projection_fixture import LegacyExpressionProjection\n\n\n"
+        "def f(LegacyExpressionProjection, node):\n"
+        "    return LegacyExpressionProjection.identifier(node)\n",
         encoding="utf-8",
     )
     with pytest.raises(ValueError, match="No use"):
@@ -169,27 +175,27 @@ def test_finding_recipe_rewrites_the_evidenced_module(tmp_path: Path) -> None:
 def test_reexport_through_a_loaded_module_is_rewritten(tmp_path: Path) -> None:
     user = tmp_path / "user.py"
     user.write_text(
-        "from nominal_refactor_advisor.ast_tools import AstExpressionProjection\n\n\n"
-        "def f(node):\n    return AstExpressionProjection.identifier(node)\n",
+        "from static_projection_reexport import LegacyExpressionProjection\n\n\n"
+        "def f(node):\n    return LegacyExpressionProjection.identifier(node)\n",
         encoding="utf-8",
     )
     _simulate(tmp_path, _operation(user)).apply()
     after = user.read_text(encoding="utf-8")
     assert "ExpressionReference.decoded(node).identifier" in after
-    assert "AstExpressionProjection" not in after
+    assert "LegacyExpressionProjection" not in after
 
 
 def test_an_import_another_module_takes_from_here_is_kept(tmp_path: Path) -> None:
     hub = tmp_path / "hub.py"
     hub.write_text(
-        "from nominal_refactor_advisor.ast_projection import AstExpressionProjection\n",
+        "from static_projection_fixture import LegacyExpressionProjection\n",
         encoding="utf-8",
     )
     (tmp_path / "user.py").write_text(
-        "from hub import AstExpressionProjection\n", encoding="utf-8"
+        "from hub import LegacyExpressionProjection\n", encoding="utf-8"
     )
     with pytest.raises(ValueError, match="No use"):
         _simulate(tmp_path, _operation(hub))
     (tmp_path / "user.py").write_text("x = 1\n", encoding="utf-8")
     _simulate(tmp_path, _operation(hub)).apply()
-    assert "AstExpressionProjection" not in hub.read_text(encoding="utf-8")
+    assert "LegacyExpressionProjection" not in hub.read_text(encoding="utf-8")

@@ -82,8 +82,4 @@ class ForeignAdapter(DeclaredFamily, ABC, metaclass=AutoRegisterMeta):
     def within(cls, nodes: Iterable[object]) -> Iterator[Self]:
         """Lazily decode ``nodes`` in order, skipping those this family lacks."""
 
-        return (
-            adapter
-            for adapter in map(cls.decoded, nodes)
-            if adapter is not None
-        )
+        return (adapter for adapter in map(cls.decoded, nodes) if adapter is not None)

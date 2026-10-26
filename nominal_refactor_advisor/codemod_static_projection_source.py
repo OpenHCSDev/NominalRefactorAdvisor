@@ -49,7 +49,8 @@ class StaticProjection:
         families = tuple(
             family
             for family in ForeignAdapter.concrete_families()
-            if questions and questions <= frozenset(AdapterPropertyBodies(family).property_names)
+            if questions
+            and questions <= frozenset(AdapterPropertyBodies(family).property_names)
         )
         return cls(projector, families[0]) if len(families) == 1 else None
 
@@ -67,7 +68,8 @@ class StaticProjection:
         return frozenset(
             name
             for name, declared in vars(projector).items()
-            if not name.startswith("_") and isinstance(declared, staticmethod | classmethod)
+            if not name.startswith("_")
+            and isinstance(declared, staticmethod | classmethod)
         )
 
     @cached_property
@@ -93,7 +95,14 @@ def star_imported_modules(parsed_module: ParsedModule) -> tuple[str, ...]:
     parts = parsed_module.module_name.split(".")
     package = parts if parsed_module.file_path.endswith("__init__.py") else parts[:-1]
     return tuple(
-        ".".join((*package[: len(package) - statement.level + 1 if statement.level else 0], *filter(None, [statement.module])))
+        ".".join(
+            (
+                *package[
+                    : len(package) - statement.level + 1 if statement.level else 0
+                ],
+                *filter(None, [statement.module]),
+            )
+        )
         for statement in ast.walk(parsed_module.module)
         if isinstance(statement, ast.ImportFrom)
         and any(alias.name == "*" for alias in statement.names)
@@ -174,7 +183,9 @@ class StaticProjectionSites:
                     and not isinstance(argument, ast.Starred)
                 ):
                     sites.append(StaticProjectionSite(node, argument, question, name))
-        return tuple(sorted(sites, key=lambda site: (site.call.lineno, site.call.col_offset)))
+        return tuple(
+            sorted(sites, key=lambda site: (site.call.lineno, site.call.col_offset))
+        )
 
     @cached_property
     def retired_names(self) -> tuple[str, ...]:
@@ -234,12 +245,16 @@ class StaticProjectionAuthority:
 
     @cached_property
     def outermost(self) -> tuple[StaticProjectionSite, ...]:
-        spans = [self.geometry.required_node_offsets(site.call) for site in self.found.sites]
+        spans = [
+            self.geometry.required_node_offsets(site.call) for site in self.found.sites
+        ]
         return tuple(
             site
             for site, (start, end) in zip(self.found.sites, spans, strict=True)
             if not any(
-                other_start <= start and end <= other_end and (other_start, other_end) != (start, end)
+                other_start <= start
+                and end <= other_end
+                and (other_start, other_end) != (start, end)
                 for other_start, other_end in spans
             )
         )
@@ -247,7 +262,9 @@ class StaticProjectionAuthority:
     def rewritten(self, site: StaticProjectionSite) -> str:
         """The site as a family read, with nested sites in its argument rewritten too."""
 
-        argument_start, argument_end = self.geometry.required_node_offsets(site.argument)
+        argument_start, argument_end = self.geometry.required_node_offsets(
+            site.argument
+        )
         pieces: list[str] = []
         cursor = argument_start
         nested = (
@@ -269,14 +286,21 @@ class StaticProjectionAuthority:
 
     def replacement(self, site: StaticProjectionSite) -> SourceTextSpanReplacement:
         start, end = self.geometry.required_node_offsets(site.call)
-        argument_start, argument_end = self.geometry.required_node_offsets(site.argument)
-        for gap in (SourceTextSpan(start, argument_start), SourceTextSpan(argument_end, end)):
+        argument_start, argument_end = self.geometry.required_node_offsets(
+            site.argument
+        )
+        for gap in (
+            SourceTextSpan(start, argument_start),
+            SourceTextSpan(argument_end, end),
+        ):
             if self.geometry.span_contains_comment(gap):
                 raise ValueError("Static projection rewrite would discard a comment")
         candidate = self.rewritten(site)
         if self.geometry.span_contains_comment(SourceTextSpan(start, end)):
             if not self.fit.fits(*self.line_context(start, end, candidate)):
-                raise ValueError("Static projection rewrite would exceed the line length")
+                raise ValueError(
+                    "Static projection rewrite would exceed the line length"
+                )
             text = candidate
         else:
             text = self.fit.fitted(candidate, start, end)
@@ -284,8 +308,12 @@ class StaticProjectionAuthority:
             start_offset=start, end_offset=end, replacement_source=text
         )
 
-    def line_context(self, start: int, end: int, candidate: str) -> tuple[str, str, str]:
-        line_start = self.geometry.line_offsets[self.geometry.line_number_for_offset(start) - 1]
+    def line_context(
+        self, start: int, end: int, candidate: str
+    ) -> tuple[str, str, str]:
+        line_start = self.geometry.line_offsets[
+            self.geometry.line_number_for_offset(start) - 1
+        ]
         return (
             self.geometry.source[line_start:start],
             candidate,
