@@ -165,8 +165,11 @@ from .structural_overlap import (
     StructuralOverlapReportLimits,
     build_structural_overlap_report,
 )
+from .member_census import MemberAwarenessCensus, build_member_awareness_census
 from .refactor_concepts import RefactorConcept
 
+MEMBER_AWARENESS_LISTING_LIMIT = 20
+MEMBER_AWARENESS_BYPASS_LIMIT = 3
 _VALUELESS_ARGUMENT_ACTIONS = frozenset(
     {
         "store_true",
@@ -379,6 +382,15 @@ _CLI_ARGUMENT_SPECS = (
             flags=("--predict-scan",),
             action="store_true",
             help="Predict scan impact from Python files changed relative to --compare-ref.",
+        ),
+        CliArgumentSpec(
+            flags=("--count-member-awareness",),
+            action="store_true",
+            help=(
+                "Count which consumer functions name the members of a foreign "
+                "module, declared family or enum, grouped by exact member set, "
+                "and which of them also call an owner of that set."
+            ),
         ),
         CliArgumentSpec(
             flags=("--detector-capabilities",),
@@ -1925,6 +1937,33 @@ class MarkdownReportRenderer(ABC):
             )
         return "\n".join(lines)
 
+    def member_awareness(self, report: MemberAwarenessCensus) -> str:
+        lines = [
+            "Member awareness census:",
+            f"   - Modules scanned: {report.scanned_module_count}",
+            f"   - Consumers naming two or more members: {report.branching_consumers}",
+            f"   - Consumers naming one member: {report.single_member_consumers}",
+            f"   - Distinct member sets: {report.distinct_member_sets}",
+        ]
+        for group in report.groups[:MEMBER_AWARENESS_LISTING_LIMIT]:
+            owners = ", ".join(group.covering_owners) or "none declared"
+            lines.append(
+                f"   - [{group.kind.value}] {group.family}: "
+                f"{' | '.join(group.members)}: {group.consumer_count} consumer(s), "
+                f"{group.owner_using_count} using an owner, "
+                f"{group.bypassing_count} bypassing (owners: {owners})"
+            )
+            lines.extend(
+                f"       bypass: {consumer.file_path}::{consumer.qualname}"
+                for consumer in group.bypassing[:MEMBER_AWARENESS_BYPASS_LIMIT]
+            )
+        lines.extend(
+            f"   - owner {item.owner}: {item.consumers} consumer(s) name its "
+            f"members, {item.owner_using} use it"
+            for item in report.owners[:MEMBER_AWARENESS_LISTING_LIMIT]
+        )
+        return "\n".join(lines)
+
     def scan_proof(self, scan: ScanEconomicsProof) -> list[str]:
         lines = [
             f"   - {scan.label}: {scan.finding_count} finding(s), "
@@ -2284,6 +2323,28 @@ class ScanPredictionCliCommand(SingleRootReportCliCommand):
     @property
     def markdown(self) -> str:
         return MARKDOWN_RENDERER.scan_prediction(self.report)
+
+
+class MemberAwarenessCliCommand(SingleRootReportCliCommand):
+    command_id = "count_member_awareness"
+
+    @classmethod
+    def requested(cls, args: argparse.Namespace) -> bool:
+        return args.count_member_awareness
+
+    @cached_property
+    def report(self) -> MemberAwarenessCensus:
+        return build_member_awareness_census(
+            self.root,
+            config=self.detector_config,
+            cache_dir=self.configured_parse_cache_dir,
+            use_parse_cache=self.args.use_parse_cache,
+            parse_workers=self.args.parse_workers,
+        )
+
+    @property
+    def markdown(self) -> str:
+        return MARKDOWN_RENDERER.member_awareness(self.report)
 
 
 class EconomicsProofCliCommand(SingleRootReportCliCommand):

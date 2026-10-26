@@ -1105,6 +1105,13 @@ class TypeArgumentResolver:
         reference = self.snapshot.reference_for(parts)
         return None if reference.root_binding is None else reference.qualified_name
 
+    def qualified_class_at(
+        self, member: ast.expr, ancestors: Sequence[ast.AST]
+    ) -> str | None:
+        """Qualified class a name expression denotes beneath these ancestors."""
+
+        return self.qualified_name(member, _enclosing_function_names(ancestors))
+
     def qualified_names(
         self, type_argument: ast.expr, shadowed: frozenset[str]
     ) -> tuple[str, ...] | None:

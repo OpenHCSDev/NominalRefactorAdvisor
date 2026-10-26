@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import ast
 from abc import ABC, abstractmethod
+from collections.abc import Iterable
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import TYPE_CHECKING, Any, ClassVar, cast
@@ -386,6 +387,16 @@ class ForeignTypeTestShape:
     symbol: str
     owner: str
     type_names: tuple[str, ...]
+
+    def is_foreign_to(self, scanned_module_names: Iterable[str]) -> bool:
+        """Whether no scanned module is, contains, or sits inside the owner."""
+
+        return not any(
+            self.owner == scanned_name
+            or self.owner.startswith(f"{scanned_name}.")
+            or scanned_name.startswith(f"{self.owner}.")
+            for scanned_name in scanned_module_names
+        )
 
 
 @dataclass(frozen=True)
