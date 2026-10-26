@@ -441,9 +441,9 @@ class DirectManualRegistryComponent(RegistryEntries):
             return ()
         entries = []
         for key_node, value_node in zip(value.keys, value.values, strict=True):
-            class_node = class_nodes.get(ExpressionReference.decoded(
-                value_node
-            ).identifier)
+            class_node = class_nodes.get(
+                ExpressionReference.decoded(value_node).identifier
+            )
             if class_node is None or key_node is None:
                 return ()
             entries.append(
