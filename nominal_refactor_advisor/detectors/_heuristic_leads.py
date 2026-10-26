@@ -3,11 +3,15 @@
 from __future__ import annotations
 
 import ast
+import inspect
+import sys
 from collections import Counter, defaultdict
-from collections.abc import Callable, Sequence
-from typing import TypeVar
+from collections.abc import Callable, Iterable, Mapping, Sequence
+from dataclasses import dataclass
+from typing import Self, TypeVar
 
 from ..ast_tools import ParsedModule, module_syntax_index
+from ..collection_algebra import sorted_tuple
 from ..models import RefactorFinding, SourceLocation
 from ..observation_families import (
     ForeignTypeTestModuleFamily,
@@ -252,21 +256,20 @@ class ForeignTypeSwitchDetector(
             + ". Whether each set is meant to be closed, and which site should own "
             "it, remains OPEN."
         ]
-        divergences = _strict_subset_divergences(type_sets)
-        if divergences:
+        misses = ForeignClassTwins.from_type_sets(type_sets).misses(type_sets)
+        if misses:
             lines.append(
-                f"{sum(type_sets[subset] for subset, _superset in divergences)} sites "
-                "test a strict subset of a type set used elsewhere (possible missed "
-                "case): "
+                f"{sum(type_sets[type_set] for type_set, _twins in misses)} sites "
+                "test a class without its same-shape twin (possible missed case): "
                 + _counted_list(
                     sorted(
-                        ((pair, type_sets[pair[0]]) for pair in divergences),
+                        ((miss, type_sets[miss[0]]) for miss in misses),
                         key=lambda item: -item[1],
                     ),
-                    lambda pair: (
-                        f"{_type_set_text(pair[0])} vs {_type_set_text(pair[1])}"
+                    lambda miss: (
+                        f"{_type_set_text(miss[0])} without {_type_set_text(miss[1])}"
                     ),
-                    "pairs",
+                    "type sets",
                 )
             )
         return self.build_finding(
@@ -303,20 +306,67 @@ def _type_set_text(type_set: tuple[str, ...]) -> str:
     return "`" + " | ".join(type_set) + "`"
 
 
-def _strict_subset_divergences(
-    type_sets: Counter[tuple[str, ...]],
-) -> tuple[tuple[tuple[str, ...], tuple[str, ...]], ...]:
-    """Pair each type set with its smallest strict superset seen in the family."""
+@dataclass(frozen=True)
+class ForeignClassTwins:
+    """Foreign classes sharing a base, match fields and field types.
 
-    pairs: list[tuple[tuple[str, ...], tuple[str, ...]]] = []
-    for subset in sorted(type_sets):
-        supersets = [
-            candidate
-            for candidate in type_sets
-            if frozenset(subset) < frozenset(candidate)
-        ]
-        if supersets:
-            pairs.append(
-                (subset, min(supersets, key=lambda item: (len(item), -type_sets[item], item)))
+    Twins are one shape under two names (``ast.FunctionDef`` and
+    ``ast.AsyncFunctionDef``), so a type test naming one without the other is a
+    likely missed case. Classes are read only from modules already imported;
+    nothing is imported for analysis, and an unreadable class has no twins.
+    """
+
+    twins_by_name: Mapping[str, frozenset[str]]
+
+    @classmethod
+    def from_type_sets(cls, type_sets: Iterable[tuple[str, ...]]) -> Self:
+        names_by_shape: dict[tuple[object, ...], set[str]] = defaultdict(set)
+        for name in {name for type_set in type_sets for name in type_set}:
+            shape = cls._shape(name)
+            if shape is not None:
+                names_by_shape[shape].add(name)
+        return cls(
+            {
+                name: frozenset(names - {name})
+                for names in names_by_shape.values()
+                if len(names) > 1
+                for name in names
+            }
+        )
+
+    @staticmethod
+    def _shape(qualified_name: str) -> tuple[object, ...] | None:
+        module_name, _, attribute = qualified_name.rpartition(".")
+        module = sys.modules.get(module_name)
+        declared = None if module is None else vars(module).get(attribute)
+        if not isinstance(declared, type):
+            return None
+        match_fields = vars(declared).get("__match_args__", ())
+        if not match_fields:
+            return None
+        field_types = tuple(
+            (field_name, repr(field_type))
+            for field_name, field_type in inspect.get_annotations(declared).items()
+        )
+        return (declared.__bases__, match_fields, field_types)
+
+    def misses(
+        self, type_sets: Iterable[tuple[str, ...]]
+    ) -> tuple[tuple[tuple[str, ...], tuple[str, ...]], ...]:
+        """Each type set paired with the twins of its members that it omits."""
+
+        return tuple(
+            (type_set, missing)
+            for type_set in sorted(type_sets)
+            for missing in (
+                sorted_tuple(
+                    {
+                        twin
+                        for name in type_set
+                        for twin in self.twins_by_name.get(name, ())
+                    }
+                    - set(type_set)
+                ),
             )
-    return tuple(pairs)
+            if missing
+        )

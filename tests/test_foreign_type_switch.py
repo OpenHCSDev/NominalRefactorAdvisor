@@ -37,8 +37,8 @@ def test_ast_tests_with_a_narrower_set_diverge_from_the_wider_one(tmp_path: Path
     assert "3 isinstance/issubclass sites in 3 module(s)" in finding.summary
     assert "`ast.AsyncFunctionDef | ast.FunctionDef` x2" in finding.summary
     assert (
-        "1 sites test a strict subset of a type set used elsewhere (possible missed "
-        "case): `ast.FunctionDef` vs `ast.AsyncFunctionDef | ast.FunctionDef`"
+        "1 sites test a class without its same-shape twin (possible missed case): "
+        "`ast.FunctionDef` without `ast.AsyncFunctionDef`"
     ) in finding.summary
 
 
@@ -76,3 +76,16 @@ def test_fewer_sites_than_the_declared_count_make_no_finding(tmp_path: Path):
 def test_a_local_rebinding_of_the_module_name_is_not_foreign(tmp_path: Path):
     source = "def f(n, ast):\n    return isinstance(n, ast.Call)\n"
     assert _findings(tmp_path, {f"m{index}": source for index in range(3)}) == []
+
+
+def test_a_narrower_set_of_unlike_classes_is_not_a_missed_case(tmp_path: Path):
+    findings = _findings(
+        tmp_path,
+        {
+            "m0": "import ast\ndef f(n):\n    return isinstance(n, ast.Name)\n",
+            "m1": "import ast\ndef f(n):\n    return isinstance(n, ast.Name)\n",
+            "m2": "import ast\ndef f(n):\n    return isinstance(n, (ast.Name, ast.Attribute))\n",
+        },
+    )
+    assert len(findings) == 1
+    assert "possible missed case" not in findings[0].summary
