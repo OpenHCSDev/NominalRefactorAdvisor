@@ -295,3 +295,38 @@ class ForeignFamilyFilterAuthority:
                 f"{self.reference.import_path}"
             )
         return tuple(sorted(replacements, key=lambda item: item.start_offset))
+
+
+class ForeignFamilyFilterModuleFamily(ShapeFamily[ForeignFamilyFilterModule]):
+    """Filters testing exactly the members of a declared concrete family."""
+
+    item_type = ForeignFamilyFilterModule
+
+    @classmethod
+    def collect(cls, parsed_module: ParsedModule) -> list[ForeignFamilyFilterModule]:
+        index = module_syntax_index(parsed_module.module)
+        node_indices = {call: node_index for node_index, call in index.indexed_nodes_of_type(ast.Call)}
+        resolver = TypeArgumentResolver(parsed_module)
+        families_by_members = {
+            family.member_names(): family for family in ForeignFamily.concrete_families()
+        }
+        shapes = []
+        for site_type in FilterSiteABC.__subclasses__():
+            for site in site_type.in_scope(parsed_module.module):
+                tested = resolver.qualified_names_of_test(site.condition)
+                family = families_by_members.get(frozenset(tested or ()))
+                if family is not None:
+                    shapes.append(
+                        ForeignFamilyFilterShape(
+                            file_path=parsed_module.file_path,
+                            lineno=site.condition.lineno,
+                            symbol=index.lexical_symbol(node_indices[site.condition]),
+                            family=family.import_path(),
+                        )
+                    )
+        return [
+            ForeignFamilyFilterModule(
+                module_name=parsed_module.module_name,
+                sites=tuple(sorted(shapes, key=lambda shape: shape.lineno)),
+            )
+        ]

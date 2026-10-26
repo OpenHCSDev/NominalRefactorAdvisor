@@ -12,9 +12,6 @@ from typing import Self, TypeVar
 
 from ..ast_tools import ParsedModule, module_syntax_index
 from ..collection_algebra import sorted_tuple
-from ..codemod_foreign_family_recipe import (
-    ForeignTypeSwitchFindingRecipeSynthesizer,
-)
 from ..models import RefactorFinding, SourceLocation
 from ..observation_families import (
     ForeignTypeTestModuleFamily,
@@ -199,9 +196,7 @@ class RepeatedModuleExpressionLeadDetector(
 
 
 class ForeignTypeSwitchDetector(
-    CompactModuleProjectionDetectorMixin[ForeignTypeTestModule],
-    ForeignTypeSwitchFindingRecipeSynthesizer,
-    IssueDetector,
+    CompactModuleProjectionDetectorMixin[ForeignTypeTestModule], IssueDetector
 ):
     """Find `isinstance` tests on one foreign module's classes across the scan.
 

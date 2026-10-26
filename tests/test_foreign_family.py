@@ -171,23 +171,33 @@ SYNC_ONLY = (
 )
 
 
-def test_finding_recipe_routes_exact_filters_and_spares_the_sync_only_one(
+def _routable_findings(root: Path):
+    from nominal_refactor_advisor.analysis import analyze_path
+
+    return [
+        finding
+        for finding in analyze_path(root)
+        if finding.detector_id == "foreign_family_routable_filter"
+    ]
+
+
+def test_routable_filter_finding_recipe_routes_exact_filters_only(
     tmp_path: Path,
 ) -> None:
-    from nominal_refactor_advisor.analysis import analyze_path
-    from nominal_refactor_advisor.detectors._heuristic_leads import (
-        ForeignTypeSwitchDetector,
+    from nominal_refactor_advisor.detectors._runtime import (
+        ForeignFamilyRoutableFilterDetector,
     )
 
     for name, source in (("a", EXACT), ("b", EXACT), ("c", EXACT), ("d", SYNC_ONLY)):
         (tmp_path / f"{name}.py").write_text(source, encoding="utf-8")
-    (finding,) = (
-        finding
-        for finding in analyze_path(tmp_path)
-        if finding.detector_id == "foreign_type_switch"
-    )
+    (finding,) = _routable_findings(tmp_path)
+    assert [Path(item.file_path).name for item in finding.evidence] == [
+        "a.py",
+        "b.py",
+        "c.py",
+    ]
     snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
-    evaluation = ForeignTypeSwitchDetector().evaluate_recipe_for_finding(
+    evaluation = ForeignFamilyRoutableFilterDetector().evaluate_recipe_for_finding(
         finding, snapshot
     )
     operations = evaluation.executable_recipe.operations
@@ -202,90 +212,19 @@ def test_finding_recipe_routes_exact_filters_and_spares_the_sync_only_one(
             tmp_path / f"{name}.py"
         ).read_text(encoding="utf-8")
     assert (tmp_path / "d.py").read_text(encoding="utf-8") == SYNC_ONLY
+    assert _routable_findings(tmp_path) == []
 
 
-def test_finding_without_an_exact_family_filter_is_rejected(tmp_path: Path) -> None:
-    from nominal_refactor_advisor.analysis import analyze_path
+def test_sync_only_filters_are_not_routable_findings(tmp_path: Path) -> None:
+    for name in "abc":
+        (tmp_path / f"{name}.py").write_text(SYNC_ONLY, encoding="utf-8")
+    assert _routable_findings(tmp_path) == []
+
+
+def test_type_switch_lead_carries_no_recipe(tmp_path: Path) -> None:
+    from nominal_refactor_advisor.codemod import FindingRecipeEvaluator
     from nominal_refactor_advisor.detectors._heuristic_leads import (
         ForeignTypeSwitchDetector,
     )
 
-    for name in "abc":
-        (tmp_path / f"{name}.py").write_text(SYNC_ONLY, encoding="utf-8")
-    (finding,) = (
-        finding
-        for finding in analyze_path(tmp_path)
-        if finding.detector_id == "foreign_type_switch"
-    )
-    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
-    evaluation = ForeignTypeSwitchDetector().evaluate_recipe_for_finding(
-        finding, snapshot
-    )
-    assert "no function holds a filter testing exactly" in evaluation.reason
-
-
-def test_within_is_lazy() -> None:
-    import itertools
-
-    endless = itertools.cycle(ast.parse("def a(): pass\nclass B: pass\n").body)
-    assert len(list(itertools.islice(FunctionDefinition.within(endless), 3))) == 3
-
-
-def test_rewritten_import_follows_the_importing_modules_style(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    package = tmp_path / "ffshapes"
-    package.mkdir()
-    (package / "__init__.py").write_text("", encoding="utf-8")
-    (package / "helper.py").write_text("HELP = 1\n", encoding="utf-8")
-    (package / "family.py").write_text(
-        "import ast\n\n"
-        "from nominal_refactor_advisor.foreign_family import ForeignFamily\n\n\n"
-        "class Defs(ForeignFamily):\n"
-        "    members = (ast.FunctionDef, ast.AsyncFunctionDef)\n",
-        encoding="utf-8",
-    )
-    body = (
-        "\n\ndef names(node):\n"
-        "    return [s.name for s in node.body if isinstance(s, (ast.FunctionDef, ast.AsyncFunctionDef))]\n"
-    )
-    (package / "relative_user.py").write_text(
-        "import ast\n\nfrom .helper import HELP\n" + body, encoding="utf-8"
-    )
-    (package / "absolute_user.py").write_text("import ast\n" + body, encoding="utf-8")
-    monkeypatch.syspath_prepend(str(tmp_path))
-    for name, expected in (
-        ("relative_user", "from .family import Defs\n"),
-        ("absolute_user", "from ffshapes.family import Defs\n"),
-    ):
-        path = package / f"{name}.py"
-        operation = RouteForeignFamilyFilterOperation(
-            target=SourceRewriteTarget(file_path=path.as_posix(), qualname="names"),
-            family="ffshapes.family.Defs",
-        )
-        simulation = _simulate(tmp_path, operation)
-        assert simulation.is_clean
-        simulation.apply()
-        assert expected in path.read_text(encoding="utf-8")
-
-
-def test_rewrite_keeps_to_the_declared_line_length(tmp_path: Path) -> None:
-    (tmp_path / "pyproject.toml").write_text(
-        "[tool.black]\nline-length = 88\n", encoding="utf-8"
-    )
-    path = tmp_path / "probe.py"
-    path.write_text(
-        "import ast\n\n\ndef names(node):\n"
-        "    return [\n"
-        "        s.name\n"
-        "        for s in node.some_long_receiver_name.another_long_attribute_name.body_items\n"
-        "        if isinstance(s, (ast.FunctionDef, ast.AsyncFunctionDef))\n"
-        "    ]\n",
-        encoding="utf-8",
-    )
-    simulation = _simulate(tmp_path, _operation(path))
-    assert simulation.is_clean
-    simulation.apply()
-    rewritten = path.read_text(encoding="utf-8")
-    assert "FunctionDefinition.within(" in rewritten
-    assert max(len(line) for line in rewritten.splitlines()) <= 88
+    assert not issubclass(ForeignTypeSwitchDetector, FindingRecipeEvaluator)

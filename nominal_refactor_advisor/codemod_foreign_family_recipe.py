@@ -1,4 +1,4 @@
-"""Executable recipes for foreign type-test findings: filters onto declared families."""
+"""Executable recipes for routable foreign-class filters: filters onto declared families."""
 
 from __future__ import annotations
 
@@ -7,6 +7,7 @@ from .codemod import (
     FindingRecipeSynthesizer,
     ForeignFamilyRoutingConcept,
 )
+from .codemod_foreign_family_source import ForeignFamilyFilterModuleFamily
 from .codemod_function_operations import RouteForeignFamilyFilterOperation
 from .codemod_runtime import (
     FindingRecipeEvaluation,
@@ -15,21 +16,18 @@ from .codemod_runtime import (
 from .codemod_selection_context import CodemodSelectorContext
 from .codemod_selector_models import SourceRewriteTarget
 from .codemod_target_selectors import SourceIndexTargetSelector
-from .foreign_family import ForeignFamily
 from .models import RefactorFinding
-from .observation_families import ForeignTypeTestModuleFamily
 
 
-class ForeignTypeSwitchFindingRecipeSynthesizer(
+class ForeignFamilyRoutableFilterFindingRecipeSynthesizer(
     FindingEvidenceActionKeysMixin,
     FindingRecipeSynthesizer,
     ForeignFamilyRoutingConcept,
 ):
-    """Route filters whose tested classes are exactly a declared family's.
+    """Route each evidenced filter's function through the family its finding names.
 
-    A function qualifies when one of the finding's own sites tests exactly the
-    members of a declared family. Sites testing part of a family (possible
-    missed cases) are not part of this recipe.
+    The finding's sites already test exactly a declared family's members, so the
+    recipe is one operation per function; current source proves each one.
     """
 
     recipe_id_suffix = "route-foreign-family-filter"
@@ -55,28 +53,18 @@ class ForeignTypeSwitchFindingRecipeSynthesizer(
         refusals: list[str] = []
         for file_path, lines in sorted(lines_by_file.items()):
             parsed_module = snapshot.parsed_module_for_source_path(file_path)
-            sites = tuple(
-                site
-                for projection in ForeignTypeTestModuleFamily.collect(parsed_module)
-                for site in projection.sites
-                if site.lineno in lines
-            )
-            for site in sites:
-                for family in ForeignFamily.concrete_families():
-                    if not self.tests_exactly(family, site.type_names):
-                        continue
-                    key = (file_path, site.symbol, family_path(family))
-                    if key in operations:
+            for projection in ForeignFamilyFilterModuleFamily.collect(parsed_module):
+                for site in projection.sites:
+                    key = (file_path, site.symbol, site.family)
+                    if site.lineno not in lines or key in operations:
                         continue
                     try:
-                        operation = self.checked_operation(snapshot, *key)
+                        operations[key] = self.checked_operation(snapshot, *key)
                     except ValueError as error:
                         refusals.append(str(error))
-                        continue
-                    operations[key] = operation
         if not operations:
             return self.rejected_evaluation(
-                "no function holds a filter testing exactly a declared family"
+                "no evidenced function admits family routing"
                 + (f" ({'; '.join(refusals)})" if refusals else "")
             )
         recipe = RefactorRecipe(
@@ -86,12 +74,6 @@ class ForeignTypeSwitchFindingRecipeSynthesizer(
         for operation in operations.values():
             recipe = recipe.with_operation(operation)
         return self.executable_evaluation(recipe)
-
-    @staticmethod
-    def tests_exactly(family: type[ForeignFamily], type_names: tuple[str, ...]) -> bool:
-        return {
-            f"{member.__module__}.{member.__qualname__}" for member in family.members
-        } == set(type_names)
 
     @staticmethod
     def checked_operation(
@@ -110,7 +92,3 @@ class ForeignTypeSwitchFindingRecipeSynthesizer(
         )
         operation.source_edits_from_snapshot(snapshot.execution_snapshot())
         return operation
-
-
-def family_path(family: type[ForeignFamily]) -> str:
-    return f"{family.__module__}.{family.__qualname__}"
