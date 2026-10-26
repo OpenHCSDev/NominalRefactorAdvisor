@@ -107,6 +107,43 @@ each old source fragment to occur exactly once, compiles the chain into one
 physical rewrite, validates the resulting Python, and writes nothing when any
 step fails.  Review the simulated diff, then use ``--codemod-apply``.
 
+Editing Selected Field Metadata
+-------------------------------
+
+Field metadata changes can target the existing module-level class, field and constructor
+declarations instead of replacing the whole field or module. For example,
+after a field's nominal representation owns its spelling constraints:
+
+.. code-block:: json
+
+   {
+     "recipes": [{
+       "recipe_id": "derive-identity-spelling",
+       "operations": [{
+         "operation": "remove_field_metadata_keywords",
+         "file_path": "package/rows.py",
+         "target_qualname": "Publication",
+         "callee": {"file_path": "package/tables.py", "target_qualname": "Column"},
+         "field_name": "message_id",
+         "keyword_names": ["check"]
+       }]
+     }]
+   }
+
+This retains the other arguments and the field's default value, and also
+supports metadata in a generated-field initializer. Missing or ambiguous
+declarations, shadowed bindings, expanded keywords, nonliteral discarded
+values and source comments that would be lost refuse the edit. The constructor
+name must resolve to the selected declaration before the class and at the end
+of its module; this is nominal source evidence, not native invocation proof.
+
+An emptied constructor remains. ``FrozenColumn()`` can still own immutability.
+Use ``prune_field_metadata_keywords`` only when the authored ownership decision
+also permits removing the empty constructor from a direct ``typing.Annotated``
+metadata list. It keeps the other metadata or unwraps the last metadata entry
+to the original type expression. Whether a removed SQL constraint is redundant
+remains the migration author's responsibility.
+
 Chaining a Hand Patch into a Semantic Refactor
 ----------------------------------------------
 

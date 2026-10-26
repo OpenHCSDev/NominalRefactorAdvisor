@@ -336,6 +336,19 @@ class SelectionCountPayloadValueCodec(PayloadValueCodec["SelectionCountExpectati
         return json_report_object(value)
 
 
+@dataclass(frozen=True, kw_only=True)
+class DeclaredCallSelection:
+    """The shared declaration and cardinality inputs of call-edit operations."""
+
+    callee: SourceRewriteTarget = codemod_payload_field(
+        PayloadRecordValueCodec(SourceRewriteTarget)
+    )
+    selection_count: SelectionCountExpectation = codemod_payload_field(
+        SelectionCountPayloadValueCodec(),
+        default_factory=SelectionCountExpectation,
+    )
+
+
 @dataclass(frozen=True)
 class RegexPatternSet:
     """Validated regular-expression filter set for source-index selectors."""
