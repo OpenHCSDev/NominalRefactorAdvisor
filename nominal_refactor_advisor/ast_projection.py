@@ -4,6 +4,123 @@ from __future__ import annotations
 
 import ast
 from dataclasses import dataclass
+from typing import Self, cast
+
+from .declared_family import ForeignAdapter
+
+
+class ExpressionReference(ForeignAdapter):
+    """An expression read as a source-level name reference."""
+
+    __registry_key__ = "adapts"
+
+    @classmethod
+    def decoded(cls, node: object) -> Self:
+        """The reference for ``node``; total, because ``OpaqueReference`` adapts ``object``.
+
+        This only narrows ``ForeignAdapter.decoded``'s optional result.
+        """
+
+        return cast(Self, super().decoded(node))
+
+    @property
+    def identifier(self) -> str | None:
+        """A bare-name identifier; attribute access does not answer."""
+
+        return None
+
+    @property
+    def qualified_name(self) -> str | None:
+        """The complete spelling of a name or attribute expression."""
+
+        return None
+
+    @property
+    def terminal_name(self) -> str | None:
+        """The terminal name, unwrapping subscription expressions."""
+
+        return None
+
+    @property
+    def attribute_chain(self) -> tuple[str, ...] | None:
+        """Every component of a name or attribute expression."""
+
+        return None
+
+    @property
+    def attribute_projection(self) -> tuple[str, str] | None:
+        """An attribute's owner source and terminal field name."""
+
+        return None
+
+
+class SpelledReference(ExpressionReference):
+    """A reference whose whole spelling is its source text."""
+
+    @property
+    def qualified_name(self) -> str | None:
+        return ast.unparse(self.node)
+
+
+class NameReference(SpelledReference):
+    """A bare name."""
+
+    adapts = ast.Name
+
+    @property
+    def identifier(self) -> str | None:
+        return self.node.id
+
+    @property
+    def terminal_name(self) -> str | None:
+        return self.node.id
+
+    @property
+    def attribute_chain(self) -> tuple[str, ...] | None:
+        return (self.node.id,)
+
+
+class AttributeReference(SpelledReference):
+    """An attribute access on an owner expression."""
+
+    adapts = ast.Attribute
+
+    @property
+    def terminal_name(self) -> str | None:
+        return self.node.attr
+
+    @property
+    def attribute_chain(self) -> tuple[str, ...] | None:
+        parent = ExpressionReference.decoded(self.node.value).attribute_chain
+        return None if parent is None else (*parent, self.node.attr)
+
+    @property
+    def attribute_projection(self) -> tuple[str, str] | None:
+        return ast.unparse(self.node.value), self.node.attr
+
+
+class SubscriptReference(ExpressionReference):
+    """A subscription, read as the reference it subscripts."""
+
+    adapts = ast.Subscript
+
+    @property
+    def subscripted(self) -> ExpressionReference:
+        return ExpressionReference.decoded(self.node.value)
+
+    @property
+    def terminal_name(self) -> str | None:
+        return self.subscripted.terminal_name
+
+    @property
+    def attribute_chain(self) -> tuple[str, ...] | None:
+        return self.subscripted.attribute_chain
+
+
+class OpaqueReference(ExpressionReference):
+    """Anything else, including no expression: it answers no question."""
+
+    adapts = object
 
 
 class AstExpressionProjection:

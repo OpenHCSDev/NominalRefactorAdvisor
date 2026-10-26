@@ -23,7 +23,8 @@ from .codemod_source_edits import (
     SourceTextSpan,
     SourceTextSpanReplacement,
 )
-from .foreign_family import AssignmentStatement, ForeignAdapter, FunctionDefinition
+from .declared_family import ForeignAdapter
+from .foreign_family import AssignmentStatement, FunctionDefinition
 from .lexical_bindings import LEXICAL_SCOPE_BINDING_AUTHORITY
 from .observation_families import ShapeFamily, TypeArgumentResolver
 from .observation_shapes import ForeignFamilySiteModule, ForeignFamilySiteShape
