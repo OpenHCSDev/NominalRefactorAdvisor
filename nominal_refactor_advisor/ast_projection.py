@@ -4,10 +4,16 @@ from __future__ import annotations
 
 import ast
 from dataclasses import dataclass
+from typing import ClassVar
 
 
 class AstExpressionProjection:
     """Project AST expressions into source-level name identities."""
+
+    ISINSTANCE_CALLEE_NAMES: ClassVar[frozenset[str]] = frozenset({"isinstance"})
+    TYPE_TEST_CALLEE_NAMES: ClassVar[frozenset[str]] = frozenset(
+        {"isinstance", "issubclass"}
+    )
 
     @staticmethod
     def identifier(node: ast.AST | None) -> str | None:
@@ -36,6 +42,28 @@ class AstExpressionProjection:
                 return cls.terminal_name(value)
             case _:
                 return None
+
+    @classmethod
+    def isinstance_arguments(cls, node: ast.AST) -> tuple[ast.expr, ast.expr] | None:
+        """Return (subject, type argument) of a bare two-argument `isinstance` call."""
+
+        return cls._two_argument_call(node, cls.ISINSTANCE_CALLEE_NAMES)
+
+    @classmethod
+    def type_test_arguments(cls, node: ast.AST) -> tuple[ast.expr, ast.expr] | None:
+        """Return (subject, type argument) of an `isinstance` or `issubclass` call."""
+
+        return cls._two_argument_call(node, cls.TYPE_TEST_CALLEE_NAMES)
+
+    @classmethod
+    def _two_argument_call(
+        cls, node: ast.AST, callee_names: frozenset[str]
+    ) -> tuple[ast.expr, ast.expr] | None:
+        match node:
+            case ast.Call(func=callee, args=[subject, type_argument], keywords=[]):
+                if cls.terminal_name(callee) in callee_names:
+                    return subject, type_argument
+        return None
 
     @classmethod
     def attribute_chain(cls, node: ast.AST | None) -> tuple[str, ...] | None:

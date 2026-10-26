@@ -85,19 +85,15 @@ def _compact_concrete_type_case_function_facts(
         alias_sources = _top_level_attribute_aliases(function)
         grouped_checks: dict[str, list[tuple[str, ...]]] = defaultdict(list)
         for subnode in _walk_nodes(function):
-            if not (
-                isinstance(subnode, ast.Call)
-                and len(subnode.args) == 2
-                and not subnode.keywords
-                and AstExpressionProjection.terminal_name(subnode.func) == "isinstance"
-            ):
+            isinstance_arguments = AstExpressionProjection.isinstance_arguments(subnode)
+            if isinstance_arguments is None:
                 continue
+            subject, type_node = isinstance_arguments
             subject_expression = _attribute_family_subject_expression(
-                subnode.args[0], alias_sources=alias_sources
+                subject, alias_sources=alias_sources
             )
             if subject_expression is None:
                 continue
-            type_node = subnode.args[1]
             type_items = (
                 type_node.elts if isinstance(type_node, ast.Tuple) else (type_node,)
             )

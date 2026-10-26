@@ -1177,14 +1177,10 @@ def _guarded_wrapper_node_types(node: ast.If) -> tuple[str, ...] | None:
     test = node.test
     if not isinstance(test, ast.UnaryOp) or not isinstance(test.op, ast.Not):
         return None
-    operand = test.operand
-    if (
-        not isinstance(operand, ast.Call)
-        or AstExpressionProjection.terminal_name(operand.func) != "isinstance"
-        or len(operand.args) != 2
-    ):
+    isinstance_arguments = AstExpressionProjection.isinstance_arguments(test.operand)
+    if isinstance_arguments is None:
         return None
-    type_node = operand.args[1]
+    _subject, type_node = isinstance_arguments
     if isinstance(type_node, ast.Tuple):
         node_types = tuple(ast.unparse(item) for item in type_node.elts)
     else:
