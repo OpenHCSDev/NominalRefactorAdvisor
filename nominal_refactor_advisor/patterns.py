@@ -355,6 +355,16 @@ class PatternId(IntEnum):
         ),
         witness_capabilities=(CapabilityTag.PROVENANCE,),
     )
+    FOREIGN_TYPE_SWITCH_LEAD = _pattern(
+        stable_id=26,
+        display_name="Foreign Type Switch Lead (Closed Set OPEN)",
+        required_relation=(
+            "Several sites test instances against classes declared outside the "
+            "scanned repository, all from one owner module. Whether the tested "
+            "set is closed, and which site owns it, remains OPEN."
+        ),
+        witness_capabilities=(CapabilityTag.PROVENANCE,),
+    )
 
     def __new__(
         cls,

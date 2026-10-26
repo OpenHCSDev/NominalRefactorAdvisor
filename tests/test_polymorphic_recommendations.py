@@ -72,6 +72,32 @@ def incomplete(status):
     assert finding.certification is CertificationLevel.STRONG_HEURISTIC
 
 
+
+def test_member_as_call_receiver_is_a_query_not_a_recovered_case():
+    rows = findings(ExternalEnumCaseRecoveryDetector(), '''
+from enum import Enum
+class Builtin(Enum):
+    TYPE = "type"
+    LEN = "len"
+    ABS = "abs"
+    def names(self, node):
+        return getattr(node, "id", None) == self.value
+def reads_type(node):
+    if Builtin.TYPE.names(node):
+        return True
+    return False
+def reads_len(node):
+    if Builtin.LEN.names(node):
+        return True
+    return False
+def reads_abs(node):
+    if Builtin.ABS.names(node):
+        return True
+    return False
+''')
+    assert rows == []
+
+
 _HELD_RULE = '''
 from enum import Enum
 class Rule(Enum):

@@ -3,21 +3,42 @@
 from __future__ import annotations
 
 import ast
-from collections import defaultdict
+import inspect
+import sys
+from collections import Counter, defaultdict
+from collections.abc import Callable, Iterable, Mapping, Sequence
+from dataclasses import dataclass
+from typing import Self, TypeVar
 
 from ..ast_tools import ParsedModule, module_syntax_index
+from ..collection_algebra import sorted_tuple
 from ..models import RefactorFinding, SourceLocation
-from ..observation_families import ModuleExpressionShapeFamily
-from ..observation_shapes import ModuleExpressionShape
+from ..observation_families import (
+    ForeignTypeTestModuleFamily,
+    ModuleExpressionShapeFamily,
+)
+from ..observation_shapes import (
+    ForeignTypeTestModule,
+    ForeignTypeTestShape,
+    ModuleExpressionShape,
+)
 from ..patterns import PatternId
 from ..taxonomy import CapabilityTag, ObservationTag
 from ._base import (
     CANDIDATE_COLLECTION_AUTHORITY,
     CompactGroupedShapeIssueDetector,
     DetectorConfig,
+    CompactModuleProjectionDetectorMixin,
+    IssueDetector,
     PerModuleIssueDetector,
     finding_spec_template,
 )
+
+
+T = TypeVar("T")
+
+# Findings list this many type sets or divergence pairs; the rest are counted.
+DIVERGENCE_LISTING_LIMIT = 8
 
 
 class LongConditionFactoringLeadDetector(PerModuleIssueDetector):
@@ -171,4 +192,181 @@ class RepeatedModuleExpressionLeadDetector(
                 SourceLocation(shape.file_path, shape.lineno, shape.symbol)
                 for shape in sites
             ),
+        )
+
+
+class ForeignTypeSwitchDetector(
+    CompactModuleProjectionDetectorMixin[ForeignTypeTestModule], IssueDetector
+):
+    """Find `isinstance` tests on one foreign module's classes across the scan.
+
+    Every site counts: a module may legitimately hold exactly one decoder for a
+    family, but this detector does not try to recognise decoders.
+    """
+
+    module_projection_family = ForeignTypeTestModuleFamily
+
+    finding_spec = finding_spec_template(
+        PatternId.FOREIGN_TYPE_SWITCH_LEAD,
+        "Type tests on foreign classes raise a closed-set question",
+        "Several sites test instances against classes owned by one module outside this repository. Each site restates which of that module's classes it handles; a site that tests a strict subset of another site's set may have missed a case.",
+        "isinstance/issubclass sites whose type argument resolves through imports or builtins to classes of one non-repository module; closedness, owner and migration recipe OPEN",
+        "isinstance/issubclass sites on classes of one foreign module at or above the configured site count across the scanned modules",
+        (CapabilityTag.PROVENANCE,),
+        (ObservationTag.PARTIAL_VIEW,),
+    )
+
+    def _findings_from_compact_projections(
+        self,
+        projections: Sequence[ForeignTypeTestModule],
+        config: DetectorConfig,
+    ) -> list[RefactorFinding]:
+        scanned = tuple(projection.module_name for projection in projections)
+        groups: dict[str, list[ForeignTypeTestShape]] = defaultdict(list)
+        for projection in projections:
+            for shape in projection.sites:
+                if not any(
+                    _module_names_overlap(shape.owner, scanned_name)
+                    for scanned_name in scanned
+                ):
+                    groups[shape.owner].append(shape)
+        findings = (
+            self._finding_from_group(tuple(shapes), config)
+            for shapes in groups.values()
+        )
+        return [finding for finding in findings if finding is not None]
+
+    def _finding_from_group(
+        self, shapes: tuple[ForeignTypeTestShape, ...], config: DetectorConfig
+    ) -> RefactorFinding | None:
+        if len(shapes) < config.min_foreign_type_switch_sites:
+            return None
+        sites = sorted(shapes, key=lambda shape: (shape.file_path, shape.lineno))
+        type_sets = Counter(shape.type_names for shape in sites)
+        modules = {shape.file_path for shape in sites}
+        lines = [
+            f"{len(sites)} isinstance/issubclass sites in {len(modules)} module(s) "
+            f"test classes of `{sites[0].owner}`, which this repository does not "
+            "declare. Type sets seen: "
+            + _counted_list(
+                type_sets.most_common(),
+                lambda type_set: _type_set_text(type_set),
+                "type sets",
+            )
+            + ". Whether each set is meant to be closed, and which site should own "
+            "it, remains OPEN."
+        ]
+        misses = ForeignClassTwins.from_type_sets(type_sets).misses(type_sets)
+        if misses:
+            lines.append(
+                f"{sum(type_sets[type_set] for type_set, _twins in misses)} sites "
+                "test a class without its same-shape twin (possible missed case): "
+                + _counted_list(
+                    sorted(
+                        ((miss, type_sets[miss[0]]) for miss in misses),
+                        key=lambda item: -item[1],
+                    ),
+                    lambda miss: (
+                        f"{_type_set_text(miss[0])} without {_type_set_text(miss[1])}"
+                    ),
+                    "type sets",
+                )
+            )
+        return self.build_finding(
+            "\n".join(lines),
+            tuple(
+                SourceLocation(shape.file_path, shape.lineno, shape.symbol)
+                for shape in sites
+            ),
+        )
+
+
+def _module_names_overlap(owner: str, scanned_name: str) -> bool:
+    """Whether a dotted owner is a scanned module, or a package or member of one."""
+
+    return (
+        owner == scanned_name
+        or owner.startswith(f"{scanned_name}.")
+        or scanned_name.startswith(f"{owner}.")
+    )
+
+
+def _counted_list(
+    entries: Sequence[tuple[T, int]], render: Callable[[T], str], noun: str
+) -> str:
+    """The most frequent entries with their site counts, then how many were cut."""
+
+    shown = entries[:DIVERGENCE_LISTING_LIMIT]
+    text = "; ".join(f"{render(item)} x{count}" for item, count in shown)
+    hidden = len(entries) - len(shown)
+    return f"{text}; and {hidden} more {noun}" if hidden else text
+
+
+def _type_set_text(type_set: tuple[str, ...]) -> str:
+    return "`" + " | ".join(type_set) + "`"
+
+
+@dataclass(frozen=True)
+class ForeignClassTwins:
+    """Foreign classes sharing a base, match fields and field types.
+
+    Twins are one shape under two names (``ast.FunctionDef`` and
+    ``ast.AsyncFunctionDef``), so a type test naming one without the other is a
+    likely missed case. Classes are read only from modules already imported;
+    nothing is imported for analysis, and an unreadable class has no twins.
+    """
+
+    twins_by_name: Mapping[str, frozenset[str]]
+
+    @classmethod
+    def from_type_sets(cls, type_sets: Iterable[tuple[str, ...]]) -> Self:
+        names_by_shape: dict[tuple[object, ...], set[str]] = defaultdict(set)
+        for name in {name for type_set in type_sets for name in type_set}:
+            shape = cls._shape(name)
+            if shape is not None:
+                names_by_shape[shape].add(name)
+        return cls(
+            {
+                name: frozenset(names - {name})
+                for names in names_by_shape.values()
+                if len(names) > 1
+                for name in names
+            }
+        )
+
+    @staticmethod
+    def _shape(qualified_name: str) -> tuple[object, ...] | None:
+        module_name, _, attribute = qualified_name.rpartition(".")
+        module = sys.modules.get(module_name)
+        declared = None if module is None else vars(module).get(attribute)
+        if not isinstance(declared, type):
+            return None
+        match_fields = vars(declared).get("__match_args__", ())
+        if not match_fields:
+            return None
+        field_types = tuple(
+            (field_name, repr(field_type))
+            for field_name, field_type in inspect.get_annotations(declared).items()
+        )
+        return (declared.__bases__, match_fields, field_types)
+
+    def misses(
+        self, type_sets: Iterable[tuple[str, ...]]
+    ) -> tuple[tuple[tuple[str, ...], tuple[str, ...]], ...]:
+        """Each type set paired with the twins of its members that it omits."""
+
+        return tuple(
+            (type_set, missing)
+            for type_set in sorted(type_sets)
+            for missing in (
+                sorted_tuple(
+                    {
+                        twin
+                        for name in type_set
+                        for twin in self.twins_by_name.get(name, ())
+                    }
+                    - set(type_set)
+                ),
+            )
+            if missing
         )

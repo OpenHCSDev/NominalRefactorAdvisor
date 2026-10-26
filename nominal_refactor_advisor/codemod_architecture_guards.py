@@ -25,7 +25,7 @@ from typing import (
 
 from metaclass_registry import AutoRegisterMeta
 
-from .ast_tools import AstExpressionProjection
+from .ast_tools import AstExpressionProjection, BuiltinCallName
 from .codemod_paths import SourcePathCandidateSet, SourcePathResolutionAuthority
 from .codemod_payload import (
     CodemodPayloadRecord,
@@ -245,8 +245,7 @@ class ArchitectureGuardDispatchSubject:
 
     def isinstance_call_matches(self, call: ast.Call) -> bool:
         return (
-            isinstance(call.func, ast.Name)
-            and call.func.id == "isinstance"
+            BuiltinCallName.is_isinstance_callee(call.func)
             and len(call.args) >= 2
             and self.matches(call.args[0])
         )

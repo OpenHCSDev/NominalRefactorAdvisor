@@ -6,7 +6,7 @@ import ast
 from dataclasses import dataclass
 
 from .annotation_semantics import NOMINAL_ANNOTATION_SOURCE_AUTHORITY
-from .ast_tools import ClassFunctionStackNodeVisitor, ParsedModule
+from .ast_tools import BuiltinCallName, ClassFunctionStackNodeVisitor, ParsedModule
 from .class_index import (
     CompactClassFamilyIndex,
     CompactClassReferenceResolver,
@@ -97,21 +97,15 @@ class DeclaredAttributeCheckCollector(ClassFunctionStackNodeVisitor):
     def visit_Lambda(self, node: ast.Lambda) -> None:
         pass
 
-    def _builtin(self, node: ast.AST, name: str) -> bool:
-        return (
-            isinstance(node, ast.Name)
-            and node.id == name
-            and not any(name in scope for scope in self.locals)
-            and self.module_bindings.resolves_unshadowed_builtin(name)
-        )
-
     def visit_Call(self, node: ast.Call) -> None:
+        arguments = BuiltinCallName.isinstance_arguments(node)
         if (
-            self._builtin(node.func, "isinstance")
-            and len(node.args) == 2
-            and not node.keywords
+            arguments is not None
+            and BuiltinCallName.ISINSTANCE.resolves_unshadowed(
+                node.func, self.module_bindings.resolves_unshadowed_builtin, self.locals
+            )
         ):
-            self._record(node, node.args[0], node.args[1])
+            self._record(node, *arguments)
         self.generic_visit(node)
 
     def visit_Compare(self, node: ast.Compare) -> None:
@@ -124,7 +118,11 @@ class DeclaredAttributeCheckCollector(ClassFunctionStackNodeVisitor):
             ):
                 if (
                     isinstance(call, ast.Call)
-                    and self._builtin(call.func, "type")
+                    and BuiltinCallName.TYPE.resolves_unshadowed(
+                        call.func,
+                        self.module_bindings.resolves_unshadowed_builtin,
+                        self.locals,
+                    )
                     and len(call.args) == 1
                     and not call.keywords
                 ):

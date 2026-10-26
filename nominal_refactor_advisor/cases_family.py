@@ -31,7 +31,12 @@ from typing import ClassVar
 
 from metaclass_registry import AutoRegisterMeta
 
-from .ast_tools import AstParentIndex, ParsedModule, PythonSourcePathPolicy
+from .ast_tools import (
+    AstParentIndex,
+    BuiltinCallName,
+    ParsedModule,
+    PythonSourcePathPolicy,
+)
 from .codemod_runtime import CodemodSourceSnapshot
 from .codemod_source_edits import SourceTextGeometry, SourceTextSpanReplacement
 from .descent import (
@@ -50,7 +55,9 @@ from .declared_root import DeclaredRoot
 from .semantic_descent import AuthorityClaim, SemanticAuthorityKind
 
 ITERATING_CALLS = frozenset({"tuple", "list", "set", "frozenset", "sorted"})
-BOOLEAN_CALLS = frozenset({"isinstance", "issubclass", "bool", "callable", "hasattr"})
+BOOLEAN_CALLS = frozenset(
+    (*BuiltinCallName.type_test_names(), BuiltinCallName.BOOL, "callable", "hasattr")
+)
 
 
 class CallbackName(Question):
@@ -1866,7 +1873,7 @@ class CasesFamily(Cases, Descent):
                 continue
             if isinstance(parent, ast.Call) and (
                 parent.func is node
-                or (is_name(parent.func, ["isinstance", "issubclass"]))
+                or (is_name(parent.func, BuiltinCallName.type_test_names()))
             ):
                 raise handback(
                     module,

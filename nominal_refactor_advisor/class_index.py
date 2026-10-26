@@ -17,6 +17,7 @@ from abc import ABC, abstractmethod
 from collections import defaultdict, deque
 from collections.abc import (
     Hashable,
+    Iterator,
     Sequence,
 )
 from dataclasses import MISSING, dataclass, field, fields, replace
@@ -5200,7 +5201,7 @@ class _BranchReferenceTally(ABC):
 
         names_by_key: dict[str, set[str]] = defaultdict(set)
         for node in branch:
-            for subnode in ast.walk(node):
+            for subnode in self.referenced_nodes(node):
                 parts = AstExpressionProjection.attribute_chain(subnode)
                 reference = None if parts is None else self.reference(parts, receiver)
                 if reference is not None:
@@ -5208,6 +5209,11 @@ class _BranchReferenceTally(ABC):
         for key, names in names_by_key.items():
             self.site_counts[function_id][key] += 1
             self.names[function_id][key].update(names)
+
+    def referenced_nodes(self, branch_node: ast.AST) -> Iterator[ast.AST]:
+        """Every node of one test or pattern whose chain may name a reference."""
+
+        return ast.walk(branch_node)
 
     def facts(self, function_id: int) -> tuple:
         return tuple(
@@ -5217,9 +5223,23 @@ class _BranchReferenceTally(ABC):
 
 
 class _EnumMemberBranchTally(_BranchReferenceTally):
-    """``Key.CASE`` references, keyed by the chain's penultimate name."""
+    """``Key.CASE`` references, keyed by the chain's penultimate name.
+
+    A case is recovered only where a branch compares a value against it or
+    matches it as a pattern. A member used as a call receiver or argument is a
+    constant query about something else, not a decision between cases.
+    """
 
     fact_type = CompactClosedAxisBranchFact
+
+    def referenced_nodes(self, branch_node: ast.AST) -> Iterator[ast.AST]:
+        for node in ast.walk(branch_node):
+            match node:
+                case ast.Compare(left=left, comparators=comparators):
+                    for operand in (left, *comparators):
+                        yield from ast.walk(operand)
+                case ast.MatchValue(value=value):
+                    yield from ast.walk(value)
 
     def reference(
         self, parts: tuple[str, ...], receiver: str | None
@@ -5748,14 +5768,15 @@ def _compact_class_syntax_facets(
     closed_axis_functions: list[CompactClosedAxisBranchFunction] = []
     for qualname, function in syntax_index.named_functions:
         axes = enum_member_tally.facts(id(function))
-        if axes:
+        receiver_field_reads = receiver_field_tally.facts(id(function))
+        if axes or receiver_field_reads:
             closed_axis_functions.append(
                 CompactClosedAxisBranchFunction(
                     file_path=file_path,
                     line=function.lineno,
                     qualname=qualname,
                     axes=axes,
-                    receiver_field_reads=receiver_field_tally.facts(id(function)),
+                    receiver_field_reads=receiver_field_reads,
                 )
             )
     return CompactClassSyntaxFacets(

@@ -24,6 +24,7 @@ from nominal_refactor_advisor.declaration_binding_transfer import (
 )
 
 from .ast_tools import (
+    BuiltinCallName,
     ParsedModule,
     statements_without_docstring,
 )
@@ -196,10 +197,11 @@ class _TypeKeyedBehaviorMethodDescent:
         )
         if guarded_type is None:
             return body, None
-        if (
-            not ModuleNominalBindingAuthority(self.source_module)
-            .snapshot_before(self.projection_method.lineno)
-            .resolves_unshadowed_builtin("isinstance")
+        snapshot = ModuleNominalBindingAuthority(self.source_module).snapshot_before(
+            self.projection_method.lineno
+        )
+        if not BuiltinCallName.ISINSTANCE.is_unshadowed(
+            snapshot.resolves_unshadowed_builtin
         ):
             raise ValueError(
                 f"projected method {self.projection_method.name!r} uses a shadowed "
@@ -235,11 +237,8 @@ class _TypeKeyedBehaviorMethodDescent:
             return None
         call = test.operand
         if not (
-            isinstance(call, ast.Call)
-            and isinstance(call.func, ast.Name)
-            and call.func.id == "isinstance"
-            and len(call.args) == 2
-            and not call.keywords
+            BuiltinCallName.isinstance_arguments(call) is not None
+            and BuiltinCallName.is_isinstance_callee(call.func)
             and isinstance(call.args[0], ast.Name)
             and call.args[0].id == subject_name
         ):

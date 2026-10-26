@@ -21,7 +21,7 @@ import pickle
 import sys
 import tokenize
 from abc import ABC, abstractmethod
-from collections.abc import Iterable, Iterator, Mapping, Sequence
+from collections.abc import Container, Iterable, Iterator, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field, fields, is_dataclass
 from enum import Enum, StrEnum
@@ -1171,6 +1171,78 @@ class BuiltinCallName(StrEnum):
     ZIP = "zip"
 
     @classmethod
+    def type_test_names(cls) -> frozenset["BuiltinCallName"]:
+        return frozenset((cls.ISINSTANCE, cls.ISSUBCLASS))
+
+    @classmethod
+    def is_isinstance_callee(cls, func: ast.AST | None) -> bool:
+        """Whether a call target is the bare `isinstance` name."""
+
+        return cls.ISINSTANCE.is_callee(func)
+
+    @classmethod
+    def is_isinstance_name(cls, name: str | None) -> bool:
+        return name == cls.ISINSTANCE
+
+    @classmethod
+    def mentions_isinstance(cls, text: str) -> bool:
+        return cls.ISINSTANCE in text
+
+    @classmethod
+    def isinstance_arguments(cls, node: ast.AST) -> tuple[ast.expr, ast.expr] | None:
+        """Return (subject, type argument) of a two-argument `isinstance` call."""
+
+        match node:
+            case ast.Call(func=callee, args=[subject, type_argument], keywords=[]):
+                if cls.is_isinstance_name(AstExpressionProjection.terminal_name(callee)):
+                    return subject, type_argument
+        return None
+
+    def is_callee(self, func: ast.AST | None) -> bool:
+        """Whether a call target is exactly this builtin's bare name."""
+
+        return isinstance(func, ast.Name) and func.id == self
+
+    def is_unshadowed(
+        self,
+        resolves_unshadowed_builtin: Callable[[str], bool],
+        local_scopes: Iterable[Container[str]] = (),
+    ) -> bool:
+        """Whether this name still means the builtin under these bindings."""
+
+        return not any(self in scope for scope in local_scopes) and (
+            resolves_unshadowed_builtin(self)
+        )
+
+    def resolves_unshadowed(
+        self,
+        func: ast.AST | None,
+        resolves_unshadowed_builtin: Callable[[str], bool],
+        local_scopes: Iterable[Container[str]] = (),
+    ) -> bool:
+        """Whether a call target is this builtin, bare and not shadowed."""
+
+        return self.is_callee(func) and self.is_unshadowed(
+            resolves_unshadowed_builtin, local_scopes
+        )
+
+    @classmethod
+    def type_test_arguments(cls, node: ast.AST) -> tuple[ast.expr, ast.expr] | None:
+        """Return (subject, type argument) of an `isinstance` or `issubclass` call."""
+
+        return cls._two_argument_call(node, cls.type_test_names())
+
+    @classmethod
+    def _two_argument_call(
+        cls, node: ast.AST, callee_names: frozenset["BuiltinCallName"]
+    ) -> tuple[ast.expr, ast.expr] | None:
+        match node:
+            case ast.Call(func=callee, args=[subject, type_argument], keywords=[]):
+                if AstExpressionProjection.terminal_name(callee) in callee_names:
+                    return subject, type_argument
+        return None
+
+    @classmethod
     def sequence_wrapper_names(cls) -> frozenset["BuiltinCallName"]:
         return frozenset((cls.TUPLE, cls.LIST, cls.SET))
 
@@ -1502,7 +1574,7 @@ class ScopedAstObservation:
             return ScopedAstObservationRole.CLASS_SCOPE.value
         if mentions_function:
             return ScopedAstObservationRole.FUNCTION_SCOPE.value
-        if "isinstance" in text:
+        if BuiltinCallName.mentions_isinstance(text):
             return ScopedAstObservationRole.NODE_TYPE.value
         return ScopedAstObservationRole.GENERIC_SCOPE.value
 
@@ -1518,7 +1590,7 @@ class ScopedAstObservation:
             return ScopedAstObservationRole.MODULE_SCOPE_GUARD.value
         if f"{function_ref} is not None" in text:
             return ScopedAstObservationRole.FUNCTION_SCOPE_GUARD.value
-        if "isinstance" in text:
+        if BuiltinCallName.mentions_isinstance(text):
             return ScopedAstObservationRole.NODE_TYPE_GUARD.value
         return ScopedAstObservationRole.GUARDED_DELEGATE.value
 

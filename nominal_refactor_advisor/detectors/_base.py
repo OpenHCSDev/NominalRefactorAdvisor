@@ -94,6 +94,7 @@ if TYPE_CHECKING:
 
 from ..ast_tools import (
     AstExpressionProjection,
+    BuiltinCallName,
     AstParentIndex,
     BuilderCallShape,
     BuilderCallShapeFamily,
@@ -426,6 +427,10 @@ class DetectorConfig:
     min_repeated_module_expression_sites: int = detector_config_option(
         3,
         "Minimum sites of one pure module-attribute expression before surfacing a value-owner lead.",
+    )
+    min_foreign_type_switch_sites: int = detector_config_option(
+        3,
+        "Minimum isinstance/issubclass sites on one foreign module's classes before surfacing a type-switch lead.",
     )
     min_repeated_local_regex_literals: int = detector_config_option(
         3,
@@ -5422,20 +5427,17 @@ def _concrete_type_case_function_candidates_for_function(
     alias_sources = _top_level_attribute_aliases(function)
     grouped_checks: dict[str, list[ResolvedTypeNamePartition]] = defaultdict(list)
     for subnode in _walk_nodes(function):
-        if not (
-            isinstance(subnode, ast.Call)
-            and len(subnode.args) == 2
-            and (not subnode.keywords)
-            and (AstExpressionProjection.terminal_name(subnode.func) == "isinstance")
-        ):
+        isinstance_arguments = BuiltinCallName.isinstance_arguments(subnode)
+        if isinstance_arguments is None:
             continue
+        subject, type_argument = isinstance_arguments
         subject_expression = _attribute_family_subject_expression(
-            subnode.args[0], alias_sources=alias_sources
+            subject, alias_sources=alias_sources
         )
         if subject_expression is None:
             continue
         concrete_names, abstract_names = _resolved_isinstance_type_names(
-            subnode.args[1], module=module, class_index=class_index
+            type_argument, module=module, class_index=class_index
         )
         if not concrete_names:
             continue

@@ -373,6 +373,30 @@ class ModuleExpressionShape:
 
 
 @dataclass(frozen=True)
+class ForeignTypeTestShape:
+    """One `isinstance`/`issubclass` site whose type argument resolved to classes.
+
+    `type_names` are qualified class names, each reached through an import or a
+    builtin; `owner` is the one module they all come from. Whether that module
+    is declared in the scanned repository is decided against the whole scan.
+    """
+
+    file_path: str
+    lineno: int
+    symbol: str
+    owner: str
+    type_names: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class ForeignTypeTestModule:
+    """One module's type tests, kept even when empty so a scan knows its modules."""
+
+    module_name: str
+    sites: tuple[ForeignTypeTestShape, ...]
+
+
+@dataclass(frozen=True)
 class RegistrationShape:
     """Normalized record for one recovered manual registration site."""
 

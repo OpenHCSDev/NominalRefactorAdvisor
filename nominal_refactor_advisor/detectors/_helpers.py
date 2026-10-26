@@ -1177,14 +1177,10 @@ def _guarded_wrapper_node_types(node: ast.If) -> tuple[str, ...] | None:
     test = node.test
     if not isinstance(test, ast.UnaryOp) or not isinstance(test.op, ast.Not):
         return None
-    operand = test.operand
-    if (
-        not isinstance(operand, ast.Call)
-        or AstExpressionProjection.terminal_name(operand.func) != "isinstance"
-        or len(operand.args) != 2
-    ):
+    isinstance_arguments = BuiltinCallName.isinstance_arguments(test.operand)
+    if isinstance_arguments is None:
         return None
-    type_node = operand.args[1]
+    _subject, type_node = isinstance_arguments
     if isinstance(type_node, ast.Tuple):
         node_types = tuple(ast.unparse(item) for item in type_node.elts)
     else:
@@ -4356,7 +4352,6 @@ def _repeated_result_assembly_pipeline_candidates(
 
 
 _SCHEMA_ACCESSOR_FETCH_METHOD_NAMES = frozenset({"required", "optional"})
-_SCHEMA_ACCESSOR_RUNTIME_GUARD_CALL_NAMES = frozenset({"isinstance"})
 _SCHEMA_ACCESSOR_MIN_METHODS = 4
 _SCHEMA_ACCESSOR_COPY_CALL_NAMES = BuiltinCallName.schema_accessor_copy_call_names()
 _SCHEMA_ACCESSOR_SELF_NAME = "self"
@@ -4453,7 +4448,7 @@ def _schema_accessor_coercion_kinds(
             continue
         call_name = AstExpressionProjection.terminal_name(node.func)
         if (
-            call_name in _SCHEMA_ACCESSOR_RUNTIME_GUARD_CALL_NAMES
+            BuiltinCallName.is_isinstance_name(call_name)
             and node.args
             and _node_mentions_name(node.args[0], local_name)
         ):

@@ -5,10 +5,17 @@ from __future__ import annotations
 import ast
 from abc import ABC, abstractmethod
 from collections.abc import Sequence
+from collections import Counter
 from dataclasses import dataclass
+from functools import cached_property
 from typing import Callable, ClassVar, Generic, TypeVar
 
-from .class_index import module_import_names
+from .class_index import (
+    ModuleNominalBindingAuthority,
+    ModuleNominalBindingSnapshot,
+    module_import_names,
+)
+from .lexical_bindings import LEXICAL_SCOPE_BINDING_AUTHORITY
 from .export_tools import PublicExportPolicy, derive_public_exports
 from .registry_identity import DEFAULT_REGISTRY_KEY_ATTRIBUTE, class_name_registry_key
 from .native_syntax import NativePythonSyntaxIndex
@@ -17,6 +24,8 @@ from .observation_shapes import (
     BuilderCallShape,
     DynamicMethodInjectionObservation,
     FieldObservation,
+    ForeignTypeTestModule,
+    ForeignTypeTestShape,
     LiteralDispatchObservation,
     LiteralKind,
     ModuleExpressionShape,
@@ -26,6 +35,7 @@ from .observation_shapes import (
 
 from .ast_tools import (
     AstExpressionProjection,
+    BuiltinCallName,
     AstNameFamily,
     AssignObservationSpec,
     AutoRegisterMeta,
@@ -1020,6 +1030,146 @@ class ModuleExpressionShapeFamily(ShapeFamily[ModuleExpressionShape]):
     @classmethod
     def collect(cls, parsed_module: ParsedModule) -> list[ModuleExpressionShape]:
         return _module_expression_shapes(parsed_module)
+
+
+@dataclass(frozen=True)
+class TypeArgumentResolver:
+    """Resolve an `isinstance` type argument to qualified class names, fail closed.
+
+    Names resolve through the module's final import and builtin bindings; a
+    tuple, a `|` union, or a once-assigned module-level alias of either expands
+    to its members. Anything unresolved or shadowed in an enclosing function
+    makes the whole site unresolved.
+    """
+
+    parsed_module: ParsedModule
+
+    @cached_property
+    def snapshot(self) -> ModuleNominalBindingSnapshot:
+        return ModuleNominalBindingAuthority(self.parsed_module).snapshot_before(None)
+
+    @cached_property
+    def aliases(self) -> dict[str, ast.expr]:
+        assignments = [
+            (statement.targets[0].id, statement.value)
+            for statement in self.parsed_module.module.body
+            if isinstance(statement, ast.Assign)
+            and len(statement.targets) == 1
+            and isinstance(statement.targets[0], ast.Name)
+        ]
+        counts = Counter(name for name, _value in assignments)
+        return {
+            name: value
+            for name, value in assignments
+            if counts[name] == 1 and self._is_member_collection(value)
+        }
+
+    @staticmethod
+    def _is_member_collection(node: ast.AST) -> bool:
+        match node:
+            case ast.Tuple() | ast.BinOp(op=ast.BitOr()):
+                return True
+        return False
+
+    def members(
+        self,
+        node: ast.expr,
+        shadowed: frozenset[str],
+        expanding: frozenset[str] = frozenset(),
+    ) -> tuple[ast.expr, ...]:
+        match node:
+            case ast.Tuple(elts=elements):
+                return tuple(
+                    member
+                    for element in elements
+                    for member in self.members(element, shadowed, expanding)
+                )
+            case ast.BinOp(left=left, op=ast.BitOr(), right=right):
+                return (
+                    *self.members(left, shadowed, expanding),
+                    *self.members(right, shadowed, expanding),
+                )
+            case ast.Name(id=name) if (
+                name in self.aliases and name not in shadowed | expanding
+            ):
+                return self.members(self.aliases[name], shadowed, expanding | {name})
+        return (node,)
+
+    def qualified_name(self, member: ast.expr, shadowed: frozenset[str]) -> str | None:
+        if AstExpressionProjection.qualified_name(member) is None:
+            return None
+        parts = AstExpressionProjection.attribute_chain(member)
+        if parts is None or parts[0] in shadowed:
+            return None
+        reference = self.snapshot.reference_for(parts)
+        return None if reference.root_binding is None else reference.qualified_name
+
+    def qualified_names(
+        self, type_argument: ast.expr, shadowed: frozenset[str]
+    ) -> tuple[str, ...] | None:
+        members = self.members(type_argument, shadowed)
+        names = tuple(self.qualified_name(member, shadowed) for member in members)
+        if not names or None in names:
+            return None
+        return tuple(sorted(set(names)))
+
+
+def _enclosing_function_names(ancestors: Sequence[ast.AST]) -> frozenset[str]:
+    """Names rebound by any enclosing function, which hide module bindings."""
+
+    return frozenset().union(
+        *(
+            LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(ancestor.body)
+            | LEXICAL_SCOPE_BINDING_AUTHORITY.argument_names(ancestor)
+            for ancestor in ancestors
+            if isinstance(ancestor, (ast.FunctionDef, ast.AsyncFunctionDef))
+        )
+    )
+
+
+def _foreign_type_test_shapes(
+    parsed_module: ParsedModule,
+) -> list[ForeignTypeTestShape]:
+    """Collect type tests whose classes all come from one imported owner module."""
+
+    index = module_syntax_index(parsed_module.module)
+    resolver = TypeArgumentResolver(parsed_module)
+    shapes: list[ForeignTypeTestShape] = []
+    for node_index, node in index.indexed_nodes_of_type(ast.Call):
+        arguments = BuiltinCallName.type_test_arguments(node)
+        if arguments is None:
+            continue
+        names = resolver.qualified_names(
+            arguments[1], _enclosing_function_names(index.ancestor_nodes(node_index))
+        )
+        if names is None:
+            continue
+        owners = {name.rpartition(".")[0] for name in names}
+        if len(owners) != 1 or "" in owners:
+            continue
+        shapes.append(
+            ForeignTypeTestShape(
+                file_path=parsed_module.file_path,
+                lineno=node.lineno,
+                symbol=index.lexical_symbol(node_index),
+                owner=owners.pop(),
+                type_names=names,
+            )
+        )
+    return shapes
+
+
+class ForeignTypeTestModuleFamily(ShapeFamily[ForeignTypeTestModule]):
+    item_type = ForeignTypeTestModule
+
+    @classmethod
+    def collect(cls, parsed_module: ParsedModule) -> list[ForeignTypeTestModule]:
+        return [
+            ForeignTypeTestModule(
+                module_name=parsed_module.module_name,
+                sites=tuple(_foreign_type_test_shapes(parsed_module)),
+            )
+        ]
 
 
 class RegistrationShapeFamily(
