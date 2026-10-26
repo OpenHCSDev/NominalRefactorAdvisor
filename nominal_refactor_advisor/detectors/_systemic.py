@@ -1271,7 +1271,7 @@ class ExternalEnumCaseRecoveryCandidate:
         )
 
 
-def _unique_direct_enum_classes(
+def unique_direct_enum_classes(
     class_index: CompactClassFamilyIndex,
 ) -> dict[str, CompactIndexedClass]:
     return {
@@ -1284,7 +1284,7 @@ def _unique_direct_enum_classes(
     }
 
 
-def _declared_cases(enum_class: CompactIndexedClass) -> set[str]:
+def declared_cases(enum_class: CompactIndexedClass) -> set[str]:
     return {
         f"{enum_class.simple_name}.{member_name}"
         for member_name in enum_class.direct_enum_member_names
@@ -1321,7 +1321,7 @@ def _receiver_field_enum(
     return enum_classes.get(next(iter(annotated)))
 
 
-def _recovered_enum_sites(
+def recovered_enum_sites(
     class_index: CompactClassFamilyIndex,
     enum_classes: dict[str, CompactIndexedClass],
     function: CompactClosedAxisBranchFunction,
@@ -1342,7 +1342,7 @@ def _recovered_enum_sites(
                 function
             ).with_branches(
                 axis.branch_site_count,
-                set(axis.case_names) & _declared_cases(compared),
+                set(axis.case_names) & declared_cases(compared),
             )
     for read in function.receiver_field_reads:
         held = _receiver_field_enum(
@@ -1354,7 +1354,7 @@ def _recovered_enum_sites(
             continue
         sites[held.simple_name] = sites.get(
             held.simple_name, ExternalEnumCaseRecoverySite(function)
-        ).with_branches(read.branch_site_count, _declared_cases(held))
+        ).with_branches(read.branch_site_count, declared_cases(held))
     return sites
 
 
@@ -1362,7 +1362,7 @@ def _external_enum_case_recovery_candidates(
     context: CompactClassRepositoryContext,
     config: DetectorConfig,
 ) -> tuple[ExternalEnumCaseRecoveryCandidate, ...]:
-    enum_classes = _unique_direct_enum_classes(context.class_index)
+    enum_classes = unique_direct_enum_classes(context.class_index)
     keyed_axis_names = {
         spec.key_type_name
         for spec in _compact_keyed_family_axis_specs_from_context(context)
@@ -1374,7 +1374,7 @@ def _external_enum_case_recovery_candidates(
         for function in projection.closed_axis_branch_functions:
             if PythonSourcePathPolicy.is_test_path(Path(function.file_path)):
                 continue
-            for enum_name, site in _recovered_enum_sites(
+            for enum_name, site in recovered_enum_sites(
                 context.class_index, enum_classes, function
             ).items():
                 enum_class = enum_classes[enum_name]

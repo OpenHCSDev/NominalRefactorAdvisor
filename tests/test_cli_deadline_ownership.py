@@ -126,6 +126,7 @@ def test_architecture_guard_retains_scan_deadline_at_each_plan_level(
         ("--detector-capabilities",),
         ("--calibrate", "cases.json"),
         ("--predict-scan",),
+        ("--count-member-awareness",),
         ("--prove-economics",),
         ("--codemod-validate-plan", "--codemod-plan", "-"),
     ),

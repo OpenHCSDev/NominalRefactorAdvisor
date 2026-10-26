@@ -4,10 +4,29 @@ from __future__ import annotations
 
 import ast
 from dataclasses import dataclass
+from typing import ClassVar
 
 
-class AstExpressionProjection:
+class MemberProjectionOwner:
+    """A projection that owns questions about foreign member classes.
+
+    A census of which consumers name those members counts a consumer that
+    calls the projection as using its owner rather than restating the test.
+    """
+
+    covers: ClassVar[tuple[type, ...]]
+
+    @classmethod
+    def covered_member_names(cls) -> frozenset[str]:
+        """Qualified names of the foreign classes this projection answers for."""
+
+        return frozenset(f"{member.__module__}.{member.__qualname__}" for member in cls.covers)
+
+
+class AstExpressionProjection(MemberProjectionOwner):
     """Project AST expressions into source-level name identities."""
+
+    covers = (ast.Name, ast.Attribute)
 
     @staticmethod
     def identifier(node: ast.AST | None) -> str | None:

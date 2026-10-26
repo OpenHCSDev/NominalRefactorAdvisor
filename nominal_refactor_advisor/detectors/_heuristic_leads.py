@@ -225,10 +225,7 @@ class ForeignTypeSwitchDetector(
         groups: dict[str, list[ForeignTypeTestShape]] = defaultdict(list)
         for projection in projections:
             for shape in projection.sites:
-                if not any(
-                    _module_names_overlap(shape.owner, scanned_name)
-                    for scanned_name in scanned
-                ):
+                if shape.is_foreign_to(scanned):
                     groups[shape.owner].append(shape)
         findings = (
             self._finding_from_group(tuple(shapes), config)
@@ -279,16 +276,6 @@ class ForeignTypeSwitchDetector(
                 for shape in sites
             ),
         )
-
-
-def _module_names_overlap(owner: str, scanned_name: str) -> bool:
-    """Whether a dotted owner is a scanned module, or a package or member of one."""
-
-    return (
-        owner == scanned_name
-        or owner.startswith(f"{scanned_name}.")
-        or scanned_name.startswith(f"{owner}.")
-    )
 
 
 def _counted_list(
