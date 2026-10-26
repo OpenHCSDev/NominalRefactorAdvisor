@@ -269,6 +269,10 @@ Report separately:
 
 `is_clean` means the configured operation preflights and guards passed. Inspect
 which guards were present; an empty suite does not certify global architecture.
+For a refused operation, inspect the complete causal chain. A class-creation
+refusal names the original class and line; that class may precede the selected
+target in its module. Do not report the target itself as having an unproved hook
+when the named earlier declaration is what opened its binding evidence.
 Valid Python, resolved callees or signature binding do not prove an authored
 body/expression equivalent. Class simulation does not execute metaclasses or
 class bodies. Preserve fail-closed unsupported native behavior; do not fabricate
