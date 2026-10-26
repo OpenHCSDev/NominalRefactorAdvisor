@@ -407,6 +407,13 @@ class ForeignFamilySiteShape:
 
 
 @dataclass(frozen=True)
+class StaticProjectionSiteShape(ForeignFamilySiteShape):
+    """A call of a static projection class that its adapter family answers."""
+
+    projector: str
+
+
+@dataclass(frozen=True)
 class ForeignFamilySiteModule:
     """One module's sites of one family-routing shape, kept even when empty."""
 

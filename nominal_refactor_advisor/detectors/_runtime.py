@@ -55,8 +55,10 @@ from ..enum_keyed_query import (
     EnumKeyedDerivedMapFacadeModuleProjectionFamily,
 )
 from ..codemod_foreign_adapter_source import ForeignAdapterBindChainModuleFamily
+from ..codemod_static_projection_source import StaticProjectionCallModuleFamily
 from ..codemod_foreign_family_recipe import (
     ForeignAdapterBindChainFindingRecipeSynthesizer,
+    StaticProjectionAdapterFindingRecipeSynthesizer,
     ForeignFamilyRoutableFilterFindingRecipeSynthesizer,
     ForeignFamilySiteFindingRecipeSynthesizer,
 )
@@ -3097,6 +3099,29 @@ class ForeignAdapterBindChainDetector(
         "A declared adapter family answers one question about every class it adapts. An isinstance chain that binds the same locals from each class re-derives those answers arm by arm instead of asking the adapter.",
         "bind chains folded into one decode and the adapter properties that already compute their values",
         "isinstance chains over exactly one adapter family's classes whose arms bind names to the adapter properties' bodies",
+        (CapabilityTag.PROVENANCE,),
+        (ObservationTag.PARTIAL_VIEW,),
+    )
+
+
+class StaticProjectionAdapterCallDetector(
+    ForeignFamilySiteDetector, StaticProjectionAdapterFindingRecipeSynthesizer
+):
+    """Find static projection calls that a declared adapter family answers."""
+
+    module_projection_family = StaticProjectionCallModuleFamily
+    finding_message = (
+        "{count} static projection call(s) in {modules} module(s) ask what the "
+        "properties of `{family}` already answer; each can decode once with "
+        "`.decoded(...)` and read the property of the same name."
+    )
+
+    finding_spec = certified_spec(
+        PatternId.STATIC_PROJECTION_ADAPTER_CALL,
+        "Static projection calls restate a declared adapter family's properties",
+        "A static projection class re-matches the node kinds in every method. A declared adapter family answers each of those questions as a property per kind, so the call can ask the adapter instead.",
+        "static projection calls rewritten to property reads of the adapter family that answers the same question",
+        "calls of a loaded class whose public callables are all properties of one adapter family, with one positional argument",
         (CapabilityTag.PROVENANCE,),
         (ObservationTag.PARTIAL_VIEW,),
     )
