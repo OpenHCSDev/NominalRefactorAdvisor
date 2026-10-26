@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 
+from ..ast_tools import ParsedModule
 from ..carrier_collapse import ClosedCarrierCollapseComponent
 from ..carrier_expansion import DeclaredCarrierExpansionBuilder
 from ..class_index import CompactModuleClassProjectionFamily
@@ -21,6 +22,7 @@ from ..product_flow import CompactProductFlowModuleProjectionFamily
 from ..product_flow_authority import (
     CompactProductFlowRepository,
     ProductFlowRepository,
+    SourceProductFlowRepository,
 )
 from ..taxonomy import CapabilityTag, ObservationTag
 from ._base import (
@@ -45,6 +47,16 @@ class CarrierCollapseCandidateDetector(
     compact_shared_group_context_builder = staticmethod(
         CompactProductFlowRepository.from_projection_groups
     )
+
+    def _candidate_items(
+        self,
+        modules: list[ParsedModule],
+        config: DetectorConfig,
+    ) -> tuple[ClosedCarrierCollapseComponent, ...]:
+        del config
+        return self._proven_components(
+            SourceProductFlowRepository.from_modules(tuple(modules))
+        )
 
     def _candidates_from_compact_projection_groups_context(
         self,
