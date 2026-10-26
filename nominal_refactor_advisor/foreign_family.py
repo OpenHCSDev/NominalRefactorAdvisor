@@ -13,6 +13,31 @@ from metaclass_registry import AutoRegisterMeta
 from .ast_projection import AstExpressionProjection
 
 
+class DeclaredFamily:
+    """A family declared by a marker in its own body, named by its import path."""
+
+    declaration_marker: ClassVar[str]
+
+    @classmethod
+    def concrete_families(cls) -> tuple[type[Self], ...]:
+        """Every loaded family below this one that declares its own marker."""
+
+        descendants = tuple(
+            descendant
+            for child in cls.__subclasses__()
+            for descendant in (child, *child.concrete_families())
+        )
+        return tuple(
+            family for family in descendants if cls.declaration_marker in vars(family)
+        )
+
+    @classmethod
+    def import_path(cls) -> str:
+        """The qualified path a recipe names this family by."""
+
+        return f"{cls.__module__}.{cls.__qualname__}"
+
+
 class ForeignFamilyMeta(ABCMeta):
     """Registers declared members once the ABC machinery exists for the family.
 
@@ -26,7 +51,7 @@ class ForeignFamilyMeta(ABCMeta):
             cls.register(member)
 
 
-class ForeignFamily(metaclass=ForeignFamilyMeta):
+class ForeignFamily(DeclaredFamily, metaclass=ForeignFamilyMeta):
     """Foreign classes that answer one question together, tested once.
 
     Members declared in a family's own body become virtual subclasses, so ``isinstance`` on the family is the
@@ -35,24 +60,8 @@ class ForeignFamily(metaclass=ForeignFamilyMeta):
     would turn each if-chain site into a rename; sites are folded later instead.
     """
 
+    declaration_marker = "members"
     members: ClassVar[tuple[type, ...]]
-
-    @classmethod
-    def concrete_families(cls) -> tuple[type[Self], ...]:
-        """Every loaded family below this one that declares its own members."""
-
-        descendants = tuple(
-            descendant
-            for child in cls.__subclasses__()
-            for descendant in (child, *child.concrete_families())
-        )
-        return tuple(family for family in descendants if "members" in vars(family))
-
-    @classmethod
-    def import_path(cls) -> str:
-        """The qualified path a recipe names this family by."""
-
-        return f"{cls.__module__}.{cls.__qualname__}"
 
     @classmethod
     def member_names(cls) -> frozenset[str]:
@@ -76,7 +85,7 @@ class FunctionDefinition(ForeignFamily):
 
 
 @dataclass(frozen=True)
-class ForeignAdapter(ABC, metaclass=AutoRegisterMeta):
+class ForeignAdapter(DeclaredFamily, ABC, metaclass=AutoRegisterMeta):
     """A foreign node decoded once into the family that answers questions about it.
 
     A family root declares ``__registry_key__ = "adapts"`` and so owns exactly
@@ -84,8 +93,24 @@ class ForeignAdapter(ABC, metaclass=AutoRegisterMeta):
     foreign class named by its ``adapts`` attribute.
     """
 
+    declaration_marker = "__registry_key__"
     adapts: ClassVar[type]
     node: ast.AST
+
+    @classmethod
+    def adapters(cls) -> tuple[type[Self], ...]:
+        """The concrete adapters of this family, in registration order."""
+
+        return tuple(cls.__registry__.values())
+
+    @classmethod
+    def member_names(cls) -> frozenset[str]:
+        """Qualified names of the foreign classes this family adapts."""
+
+        return frozenset(
+            f"{foreign.__module__}.{foreign.__qualname__}"
+            for foreign in cls.__registry__
+        )
 
     @classmethod
     def decoded(cls, node: object) -> Self | None:

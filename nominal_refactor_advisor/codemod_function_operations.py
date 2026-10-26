@@ -30,6 +30,7 @@ from .codemod_declaration_source import (
     FunctionRegionSourceAuthority,
     FunctionSignatureSourceAuthority,
 )
+from .codemod_foreign_adapter_source import AdapterBindChainAuthority
 from .codemod_foreign_family_source import (
     ForeignFamilyFilterAuthority,
     ForeignFamilyReference,
@@ -356,6 +357,47 @@ class RouteForeignFamilyFilterOperation(SourceReprovedOperation):
                 rationale=self.rationale
                 or f"Route foreign-class filters in {target.qualname!r} through "
                 f"{reference.class_name}.",
+            ),
+            *self.required_import_mutations(
+                target.file_path,
+                import_source=reference.import_source_for(snapshot, parsed_module),
+                default_rationale=f"Import {reference.class_name}.",
+            ),
+        )
+
+
+@dataclass(frozen=True, kw_only=True)
+class FoldAdapterBindChainOperation(SourceReprovedOperation):
+    """Fold bind chains in one function into reads of a declared adapter family.
+
+    A chain of `isinstance` arms that each bind the same locals becomes
+    `fresh = Family.decoded(subject)` followed by one property read per local,
+    when the arms test exactly the family's adapted classes and every arm
+    expression is that property's body for the arm's class.
+    """
+
+    family: str = codemod_payload_field(RequiredStringPayloadValueCodec())
+
+    def source_edits_from_snapshot(
+        self, snapshot: CodemodSourceSnapshot
+    ) -> tuple[NominalSourceEdit, ...]:
+        _, target, node = self.target_node_from_context(snapshot)
+        parsed_module = snapshot.parsed_module_for_source_path(target.file_path)
+        reference = ForeignFamilyReference(self.family)
+        authority = AdapterBindChainAuthority(
+            parsed_module=parsed_module,
+            geometry=SourceTextGeometry(snapshot.sources_by_file_path[target.file_path]),
+            line_length=DeclaredRoot.line_length_for(Path(target.file_path)),
+            declaration=node,
+            reference=reference,
+        )
+        return (
+            *authority.geometry.physical_edits(
+                file_path=target.file_path,
+                replacements=authority.replacements(),
+                rationale=self.rationale
+                or f"Fold bind chains in {target.qualname!r} into "
+                f"{reference.class_name} property reads.",
             ),
             *self.required_import_mutations(
                 target.file_path,
