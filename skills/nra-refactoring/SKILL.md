@@ -34,6 +34,58 @@ migration's binding, MRO, effects and behavioral obligations.
 Do not turn an unresolved proof into a reason to praise the existing mirror:
 record the blocker and work toward proving or refining the nominal design.
 
+## The front door: count, declare the family, let NRA fold it
+
+The rule this whole skill serves: **a consumer that knows which subclass it has
+is under-abstracting.** Every `isinstance`, `match` class pattern or member
+comparison outside the family's own decoder restates a case decision the family
+should answer once. m consumers × n cases of restated decisions become m + n.
+
+1. **Count first.** `python -m nominal_refactor_advisor PKG --count-member-awareness
+   --scan-budget-seconds 600 [--json]` lists, per family (foreign modules such as
+   `ast`, declared `ForeignFamily`/`ForeignAdapter` families, enums), every consumer
+   that tests two or more members **on the same subject**, grouped by member set,
+   and which of them bypass an owner that already exists. Largest bypassing group
+   first. Tests on `x` and `x.value` are a structural path, not a case branch,
+   and do not count.
+2. **Pick the owner shape** for the top group:
+   - consumers only ask *which nodes are in the set* → a `ForeignFamily`
+     (`foreign_family.py`, e.g. `FunctionDefinition`): `within(nodes)` is the
+     one type test;
+   - consumers ask the members *different questions* → a `ForeignAdapter` family
+     (e.g. `AssignmentStatement`): one adapter per foreign class keyed on
+     `adapts`, `decoded(node)` is the one type test, siblings keep only
+     irreducible differences. A null member (`adapts = object`) replaces
+     `None` checks at call sites. When the old owner is a bag of static
+     projection methods (e.g. the deleted `AstExpressionProjection`), name the
+     family's properties after its methods: concept `static_projection_adapter`
+     then rewrites every `Projector.question(x)` to `Family.decoded(x).question`
+     and the bag is deleted;
+   - our own enum read as cases outside the enum → a class family on the enum's
+     owner.
+   Never a one-element `within((x,))` or one-member set: that is a disguised
+   predicate.
+3. **Fold through the goal search, never by hand.** Each fold ships as detector
+   + operation + recipe + concept. Dry run, then apply:
+   `python -m nominal_refactor_advisor PKG --codemod-refactor-goal CONCEPT
+   --codemod-goal-detector DETECTOR --codemod-apply --scan-budget-seconds 600 --json`.
+   `CONCEPT` is the concept key (class name minus `Concept`, snake case: e.g.
+   `foreign_family_routing`, `foreign_adapter_bind_chain`). The fold must prove
+   each site (e.g. AST-equality of each arm's expression to the adapter
+   property's body) and refuse anything it cannot prove; refusals are the next
+   widening, not a reason to hand-edit.
+4. **CI is the behaviour proof.** Commit the applied diff alone, with the command,
+   wall time and stop reason in the message. Re-run the census: the group must
+   shrink.
+5. **Every refactor also improves NRA.** A script you needed becomes an NRA
+   command, a dodge an agent used becomes a detector, a refusal that blocked a
+   real site becomes a proved widening, two near-copies you touched collapse
+   into a shared base. A refactor that leaves the tool unchanged left the next
+   one just as expensive.
+
+Verify subagent work from the diff and by re-running the command yourself; a
+report is a claim.
+
 ## Start with worked transformations
 
 Read [theory → evidence → migration](references/theory-to-workflow.md) for the
