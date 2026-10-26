@@ -12,8 +12,8 @@ from typing import ClassVar
 
 from metaclass_registry import AutoRegisterMeta
 
+from ..ast_projection import ExpressionReference
 from ..ast_tools import (
-    AstExpressionProjection,
     BuiltinCallName,
     CollectedFamily,
     ParsedModule,
@@ -328,7 +328,7 @@ class _LiteralResolver:
     def string(self, node: ast.AST, seen: frozenset[str] = frozenset()) -> str | None:
         if isinstance(node, ast.Constant) and isinstance(node.value, str):
             return node.value
-        name = AstExpressionProjection.terminal_name(node)
+        name = ExpressionReference.decoded(node).terminal_name
         if name is None or name in seen or name not in self.values_by_name:
             return None
         return self.string(self.values_by_name[name], seen | {name})
@@ -343,7 +343,7 @@ class _LiteralResolver:
             elements = node.elts
         elif (
             isinstance(node, ast.Call)
-            and AstExpressionProjection.terminal_name(node.func)
+            and ExpressionReference.decoded(node.func).terminal_name
             in BuiltinCallName.collection_factory_names()
             and len(node.args) == 1
             and not node.keywords
@@ -360,7 +360,7 @@ class _LiteralResolver:
             ):
                 return raw_values
             return None
-        name = AstExpressionProjection.terminal_name(node)
+        name = ExpressionReference.decoded(node).terminal_name
         if name is None or name in seen or name not in self.values_by_name:
             return None
         return self.boolean_tokens(self.values_by_name[name], seen | {name})
@@ -493,7 +493,7 @@ class _GetenvReadRecognizer(_EnvironmentReadRecognizer):
     ) -> _EnvironmentReadSyntax | None:
         if not isinstance(node, ast.Call):
             return None
-        chain = AstExpressionProjection.attribute_chain(node.func)
+        chain = ExpressionReference.decoded(node.func).attribute_chain
         module_call = (
             chain is not None
             and len(chain) == 2
@@ -519,7 +519,7 @@ class _EnvironGetReadRecognizer(_EnvironmentReadRecognizer):
     ) -> _EnvironmentReadSyntax | None:
         if not isinstance(node, ast.Call):
             return None
-        chain = AstExpressionProjection.attribute_chain(node.func)
+        chain = ExpressionReference.decoded(node.func).attribute_chain
         if chain is None or chain[-1] != cls.kind.method_name:
             return None
         owner = chain[:-1]
@@ -545,7 +545,7 @@ class _EnvironSubscriptReadRecognizer(_EnvironmentReadRecognizer):
     ) -> _EnvironmentReadSyntax | None:
         if not isinstance(node, ast.Subscript):
             return None
-        chain = AstExpressionProjection.attribute_chain(node.value)
+        chain = ExpressionReference.decoded(node.value).attribute_chain
         module_owner = (
             chain is not None
             and len(chain) == 2
@@ -1009,7 +1009,7 @@ class EnvironmentSemanticNameAuthority:
 def _annotation_is_bool(node: ast.AST | None) -> bool:
     return (
         node is not None
-        and AstExpressionProjection.terminal_name(node) == "bool"
+        and ExpressionReference.decoded(node).terminal_name == "bool"
     )
 
 
@@ -1158,7 +1158,7 @@ def _fixed_key_authority_wrapper_facts(
         call = _returned_call(scope)
         if call is None:
             continue
-        selector_chain = AstExpressionProjection.attribute_chain(call.func)
+        selector_chain = ExpressionReference.decoded(call.func).attribute_chain
         if selector_chain is None:
             continue
         key_expression = next(

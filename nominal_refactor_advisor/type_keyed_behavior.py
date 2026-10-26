@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from functools import cached_property
 
 from .annotation_semantics import CLASSVAR_ANNOTATION_AUTHORITY
-from .ast_tools import AstExpressionProjection
+from .ast_projection import ExpressionReference
 from .class_index import (
     CompactClassFamilyIndex,
     CompactClassReferenceResolver,
@@ -227,7 +227,7 @@ class TypeKeyedBehaviorProjectionComponentBuilder:
             node = ast.parse(expression, mode="eval").body
         except SyntaxError:
             return None
-        return AstExpressionProjection.attribute_chain(node)
+        return ExpressionReference.decoded(node).attribute_chain
 
     def _declared_target_root(
         self,
@@ -272,11 +272,11 @@ class TypeKeyedBehaviorProjectionComponentBuilder:
             annotation = annotation.slice
         if not (
             isinstance(annotation, ast.Subscript)
-            and (parts := AstExpressionProjection.attribute_chain(annotation.value))
+            and (parts := ExpressionReference.decoded(annotation.value).attribute_chain)
             and parts[-1] == "type"
         ):
             return None
-        return AstExpressionProjection.attribute_chain(annotation.slice)
+        return ExpressionReference.decoded(annotation.slice).attribute_chain
 
     @staticmethod
     def _behavior_method_names(

@@ -14,10 +14,10 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Generic, TypeVar
 
+from ..ast_projection import ExpressionReference
 from ..semantic_algebra import ObjectFamilyShape
 from ..semantic_description_length import CompressionCertificate
 from ..ast_tools import (
-    AstExpressionProjection,
     BuiltinCallName,
     CompactModuleIdentity,
     PythonSourcePathPolicy,
@@ -102,7 +102,7 @@ def _compact_concrete_type_case_function_facts(
                 {
                     type_name
                     for item in type_items
-                    if (type_name := AstExpressionProjection.terminal_name(item))
+                    if (type_name := ExpressionReference.decoded(item).terminal_name)
                     not in {None, "None", "NoneType"}
                 }
             )
@@ -726,7 +726,7 @@ def _projection_property_family_candidates(
                 continue
             if not any(
                 (
-                    AstExpressionProjection.terminal_name(decorator) == "property"
+                    ExpressionReference.decoded(decorator).terminal_name == "property"
                     for decorator in statement.decorator_list
                 )
             ):
@@ -835,7 +835,7 @@ def _is_property_method(
 ) -> bool:
     return any(
         (
-            AstExpressionProjection.terminal_name(decorator) == "property"
+            ExpressionReference.decoded(decorator).terminal_name == "property"
             for decorator in method.decorator_list
         )
     )

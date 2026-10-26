@@ -35,7 +35,10 @@ from metaclass_registry import AutoRegisterMeta
 
 from .foreign_family import FunctionDefinition
 from .interpreter import PythonVersion
-from .ast_projection import AstExpressionProjection, AstNameFamily
+from .ast_projection import (
+    AstNameFamily,
+    ExpressionReference,
+)
 from .cache_paths import ParseCacheDirectory, default_parse_cache_dir
 from .case_root import Case
 from .collection_algebra import (
@@ -1194,7 +1197,9 @@ class BuiltinCallName(StrEnum):
 
         match node:
             case ast.Call(func=callee, args=[subject, type_argument], keywords=[]):
-                if cls.is_isinstance_name(AstExpressionProjection.terminal_name(callee)):
+                if cls.is_isinstance_name(ExpressionReference.decoded(
+                    callee
+                ).terminal_name):
                     return subject, type_argument
         return None
 
@@ -1238,7 +1243,7 @@ class BuiltinCallName(StrEnum):
     ) -> tuple[ast.expr, ast.expr] | None:
         match node:
             case ast.Call(func=callee, args=[subject, type_argument], keywords=[]):
-                if AstExpressionProjection.terminal_name(callee) in callee_names:
+                if ExpressionReference.decoded(callee).terminal_name in callee_names:
                     return subject, type_argument
         return None
 
@@ -3216,7 +3221,7 @@ def _iter_class_decorator_family_calls(
 
 
 def _node_display_name(node: ast.AST) -> str:
-    return AstExpressionProjection.terminal_name(node) or node.__class__.__name__
+    return ExpressionReference.decoded(node).terminal_name or node.__class__.__name__
 
 
 @lru_cache(maxsize=None)
@@ -3758,7 +3763,7 @@ def _is_type_call_constructor(node: ast.AST) -> bool:
     return bool(
         isinstance(node, ast.Call)
         and isinstance(node.func, ast.Call)
-        and (AstExpressionProjection.terminal_name(node.func.func) == _TYPE_BUILTIN)
+        and (ExpressionReference.decoded(node.func.func).terminal_name == _TYPE_BUILTIN)
     )
 
 
@@ -3806,7 +3811,7 @@ def _dynamic_method_injection_observations(
     for node in walk_function_body_nodes(function):
         if not isinstance(node, ast.Call):
             continue
-        if AstExpressionProjection.terminal_name(node.func) != _SETATTR_BUILTIN:
+        if ExpressionReference.decoded(node.func).terminal_name != _SETATTR_BUILTIN:
             continue
         if len(node.args) < 3:
             continue
@@ -3852,7 +3857,7 @@ def _builder_call_shape(
             return False
         if not call.func.attr.startswith(("for_", "from_", "with_")):
             return False
-        owner_name = AstExpressionProjection.terminal_name(call.func.value)
+        owner_name = ExpressionReference.decoded(call.func.value).terminal_name
         if owner_name is None:
             return False
         return owner_name in module_class_names
@@ -3868,7 +3873,7 @@ def _builder_call_shape(
             return ()
         pairs: list[tuple[str, ast.AST]] = []
         for argument in call.args:
-            field_name = AstExpressionProjection.terminal_name(argument)
+            field_name = ExpressionReference.decoded(argument).terminal_name
             if field_name is None:
                 return ()
             pairs.append((field_name, argument))
@@ -3889,7 +3894,7 @@ def _builder_call_shape(
         Maybe.of(as_ast(node, ast.Call))
         .filter(lambda _call: function_name is not None)
         .combine(
-            lambda call: AstExpressionProjection.terminal_name(call.func),
+            lambda call: ExpressionReference.decoded(call.func).terminal_name,
             lambda call, callee_name: _BuilderCallContext(
                 call=call,
                 callee_name=callee_name,
@@ -3921,7 +3926,7 @@ def _builder_call_shape(
         (
             name
             for name, value in context.field_pairs
-            if AstExpressionProjection.terminal_name(value) == name
+            if ExpressionReference.decoded(value).terminal_name == name
         )
     )
     return BuilderCallShape(

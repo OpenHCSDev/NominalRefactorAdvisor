@@ -7,7 +7,7 @@ from abc import ABCMeta, abstractmethod
 from collections.abc import Iterable, Iterator
 from typing import ClassVar, Self
 
-from .ast_projection import AstExpressionProjection
+from .ast_projection import ExpressionReference
 from .declared_family import DeclaredFamily, ForeignAdapter
 
 
@@ -85,7 +85,7 @@ class AssignmentStatement(ForeignAdapter):
 
         match self.targets:
             case (target,):
-                return AstExpressionProjection.identifier(target)
+                return ExpressionReference.decoded(target).identifier
             case _:
                 return None
 

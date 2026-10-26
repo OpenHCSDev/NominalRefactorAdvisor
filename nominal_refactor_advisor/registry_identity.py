@@ -21,7 +21,7 @@ from metaclass_registry import AutoRegisterMeta, DuplicateRegistryKeyError
 from .assignment_projection import SingleAssignmentAndValueNameProjection
 from .ast_projection import (
     AstClassProjection,
-    AstExpressionProjection,
+    ExpressionReference,
 )
 from .native_declarations import NativeDeclaration
 from .value_expression import LiteralExpressionEffects
@@ -205,7 +205,7 @@ class AutoRegisterClassAuthority:
     def uses_autoregister_metaclass(self) -> bool:
         return any(
             keyword.arg == "metaclass"
-            and AstExpressionProjection.terminal_name(keyword.value)
+            and ExpressionReference.decoded(keyword.value).terminal_name
             == AUTOREGISTER_META_NAME
             for keyword in self.node.keywords
         )

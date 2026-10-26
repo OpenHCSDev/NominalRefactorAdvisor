@@ -226,7 +226,7 @@ class AstNameFamily:
 
         if isinstance(node, ast.Call):
             return self.matching_name(node.func)
-        terminal_name = AstExpressionProjection.terminal_name(node)
+        terminal_name = ExpressionReference.decoded(node).terminal_name
         return terminal_name if terminal_name in self.names else None
 
     def matches(self, node: ast.AST) -> bool:

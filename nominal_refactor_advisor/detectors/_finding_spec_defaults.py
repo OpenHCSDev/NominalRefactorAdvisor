@@ -5,7 +5,8 @@ from __future__ import annotations
 import ast
 from dataclasses import dataclass, replace
 
-from ..ast_tools import AstExpressionProjection, ParsedModule
+from ..ast_projection import ExpressionReference
+from ..ast_tools import ParsedModule
 from ._base import (
     FindingSpecConstructionCandidate,
     FindingSpecFactory,
@@ -34,7 +35,7 @@ class FindingSpecSemanticKeyword:
         field = FindingSpecSemanticField.from_keyword_name(keyword.arg)
         if field is None:
             return None
-        value_name = AstExpressionProjection.terminal_name(keyword.value)
+        value_name = ExpressionReference.decoded(keyword.value).terminal_name
         return cls(
             field=field,
             value_name=value_name,
@@ -101,7 +102,7 @@ class FindingSpecCallSemantics:
 
     @classmethod
     def from_call(cls, node: ast.Call) -> "FindingSpecCallSemantics | None":
-        constructor_name = AstExpressionProjection.terminal_name(node.func)
+        constructor_name = ExpressionReference.decoded(node.func).terminal_name
         factory = (
             None
             if constructor_name is None

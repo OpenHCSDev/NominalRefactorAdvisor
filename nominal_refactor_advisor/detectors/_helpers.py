@@ -23,8 +23,8 @@ from typing import (
 )
 
 from ..annotation_semantics import CLASSVAR_ANNOTATION_AUTHORITY
+from ..ast_projection import ExpressionReference
 from ..ast_tools import (
-    AstExpressionProjection,
     BuiltinCallName,
     SourceModule,
     walk_function_body_nodes,
@@ -89,7 +89,7 @@ class HelperSupportProjectionAuthority:
             (
                 (
                     metaclass_name
-                    := AstExpressionProjection.terminal_name(keyword.value)
+                    := ExpressionReference.decoded(keyword.value).terminal_name
                 )
                 is not None
                 and (
@@ -134,7 +134,7 @@ class HelperSupportProjectionAuthority:
     def inherits_named_registration_authority(self, node: ast.ClassDef) -> bool:
         return any(
             (
-                (base_name := AstExpressionProjection.terminal_name(base)) is not None
+                (base_name := ExpressionReference.decoded(base).terminal_name) is not None
                 and self.registration_authority_base_name(base_name)
                 for base in node.bases
             )
@@ -765,7 +765,7 @@ def _raised_exception_name(
         return None
     exc = statement.exc
     if isinstance(exc, ast.Call):
-        exc_name = AstExpressionProjection.terminal_name(exc.func)
+        exc_name = ExpressionReference.decoded(exc.func).terminal_name
         referenced_names = sorted_tuple(
             {
                 current.id
@@ -775,7 +775,7 @@ def _raised_exception_name(
         )
         if exc_name is not None:
             return (exc_name, referenced_names)
-    exc_name = AstExpressionProjection.terminal_name(exc)
+    exc_name = ExpressionReference.decoded(exc).terminal_name
     if exc_name is not None:
         return (exc_name, ())
     return None
@@ -963,7 +963,7 @@ def _structural_observation_property_candidates_for_class(
         if not isinstance(statement, ast.FunctionDef):
             continue
         if not any(
-            AstExpressionProjection.terminal_name(decorator) == "property"
+            ExpressionReference.decoded(decorator).terminal_name == "property"
             for decorator in statement.decorator_list
         ):
             continue
@@ -973,7 +973,7 @@ def _structural_observation_property_candidates_for_class(
         returned = body[0].value
         if not isinstance(returned, ast.Call):
             continue
-        constructor_name = AstExpressionProjection.terminal_name(returned.func)
+        constructor_name = ExpressionReference.decoded(returned.func).terminal_name
         if constructor_name is None:
             continue
         keyword_names = sorted_tuple(
@@ -1091,7 +1091,7 @@ def _property_alias_hook_groups(
                 continue
             if not any(
                 (
-                    AstExpressionProjection.terminal_name(decorator) == "property"
+                    ExpressionReference.decoded(decorator).terminal_name == "property"
                     for decorator in statement.decorator_list
                 )
             ):
@@ -1140,7 +1140,7 @@ def _reflective_self_attribute_candidates_for_class(
         for subnode in _walk_nodes(statement):
             if not isinstance(subnode, ast.Call):
                 continue
-            builtin_name = AstExpressionProjection.terminal_name(subnode.func)
+            builtin_name = ExpressionReference.decoded(subnode.func).terminal_name
             if builtin_name != _GETATTR_BUILTIN or len(subnode.args) != 2:
                 continue
             receiver, attribute_name_node = subnode.args[0], subnode.args[1]
@@ -1242,7 +1242,7 @@ def _guarded_wrapper_spec_pairs(
             continue
         if not isinstance(target, ast.Name) or not isinstance(value, ast.Call):
             continue
-        constructor_name = AstExpressionProjection.terminal_name(value.func)
+        constructor_name = ExpressionReference.decoded(value.func).terminal_name
         if constructor_name is None:
             continue
         referenced_functions = [
@@ -1295,7 +1295,7 @@ def _dynamic_self_field_selection_candidates_for_class(
         for subnode in _walk_nodes(statement):
             if not isinstance(subnode, ast.Call):
                 continue
-            builtin_name = AstExpressionProjection.terminal_name(subnode.func)
+            builtin_name = ExpressionReference.decoded(subnode.func).terminal_name
             if builtin_name not in _REFLECTIVE_SELF_BUILTINS:
                 continue
             if len(subnode.args) < 2:
@@ -1347,7 +1347,7 @@ def _reflective_lookup_shape(
     node: ast.AST,
 ) -> tuple[str, str, ast.AST] | None:
     if isinstance(node, ast.Call):
-        builtin_name = AstExpressionProjection.terminal_name(node.func)
+        builtin_name = ExpressionReference.decoded(node.func).terminal_name
         if builtin_name == _GETATTR_BUILTIN and len(node.args) >= 2:
             selector_node = node.args[1]
             if _constant_string(selector_node) is None:
@@ -1539,7 +1539,7 @@ def _concrete_config_field_probe_candidates(
             for subnode in _walk_nodes(method):
                 if not isinstance(subnode, ast.Call):
                     continue
-                builtin_name = AstExpressionProjection.terminal_name(subnode.func)
+                builtin_name = ExpressionReference.decoded(subnode.func).terminal_name
                 if (
                     builtin_name not in {_GETATTR_BUILTIN, _HASATTR_BUILTIN}
                     or len(subnode.args) < 2
@@ -1663,7 +1663,7 @@ def _declared_base_name_sequence(node: ast.ClassDef) -> tuple[str, ...]:
         (
             base_name
             for base_name in (
-                AstExpressionProjection.terminal_name(base) for base in node.bases
+                ExpressionReference.decoded(base).terminal_name for base in node.bases
             )
             if base_name is not None
         )
@@ -3247,7 +3247,7 @@ class TransportProjectionAuthority:
         if symbol is None:
             symbol = ast.unparse(inner.func)
         for call in reversed(chain[:-1]):
-            method_name = AstExpressionProjection.terminal_name(call.func)
+            method_name = ExpressionReference.decoded(call.func).terminal_name
             if method_name is None:
                 method_name = ast.unparse(call.func)
             symbol = f"{symbol}.{method_name}"
@@ -3377,7 +3377,7 @@ def _pipeline_stage_source(statement: ast.stmt) -> _PipelineStageSource | None:
 def _pipeline_stage(statement: ast.stmt) -> PipelineAssemblyStage | None:
     source = _pipeline_stage_source(statement)
     callee_name = (
-        AstExpressionProjection.terminal_name(source.call.func)
+        ExpressionReference.decoded(source.call.func).terminal_name
         if source is not None
         else None
     )
@@ -3554,7 +3554,7 @@ def _first_named_call_assignment(
 
 def _call_is_cast_of_parameter(call: ast.Call, parameter_name: str) -> bool:
     return (
-        AstExpressionProjection.terminal_name(call.func) == "cast"
+        ExpressionReference.decoded(call.func).terminal_name == "cast"
         and len(call.args) == 2
         and (name_id(call.args[1]) == parameter_name)
     )
@@ -3785,7 +3785,7 @@ class HelperSyntaxProjectionAuthority:
             (
                 base_name
                 for base in node.bases
-                if (base_name := AstExpressionProjection.terminal_name(base))
+                if (base_name := ExpressionReference.decoded(base).terminal_name)
                 is not None
             )
         )
@@ -4091,7 +4091,7 @@ class TupleIndexSemanticOpacityCandidateCollector:
                 call_name
                 for node in body_nodes
                 if isinstance(node, ast.Call)
-                for call_name in (AstExpressionProjection.terminal_name(node.func),)
+                for call_name in (ExpressionReference.decoded(node.func).terminal_name,)
                 if call_name in cls.carrier_calls
             }
         )
@@ -4380,9 +4380,9 @@ def _schema_accessor_fetch_call(value: ast.AST) -> tuple[str, str, str] | None:
         )
         .filter(lambda context: context[1].attr in _SCHEMA_ACCESSOR_FETCH_METHOD_NAMES)
         .combine(
-            lambda context: AstExpressionProjection.attribute_chain(
+            lambda context: ExpressionReference.decoded(
                 context[0].args[0]
-            ),
+            ).attribute_chain,
             lambda context, field_chain: (context[1], field_chain),
         )
         .filter(lambda context: len(context[1]) >= 2)
@@ -4446,7 +4446,7 @@ def _schema_accessor_coercion_kinds(
             kinds.add("none_guard")
         if not isinstance(node, ast.Call):
             continue
-        call_name = AstExpressionProjection.terminal_name(node.func)
+        call_name = ExpressionReference.decoded(node.func).terminal_name
         if (
             BuiltinCallName.is_isinstance_name(call_name)
             and node.args
