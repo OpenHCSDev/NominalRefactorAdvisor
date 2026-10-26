@@ -2754,6 +2754,72 @@ def test_dataclass_payload_operation_rederives_current_source(tmp_path: Path) ->
     assert "action.description" not in rewritten
 
 
+@pytest.mark.parametrize("partial", (False, True))
+def test_dataclass_payload_owns_complete_expression_or_only_its_field_run(
+    tmp_path: Path,
+    partial: bool,
+) -> None:
+    import ast
+
+    entries = "'left': row.left, 'right': row.right"
+    if partial:
+        entries = "'before': tag('before'), " + entries + ", 'after': tag('after')"
+    source = (
+        "from dataclasses import dataclass\n"
+        "@dataclass(frozen=True)\nclass Row:\n    left: str\n    right: str\n"
+        "events = []\n"
+        "def tag(value):\n    events.append(value)\n    return value\n"
+        f"def payload(row: Row):\n    return {{{entries}}}\n"
+    )
+    path = _write_module(tmp_path, source)
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    operation = _dataclass_payload_projection_operation(snapshot, "Row", "payload")
+    simulation = (
+        RefactorRecipe("derive-payload-boundary")
+        .with_operation(operation)
+        .simulate(snapshot)
+    )
+    rewritten = simulation.simulation.rewritten_sources[path.as_posix()]
+    payload = next(
+        node for node in ast.parse(rewritten).body
+        if isinstance(node, ast.FunctionDef) and node.name == "payload"
+    )
+    returned = payload.body[0].value
+    if partial:
+        assert isinstance(returned, ast.Dict)
+        assert sum(key is None for key in returned.keys) == 1
+    else:
+        assert isinstance(returned, ast.DictComp)
+
+    observations = []
+    for text in (source, rewritten):
+        namespace = {"__name__": __name__}
+        exec(compile(text, str(path), "exec", dont_inherit=True), namespace)
+        result = namespace["payload"](namespace["Row"]("L", "R"))
+        observations.append((result, list(result), namespace["events"]))
+    assert observations[0] == observations[1]
+
+
+def test_complete_dataclass_payload_does_not_discard_trailing_comments(
+    tmp_path: Path,
+) -> None:
+    path = _write_module(
+        tmp_path,
+        "from dataclasses import dataclass\n"
+        "@dataclass(frozen=True)\nclass Row:\n    left: str\n    right: str\n"
+        "def payload(row: Row):\n"
+        "    return {'left': row.left, 'right': row.right,  # retain this explanation\n"
+        "    }\n",
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    operation = _dataclass_payload_projection_operation(snapshot, "Row", "payload")
+    document = CodemodPlanDocument(
+        recipes=(RefactorRecipe("preserve-comment").with_operation(operation),)
+    )
+    assert not document.preflight(snapshot).report.is_clean
+    assert "retain this explanation" in path.read_text()
+
+
 def test_dataclass_payload_operation_rejects_authority_schema_drift(
     tmp_path: Path,
 ) -> None:
