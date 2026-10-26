@@ -120,7 +120,7 @@ def test_a_rebound_projector_name_is_not_rewritten(tmp_path: Path) -> None:
         "    return AstExpressionProjection.identifier(node)\n",
         encoding="utf-8",
     )
-    with pytest.raises(ValueError, match="No call"):
+    with pytest.raises(ValueError, match="No use"):
         _simulate(tmp_path, _operation(path))
 
 
@@ -164,3 +164,32 @@ def test_finding_recipe_rewrites_the_evidenced_module(tmp_path: Path) -> None:
     assert [
         item for item in analyze_path(tmp_path) if item.detector_id == DETECTOR_ID
     ] == []
+
+
+def test_reexport_through_a_loaded_module_is_rewritten(tmp_path: Path) -> None:
+    user = tmp_path / "user.py"
+    user.write_text(
+        "from nominal_refactor_advisor.ast_tools import AstExpressionProjection\n\n\n"
+        "def f(node):\n    return AstExpressionProjection.identifier(node)\n",
+        encoding="utf-8",
+    )
+    _simulate(tmp_path, _operation(user)).apply()
+    after = user.read_text(encoding="utf-8")
+    assert "ExpressionReference.decoded(node).identifier" in after
+    assert "AstExpressionProjection" not in after
+
+
+def test_an_import_another_module_takes_from_here_is_kept(tmp_path: Path) -> None:
+    hub = tmp_path / "hub.py"
+    hub.write_text(
+        "from nominal_refactor_advisor.ast_projection import AstExpressionProjection\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "user.py").write_text(
+        "from hub import AstExpressionProjection\n", encoding="utf-8"
+    )
+    with pytest.raises(ValueError, match="No use"):
+        _simulate(tmp_path, _operation(hub))
+    (tmp_path / "user.py").write_text("x = 1\n", encoding="utf-8")
+    _simulate(tmp_path, _operation(hub)).apply()
+    assert "AstExpressionProjection" not in hub.read_text(encoding="utf-8")

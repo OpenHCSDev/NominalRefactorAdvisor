@@ -447,10 +447,22 @@ class ProjectStaticCallsToAdapterOperation(SourceReprovedOperation):
             line_length=DeclaredRoot.line_length_for(Path(target.file_path)),
             projection=projection,
             family=reference,
+            other_modules=tuple(
+                snapshot.parsed_module_for_source_path(file_path)
+                for file_path in sorted(snapshot.sources_by_file_path)
+                if file_path != target.file_path
+            ),
         )
+        replacements = authority.replacements()
+        if not replacements and not authority.retired_names:
+            raise ValueError(
+                f"No use of {self.projector} in {target.file_path!r} can move to "
+                f"{self.family}"
+            )
         imports = (
             ()
-            if parsed_module.module_name == reference.module_name
+            if not replacements
+            or parsed_module.module_name == reference.module_name
             else self.required_import_mutations(
                 target.file_path,
                 import_source=reference.import_source_for(snapshot, parsed_module),
@@ -469,7 +481,7 @@ class ProjectStaticCallsToAdapterOperation(SourceReprovedOperation):
         return (
             *authority.geometry.physical_edits(
                 file_path=target.file_path,
-                replacements=authority.replacements(),
+                replacements=replacements,
                 rationale=self.rationale
                 or f"Read {reference.class_name} properties in place of "
                 f"{self.projector} calls.",

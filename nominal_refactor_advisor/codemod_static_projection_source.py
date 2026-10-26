@@ -9,6 +9,11 @@ from functools import cached_property
 from typing import Self
 
 from .ast_tools import ParsedModule, module_syntax_index
+from .class_index import (
+    ModuleNominalBindingAuthority,
+    CompactNominalBinding,
+    ModuleNominalBindingSnapshotPolicy,
+)
 from .codemod_foreign_adapter_source import AdapterPropertyBodies
 from .codemod_foreign_family_source import ForeignFamilyReference, RewrittenLineFit
 from .codemod_source_edits import (
@@ -37,10 +42,8 @@ class StaticProjection:
     def declared_for(cls, qualified_name: str) -> Self | None:
         """The projection when the loaded class's public callables all match one family."""
 
-        module_name, _, class_name = qualified_name.rpartition(".")
-        module = sys.modules.get(module_name)
-        projector = None if module is None else vars(module).get(class_name)
-        if not isinstance(projector, type):
+        projector = cls.class_named(qualified_name)
+        if projector is None:
             return None
         questions = cls.questions_of(projector)
         families = tuple(
@@ -49,6 +52,15 @@ class StaticProjection:
             if questions and questions <= frozenset(AdapterPropertyBodies(family).property_names)
         )
         return cls(projector, families[0]) if len(families) == 1 else None
+
+    @staticmethod
+    def class_named(qualified_name: str) -> type | None:
+        """The loaded class a binding's qualified name reaches, through re-exports."""
+
+        module_name, _, class_name = qualified_name.rpartition(".")
+        module = sys.modules.get(module_name)
+        declared = None if module is None else vars(module).get(class_name)
+        return declared if isinstance(declared, type) else None
 
     @staticmethod
     def questions_of(projector: type) -> frozenset[str]:
@@ -63,6 +75,31 @@ class StaticProjection:
         return self.questions_of(self.projector)
 
 
+def named_bindings(parsed_module: ParsedModule) -> dict[str, CompactNominalBinding]:
+    """Final name bindings, read past star imports; callers prove the star imports."""
+
+    return (
+        ModuleNominalBindingAuthority(parsed_module)
+        .snapshot_before(
+            None, policy=ModuleNominalBindingSnapshotPolicy.NAMED_IMPORT_PROJECTION
+        )
+        .bindings_by_name
+    )
+
+
+def star_imported_modules(parsed_module: ParsedModule) -> tuple[str, ...]:
+    """Absolute names of the modules `parsed_module` star-imports."""
+
+    parts = parsed_module.module_name.split(".")
+    package = parts if parsed_module.file_path.endswith("__init__.py") else parts[:-1]
+    return tuple(
+        ".".join((*package[: len(package) - statement.level + 1 if statement.level else 0], *filter(None, [statement.module])))
+        for statement in ast.walk(parsed_module.module)
+        if isinstance(statement, ast.ImportFrom)
+        and any(alias.name == "*" for alias in statement.names)
+    )
+
+
 @dataclass(frozen=True)
 class StaticProjectionSite:
     """`Projector.question(argument)`, one positional argument."""
@@ -75,7 +112,7 @@ class StaticProjectionSite:
 
 @dataclass(frozen=True)
 class StaticProjectionSites:
-    """Every call in one module that a declared static projection can hand to its family."""
+    """Every use in one module of a declared static projection and its import bindings."""
 
     parsed_module: ParsedModule
     projection: StaticProjection
@@ -95,14 +132,35 @@ class StaticProjectionSites:
                     names.add(name)
                 case ast.arg(arg=name):
                     names.add(name)
-                case ast.FunctionDef(name=name) | ast.AsyncFunctionDef(name=name) | ast.ClassDef(name=name):
-                    names.add(name)
         return frozenset(names)
 
     @cached_property
+    def bound_names(self) -> frozenset[str]:
+        """Names this module binds that reach the projector class.
+
+        A star import cannot silently rebind a name when every star-imported
+        module is loaded and either lacks the name or holds the same class.
+        """
+
+        return frozenset(
+            name
+            for name, binding in named_bindings(self.parsed_module).items()
+            if name not in self.shadowing_names
+            and StaticProjection.class_named(binding.qualified_name)
+            is self.projection.projector
+            and self.star_imports_keep(name)
+        )
+
+    def star_imports_keep(self, name: str) -> bool:
+        projector = self.projection.projector
+        return all(
+            (module := sys.modules.get(star_module)) is not None
+            and vars(module).get(name, projector) is projector
+            for star_module in star_imported_modules(self.parsed_module)
+        )
+
+    @cached_property
     def sites(self) -> tuple[StaticProjectionSite, ...]:
-        resolver = TypeArgumentResolver(self.parsed_module)
-        resolved: dict[str, bool] = {}
         sites = []
         for node in ast.walk(self.parsed_module.module):
             match node:
@@ -110,31 +168,49 @@ class StaticProjectionSites:
                     func=ast.Attribute(value=ast.Name(id=name), attr=question),
                     args=[argument],
                     keywords=[],
-                ) if question in self.projection.questions and not isinstance(
-                    argument, ast.Starred
+                ) if (
+                    name in self.bound_names
+                    and question in self.projection.questions
+                    and not isinstance(argument, ast.Starred)
                 ):
-                    if name not in resolved:
-                        reference = resolver.snapshot.reference_for((name,))
-                        resolved[name] = (
-                            name not in self.shadowing_names
-                            and reference.root_binding is not None
-                            and reference.qualified_name == self.projector_name
-                        )
-                    if resolved[name]:
-                        sites.append(StaticProjectionSite(node, argument, question, name))
+                    sites.append(StaticProjectionSite(node, argument, question, name))
         return tuple(sorted(sites, key=lambda site: (site.call.lineno, site.call.col_offset)))
 
     @cached_property
-    def remaining_projector_names(self) -> frozenset[str]:
-        """Names of the projector still read once every site is rewritten."""
+    def retired_names(self) -> tuple[str, ...]:
+        """Bound names that no read keeps alive once every site is rewritten."""
 
         rewritten = {id(site.call.func.value) for site in self.sites}
-        return frozenset(
+        read = {
             node.id
             for node in ast.walk(self.parsed_module.module)
-            if isinstance(node, ast.Name)
-            and node.id in {site.name for site in self.sites}
-            and id(node) not in rewritten
+            if isinstance(node, ast.Name) and id(node) not in rewritten
+        }
+        return tuple(sorted((self.bound_names - read) & self.import_statements.keys()))
+
+    @cached_property
+    def import_statements(self) -> dict[str, ast.ImportFrom]:
+        """The from-import statement that binds each retired name."""
+
+        return {
+            alias.asname or alias.name: statement
+            for statement in ast.walk(self.parsed_module.module)
+            if isinstance(statement, ast.ImportFrom)
+            for alias in statement.names
+            if (alias.asname or alias.name) in self.bound_names
+        }
+
+    @cached_property
+    def unused_import_statements(self) -> tuple[ast.ImportFrom, ...]:
+        """Import statements binding the projector where no site needs them."""
+
+        used = {site.name for site in self.sites}
+        return tuple(
+            dict.fromkeys(
+                statement
+                for name, statement in self.import_statements.items()
+                if name not in used
+            )
         )
 
 
@@ -217,23 +293,46 @@ class StaticProjectionAuthority:
         )
 
     def replacements(self) -> tuple[SourceTextSpanReplacement, ...]:
-        if not self.outermost:
-            raise ValueError(
-                f"No call of {self.found.projector_name} has a property on "
-                f"{self.family.import_path}"
-            )
         return tuple(self.replacement(site) for site in self.outermost)
 
-    @property
+    @cached_property
     def retired_names(self) -> tuple[str, ...]:
-        """Import bindings of the projector that no read keeps alive."""
+        """Projector bindings nothing reads, here or in a module importing them from here."""
 
-        remaining = self.found.remaining_projector_names
-        return tuple(sorted({site.name for site in self.found.sites} - remaining))
+        return tuple(
+            name
+            for name in self.found.retired_names
+            if name not in self.imported_from_here
+        )
+
+    @cached_property
+    def imported_from_here(self) -> frozenset[str]:
+        """Retired names another module of the source set still imports from this one."""
+
+        qualified = {
+            f"{self.parsed_module.module_name}.{name}": name
+            for name in self.found.retired_names
+        }
+        named = {
+            qualified[binding.qualified_name]
+            for other in self.other_modules
+            for binding in named_bindings(other).values()
+            if binding.qualified_name in qualified
+        }
+        starred = {
+            node.id
+            for other in self.other_modules
+            if self.parsed_module.module_name in star_imported_modules(other)
+            for node in ast.walk(other.module)
+            if isinstance(node, ast.Name) and node.id in self.found.retired_names
+        }
+        return frozenset(named | starred)
+
+    other_modules: tuple[ParsedModule, ...] = ()
 
 
 class StaticProjectionCallModuleFamily(ShapeFamily[ForeignFamilySiteModule]):
-    """Calls of a static projection class whose questions an adapter family answers."""
+    """Uses of a static projection class whose questions an adapter family answers."""
 
     item_type = ForeignFamilySiteModule
 
@@ -241,17 +340,24 @@ class StaticProjectionCallModuleFamily(ShapeFamily[ForeignFamilySiteModule]):
     def collect(cls, parsed_module: ParsedModule) -> list[ForeignFamilySiteModule]:
         index = module_syntax_index(parsed_module.module)
         node_indices = {
-            call: node_index for node_index, call in index.indexed_nodes_of_type(ast.Call)
+            statement: node_index
+            for node_index, statement in index.indexed_nodes_of_type(ast.Call)
+        } | {
+            statement: node_index
+            for node_index, statement in index.indexed_nodes_of_type(ast.ImportFrom)
         }
         shapes = []
         for projection in cls.loaded_projections(parsed_module):
             found = StaticProjectionSites(parsed_module, projection)
-            for site in found.sites:
+            for node in (
+                *(site.call for site in found.sites),
+                *found.unused_import_statements,
+            ):
                 shapes.append(
                     StaticProjectionSiteShape(
                         file_path=parsed_module.file_path,
-                        lineno=site.call.lineno,
-                        symbol=index.lexical_symbol(node_indices[site.call]),
+                        lineno=node.lineno,
+                        symbol=index.lexical_symbol(node_indices[node]),
                         family=projection.family.import_path(),
                         projector=found.projector_name,
                     )
@@ -265,21 +371,15 @@ class StaticProjectionCallModuleFamily(ShapeFamily[ForeignFamilySiteModule]):
 
     @staticmethod
     def loaded_projections(parsed_module: ParsedModule) -> tuple[StaticProjection, ...]:
-        """Projections for the names this module's own bindings resolve to."""
+        """The projections of the classes this module's own bindings reach."""
 
-        snapshot = TypeArgumentResolver(parsed_module).snapshot
-        references = (
-            snapshot.reference_for((node.value.id,))
-            for node in ast.walk(parsed_module.module)
-            if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name)
-        )
-        qualified = {
-            reference.qualified_name
-            for reference in references
-            if reference.root_binding is not None
-        }
-        return tuple(
-            projection
-            for projection in map(StaticProjection.declared_for, sorted(qualified))
+        bindings = named_bindings(parsed_module)
+        projections = {
+            projection.projector: projection
+            for projection in map(
+                StaticProjection.declared_for,
+                sorted({binding.qualified_name for binding in bindings.values()}),
+            )
             if projection is not None
-        )
+        }
+        return tuple(projections.values())
