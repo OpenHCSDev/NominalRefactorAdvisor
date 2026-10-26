@@ -22,7 +22,7 @@ from .codemod_source_edits import (
 )
 from .foreign_family import ForeignFamily, FunctionDefinition
 from .observation_families import ShapeFamily, TypeArgumentResolver
-from .observation_shapes import ForeignFamilyFilterModule, ForeignFamilyFilterShape
+from .observation_shapes import ForeignFamilySiteModule, ForeignFamilySiteShape
 
 FunctionNode = ast.FunctionDef | ast.AsyncFunctionDef
 
@@ -319,13 +319,13 @@ class ForeignFamilyFilterAuthority:
         return tuple(sorted(replacements, key=lambda item: item.start_offset))
 
 
-class ForeignFamilyFilterModuleFamily(ShapeFamily[ForeignFamilyFilterModule]):
+class ForeignFamilyFilterModuleFamily(ShapeFamily[ForeignFamilySiteModule]):
     """Filters testing exactly the members of a declared concrete family."""
 
-    item_type = ForeignFamilyFilterModule
+    item_type = ForeignFamilySiteModule
 
     @classmethod
-    def collect(cls, parsed_module: ParsedModule) -> list[ForeignFamilyFilterModule]:
+    def collect(cls, parsed_module: ParsedModule) -> list[ForeignFamilySiteModule]:
         index = module_syntax_index(parsed_module.module)
         node_indices = {
             call: node_index
@@ -343,7 +343,7 @@ class ForeignFamilyFilterModuleFamily(ShapeFamily[ForeignFamilyFilterModule]):
                 family = families_by_members.get(frozenset(tested or ()))
                 if family is not None:
                     shapes.append(
-                        ForeignFamilyFilterShape(
+                        ForeignFamilySiteShape(
                             file_path=parsed_module.file_path,
                             lineno=site.condition.lineno,
                             symbol=index.lexical_symbol(node_indices[site.condition]),
@@ -351,7 +351,7 @@ class ForeignFamilyFilterModuleFamily(ShapeFamily[ForeignFamilyFilterModule]):
                         )
                     )
         return [
-            ForeignFamilyFilterModule(
+            ForeignFamilySiteModule(
                 module_name=parsed_module.module_name,
                 sites=tuple(sorted(shapes, key=lambda shape: shape.lineno)),
             )

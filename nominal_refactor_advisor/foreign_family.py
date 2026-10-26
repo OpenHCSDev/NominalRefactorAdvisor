@@ -3,9 +3,39 @@
 from __future__ import annotations
 
 import ast
-from abc import ABCMeta
+from abc import ABC, ABCMeta, abstractmethod
 from collections.abc import Iterable, Iterator
+from dataclasses import dataclass
 from typing import ClassVar, Self
+
+from metaclass_registry import AutoRegisterMeta
+
+from .ast_projection import AstExpressionProjection
+
+
+class DeclaredFamily:
+    """A family declared by a marker in its own body, named by its import path."""
+
+    declaration_marker: ClassVar[str]
+
+    @classmethod
+    def concrete_families(cls) -> tuple[type[Self], ...]:
+        """Every loaded family below this one that declares its own marker."""
+
+        descendants = tuple(
+            descendant
+            for child in cls.__subclasses__()
+            for descendant in (child, *child.concrete_families())
+        )
+        return tuple(
+            family for family in descendants if cls.declaration_marker in vars(family)
+        )
+
+    @classmethod
+    def import_path(cls) -> str:
+        """The qualified path a recipe names this family by."""
+
+        return f"{cls.__module__}.{cls.__qualname__}"
 
 
 class ForeignFamilyMeta(ABCMeta):
@@ -21,7 +51,7 @@ class ForeignFamilyMeta(ABCMeta):
             cls.register(member)
 
 
-class ForeignFamily(metaclass=ForeignFamilyMeta):
+class ForeignFamily(DeclaredFamily, metaclass=ForeignFamilyMeta):
     """Foreign classes that answer one question together, tested once.
 
     Members declared in a family's own body become virtual subclasses, so ``isinstance`` on the family is the
@@ -30,24 +60,8 @@ class ForeignFamily(metaclass=ForeignFamilyMeta):
     would turn each if-chain site into a rename; sites are folded later instead.
     """
 
+    declaration_marker = "members"
     members: ClassVar[tuple[type, ...]]
-
-    @classmethod
-    def concrete_families(cls) -> tuple[type[Self], ...]:
-        """Every loaded family below this one that declares its own members."""
-
-        descendants = tuple(
-            descendant
-            for child in cls.__subclasses__()
-            for descendant in (child, *child.concrete_families())
-        )
-        return tuple(family for family in descendants if "members" in vars(family))
-
-    @classmethod
-    def import_path(cls) -> str:
-        """The qualified path a recipe names this family by."""
-
-        return f"{cls.__module__}.{cls.__qualname__}"
 
     @classmethod
     def member_names(cls) -> frozenset[str]:
@@ -68,3 +82,113 @@ class FunctionDefinition(ForeignFamily):
     """A def or async def statement."""
 
     members = (ast.FunctionDef, ast.AsyncFunctionDef)
+
+
+@dataclass(frozen=True)
+class ForeignAdapter(DeclaredFamily, ABC, metaclass=AutoRegisterMeta):
+    """A foreign node decoded once into the family that answers questions about it.
+
+    A family root declares ``__registry_key__ = "adapts"`` and so owns exactly
+    one registry; each concrete adapter below it is registered under the
+    foreign class named by its ``adapts`` attribute.
+    """
+
+    declaration_marker = "__registry_key__"
+    adapts: ClassVar[type]
+    node: ast.AST
+
+    @classmethod
+    def adapters(cls) -> tuple[type[Self], ...]:
+        """The concrete adapters of this family, in registration order."""
+
+        return tuple(cls.__registry__.values())
+
+    @classmethod
+    def member_names(cls) -> frozenset[str]:
+        """Qualified names of the foreign classes this family adapts."""
+
+        return frozenset(
+            f"{foreign.__module__}.{foreign.__qualname__}"
+            for foreign in cls.__registry__
+        )
+
+    @classmethod
+    def decoded(cls, node: object) -> Self | None:
+        """The adapter of this family for ``node``; the family's one type test.
+
+        The most specific registered class on the node's MRO wins, so an
+        adapter for a subclass overrides an adapter for its base.
+        """
+
+        for foreign in type(node).__mro__:
+            adapter = cls.__registry__.get(foreign)
+            if adapter is not None:
+                return adapter(node)
+        return None
+
+    @classmethod
+    def within(cls, nodes: Iterable[object]) -> Iterator[Self]:
+        """Lazily decode ``nodes`` in order, skipping those this family lacks."""
+
+        return (
+            adapter
+            for adapter in map(cls.decoded, nodes)
+            if adapter is not None
+        )
+
+
+class AssignmentStatement(ForeignAdapter):
+    """An assignment statement: what it binds, to which value, under which annotation."""
+
+    __registry_key__ = "adapts"
+
+    @property
+    @abstractmethod
+    def targets(self) -> tuple[ast.expr, ...]:
+        """Every expression the statement binds."""
+
+    @property
+    def value(self) -> ast.expr | None:
+        """The assigned expression, absent for a bare annotation."""
+
+        return self.node.value
+
+    @property
+    def annotation(self) -> ast.expr | None:
+        """The declared annotation, absent unless the statement carries one."""
+
+        return None
+
+    @property
+    def single_name(self) -> str | None:
+        """The identifier when exactly one target is a bare name."""
+
+        match self.targets:
+            case (target,):
+                return AstExpressionProjection.identifier(target)
+            case _:
+                return None
+
+
+class AssignStatement(AssignmentStatement):
+    """``a = b = value``."""
+
+    adapts = ast.Assign
+
+    @property
+    def targets(self) -> tuple[ast.expr, ...]:
+        return tuple(self.node.targets)
+
+
+class AnnAssignStatement(AssignmentStatement):
+    """``target: annotation`` with or without a value."""
+
+    adapts = ast.AnnAssign
+
+    @property
+    def targets(self) -> tuple[ast.expr, ...]:
+        return (self.node.target,)
+
+    @property
+    def annotation(self) -> ast.expr | None:
+        return self.node.annotation

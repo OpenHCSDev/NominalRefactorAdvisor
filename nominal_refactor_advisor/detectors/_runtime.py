@@ -54,8 +54,11 @@ from ..enum_keyed_query import (
     EnumKeyedDerivedMapFacadeModuleProjection,
     EnumKeyedDerivedMapFacadeModuleProjectionFamily,
 )
+from ..codemod_foreign_adapter_source import ForeignAdapterBindChainModuleFamily
 from ..codemod_foreign_family_recipe import (
+    ForeignAdapterBindChainFindingRecipeSynthesizer,
     ForeignFamilyRoutableFilterFindingRecipeSynthesizer,
+    ForeignFamilySiteFindingRecipeSynthesizer,
 )
 from ..codemod_foreign_family_source import ForeignFamilyFilterModuleFamily
 from ..codemod import (
@@ -75,8 +78,8 @@ from ..models import (
     SourceLocation,
 )
 from ..observation_shapes import (
-    ForeignFamilyFilterModule,
-    ForeignFamilyFilterShape,
+    ForeignFamilySiteModule,
+    ForeignFamilySiteShape,
 )
 from ..patterns import PatternId
 from ..semantic_identity import (
@@ -3015,14 +3018,55 @@ class ScopedShapeWrapperDetector(PerModuleIssueDetector):
         ]
 
 
-class ForeignFamilyRoutableFilterDetector(
-    CompactModuleProjectionDetectorMixin[ForeignFamilyFilterModule],
-    ForeignFamilyRoutableFilterFindingRecipeSynthesizer,
+class ForeignFamilySiteDetector(
+    CompactModuleProjectionDetectorMixin[ForeignFamilySiteModule],
+    ForeignFamilySiteFindingRecipeSynthesizer,
     IssueDetector,
+    ABC,
+):
+    """Report, per declared family, the sites its recipe can move onto it."""
+
+    finding_message: ClassVar[str]
+
+    def _findings_from_compact_projections(
+        self,
+        projections: Sequence[ForeignFamilySiteModule],
+        config: DetectorConfig,
+    ) -> list[RefactorFinding]:
+        del config
+        sites_by_family: dict[str, list[ForeignFamilySiteShape]] = defaultdict(list)
+        for projection in projections:
+            for site in projection.sites:
+                sites_by_family[site.family].append(site)
+        return [
+            self.build_finding(
+                self.finding_message.format(
+                    count=len(sites),
+                    modules=len({site.file_path for site in sites}),
+                    family=family,
+                ),
+                tuple(
+                    SourceLocation(site.file_path, site.lineno, site.symbol)
+                    for site in sorted(
+                        sites, key=lambda site: (site.file_path, site.lineno)
+                    )
+                ),
+            )
+            for family, sites in sorted(sites_by_family.items())
+        ]
+
+
+class ForeignFamilyRoutableFilterDetector(
+    ForeignFamilySiteDetector, ForeignFamilyRoutableFilterFindingRecipeSynthesizer
 ):
     """Find filters that restate the classes a declared foreign family owns."""
 
     module_projection_family = ForeignFamilyFilterModuleFamily
+    finding_message = (
+        "{count} filter site(s) in {modules} module(s) test exactly the classes "
+        "of `{family}`; each can iterate `.within(...)` on it instead of "
+        "restating the type test."
+    )
 
     finding_spec = certified_spec(
         PatternId.FOREIGN_FAMILY_ROUTABLE_FILTER,
@@ -3034,28 +3078,25 @@ class ForeignFamilyRoutableFilterDetector(
         (ObservationTag.PARTIAL_VIEW,),
     )
 
-    def _findings_from_compact_projections(
-        self,
-        projections: Sequence[ForeignFamilyFilterModule],
-        config: DetectorConfig,
-    ) -> list[RefactorFinding]:
-        del config
-        sites_by_family: dict[str, list[ForeignFamilyFilterShape]] = defaultdict(list)
-        for projection in projections:
-            for site in projection.sites:
-                sites_by_family[site.family].append(site)
-        return [
-            self.build_finding(
-                f"{len(sites)} filter site(s) in "
-                f"{len({site.file_path for site in sites})} module(s) test exactly "
-                f"the classes of `{family}`; each can iterate `.within(...)` on it "
-                "instead of restating the type test.",
-                tuple(
-                    SourceLocation(site.file_path, site.lineno, site.symbol)
-                    for site in sorted(
-                        sites, key=lambda site: (site.file_path, site.lineno)
-                    )
-                ),
-            )
-            for family, sites in sorted(sites_by_family.items())
-        ]
+
+class ForeignAdapterBindChainDetector(
+    ForeignFamilySiteDetector, ForeignAdapterBindChainFindingRecipeSynthesizer
+):
+    """Find bind chains that restate what a declared adapter family computes."""
+
+    module_projection_family = ForeignAdapterBindChainModuleFamily
+    finding_message = (
+        "{count} bind chain(s) in {modules} module(s) read, class by class, "
+        "what the properties of `{family}` already compute; each can decode "
+        "once with `.decoded(...)` and read those properties."
+    )
+
+    finding_spec = certified_spec(
+        PatternId.FOREIGN_ADAPTER_BIND_CHAIN,
+        "Bind chains restate a declared adapter family's properties",
+        "A declared adapter family answers one question about every class it adapts. An isinstance chain that binds the same locals from each class re-derives those answers arm by arm instead of asking the adapter.",
+        "bind chains folded into one decode and the adapter properties that already compute their values",
+        "isinstance chains over exactly one adapter family's classes whose arms bind names to the adapter properties' bodies",
+        (CapabilityTag.PROVENANCE,),
+        (ObservationTag.PARTIAL_VIEW,),
+    )

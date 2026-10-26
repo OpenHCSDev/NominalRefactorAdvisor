@@ -374,6 +374,16 @@ class PatternId(IntEnum):
         ),
         witness_capabilities=(CapabilityTag.PROVENANCE,),
     )
+    FOREIGN_ADAPTER_BIND_CHAIN = _pattern(
+        stable_id=28,
+        display_name="Foreign Adapter Bind Chain",
+        required_relation=(
+            "An isinstance chain binds the same locals from each class of a "
+            "declared adapter family, and every arm expression is the property "
+            "the adapter already implements for that class."
+        ),
+        witness_capabilities=(CapabilityTag.PROVENANCE,),
+    )
 
     def __new__(
         cls,

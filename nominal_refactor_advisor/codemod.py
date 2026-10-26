@@ -148,6 +148,7 @@ from .codemod_function_operations import (
     ReplaceFunctionBodyOperation as ReplaceFunctionBodyOperation,
     ReplaceFunctionDecoratorsOperation as ReplaceFunctionDecoratorsOperation,
     ReplaceFunctionSignatureOperation as ReplaceFunctionSignatureOperation,
+    FoldAdapterBindChainOperation as FoldAdapterBindChainOperation,
     RouteForeignFamilyFilterOperation as RouteForeignFamilyFilterOperation,
 )
 from .codemod_operations import (
@@ -735,6 +736,7 @@ from .refactor_concepts import (
     AutoRegisterClassRegistryConcept as AutoRegisterClassRegistryConcept,
     AutoRegisterConcept as AutoRegisterConcept,
     AutoRegisterMroOrderingConcept as AutoRegisterMroOrderingConcept,
+    ForeignAdapterBindChainConcept as ForeignAdapterBindChainConcept,
     ForeignFamilyRoutingConcept as ForeignFamilyRoutingConcept,
     AutoRegisterStrategyFamilyConcept as AutoRegisterStrategyFamilyConcept,
     CallMappingAuthorityConcept as CallMappingAuthorityConcept,

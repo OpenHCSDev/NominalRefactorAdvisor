@@ -397,8 +397,8 @@ class ForeignTypeTestModule:
 
 
 @dataclass(frozen=True)
-class ForeignFamilyFilterShape:
-    """One filter whose tested classes are exactly one declared family's members."""
+class ForeignFamilySiteShape:
+    """One site whose tested classes are exactly one declared family's members."""
 
     file_path: str
     lineno: int
@@ -407,11 +407,11 @@ class ForeignFamilyFilterShape:
 
 
 @dataclass(frozen=True)
-class ForeignFamilyFilterModule:
-    """One module's family-routable filters, kept even when empty."""
+class ForeignFamilySiteModule:
+    """One module's sites of one family-routing shape, kept even when empty."""
 
     module_name: str
-    sites: tuple[ForeignFamilyFilterShape, ...]
+    sites: tuple[ForeignFamilySiteShape, ...]
 
 
 @dataclass(frozen=True)
