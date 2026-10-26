@@ -97,21 +97,12 @@ class DeclaredAttributeCheckCollector(ClassFunctionStackNodeVisitor):
     def visit_Lambda(self, node: ast.Lambda) -> None:
         pass
 
-    def _builtin(self, node: ast.AST, name: str) -> bool:
-        return (
-            isinstance(node, ast.Name)
-            and node.id == name
-            and not any(name in scope for scope in self.locals)
-            and self.module_bindings.resolves_unshadowed_builtin(name)
-        )
-
     def visit_Call(self, node: ast.Call) -> None:
         arguments = BuiltinCallName.isinstance_arguments(node)
         if (
             arguments is not None
-            and BuiltinCallName.is_isinstance_callee(node.func)
-            and BuiltinCallName.isinstance_unshadowed(
-                self.module_bindings.resolves_unshadowed_builtin, self.locals
+            and BuiltinCallName.ISINSTANCE.resolves_unshadowed(
+                node.func, self.module_bindings.resolves_unshadowed_builtin, self.locals
             )
         ):
             self._record(node, *arguments)
@@ -127,7 +118,11 @@ class DeclaredAttributeCheckCollector(ClassFunctionStackNodeVisitor):
             ):
                 if (
                     isinstance(call, ast.Call)
-                    and self._builtin(call.func, "type")
+                    and BuiltinCallName.TYPE.resolves_unshadowed(
+                        call.func,
+                        self.module_bindings.resolves_unshadowed_builtin,
+                        self.locals,
+                    )
                     and len(call.args) == 1
                     and not call.keywords
                 ):

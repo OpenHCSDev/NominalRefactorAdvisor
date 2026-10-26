@@ -1178,7 +1178,7 @@ class BuiltinCallName(StrEnum):
     def is_isinstance_callee(cls, func: ast.AST | None) -> bool:
         """Whether a call target is the bare `isinstance` name."""
 
-        return isinstance(func, ast.Name) and cls.is_isinstance_name(func.id)
+        return cls.ISINSTANCE.is_callee(func)
 
     @classmethod
     def is_isinstance_name(cls, name: str | None) -> bool:
@@ -1198,17 +1198,33 @@ class BuiltinCallName(StrEnum):
                     return subject, type_argument
         return None
 
-    @classmethod
-    def isinstance_unshadowed(
-        cls,
+    def is_callee(self, func: ast.AST | None) -> bool:
+        """Whether a call target is exactly this builtin's bare name."""
+
+        return isinstance(func, ast.Name) and func.id == self
+
+    def is_unshadowed(
+        self,
         resolves_unshadowed_builtin: Callable[[str], bool],
         local_scopes: Iterable[Container[str]] = (),
     ) -> bool:
-        """Whether `isinstance` still means the builtin under these bindings."""
+        """Whether this name still means the builtin under these bindings."""
 
-        return not any(
-            cls.ISINSTANCE in scope for scope in local_scopes
-        ) and resolves_unshadowed_builtin(cls.ISINSTANCE)
+        return not any(self in scope for scope in local_scopes) and (
+            resolves_unshadowed_builtin(self)
+        )
+
+    def resolves_unshadowed(
+        self,
+        func: ast.AST | None,
+        resolves_unshadowed_builtin: Callable[[str], bool],
+        local_scopes: Iterable[Container[str]] = (),
+    ) -> bool:
+        """Whether a call target is this builtin, bare and not shadowed."""
+
+        return self.is_callee(func) and self.is_unshadowed(
+            resolves_unshadowed_builtin, local_scopes
+        )
 
     @classmethod
     def type_test_arguments(cls, node: ast.AST) -> tuple[ast.expr, ast.expr] | None:

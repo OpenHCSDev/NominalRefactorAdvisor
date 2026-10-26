@@ -200,7 +200,7 @@ class _TypeKeyedBehaviorMethodDescent:
         snapshot = ModuleNominalBindingAuthority(self.source_module).snapshot_before(
             self.projection_method.lineno
         )
-        if not BuiltinCallName.isinstance_unshadowed(
+        if not BuiltinCallName.ISINSTANCE.is_unshadowed(
             snapshot.resolves_unshadowed_builtin
         ):
             raise ValueError(
