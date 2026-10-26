@@ -34,7 +34,8 @@ from .detectors._systemic import (
     recovered_enum_sites,
     unique_direct_enum_classes,
 )
-from .foreign_family import ForeignAdapter, ForeignFamily
+from .declared_family import ForeignAdapter
+from .foreign_family import ForeignFamily
 from .json_reports import SemanticRecord, json_report_property
 from .observation_families import ForeignTypeTestModuleFamily, TypeArgumentResolver
 from .observation_shapes import ForeignTypeTestShape
