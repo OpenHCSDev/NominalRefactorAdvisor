@@ -93,8 +93,10 @@ class RewrittenLineFit:
         if self.fits(prefix, candidate, tail):
             return candidate
         indentation = prefix[: len(prefix) - len(prefix.lstrip())]
+        # The formatter budgets only the indentation; the rest of the prefix
+        # (`for x in `) is charged to the line length instead.
         formatted = PythonExpressionSourceFormatter(
-            self.line_length
+            self.line_length - (len(prefix) - len(indentation))
         ).replacement_source(
             ast.parse(candidate, mode="eval").body, line_prefix=indentation
         )
