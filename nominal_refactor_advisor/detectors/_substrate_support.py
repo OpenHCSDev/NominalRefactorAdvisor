@@ -13,8 +13,8 @@ from collections import defaultdict
 from dataclasses import dataclass
 from typing import Generic, TypeVar
 
+from ..ast_projection import ExpressionReference
 from ..ast_tools import (
-    AstExpressionProjection,
     ParsedModule,
     is_docstring_statement,
     statements_without_docstring,
@@ -79,7 +79,7 @@ class _AnnotationTypeNamesProjection(_AstNodeProjection[tuple[str, ...]]):
         if isinstance(node, ast.BinOp) and isinstance(node.op, ast.BitOr):
             return sorted_tuple({*self(node.left), *self(node.right)})
         if isinstance(node, ast.Subscript):
-            base_name = AstExpressionProjection.terminal_name(node.value)
+            base_name = ExpressionReference.decoded(node.value).terminal_name
             if base_name in {
                 "Optional",
                 "Required",
@@ -125,7 +125,7 @@ class ClassNodeAuthority:
             {
                 base_name
                 for base_name in (
-                    AstExpressionProjection.terminal_name(base) for base in node.bases
+                    ExpressionReference.decoded(base).terminal_name for base in node.bases
                 )
                 if base_name is not None
             }
@@ -168,7 +168,7 @@ class ClassNodeAuthority:
             return True
         for statement in self.methods(node):
             for decorator in statement.decorator_list:
-                if AstExpressionProjection.terminal_name(decorator) == "abstractmethod":
+                if ExpressionReference.decoded(decorator).terminal_name == "abstractmethod":
                     return True
         return False
 
@@ -179,7 +179,7 @@ CLASS_NODE_AUTHORITY = ClassNodeAuthority()
 def _is_abstract_method(node: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
     return any(
         (
-            AstExpressionProjection.terminal_name(decorator) == "abstractmethod"
+            ExpressionReference.decoded(decorator).terminal_name == "abstractmethod"
             for decorator in node.decorator_list
         )
     )

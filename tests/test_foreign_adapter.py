@@ -4,11 +4,11 @@ import ast
 
 import pytest
 
+from nominal_refactor_advisor.declared_family import ForeignAdapter
 from nominal_refactor_advisor.foreign_family import (
     AnnAssignStatement,
     AssignStatement,
     AssignmentStatement,
-    ForeignAdapter,
 )
 
 

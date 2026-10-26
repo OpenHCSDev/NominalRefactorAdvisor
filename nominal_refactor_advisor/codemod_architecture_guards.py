@@ -25,7 +25,8 @@ from typing import (
 
 from metaclass_registry import AutoRegisterMeta
 
-from .ast_tools import AstExpressionProjection, BuiltinCallName
+from .ast_projection import ExpressionReference
+from .ast_tools import BuiltinCallName
 from .codemod_paths import SourcePathCandidateSet, SourcePathResolutionAuthority
 from .codemod_payload import (
     CodemodPayloadRecord,
@@ -137,7 +138,7 @@ class ForbiddenCallArchitectureGuardConstraint(
             )
             for node in ast.walk(module)
             if isinstance(node, ast.Call)
-            for call_name in (AstExpressionProjection.qualified_name(node.func),)
+            for call_name in (ExpressionReference.decoded(node.func).qualified_name,)
             if call_name in self.names
         )
 

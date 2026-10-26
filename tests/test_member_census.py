@@ -24,10 +24,10 @@ def test_name_or_attribute_consumers_split_by_projection_use(tmp_path: Path):
         {
             "owner_user": (
                 "import ast\n"
-                "from nominal_refactor_advisor.ast_projection import AstExpressionProjection\n"
+                "from nominal_refactor_advisor.ast_projection import ExpressionReference\n"
                 "def uses_owner(node):\n"
                 "    if isinstance(node, (ast.Name, ast.Attribute)):\n"
-                "        return AstExpressionProjection.attribute_chain(node)\n"
+                "        return ExpressionReference.decoded(node).attribute_chain\n"
             ),
             "bypass_a": (
                 "import ast\n"
@@ -61,7 +61,7 @@ def test_name_or_attribute_consumers_split_by_projection_use(tmp_path: Path):
         "hand_rolled",
     ]
     assert group.covering_owners == (
-        "nominal_refactor_advisor.ast_projection.AstExpressionProjection",
+        "nominal_refactor_advisor.ast_projection.ExpressionReference",
     )
 
 
@@ -147,7 +147,7 @@ def test_owner_own_methods_are_not_consumers(tmp_path: Path):
     (package / "__init__.py").write_text("")
     (package / "ast_projection.py").write_text(
         "import ast\n"
-        "class AstExpressionProjection:\n"
+        "class ExpressionReference:\n"
         "    @staticmethod\n"
         "    def identifier(node):\n"
         "        return isinstance(node, (ast.Name, ast.Attribute))\n"

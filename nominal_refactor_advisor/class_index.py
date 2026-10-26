@@ -40,8 +40,8 @@ from .annotation_semantics import (
     CLASSVAR_ANNOTATION_AUTHORITY,
     NOMINAL_ANNOTATION_SOURCE_AUTHORITY,
 )
+from .ast_projection import ExpressionReference
 from .ast_tools import (
-    AstExpressionProjection,
     CompactModuleIdentity,
     CollectedFamily,
     ParsedModule,
@@ -2913,9 +2913,9 @@ class ModuleNominalBindingAuthority:
             ModuleNominalBindingSnapshotPolicy.EXACT
         ),
     ) -> str | None:
-        parts = AstExpressionProjection.attribute_chain(
+        parts = ExpressionReference.decoded(
             ClassSymbolResolutionAuthority.reference_node(reference)
-        )
+        ).attribute_chain
         if parts is None:
             return None
         root_binding = self.snapshot_before(line, policy=policy).binding_for(parts[0])
@@ -2965,7 +2965,7 @@ class ModuleNominalBindingAuthority:
     def _annotation_factory_name_at(
         self, reference: ast.AST, *, line: int, class_bound_names: frozenset[str]
     ) -> str | None:
-        parts = AstExpressionProjection.attribute_chain(reference)
+        parts = ExpressionReference.decoded(reference).attribute_chain
         if parts is None or parts[0] in class_bound_names:
             return None
         resolved = self.snapshot_before(line).reference_for(parts)
@@ -3048,9 +3048,9 @@ class ModuleNominalBindingAuthority:
                     kind=CompactNominalBindingKind.LOCAL_DECLARATION,
                 )
             }
-        parts = AstExpressionProjection.attribute_chain(
+        parts = ExpressionReference.decoded(
             ClassSymbolResolutionAuthority.reference_node(value)
-        )
+        ).attribute_chain
         if parts is None or (root_binding := preceding_bindings.get(parts[0])) is None:
             return {}
         return {
@@ -3815,9 +3815,9 @@ def _compact_base_references(
         module_binding_snapshot.reference_for(parts)
         for base in node.bases
         if (
-            parts := AstExpressionProjection.attribute_chain(
+            parts := ExpressionReference.decoded(
                 ClassSymbolResolutionAuthority.reference_node(base)
-            )
+            ).attribute_chain
         )
         is not None
     )
@@ -4715,7 +4715,7 @@ def _compact_projection_reference(
     if isinstance(node, ast.Name):
         return node.id, node.id
     if isinstance(node, ast.Attribute):
-        parts = AstExpressionProjection.attribute_chain(node)
+        parts = ExpressionReference.decoded(node).attribute_chain
         if parts is None:
             return ast.unparse(node), None
         return ".".join(parts), parts[0]
@@ -5196,7 +5196,7 @@ class _BranchReferenceTally(ABC):
         names_by_key: dict[str, set[str]] = defaultdict(set)
         for node in branch:
             for subnode in self.referenced_nodes(node):
-                parts = AstExpressionProjection.attribute_chain(subnode)
+                parts = ExpressionReference.decoded(subnode).attribute_chain
                 reference = None if parts is None else self.reference(parts, receiver)
                 if reference is not None:
                     names_by_key[reference[0]].add(reference[1])
@@ -5260,7 +5260,7 @@ def _method_receiver(function: ast.FunctionDef | ast.AsyncFunctionDef) -> str | 
     """The first positional parameter, which binds the receiver of a method."""
 
     if any(
-        AstExpressionProjection.attribute_chain(decorator) == ("staticmethod",)
+        ExpressionReference.decoded(decorator).attribute_chain == ("staticmethod",)
         for decorator in function.decorator_list
     ):
         return None
@@ -5729,7 +5729,7 @@ def _compact_class_syntax_facets(
             continue
         subject, type_reference, matches_exact_type_when_true, expression = predicate
         reference_node = ClassSymbolResolutionAuthority.reference_node(type_reference)
-        parts = AstExpressionProjection.attribute_chain(reference_node)
+        parts = ExpressionReference.decoded(reference_node).attribute_chain
         if parts is None:
             continue
         exact_type_guards.append(
@@ -5852,9 +5852,9 @@ def _class_scope_qualified_import_name(
     reference: ast.AST,
     preceding_class_bound_names: frozenset[str],
 ) -> str | None:
-    parts = AstExpressionProjection.attribute_chain(
+    parts = ExpressionReference.decoded(
         ClassSymbolResolutionAuthority.reference_node(reference)
-    )
+    ).attribute_chain
     if parts is None:
         return None
     if (class_alias := class_aliases.get(parts[0])) is not None:
@@ -6119,7 +6119,7 @@ def _dynamic_dataclass_schema_lines(node: ast.ClassDef) -> tuple[int, ...]:
             self.generic_visit(child)
 
         def visit_Call(self, child: ast.Call) -> None:
-            called_parts = AstExpressionProjection.attribute_chain(child.func)
+            called_parts = ExpressionReference.decoded(child.func).attribute_chain
             if called_parts == ("exec",) or called_parts in {
                 ("__annotations__", "clear"),
                 ("__annotations__", "pop"),
@@ -6133,7 +6133,7 @@ def _dynamic_dataclass_schema_lines(node: ast.ClassDef) -> tuple[int, ...]:
                 and called_parts[-1] in {"setdefault", "update"}
                 and isinstance(child.func, ast.Attribute)
                 and isinstance(child.func.value, ast.Call)
-                and AstExpressionProjection.attribute_chain(child.func.value.func)
+                and ExpressionReference.decoded(child.func.value.func).attribute_chain
                 in {("locals",), ("vars",)}
             ):
                 lines.add(child.lineno)
@@ -6369,9 +6369,9 @@ def _compact_sorted_key_calls(
 
 
 def _terminal_reference_name(node: ast.AST) -> str | None:
-    parts = AstExpressionProjection.attribute_chain(
+    parts = ExpressionReference.decoded(
         ClassSymbolResolutionAuthority.reference_node(node)
-    )
+    ).attribute_chain
     return None if parts is None else parts[-1]
 
 
@@ -6572,7 +6572,7 @@ class ClassSymbolResolutionAuthority:
     allow_unique_unqualified: bool
 
     def symbol_for_node(self, node: ast.AST) -> str | None:
-        parts = AstExpressionProjection.attribute_chain(self.reference_node(node))
+        parts = ExpressionReference.decoded(self.reference_node(node)).attribute_chain
         if parts is None:
             return None
         alias_symbol = self._import_alias_symbol(parts)
@@ -6620,7 +6620,7 @@ class ClassSymbolResolutionAuthority:
     @classmethod
     def declared_base_name(cls, node: ast.AST) -> str | None:
         reference_node = cls.reference_node(node)
-        if AstExpressionProjection.attribute_chain(reference_node) is None:
+        if ExpressionReference.decoded(reference_node).attribute_chain is None:
             return None
         return ast.unparse(reference_node)
 

@@ -20,7 +20,7 @@ from itertools import chain
 from pathlib import Path
 from typing import Self
 
-from .ast_projection import AstExpressionProjection, MemberProjectionOwner
+from .ast_projection import ExpressionReference
 from .ast_tools import ParsedModule, module_syntax_index, parse_python_modules
 from .class_index import (
     CompactClassFamilyIndex,
@@ -34,7 +34,8 @@ from .detectors._systemic import (
     recovered_enum_sites,
     unique_direct_enum_classes,
 )
-from .foreign_family import ForeignAdapter, ForeignFamily
+from .declared_family import ForeignAdapter
+from .foreign_family import ForeignFamily
 from .json_reports import SemanticRecord, json_report_property
 from .observation_families import ForeignTypeTestModuleFamily, TypeArgumentResolver
 from .observation_shapes import ForeignTypeTestShape
@@ -289,36 +290,17 @@ class ForeignModuleSource(MemberCensusSource):
     """Classes of foreign modules named by type tests and class patterns."""
 
     def owners(self) -> tuple[MemberOwner, ...]:
-        declared = tuple(
-            family
+        return tuple(
+            ClassOwner(
+                kind=CensusFamilyKind.FOREIGN_MODULE,
+                name=family.import_path(),
+                covered=family.member_names(),
+                method_names=_public_method_names(family),
+                aliases=self.corpus.aliases_of(family.import_path()),
+                definitions=_own_definitions(family),
+            )
             for root in (ForeignFamily, ForeignAdapter)
             for family in root.concrete_families()
-        )
-        return (
-            *(
-                ClassOwner(
-                    kind=CensusFamilyKind.FOREIGN_MODULE,
-                    name=family.import_path(),
-                    covered=family.member_names(),
-                    method_names=_public_method_names(family),
-                    aliases=self.corpus.aliases_of(family.import_path()),
-                    definitions=_own_definitions(family),
-                )
-                for family in declared
-            ),
-            *(
-                ClassOwner(
-                    kind=CensusFamilyKind.FOREIGN_MODULE,
-                    name=f"{projection.__module__}.{projection.__qualname__}",
-                    covered=projection.covered_member_names(),
-                    method_names=_public_method_names(projection),
-                    aliases=self.corpus.aliases_of(
-                        f"{projection.__module__}.{projection.__qualname__}"
-                    ),
-                    definitions=_own_definitions(projection),
-                )
-                for projection in MemberProjectionOwner.__subclasses__()
-            ),
         )
 
     def observations(self) -> Iterator[MemberObservation]:
@@ -428,7 +410,9 @@ class ModuleCalls:
                 case ast.Attribute(value=receiver, attr=method_name) if (
                     method_name in self.method_names
                 ):
-                    receiver_chain = AstExpressionProjection.attribute_chain(receiver)
+                    receiver_chain = ExpressionReference.decoded(
+                        receiver
+                    ).attribute_chain
                     if receiver_chain is not None:
                         calls[index.lexical_symbol(node_index)].append(
                             CalledMethod(

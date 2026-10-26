@@ -28,6 +28,7 @@ from typing import ClassVar, Generic, Self, TypeAlias, TypeVar, cast
 from metaclass_registry import AutoRegisterMeta
 
 from .annotation_semantics import NOMINAL_ANNOTATION_SOURCE_AUTHORITY
+from .ast_projection import ExpressionReference
 from .codemod_native_requirements import (
     NativeDefinitionUseRequirement,
     DeclaredNativeUseInvariants,
@@ -68,9 +69,6 @@ from .ast_tools import (
     root_agnostic_expression_fingerprint,
     statements_without_docstring,
     walk_function_body_nodes,
-)
-from .ast_tools import (
-    AstExpressionProjection as AstExpressionProjection,
 )
 from .cancelable_composition import (
     CancelableCompositionKind as CancelableCompositionKind,
@@ -149,6 +147,7 @@ from .codemod_function_operations import (
     ReplaceFunctionDecoratorsOperation as ReplaceFunctionDecoratorsOperation,
     ReplaceFunctionSignatureOperation as ReplaceFunctionSignatureOperation,
     FoldAdapterBindChainOperation as FoldAdapterBindChainOperation,
+    ProjectStaticCallsToAdapterOperation as ProjectStaticCallsToAdapterOperation,
     RouteForeignFamilyFilterOperation as RouteForeignFamilyFilterOperation,
 )
 from .codemod_operations import (
@@ -738,6 +737,7 @@ from .refactor_concepts import (
     AutoRegisterMroOrderingConcept as AutoRegisterMroOrderingConcept,
     ForeignAdapterBindChainConcept as ForeignAdapterBindChainConcept,
     ForeignFamilyRoutingConcept as ForeignFamilyRoutingConcept,
+    StaticProjectionAdapterConcept as StaticProjectionAdapterConcept,
     AutoRegisterStrategyFamilyConcept as AutoRegisterStrategyFamilyConcept,
     CallMappingAuthorityConcept as CallMappingAuthorityConcept,
     ClassFamilyAuthorityConcept as ClassFamilyAuthorityConcept,
@@ -6638,7 +6638,7 @@ class RepeatedBuilderAuthorityMethodDeriver(ABC):
         )
         if not isinstance(
             annotation_node, ast.Subscript
-        ) or AstExpressionProjection.terminal_name(annotation_node.value) not in {
+        ) or ExpressionReference.decoded(annotation_node.value).terminal_name not in {
             "tuple",
             "Tuple",
         }:
@@ -7528,7 +7528,7 @@ class AutoRegisterMroOrderingDerivation:
                 base_names = {
                     base_name
                     for base in target.node.bases
-                    if (base_name := AstExpressionProjection.terminal_name(base))
+                    if (base_name := ExpressionReference.decoded(base).terminal_name)
                     is not None
                 }
                 if family_names.isdisjoint(base_names):
@@ -7565,7 +7565,7 @@ class AutoRegisterMroOrderingDerivation:
                 )
             ):
                 return None
-            base_name = AstExpressionProjection.terminal_name(target.node.bases[0])
+            base_name = ExpressionReference.decoded(target.node.bases[0]).terminal_name
             if base_name not in family_names:
                 return None
             child_names_by_parent[base_name].add(class_name)
@@ -7657,7 +7657,7 @@ class AutoRegisterMroOrderingDerivation:
             for class_name, target in class_nodes_by_name.items()
             if class_name in annotation_names
             and PYTHON_ENUM_BASE_AUTHORITY.matches_any(
-                AstExpressionProjection.terminal_name(base)
+                ExpressionReference.decoded(base).terminal_name
                 for base in target.node.bases
             )
         )
@@ -7702,7 +7702,7 @@ class AutoRegisterMroOrderingDerivation:
     @staticmethod
     def has_plain_root_bases(root_node: ast.ClassDef) -> bool:
         return all(
-            AstExpressionProjection.terminal_name(base) in {"ABC", "Generic", "object"}
+            ExpressionReference.decoded(base).terminal_name in {"ABC", "Generic", "object"}
             for base in root_node.bases
         ) and not any(
             isinstance(statement, ast.FunctionDef | ast.AsyncFunctionDef)
@@ -9093,7 +9093,7 @@ class DataclassPayloadAuthorityTarget(ResolvedClassTarget):
     def decorator_name(cls, node: ast.expr) -> str | None:
         if isinstance(node, ast.Call):
             return cls.decorator_name(node.func)
-        return AstExpressionProjection.terminal_name(node)
+        return ExpressionReference.decoded(node).terminal_name
 
     @staticmethod
     def field_names_for_node(node: ast.ClassDef) -> tuple[str, ...]:
@@ -9186,7 +9186,9 @@ class DataclassPayloadAuthorityTarget(ResolvedClassTarget):
             and isinstance(statement.target, ast.Name)
             and statement.target.id in self.field_names
             and isinstance(statement.value, ast.Call)
-            and AstExpressionProjection.terminal_name(statement.value.func) == "field"
+            and ExpressionReference.decoded(
+                statement.value.func
+            ).terminal_name == "field"
             and self.call_keyword_bool(statement.value, "init", default=True)
             is not True
             for statement in self.node.body
@@ -9517,7 +9519,7 @@ class DataclassInstanceFieldProjection:
             for statement in authority.node.body
             if isinstance(statement, ast.FunctionDef | ast.AsyncFunctionDef)
             and any(
-                AstExpressionProjection.terminal_name(decorator) == "classmethod"
+                ExpressionReference.decoded(decorator).terminal_name == "classmethod"
                 for decorator in statement.decorator_list
             )
             and statement.returns is not None

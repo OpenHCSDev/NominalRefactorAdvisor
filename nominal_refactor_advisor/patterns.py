@@ -384,6 +384,16 @@ class PatternId(IntEnum):
         ),
         witness_capabilities=(CapabilityTag.PROVENANCE,),
     )
+    STATIC_PROJECTION_ADAPTER_CALL = _pattern(
+        stable_id=29,
+        display_name="Static Projection Adapter Call",
+        required_relation=(
+            "A call of a static projection class asks a question that a "
+            "declared adapter family already answers as a property of the same "
+            "name, so the call can decode once and read that property."
+        ),
+        witness_capabilities=(CapabilityTag.PROVENANCE,),
+    )
 
     def __new__(
         cls,

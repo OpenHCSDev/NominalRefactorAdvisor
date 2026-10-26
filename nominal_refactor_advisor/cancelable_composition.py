@@ -16,7 +16,8 @@ from enum import StrEnum
 from functools import reduce
 from typing import ClassVar
 
-from .ast_tools import AstExpressionProjection, FunctionDefinitionNode
+from .ast_projection import ExpressionReference
+from .ast_tools import FunctionDefinitionNode
 from .collection_algebra import sorted_tuple
 from .semantic_match import Maybe
 from .source_index import (
@@ -349,7 +350,7 @@ class ProductForwardFieldProjection:
         argument: ast.expr,
     ) -> "ProductForwardFieldProjection | None":
         return (
-            Maybe.of(AstExpressionProjection.attribute_projection(argument))
+            Maybe.of(ExpressionReference.decoded(argument).attribute_projection)
             .project(lambda projected: self.with_projected_field(*projected))
             .unwrap_or_none()
         )
@@ -361,9 +362,9 @@ class ProductForwardFieldProjection:
         return (
             Maybe.of(keyword.arg)
             .combine(
-                lambda _keyword_name: AstExpressionProjection.attribute_projection(
+                lambda _keyword_name: ExpressionReference.decoded(
                     keyword.value
-                ),
+                ).attribute_projection,
                 lambda keyword_name, projected: (keyword_name, *projected),
             )
             .filter(
@@ -419,7 +420,7 @@ class ProductForwardCallAuthority:
 
     def product_forward(self) -> _ProductForward | None:
         return (
-            Maybe.of(AstExpressionProjection.qualified_name(self.call.func))
+            Maybe.of(ExpressionReference.decoded(self.call.func).qualified_name)
             .combine(
                 lambda carrier_name: self.field_projection(),
                 lambda carrier_name, projection: projection.product_forward(

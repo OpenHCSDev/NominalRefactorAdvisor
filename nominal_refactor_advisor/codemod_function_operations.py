@@ -35,6 +35,10 @@ from .codemod_foreign_family_source import (
     ForeignFamilyFilterAuthority,
     ForeignFamilyReference,
 )
+from .codemod_static_projection_source import (
+    StaticProjection,
+    StaticProjectionAuthority,
+)
 from .codemod_payload import (
     BooleanPayloadValueCodec,
     EmptyDefaultStringPayloadValueCodec,
@@ -53,6 +57,7 @@ from .codemod_selector_models import (
     SelectionCountPayloadValueCodec,
     SourceRewriteTarget,
 )
+from .codemod_imports import ModuleImportMutation
 from .codemod_source_edits import (
     NominalSourceEdit,
     PhysicalSourceEdit,
@@ -65,6 +70,7 @@ from .declaration_dependencies import (
 )
 from .declared_root import DeclaredRoot
 from .descriptor_algebra import AliasProperty
+from .source_index import AstTargetNodeKind
 from .product_flow import BareCallTargetReference
 from .value_expression import LexicalValueReference
 
@@ -404,4 +410,82 @@ class FoldAdapterBindChainOperation(SourceReprovedOperation):
                 import_source=reference.import_source_for(snapshot, parsed_module),
                 default_rationale=f"Import {reference.class_name}.",
             ),
+        )
+
+
+@dataclass(frozen=True, kw_only=True)
+class ProjectStaticCallsToAdapterOperation(SourceReprovedOperation):
+    """Rewrite a module's static projection calls into reads of an adapter family.
+
+    `Projector.question(argument)` becomes `Family.decoded(argument).question`
+    for every question the projector's public callables share by name with the
+    family's properties. The family must be the unique one whose properties
+    cover all of the projector's public callables. Bindings of the projector
+    that no read keeps alive are removed from the module's imports.
+    """
+
+    projector: str = codemod_payload_field(RequiredStringPayloadValueCodec())
+    family: str = codemod_payload_field(RequiredStringPayloadValueCodec())
+
+    def source_edits_from_snapshot(
+        self, snapshot: CodemodSourceSnapshot
+    ) -> tuple[NominalSourceEdit, ...]:
+        _, target = self.target_digest(snapshot)
+        target.require_kind(
+            AstTargetNodeKind.MODULE, "Static projection rewriting requires a module target"
+        )
+        projection = StaticProjection.declared_for(self.projector)
+        reference = ForeignFamilyReference(self.family)
+        if projection is None or projection.family is not reference.family:
+            raise ValueError(
+                f"{self.projector} is not a loaded static projection of {self.family}"
+            )
+        parsed_module = snapshot.parsed_module_for_source_path(target.file_path)
+        authority = StaticProjectionAuthority(
+            parsed_module=parsed_module,
+            geometry=SourceTextGeometry(snapshot.sources_by_file_path[target.file_path]),
+            line_length=DeclaredRoot.line_length_for(Path(target.file_path)),
+            projection=projection,
+            family=reference,
+            other_modules=tuple(
+                snapshot.parsed_module_for_source_path(file_path)
+                for file_path in sorted(snapshot.sources_by_file_path)
+                if file_path != target.file_path
+            ),
+        )
+        replacements = authority.replacements()
+        if not replacements and not authority.retired_names:
+            raise ValueError(
+                f"No use of {self.projector} in {target.file_path!r} can move to "
+                f"{self.family}"
+            )
+        imports = (
+            ()
+            if not replacements
+            or parsed_module.module_name == reference.module_name
+            else self.required_import_mutations(
+                target.file_path,
+                import_source=reference.import_source_for(snapshot, parsed_module),
+                default_rationale=f"Import {reference.class_name}.",
+            )
+        )
+        retired = (
+            ModuleImportMutation.remove_bound_names(
+                file_path=target.file_path,
+                names=authority.retired_names,
+                rationale=self.rationale_text(
+                    f"Drop the unused {self.projector} import."
+                ),
+            ),
+        )
+        return (
+            *authority.geometry.physical_edits(
+                file_path=target.file_path,
+                replacements=replacements,
+                rationale=self.rationale
+                or f"Read {reference.class_name} properties in place of "
+                f"{self.projector} calls.",
+            ),
+            *imports,
+            *(retired if authority.retired_names else ()),
         )

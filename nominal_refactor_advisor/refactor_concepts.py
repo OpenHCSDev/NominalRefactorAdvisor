@@ -136,3 +136,7 @@ class ForeignFamilyRoutingConcept(ClassFamilyAuthorityConcept):
 
 class ForeignAdapterBindChainConcept(ClassFamilyAuthorityConcept):
     """Fold per-class bindings of foreign nodes into one declared adapter family."""
+
+
+class StaticProjectionAdapterConcept(ClassFamilyAuthorityConcept):
+    """Answer a static projection class's questions from one declared adapter family."""

@@ -32,11 +32,11 @@ from typing import ClassVar, Generic, TypeAlias, TypeVar, cast
 
 from metaclass_registry import AutoRegisterMeta
 
+from .ast_projection import ExpressionReference
 from .foreign_family import FunctionDefinition
 from .interpreter import PythonVersion
 from .assignment_projection import SingleAssignmentAndValueNameProjection
 from .ast_tools import (
-    AstExpressionProjection,
     ClassFunctionStackNodeVisitor,
     CollectedFamily,
     CompactModuleIdentity,
@@ -1445,7 +1445,7 @@ class SemanticClassSupplement:
                 for _, value in authority.assignment_pairs
                 if (
                     terminal_name
-                    := AstExpressionProjection.terminal_name(value)
+                    := ExpressionReference.decoded(value).terminal_name
                 )
             }
             | {
@@ -4660,7 +4660,7 @@ class MappingReadProjectionCollector(ast.NodeVisitor):
         if (
             not isinstance(key_node, ast.Constant)
             or not isinstance(key_node.value, str)
-            or AstExpressionProjection.attribute_chain(subject) is None
+            or ExpressionReference.decoded(subject).attribute_chain is None
         ):
             return
         key = key_node.value
@@ -4668,7 +4668,7 @@ class MappingReadProjectionCollector(ast.NodeVisitor):
         for index, ancestor in enumerate(self.parents[:-1]):
             if not isinstance(ancestor, ast.Call):
                 continue
-            parts = AstExpressionProjection.attribute_chain(ancestor.func)
+            parts = ExpressionReference.decoded(ancestor.func).attribute_chain
             if not parts:
                 continue
             child = self.parents[index + 1]
@@ -5721,7 +5721,7 @@ class ConstructionAuthorityResolver:
                 ).assignment_pairs
                 if (
                     terminal_name
-                    := AstExpressionProjection.terminal_name(value)
+                    := ExpressionReference.decoded(value).terminal_name
                 )
                 is not None
             }
@@ -6647,7 +6647,7 @@ class AttributePresentationTokenProjector(PresentationTokenNodeProjector):
         del cls
         if not isinstance(node, ast.Attribute):
             raise TypeError(f"Expected ast.Attribute, got {type(node)!r}")
-        chain = AstExpressionProjection.attribute_chain(node) or ()
+        chain = ExpressionReference.decoded(node).attribute_chain or ()
         if len(chain) >= 2:
             qualifier = chain[-2]
             return tuple(
@@ -6899,7 +6899,7 @@ class PresentationAuthorityConstructionCollector:
                 type_name=type_name,
                 field_tokens=field_tokens,
                 call_target_parts=(
-                    AstExpressionProjection.attribute_chain(node.func) or ()
+                    ExpressionReference.decoded(node.func).attribute_chain or ()
                 ),
             )
             for type_name in type_names
@@ -6907,7 +6907,7 @@ class PresentationAuthorityConstructionCollector:
 
     @classmethod
     def construction_type_names(cls, node: ast.Call) -> tuple[str, ...]:
-        chain = AstExpressionProjection.attribute_chain(node.func)
+        chain = ExpressionReference.decoded(node.func).attribute_chain
         if not chain:
             return ()
         type_names = {chain[-1]}

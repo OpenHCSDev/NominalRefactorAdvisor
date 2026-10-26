@@ -4,82 +4,123 @@ from __future__ import annotations
 
 import ast
 from dataclasses import dataclass
-from typing import ClassVar
+from typing import Self, cast
+
+from .declared_family import ForeignAdapter
 
 
-class MemberProjectionOwner:
-    """A projection that owns questions about foreign member classes.
+class ExpressionReference(ForeignAdapter):
+    """An expression read as a source-level name reference."""
 
-    A census of which consumers name those members counts a consumer that
-    calls the projection as using its owner rather than restating the test.
-    """
-
-    covers: ClassVar[tuple[type, ...]]
+    __registry_key__ = "adapts"
 
     @classmethod
-    def covered_member_names(cls) -> frozenset[str]:
-        """Qualified names of the foreign classes this projection answers for."""
+    def decoded(cls, node: object) -> Self:
+        """The reference for ``node``; total, because ``OpaqueReference`` adapts ``object``.
 
-        return frozenset(f"{member.__module__}.{member.__qualname__}" for member in cls.covers)
+        This only narrows ``ForeignAdapter.decoded``'s optional result.
+        """
+
+        return cast(Self, super().decoded(node))
+
+    @property
+    def identifier(self) -> str | None:
+        """A bare-name identifier; attribute access does not answer."""
+
+        return None
+
+    @property
+    def qualified_name(self) -> str | None:
+        """The complete spelling of a name or attribute expression."""
+
+        return None
+
+    @property
+    def terminal_name(self) -> str | None:
+        """The terminal name, unwrapping subscription expressions."""
+
+        return None
+
+    @property
+    def attribute_chain(self) -> tuple[str, ...] | None:
+        """Every component of a name or attribute expression."""
+
+        return None
+
+    @property
+    def attribute_projection(self) -> tuple[str, str] | None:
+        """An attribute's owner source and terminal field name."""
+
+        return None
 
 
-class AstExpressionProjection(MemberProjectionOwner):
-    """Project AST expressions into source-level name identities."""
+class SpelledReference(ExpressionReference):
+    """A reference whose whole spelling is its source text."""
 
-    covers = (ast.Name, ast.Attribute)
+    @property
+    def qualified_name(self) -> str | None:
+        return ast.unparse(self.node)
 
-    @staticmethod
-    def identifier(node: ast.AST | None) -> str | None:
-        """Return a bare-name identifier without accepting attribute access."""
 
-        return node.id if isinstance(node, ast.Name) else None
+class NameReference(SpelledReference):
+    """A bare name."""
 
-    @staticmethod
-    def qualified_name(node: ast.AST) -> str | None:
-        """Return the complete spelling of a name or attribute expression."""
+    adapts = ast.Name
 
-        match node:
-            case ast.Name() | ast.Attribute():
-                return ast.unparse(node)
-            case _:
-                return None
+    @property
+    def identifier(self) -> str | None:
+        return self.node.id
 
-    @classmethod
-    def terminal_name(cls, node: ast.AST | None) -> str | None:
-        """Return the terminal name, unwrapping subscription expressions."""
+    @property
+    def terminal_name(self) -> str | None:
+        return self.node.id
 
-        match node:
-            case ast.Name(id=name) | ast.Attribute(attr=name):
-                return name
-            case ast.Subscript(value=value):
-                return cls.terminal_name(value)
-            case _:
-                return None
+    @property
+    def attribute_chain(self) -> tuple[str, ...] | None:
+        return (self.node.id,)
 
-    @classmethod
-    def attribute_chain(cls, node: ast.AST | None) -> tuple[str, ...] | None:
-        """Return every component of a name or attribute expression."""
 
-        match node:
-            case ast.Name(id=name):
-                return (name,)
-            case ast.Attribute(value=owner, attr=field_name):
-                parent = cls.attribute_chain(owner)
-                return None if parent is None else (*parent, field_name)
-            case ast.Subscript(value=value):
-                return cls.attribute_chain(value)
-            case _:
-                return None
+class AttributeReference(SpelledReference):
+    """An attribute access on an owner expression."""
 
-    @staticmethod
-    def attribute_projection(node: ast.AST) -> tuple[str, str] | None:
-        """Return an attribute's owner source and terminal field name."""
+    adapts = ast.Attribute
 
-        match node:
-            case ast.Attribute(value=owner, attr=field_name):
-                return ast.unparse(owner), field_name
-            case _:
-                return None
+    @property
+    def terminal_name(self) -> str | None:
+        return self.node.attr
+
+    @property
+    def attribute_chain(self) -> tuple[str, ...] | None:
+        parent = ExpressionReference.decoded(self.node.value).attribute_chain
+        return None if parent is None else (*parent, self.node.attr)
+
+    @property
+    def attribute_projection(self) -> tuple[str, str] | None:
+        return ast.unparse(self.node.value), self.node.attr
+
+
+class SubscriptReference(ExpressionReference):
+    """A subscription, read as the reference it subscripts."""
+
+    adapts = ast.Subscript
+
+    @property
+    def subscripted(self) -> ExpressionReference:
+        return ExpressionReference.decoded(self.node.value)
+
+    @property
+    def terminal_name(self) -> str | None:
+        return self.subscripted.terminal_name
+
+    @property
+    def attribute_chain(self) -> tuple[str, ...] | None:
+        return self.subscripted.attribute_chain
+
+
+class OpaqueReference(ExpressionReference):
+    """Anything else, including no expression: it answers no question."""
+
+    adapts = object
 
 
 class AstClassProjection:
@@ -128,7 +169,7 @@ class AstNameFamily:
 
         if isinstance(node, ast.Call):
             return self.matching_name(node.func)
-        terminal_name = AstExpressionProjection.terminal_name(node)
+        terminal_name = ExpressionReference.decoded(node).terminal_name
         return terminal_name if terminal_name in self.names else None
 
     def matches(self, node: ast.AST) -> bool:

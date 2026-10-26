@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from functools import cached_property
 from typing import Callable, ClassVar, Generic, TypeVar
 
+from .ast_projection import ExpressionReference
 from .class_index import (
     ModuleNominalBindingAuthority,
     ModuleNominalBindingSnapshot,
@@ -35,7 +36,6 @@ from .observation_shapes import (
 )
 
 from .ast_tools import (
-    AstExpressionProjection,
     BuiltinCallName,
     AstNameFamily,
     AssignObservationSpec,
@@ -459,7 +459,7 @@ def _native_registration_shapes(
             if statement.value.id not in class_names:
                 continue
             for target in statement.targets:
-                registry_name = AstExpressionProjection.terminal_name(target)
+                registry_name = ExpressionReference.decoded(target).terminal_name
                 key_fingerprint = _registration_key_fingerprint(target)
                 if registry_name is None or key_fingerprint is None:
                     continue
@@ -486,7 +486,7 @@ def _native_registration_shapes(
             ):
                 return None
             class_name = _class_name_from_expr(node.args[0], known_class_family)
-            registry_name = AstExpressionProjection.terminal_name(node.func.value)
+            registry_name = ExpressionReference.decoded(node.func.value).terminal_name
             if class_name is None or registry_name is None:
                 continue
             key_source = node.args[1] if len(node.args) >= 2 else node.args[0]
@@ -515,12 +515,14 @@ def _native_registration_shapes(
             for decorator in statement.decorator_list:
                 if not (
                     isinstance(decorator, ast.Call)
-                    and AstExpressionProjection.terminal_name(decorator.func)
+                    and ExpressionReference.decoded(decorator.func).terminal_name
                     in REGISTRATION_DECORATOR_FAMILY.names
                     and decorator.args
                 ):
                     continue
-                registry_name = AstExpressionProjection.terminal_name(decorator.args[0])
+                registry_name = ExpressionReference.decoded(
+                    decorator.args[0]
+                ).terminal_name
                 if registry_name is None:
                     continue
                 key_expression = (
@@ -606,7 +608,7 @@ class AssignmentRegistrationShapeSpec(KnownClassFamilyShapeSpec):
             if known_class_family.matching_name(node.value) is None:
                 continue
             for target in node.targets:
-                registry_name = AstExpressionProjection.terminal_name(target)
+                registry_name = ExpressionReference.decoded(target).terminal_name
                 if registry_name is None:
                     continue
                 key_fingerprint = _registration_key_fingerprint(target)
@@ -632,7 +634,7 @@ class CallRegistrationShapeSpec(KnownClassFamilyShapeSpec):
         ):
             node = observation.call
             assert isinstance(node.func, ast.Attribute)
-            registry_name = AstExpressionProjection.terminal_name(node.func.value)
+            registry_name = ExpressionReference.decoded(node.func.value).terminal_name
             if registry_name is None:
                 continue
             if not node.args:
@@ -658,7 +660,7 @@ class DecoratorRegistrationShapeSpec(RegistrationShapeSpec):
         ):
             if not decorator.args:
                 continue
-            registry_name = AstExpressionProjection.terminal_name(decorator.args[0])
+            registry_name = ExpressionReference.decoded(decorator.args[0]).terminal_name
             if registry_name is None:
                 continue
             key_expr = (
@@ -761,7 +763,7 @@ class RegistryMutatingDecoratorFactory:
                 decorator
                 for decorator in node.decorator_list
                 if isinstance(decorator, ast.Call)
-                and AstExpressionProjection.terminal_name(decorator.func)
+                and ExpressionReference.decoded(decorator.func).terminal_name
                 == self.function_name
                 and len(decorator.args) > self.key_parameter_index
             ),
@@ -1097,9 +1099,9 @@ class TypeArgumentResolver:
         return (node,)
 
     def qualified_name(self, member: ast.expr, shadowed: frozenset[str]) -> str | None:
-        if AstExpressionProjection.qualified_name(member) is None:
+        if ExpressionReference.decoded(member).qualified_name is None:
             return None
-        parts = AstExpressionProjection.attribute_chain(member)
+        parts = ExpressionReference.decoded(member).attribute_chain
         if parts is None or parts[0] in shadowed:
             return None
         reference = self.snapshot.reference_for(parts)

@@ -8,8 +8,8 @@ from dataclasses import dataclass
 from functools import cached_property
 from itertools import combinations
 
+from .ast_projection import ExpressionReference
 from .ast_tools import (
-    AstExpressionProjection,
     ModuleAnnotationEvaluationMode,
     ParsedModule,
 )
@@ -55,7 +55,7 @@ class ExactDataclassDecorator:
             )
         decorator = decorators[0]
         target = decorator.func if isinstance(decorator, ast.Call) else decorator
-        parts = AstExpressionProjection.attribute_chain(target)
+        parts = ExpressionReference.decoded(target).attribute_chain
         if parts is None:
             raise ValueError("Dataclass decorator has no nominal reference")
         binding = binding_snapshot.binding_for(parts[0])

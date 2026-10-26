@@ -65,8 +65,8 @@ from nominal_refactor_advisor.analysis import (
     analyze_paths,
     default_detector_types_for_analysis,
 )
+from nominal_refactor_advisor.ast_projection import ExpressionReference
 from nominal_refactor_advisor.ast_tools import (
-    AstExpressionProjection,
     AstKeywordSourceProjection,
     AstNameFamily,
     BuiltinCallName,
@@ -10237,7 +10237,7 @@ def test_ast_expression_projection_owns_qualified_name_semantics(
 ) -> None:
     expression = ast.parse(source, mode="eval").body
 
-    assert AstExpressionProjection.qualified_name(expression) == expected_name
+    assert ExpressionReference.decoded(expression).qualified_name == expected_name
 
 
 @pytest.mark.parametrize(
@@ -10257,9 +10257,9 @@ def test_ast_expression_projection_owns_name_and_chain_semantics(
 ) -> None:
     expression = ast.parse(source, mode="eval").body
 
-    assert AstExpressionProjection.identifier(expression) == expected_identifier
-    assert AstExpressionProjection.terminal_name(expression) == expected_terminal
-    assert AstExpressionProjection.attribute_chain(expression) == expected_chain
+    assert ExpressionReference.decoded(expression).identifier == expected_identifier
+    assert ExpressionReference.decoded(expression).terminal_name == expected_terminal
+    assert ExpressionReference.decoded(expression).attribute_chain == expected_chain
 
 
 def test_ast_name_family_unwraps_call_and_subscript_at_its_declaration() -> None:

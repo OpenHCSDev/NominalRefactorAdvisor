@@ -10,11 +10,14 @@ from .codemod import (
     FindingRecipeSynthesizer,
     ForeignAdapterBindChainConcept,
     ForeignFamilyRoutingConcept,
+    StaticProjectionAdapterConcept,
 )
 from .codemod_foreign_adapter_source import ForeignAdapterBindChainModuleFamily
 from .codemod_foreign_family_source import ForeignFamilyFilterModuleFamily
+from .codemod_static_projection_source import StaticProjectionCallModuleFamily
 from .codemod_function_operations import (
     FoldAdapterBindChainOperation,
+    ProjectStaticCallsToAdapterOperation,
     RouteForeignFamilyFilterOperation,
 )
 from .codemod_reproof import SourceReprovedOperation
@@ -25,9 +28,14 @@ from .codemod_runtime import (
 from .codemod_selection_context import CodemodSelectorContext
 from .codemod_selector_models import SourceRewriteTarget
 from .observation_families import ShapeFamily
-from .observation_shapes import ForeignFamilySiteModule
+from .observation_shapes import (
+    ForeignFamilySiteModule,
+    ForeignFamilySiteShape,
+    StaticProjectionSiteShape,
+)
 from .codemod_target_selectors import SourceIndexTargetSelector
 from .models import RefactorFinding
+from .source_index import AstTargetNodeKind
 
 
 class ForeignFamilySiteFindingRecipeSynthesizer(
@@ -63,11 +71,13 @@ class ForeignFamilySiteFindingRecipeSynthesizer(
             parsed_module = snapshot.parsed_module_for_source_path(file_path)
             for projection in self.site_family.collect(parsed_module):
                 for site in projection.sites:
-                    key = (file_path, site.symbol, site.family)
+                    key = self.operation_scope(file_path, site)
                     if site.lineno not in lines or key in operations:
                         continue
                     try:
-                        operations[key] = self.checked_operation(snapshot, *key)
+                        operations[key] = self.checked_operation(
+                            snapshot, file_path, site
+                        )
                     except ValueError as error:
                         refusals.append(str(error))
         if not operations:
@@ -84,20 +94,27 @@ class ForeignFamilySiteFindingRecipeSynthesizer(
         return self.executable_evaluation(recipe)
 
     @classmethod
+    def operation_scope(
+        cls, file_path: str, site: ForeignFamilySiteShape
+    ) -> tuple[str, ...]:
+        """What one operation covers: the function holding the site."""
+
+        return (file_path, site.symbol, site.family)
+
+    @classmethod
     def checked_operation(
         cls,
         snapshot: CodemodSelectorContext,
         file_path: str,
-        symbol: str,
-        family: str,
+        site: ForeignFamilySiteShape,
     ) -> SourceReprovedOperation:
         """The operation for one function, proved against current source."""
 
         (target_id,) = SourceIndexTargetSelector.for_function_or_method(
-            file_path, symbol
+            file_path, site.symbol
         ).target_ids(snapshot)
         operation = cls.operation_type(
-            target=SourceRewriteTarget(target_id=target_id), family=family
+            target=SourceRewriteTarget(target_id=target_id), family=site.family
         )
         operation.source_edits_from_snapshot(snapshot.execution_snapshot())
         return operation
@@ -129,3 +146,43 @@ class ForeignAdapterBindChainFindingRecipeSynthesizer(
         "Bindings read class by class from foreign nodes become property reads "
         "of the adapter family that already implements them."
     )
+
+
+class StaticProjectionAdapterFindingRecipeSynthesizer(
+    ForeignFamilySiteFindingRecipeSynthesizer, StaticProjectionAdapterConcept
+):
+    """Rewrite each evidenced module's static projection calls onto their family."""
+
+    operation_type = ProjectStaticCallsToAdapterOperation
+    site_family = StaticProjectionCallModuleFamily
+    recipe_id_suffix = "project-static-calls-to-adapter"
+    recipe_reason = (
+        "Calls of a static projection class read the property of the same "
+        "name on the adapter family that already answers that question."
+    )
+
+    @classmethod
+    def operation_scope(
+        cls, file_path: str, site: ForeignFamilySiteShape
+    ) -> tuple[str, ...]:
+        """One operation per module and projector: it owns the module's imports."""
+
+        return (file_path, site.projector, site.family)
+
+    @classmethod
+    def checked_operation(
+        cls,
+        snapshot: CodemodSelectorContext,
+        file_path: str,
+        site: StaticProjectionSiteShape,
+    ) -> SourceReprovedOperation:
+        (target_id,) = SourceIndexTargetSelector(
+            node_kinds=(AstTargetNodeKind.MODULE,), file_paths=(file_path,)
+        ).target_ids(snapshot)
+        operation = cls.operation_type(
+            target=SourceRewriteTarget(target_id=target_id),
+            projector=site.projector,
+            family=site.family,
+        )
+        operation.source_edits_from_snapshot(snapshot.execution_snapshot())
+        return operation

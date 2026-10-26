@@ -7,10 +7,8 @@ import builtins
 import copy
 from dataclasses import dataclass
 
-from .ast_tools import (
-    AstExpressionProjection,
-    ParsedModule,
-)
+from .ast_projection import ExpressionReference
+from .ast_tools import ParsedModule
 from .class_index import (
     ClassMethodPromotionSafetyProfile,
     ClassFamilyIndex,
@@ -244,7 +242,7 @@ class ClassBaseBehaviorAuthority:
     ) -> tuple["ClassBaseBehaviorAuthority", ...]:
         authorities: list[ClassBaseBehaviorAuthority] = []
         for base in context.owner.node.bases:
-            parts = AstExpressionProjection.attribute_chain(base)
+            parts = ExpressionReference.decoded(base).attribute_chain
             if parts is None:
                 raise ValueError(
                     f"Class authority {context.owner.qualname!r} has parameterized or "

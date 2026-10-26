@@ -12,7 +12,7 @@ from inspect import Signature, signature
 from itertools import combinations
 import re
 
-from ..ast_projection import AstExpressionProjection
+from ..ast_projection import ExpressionReference
 from ..ast_tools import ParsedModule, named_function_nodes, walk_function_body_nodes
 from ..class_index import (
     ModuleNominalBindingAuthority,
@@ -164,7 +164,7 @@ class RegexBundleModuleProjection:
             or id(root) not in self.external_reference_ids
         ):
             return None
-        parts = AstExpressionProjection.attribute_chain(call.func)
+        parts = ExpressionReference.decoded(call.func).attribute_chain
         if parts is None:
             return None
         operation = RegexPatternOperation.for_qualified_name(
