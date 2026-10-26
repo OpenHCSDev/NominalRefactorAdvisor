@@ -9570,6 +9570,15 @@ class DataclassInstanceFieldRunProjection:
     instance: DataclassInstanceFieldProjection
     first_key_node: ast.expr
     last_value_node: ast.expr
+    dict_node: ast.Dict
+    comprehension_prefix: ClassVar[str] = "**"
+
+    def replacement_span(self, geometry: SourceTextGeometry) -> SourceTextSpan | None:
+        first = geometry.node_offsets(self.first_key_node)
+        last = geometry.node_offsets(self.last_value_node)
+        if first is None or last is None:
+            return None
+        return SourceTextSpan(start_offset=first[0], end_offset=last[1])
 
     @property
     def owner_node(self) -> ast.expr:
@@ -9602,10 +9611,16 @@ class DataclassInstanceFieldRunProjection:
         first_key_node = projection.dict_node.keys[matched_indices[0]]
         if not isinstance(first_key_node, ast.expr):
             return None
-        return cls(
+        projection_type = (
+            WholeDataclassPayloadProjection
+            if len(projection.field_values) == len(projection.dict_node.values)
+            else cls
+        )
+        return projection_type(
             instance=instance,
             first_key_node=first_key_node,
             last_value_node=projection.dict_node.values[matched_indices[-1]],
+            dict_node=projection.dict_node,
         )
 
     def owner_has_nominal_authority_type(
@@ -9621,6 +9636,19 @@ class DataclassInstanceFieldRunProjection:
             projection,
             authority_import_source,
         )
+
+
+@dataclass(frozen=True)
+class WholeDataclassPayloadProjection(DataclassInstanceFieldRunProjection):
+    """An exhaustive payload owns the entire dict expression, without a merge."""
+
+    comprehension_prefix: ClassVar[str] = ""
+
+    def replacement_span(self, geometry: SourceTextGeometry) -> SourceTextSpan | None:
+        offsets = geometry.node_offsets(self.dict_node)
+        if offsets is None:
+            return None
+        return SourceTextSpan(start_offset=offsets[0], end_offset=offsets[1])
 
 
 @dataclass(frozen=True)
@@ -10152,26 +10180,17 @@ class DataclassPayloadProjectionDerivation(
     ) -> SourceTextReplacement | None:
         source = context.sources_by_file_path[projection.source_path]
         geometry = SourceTextGeometry(source)
-        first_key_offsets = geometry.node_offsets(field_run.first_key_node)
-        last_value_offsets = geometry.node_offsets(field_run.last_value_node)
+        replacement_span = field_run.replacement_span(geometry)
         owner_source = geometry.segment_for_node(field_run.owner_node)
-        if (
-            first_key_offsets is None
-            or last_value_offsets is None
-            or owner_source is None
-        ):
+        if replacement_span is None or owner_source is None:
             return None
-        replacement_span = SourceTextSpan(
-            start_offset=first_key_offsets[0],
-            end_offset=last_value_offsets[1],
-        )
         if replacement_span.contains_comment(source):
             return None
         indentation = " " * field_run.first_key_node.col_offset
         continuation_indentation = f"{indentation}    "
         nested_indentation = f"{continuation_indentation}    "
         replacement_source = (
-            "**{\n"
+            f"{field_run.comprehension_prefix}{{\n"
             f"{continuation_indentation}field.name: getattr(\n"
             f"{nested_indentation}{owner_source},\n"
             f"{nested_indentation}field.name,\n"
