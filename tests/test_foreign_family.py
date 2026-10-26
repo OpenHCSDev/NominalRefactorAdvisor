@@ -228,3 +228,22 @@ def test_type_switch_lead_carries_no_recipe(tmp_path: Path) -> None:
     )
 
     assert not issubclass(ForeignTypeSwitchDetector, FindingRecipeEvaluator)
+
+
+def test_mixed_function_routes_exact_sites_and_leaves_the_part_site(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "probe.py"
+    path.write_text(
+        "import ast\n\n\ndef names(node):\n"
+        "    sync = [s for s in node.body if isinstance(s, ast.FunctionDef)]\n"
+        "    both = [s for s in node.body if isinstance(s, (ast.FunctionDef, ast.AsyncFunctionDef))]\n"
+        "    return sync, both\n",
+        encoding="utf-8",
+    )
+    simulation = _simulate(tmp_path, _operation(path))
+    assert simulation.is_clean
+    simulation.apply()
+    rewritten = path.read_text(encoding="utf-8")
+    assert "if isinstance(s, ast.FunctionDef)]" in rewritten
+    assert "both = [s for s in FunctionDefinition.within(node.body)]" in rewritten

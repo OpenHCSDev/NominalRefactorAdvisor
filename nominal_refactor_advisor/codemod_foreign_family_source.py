@@ -172,7 +172,10 @@ class ComprehensionFilterSite(FilterSiteABC):
         geometry = fit.geometry
         condition_start, condition_end = geometry.required_node_offsets(self.condition)
         _, iterable_end = geometry.required_node_offsets(self.iterable)
-        if re.fullmatch(r"\s+if\s+", geometry.source[iterable_end:condition_start]) is None:
+        if (
+            re.fullmatch(r"\s+if\s+", geometry.source[iterable_end:condition_start])
+            is None
+        ):
             raise ValueError("Comprehension filter layout is not a bare `if` clause")
         if geometry.span_contains_comment(SourceTextSpan(iterable_end, condition_end)):
             raise ValueError("Comprehension filter rewrite would discard a comment")
@@ -212,14 +215,16 @@ class ContinueFilterSite(FilterSiteABC):
         geometry = fit.geometry
         statement_span = SourceTextSpan(
             *geometry.line_span_offsets(
-                self.statement.lineno, self.statement.end_lineno or self.statement.lineno
+                self.statement.lineno,
+                self.statement.end_lineno or self.statement.lineno,
             )
         )
         if geometry.span_contains_comment(statement_span):
             raise ValueError("Loop filter rewrite would discard a comment")
         deleted = geometry.statement_deletion_span(
             SourceLineSpan(
-                self.statement.lineno, self.statement.end_lineno or self.statement.lineno
+                self.statement.lineno,
+                self.statement.end_lineno or self.statement.lineno,
             )
         )
         start_offset, end_offset = geometry.line_span_offsets(
@@ -270,10 +275,16 @@ class ForeignFamilyFilterAuthority:
         return TypeArgumentResolver(self.parsed_module)
 
     def replacements(self) -> tuple[SourceTextSpanReplacement, ...]:
-        """Edits for every site testing the family or, if accepted, a part of it."""
+        """Edits for every site testing exactly the family, or a part if accepted.
+
+        A part-of-family site would widen its filter, so it stays untouched
+        unless widening is accepted; when only such sites exist the first one
+        is handed back, naming the classes the rewrite would add.
+        """
 
         members = self.reference.member_names
         replacements: list[SourceTextSpanReplacement] = []
+        refusals: list[ValueError] = []
         for shape in FilterSiteABC.__subclasses__():
             for site in shape.in_scope(self.function):
                 tested = self.resolver.qualified_names_of_test(site.condition)
@@ -281,18 +292,27 @@ class ForeignFamilyFilterAuthority:
                     continue
                 missing = members - set(tested)
                 if missing and not self.accept_widening:
-                    raise handback(
-                        self.parsed_module,
-                        site.condition,
-                        f"rewriting to {self.reference.class_name} would widen the "
-                        f"filter to include {', '.join(sorted(missing))}; "
-                        "set accept_widening to allow it",
+                    refusals.append(
+                        handback(
+                            self.parsed_module,
+                            site.condition,
+                            f"rewriting to {self.reference.class_name} would widen "
+                            f"the filter to include {', '.join(sorted(missing))}; "
+                            "set accept_widening to allow it",
+                        )
                     )
-                replacements.extend(site.replacements(self.fit, self.reference.class_name))
+                    continue
+                replacements.extend(
+                    site.replacements(self.fit, self.reference.class_name)
+                )
         if not replacements:
-            raise ValueError(
-                f"No filter site in {self.function.name!r} tests classes of "
-                f"{self.reference.import_path}"
+            raise (
+                refusals[0]
+                if refusals
+                else ValueError(
+                    f"No filter site in {self.function.name!r} tests classes of "
+                    f"{self.reference.import_path}"
+                )
             )
         return tuple(sorted(replacements, key=lambda item: item.start_offset))
 
@@ -305,10 +325,14 @@ class ForeignFamilyFilterModuleFamily(ShapeFamily[ForeignFamilyFilterModule]):
     @classmethod
     def collect(cls, parsed_module: ParsedModule) -> list[ForeignFamilyFilterModule]:
         index = module_syntax_index(parsed_module.module)
-        node_indices = {call: node_index for node_index, call in index.indexed_nodes_of_type(ast.Call)}
+        node_indices = {
+            call: node_index
+            for node_index, call in index.indexed_nodes_of_type(ast.Call)
+        }
         resolver = TypeArgumentResolver(parsed_module)
         families_by_members = {
-            family.member_names(): family for family in ForeignFamily.concrete_families()
+            family.member_names(): family
+            for family in ForeignFamily.concrete_families()
         }
         shapes = []
         for site_type in FilterSiteABC.__subclasses__():

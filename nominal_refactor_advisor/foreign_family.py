@@ -41,9 +41,7 @@ class ForeignFamily(metaclass=ForeignFamilyMeta):
             for child in cls.__subclasses__()
             for descendant in (child, *child.concrete_families())
         )
-        return tuple(
-            family for family in descendants if "members" in vars(family)
-        )
+        return tuple(family for family in descendants if "members" in vars(family))
 
     @classmethod
     def import_path(cls) -> str:
