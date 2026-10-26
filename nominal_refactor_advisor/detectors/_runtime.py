@@ -54,6 +54,10 @@ from ..enum_keyed_query import (
     EnumKeyedDerivedMapFacadeModuleProjection,
     EnumKeyedDerivedMapFacadeModuleProjectionFamily,
 )
+from ..codemod_foreign_family_recipe import (
+    ForeignFamilyRoutableFilterFindingRecipeSynthesizer,
+)
+from ..codemod_foreign_family_source import ForeignFamilyFilterModuleFamily
 from ..codemod import (
     KeyedMirrorFindingRecipeSynthesizer,
     ManualClassRegistrationFindingRecipeSynthesizer,
@@ -69,6 +73,10 @@ from ..models import (
     HierarchyCandidateMetrics,
     RefactorFinding,
     SourceLocation,
+)
+from ..observation_shapes import (
+    ForeignFamilyFilterModule,
+    ForeignFamilyFilterShape,
 )
 from ..patterns import PatternId
 from ..semantic_identity import (
@@ -3004,4 +3012,50 @@ class ScopedShapeWrapperDetector(PerModuleIssueDetector):
                 f"{module.path} encodes guarded wrapper functions {function_names} and specs {spec_names} as parallel wrapper/spec pairs over node families {node_families}.",
                 evidence,
             )
+        ]
+
+
+class ForeignFamilyRoutableFilterDetector(
+    CompactModuleProjectionDetectorMixin[ForeignFamilyFilterModule],
+    ForeignFamilyRoutableFilterFindingRecipeSynthesizer,
+    IssueDetector,
+):
+    """Find filters that restate the classes a declared foreign family owns."""
+
+    module_projection_family = ForeignFamilyFilterModuleFamily
+
+    finding_spec = certified_spec(
+        PatternId.FOREIGN_FAMILY_ROUTABLE_FILTER,
+        "Filters restate a declared foreign family's classes",
+        "A declared foreign family owns its members and the one type test on them. A filter that tests exactly those classes again restates the family instead of iterating it.",
+        "filters routed through the declared family that owns their tested classes",
+        "loop or comprehension filters whose tested class set equals one declared concrete family's members",
+        (CapabilityTag.PROVENANCE,),
+        (ObservationTag.PARTIAL_VIEW,),
+    )
+
+    def _findings_from_compact_projections(
+        self,
+        projections: Sequence[ForeignFamilyFilterModule],
+        config: DetectorConfig,
+    ) -> list[RefactorFinding]:
+        del config
+        sites_by_family: dict[str, list[ForeignFamilyFilterShape]] = defaultdict(list)
+        for projection in projections:
+            for site in projection.sites:
+                sites_by_family[site.family].append(site)
+        return [
+            self.build_finding(
+                f"{len(sites)} filter site(s) in "
+                f"{len({site.file_path for site in sites})} module(s) test exactly "
+                f"the classes of `{family}`; each can iterate `.within(...)` on it "
+                "instead of restating the type test.",
+                tuple(
+                    SourceLocation(site.file_path, site.lineno, site.symbol)
+                    for site in sorted(
+                        sites, key=lambda site: (site.file_path, site.lineno)
+                    )
+                ),
+            )
+            for family, sites in sorted(sites_by_family.items())
         ]

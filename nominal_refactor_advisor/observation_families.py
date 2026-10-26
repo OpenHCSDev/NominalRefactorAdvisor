@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import ast
 from abc import ABC, abstractmethod
-from collections.abc import Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from collections import Counter
 from dataclasses import dataclass
 from functools import cached_property
@@ -1112,6 +1112,25 @@ class TypeArgumentResolver:
         if not names or None in names:
             return None
         return tuple(sorted(set(names)))
+
+    def qualified_names_of_test(self, call: ast.Call) -> tuple[str, ...] | None:
+        """Qualified classes one `isinstance` call of this module tests, if resolved."""
+
+        arguments = BuiltinCallName.isinstance_arguments(call)
+        if arguments is None:
+            return None
+        parents = module_syntax_index(self.parsed_module.module).parent_by_node
+        ancestors = tuple(self._ancestors(parents, call))
+        return self.qualified_names(arguments[1], _enclosing_function_names(ancestors))
+
+    @staticmethod
+    def _ancestors(
+        parents: Mapping[ast.AST, ast.AST], node: ast.AST
+    ) -> Iterator[ast.AST]:
+        parent = parents.get(node)
+        if parent is not None:
+            yield parent
+            yield from TypeArgumentResolver._ancestors(parents, parent)
 
 
 def _enclosing_function_names(ancestors: Sequence[ast.AST]) -> frozenset[str]:

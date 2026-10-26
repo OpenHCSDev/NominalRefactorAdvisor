@@ -30,6 +30,7 @@ EXPECTED_CONCEPT_DECLARATIONS = frozenset(
         codemod.AutoRegisterClassRegistryConcept,
         codemod.AutoRegisterStrategyFamilyConcept,
         codemod.AutoRegisterMroOrderingConcept,
+        codemod.ForeignFamilyRoutingConcept,
     }
 )
 

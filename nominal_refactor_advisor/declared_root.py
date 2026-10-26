@@ -78,14 +78,7 @@ class DeclaredRoot:
     def declared_for(cls, path: Path) -> DeclaredRoot:
         """The declaration in the nearest ``pyproject.toml`` above ``path``."""
 
-        pyproject = next(
-            (
-                directory / "pyproject.toml"
-                for directory in path.resolve().parents
-                if (directory / "pyproject.toml").is_file()
-            ),
-            None,
-        )
+        pyproject = cls.nearest_pyproject(path)
         if pyproject is None:
             raise ValueError(
                 f"handback: {path}: declare a family root: no pyproject.toml"
@@ -96,6 +89,28 @@ class DeclaredRoot:
             case {"tool": {"nominal-refactor-advisor": {"family-root": dict(table)}}}:
                 return cls.decoded(pyproject, table, cls.line_length_of(declared))
         raise ValueError(f"handback: {pyproject}: declare a family root in {TABLE}")
+
+    @staticmethod
+    def nearest_pyproject(path: Path) -> Path | None:
+        """The closest ``pyproject.toml`` in ``path``'s ancestor directories."""
+
+        return next(
+            (
+                directory / "pyproject.toml"
+                for directory in path.resolve().parents
+                if (directory / "pyproject.toml").is_file()
+            ),
+            None,
+        )
+
+    @classmethod
+    def line_length_for(cls, path: Path) -> int:
+        """The line length the formatter declared for ``path``'s repository."""
+
+        pyproject = cls.nearest_pyproject(path)
+        if pyproject is None:
+            return BLACK_DEFAULT_LINE_LENGTH
+        return cls.line_length_of(tomllib.loads(pyproject.read_text()))
 
     @staticmethod
     def line_length_of(declared: dict[str, object]) -> int:

@@ -6,6 +6,7 @@ from abc import (
     abstractmethod,
 )
 from dataclasses import dataclass
+from pathlib import Path
 from typing import ClassVar
 
 
@@ -29,7 +30,12 @@ from .codemod_declaration_source import (
     FunctionRegionSourceAuthority,
     FunctionSignatureSourceAuthority,
 )
+from .codemod_foreign_family_source import (
+    ForeignFamilyFilterAuthority,
+    ForeignFamilyReference,
+)
 from .codemod_payload import (
+    BooleanPayloadValueCodec,
     EmptyDefaultStringPayloadValueCodec,
     OptionalStringArrayPayloadValueCodec,
     PayloadRecordValueCodec,
@@ -46,12 +52,17 @@ from .codemod_selector_models import (
     SelectionCountPayloadValueCodec,
     SourceRewriteTarget,
 )
-from .codemod_source_edits import PhysicalSourceEdit
+from .codemod_source_edits import (
+    NominalSourceEdit,
+    PhysicalSourceEdit,
+    SourceTextGeometry,
+)
 from .declaration_dependencies import (
     FunctionBindingABC,
     FunctionLocalBinding,
     FunctionParameterBinding,
 )
+from .declared_root import DeclaredRoot
 from .descriptor_algebra import AliasProperty
 from .product_flow import BareCallTargetReference
 from .value_expression import LexicalValueReference
@@ -307,3 +318,48 @@ class ProjectFunctionLocalOperation(FunctionBindingProjectionOperationABC):
     local_name: str = codemod_payload_field(RequiredStringPayloadValueCodec())
     binding_type = FunctionLocalBinding
     binding_name = AliasProperty[str]("local_name")
+
+
+@dataclass(frozen=True, kw_only=True)
+class RouteForeignFamilyFilterOperation(SourceReprovedOperation):
+    """Route foreign-class filters in one function through a declared family.
+
+    Rewrites `for V in ITER if isinstance(V, T)` comprehension clauses and
+    `if not isinstance(V, T): continue` loop guards to `Family.within(ITER)`.
+    A filter testing only part of the family would widen; that needs
+    `accept_widening`.
+    """
+
+    family: str = codemod_payload_field(RequiredStringPayloadValueCodec())
+    accept_widening: bool = codemod_payload_field(
+        BooleanPayloadValueCodec(), default=False
+    )
+
+    def source_edits_from_snapshot(
+        self, snapshot: CodemodSourceSnapshot
+    ) -> tuple[NominalSourceEdit, ...]:
+        _, target, node = self.target_node_from_context(snapshot)
+        parsed_module = snapshot.parsed_module_for_source_path(target.file_path)
+        reference = ForeignFamilyReference(self.family)
+        authority = ForeignFamilyFilterAuthority(
+            parsed_module=parsed_module,
+            geometry=SourceTextGeometry(snapshot.sources_by_file_path[target.file_path]),
+            line_length=DeclaredRoot.line_length_for(Path(target.file_path)),
+            declaration=node,
+            reference=reference,
+            accept_widening=self.accept_widening,
+        )
+        return (
+            *authority.geometry.physical_edits(
+                file_path=target.file_path,
+                replacements=authority.replacements(),
+                rationale=self.rationale
+                or f"Route foreign-class filters in {target.qualname!r} through "
+                f"{reference.class_name}.",
+            ),
+            *self.required_import_mutations(
+                target.file_path,
+                import_source=reference.import_source_for(snapshot, parsed_module),
+                default_rationale=f"Import {reference.class_name}.",
+            ),
+        )
