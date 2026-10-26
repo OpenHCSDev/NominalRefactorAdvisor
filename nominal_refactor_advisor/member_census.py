@@ -130,6 +130,16 @@ class MemberOwner(ABC):
     name: str
     covered: frozenset[str]
     method_names: frozenset[str]
+    definitions: frozenset[tuple[str, str]]
+
+    def defines(self, module_name: str, symbol: str) -> bool:
+        """Whether the symbol sits inside a class that is this owner's own code."""
+
+        return any(
+            module_name == owner_module
+            and (symbol == qualname or symbol.startswith(f"{qualname}."))
+            for owner_module, qualname in self.definitions
+        )
 
     def covers(self, members: frozenset[str]) -> bool:
         return members <= self.covered
@@ -190,6 +200,10 @@ class CensusCorpus:
         return tuple(module.module_name for module in self.modules)
 
     @cached_property
+    def module_name_by_file(self) -> dict[str, str]:
+        return {module.file_path: module.module_name for module in self.modules}
+
+    @cached_property
     def resolvers(self) -> dict[str, TypeArgumentResolver]:
         return {
             module.file_path: TypeArgumentResolver(module) for module in self.modules
@@ -228,6 +242,17 @@ class MemberCensusSource(ABC):
         raise NotImplementedError
 
 
+def _own_definitions(owner: type) -> frozenset[tuple[str, str]]:
+    """The owner and every class below it, as (module, qualname): the decoder code."""
+
+    def below(klass: type) -> Iterator[type]:
+        yield klass
+        for child in klass.__subclasses__():
+            yield from below(child)
+
+    return frozenset((klass.__module__, klass.__qualname__) for klass in below(owner))
+
+
 def _public_method_names(owner: type) -> frozenset[str]:
     """Names of the public callables a declaration exposes, from its MRO."""
 
@@ -258,6 +283,7 @@ class ForeignModuleSource(MemberCensusSource):
                     covered=family.member_names(),
                     method_names=_public_method_names(family),
                     aliases=self.corpus.aliases_of(family.import_path()),
+                    definitions=_own_definitions(family),
                 )
                 for family in declared
             ),
@@ -270,6 +296,7 @@ class ForeignModuleSource(MemberCensusSource):
                     aliases=self.corpus.aliases_of(
                         f"{projection.__module__}.{projection.__qualname__}"
                     ),
+                    definitions=_own_definitions(projection),
                 )
                 for projection in MemberProjectionOwner.__subclasses__()
             ),
@@ -337,6 +364,7 @@ class EnumSource(MemberCensusSource):
                 covered=frozenset(declared_cases(enum_class)),
                 method_names=frozenset(enum_class.method_names),
                 simple_name=enum_class.simple_name,
+                definitions=frozenset(),
             )
             for enum_class in self.enum_classes.values()
         )
@@ -469,6 +497,11 @@ class MemberAwarenessCensusBuilder:
             owner.name for owner in owners if any(owner.called_by(call) for call in calls)
         )
 
+    def defined_by(self, consumer: Consumer, owner: MemberOwner) -> bool:
+        return owner.defines(
+            self.corpus.module_name_by_file[consumer.file_path], consumer.symbol
+        )
+
     def covering(self, consumer: Consumer) -> tuple[MemberOwner, ...]:
         return tuple(
             owner
@@ -486,8 +519,15 @@ class MemberAwarenessCensusBuilder:
                     consumer
                 )
         groups: list[MemberSetGroup] = []
-        for (kind, family, members), consumers in grouped.items():
-            covering = self.covering(consumers[0])
+        for (kind, family, members), candidates in grouped.items():
+            covering = self.covering(candidates[0])
+            consumers = [
+                consumer
+                for consumer in candidates
+                if not any(self.defined_by(consumer, owner) for owner in covering)
+            ]
+            if not consumers:
+                continue
             records = [
                 (consumer, self.owners_called(consumer, covering))
                 for consumer in consumers
@@ -526,7 +566,9 @@ class MemberAwarenessCensusBuilder:
             naming = tuple(
                 consumer
                 for consumer in self.consumers
-                if consumer.kind is owner.kind and owner.names_any(consumer.members)
+                if consumer.kind is owner.kind
+                and owner.names_any(consumer.members)
+                and not self.defined_by(consumer, owner)
             )
             if naming:
                 census.append(

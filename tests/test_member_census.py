@@ -139,3 +139,26 @@ def test_json_output_round_trips(tmp_path: Path, capsys, monkeypatch):
     assert main() == 0
     assert json.loads(capsys.readouterr().out) == expected
     assert expected["groups"][0]["bypassing_count"] == 1
+
+
+def test_owner_own_methods_are_not_consumers(tmp_path: Path):
+    package = tmp_path / "nominal_refactor_advisor"
+    package.mkdir()
+    (package / "__init__.py").write_text("")
+    (package / "ast_projection.py").write_text(
+        "import ast\n"
+        "class AstExpressionProjection:\n"
+        "    @staticmethod\n"
+        "    def identifier(node):\n"
+        "        return isinstance(node, (ast.Name, ast.Attribute))\n"
+    )
+    (tmp_path / "outside.py").write_text(
+        "import ast\n"
+        "def outside(node):\n"
+        "    return isinstance(node, (ast.Name, ast.Attribute))\n"
+    )
+    report = build_member_awareness_census(tmp_path)
+    [group] = [group for group in report.groups if group.family == "ast"]
+    assert group.consumer_count == 1
+    assert group.bypassing_count == 1
+    assert [consumer.qualname for consumer in group.bypassing] == ["outside"]
