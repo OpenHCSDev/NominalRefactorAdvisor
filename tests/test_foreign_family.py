@@ -57,7 +57,7 @@ def _run(path: Path) -> str:
 
 def test_within_keeps_family_members_in_order() -> None:
     nodes = ast.parse("def a(): pass\nclass B: pass\nasync def c(): pass\n").body
-    assert FunctionDefinition.within(nodes) == (nodes[0], nodes[2])
+    assert tuple(FunctionDefinition.within(nodes)) == (nodes[0], nodes[2])
 
 
 def test_comprehension_filter_routes_through_family(tmp_path: Path) -> None:
@@ -222,3 +222,70 @@ def test_finding_without_an_exact_family_filter_is_rejected(tmp_path: Path) -> N
         finding, snapshot
     )
     assert "no function holds a filter testing exactly" in evaluation.reason
+
+
+def test_within_is_lazy() -> None:
+    import itertools
+
+    endless = itertools.cycle(ast.parse("def a(): pass\nclass B: pass\n").body)
+    assert len(list(itertools.islice(FunctionDefinition.within(endless), 3))) == 3
+
+
+def test_rewritten_import_follows_the_importing_modules_style(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    package = tmp_path / "ffshapes"
+    package.mkdir()
+    (package / "__init__.py").write_text("", encoding="utf-8")
+    (package / "helper.py").write_text("HELP = 1\n", encoding="utf-8")
+    (package / "family.py").write_text(
+        "import ast\n\n"
+        "from nominal_refactor_advisor.foreign_family import ForeignFamily\n\n\n"
+        "class Defs(ForeignFamily):\n"
+        "    members = (ast.FunctionDef, ast.AsyncFunctionDef)\n",
+        encoding="utf-8",
+    )
+    body = (
+        "\n\ndef names(node):\n"
+        "    return [s.name for s in node.body if isinstance(s, (ast.FunctionDef, ast.AsyncFunctionDef))]\n"
+    )
+    (package / "relative_user.py").write_text(
+        "import ast\n\nfrom .helper import HELP\n" + body, encoding="utf-8"
+    )
+    (package / "absolute_user.py").write_text("import ast\n" + body, encoding="utf-8")
+    monkeypatch.syspath_prepend(str(tmp_path))
+    for name, expected in (
+        ("relative_user", "from .family import Defs\n"),
+        ("absolute_user", "from ffshapes.family import Defs\n"),
+    ):
+        path = package / f"{name}.py"
+        operation = RouteForeignFamilyFilterOperation(
+            target=SourceRewriteTarget(file_path=path.as_posix(), qualname="names"),
+            family="ffshapes.family.Defs",
+        )
+        simulation = _simulate(tmp_path, operation)
+        assert simulation.is_clean
+        simulation.apply()
+        assert expected in path.read_text(encoding="utf-8")
+
+
+def test_rewrite_keeps_to_the_declared_line_length(tmp_path: Path) -> None:
+    (tmp_path / "pyproject.toml").write_text(
+        "[tool.black]\nline-length = 88\n", encoding="utf-8"
+    )
+    path = tmp_path / "probe.py"
+    path.write_text(
+        "import ast\n\n\ndef names(node):\n"
+        "    return [\n"
+        "        s.name\n"
+        "        for s in node.some_long_receiver_name.another_long_attribute_name.body_items\n"
+        "        if isinstance(s, (ast.FunctionDef, ast.AsyncFunctionDef))\n"
+        "    ]\n",
+        encoding="utf-8",
+    )
+    simulation = _simulate(tmp_path, _operation(path))
+    assert simulation.is_clean
+    simulation.apply()
+    rewritten = path.read_text(encoding="utf-8")
+    assert "FunctionDefinition.within(" in rewritten
+    assert max(len(line) for line in rewritten.splitlines()) <= 88

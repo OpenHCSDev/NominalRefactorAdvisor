@@ -6,6 +6,7 @@ from abc import (
     abstractmethod,
 )
 from dataclasses import dataclass
+from pathlib import Path
 from typing import ClassVar
 
 
@@ -61,6 +62,7 @@ from .declaration_dependencies import (
     FunctionLocalBinding,
     FunctionParameterBinding,
 )
+from .declared_root import DeclaredRoot
 from .descriptor_algebra import AliasProperty
 from .product_flow import BareCallTargetReference
 from .value_expression import LexicalValueReference
@@ -325,8 +327,7 @@ class RouteForeignFamilyFilterOperation(SourceReprovedOperation):
     Rewrites `for V in ITER if isinstance(V, T)` comprehension clauses and
     `if not isinstance(V, T): continue` loop guards to `Family.within(ITER)`.
     A filter testing only part of the family would widen; that needs
-    `accept_widening`. The family's `within` returns a tuple, so iteration is
-    eager and the iterable is read once, up front.
+    `accept_widening`.
     """
 
     family: str = codemod_payload_field(RequiredStringPayloadValueCodec())
@@ -343,6 +344,7 @@ class RouteForeignFamilyFilterOperation(SourceReprovedOperation):
         authority = ForeignFamilyFilterAuthority(
             parsed_module=parsed_module,
             geometry=SourceTextGeometry(snapshot.sources_by_file_path[target.file_path]),
+            line_length=DeclaredRoot.line_length_for(Path(target.file_path)),
             declaration=node,
             reference=reference,
             accept_widening=self.accept_widening,
@@ -357,7 +359,7 @@ class RouteForeignFamilyFilterOperation(SourceReprovedOperation):
             ),
             *self.required_import_mutations(
                 target.file_path,
-                import_source=reference.import_source,
+                import_source=reference.import_source_for(snapshot, parsed_module),
                 default_rationale=f"Import {reference.class_name}.",
             ),
         )

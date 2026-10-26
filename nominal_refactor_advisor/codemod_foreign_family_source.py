@@ -10,8 +10,10 @@ from functools import cached_property
 from importlib import import_module
 from typing import Self
 
-from .ast_tools import BuiltinCallName, ParsedModule
+from .ast_tools import BuiltinCallName, ParsedModule, module_syntax_index
 from .cases_family import handback
+from .codemod_declaration_source import PythonExpressionSourceFormatter
+from .codemod_runtime import CodemodSourceSnapshot
 from .codemod_source_edits import (
     SourceLineSpan,
     SourceTextGeometry,
@@ -19,7 +21,8 @@ from .codemod_source_edits import (
     SourceTextSpanReplacement,
 )
 from .foreign_family import ForeignFamily, FunctionDefinition
-from .observation_families import TypeArgumentResolver
+from .observation_families import ShapeFamily, TypeArgumentResolver
+from .observation_shapes import ForeignFamilyFilterModule, ForeignFamilyFilterShape
 
 FunctionNode = ast.FunctionDef | ast.AsyncFunctionDef
 
@@ -42,16 +45,66 @@ class ForeignFamilyReference:
     def family(self) -> type[ForeignFamily]:
         return getattr(import_module(self.module_name), self.class_name)
 
-    @cached_property
-    def member_names(self) -> frozenset[str]:
-        return frozenset(
-            f"{member.__module__}.{member.__qualname__}"
-            for member in self.family.members
-        )
-
     @property
-    def import_source(self) -> str:
-        return f"from {self.module_name} import {self.class_name}"
+    def member_names(self) -> frozenset[str]:
+        return self.family.member_names()
+
+    def import_source_for(
+        self, snapshot: CodemodSourceSnapshot, parsed_module: ParsedModule
+    ) -> str:
+        """Import in the importing module's own style: relative when it is."""
+
+        family_file = snapshot.module_import_graph.unique_source_file_for_module_name(
+            self.module_name
+        )
+        uses_relative_imports = any(
+            statement.level
+            for _, statement in module_syntax_index(
+                parsed_module.module
+            ).indexed_nodes_of_type(ast.ImportFrom)
+        )
+        reference = (
+            snapshot.module_import_graph.import_module_reference(
+                importing_file_path=parsed_module.file_path,
+                imported_file_path=family_file.file_path,
+                imported_name=self.class_name,
+            )
+            if family_file is not None and uses_relative_imports
+            else None
+        )
+        return f"from {reference or self.module_name} import {self.class_name}"
+
+
+@dataclass(frozen=True)
+class RewrittenLineFit:
+    """Keeps a rewritten expression inside the repository's declared line length."""
+
+    geometry: SourceTextGeometry
+    line_length: int
+
+    def fitted(self, candidate: str, start: int, end: int) -> str:
+        """The candidate, black-formatted when it would overflow its line."""
+
+        line_start = self.geometry.line_offsets[
+            self.geometry.line_number_for_offset(start) - 1
+        ]
+        prefix = self.geometry.source[line_start:start]
+        tail = self.geometry.source[end:].partition("\n")[0]
+        if self.fits(prefix, candidate, tail):
+            return candidate
+        indentation = prefix[: len(prefix) - len(prefix.lstrip())]
+        formatted = PythonExpressionSourceFormatter(
+            self.line_length
+        ).replacement_source(
+            ast.parse(candidate, mode="eval").body, line_prefix=indentation
+        )
+        return formatted if self.fits(prefix, formatted, tail) else candidate
+
+    def fits(self, prefix: str, text: str, tail: str) -> bool:
+        return all(
+            len(line) <= self.line_length
+            for line in f"{prefix}{text}{tail}".split("\n")
+        )
 
 
 @dataclass(frozen=True)
@@ -64,13 +117,13 @@ class FilterSiteABC(ABC):
 
     @classmethod
     @abstractmethod
-    def in_function(cls, function: FunctionNode) -> tuple[Self, ...]:
-        """Every site of this shape inside the function, nested scopes included."""
+    def in_scope(cls, root: ast.AST) -> tuple[Self, ...]:
+        """Every site of this shape under `root`, nested scopes included."""
         raise NotImplementedError
 
     @abstractmethod
     def replacements(
-        self, geometry: SourceTextGeometry, family_name: str
+        self, fit: RewrittenLineFit, family_name: str
     ) -> tuple[SourceTextSpanReplacement, ...]:
         """Wrap the iterable in `family.within` and delete the type test."""
         raise NotImplementedError
@@ -83,17 +136,18 @@ class FilterSiteABC(ABC):
         return False
 
     def within_replacement(
-        self, geometry: SourceTextGeometry, family_name: str, end_offset: int
+        self, fit: RewrittenLineFit, family_name: str, end_offset: int
     ) -> SourceTextSpanReplacement:
         """Replace the iterable through `end_offset` by its family-filtered form."""
 
-        start_offset, iterable_end = geometry.required_node_offsets(self.iterable)
+        start_offset, iterable_end = fit.geometry.required_node_offsets(self.iterable)
+        candidate = (
+            f"{family_name}.within({fit.geometry.source[start_offset:iterable_end]})"
+        )
         return SourceTextSpanReplacement.from_offsets(
             start_offset=start_offset,
             end_offset=end_offset,
-            replacement_source=(
-                f"{family_name}.within({geometry.source[start_offset:iterable_end]})"
-            ),
+            replacement_source=fit.fitted(candidate, start_offset, end_offset),
         )
 
 
@@ -102,10 +156,10 @@ class ComprehensionFilterSite(FilterSiteABC):
     """`for V in ITER if isinstance(V, T)` as a comprehension's first condition."""
 
     @classmethod
-    def in_function(cls, function: FunctionNode) -> tuple[Self, ...]:
+    def in_scope(cls, root: ast.AST) -> tuple[Self, ...]:
         return tuple(
             cls(clause.target.id, clause.ifs[0], clause.iter)
-            for clause in ast.walk(function)
+            for clause in ast.walk(root)
             if isinstance(clause, ast.comprehension)
             and clause.ifs
             and isinstance(clause.target, ast.Name)
@@ -113,15 +167,16 @@ class ComprehensionFilterSite(FilterSiteABC):
         )
 
     def replacements(
-        self, geometry: SourceTextGeometry, family_name: str
+        self, fit: RewrittenLineFit, family_name: str
     ) -> tuple[SourceTextSpanReplacement, ...]:
+        geometry = fit.geometry
         condition_start, condition_end = geometry.required_node_offsets(self.condition)
         _, iterable_end = geometry.required_node_offsets(self.iterable)
         if re.fullmatch(r"\s+if\s+", geometry.source[iterable_end:condition_start]) is None:
             raise ValueError("Comprehension filter layout is not a bare `if` clause")
         if geometry.span_contains_comment(SourceTextSpan(iterable_end, condition_end)):
             raise ValueError("Comprehension filter rewrite would discard a comment")
-        return (self.within_replacement(geometry, family_name, condition_end),)
+        return (self.within_replacement(fit, family_name, condition_end),)
 
 
 @dataclass(frozen=True)
@@ -131,9 +186,9 @@ class ContinueFilterSite(FilterSiteABC):
     statement: ast.If
 
     @classmethod
-    def in_function(cls, function: FunctionNode) -> tuple[Self, ...]:
+    def in_scope(cls, root: ast.AST) -> tuple[Self, ...]:
         sites = []
-        for loop in ast.walk(function):
+        for loop in ast.walk(root):
             match loop:
                 case ast.For(
                     target=ast.Name() as target,
@@ -152,8 +207,9 @@ class ContinueFilterSite(FilterSiteABC):
         return tuple(sites)
 
     def replacements(
-        self, geometry: SourceTextGeometry, family_name: str
+        self, fit: RewrittenLineFit, family_name: str
     ) -> tuple[SourceTextSpanReplacement, ...]:
+        geometry = fit.geometry
         statement_span = SourceTextSpan(
             *geometry.line_span_offsets(
                 self.statement.lineno, self.statement.end_lineno or self.statement.lineno
@@ -171,7 +227,7 @@ class ContinueFilterSite(FilterSiteABC):
         )
         _, iterable_end = geometry.required_node_offsets(self.iterable)
         return (
-            self.within_replacement(geometry, family_name, iterable_end),
+            self.within_replacement(fit, family_name, iterable_end),
             SourceTextSpanReplacement.from_offsets(
                 start_offset=start_offset, end_offset=end_offset, replacement_source=""
             ),
@@ -184,6 +240,7 @@ class ForeignFamilyFilterAuthority:
 
     parsed_module: ParsedModule
     geometry: SourceTextGeometry
+    line_length: int
     declaration: ast.stmt
     reference: ForeignFamilyReference
     accept_widening: bool
@@ -205,6 +262,10 @@ class ForeignFamilyFilterAuthority:
         return matches[0]
 
     @cached_property
+    def fit(self) -> RewrittenLineFit:
+        return RewrittenLineFit(self.geometry, self.line_length)
+
+    @cached_property
     def resolver(self) -> TypeArgumentResolver:
         return TypeArgumentResolver(self.parsed_module)
 
@@ -214,7 +275,7 @@ class ForeignFamilyFilterAuthority:
         members = self.reference.member_names
         replacements: list[SourceTextSpanReplacement] = []
         for shape in FilterSiteABC.__subclasses__():
-            for site in shape.in_function(self.function):
+            for site in shape.in_scope(self.function):
                 tested = self.resolver.qualified_names_of_test(site.condition)
                 if tested is None or not set(tested) <= members:
                     continue
@@ -227,7 +288,7 @@ class ForeignFamilyFilterAuthority:
                         f"filter to include {', '.join(sorted(missing))}; "
                         "set accept_widening to allow it",
                     )
-                replacements.extend(site.replacements(self.geometry, self.reference.class_name))
+                replacements.extend(site.replacements(self.fit, self.reference.class_name))
         if not replacements:
             raise ValueError(
                 f"No filter site in {self.function.name!r} tests classes of "

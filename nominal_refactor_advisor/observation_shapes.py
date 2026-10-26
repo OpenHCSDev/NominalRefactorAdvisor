@@ -397,6 +397,24 @@ class ForeignTypeTestModule:
 
 
 @dataclass(frozen=True)
+class ForeignFamilyFilterShape:
+    """One filter whose tested classes are exactly one declared family's members."""
+
+    file_path: str
+    lineno: int
+    symbol: str
+    family: str
+
+
+@dataclass(frozen=True)
+class ForeignFamilyFilterModule:
+    """One module's family-routable filters, kept even when empty."""
+
+    module_name: str
+    sites: tuple[ForeignFamilyFilterShape, ...]
+
+
+@dataclass(frozen=True)
 class RegistrationShape:
     """Normalized record for one recovered manual registration site."""
 

@@ -365,6 +365,15 @@ class PatternId(IntEnum):
         ),
         witness_capabilities=(CapabilityTag.PROVENANCE,),
     )
+    FOREIGN_FAMILY_ROUTABLE_FILTER = _pattern(
+        stable_id=27,
+        display_name="Foreign Family Routable Filter",
+        required_relation=(
+            "A filter tests exactly the classes a declared foreign family owns, "
+            "so the family's own membership test can replace the restated one."
+        ),
+        witness_capabilities=(CapabilityTag.PROVENANCE,),
+    )
 
     def __new__(
         cls,

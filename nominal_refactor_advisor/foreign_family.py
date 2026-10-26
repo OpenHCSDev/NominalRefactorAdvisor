@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import ast
 from abc import ABCMeta
-from collections.abc import Iterable
+from collections.abc import Iterable, Iterator
 from typing import ClassVar, Self
 
 
@@ -46,10 +46,24 @@ class ForeignFamily(metaclass=ForeignFamilyMeta):
         )
 
     @classmethod
-    def within(cls, nodes: Iterable[object]) -> tuple[Self, ...]:
-        """Keep the members of this family, in order; the one `isinstance` here."""
+    def import_path(cls) -> str:
+        """The qualified path a recipe names this family by."""
 
-        return tuple(node for node in nodes if isinstance(node, cls))
+        return f"{cls.__module__}.{cls.__qualname__}"
+
+    @classmethod
+    def member_names(cls) -> frozenset[str]:
+        """Qualified names of the classes this family answers for."""
+
+        return frozenset(
+            f"{member.__module__}.{member.__qualname__}" for member in cls.members
+        )
+
+    @classmethod
+    def within(cls, nodes: Iterable[object]) -> Iterator[Self]:
+        """Lazily keep the members of this family, in order; the one `isinstance`."""
+
+        return (node for node in nodes if isinstance(node, cls))
 
 
 class FunctionDefinition(ForeignFamily):
