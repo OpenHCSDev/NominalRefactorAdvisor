@@ -23,6 +23,7 @@ from .class_index import (
     build_class_family_index,
 )
 from .collection_algebra import sorted_tuple
+from .foreign_family import FunctionDefinition
 from .lexical_bindings import LEXICAL_SCOPE_BINDING_AUTHORITY
 from .native_declarations import DataclassRuntimeDeclaration
 from .source_geometry import (
@@ -382,8 +383,7 @@ class ExactDataclassFieldAuthorityComponentBuilder:
             isinstance(child, ast.Name)
             and isinstance(child.ctx, ast.Load)
             and child.id in {"super", "__class__"}
-            for statement in node.body
-            if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef))
+            for statement in FunctionDefinition.within(node.body)
             for child in ast.walk(statement)
         ):
             raise ValueError("Dataclass methods depend on the current MRO")

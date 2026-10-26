@@ -32,6 +32,7 @@ from typing import ClassVar, Generic, TypeAlias, TypeVar, cast
 
 from metaclass_registry import AutoRegisterMeta
 
+from .foreign_family import FunctionDefinition
 from .interpreter import PythonVersion
 from .assignment_projection import SingleAssignmentAndValueNameProjection
 from .ast_tools import (
@@ -1458,12 +1459,7 @@ class SemanticClassSupplement:
         )
         if constructed_type_names is None:
             collected_constructed_type_names: set[str] = set()
-            for statement in node.body:
-                if not isinstance(
-                    statement,
-                    (ast.FunctionDef, ast.AsyncFunctionDef),
-                ):
-                    continue
+            for statement in FunctionDefinition.within(node.body):
                 for child in ast.walk(statement):
                     if isinstance(child, ast.Call):
                         collected_constructed_type_names.update(
@@ -4259,12 +4255,7 @@ class CompactSemanticModuleProjectionFamily(
             return ()
         class_ids_by_direct_method_id: dict[int, tuple[int, ...]] = {}
         for _qualname, class_node in indexed_class_nodes:
-            for statement in class_node.body:
-                if not isinstance(
-                    statement,
-                    (ast.FunctionDef, ast.AsyncFunctionDef),
-                ):
-                    continue
+            for statement in FunctionDefinition.within(class_node.body):
                 class_ids_by_direct_method_id[id(statement)] = (
                     *class_ids_by_direct_method_id.get(id(statement), ()),
                     id(class_node),
@@ -4833,11 +4824,7 @@ class _ProjectionVisitor(ClassFunctionStackNodeVisitor):
                 qualname=".".join((*self.class_stack, node.name)),
                 direct_method_ids=frozenset(
                     id(statement)
-                    for statement in node.body
-                    if isinstance(
-                        statement,
-                        (ast.FunctionDef, ast.AsyncFunctionDef),
-                    )
+                    for statement in FunctionDefinition.within(node.body)
                 ),
                 supplement_index=len(self._class_supplements),
             )
@@ -5748,9 +5735,7 @@ class ConstructionAuthorityResolver:
             }
         )
         constructed_type_names: set[str] = set()
-        for statement in indexed_class.node.body:
-            if not isinstance(statement, ast.FunctionDef | ast.AsyncFunctionDef):
-                continue
+        for statement in FunctionDefinition.within(indexed_class.node.body):
             for child in ast.walk(statement):
                 if isinstance(child, ast.Call):
                     constructed_type_names.update(

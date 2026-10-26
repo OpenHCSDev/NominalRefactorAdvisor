@@ -22,6 +22,7 @@ from ..ast_tools import (
 )
 from ..class_index import ClassFamilyIndex, IndexedClass
 from ..collection_algebra import sorted_tuple
+from ..foreign_family import FunctionDefinition
 from ..name_algebra import CLASS_NAME_ALGEBRA, ClassNameAlgebra
 
 _TYPE_NAME_LITERAL = "type"
@@ -150,8 +151,7 @@ class ClassNodeAuthority:
         return tuple(
             (
                 statement
-                for statement in node.body
-                if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef))
+                for statement in FunctionDefinition.within(node.body)
             )
         )
 

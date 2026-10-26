@@ -59,6 +59,7 @@ from .collection_algebra import (
     sorted_tuple,
 )
 from .class_mro import ClassMroAuthority
+from .foreign_family import FunctionDefinition
 from .source_entry import ImportedSourceModuleEntryPremise
 from .value_expression import (
     CompactValueExpression,
@@ -3961,13 +3962,11 @@ def _compact_indexed_classes(
             end_line=node.end_lineno,
             method_names=tuple(
                 statement.name
-                for statement in node.body
-                if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef))
+                for statement in FunctionDefinition.within(node.body)
             ),
             abstract_method_names=sorted_tuple(
                 statement.name
-                for statement in node.body
-                if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef))
+                for statement in FunctionDefinition.within(node.body)
                 if any(
                     _terminal_reference_name(decorator) == "abstractmethod"
                     for decorator in statement.decorator_list
@@ -4308,9 +4307,7 @@ def _compact_predicate_selected_methods(
     """Project exact registered-types selector shapes without retaining method ASTs."""
 
     methods: list[tuple[int, str, str, str]] = []
-    for statement in node.body:
-        if not isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            continue
+    for statement in FunctionDefinition.within(node.body):
         if not any(
             _terminal_reference_name(decorator) == "classmethod"
             for decorator in statement.decorator_list
@@ -4434,9 +4431,7 @@ def _compact_manual_subclass_roster_roots(
             continue
         consumers: list[tuple[str, int, str, str]] = []
         for registry_name in registry_names:
-            for method in node.body:
-                if not isinstance(method, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                    continue
+            for method in FunctionDefinition.within(node.body):
                 if method.name == "__init_subclass__":
                     continue
                 if _compact_uses_named_registry(
@@ -4905,9 +4900,7 @@ def _compact_class_methods(
             )
             is not None
         )
-        for statement in node.body:
-            if not isinstance(statement, ast.FunctionDef | ast.AsyncFunctionDef):
-                continue
+        for statement in FunctionDefinition.within(node.body):
             if method_names is not None and statement.name not in method_names:
                 continue
             method = _compact_class_method(
@@ -5045,9 +5038,7 @@ def _compact_manual_selector_axes(
     for node in _walk_nodes(parsed_module.module):
         if not isinstance(node, ast.ClassDef):
             continue
-        for method in node.body:
-            if not isinstance(method, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                continue
+        for method in FunctionDefinition.within(node.body):
             if not method.name.startswith("for_") or not any(
                 _terminal_reference_name(decorator) == "classmethod"
                 for decorator in method.decorator_list
@@ -5436,8 +5427,7 @@ def _autoregister_registry_projection_names(
 ) -> tuple[str, ...]:
     return tuple(
         method.name
-        for method in node.body
-        if isinstance(method, (ast.FunctionDef, ast.AsyncFunctionDef))
+        for method in FunctionDefinition.within(node.body)
         if any(
             isinstance(subnode, ast.Attribute)
             and subnode.attr in {"__registry__", "_registry", "registry"}
@@ -5462,8 +5452,7 @@ def _method_references_cls_registry(
 def _keyed_registry_lookup_method_names(node: ast.ClassDef) -> tuple[str, ...]:
     return tuple(
         method.name
-        for method in node.body
-        if isinstance(method, (ast.FunctionDef, ast.AsyncFunctionDef))
+        for method in FunctionDefinition.within(node.body)
         if _is_classmethod(method) and _method_references_cls_registry(method)
     )
 
@@ -5471,8 +5460,7 @@ def _keyed_registry_lookup_method_names(node: ast.ClassDef) -> tuple[str, ...]:
 def _keyed_registry_reverse_lookup_method_names(node: ast.ClassDef) -> tuple[str, ...]:
     return tuple(
         method.name
-        for method in node.body
-        if isinstance(method, (ast.FunctionDef, ast.AsyncFunctionDef))
+        for method in FunctionDefinition.within(node.body)
         if _is_classmethod(method)
         and _method_references_cls_registry(method)
         and any(token in method.name for token in ("class", "type", "reverse"))
@@ -5520,8 +5508,7 @@ def _compact_repeated_keyed_family_roots(
             continue
         lookup_methods = tuple(
             (method, shape)
-            for method in node.body
-            if isinstance(method, (ast.FunctionDef, ast.AsyncFunctionDef))
+            for method in FunctionDefinition.within(node.body)
             if _is_classmethod(method)
             and method.name.startswith("for_")
             and (shape := RegistryLookupShape.from_method(method)) is not None
@@ -5541,8 +5528,7 @@ def _compact_repeated_keyed_family_roots(
                 error_type_name=lookup_shape.error_type_name,
                 abstract_hook_names=tuple(
                     method.name
-                    for method in node.body
-                    if isinstance(method, (ast.FunctionDef, ast.AsyncFunctionDef))
+                    for method in FunctionDefinition.within(node.body)
                     if any(
                         _terminal_reference_name(decorator) == "abstractmethod"
                         for decorator in method.decorator_list
@@ -5852,8 +5838,7 @@ def _is_abstract_class(node: ast.ClassDef) -> bool:
         return True
     return any(
         _terminal_reference_name(decorator) == "abstractmethod"
-        for statement in node.body
-        if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef))
+        for statement in FunctionDefinition.within(node.body)
         for decorator in statement.decorator_list
     )
 

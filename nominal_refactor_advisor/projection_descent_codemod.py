@@ -65,6 +65,7 @@ from .codemod_source_edits import (
     SourceTextSpanReplacement,
 )
 from .collection_algebra import sorted_tuple
+from .foreign_family import FunctionDefinition
 from .lexical_bindings import (
     ImportFromModuleName,
     LEXICAL_SCOPE_BINDING_AUTHORITY,
@@ -862,8 +863,7 @@ class _TypeKeyedBehaviorSourceDerivation:
             }
             target_method_names = frozenset(
                 statement.name
-                for statement in target_class.node.body
-                if isinstance(statement, ast.FunctionDef | ast.AsyncFunctionDef)
+                for statement in FunctionDefinition.within(target_class.node.body)
             )
             collisions = sorted_tuple(
                 target_method_names.intersection(self.component.behavior_method_names)
@@ -983,9 +983,7 @@ class _TypeKeyedBehaviorSourceDerivation:
         replacements: list[SourceTextSpanReplacement],
         spans: list[SourceTextSpan],
     ) -> None:
-        for function in ast.walk(module.module):
-            if not isinstance(function, ast.FunctionDef | ast.AsyncFunctionDef):
-                continue
+        for function in FunctionDefinition.within(ast.walk(module.module)):
             function_offsets = geometry.required_node_offsets(function)
             if self._offsets_within_any(function_offsets, deleted_spans):
                 continue

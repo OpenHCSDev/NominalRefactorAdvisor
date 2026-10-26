@@ -36,6 +36,7 @@ from .codemod_native_requirements import (
 from .codemod_mapping_observation import (
     RequireDictionaryCopyMappingOperation as RequireDictionaryCopyMappingOperation,
 )
+from .foreign_family import FunctionDefinition
 from .native_class_mro import NativeClassMroDeclaration
 from .native_declarations import NativeDeclaration
 from .codemod_declaration_operations import (
@@ -6098,8 +6099,9 @@ class RepeatedBuilderCallFindingRecipeSynthesizer(
         candidates = tuple(
             target
             for target in participants
-            for node in (context.ast_target_nodes_by_id.get(target.target_id),)
-            if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef)
+            for node in FunctionDefinition.within(
+                (context.ast_target_nodes_by_id.get(target.target_id),)
+            )
             if sum(
                 1
                 for call in walk_function_body_nodes(node)
@@ -7713,8 +7715,7 @@ class AutoRegisterMroOrderingDerivation:
     ) -> tuple[ast.FunctionDef | ast.AsyncFunctionDef, ast.Call, str] | None:
         matches = tuple(
             (statement, node, ordering_field_name)
-            for statement in root_node.body
-            if isinstance(statement, ast.FunctionDef | ast.AsyncFunctionDef)
+            for statement in FunctionDefinition.within(root_node.body)
             for node in ast.walk(statement)
             if isinstance(node, ast.Call)
             and (ordering_field_name := cls.registry_ordering_field_name(node))

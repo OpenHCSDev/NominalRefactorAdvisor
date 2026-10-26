@@ -65,6 +65,7 @@ from .exact_method_authority import (
     ExactMethodRoleComponent,
     ParallelMirroredLeafFamilyComponent,
 )
+from .foreign_family import FunctionDefinition
 from .lexical_bindings import LEXICAL_SCOPE_BINDING_AUTHORITY
 from .semantic_descent import (
     AuthorityClaim,
@@ -373,9 +374,7 @@ class ClassMemberPromotionTargets(CodemodSourceSnapshot):
             class_bound_names = LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(
                 class_target.node.body
             )
-            for statement in class_target.node.body:
-                if not isinstance(statement, ast.FunctionDef | ast.AsyncFunctionDef):
-                    continue
+            for statement in FunctionDefinition.within(class_target.node.body):
                 if statement.name not in method_names:
                     continue
                 profile = ClassMethodPromotionSafetyProfile.from_method(

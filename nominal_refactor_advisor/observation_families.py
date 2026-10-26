@@ -15,6 +15,7 @@ from .class_index import (
     ModuleNominalBindingSnapshot,
     module_import_names,
 )
+from .foreign_family import FunctionDefinition
 from .lexical_bindings import LEXICAL_SCOPE_BINDING_AUTHORITY
 from .export_tools import PublicExportPolicy, derive_public_exports
 from .registry_identity import DEFAULT_REGISTRY_KEY_ATTRIBUTE, class_name_registry_key
@@ -1140,8 +1141,7 @@ def _enclosing_function_names(ancestors: Sequence[ast.AST]) -> frozenset[str]:
         *(
             LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(ancestor.body)
             | LEXICAL_SCOPE_BINDING_AUTHORITY.argument_names(ancestor)
-            for ancestor in ancestors
-            if isinstance(ancestor, (ast.FunctionDef, ast.AsyncFunctionDef))
+            for ancestor in FunctionDefinition.within(ancestors)
         )
     )
 

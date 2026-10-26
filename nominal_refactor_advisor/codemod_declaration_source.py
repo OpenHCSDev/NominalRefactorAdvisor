@@ -49,6 +49,7 @@ from .declaration_dependencies import (
     FunctionParameterBinding,
 )
 from .descriptor_algebra import AliasProperty
+from .foreign_family import FunctionDefinition
 from .lexical_bindings import LEXICAL_SCOPE_BINDING_AUTHORITY
 from .source_geometry import (
     ClassHeaderSourceSpan,
@@ -472,8 +473,7 @@ class ClassBodySourceAuthority(ClassSourceAuthority):
         first_method = next(
             (
                 statement
-                for statement in self.node.body
-                if isinstance(statement, ast.FunctionDef | ast.AsyncFunctionDef)
+                for statement in FunctionDefinition.within(self.node.body)
             ),
             None,
         )
