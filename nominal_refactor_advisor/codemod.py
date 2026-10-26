@@ -734,6 +734,7 @@ from .refactor_concepts import (
     AutoRegisterClassRegistryConcept as AutoRegisterClassRegistryConcept,
     AutoRegisterConcept as AutoRegisterConcept,
     AutoRegisterMroOrderingConcept as AutoRegisterMroOrderingConcept,
+    ForeignFamilyRoutingConcept as ForeignFamilyRoutingConcept,
     AutoRegisterStrategyFamilyConcept as AutoRegisterStrategyFamilyConcept,
     CallMappingAuthorityConcept as CallMappingAuthorityConcept,
     ClassFamilyAuthorityConcept as ClassFamilyAuthorityConcept,

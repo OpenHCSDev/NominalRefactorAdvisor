@@ -128,3 +128,7 @@ class AutoRegisterStrategyFamilyConcept(AutoRegisterConcept):
 
 class AutoRegisterMroOrderingConcept(AutoRegisterConcept):
     """Derive registered-family precedence from a declared MRO composition."""
+
+
+class ForeignFamilyRoutingConcept(ClassFamilyAuthorityConcept):
+    """Route type tests on foreign classes through one declared family."""

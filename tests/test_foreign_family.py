@@ -159,3 +159,66 @@ def test_operation_round_trips_through_json(tmp_path: Path) -> None:
         == operation
     )
     assert json.loads(json.dumps(json_report_object(operation)))["family"] == FAMILY
+
+
+EXACT = (
+    "import ast\n\n\ndef names(node):\n"
+    "    return [s.name for s in node.body if isinstance(s, (ast.FunctionDef, ast.AsyncFunctionDef))]\n"
+)
+SYNC_ONLY = (
+    "import ast\n\n\ndef names(node):\n"
+    "    return [s.name for s in node.body if isinstance(s, ast.FunctionDef)]\n"
+)
+
+
+def test_finding_recipe_routes_exact_filters_and_spares_the_sync_only_one(
+    tmp_path: Path,
+) -> None:
+    from nominal_refactor_advisor.analysis import analyze_path
+    from nominal_refactor_advisor.detectors._heuristic_leads import (
+        ForeignTypeSwitchDetector,
+    )
+
+    for name, source in (("a", EXACT), ("b", EXACT), ("c", EXACT), ("d", SYNC_ONLY)):
+        (tmp_path / f"{name}.py").write_text(source, encoding="utf-8")
+    (finding,) = (
+        finding
+        for finding in analyze_path(tmp_path)
+        if finding.detector_id == "foreign_type_switch"
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    evaluation = ForeignTypeSwitchDetector().evaluate_recipe_for_finding(
+        finding, snapshot
+    )
+    operations = evaluation.executable_recipe.operations
+    assert len(operations) == 3
+    assert {operation.family for operation in operations} == {FAMILY}
+    assert not any(operation.accept_widening for operation in operations)
+    simulation = CodemodPlanSequence.from_operations(operations).simulate(snapshot)
+    assert simulation.is_clean
+    simulation.apply()
+    for name in "abc":
+        assert "FunctionDefinition.within(node.body)" in (
+            tmp_path / f"{name}.py"
+        ).read_text(encoding="utf-8")
+    assert (tmp_path / "d.py").read_text(encoding="utf-8") == SYNC_ONLY
+
+
+def test_finding_without_an_exact_family_filter_is_rejected(tmp_path: Path) -> None:
+    from nominal_refactor_advisor.analysis import analyze_path
+    from nominal_refactor_advisor.detectors._heuristic_leads import (
+        ForeignTypeSwitchDetector,
+    )
+
+    for name in "abc":
+        (tmp_path / f"{name}.py").write_text(SYNC_ONLY, encoding="utf-8")
+    (finding,) = (
+        finding
+        for finding in analyze_path(tmp_path)
+        if finding.detector_id == "foreign_type_switch"
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    evaluation = ForeignTypeSwitchDetector().evaluate_recipe_for_finding(
+        finding, snapshot
+    )
+    assert "no function holds a filter testing exactly" in evaluation.reason

@@ -33,6 +33,19 @@ class ForeignFamily(metaclass=ForeignFamilyMeta):
     members: ClassVar[tuple[type, ...]]
 
     @classmethod
+    def concrete_families(cls) -> tuple[type[Self], ...]:
+        """Every loaded family below this one that declares its own members."""
+
+        descendants = tuple(
+            descendant
+            for child in cls.__subclasses__()
+            for descendant in (child, *child.concrete_families())
+        )
+        return tuple(
+            family for family in descendants if "members" in vars(family)
+        )
+
+    @classmethod
     def within(cls, nodes: Iterable[object]) -> tuple[Self, ...]:
         """Keep the members of this family, in order; the one `isinstance` here."""
 
