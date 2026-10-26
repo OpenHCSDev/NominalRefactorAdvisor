@@ -3,21 +3,38 @@
 from __future__ import annotations
 
 import ast
-from collections import defaultdict
+from collections import Counter, defaultdict
+from collections.abc import Callable, Sequence
+from typing import TypeVar
 
 from ..ast_tools import ParsedModule, module_syntax_index
 from ..models import RefactorFinding, SourceLocation
-from ..observation_families import ModuleExpressionShapeFamily
-from ..observation_shapes import ModuleExpressionShape
+from ..observation_families import (
+    ForeignTypeTestModuleFamily,
+    ModuleExpressionShapeFamily,
+)
+from ..observation_shapes import (
+    ForeignTypeTestModule,
+    ForeignTypeTestShape,
+    ModuleExpressionShape,
+)
 from ..patterns import PatternId
 from ..taxonomy import CapabilityTag, ObservationTag
 from ._base import (
     CANDIDATE_COLLECTION_AUTHORITY,
     CompactGroupedShapeIssueDetector,
     DetectorConfig,
+    CompactModuleProjectionDetectorMixin,
+    IssueDetector,
     PerModuleIssueDetector,
     finding_spec_template,
 )
+
+
+T = TypeVar("T")
+
+# Findings list this many type sets or divergence pairs; the rest are counted.
+DIVERGENCE_LISTING_LIMIT = 8
 
 
 class LongConditionFactoringLeadDetector(PerModuleIssueDetector):
@@ -172,3 +189,134 @@ class RepeatedModuleExpressionLeadDetector(
                 for shape in sites
             ),
         )
+
+
+class ForeignTypeSwitchDetector(
+    CompactModuleProjectionDetectorMixin[ForeignTypeTestModule], IssueDetector
+):
+    """Find `isinstance` tests on one foreign module's classes across the scan.
+
+    Every site counts: a module may legitimately hold exactly one decoder for a
+    family, but this detector does not try to recognise decoders.
+    """
+
+    module_projection_family = ForeignTypeTestModuleFamily
+
+    finding_spec = finding_spec_template(
+        PatternId.FOREIGN_TYPE_SWITCH_LEAD,
+        "Type tests on foreign classes raise a closed-set question",
+        "Several sites test instances against classes owned by one module outside this repository. Each site restates which of that module's classes it handles; a site that tests a strict subset of another site's set may have missed a case.",
+        "isinstance/issubclass sites whose type argument resolves through imports or builtins to classes of one non-repository module; closedness, owner and migration recipe OPEN",
+        "isinstance/issubclass sites on classes of one foreign module at or above the configured site count across the scanned modules",
+        (CapabilityTag.PROVENANCE,),
+        (ObservationTag.PARTIAL_VIEW,),
+    )
+
+    def _findings_from_compact_projections(
+        self,
+        projections: Sequence[ForeignTypeTestModule],
+        config: DetectorConfig,
+    ) -> list[RefactorFinding]:
+        scanned = tuple(projection.module_name for projection in projections)
+        groups: dict[str, list[ForeignTypeTestShape]] = defaultdict(list)
+        for projection in projections:
+            for shape in projection.sites:
+                if not any(
+                    _module_names_overlap(shape.owner, scanned_name)
+                    for scanned_name in scanned
+                ):
+                    groups[shape.owner].append(shape)
+        findings = (
+            self._finding_from_group(tuple(shapes), config)
+            for shapes in groups.values()
+        )
+        return [finding for finding in findings if finding is not None]
+
+    def _finding_from_group(
+        self, shapes: tuple[ForeignTypeTestShape, ...], config: DetectorConfig
+    ) -> RefactorFinding | None:
+        if len(shapes) < config.min_foreign_type_switch_sites:
+            return None
+        sites = sorted(shapes, key=lambda shape: (shape.file_path, shape.lineno))
+        type_sets = Counter(shape.type_names for shape in sites)
+        modules = {shape.file_path for shape in sites}
+        lines = [
+            f"{len(sites)} isinstance/issubclass sites in {len(modules)} module(s) "
+            f"test classes of `{sites[0].owner}`, which this repository does not "
+            "declare. Type sets seen: "
+            + _counted_list(
+                type_sets.most_common(),
+                lambda type_set: _type_set_text(type_set),
+                "type sets",
+            )
+            + ". Whether each set is meant to be closed, and which site should own "
+            "it, remains OPEN."
+        ]
+        divergences = _strict_subset_divergences(type_sets)
+        if divergences:
+            lines.append(
+                f"{sum(type_sets[subset] for subset, _superset in divergences)} sites "
+                "test a strict subset of a type set used elsewhere (possible missed "
+                "case): "
+                + _counted_list(
+                    sorted(
+                        ((pair, type_sets[pair[0]]) for pair in divergences),
+                        key=lambda item: -item[1],
+                    ),
+                    lambda pair: (
+                        f"{_type_set_text(pair[0])} vs {_type_set_text(pair[1])}"
+                    ),
+                    "pairs",
+                )
+            )
+        return self.build_finding(
+            "\n".join(lines),
+            tuple(
+                SourceLocation(shape.file_path, shape.lineno, shape.symbol)
+                for shape in sites
+            ),
+        )
+
+
+def _module_names_overlap(owner: str, scanned_name: str) -> bool:
+    """Whether a dotted owner is a scanned module, or a package or member of one."""
+
+    return (
+        owner == scanned_name
+        or owner.startswith(f"{scanned_name}.")
+        or scanned_name.startswith(f"{owner}.")
+    )
+
+
+def _counted_list(
+    entries: Sequence[tuple[T, int]], render: Callable[[T], str], noun: str
+) -> str:
+    """The most frequent entries with their site counts, then how many were cut."""
+
+    shown = entries[:DIVERGENCE_LISTING_LIMIT]
+    text = "; ".join(f"{render(item)} x{count}" for item, count in shown)
+    hidden = len(entries) - len(shown)
+    return f"{text}; and {hidden} more {noun}" if hidden else text
+
+
+def _type_set_text(type_set: tuple[str, ...]) -> str:
+    return "`" + " | ".join(type_set) + "`"
+
+
+def _strict_subset_divergences(
+    type_sets: Counter[tuple[str, ...]],
+) -> tuple[tuple[tuple[str, ...], tuple[str, ...]], ...]:
+    """Pair each type set with its smallest strict superset seen in the family."""
+
+    pairs: list[tuple[tuple[str, ...], tuple[str, ...]]] = []
+    for subset in sorted(type_sets):
+        supersets = [
+            candidate
+            for candidate in type_sets
+            if frozenset(subset) < frozenset(candidate)
+        ]
+        if supersets:
+            pairs.append(
+                (subset, min(supersets, key=lambda item: (len(item), -type_sets[item], item)))
+            )
+    return tuple(pairs)
