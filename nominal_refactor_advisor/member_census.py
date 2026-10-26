@@ -12,7 +12,7 @@ from __future__ import annotations
 import ast
 from abc import ABC, abstractmethod
 from collections import defaultdict
-from collections.abc import Iterable, Iterator, Mapping
+from collections.abc import Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 from functools import cached_property
@@ -186,6 +186,7 @@ class MemberObservation:
     family: str
     file_path: str
     symbol: str
+    subject: str
     members: frozenset[str]
 
 
@@ -253,6 +254,24 @@ def _own_definitions(owner: type) -> frozenset[tuple[str, str]]:
     return frozenset((klass.__module__, klass.__qualname__) for klass in below(owner))
 
 
+def _matched_subject(ancestors: Sequence[ast.AST]) -> str:
+    """The value a class pattern tests: the match subject, or a part of it.
+
+    A pattern nested inside another class, sequence or mapping pattern tests an
+    attribute or element of the subject, so it is keyed apart from the top-level
+    patterns of the same match.
+    """
+
+    parts: list[str] = []
+    for ancestor in reversed(ancestors):
+        match ancestor:
+            case ast.MatchClass() | ast.MatchSequence() | ast.MatchMapping():
+                parts.append(f"{ancestor.lineno}:{ancestor.col_offset}")
+            case ast.Match(subject=subject):
+                return ast.dump(subject) + "".join(f"@{part}" for part in parts)
+    return "@".join(parts)
+
+
 def _public_method_names(owner: type) -> frozenset[str]:
     """Names of the public callables a declaration exposes, from its MRO."""
 
@@ -310,6 +329,7 @@ class ForeignModuleSource(MemberCensusSource):
                     family=shape.owner,
                     file_path=shape.file_path,
                     symbol=shape.symbol,
+                    subject=shape.subject,
                     members=frozenset(shape.type_names),
                 )
 
@@ -325,9 +345,8 @@ class ForeignModuleSource(MemberCensusSource):
         index = module_syntax_index(module.module)
         resolver = self.corpus.resolvers[module.file_path]
         for node_index, pattern in index.indexed_nodes_of_type(ast.MatchClass):
-            name = resolver.qualified_class_at(
-                pattern.cls, index.ancestor_nodes(node_index)
-            )
+            ancestors = index.ancestor_nodes(node_index)
+            name = resolver.qualified_class_at(pattern.cls, ancestors)
             owner = "" if name is None else name.rpartition(".")[0]
             if name is not None and owner:
                 yield ForeignTypeTestShape(
@@ -336,6 +355,7 @@ class ForeignModuleSource(MemberCensusSource):
                     symbol=index.lexical_symbol(node_index),
                     owner=owner,
                     type_names=(name,),
+                    subject=_matched_subject(ancestors),
                 )
 
 
@@ -386,6 +406,7 @@ class EnumSource(MemberCensusSource):
                             family=enum_class.symbol,
                             file_path=function.file_path,
                             symbol=function.qualname,
+                            subject="",
                             members=frozenset(site.case_names),
                         )
 
@@ -429,7 +450,12 @@ class Consumer:
     family: str
     file_path: str
     symbol: str
+    subject: str
     members: frozenset[str]
+
+    @property
+    def function(self) -> tuple[CensusFamilyKind, str, str, str]:
+        return self.kind, self.family, self.file_path, self.symbol
 
     def record(self, owners_called: Iterable[str]) -> CensusConsumer:
         return CensusConsumer(
@@ -462,8 +488,8 @@ class MemberAwarenessCensusBuilder:
 
     @cached_property
     def consumers(self) -> tuple[Consumer, ...]:
-        members: dict[tuple[CensusFamilyKind, str, str, str], set[str]] = defaultdict(
-            set
+        members: dict[tuple[CensusFamilyKind, str, str, str, str], set[str]] = (
+            defaultdict(set)
         )
         for observation in self.observations:
             members[
@@ -472,11 +498,14 @@ class MemberAwarenessCensusBuilder:
                     observation.family,
                     observation.file_path,
                     observation.symbol,
+                    observation.subject,
                 )
             ] |= observation.members
         return tuple(
-            Consumer(kind, family, file_path, symbol, frozenset(found))
-            for (kind, family, file_path, symbol), found in sorted(members.items())
+            Consumer(kind, family, file_path, symbol, subject, frozenset(found))
+            for (kind, family, file_path, symbol, subject), found in sorted(
+                members.items()
+            )
         )
 
     @cached_property
@@ -523,7 +552,9 @@ class MemberAwarenessCensusBuilder:
             covering = self.covering(candidates[0])
             consumers = [
                 consumer
-                for consumer in candidates
+                for consumer in {
+                    consumer.function: consumer for consumer in candidates
+                }.values()
                 if not any(self.defined_by(consumer, owner) for owner in covering)
             ]
             if not consumers:
@@ -564,11 +595,13 @@ class MemberAwarenessCensusBuilder:
         census: list[OwnerCensus] = []
         for owner in self.owners:
             naming = tuple(
-                consumer
-                for consumer in self.consumers
-                if consumer.kind is owner.kind
-                and owner.names_any(consumer.members)
-                and not self.defined_by(consumer, owner)
+                {
+                    consumer.function: consumer
+                    for consumer in self.consumers
+                    if consumer.kind is owner.kind
+                    and owner.names_any(consumer.members)
+                    and not self.defined_by(consumer, owner)
+                }.values()
             )
             if naming:
                 census.append(
@@ -588,8 +621,13 @@ class MemberAwarenessCensusBuilder:
     def report(self) -> MemberAwarenessCensus:
         return MemberAwarenessCensus(
             scanned_module_count=len(self.corpus.modules),
-            single_member_consumers=sum(
-                len(consumer.members) == 1 for consumer in self.consumers
+            single_member_consumers=len(
+                {consumer.function for consumer in self.consumers}
+                - {
+                    consumer.function
+                    for consumer in self.consumers
+                    if len(consumer.members) >= 2
+                }
             ),
             groups=self.groups(),
             owners=self.owner_census(),

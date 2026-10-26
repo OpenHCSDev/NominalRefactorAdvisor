@@ -162,3 +162,56 @@ def test_owner_own_methods_are_not_consumers(tmp_path: Path):
     assert group.consumer_count == 1
     assert group.bypassing_count == 1
     assert [consumer.qualname for consumer in group.bypassing] == ["outside"]
+
+
+def _name_attribute_consumers(tmp_path: Path, source: str) -> list[str]:
+    _write(tmp_path, {"m": "import ast\n" + source})
+    report = build_member_awareness_census(tmp_path)
+    return sorted(
+        consumer.qualname
+        for group in report.groups
+        if group.members == NAME_OR_ATTRIBUTE
+        for consumer in (*group.owner_using, *group.bypassing)
+    )
+
+
+def test_sequential_ifs_on_one_subject_are_counted(tmp_path: Path):
+    assert _name_attribute_consumers(
+        tmp_path,
+        "def call_symbol(node):\n"
+        "    if isinstance(node, ast.Name):\n"
+        "        return node.id\n"
+        "    if isinstance(node, ast.Attribute):\n"
+        "        return node.attr\n",
+    ) == ["call_symbol"]
+
+
+def test_boolean_operands_on_one_subject_are_counted(tmp_path: Path):
+    assert _name_attribute_consumers(
+        tmp_path,
+        "def is_final(decorator):\n"
+        "    return (isinstance(decorator, ast.Name) and decorator.id == 'final') or (\n"
+        "        isinstance(decorator, ast.Attribute) and decorator.attr == 'final'\n"
+        "    )\n",
+    ) == ["is_final"]
+
+
+def test_tests_on_different_subjects_are_not_combined(tmp_path: Path):
+    assert (
+        _name_attribute_consumers(
+            tmp_path,
+            "def self_attr_name(target):\n"
+            "    return isinstance(target, ast.Attribute) and isinstance(target.value, ast.Name)\n",
+        )
+        == []
+    )
+
+
+def test_nested_def_branching_belongs_to_the_nested_def_only(tmp_path: Path):
+    assert _name_attribute_consumers(
+        tmp_path,
+        "def outer(node):\n"
+        "    def inner(child):\n"
+        "        return isinstance(child, ast.Name) or isinstance(child, ast.Attribute)\n"
+        "    return inner(node)\n",
+    ) == ["outer.inner"]

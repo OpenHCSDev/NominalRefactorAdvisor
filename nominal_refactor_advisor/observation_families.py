@@ -1180,6 +1180,7 @@ def _foreign_type_test_shapes(
                 symbol=index.lexical_symbol(node_index),
                 owner=owners.pop(),
                 type_names=names,
+                subject=ast.dump(arguments[0]),
             )
         )
     return shapes
