@@ -56,7 +56,11 @@ should answer once. m consumers × n cases of restated decisions become m + n.
      (e.g. `AssignmentStatement`): one adapter per foreign class keyed on
      `adapts`, `decoded(node)` is the one type test, siblings keep only
      irreducible differences. A null member (`adapts = object`) replaces
-     `None` checks at call sites;
+     `None` checks at call sites. When the old owner is a bag of static
+     projection methods (e.g. the deleted `AstExpressionProjection`), name the
+     family's properties after its methods: concept `static_projection_adapter`
+     then rewrites every `Projector.question(x)` to `Family.decoded(x).question`
+     and the bag is deleted;
    - our own enum read as cases outside the enum → a class family on the enum's
      owner.
    Never a one-element `within((x,))` or one-member set: that is a disguised
