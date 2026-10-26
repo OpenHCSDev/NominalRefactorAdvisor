@@ -184,7 +184,7 @@ class ForeignFamilyFilterAuthority:
 
     parsed_module: ParsedModule
     geometry: SourceTextGeometry
-    declaration: ast.AST
+    declaration: ast.stmt
     reference: ForeignFamilyReference
     accept_widening: bool
 
@@ -192,15 +192,13 @@ class ForeignFamilyFilterAuthority:
     def function(self) -> FunctionNode:
         """The function of the indexed module tree that the target node denotes."""
 
-        declared = next(iter(FunctionDefinition.within((self.declaration,))), None)
+        position = (self.declaration.lineno, self.declaration.col_offset)
         matches = tuple(
             candidate
             for candidate in FunctionDefinition.within(
                 ast.walk(self.parsed_module.module)
             )
-            if declared is not None
-            and (candidate.name, candidate.lineno, candidate.col_offset)
-            == (declared.name, declared.lineno, declared.col_offset)
+            if (candidate.lineno, candidate.col_offset) == position
         )
         if len(matches) != 1:
             raise ValueError("Filter routing requires a function declaration target")
