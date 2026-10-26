@@ -3330,7 +3330,10 @@ class SourceClassEntry(SourceClassBodyEntryABC):
         self, capture: ExactNativeClassCapture
     ) -> ExactNativeClassCapture:
         if self.node.keywords:
-            raise ValueError("Native class entry has unproved construction hooks")
+            raise ValueError(
+                f"Native class entry {self.qualified_name!r} has unproved construction hooks "
+                f"at line {self.node.lineno}"
+            )
         return capture
 
     @cached_property

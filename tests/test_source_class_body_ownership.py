@@ -153,8 +153,10 @@ def test_body_factoring_does_not_bypass_explicit_constructor_keyword_rejection(h
     # The ordinary owner retains its proof boundary independently of the new
     # factory's earlier native-family selection from explicit metaclass inputs.
     entry = SourceClassEntry(env, env.module.module.body[0])
-    with pytest.raises(ValueError, match="unproved construction hooks"):
+    with pytest.raises(ValueError, match="unproved construction hooks") as refused:
         _ = entry.frame
+    assert "'documentation.Sample'" in str(refused.value)
+    assert "line 1" in str(refused.value)
 
 
 def test_unknown_base_still_prevents_prepared_frame_admission():
