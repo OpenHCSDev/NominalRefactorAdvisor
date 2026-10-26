@@ -33,6 +33,7 @@ from typing import Callable, ClassVar, Generic, TypeAlias, TypeVar, cast
 
 from metaclass_registry import AutoRegisterMeta
 
+from .foreign_family import FunctionDefinition
 from .interpreter import PythonVersion
 from .ast_projection import AstExpressionProjection, AstNameFamily
 from .cache_paths import ParseCacheDirectory, default_parse_cache_dir
@@ -853,8 +854,7 @@ class AstParentIndex:
         return next(
             (
                 ancestor
-                for ancestor in self.ancestors(node)
-                if isinstance(ancestor, ast.FunctionDef | ast.AsyncFunctionDef)
+                for ancestor in FunctionDefinition.within(self.ancestors(node))
             ),
             None,
         )

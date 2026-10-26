@@ -50,6 +50,7 @@ from .enum_keyed_query import (
     EnumKeyedDerivedMapFacadeComponent,
     EnumKeyedDerivedMapFacadeComponentBuilder,
 )
+from .foreign_family import FunctionDefinition
 from .lexical_bindings import LEXICAL_SCOPE_BINDING_AUTHORITY, ImportFromModuleName
 from .semantic_descent import AuthorityClaim, SemanticAuthorityKind
 
@@ -1030,9 +1031,7 @@ class Enumerated(Rewritten, ABC):
         """An import of the enum inside a function binds a name no rewrite sees."""
 
         for module in snapshot.parsed_modules:
-            for scope in ast.walk(module.module):
-                if not isinstance(scope, ast.FunctionDef | ast.AsyncFunctionDef):
-                    continue
+            for scope in FunctionDefinition.within(ast.walk(module.module)):
                 for node in ast.walk(scope):
                     if not isinstance(node, ast.ImportFrom):
                         continue

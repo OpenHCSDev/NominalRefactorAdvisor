@@ -22,6 +22,7 @@ from .class_index import (
     ModuleNominalBindingWitness,
     module_star_import_origins,
 )
+from .foreign_family import FunctionDefinition
 from .lexical_bindings import LEXICAL_SCOPE_BINDING_AUTHORITY
 
 _NESTED_METHOD_SCOPES = (
@@ -588,8 +589,7 @@ class RedundantClassAuthorityCollapseProof:
     ) -> dict[str, ast.FunctionDef | ast.AsyncFunctionDef]:
         methods = tuple(
             statement
-            for statement in indexed_class.node.body
-            if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef))
+            for statement in FunctionDefinition.within(indexed_class.node.body)
         )
         methods_by_name = {method.name: method for method in methods}
         if len(methods_by_name) != len(methods):
