@@ -1178,10 +1178,15 @@ class BuiltinCallName(StrEnum):
     def type_test_names(cls) -> frozenset["BuiltinCallName"]:
         return frozenset((cls.ISINSTANCE, cls.ISSUBCLASS))
 
-    def is_bare_callee(self, func: ast.AST | None) -> bool:
-        """Whether a call target is exactly this builtin's bare name."""
+    @classmethod
+    def is_isinstance_callee(cls, func: ast.AST | None) -> bool:
+        """Whether a call target is the bare `isinstance` name."""
 
-        return isinstance(func, ast.Name) and func.id == self
+        return isinstance(func, ast.Name) and func.id in cls.isinstance_names()
+
+    @classmethod
+    def mentions_isinstance(cls, text: str) -> bool:
+        return any(name in text for name in cls.isinstance_names())
 
     @classmethod
     def isinstance_arguments(cls, node: ast.AST) -> tuple[ast.expr, ast.expr] | None:
@@ -1537,7 +1542,7 @@ class ScopedAstObservation:
             return ScopedAstObservationRole.CLASS_SCOPE.value
         if mentions_function:
             return ScopedAstObservationRole.FUNCTION_SCOPE.value
-        if BuiltinCallName.ISINSTANCE in text:
+        if BuiltinCallName.mentions_isinstance(text):
             return ScopedAstObservationRole.NODE_TYPE.value
         return ScopedAstObservationRole.GENERIC_SCOPE.value
 
@@ -1553,7 +1558,7 @@ class ScopedAstObservation:
             return ScopedAstObservationRole.MODULE_SCOPE_GUARD.value
         if f"{function_ref} is not None" in text:
             return ScopedAstObservationRole.FUNCTION_SCOPE_GUARD.value
-        if BuiltinCallName.ISINSTANCE in text:
+        if BuiltinCallName.mentions_isinstance(text):
             return ScopedAstObservationRole.NODE_TYPE_GUARD.value
         return ScopedAstObservationRole.GUARDED_DELEGATE.value
 

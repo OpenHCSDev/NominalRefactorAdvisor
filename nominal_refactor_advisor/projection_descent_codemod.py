@@ -197,10 +197,12 @@ class _TypeKeyedBehaviorMethodDescent:
         )
         if guarded_type is None:
             return body, None
-        if (
-            not ModuleNominalBindingAuthority(self.source_module)
-            .snapshot_before(self.projection_method.lineno)
-            .resolves_unshadowed_builtin(BuiltinCallName.ISINSTANCE)
+        snapshot = ModuleNominalBindingAuthority(self.source_module).snapshot_before(
+            self.projection_method.lineno
+        )
+        if not all(
+            snapshot.resolves_unshadowed_builtin(name)
+            for name in BuiltinCallName.isinstance_names()
         ):
             raise ValueError(
                 f"projected method {self.projection_method.name!r} uses a shadowed "
@@ -237,7 +239,7 @@ class _TypeKeyedBehaviorMethodDescent:
         call = test.operand
         if not (
             BuiltinCallName.isinstance_arguments(call) is not None
-            and BuiltinCallName.ISINSTANCE.is_bare_callee(call.func)
+            and BuiltinCallName.is_isinstance_callee(call.func)
             and isinstance(call.args[0], ast.Name)
             and call.args[0].id == subject_name
         ):

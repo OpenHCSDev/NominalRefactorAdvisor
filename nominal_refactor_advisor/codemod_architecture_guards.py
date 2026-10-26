@@ -245,7 +245,7 @@ class ArchitectureGuardDispatchSubject:
 
     def isinstance_call_matches(self, call: ast.Call) -> bool:
         return (
-            BuiltinCallName.ISINSTANCE.is_bare_callee(call.func)
+            BuiltinCallName.is_isinstance_callee(call.func)
             and len(call.args) >= 2
             and self.matches(call.args[0])
         )

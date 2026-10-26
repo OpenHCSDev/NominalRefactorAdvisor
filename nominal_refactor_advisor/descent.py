@@ -385,7 +385,7 @@ class Guard(ABC):
             return Negated(cls.decoded(test.operand, subject, field_name, enum))
         if (
             isinstance(test, ast.Call)
-            and BuiltinCallName.ISINSTANCE.is_bare_callee(test.func)
+            and BuiltinCallName.is_isinstance_callee(test.func)
             and len(test.args) == 2
             and _is_name(test.args[0], subject)
             and isinstance(test.args[1], ast.Name)
@@ -1867,7 +1867,7 @@ class Fold(Cases, ABC):
         test = node.test
         if not (
             isinstance(test, ast.Call)
-            and BuiltinCallName.ISINSTANCE.is_bare_callee(test.func)
+            and BuiltinCallName.is_isinstance_callee(test.func)
             and len(test.args) == 2
             and isinstance(test.args[0], ast.Name)
             and _is_any_name(test.args[1], holder_names)
