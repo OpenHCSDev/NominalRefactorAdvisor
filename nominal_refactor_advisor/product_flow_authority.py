@@ -609,9 +609,13 @@ class ProductFlowRepository(
 ):
     """Derived query authority over product flows and nominal class declarations."""
 
+    def iter_product_projections(self) -> Iterator[CompactProductFlowModuleProjection]:
+        """Visit retained projections; source repositories supply their original demand."""
+        yield from self.product_projections
+
     def iter_flow_contexts(self) -> Iterator[CompactFlowContext]:
         """Visit original contexts without materializing unrequested module graphs."""
-        for projection in self.product_projections:
+        for projection in self.iter_product_projections():
             yield from projection.flow_contexts
 
     def iter_product_runtime_failures(
@@ -1767,6 +1771,11 @@ class CompactProductFlowRepository(ProductFlowRepository):
 class SourceProductFlowRepository(RepositoryModuleBindingProof, ProductFlowRepository):
     """Derive flow queries and runtime capture from the same original source task."""
 
+    def iter_product_projections(self) -> Iterator[CompactProductFlowModuleProjection]:
+        """Preserve every original module without projecting unrequested successors."""
+        for module in self.modules:
+            yield self.source_projection(module).compact
+
     def _class_source(self, symbol: str) -> tuple[ParsedModule, ast.ClassDef] | None:
         declaration = self.class_index.class_for(symbol)
         if declaration is None or not self.contains_module(declaration.module_name):
@@ -2261,7 +2270,7 @@ class SourceProductFlowRepository(RepositoryModuleBindingProof, ProductFlowRepos
 
     @cached_property
     def product_projections(self) -> tuple[CompactProductFlowModuleProjection, ...]:
-        return tuple(source.compact for source in self.sources)
+        return tuple(self.iter_product_projections())
 
     @cached_property
     def class_projections(self) -> tuple[CompactModuleClassProjection, ...]:

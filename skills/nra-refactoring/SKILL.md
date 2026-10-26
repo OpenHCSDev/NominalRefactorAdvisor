@@ -151,6 +151,16 @@ callee is a useful lead, not live binding, domain identity or behavioral proof.
 The agent—not the user—clusters source-backed leads into candidate maintenance
 questions, keeping nonmatches and unsupported sites visible.
 
+Look inside otherwise different methods and classes for substantial shared
+sub-behavior entangled with their independent responsibilities. Whole-method
+names, text or body identity are insufficient: trace every occurrence of the
+same behavior, its inputs, effects, ordering, role and determining declaration.
+Factor the admitted shared algorithm onto its meaningful parent; use MI for
+overlapping capabilities while retaining each class's irreducible behavior.
+Performance changes must preserve the global source and role evidence needed
+for this trace. A demand-driven view may defer work, but it must still answer
+complete later queries and preserve ambiguous, unmatched and OPEN cases.
+
 Start with the bounded class-first corpus; expand to a complete scan of the
 relevant package and dependency context **when a proposed ownership claim
 depends on that context**. Use `--context-root` for explicit global context
