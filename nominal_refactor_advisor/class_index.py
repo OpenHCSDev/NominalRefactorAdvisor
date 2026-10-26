@@ -59,7 +59,10 @@ from .collection_algebra import (
     sorted_tuple,
 )
 from .class_mro import ClassMroAuthority
-from .foreign_family import FunctionDefinition
+from .foreign_family import (
+    AssignmentStatement,
+    FunctionDefinition,
+)
 from .source_entry import ImportedSourceModuleEntryPremise
 from .value_expression import (
     CompactValueExpression,
@@ -6273,16 +6276,12 @@ def _compact_class_member_declarations(
 ) -> tuple[CompactClassMemberDeclaration, ...]:
     declarations: list[CompactClassMemberDeclaration] = []
     for statement in node.body:
-        if isinstance(statement, ast.AnnAssign):
-            targets = (statement.target,)
-            value = statement.value
-            annotation = statement.annotation
-        elif isinstance(statement, ast.Assign):
-            targets = tuple(statement.targets)
-            value = statement.value
-            annotation = None
-        else:
+        assignment_statement = AssignmentStatement.decoded(statement)
+        if assignment_statement is None:
             continue
+        targets = assignment_statement.targets
+        value = assignment_statement.value
+        annotation = assignment_statement.annotation
         constructor_name = (
             _terminal_reference_name(value.func)
             if isinstance(value, ast.Call)
