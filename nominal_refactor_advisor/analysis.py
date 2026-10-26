@@ -3366,6 +3366,9 @@ class IncrementalAnalysisCacheResolver:
                     )
                 )
         findings_by_module: list[list[RefactorFinding]] = []
+        # This resolver still owns the complete original source context.
+        # Its global consumers reuse these same syntax and declaration facts;
+        # result() releases them after every consumer has finished.
         for module, detector_types in zip(
             missing_modules,
             detector_types_by_module,
@@ -3380,10 +3383,6 @@ class IncrementalAnalysisCacheResolver:
                     semantic_descent_source=self._semantic_descent_source,
                 )
             )
-            # Module-local detector helpers use LRU caches keyed by ParsedModule
-            # and AST nodes. None of those entries can contribute to the next
-            # module's local shard, so retaining them only duplicates live ASTs.
-            release_module_analysis_memory(collect_cycles=False)
         return findings_by_module
 
     def _contextual_module_findings(self) -> IncrementalAnalysisResult:
@@ -3432,11 +3431,6 @@ class IncrementalAnalysisCacheResolver:
                 )
                 self._analysis_cache.store(identity, module_findings)
                 findings.extend(module_findings)
-        # These six detectors share several repository reference projections.
-        # Keep those reusable within the family, then release them before the
-        # contextual-global phase constructs its separate candidate indexes.
-        release_module_analysis_memory(collect_cycles=False)
-
         cache_status = AnalysisCacheStatus.from_reused_item_count(hit_count)
         return IncrementalAnalysisResult(findings, cache_status)
 

@@ -40,6 +40,7 @@ from .class_index import (
     CompactClassMemberDeclaration,
     CompactClassReferenceResolver,
     CompactIndexedClass,
+    CompactModuleClassHeader,
     CompactModuleClassProjection,
     CompactModuleClassProjectionFamily,
     CompactModuleStarImportOrigin,
@@ -731,7 +732,7 @@ class ProductFlowRepository(
 
     @property
     @abstractmethod
-    def class_projections(self) -> Sequence[CompactModuleClassProjection]:
+    def class_projections(self) -> Sequence[CompactModuleClassHeader]:
         raise NotImplementedError
 
     def _definition_body_context(
@@ -1032,9 +1033,7 @@ class ProductFlowRepository(
         return self.function_declaration_multiplicity.ambiguous_handles
 
     @cached_property
-    def class_projections_by_module_name(
-        self,
-    ) -> dict[str, CompactModuleClassProjection]:
+    def class_projections_by_module_name(self) -> dict[str, CompactModuleClassHeader]:
         return UniqueIdentityIndexAuthority.unambiguous_declarations_by_handle(
             self.class_projections,
             lambda projection: projection.module_name,
@@ -2273,8 +2272,8 @@ class SourceProductFlowRepository(RepositoryModuleBindingProof, ProductFlowRepos
         return tuple(self.iter_product_projections())
 
     @cached_property
-    def class_projections(self) -> tuple[CompactModuleClassProjection, ...]:
-        return CompactModuleClassProjectionFamily.collect_modules(self.modules)
+    def class_projections(self) -> tuple[CompactModuleClassHeader, ...]:
+        return CompactModuleClassHeader.from_modules(self.modules)
 
     def captured_value(self, value: CompactFlowValue) -> CapturedReferenceResolution:
         source = self.source_projection_for_module(value.context.module_name)

@@ -250,6 +250,23 @@ class/aggregate for independent domain, UI, transport and setup roles.
 
 ## Compose a trajectory, not isolated edits
 
+Use the recursive improvement loop: start from real consumer friction; trace
+the entangled shared behavior and admit its owner/consumer relation under the
+binding rules; fix the existing owner and delete the replaced paths; mechanize
+the supported work in NRA; replay the original case and its counterexamples;
+then measure the actual work removed. Apply this to NRA's own implementation
+too. Check admitted relations mechanically with existing guards where supported;
+neither cleaner output nor a faster local helper establishes end-to-end success.
+
+Retain a complete scan's findings, source manifest and available proof objects.
+Use that landscape to assemble the largest supported ordered codemod batch;
+simulate dependent stages on projected source, apply with revision checks, and
+validate the real consumer. Keep remaining unsupported or unproved obligations
+as an explicit OPEN worklist. Reuse valid evidence before requesting another
+full scan; changed dependencies still require reproof, and serialized reports
+do not preserve native execution proofs. Measure verified structural obligations
+discharged, rather than commits, test counts or scans performed.
+
 Read [references/batching.md](references/batching.md) and
 [ownership-to-DSL gates](references/ownership-to-dsl.md) when authoring or
 extending an ordered plan. Prefer declaration-selected movement, promotion, projection,

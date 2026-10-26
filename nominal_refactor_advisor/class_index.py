@@ -63,6 +63,7 @@ from .foreign_family import (
     AssignmentStatement,
     FunctionDefinition,
 )
+from .scan_cache import ScanCache
 from .source_entry import ImportedSourceModuleEntryPremise
 from .value_expression import (
     CompactValueExpression,
@@ -929,6 +930,33 @@ class CompactModuleClassHeader(CompactModuleIdentity):
     public_export_contract: CompactModulePublicExportContract
     star_import_origins: tuple[CompactModuleStarImportOrigin, ...]
     classes: tuple[CompactIndexedClass, ...]
+
+    @classmethod
+    @ScanCache.cached
+    def from_modules(cls, modules: tuple[ParsedModule, ...]) -> tuple[Self, ...]:
+        """Join original declarations with the repository's namespace proof."""
+        return RepositoryModuleBindingProof(modules).refined_class_projections(
+            cls.from_module
+        )
+
+    @classmethod
+    @ScanCache.cached
+    def from_module(cls, parsed_module: ParsedModule) -> Self:
+        """Acquire complete class declarations without unrelated analysis surfaces."""
+        return cls(
+            module_name=parsed_module.module_name,
+            file_path=parsed_module.file_path,
+            import_aliases=tuple(sorted(_module_import_aliases(parsed_module).items())),
+            public_export_contract=module_public_export_contract(parsed_module),
+            star_import_origins=module_star_import_origins(parsed_module),
+            classes=_compact_indexed_classes(
+                parsed_module,
+                iter_class_definitions(list(parsed_module.module.body)),
+                include_body_facets=True,
+            ),
+        )
+
+ClassProjectionT = TypeVar("ClassProjectionT", bound=CompactModuleClassHeader)
 
 
 @dataclass(frozen=True)
@@ -2131,10 +2159,10 @@ class CompactClassFamilyIndex(ClassDeclarationIndex[CompactIndexedClass]):
         cls,
         modules: tuple[ParsedModule, ...],
     ) -> Self:
-        """Collect and join the complete compact class projection once."""
+        """Join complete class declarations without collecting unrelated analyses."""
 
         return CompactClassFamilyIndexBuilder(
-            CompactModuleClassProjectionFamily.collect_modules(modules)
+            CompactModuleClassHeader.from_modules(modules)
         ).build()
 
     @classmethod
@@ -3380,6 +3408,26 @@ class RepositoryModuleBindingProof(
 
     modules: tuple[ParsedModule, ...]
 
+    def refined_class_projections(
+        self,
+        collect: Callable[[ParsedModule], ClassProjectionT],
+    ) -> tuple[ClassProjectionT, ...]:
+        """Refine original declarations through this repository's export evidence."""
+        projections = []
+        for module in self.modules:
+            excluded_names = frozenset(
+                name
+                for name in _class_nominal_reference_root_names(module)
+                if self.star_imports_exclude(module.module_name, name)
+            )
+            projection = collect(module)
+            if excluded_names:
+                projection = _repository_refined_class_projection(
+                    module, projection, excluded_names
+                )
+            projections.append(projection)
+        return tuple(projections)
+
     @cached_property
     def public_export_contract_by_module_name(
         self,
@@ -4042,11 +4090,7 @@ def _class_nominal_reference_root_names(
     )
 
 
-def _repository_refined_class_projection(
-    parsed_module: ParsedModule,
-    projection: CompactModuleClassProjection,
-    star_import_excluded_names: frozenset[str],
-) -> CompactModuleClassProjection:
+def _repository_refined_class_projection(parsed_module: ParsedModule, projection: ClassProjectionT, star_import_excluded_names: frozenset[str]) -> ClassProjectionT:
     """Refine only binding-sensitive class facts from repository export proof."""
 
     class_nodes_by_qualname = dict(
@@ -4096,6 +4140,17 @@ class CompactModuleClassProjectionFamily(CollectedFamily[CompactModuleClassProje
     source_demand_collector = staticmethod(
         _collect_demanded_class_projection_from_source
     )
+
+    @classmethod
+    def _required_module_projection(
+        cls, parsed_module: ParsedModule,
+    ) -> CompactModuleClassProjection:
+        projections = collect_family_items(parsed_module, cls)
+        if len(projections) != 1:
+            raise ValueError(
+                "Compact class projection family must emit one item per module"
+            )
+        return projections[0]
 
     @classmethod
     def report_demand(
@@ -4175,33 +4230,9 @@ class CompactModuleClassProjectionFamily(CollectedFamily[CompactModuleClassProje
     ) -> tuple[CompactModuleClassProjection, ...]:
         """Collect the single module projection declared by this family."""
 
-        parsed_modules = tuple(parsed_modules)
-        repository_binding_proof = RepositoryModuleBindingProof(parsed_modules)
-        projections: list[CompactModuleClassProjection] = []
-        for parsed_module in parsed_modules:
-            star_import_excluded_names = frozenset(
-                name
-                for name in _class_nominal_reference_root_names(parsed_module)
-                if repository_binding_proof.star_imports_exclude(
-                    parsed_module.module_name,
-                    name,
-                )
-            )
-            module_projections = collect_family_items(parsed_module, cls)
-            if star_import_excluded_names and len(module_projections) == 1:
-                module_projections = [
-                    _repository_refined_class_projection(
-                        parsed_module,
-                        module_projections[0],
-                        star_import_excluded_names,
-                    )
-                ]
-            if len(module_projections) != 1:
-                raise ValueError(
-                    "Compact class projection family must emit one item per module"
-                )
-            projections.append(module_projections[0])
-        return tuple(projections)
+        return RepositoryModuleBindingProof(
+            tuple(parsed_modules)
+        ).refined_class_projections(cls._required_module_projection)
 
     @classmethod
     def collect_demanded(
@@ -4246,7 +4277,7 @@ class CompactModuleClassProjectionFamily(CollectedFamily[CompactModuleClassProje
         demand: CompactClassProjectionDemand | None,
     ) -> list[CompactModuleClassProjection]:
         del cls
-        file_path = parsed_module.file_path
+        declarations = CompactModuleClassHeader.from_module(parsed_module)
         syntax_facets = _compact_class_syntax_facets(
             parsed_module,
             collect_autoregister=(
@@ -4259,21 +4290,12 @@ class CompactModuleClassProjectionFamily(CollectedFamily[CompactModuleClassProje
             indexed_class_nodes,
             method_names=(None if demand is None else demand.class_method_names),
         )
-        classes = _compact_indexed_classes(
-            parsed_module,
-            indexed_class_nodes,
-            include_body_facets=True,
-        )
         return [
             CompactModuleClassProjection(
-                module_name=parsed_module.module_name,
-                file_path=file_path,
-                import_aliases=tuple(
-                    sorted(_module_import_aliases(parsed_module).items())
-                ),
-                public_export_contract=module_public_export_contract(parsed_module),
-                star_import_origins=module_star_import_origins(parsed_module),
-                classes=classes,
+                **{
+                    declaration.name: getattr(declarations, declaration.name)
+                    for declaration in fields(CompactModuleClassHeader)
+                },
                 sorted_key_calls=_compact_sorted_key_calls(parsed_module),
                 keyed_table_axes=_compact_keyed_table_axes(parsed_module),
                 closed_axis_branch_functions=syntax_facets.closed_axis_branch_functions,
@@ -6377,7 +6399,7 @@ def _terminal_reference_name(node: ast.AST) -> str | None:
 
 @dataclass(frozen=True)
 class CompactClassFamilyIndexBuilder:
-    projections: Sequence[CompactModuleClassProjection]
+    projections: Sequence[CompactModuleClassHeader]
 
     def build(self) -> CompactClassFamilyIndex:
         records = tuple(
@@ -6467,9 +6489,7 @@ class CompactClassFamilyIndexBuilder:
         return None
 
 
-def build_compact_class_family_index(
-    projections: Sequence[CompactModuleClassProjection],
-) -> CompactClassFamilyIndex:
+def build_compact_class_family_index(projections: Sequence[CompactModuleClassHeader]) -> CompactClassFamilyIndex:
     """Build an exact inheritance graph from AST-free per-module facts."""
 
     return CompactClassFamilyIndexBuilder(projections).build()
@@ -6483,11 +6503,7 @@ class CompactClassReferenceResolver:
     unique_symbols_by_suffix: _UniqueKnownSymbolSuffixIndex
 
     @classmethod
-    def from_index(
-        cls,
-        projections: Sequence[CompactModuleClassProjection],
-        class_index: CompactClassFamilyIndex,
-    ) -> "CompactClassReferenceResolver":
+    def from_index(cls, projections: Sequence[CompactModuleClassHeader], class_index: CompactClassFamilyIndex) -> 'CompactClassReferenceResolver':
         return cls(
             import_aliases_by_module_name={
                 projection.module_name: dict(projection.import_aliases)
