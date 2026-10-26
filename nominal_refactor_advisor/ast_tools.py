@@ -1171,6 +1171,41 @@ class BuiltinCallName(StrEnum):
     ZIP = "zip"
 
     @classmethod
+    def isinstance_names(cls) -> frozenset["BuiltinCallName"]:
+        return frozenset((cls.ISINSTANCE,))
+
+    @classmethod
+    def type_test_names(cls) -> frozenset["BuiltinCallName"]:
+        return frozenset((cls.ISINSTANCE, cls.ISSUBCLASS))
+
+    def is_bare_callee(self, func: ast.AST | None) -> bool:
+        """Whether a call target is exactly this builtin's bare name."""
+
+        return isinstance(func, ast.Name) and func.id == self
+
+    @classmethod
+    def isinstance_arguments(cls, node: ast.AST) -> tuple[ast.expr, ast.expr] | None:
+        """Return (subject, type argument) of a two-argument `isinstance` call."""
+
+        return cls._two_argument_call(node, cls.isinstance_names())
+
+    @classmethod
+    def type_test_arguments(cls, node: ast.AST) -> tuple[ast.expr, ast.expr] | None:
+        """Return (subject, type argument) of an `isinstance` or `issubclass` call."""
+
+        return cls._two_argument_call(node, cls.type_test_names())
+
+    @classmethod
+    def _two_argument_call(
+        cls, node: ast.AST, callee_names: frozenset["BuiltinCallName"]
+    ) -> tuple[ast.expr, ast.expr] | None:
+        match node:
+            case ast.Call(func=callee, args=[subject, type_argument], keywords=[]):
+                if AstExpressionProjection.terminal_name(callee) in callee_names:
+                    return subject, type_argument
+        return None
+
+    @classmethod
     def sequence_wrapper_names(cls) -> frozenset["BuiltinCallName"]:
         return frozenset((cls.TUPLE, cls.LIST, cls.SET))
 
@@ -1502,7 +1537,7 @@ class ScopedAstObservation:
             return ScopedAstObservationRole.CLASS_SCOPE.value
         if mentions_function:
             return ScopedAstObservationRole.FUNCTION_SCOPE.value
-        if "isinstance" in text:
+        if BuiltinCallName.ISINSTANCE in text:
             return ScopedAstObservationRole.NODE_TYPE.value
         return ScopedAstObservationRole.GENERIC_SCOPE.value
 
@@ -1518,7 +1553,7 @@ class ScopedAstObservation:
             return ScopedAstObservationRole.MODULE_SCOPE_GUARD.value
         if f"{function_ref} is not None" in text:
             return ScopedAstObservationRole.FUNCTION_SCOPE_GUARD.value
-        if "isinstance" in text:
+        if BuiltinCallName.ISINSTANCE in text:
             return ScopedAstObservationRole.NODE_TYPE_GUARD.value
         return ScopedAstObservationRole.GUARDED_DELEGATE.value
 

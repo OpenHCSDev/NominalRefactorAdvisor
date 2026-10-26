@@ -6,7 +6,7 @@ import ast
 from dataclasses import dataclass
 
 from .annotation_semantics import NOMINAL_ANNOTATION_SOURCE_AUTHORITY
-from .ast_tools import ClassFunctionStackNodeVisitor, ParsedModule
+from .ast_tools import BuiltinCallName, ClassFunctionStackNodeVisitor, ParsedModule
 from .class_index import (
     CompactClassFamilyIndex,
     CompactClassReferenceResolver,
@@ -106,12 +106,11 @@ class DeclaredAttributeCheckCollector(ClassFunctionStackNodeVisitor):
         )
 
     def visit_Call(self, node: ast.Call) -> None:
-        if (
-            self._builtin(node.func, "isinstance")
-            and len(node.args) == 2
-            and not node.keywords
+        arguments = BuiltinCallName.isinstance_arguments(node)
+        if arguments is not None and self._builtin(
+            node.func, BuiltinCallName.ISINSTANCE
         ):
-            self._record(node, node.args[0], node.args[1])
+            self._record(node, *arguments)
         self.generic_visit(node)
 
     def visit_Compare(self, node: ast.Compare) -> None:

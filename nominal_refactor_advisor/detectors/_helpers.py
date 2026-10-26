@@ -1177,7 +1177,7 @@ def _guarded_wrapper_node_types(node: ast.If) -> tuple[str, ...] | None:
     test = node.test
     if not isinstance(test, ast.UnaryOp) or not isinstance(test.op, ast.Not):
         return None
-    isinstance_arguments = AstExpressionProjection.isinstance_arguments(test.operand)
+    isinstance_arguments = BuiltinCallName.isinstance_arguments(test.operand)
     if isinstance_arguments is None:
         return None
     _subject, type_node = isinstance_arguments
@@ -4352,7 +4352,7 @@ def _repeated_result_assembly_pipeline_candidates(
 
 
 _SCHEMA_ACCESSOR_FETCH_METHOD_NAMES = frozenset({"required", "optional"})
-_SCHEMA_ACCESSOR_RUNTIME_GUARD_CALL_NAMES = frozenset({"isinstance"})
+_SCHEMA_ACCESSOR_RUNTIME_GUARD_CALL_NAMES = BuiltinCallName.isinstance_names()
 _SCHEMA_ACCESSOR_MIN_METHODS = 4
 _SCHEMA_ACCESSOR_COPY_CALL_NAMES = BuiltinCallName.schema_accessor_copy_call_names()
 _SCHEMA_ACCESSOR_SELF_NAME = "self"

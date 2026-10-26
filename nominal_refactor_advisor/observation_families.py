@@ -35,6 +35,7 @@ from .observation_shapes import (
 
 from .ast_tools import (
     AstExpressionProjection,
+    BuiltinCallName,
     AstNameFamily,
     AssignObservationSpec,
     AutoRegisterMeta,
@@ -1135,7 +1136,7 @@ def _foreign_type_test_shapes(
     resolver = TypeArgumentResolver(parsed_module)
     shapes: list[ForeignTypeTestShape] = []
     for node_index, node in index.indexed_nodes_of_type(ast.Call):
-        arguments = AstExpressionProjection.type_test_arguments(node)
+        arguments = BuiltinCallName.type_test_arguments(node)
         if arguments is None:
             continue
         names = resolver.qualified_names(

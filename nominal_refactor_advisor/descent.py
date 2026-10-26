@@ -22,7 +22,12 @@ from dataclasses import dataclass, field
 from functools import cached_property
 from pathlib import Path
 
-from .ast_tools import AstParentIndex, ParsedModule, PythonSourcePathPolicy
+from .ast_tools import (
+    AstParentIndex,
+    BuiltinCallName,
+    ParsedModule,
+    PythonSourcePathPolicy,
+)
 from .class_index import CompactModuleClassProjectionFamily
 from .codemod_architecture_guards import (
     ArchitectureGuardRule,
@@ -380,8 +385,7 @@ class Guard(ABC):
             return Negated(cls.decoded(test.operand, subject, field_name, enum))
         if (
             isinstance(test, ast.Call)
-            and isinstance(test.func, ast.Name)
-            and test.func.id == "isinstance"
+            and BuiltinCallName.ISINSTANCE.is_bare_callee(test.func)
             and len(test.args) == 2
             and _is_name(test.args[0], subject)
             and isinstance(test.args[1], ast.Name)
@@ -1863,7 +1867,7 @@ class Fold(Cases, ABC):
         test = node.test
         if not (
             isinstance(test, ast.Call)
-            and _is_name(test.func, "isinstance")
+            and BuiltinCallName.ISINSTANCE.is_bare_callee(test.func)
             and len(test.args) == 2
             and isinstance(test.args[0], ast.Name)
             and _is_any_name(test.args[1], holder_names)

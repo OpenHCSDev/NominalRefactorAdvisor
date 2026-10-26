@@ -94,6 +94,7 @@ if TYPE_CHECKING:
 
 from ..ast_tools import (
     AstExpressionProjection,
+    BuiltinCallName,
     AstParentIndex,
     BuilderCallShape,
     BuilderCallShapeFamily,
@@ -5426,7 +5427,7 @@ def _concrete_type_case_function_candidates_for_function(
     alias_sources = _top_level_attribute_aliases(function)
     grouped_checks: dict[str, list[ResolvedTypeNamePartition]] = defaultdict(list)
     for subnode in _walk_nodes(function):
-        isinstance_arguments = AstExpressionProjection.isinstance_arguments(subnode)
+        isinstance_arguments = BuiltinCallName.isinstance_arguments(subnode)
         if isinstance_arguments is None:
             continue
         subject, type_argument = isinstance_arguments

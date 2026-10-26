@@ -18,6 +18,7 @@ from ..semantic_algebra import ObjectFamilyShape
 from ..semantic_description_length import CompressionCertificate
 from ..ast_tools import (
     AstExpressionProjection,
+    BuiltinCallName,
     CompactModuleIdentity,
     PythonSourcePathPolicy,
     SourceModule,
@@ -85,7 +86,7 @@ def _compact_concrete_type_case_function_facts(
         alias_sources = _top_level_attribute_aliases(function)
         grouped_checks: dict[str, list[tuple[str, ...]]] = defaultdict(list)
         for subnode in _walk_nodes(function):
-            isinstance_arguments = AstExpressionProjection.isinstance_arguments(subnode)
+            isinstance_arguments = BuiltinCallName.isinstance_arguments(subnode)
             if isinstance_arguments is None:
                 continue
             subject, type_node = isinstance_arguments
