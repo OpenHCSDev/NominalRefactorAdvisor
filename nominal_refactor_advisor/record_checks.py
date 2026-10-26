@@ -107,8 +107,12 @@ class DeclaredAttributeCheckCollector(ClassFunctionStackNodeVisitor):
 
     def visit_Call(self, node: ast.Call) -> None:
         arguments = BuiltinCallName.isinstance_arguments(node)
-        if arguments is not None and any(
-            self._builtin(node.func, name) for name in BuiltinCallName.isinstance_names()
+        if (
+            arguments is not None
+            and BuiltinCallName.is_isinstance_callee(node.func)
+            and BuiltinCallName.isinstance_unshadowed(
+                self.module_bindings.resolves_unshadowed_builtin, self.locals
+            )
         ):
             self._record(node, *arguments)
         self.generic_visit(node)

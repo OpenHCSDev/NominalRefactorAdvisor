@@ -21,7 +21,7 @@ import pickle
 import sys
 import tokenize
 from abc import ABC, abstractmethod
-from collections.abc import Iterable, Iterator, Mapping, Sequence
+from collections.abc import Container, Iterable, Iterator, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field, fields, is_dataclass
 from enum import Enum, StrEnum
@@ -1171,10 +1171,6 @@ class BuiltinCallName(StrEnum):
     ZIP = "zip"
 
     @classmethod
-    def isinstance_names(cls) -> frozenset["BuiltinCallName"]:
-        return frozenset((cls.ISINSTANCE,))
-
-    @classmethod
     def type_test_names(cls) -> frozenset["BuiltinCallName"]:
         return frozenset((cls.ISINSTANCE, cls.ISSUBCLASS))
 
@@ -1182,17 +1178,37 @@ class BuiltinCallName(StrEnum):
     def is_isinstance_callee(cls, func: ast.AST | None) -> bool:
         """Whether a call target is the bare `isinstance` name."""
 
-        return isinstance(func, ast.Name) and func.id in cls.isinstance_names()
+        return isinstance(func, ast.Name) and cls.is_isinstance_name(func.id)
+
+    @classmethod
+    def is_isinstance_name(cls, name: str | None) -> bool:
+        return name == cls.ISINSTANCE
 
     @classmethod
     def mentions_isinstance(cls, text: str) -> bool:
-        return any(name in text for name in cls.isinstance_names())
+        return cls.ISINSTANCE in text
 
     @classmethod
     def isinstance_arguments(cls, node: ast.AST) -> tuple[ast.expr, ast.expr] | None:
         """Return (subject, type argument) of a two-argument `isinstance` call."""
 
-        return cls._two_argument_call(node, cls.isinstance_names())
+        match node:
+            case ast.Call(func=callee, args=[subject, type_argument], keywords=[]):
+                if cls.is_isinstance_name(AstExpressionProjection.terminal_name(callee)):
+                    return subject, type_argument
+        return None
+
+    @classmethod
+    def isinstance_unshadowed(
+        cls,
+        resolves_unshadowed_builtin: Callable[[str], bool],
+        local_scopes: Iterable[Container[str]] = (),
+    ) -> bool:
+        """Whether `isinstance` still means the builtin under these bindings."""
+
+        return not any(
+            cls.ISINSTANCE in scope for scope in local_scopes
+        ) and resolves_unshadowed_builtin(cls.ISINSTANCE)
 
     @classmethod
     def type_test_arguments(cls, node: ast.AST) -> tuple[ast.expr, ast.expr] | None:

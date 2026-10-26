@@ -200,9 +200,8 @@ class _TypeKeyedBehaviorMethodDescent:
         snapshot = ModuleNominalBindingAuthority(self.source_module).snapshot_before(
             self.projection_method.lineno
         )
-        if not all(
-            snapshot.resolves_unshadowed_builtin(name)
-            for name in BuiltinCallName.isinstance_names()
+        if not BuiltinCallName.isinstance_unshadowed(
+            snapshot.resolves_unshadowed_builtin
         ):
             raise ValueError(
                 f"projected method {self.projection_method.name!r} uses a shadowed "
