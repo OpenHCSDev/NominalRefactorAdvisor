@@ -53,8 +53,7 @@ from .codemod_reproof import (
 )
 from .codemod_runtime import CodemodSourceSnapshot
 from .codemod_selector_models import (
-    SelectionCountExpectation,
-    SelectionCountPayloadValueCodec,
+    DeclaredCallSelection,
     SourceRewriteTarget,
 )
 from .codemod_imports import ModuleImportMutation
@@ -190,16 +189,10 @@ class PrependFunctionBodyOperation(
 
 
 @dataclass(frozen=True, kw_only=True)
-class DeclaredCallMutationOperationABC(RepositorySourceReprovedOperation, ABC):
+class DeclaredCallMutationOperationABC(
+    DeclaredCallSelection, RepositorySourceReprovedOperation, ABC
+):
     """Re-prove declaration-selected calls before deriving one authored mutation."""
-
-    callee: SourceRewriteTarget = codemod_payload_field(
-        PayloadRecordValueCodec(SourceRewriteTarget)
-    )
-    selection_count: SelectionCountExpectation = codemod_payload_field(
-        SelectionCountPayloadValueCodec(),
-        default_factory=SelectionCountExpectation,
-    )
 
     source_authority: ClassVar[type[DeclaredCallRewriteABC]]
 
@@ -350,7 +343,9 @@ class RouteForeignFamilyFilterOperation(SourceReprovedOperation):
         reference = ForeignFamilyReference(self.family)
         authority = ForeignFamilyFilterAuthority(
             parsed_module=parsed_module,
-            geometry=SourceTextGeometry(snapshot.sources_by_file_path[target.file_path]),
+            geometry=SourceTextGeometry(
+                snapshot.sources_by_file_path[target.file_path]
+            ),
             line_length=DeclaredRoot.line_length_for(Path(target.file_path)),
             declaration=node,
             reference=reference,
@@ -392,7 +387,9 @@ class FoldAdapterBindChainOperation(SourceReprovedOperation):
         reference = ForeignFamilyReference(self.family)
         authority = AdapterBindChainAuthority(
             parsed_module=parsed_module,
-            geometry=SourceTextGeometry(snapshot.sources_by_file_path[target.file_path]),
+            geometry=SourceTextGeometry(
+                snapshot.sources_by_file_path[target.file_path]
+            ),
             line_length=DeclaredRoot.line_length_for(Path(target.file_path)),
             declaration=node,
             reference=reference,
@@ -432,7 +429,8 @@ class ProjectStaticCallsToAdapterOperation(SourceReprovedOperation):
     ) -> tuple[NominalSourceEdit, ...]:
         _, target = self.target_digest(snapshot)
         target.require_kind(
-            AstTargetNodeKind.MODULE, "Static projection rewriting requires a module target"
+            AstTargetNodeKind.MODULE,
+            "Static projection rewriting requires a module target",
         )
         projection = StaticProjection.declared_for(self.projector)
         reference = ForeignFamilyReference(self.family)
@@ -443,7 +441,9 @@ class ProjectStaticCallsToAdapterOperation(SourceReprovedOperation):
         parsed_module = snapshot.parsed_module_for_source_path(target.file_path)
         authority = StaticProjectionAuthority(
             parsed_module=parsed_module,
-            geometry=SourceTextGeometry(snapshot.sources_by_file_path[target.file_path]),
+            geometry=SourceTextGeometry(
+                snapshot.sources_by_file_path[target.file_path]
+            ),
             line_length=DeclaredRoot.line_length_for(Path(target.file_path)),
             projection=projection,
             family=reference,
@@ -461,8 +461,7 @@ class ProjectStaticCallsToAdapterOperation(SourceReprovedOperation):
             )
         imports = (
             ()
-            if not replacements
-            or parsed_module.module_name == reference.module_name
+            if not replacements or parsed_module.module_name == reference.module_name
             else self.required_import_mutations(
                 target.file_path,
                 import_source=reference.import_source_for(snapshot, parsed_module),

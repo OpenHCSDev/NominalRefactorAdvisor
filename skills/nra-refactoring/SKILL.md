@@ -247,6 +247,16 @@ rename and call-migration operations over copying implementations into authored
 replacement bodies. Use exact target patches when needed, but label the semantic
 decision and unsupported DSL gap honestly.
 
+For selected class-field metadata keyword removal, use the existing declaration
+selectors with `remove_field_metadata_keywords`; it preserves surviving source
+and supports calls inside generated-field initializers. The explicit
+`prune_field_metadata_keywords` variant also elides an emptied constructor from
+direct `typing.Annotated` metadata. Admit that extra semantic decision first:
+Core's plain `Column()` can be redundant while `FrozenColumn()` still owns
+immutability. Neither operation infers that a SQL check is redundant; trace its
+representation owner before selecting it. See the generated operation catalogue
+and getting-started example for the current payloads and refusal boundaries.
+
 Simulate dependent stages against projected source, inspect projected findings
 and selectors, then extend the same trajectory. NRA's global ownership analysis
 helps choose the trajectory; operation preflight alone does not choose it.

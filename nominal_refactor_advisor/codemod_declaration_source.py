@@ -21,6 +21,7 @@ from typing import (
     cast,
 )
 
+from .assignment_projection import NamedAssignmentSelection
 from .ast_tools import (
     AstKeywordSourceProjection,
     AstParentIndex,
@@ -68,6 +69,15 @@ class DirectClassDeclarationAuthority:
 
     source_segments: SourceLineSegmentAuthority
     node: ast.ClassDef
+
+    def annotated_field(self, name: str) -> ast.AnnAssign:
+        """Select one original direct field, rejecting missing or rebound declarations."""
+        (statement,) = NamedAssignmentSelection((name,)).statements(self.node.body)
+        if not isinstance(statement, ast.AnnAssign) or not isinstance(
+            statement.target, ast.Name
+        ):
+            raise ValueError(f"Class member {name!r} is not one direct annotated field")
+        return statement
 
     def declarations_by_name(self) -> dict[str, str]:
         declaration_by_name: dict[str, str] = {}
@@ -189,9 +199,7 @@ class NamedDeclarationSourceAuthority:
     def declaration_line_span(self) -> SourceLineSpan:
         """Own the complete declaration, including every decorator marker."""
 
-        return self.geometry.node_line_span(
-            SourceNodeSpan(self.node, Include)
-        )
+        return self.geometry.node_line_span(SourceNodeSpan(self.node, Include))
 
     @cached_property
     def name_span(self) -> SourceTextSpan:
@@ -471,10 +479,7 @@ class ClassBodySourceAuthority(ClassSourceAuthority):
         """Return the insertion offset without stealing attached comments."""
 
         first_method = next(
-            (
-                statement
-                for statement in FunctionDefinition.within(self.node.body)
-            ),
+            (statement for statement in FunctionDefinition.within(self.node.body)),
             None,
         )
         if first_method is None:
@@ -767,9 +772,7 @@ class DeclarationDecoratorsSourceAuthority(DeclarationRegionSourceAuthority):
     """Own only the decorator block preceding an unchanged declaration header."""
 
     def replacement(self, decorators_source: str, /) -> SourceTextSpanReplacement:
-        first_line = self.geometry.node_start_line(
-            SourceNodeSpan(self.node, Include)
-        )
+        first_line = self.geometry.node_start_line(SourceNodeSpan(self.node, Include))
         span = SourceTextSpan(
             self.geometry.line_offsets[first_line - 1],
             self.geometry.line_offsets[self.node.lineno - 1],

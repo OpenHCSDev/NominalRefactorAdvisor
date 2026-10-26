@@ -51,6 +51,8 @@ from .codemod_statement_source import (
 )
 from .codemod_class_operations import (
     InsertClassMemberOperation as InsertClassMemberOperation,
+    RemoveFieldMetadataKeywordsOperation as RemoveFieldMetadataKeywordsOperation,
+    PruneFieldMetadataKeywordsOperation as PruneFieldMetadataKeywordsOperation,
 )
 from .codemod_assignment_operations import (
     AssignmentReplacementOperationABC as AssignmentReplacementOperationABC,
@@ -828,9 +830,7 @@ class ReplaceTargetOperation(SourceReprovedOperation):
         default=(),
     )
 
-    decorator_policy: ClassVar[type[SourceNodeDecoratorPolicy]] = (
-        Exclude
-    )
+    decorator_policy: ClassVar[type[SourceNodeDecoratorPolicy]] = Exclude
 
     @cached_property
     def replacement_block(self) -> PythonBlockSource:
@@ -7702,7 +7702,8 @@ class AutoRegisterMroOrderingDerivation:
     @staticmethod
     def has_plain_root_bases(root_node: ast.ClassDef) -> bool:
         return all(
-            ExpressionReference.decoded(base).terminal_name in {"ABC", "Generic", "object"}
+            ExpressionReference.decoded(base).terminal_name
+            in {"ABC", "Generic", "object"}
             for base in root_node.bases
         ) and not any(
             isinstance(statement, ast.FunctionDef | ast.AsyncFunctionDef)
@@ -9186,9 +9187,8 @@ class DataclassPayloadAuthorityTarget(ResolvedClassTarget):
             and isinstance(statement.target, ast.Name)
             and statement.target.id in self.field_names
             and isinstance(statement.value, ast.Call)
-            and ExpressionReference.decoded(
-                statement.value.func
-            ).terminal_name == "field"
+            and ExpressionReference.decoded(statement.value.func).terminal_name
+            == "field"
             and self.call_keyword_bool(statement.value, "init", default=True)
             is not True
             for statement in self.node.body

@@ -27,7 +27,7 @@ from dataclasses import (
     replace,
 )
 from functools import cached_property
-from itertools import pairwise
+from itertools import groupby, pairwise
 from pathlib import Path
 from typing import (
     ClassVar,
@@ -1622,6 +1622,53 @@ class SourceTextGeometry(SourceLineSegmentAuthority):
         return any(
             token.type == tokenize.COMMENT for token in self.tokens_in_span(span)
         )
+
+    def remove_separated_elements(
+        self,
+        elements: tuple[ast.AST, ...],
+        selected: tuple[ast.AST, ...],
+        body_span: SourceTextSpan,
+    ) -> tuple[SourceTextSpanReplacement, ...]:
+        """Delete comma-separated elements while retaining every surviving source span."""
+        ordered = tuple(sorted(elements, key=self.required_node_offsets))
+        chosen = frozenset(selected)
+        if not chosen or len(chosen) != len(selected) or not chosen.issubset(ordered):
+            raise ValueError(
+                "Element deletion requires unique selected original elements"
+            )
+        spans = tuple(
+            SourceTextSpan(*self.required_node_offsets(node)) for node in ordered
+        )
+        if any(not span.is_within(body_span) for span in spans):
+            raise ValueError("Separated element is outside its source body")
+        replacements = []
+        for removed, group in groupby(
+            enumerate(ordered), key=lambda item: item[1] in chosen
+        ):
+            if not removed:
+                continue
+            run = tuple(group)
+            first, last = run[0][0], run[-1][0]
+            if len(chosen) == len(ordered):
+                span = body_span
+            elif last + 1 < len(ordered):
+                span = SourceTextSpan(
+                    spans[first].start_offset, spans[last + 1].start_offset
+                )
+            else:
+                span = SourceTextSpan(
+                    spans[first - 1].end_offset, spans[last].end_offset
+                )
+            if self.span_contains_comment(span):
+                raise ValueError("Element deletion would remove a comment")
+            replacements.append(
+                SourceTextSpanReplacement.from_offsets(
+                    start_offset=span.start_offset,
+                    end_offset=span.end_offset,
+                    replacement_source="",
+                )
+            )
+        return tuple(replacements)
 
     def literal_continuation_lines(self, root: ast.AST) -> frozenset[int]:
         """Lines whose source belongs to literals and must retain its indentation."""
