@@ -18,7 +18,8 @@ class ScanCache:
     """Own declaration caches until the outer invocation (or worker) ends.
 
     Per-module AST cleanup cannot invalidate this storage. Outside an explicit
-    scope, decorated functions recompute, so interactive callers cannot retain
+    scope, the outermost decorated call opens one for its own duration, so
+    everything beneath it shares results and interactive callers cannot retain
     identities from a previous implementation. Nested analysis shares its
     invocation; each process-pool worker starts an independent scope.
     """
@@ -41,8 +42,10 @@ class ScanCache:
         @wraps(function)
         def invoke(*args: P.args, **kwargs: P.kwargs) -> T:
             active = cls._active.get()
-            implementation = function if active is None else active.memoized(function)
-            return implementation(*args, **kwargs)
+            if active is None:
+                with cls.scope():
+                    return invoke(*args, **kwargs)
+            return active.memoized(function)(*args, **kwargs)
 
         return invoke
 
