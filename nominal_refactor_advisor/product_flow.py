@@ -1273,7 +1273,52 @@ class QualifiedCallTargetReference(LexicalCallTargetReference):
 
 
 @dataclass(frozen=True)
+class ReceiverAttributeCallTargetReference(CompactCallTargetReference):
+    """`<expression>.name`, where the receiver is no lexical path (`f().name`, `x[0].name`).
+
+    The receiver is unknown, but the access still selects attribute `name`: the
+    target is that attribute of whatever the receiver evaluates to, so it is
+    resolved as an unknown receiver followed by the attribute.
+    """
+
+    attribute_name: str
+
+    def resolve_target(
+        self,
+        resolver: CompactCallTargetResolverABC[ResolutionContextT, TargetResolutionT],
+        context: ResolutionContextT,
+        position: CompactFlowPosition,
+    ) -> TargetResolutionT:
+        return resolver._through_attribute_suffix(
+            resolver._local_function_target_resolution(context, self),
+            (self.attribute_name,),
+        )
+
+    @property
+    def terminal_name(self) -> str:
+        return self.attribute_name
+
+    @property
+    def lexical_reference(self) -> None:
+        return None
+
+    def local_candidate_symbols(
+        self,
+        module_name: str,
+        lexical_scope_qualnames: tuple[str, ...],
+    ) -> tuple[str, ...]:
+        del module_name, lexical_scope_qualnames
+        return ()
+
+
+@dataclass(frozen=True)
 class DynamicCallTargetReference(CompactCallTargetReference):
+    """A callee with no attribute name and no lexical path (`f()()`, `x[0]()`).
+
+    Such a call reaches only a function obtained as a value, which the callable
+    escape and dynamic fetch obligations account for.
+    """
+
     @property
     def terminal_name(self) -> None:
         return None
@@ -4156,6 +4201,8 @@ class _CompactFlowCollector(
         if member_method is not None:
             return member_method
         reference = LexicalValueReference.from_expression(expression)
+        if reference is None and isinstance(expression, ast.Attribute):
+            return ReceiverAttributeCallTargetReference(expression.attr)
         if reference is None:
             return DynamicCallTargetReference()
         if (
