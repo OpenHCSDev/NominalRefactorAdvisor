@@ -35,7 +35,7 @@ class FindingSummary(SemanticRecord):
     detector_counts: tuple[FindingDetectorCount, ...]
 
     @classmethod
-    def empty(cls) -> "FindingSummary":
+    def empty(cls) -> FindingSummary:
         return cls(
             finding_count=0,
             pattern_counts=(),
@@ -46,7 +46,7 @@ class FindingSummary(SemanticRecord):
     def from_findings(
         cls,
         findings: list[RefactorFinding] | tuple[RefactorFinding, ...],
-    ) -> "FindingSummary":
+    ) -> FindingSummary:
         return cls(
             finding_count=len(findings),
             pattern_counts=tuple(

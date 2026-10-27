@@ -296,7 +296,7 @@ class DeclaredRecords:
     owners_by_fields: dict[frozenset[str], tuple[SourceLocation, ...]]
 
     @classmethod
-    def from_observations(cls, fields: Iterable[FieldObservation]) -> "DeclaredRecords":
+    def from_observations(cls, fields: Iterable[FieldObservation]) -> DeclaredRecords:
         names: dict[tuple[str, str], set[str]] = defaultdict(set)
         first: dict[tuple[str, str], int] = {}
         for observed in fields:

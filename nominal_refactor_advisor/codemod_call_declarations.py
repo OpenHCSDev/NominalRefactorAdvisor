@@ -35,7 +35,7 @@ class ModuleCallDeclaration:
             raise TypeError("Module call declaration requires a call statement")
 
     @classmethod
-    def from_statement(cls, statement: ast.stmt) -> "ModuleCallDeclaration | None":
+    def from_statement(cls, statement: ast.stmt) -> (ModuleCallDeclaration | None):
         if not isinstance(statement, ast.Expr) or not isinstance(
             statement.value,
             ast.Call,

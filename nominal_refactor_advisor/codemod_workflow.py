@@ -66,7 +66,7 @@ IdentityT = TypeVar("IdentityT", bound=Hashable)
 class CodemodWorkflowStopReason(StrEnum):
     """Terminal state for staged codemod workflows."""
 
-    def __new__(cls, value: str, completed: bool) -> "CodemodWorkflowStopReason":
+    def __new__(cls, value: str, completed: bool) -> CodemodWorkflowStopReason:
         member = str.__new__(cls, value)
         member._value_ = value
         member._completed = completed
@@ -116,8 +116,8 @@ class CodemodRefactorTrajectoryStatus(StrEnum):
         value: str,
         stop_reason: CodemodWorkflowStopReason,
         proved: bool,
-        matcher: Callable[["CodemodRefactorTrajectoryProof"], bool],
-    ) -> "CodemodRefactorTrajectoryStatus":
+        matcher: Callable[[CodemodRefactorTrajectoryProof], bool],
+    ) -> CodemodRefactorTrajectoryStatus:
         member = str.__new__(cls, value)
         member._value_ = value
         member._stop_reason = stop_reason
@@ -133,14 +133,14 @@ class CodemodRefactorTrajectoryStatus(StrEnum):
     def proved(self) -> bool:
         return self._proved
 
-    def matches(self, proof: "CodemodRefactorTrajectoryProof") -> bool:
+    def matches(self, proof: CodemodRefactorTrajectoryProof) -> bool:
         return self._matcher(proof)
 
     @classmethod
     def from_proof(
         cls,
-        proof: "CodemodRefactorTrajectoryProof",
-    ) -> "CodemodRefactorTrajectoryStatus":
+        proof: CodemodRefactorTrajectoryProof,
+    ) -> CodemodRefactorTrajectoryStatus:
         matching_statuses = frozenset(status for status in cls if status.matches(proof))
         if len(matching_statuses) != 1:
             raise TypeError(
@@ -181,7 +181,7 @@ class CodemodProjectedScanMode(StrEnum):
     EVIDENCE_LOCAL_PARTIAL = ("evidence_local_partial", False)
     TARGET_DETECTOR_PARTIAL = ("target_detector_partial", False)
 
-    def __new__(cls, value: str, exact: bool) -> "CodemodProjectedScanMode":
+    def __new__(cls, value: str, exact: bool) -> CodemodProjectedScanMode:
         member = str.__new__(cls, value)
         member._value_ = value
         member._exact = exact
@@ -198,8 +198,8 @@ class CodemodFindingClassStatus(StrEnum):
     def __new__(
         cls,
         value: str,
-        matcher: Callable[["CodemodFindingClassChange"], bool] | None,
-    ) -> "CodemodFindingClassStatus":
+        matcher: Callable[[CodemodFindingClassChange], bool] | None,
+    ) -> CodemodFindingClassStatus:
         member = str.__new__(cls, value)
         member._value_ = value
         member._matcher = matcher
@@ -247,14 +247,14 @@ class CodemodFindingClassStatus(StrEnum):
     )
     UNCHANGED = ("unchanged", None)
 
-    def matches(self, change: "CodemodFindingClassChange") -> bool:
+    def matches(self, change: CodemodFindingClassChange) -> bool:
         return self._matcher is not None and self._matcher(change)
 
     @classmethod
     def from_change(
         cls,
-        change: "CodemodFindingClassChange",
-    ) -> "CodemodFindingClassStatus":
+        change: CodemodFindingClassChange,
+    ) -> CodemodFindingClassStatus:
         matching_statuses = frozenset(
             status for status in cls if status.matches(change)
         )
@@ -268,8 +268,8 @@ class CodemodFindingClassStatus(StrEnum):
     @classmethod
     def counts(
         cls,
-        changes: tuple["CodemodFindingClassChange", ...],
-    ) -> dict["CodemodFindingClassStatus", int]:
+        changes: tuple[CodemodFindingClassChange, ...],
+    ) -> dict[CodemodFindingClassStatus, int]:
         change_counts = Counter(change.status for change in changes)
         return {
             status: change_counts[status]
@@ -501,7 +501,7 @@ class CodemodFindingClassChange(CodemodFindingDelta):
         after_findings: tuple[RefactorFinding, ...],
         *,
         expected_removed_finding_ids: tuple[str, ...] = (),
-    ) -> "CodemodFindingClassChange":
+    ) -> CodemodFindingClassChange:
         transition = CodemodFindingIdTransition.from_findings(
             before_findings,
             after_findings,
@@ -541,7 +541,7 @@ class CodemodFindingClassDelta(DataclassJsonReport):
         after_findings: tuple[RefactorFinding, ...],
         *,
         expected_removed_finding_ids: tuple[str, ...] = (),
-    ) -> "CodemodFindingClassDelta":
+    ) -> CodemodFindingClassDelta:
         expected_ids = frozenset(expected_removed_finding_ids)
         before_findings_by_class = cls.group_findings(before_findings)
         after_findings_by_class = cls.group_findings(after_findings)
@@ -701,7 +701,7 @@ class CodemodRefactorGoalStage(DataclassJsonReport):
     def with_applied_target_findings(
         self,
         findings: Iterable[RefactorFinding],
-    ) -> "CodemodRefactorGoalStage":
+    ) -> CodemodRefactorGoalStage:
         """Record the exact post-commit target state on the final stage."""
 
         after_ids = tuple(finding.stable_id for finding in findings)
@@ -786,7 +786,7 @@ class CodemodRefactorStateBudgetObstacle(CodemodRefactorTrajectoryObstacle):
 class CodemodRefactorTrajectoryState:
     """One exact in-memory source state and the path that first reached it."""
 
-    scan: "CodemodWorkflowScan" = field(compare=False, repr=False)
+    scan: CodemodWorkflowScan = field(compare=False, repr=False)
     stages: tuple[CodemodRefactorGoalStage, ...] = ()
 
     @property
@@ -1007,7 +1007,7 @@ class CodemodProjectedFindingReport(DataclassJsonReport):
     """Before/after advisor findings for one simulated codemod source state."""
 
     before_findings: tuple[RefactorFinding, ...] = json_report_field(included=False)
-    after_scan: "CodemodWorkflowScan" = json_report_field(included=False)
+    after_scan: CodemodWorkflowScan = json_report_field(included=False)
     source_sequence: CodemodPlanSequence | None = json_report_field(
         included=False,
         default=None,
@@ -1085,7 +1085,7 @@ class CodemodProjectedFindingReport(DataclassJsonReport):
     def class_plan_delta_report(
         self,
         class_plan_report: FindingRecipeClassPlanReport,
-    ) -> "CodemodClassPlanProjectedDeltaReport":
+    ) -> CodemodClassPlanProjectedDeltaReport:
         return CodemodClassPlanProjectedDeltaReport(
             class_plan_report=class_plan_report,
             projected_finding_report=self,
@@ -1103,14 +1103,14 @@ class CodemodClassPlanProjectedDelta(CodemodFindingClassDelta):
         cls,
         class_plan: FindingRecipeClassPlan,
         finding_class_delta: CodemodFindingClassDelta,
-    ) -> "CodemodClassPlanProjectedDelta":
+    ) -> CodemodClassPlanProjectedDelta:
         return cls(
             class_plan=class_plan,
             changes=finding_class_delta.changes_for_before_ids(class_plan.finding_ids),
         )
 
     @json_report_property()
-    def site_deltas(self) -> tuple["CodemodClassPlanSiteProjectedDelta", ...]:
+    def site_deltas(self) -> tuple[CodemodClassPlanSiteProjectedDelta, ...]:
         return tuple(
             CodemodClassPlanSiteProjectedDelta.from_synthesis_record(
                 synthesis_record,
@@ -1151,7 +1151,7 @@ class CodemodClassPlanSiteProjectedDelta(CodemodFindingClassDelta):
         changes: tuple[CodemodFindingClassChange, ...],
         *,
         expected_removed_finding_ids: tuple[str, ...],
-    ) -> "CodemodClassPlanSiteProjectedDelta":
+    ) -> CodemodClassPlanSiteProjectedDelta:
         return cls(
             synthesis_record=synthesis_record,
             changes=tuple(

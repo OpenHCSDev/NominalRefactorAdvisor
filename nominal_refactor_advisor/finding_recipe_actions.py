@@ -21,7 +21,7 @@ class FindingRecipeActionIdentity(DataclassJsonReport):
     def child_subject(cls, parent_subject: str, child_subject: str) -> str:
         return f"{parent_subject}{cls.subject_separator}{child_subject}"
 
-    def conflicts_with(self, other: "FindingRecipeActionIdentity") -> bool:
+    def conflicts_with(self, other: FindingRecipeActionIdentity) -> bool:
         return self.file_path == other.file_path and self.subject_conflicts_with(
             other.subject_name
         )
@@ -47,7 +47,7 @@ class FindingRecipeActionKey(FindingRecipeActionIdentity):
         cls,
         finding: RefactorFinding,
         file_subjects: Iterable[tuple[str, str]],
-    ) -> tuple["FindingRecipeActionKey", ...]:
+    ) -> tuple[FindingRecipeActionKey, ...]:
         return tuple(
             cls(
                 detector_id=finding.detector_id,

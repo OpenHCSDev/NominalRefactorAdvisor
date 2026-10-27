@@ -379,7 +379,7 @@ class DirectManualRegistryComponent(RegistryEntries):
         cls,
         module: ast.Module,
         anchor_class_name: str,
-    ) -> "DirectManualRegistryComponent":
+    ) -> DirectManualRegistryComponent:
         class_nodes = DirectModuleClassGraph(module).classes_by_name
         entries = cls.direct_entries(module, class_nodes)
         registry_names = frozenset(
@@ -722,7 +722,7 @@ class AutoRegisterInstanceViewComponent(RegistryEntries):
         cls,
         module: ast.Module,
         authority_name: str,
-    ) -> "AutoRegisterInstanceViewComponent":
+    ) -> AutoRegisterInstanceViewComponent:
         class_graph = DirectModuleClassGraph(module)
         authority_node = class_graph.classes_by_name.get(authority_name)
         if authority_node is None:
@@ -758,7 +758,7 @@ class AutoRegisterInstanceViewComponent(RegistryEntries):
         authority_node: ast.ClassDef,
         statement: ast.stmt,
         class_graph: DirectModuleClassGraph,
-    ) -> "AutoRegisterInstanceViewComponent | None":
+    ) -> (AutoRegisterInstanceViewComponent | None):
         if not isinstance(statement, RegistryAssignment):
             return None
         try:

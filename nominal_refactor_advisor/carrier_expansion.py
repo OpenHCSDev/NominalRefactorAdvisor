@@ -228,7 +228,7 @@ class DeclaredCarrierExpansionAuthorityViolation(StrEnum):
     def explanation(self) -> str:
         return self._explanation
 
-    def is_violated_by(self, proof: "DeclaredCarrierExpansionAuthorityProof") -> bool:
+    def is_violated_by(self, proof: DeclaredCarrierExpansionAuthorityProof) -> bool:
         return self._predicate(proof)
 
 

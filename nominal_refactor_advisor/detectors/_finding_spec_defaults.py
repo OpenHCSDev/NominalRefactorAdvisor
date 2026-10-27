@@ -31,7 +31,7 @@ class FindingSpecSemanticKeyword:
     def from_keyword(
         cls,
         keyword: ast.keyword,
-    ) -> "FindingSpecSemanticKeyword | None":
+    ) -> (FindingSpecSemanticKeyword | None):
         field = FindingSpecSemanticField.from_keyword_name(keyword.arg)
         if field is None:
             return None
@@ -60,7 +60,7 @@ class FindingSpecSemanticKeywords:
     def from_keywords(
         cls,
         keywords: tuple[ast.keyword, ...] | list[ast.keyword],
-    ) -> "FindingSpecSemanticKeywords":
+    ) -> FindingSpecSemanticKeywords:
         return cls(
             tuple(
                 semantic_keyword
@@ -101,7 +101,7 @@ class FindingSpecCallSemantics:
     keywords: FindingSpecSemanticKeywords
 
     @classmethod
-    def from_call(cls, node: ast.Call) -> "FindingSpecCallSemantics | None":
+    def from_call(cls, node: ast.Call) -> (FindingSpecCallSemantics | None):
         constructor_name = ExpressionReference.decoded(node.func).terminal_name
         factory = (
             None

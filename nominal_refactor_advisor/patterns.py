@@ -488,7 +488,7 @@ class PatternId(IntEnum):
         display_name: str,
         required_relation: str,
         witness_capabilities: tuple[CapabilityTag, ...],
-    ) -> "PatternId":
+    ) -> PatternId:
         member = int.__new__(cls, stable_id)
         member._value_ = stable_id
         member.display_name = display_name

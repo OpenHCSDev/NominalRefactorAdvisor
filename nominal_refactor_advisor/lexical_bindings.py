@@ -188,7 +188,7 @@ class ImportAliasRequirement:
         return self.name if self.asname is None else f"{self.name} as {self.asname}"
 
     @classmethod
-    def from_alias(cls, alias: ast.alias) -> "ImportAliasRequirement":
+    def from_alias(cls, alias: ast.alias) -> ImportAliasRequirement:
         return cls(name=alias.name, asname=alias.asname)
 
     @property
@@ -239,7 +239,7 @@ class ImportFromModuleName:
         )
 
     @classmethod
-    def from_node(cls, node: ast.ImportFrom) -> "ImportFromModuleName":
+    def from_node(cls, node: ast.ImportFrom) -> ImportFromModuleName:
         relative_prefix = "." * node.level
         if node.module is None:
             return cls(relative_prefix)

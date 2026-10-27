@@ -40,7 +40,7 @@ class ModuleImportBinding:
         self,
         import_graph: SourceModuleImportGraph,
         importing_file_path: str,
-    ) -> "ModuleImportBindingIdentity | None":
+    ) -> (ModuleImportBindingIdentity | None):
         statement = self.request.statement
         alias = statement.names[0]
         if isinstance(statement, ast.Import):

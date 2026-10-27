@@ -67,7 +67,7 @@ class ImportSummaryKind(StrEnum):
         cls,
         value: str,
         identity_kind: SemanticInspectionIdentityKind,
-    ) -> "ImportSummaryKind":
+    ) -> ImportSummaryKind:
         member = str.__new__(cls, value)
         member._value_ = value
         member._identity_kind = identity_kind
@@ -125,7 +125,7 @@ class FunctionSummaryKind(StrEnum):
         value: str,
         target_kind: AstTargetNodeKind,
         is_async: bool,
-    ) -> "FunctionSummaryKind":
+    ) -> FunctionSummaryKind:
         member = str.__new__(cls, value)
         member._value_ = value
         member._target_kind = target_kind
@@ -138,7 +138,7 @@ class FunctionSummaryKind(StrEnum):
         target_kind: AstTargetNodeKind,
         *,
         is_async: bool,
-    ) -> "FunctionSummaryKind":
+    ) -> FunctionSummaryKind:
         """Resolve one declaration form from member-owned semantic coordinates."""
 
         matching_members = tuple(

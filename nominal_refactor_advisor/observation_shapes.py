@@ -44,7 +44,7 @@ class LiteralKind(StrEnum):
         cls,
         value: str,
         literal_type: type[str] | type[int],
-    ) -> "LiteralKind":
+    ) -> LiteralKind:
         member = str.__new__(cls, value)
         member._value_ = value
         member.literal_type = literal_type

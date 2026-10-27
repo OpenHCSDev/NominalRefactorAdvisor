@@ -49,7 +49,7 @@ class TopLevelBindingRenameTarget:
         node: ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef,
         *,
         new_name: str,
-    ) -> "TopLevelBindingRenameTarget":
+    ) -> TopLevelBindingRenameTarget:
         if target.qualname != target.name:
             raise ValueError("Declaration rename requires a top-level target")
         rename_target = cls.require_binding(
@@ -70,7 +70,7 @@ class TopLevelBindingRenameTarget:
         source_path: str,
         binding_name: str,
         new_name: str,
-    ) -> "TopLevelBindingRenameTarget":
+    ) -> TopLevelBindingRenameTarget:
         modules_by_path = {module.file_path: module for module in parsed_modules}
         if len(modules_by_path) != len(parsed_modules):
             raise ValueError("Declaration rename requires unique source modules")
@@ -133,7 +133,7 @@ class DeclarationAuthorityImportReference:
         cls,
         module: ParsedModule,
         imported_name: str,
-    ) -> tuple["DeclarationAuthorityImportReference", ...]:
+    ) -> tuple[DeclarationAuthorityImportReference, ...]:
         return tuple(
             cls(module, imported_module_name, statement, alias)
             for statement in module.module.body
@@ -175,7 +175,7 @@ class DeclarationAuthorityRenameBindingClosure:
         cls,
         parsed_modules: tuple[ParsedModule, ...],
         target: TopLevelBindingRenameTarget,
-    ) -> "DeclarationAuthorityRenameBindingClosure":
+    ) -> DeclarationAuthorityRenameBindingClosure:
         import_references = tuple(
             reference
             for module in parsed_modules
@@ -351,7 +351,7 @@ class DeclarationAuthorityModuleRenameProof:
         new_name: str,
         binding_closure: DeclarationAuthorityRenameBindingClosure,
         repository_bindings: RepositoryModuleBindingProof,
-    ) -> "DeclarationAuthorityModuleRenameProof":
+    ) -> DeclarationAuthorityModuleRenameProof:
         target = binding_closure.target
         imports = binding_closure.imports_for(module)
         cls._require_supported_import_surfaces(
@@ -719,7 +719,7 @@ class DeclarationAuthorityRenameProof:
         node: ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef,
         *,
         new_name: str,
-    ) -> "DeclarationAuthorityRenameProof":
+    ) -> DeclarationAuthorityRenameProof:
         rename_target = TopLevelBindingRenameTarget.require(
             parsed_modules,
             target,
@@ -736,7 +736,7 @@ class DeclarationAuthorityRenameProof:
         source_path: str,
         binding_name: str,
         new_name: str,
-    ) -> "DeclarationAuthorityRenameProof":
+    ) -> DeclarationAuthorityRenameProof:
         rename_target = TopLevelBindingRenameTarget.require_binding(
             parsed_modules,
             source_path=source_path,
@@ -752,7 +752,7 @@ class DeclarationAuthorityRenameProof:
         rename_target: TopLevelBindingRenameTarget,
         *,
         new_name: str,
-    ) -> "DeclarationAuthorityRenameProof":
+    ) -> DeclarationAuthorityRenameProof:
         binding_closure = DeclarationAuthorityRenameBindingClosure.from_modules(
             parsed_modules,
             rename_target,

@@ -161,7 +161,7 @@ class AstNameFamily:
     names: frozenset[str]
 
     @classmethod
-    def from_names(cls, names: set[str] | frozenset[str]) -> "AstNameFamily":
+    def from_names(cls, names: set[str] | frozenset[str]) -> AstNameFamily:
         return cls(frozenset(names))
 
     def matching_name(self, node: ast.AST) -> str | None:

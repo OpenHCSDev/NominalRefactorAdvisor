@@ -162,7 +162,7 @@ class RefactorRecipeOperation(
         *,
         import_source: str,
         default_rationale: str,
-    ) -> tuple["ModuleImportMutation", ...]:
+    ) -> tuple[ModuleImportMutation, ...]:
         return (
             ModuleImportMutation.from_source(
                 file_path=source_path,

@@ -243,7 +243,7 @@ class FindingSpecSemanticField(StrEnum):
         value: str,
         semantic_value_type: type[ConfidenceLevel] | type[CertificationLevel],
         import_name_suffix: str,
-    ) -> "FindingSpecSemanticField":
+    ) -> FindingSpecSemanticField:
         member = str.__new__(cls, value)
         member._value_ = value
         member._semantic_value_type = semantic_value_type
@@ -281,7 +281,7 @@ class FindingSpecSemanticField(StrEnum):
 
     def default_value(
         self,
-        defaults: "FindingSpecSemanticDefaults",
+        defaults: FindingSpecSemanticDefaults,
     ) -> FindingSpecSemanticValue:
         return attrgetter(self.value)(defaults)
 
@@ -439,7 +439,7 @@ class DetectorConfig:
     excluded_pattern_ids: tuple = ()
 
     @classmethod
-    def from_namespace(cls, namespace: argparse.Namespace) -> "DetectorConfig":
+    def from_namespace(cls, namespace: argparse.Namespace) -> DetectorConfig:
         namespace_values = vars(namespace)
         config_values: dict[str, object] = {}
         for config_field in fields(cls):
@@ -478,8 +478,8 @@ class DetectorCacheGranularity(StrEnum):
 
     def select_detector_types(
         self,
-        detector_types: Iterable[type["IssueDetector"]],
-    ) -> tuple[type["IssueDetector"], ...]:
+        detector_types: Iterable[type[IssueDetector]],
+    ) -> tuple[type[IssueDetector], ...]:
         """Project declarations that selected this cache contract."""
 
         return tuple(
@@ -497,21 +497,21 @@ class IssueDetector(RequiredRelationDeclaration, metaclass=AutoRegisterMeta):
     __skip_if_no_key__ = True
     detector_id: ClassVar[str | None] = None
     finding_spec: ClassVar[FindingSpec]
-    detector_declaration: ClassVar["DetectorDeclaration[object] | None"] = None
+    detector_declaration: ClassVar[(DetectorDeclaration[object] | None)] = None
     cache_granularity: ClassVar[DetectorCacheGranularity] = (
         DetectorCacheGranularity.GLOBAL
     )
 
     @classmethod
-    def registered_detector_types(cls) -> tuple[type["IssueDetector"], ...]:
+    def registered_detector_types(cls) -> tuple[type[IssueDetector], ...]:
         detector_registry = cast("dict[str, type[IssueDetector]]", cls.__registry__)
         return cls._ordered_registered_detector_types(tuple(detector_registry.values()))
 
     @staticmethod
     @lru_cache(maxsize=None)
     def _ordered_registered_detector_types(
-        detector_types: tuple[type["IssueDetector"], ...],
-    ) -> tuple[type["IssueDetector"], ...]:
+        detector_types: tuple[type[IssueDetector], ...],
+    ) -> tuple[type[IssueDetector], ...]:
         """Sort one immutable registry roster once per process."""
 
         return sorted_tuple(
@@ -527,7 +527,7 @@ class IssueDetector(RequiredRelationDeclaration, metaclass=AutoRegisterMeta):
     def registered_detector_type_for_id(
         cls,
         detector_id: str,
-    ) -> type["IssueDetector"] | None:
+    ) -> type[IssueDetector] | None:
         detector_registry = cast("dict[str, type[IssueDetector]]", cls.__registry__)
         return detector_registry.get(detector_id)
 
@@ -552,7 +552,7 @@ class IssueDetector(RequiredRelationDeclaration, metaclass=AutoRegisterMeta):
         raise TypeError(f"{cls.__name__} has no finding_spec declaration")
 
     @classmethod
-    def resolved_detector_declaration(cls) -> "DetectorDeclaration[object] | None":
+    def resolved_detector_declaration(cls) -> (DetectorDeclaration[object] | None):
         """Return the generated detector's retained nominal authority, if any."""
 
         for declaration_type in cls.__mro__:
@@ -642,8 +642,8 @@ class IssueDetector(RequiredRelationDeclaration, metaclass=AutoRegisterMeta):
     @staticmethod
     @lru_cache(maxsize=None)
     def _detector_ids_for_nominal_relation(
-        detector_types: tuple[type["IssueDetector"], ...],
-        relation_type: type["IssueDetector"],
+        detector_types: tuple[type[IssueDetector], ...],
+        relation_type: type[IssueDetector],
     ) -> frozenset[str]:
         return frozenset(
             detector_id
@@ -683,7 +683,7 @@ class IssueDetector(RequiredRelationDeclaration, metaclass=AutoRegisterMeta):
         summary: str,
         evidence: tuple[SourceLocation, ...],
         /,
-        context: "FindingBuildContext | None" = None,
+        context: (FindingBuildContext | None) = None,
         **overrides: Unpack[FindingBuildContextKwargs],
     ) -> RefactorFinding:
         detector_id = type(self).effective_detector_id()
@@ -944,7 +944,7 @@ class CompactClassRepositoryContext:
         cls,
         projections: Sequence[CompactModuleClassProjection],
         config: DetectorConfig,
-    ) -> "CompactClassRepositoryContext":
+    ) -> CompactClassRepositoryContext:
         return cls(
             projections=projections,
             config=config,
@@ -952,7 +952,7 @@ class CompactClassRepositoryContext:
         )
 
     @classmethod
-    def require(cls, context: object | None) -> "CompactClassRepositoryContext":
+    def require(cls, context: object | None) -> CompactClassRepositoryContext:
         if not isinstance(context, cls):
             raise TypeError("compact class repository context is unavailable")
         return context
@@ -1172,7 +1172,7 @@ class CompactMultiModuleProjectionDetectorMixin(
         projections_by_family: CompactProjectionGroups,
         context: object | None,
         config: DetectorConfig,
-    ) -> "CompactFindingStream | None":
+    ) -> (CompactFindingStream | None):
         del projections_by_family, context, config
         return None
 
@@ -1210,7 +1210,7 @@ class SemanticDescentGraphIssueDetector(ContextualGlobalCacheContract):
     @abstractmethod
     def _collect_findings_from_graph(
         self,
-        graph: "SemanticDescentGraph",
+        graph: SemanticDescentGraph,
         modules: list[ParsedModule],
         config: DetectorConfig,
     ) -> list[RefactorFinding]:
@@ -1218,7 +1218,7 @@ class SemanticDescentGraphIssueDetector(ContextualGlobalCacheContract):
 
     def _collect_focused_findings_from_graph(
         self,
-        graph: "SemanticDescentGraph",
+        graph: SemanticDescentGraph,
         modules: list[ParsedModule],
         config: DetectorConfig,
         *,
@@ -1648,7 +1648,7 @@ class CandidateCollectorScope(StrEnum):
     def for_forwarding_base_name(
         cls,
         base_name: str,
-    ) -> tuple["CandidateCollectorScope", ...]:
+    ) -> tuple[CandidateCollectorScope, ...]:
         return tuple(
             scope
             for scope in cls
@@ -1670,7 +1670,7 @@ class ParameterizedBaseSource:
     parameter_source: str
 
     @classmethod
-    def from_node(cls, node: ast.AST) -> "ParameterizedBaseSource | None":
+    def from_node(cls, node: ast.AST) -> (ParameterizedBaseSource | None):
         if not isinstance(node, ast.Subscript):
             return None
         base_name = ClassSymbolResolutionAuthority.declared_base_name(node.value)
@@ -1693,7 +1693,7 @@ class CandidateCollectorBaseReference:
         node: ast.expr,
         *,
         line: int,
-    ) -> "CandidateCollectorBaseReference | None":
+    ) -> (CandidateCollectorBaseReference | None):
         source_name = ClassSymbolResolutionAuthority.declared_base_name(node)
         if source_name is None:
             return None
@@ -1764,7 +1764,7 @@ class DerivedCandidateCollectorMixin(Generic[CandidateItemT]):
     @classmethod
     def registered_collector_base_types(
         cls,
-    ) -> tuple[type["DerivedCandidateCollectorMixin"], ...]:
+    ) -> tuple[type[DerivedCandidateCollectorMixin], ...]:
         return sorted_tuple(
             (
                 collector_base
@@ -1779,7 +1779,7 @@ class DerivedCandidateCollectorMixin(Generic[CandidateItemT]):
         cls,
     ) -> dict[
         CandidateCollectorBaseShape,
-        type["DerivedCandidateCollectorMixin"],
+        type[DerivedCandidateCollectorMixin],
     ]:
         return UniqueIdentityIndexAuthority.declarations_by_handle(
             cls.registered_collector_base_types(),
@@ -2287,7 +2287,7 @@ class DetectorDeclarationOptions(Generic[CandidateItemT]):
 
     @classmethod
     def from_kwargs(
-        cls, options: "DetectorDeclarationOptionKwargs[CandidateItemT]"
+        cls, options: DetectorDeclarationOptionKwargs[CandidateItemT]
     ) -> DetectorDeclarationOptions[CandidateItemT]:
         unknown_names = set(options) - cls.field_names()
         if unknown_names:
@@ -2589,7 +2589,7 @@ class GroupedShapeIssueDetector(
     @classmethod
     def _context_signature_for_shapes(
         cls,
-        detector: "GroupedShapeIssueDetector[ShapeT, GroupKeyT]",
+        detector: GroupedShapeIssueDetector[ShapeT, GroupKeyT],
         shapes: Sequence[ShapeT],
     ) -> str:
         return _contextual_global_rows_digest(
@@ -3871,7 +3871,7 @@ def _companion_dataclass_surface_projection(
 
 def _manual_companion_dataclass_surface_candidate_for_pair(
     module: ParsedModule, authority_node: ast.ClassDef, companion_node: ast.ClassDef
-) -> "ManualCompanionDataclassSurfaceCandidate | None":
+) -> (ManualCompanionDataclassSurfaceCandidate | None):
     projection = _companion_dataclass_surface_projection(authority_node, companion_node)
     if projection is None:
         return None
@@ -3912,7 +3912,7 @@ def _manual_companion_dataclass_surface_candidate_for_pair(
 
 def _manual_companion_dataclass_surface_candidates(
     module: ParsedModule,
-) -> tuple["ManualCompanionDataclassSurfaceCandidate", ...]:
+) -> tuple[ManualCompanionDataclassSurfaceCandidate, ...]:
     dataclass_nodes = tuple(
         (
             node
@@ -5149,7 +5149,7 @@ def _same_type_constructor_method_names(
 
 
 def _shared_record_mechanics_method_names(
-    candidates: Sequence["ManualStructuralRecordMechanicsClassCandidate"],
+    candidates: Sequence[ManualStructuralRecordMechanicsClassCandidate],
 ) -> tuple[str, ...]:
     shared_projection_method_names = set.intersection(
         *(set(candidate.projection_method_names) for candidate in candidates)
@@ -7356,7 +7356,7 @@ class CandidateCollectorBoilerplateCandidate(
     def from_module(
         cls,
         module: ParsedModule,
-    ) -> tuple["CandidateCollectorBoilerplateCandidate", ...]:
+    ) -> tuple[CandidateCollectorBoilerplateCandidate, ...]:
         return tuple(
             candidate
             for node in module.module.body
@@ -7369,7 +7369,7 @@ class CandidateCollectorBoilerplateCandidate(
         cls,
         module: ParsedModule,
         node: ast.ClassDef,
-    ) -> tuple["CandidateCollectorBoilerplateCandidate", ...]:
+    ) -> tuple[CandidateCollectorBoilerplateCandidate, ...]:
         detector_shape = cls.detector_shape(node)
         if detector_shape is None:
             return ()
@@ -7490,7 +7490,7 @@ class ConcreteCandidateDetectorShape:
         cls,
         module: ParsedModule,
         node: ast.ClassDef,
-    ) -> "ConcreteCandidateDetectorShape | None":
+    ) -> (ConcreteCandidateDetectorShape | None):
         declares_detector_id = any(
             binding is not None
             and binding.name == DetectorDeclaration.detector_id_field_name
@@ -7553,7 +7553,7 @@ class DirectBuildFindingRendererCandidate(
         cls,
         module: ParsedModule,
         node: ast.ClassDef,
-    ) -> tuple["DirectBuildFindingRendererCandidate", ...]:
+    ) -> tuple[DirectBuildFindingRendererCandidate, ...]:
         shape = ConcreteCandidateDetectorShape.from_class(module, node)
         if shape is None:
             return ()
@@ -7581,7 +7581,7 @@ class DirectBuildFindingRendererCandidate(
     def from_module(
         cls,
         module: ParsedModule,
-    ) -> tuple["DirectBuildFindingRendererCandidate", ...]:
+    ) -> tuple[DirectBuildFindingRendererCandidate, ...]:
         return tuple(
             candidate
             for node in module.module.body
@@ -7635,7 +7635,7 @@ class DeclarativeDetectorClassCandidate(
         cls,
         module: ParsedModule,
         node: ast.ClassDef,
-    ) -> "DeclarativeDetectorClassCandidate | None":
+    ) -> (DeclarativeDetectorClassCandidate | None):
         if node.end_lineno is None or len(node.bases) != 1:
             return None
         base = ParameterizedBaseSource.from_node(node.bases[0])
@@ -7667,7 +7667,7 @@ class DeclarativeDetectorClassCandidate(
     def from_module(
         cls,
         module: ParsedModule,
-    ) -> tuple["DeclarativeDetectorClassCandidate", ...]:
+    ) -> tuple[DeclarativeDetectorClassCandidate, ...]:
         return tuple(
             candidate
             for node in module.module.body
@@ -7727,7 +7727,7 @@ class FieldOnlyFrozenDataclassCandidate(ClassLineWitnessCandidate):
         cls,
         module: ParsedModule,
         node: ast.ClassDef,
-    ) -> "FieldOnlyFrozenDataclassCandidate | None":
+    ) -> (FieldOnlyFrozenDataclassCandidate | None):
         if not _is_frozen_dataclass(node):
             return None
         product_fields: list[tuple[str, str, str | None]] = []

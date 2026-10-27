@@ -915,8 +915,8 @@ class CompactCallArguments(Generic[CallValueT], DataclassGraphValue):
         return tuple(argument.value for argument in (*self.positional, *self.keywords))
 
     def bind_to(
-        self, declaration: "CompactFunctionDeclaration"
-    ) -> "CompactCallBinding[CallValueT]":
+        self, declaration: CompactFunctionDeclaration
+    ) -> CompactCallBinding[CallValueT]:
         return declaration.bind_call(self.positional, self.keywords)
 
 
@@ -1206,7 +1206,7 @@ class CurrentClassMemberMethodReference(CurrentClassCallTargetReference):
         *,
         owner_class_qualname: str | None,
         receiver_name: str | None,
-    ) -> "CurrentClassMemberMethodReference | None":
+    ) -> (CurrentClassMemberMethodReference | None):
         if (
             owner_class_qualname is None
             or receiver_name is None
@@ -1385,7 +1385,7 @@ class CompactFlowPosition:
         indices = self._comparison_indices(other)
         return indices is None or indices[0] <= indices[1]
 
-    def dominates(self, other: "CompactFlowPosition") -> bool:
+    def dominates(self, other: CompactFlowPosition) -> bool:
         if self.branch_path == other.branch_path:
             indices = self._comparison_indices(other)
             return indices is not None and indices[0] < indices[1]
@@ -2079,7 +2079,7 @@ class CompactValueOriginResolution(ABC):
         self,
         suffix: tuple[str, ...],
         binding_mutation: CompactMutation,
-    ) -> "CompactValueOriginResolution":
+    ) -> CompactValueOriginResolution:
         raise NotImplementedError
 
 
@@ -2100,7 +2100,7 @@ class ExactCompactValueOrigin(CompactValueOriginResolution):
         self,
         suffix: tuple[str, ...],
         binding_mutation: CompactMutation,
-    ) -> "ExactCompactValueOrigin":
+    ) -> ExactCompactValueOrigin:
         return type(self)(
             LexicalValueReference(
                 self.origin.root_name,
@@ -2131,7 +2131,7 @@ class OpenCompactValueOrigin(CompactValueOriginResolution):
         self,
         suffix: tuple[str, ...],
         binding_mutation: CompactMutation,
-    ) -> "OpenCompactValueOrigin":
+    ) -> OpenCompactValueOrigin:
         del binding_mutation
         return type(self)(
             tuple(
@@ -2495,11 +2495,11 @@ class CompactFunctionCall(DataclassGraphValue):
         return self.result.binding
 
     def bind_to(
-        self, declaration: "CompactFunctionDeclaration"
+        self, declaration: CompactFunctionDeclaration
     ) -> CompactCallBinding[CompactValueUse]:
         return self.arguments.bind_to(declaration)
 
-    def product_construction(self) -> "CompactProductConstruction | None":
+    def product_construction(self) -> (CompactProductConstruction | None):
         if (
             self.result.binding is None
             or self.arguments.positional

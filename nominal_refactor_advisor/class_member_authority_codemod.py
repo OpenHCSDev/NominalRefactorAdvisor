@@ -94,7 +94,7 @@ class ClassMemberPromotionTargets(CodemodSourceSnapshot):
         *,
         source_path: str | None,
         class_names: tuple[str, ...],
-    ) -> "ClassMemberPromotionTargets":
+    ) -> ClassMemberPromotionTargets:
         nodes_by_target_id = context.ast_target_nodes_by_id
         return cls(
             source_index=context.source_index,
@@ -121,7 +121,7 @@ class ClassMemberPromotionTargets(CodemodSourceSnapshot):
         source_path: str,
         class_names: tuple[str, ...],
         authority_name: str,
-    ) -> "ClassMemberPromotionTargets":
+    ) -> ClassMemberPromotionTargets:
         """Resolve a cohort and prove one new local base can own its members."""
 
         targets = cls.resolve(
@@ -159,7 +159,7 @@ class ClassMemberPromotionTargets(CodemodSourceSnapshot):
         *,
         source_path: str | None,
         class_names: tuple[str, ...],
-    ) -> "ClassMemberPromotionTargets | None":
+    ) -> (ClassMemberPromotionTargets | None):
         nodes_by_target_id = context.ast_target_nodes_by_id
         targets: list[ResolvedClassTarget] = []
         for class_name in class_names:
@@ -449,7 +449,7 @@ class ExactLeafMethodAncestorPromotionTargets:
         cls,
         context: CodemodSelectorContext,
         component: ExactLeafMethodAncestorPromotionComponent,
-    ) -> "ExactLeafMethodAncestorPromotionTargets":
+    ) -> ExactLeafMethodAncestorPromotionTargets:
         resolved = ClassMemberPromotionTargets.resolve(
             context,
             source_path=component.file_path,
@@ -495,7 +495,7 @@ class ParallelMirroredLeafFamilyTargets:
         cls,
         snapshot: CodemodSourceSnapshot,
         root_target: AstTargetDigest,
-    ) -> "ParallelMirroredLeafFamilyTargets":
+    ) -> ParallelMirroredLeafFamilyTargets:
         if not root_target.is_class:
             raise ValueError("parallel leaf-family authority target must be a class")
         root_symbol = snapshot.source_index.symbol_for_target(root_target)
@@ -513,7 +513,7 @@ class ParallelMirroredLeafFamilyTargets:
         cls,
         context: CodemodSelectorContext,
         component: ParallelMirroredLeafFamilyComponent,
-    ) -> "ParallelMirroredLeafFamilyTargets":
+    ) -> ParallelMirroredLeafFamilyTargets:
         class_names = (
             *(root.qualname for root in component.roots),
             *(
@@ -574,7 +574,7 @@ class ClassMemberSetSpec:
     """One typed set of class-body members."""
 
     member_names: tuple[str, ...]
-    statement_type: type["ClassMemberPromotionStatement"]
+    statement_type: type[ClassMemberPromotionStatement]
 
 
 @dataclass(frozen=True)
@@ -860,7 +860,7 @@ class _ExactDataclassFieldAuthoritySourceRewrite(
         *,
         base_name: str,
         rationale: str,
-    ) -> "_ExactDataclassFieldAuthoritySourceRewrite":
+    ) -> _ExactDataclassFieldAuthoritySourceRewrite:
         targets = ClassMemberPromotionTargets.require_new_authority(
             snapshot,
             source_path=component.file_path,
@@ -963,7 +963,7 @@ class ExistingDataclassFieldAuthorityTargets:
         snapshot: CodemodSourceSnapshot,
         component: ExactDataclassFieldAuthorityComponent,
         authority: ResolvedClassTarget,
-    ) -> "ExistingDataclassFieldAuthorityTargets":
+    ) -> ExistingDataclassFieldAuthorityTargets:
         authority_participants = tuple(
             participant
             for participant in component.participants
@@ -1178,7 +1178,7 @@ class _ExactMethodRoleSourceRewrite(NamedClassMemberAuthoritySourceRewriteABC):
         *,
         base_name: str,
         rationale: str,
-    ) -> "_ExactMethodRoleSourceRewrite":
+    ) -> _ExactMethodRoleSourceRewrite:
         targets = ClassMemberPromotionTargets.require_new_authority(
             snapshot,
             source_path=component.file_path,
@@ -1348,7 +1348,7 @@ class ClassMemberPromotionStatement(ABC):
     def for_statement(
         cls,
         statement: ast.stmt,
-    ) -> "ClassMemberPromotionStatement | None":
+    ) -> (ClassMemberPromotionStatement | None):
         """Resolve one promotable member through its nominal statement family."""
 
         matches = tuple(
@@ -1385,7 +1385,7 @@ class ClassMemberPromotionStatement(ABC):
 
     def require_safe_move(
         self,
-        context: "ClassMemberMoveProofContext",
+        context: ClassMemberMoveProofContext,
     ) -> None:
         """Reject ownership-sensitive syntax before moving this member."""
 
@@ -1413,7 +1413,7 @@ class ClassDeclarationPromotionStatement(ClassMemberPromotionStatement):
 
     def require_safe_move(
         self,
-        context: "ClassMemberMoveProofContext",
+        context: ClassMemberMoveProofContext,
     ) -> None:
         annotation_surfaces = (
             StringizedAnnotationSurface.from_annotation(self.statement.annotation)
@@ -1459,7 +1459,7 @@ class ClassMethodPromotionStatement(ClassMemberPromotionStatement):
 
     def require_safe_move(
         self,
-        context: "ClassMemberMoveProofContext",
+        context: ClassMemberMoveProofContext,
     ) -> None:
         super().require_safe_move(context)
         if not isinstance(self.statement, (ast.FunctionDef, ast.AsyncFunctionDef)):
@@ -1526,7 +1526,7 @@ class ClassMemberMoveSelection:
         source_class: ResolvedClassTarget,
         destination_class: ResolvedClassTarget,
         member_names: tuple[str, ...],
-    ) -> "ClassMemberMoveSelection":
+    ) -> ClassMemberMoveSelection:
         if source_class.file_path != destination_class.file_path:
             raise ValueError(
                 "Class-member promotion currently requires one source module"

@@ -54,7 +54,7 @@ class DescentCertificateFindingAuthority(FindingDescentCertificateAuthority):
     def group_key_for_finding(
         self,
         finding: RefactorFinding,
-    ) -> "SemanticRefactorFindingGroupKey":
+    ) -> SemanticRefactorFindingGroupKey:
         return self.group_key_for_certificate(
             self.resolved_certificate_for_finding(finding)
         )
@@ -62,7 +62,7 @@ class DescentCertificateFindingAuthority(FindingDescentCertificateAuthority):
     @staticmethod
     def group_key_for_certificate(
         resolved: ResolvedDescentCertificate,
-    ) -> "SemanticRefactorFindingGroupKey":
+    ) -> SemanticRefactorFindingGroupKey:
         return SemanticRefactorFindingGroupKey(
             authority_label=resolved.authority.name,
             descent_path=resolved.certificate.missing_derivation_path,
@@ -121,7 +121,7 @@ class SemanticRefactorBoundaryEvidence(SemanticRecord):
     def from_ssot_finding(
         cls,
         finding: RefactorFinding,
-    ) -> "SemanticRefactorBoundaryEvidence":
+    ) -> SemanticRefactorBoundaryEvidence:
         certificate_authority = DescentCertificateFindingAuthority(
             build_finding_backed_semantic_descent_graph((finding,))
         )
@@ -136,7 +136,7 @@ class SemanticRefactorBoundaryEvidence(SemanticRecord):
         findings: tuple[RefactorFinding, ...],
         *,
         certificate_authority: DescentCertificateFindingAuthority,
-    ) -> "SemanticRefactorBoundaryEvidence":
+    ) -> SemanticRefactorBoundaryEvidence:
         first_finding = findings[0]
         certificate_selection = certificate_authority.resolved_selection_for_findings(
             findings
@@ -338,7 +338,7 @@ class SemanticRefactorGateReport(SemanticRecord):
     def from_findings(
         cls,
         findings: tuple[RefactorFinding, ...] = (),
-    ) -> "SemanticRefactorGateReport":
+    ) -> SemanticRefactorGateReport:
         ssot_findings = ssot_authority_findings(findings)
         finding_descent_graph = build_finding_backed_semantic_descent_graph(
             ssot_findings,
@@ -357,7 +357,7 @@ class SemanticRefactorGateReport(SemanticRecord):
         )
 
     @classmethod
-    def inactive(cls) -> "SemanticRefactorGateReport":
+    def inactive(cls) -> SemanticRefactorGateReport:
         return cls(
             boundary_evidence=(),
             authority_discovery_findings=(),

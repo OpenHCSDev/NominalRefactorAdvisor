@@ -227,8 +227,8 @@ class CollectedFamilyImplementationIdentity:
     @classmethod
     def from_family(
         cls,
-        family: type["CollectedFamily[object]"],
-    ) -> "CollectedFamilyImplementationIdentity":
+        family: type[CollectedFamily[object]],
+    ) -> CollectedFamilyImplementationIdentity:
         return cls(
             tuple(
                 CollectedFamilyImplementationSource.from_module_name(module_name)
@@ -252,8 +252,8 @@ class CollectedFamilySchemaIdentity(CachedDataclassRepresentation):
     @ScanCache.cached
     def from_family(
         cls,
-        family: type["CollectedFamily[object]"],
-    ) -> "CollectedFamilySchemaIdentity":
+        family: type[CollectedFamily[object]],
+    ) -> CollectedFamilySchemaIdentity:
         item_type = family.item_type
         return cls(
             family_module=family.__module__,
@@ -275,8 +275,8 @@ class CollectedFamilyProjectionIdentity:
     @classmethod
     def from_identity(
         cls,
-        identity: "CollectedFamilyCacheIdentity",
-    ) -> "CollectedFamilyProjectionIdentity":
+        identity: CollectedFamilyCacheIdentity,
+    ) -> CollectedFamilyProjectionIdentity:
         return cls(
             family_schema=identity.family_schema,
             demand_signature=identity.projection_signature,
@@ -294,8 +294,8 @@ class CollectedFamilyContentSignatureIndexKey:
     @classmethod
     def from_identity(
         cls,
-        identity: "CollectedFamilyCacheIdentity",
-    ) -> "CollectedFamilyContentSignatureIndexKey":
+        identity: CollectedFamilyCacheIdentity,
+    ) -> CollectedFamilyContentSignatureIndexKey:
         return cls(
             path_text=identity.path,
             module_name=identity.module_name,
@@ -369,7 +369,7 @@ class CollectedFamilyContentSignatureIndex:
         self._dirty = False
 
     @classmethod
-    def load(cls, cache_dir: Path) -> "CollectedFamilyContentSignatureIndex":
+    def load(cls, cache_dir: Path) -> CollectedFamilyContentSignatureIndex:
         entries: dict[CollectedFamilyContentSignatureIndexKey, tuple[str, str]] = {}
         try:
             with (cache_dir / cls._file_name).open("rb") as handle:
@@ -472,7 +472,7 @@ class PythonModuleParseContext(ParseCacheDirectory):
 
 
 def _collected_family_implementation_module_names(
-    family: type["CollectedFamily[object]"],
+    family: type[CollectedFamily[object]],
 ) -> tuple[str, ...]:
     """Project cache dependencies from the collected-family declaration itself."""
 
@@ -779,7 +779,7 @@ class ParsedModule(SourceFileIdentity):
         return NativePythonCompilation(self.source, self.file_path)
 
     @cached_property
-    def collected_family_cache(self) -> "CollectedFamilyCacheContext":
+    def collected_family_cache(self) -> CollectedFamilyCacheContext:
         return CollectedFamilyCacheContext.from_source(
             path=self.path,
             module_name=self.module_name,
@@ -817,7 +817,7 @@ class ParsedModule(SourceFileIdentity):
             is_package_init=self.is_package_init,
         )
 
-    def with_source(self, source: str) -> "ParsedModule":
+    def with_source(self, source: str) -> ParsedModule:
         """Parse replacement source while preserving this module's identity."""
 
         return SourceModule.from_path_identity(
@@ -879,7 +879,7 @@ class SourceModule(SourceFileIdentity):
         source: str,
         *,
         family_cache_dir: Path | None = None,
-    ) -> "SourceModule":
+    ) -> SourceModule:
         """Bind source to one already-derived Python module identity."""
 
         return cls(
@@ -896,7 +896,7 @@ class SourceModule(SourceFileIdentity):
         source: str,
         *,
         family_cache_dir: Path | None = None,
-    ) -> "SourceModule":
+    ) -> SourceModule:
         """Bind source when no project-level module declarations are available."""
 
         return cls.from_path_identity(
@@ -935,7 +935,7 @@ class PythonModulePathAuthority:
         cls,
         modules: Iterable[ParsedModule],
         analysis_roots: Iterable[Path] = (),
-    ) -> "PythonModulePathAuthority":
+    ) -> PythonModulePathAuthority:
         return cls(
             identities=tuple(module.module_path_identity for module in modules),
             analysis_roots=tuple(
@@ -1178,13 +1178,13 @@ class BuiltinCallName(StrEnum):
     ZIP = "zip"
 
     @classmethod
-    def set_constructor_names(cls) -> frozenset["BuiltinCallName"]:
+    def set_constructor_names(cls) -> frozenset[BuiltinCallName]:
         """The builtins that build a set from one argument."""
 
         return frozenset((cls.SET, cls.FROZENSET))
 
     @classmethod
-    def key_view_wrapper_names(cls) -> frozenset["BuiltinCallName"]:
+    def key_view_wrapper_names(cls) -> frozenset[BuiltinCallName]:
         """The builtins that collect one argument's items into a set, list or tuple."""
 
         return cls.set_constructor_names() | frozenset((cls.SORTED, cls.LIST, cls.TUPLE))
@@ -1195,13 +1195,13 @@ class BuiltinCallName(StrEnum):
         return self is BuiltinCallName.GETATTR and argument_count == 3
 
     @classmethod
-    def attribute_access_names(cls) -> frozenset["BuiltinCallName"]:
+    def attribute_access_names(cls) -> frozenset[BuiltinCallName]:
         """The builtins that reach an attribute through a runtime name."""
 
         return frozenset((cls.GETATTR, cls.HASATTR, cls.SETATTR, cls.DELATTR))
 
     @classmethod
-    def type_test_names(cls) -> frozenset["BuiltinCallName"]:
+    def type_test_names(cls) -> frozenset[BuiltinCallName]:
         return frozenset((cls.ISINSTANCE, cls.ISSUBCLASS))
 
     @classmethod
@@ -1266,7 +1266,7 @@ class BuiltinCallName(StrEnum):
 
     @classmethod
     def _two_argument_call(
-        cls, node: ast.AST, callee_names: frozenset["BuiltinCallName"]
+        cls, node: ast.AST, callee_names: frozenset[BuiltinCallName]
     ) -> tuple[ast.expr, ast.expr] | None:
         match node:
             case ast.Call(func=callee, args=[subject, type_argument], keywords=[]):
@@ -1275,23 +1275,23 @@ class BuiltinCallName(StrEnum):
         return None
 
     @classmethod
-    def sequence_wrapper_names(cls) -> frozenset["BuiltinCallName"]:
+    def sequence_wrapper_names(cls) -> frozenset[BuiltinCallName]:
         return frozenset((cls.TUPLE, cls.LIST, cls.SET))
 
     @classmethod
-    def collection_factory_names(cls) -> frozenset["BuiltinCallName"]:
+    def collection_factory_names(cls) -> frozenset[BuiltinCallName]:
         return frozenset((cls.TUPLE, cls.LIST, cls.SET, cls.FROZENSET))
 
     @classmethod
-    def mutable_collection_factory_names(cls) -> frozenset["BuiltinCallName"]:
+    def mutable_collection_factory_names(cls) -> frozenset[BuiltinCallName]:
         return cls.schema_accessor_copy_call_names() - frozenset((cls.TUPLE,))
 
     @classmethod
-    def return_collection_kind_names(cls) -> frozenset["BuiltinCallName"]:
+    def return_collection_kind_names(cls) -> frozenset[BuiltinCallName]:
         return frozenset((cls.TUPLE, cls.LIST, cls.DICT))
 
     @classmethod
-    def non_helper_call_names(cls) -> frozenset["BuiltinCallName"]:
+    def non_helper_call_names(cls) -> frozenset[BuiltinCallName]:
         return frozenset(
             (
                 cls.ALL,
@@ -1313,11 +1313,11 @@ class BuiltinCallName(StrEnum):
         )
 
     @classmethod
-    def integer_result_call_names(cls) -> frozenset["BuiltinCallName"]:
+    def integer_result_call_names(cls) -> frozenset[BuiltinCallName]:
         return frozenset((cls.LEN, cls.MAX, cls.MIN, cls.SUM))
 
     @classmethod
-    def structural_alias_leaf_names(cls) -> frozenset["BuiltinCallName"]:
+    def structural_alias_leaf_names(cls) -> frozenset[BuiltinCallName]:
         return frozenset(
             (
                 cls.BOOL,
@@ -1334,15 +1334,15 @@ class BuiltinCallName(StrEnum):
         )
 
     @classmethod
-    def schema_accessor_copy_call_names(cls) -> frozenset["BuiltinCallName"]:
+    def schema_accessor_copy_call_names(cls) -> frozenset[BuiltinCallName]:
         return frozenset((cls.DICT, cls.LIST, cls.SET, cls.TUPLE))
 
     @classmethod
-    def formula_builtin_callee_names(cls) -> frozenset["BuiltinCallName"]:
+    def formula_builtin_callee_names(cls) -> frozenset[BuiltinCallName]:
         return frozenset((cls.ABS, cls.ALL, cls.ANY, cls.MAX, cls.MIN, cls.SUM))
 
     @classmethod
-    def normalized_template_stable_builtin_names(cls) -> frozenset["BuiltinCallName"]:
+    def normalized_template_stable_builtin_names(cls) -> frozenset[BuiltinCallName]:
         return frozenset(
             (
                 cls.DICT,
@@ -1398,12 +1398,12 @@ class ModuleAnnotationEvaluationMode(Case):
         return "".join(feature.import_source for feature in cls.native_features)
 
     @classmethod
-    def runtime_default(cls) -> "type[ModuleAnnotationEvaluationMode]":
+    def runtime_default(cls) -> type[ModuleAnnotationEvaluationMode]:
         """Return the annotation policy of the running Python language version."""
         return Lazy if sys.version_info >= (3, 14) else Eager
 
     @classmethod
-    def from_module(cls, module: ast.Module) -> "type[ModuleAnnotationEvaluationMode]":
+    def from_module(cls, module: ast.Module) -> type[ModuleAnnotationEvaluationMode]:
         return next(
             (
                 mode
@@ -1812,11 +1812,11 @@ class AutoRegisteredModuleShapeSpec(
 ):
     """Module shape spec family whose concrete subclasses self-register."""
 
-    __registry__: ClassVar[dict[str, type["AutoRegisteredModuleShapeSpec"]]] = {}
+    __registry__: ClassVar[dict[str, type[AutoRegisteredModuleShapeSpec]]] = {}
     __skip_if_no_key__ = True
 
     @classmethod
-    def registered_specs(cls) -> tuple["AutoRegisteredModuleShapeSpec", ...]:
+    def registered_specs(cls) -> tuple[AutoRegisteredModuleShapeSpec, ...]:
         """Return concrete specs registered directly under this root."""
         return tuple(
             (
@@ -1828,7 +1828,7 @@ class AutoRegisteredModuleShapeSpec(
         )
 
     @classmethod
-    def all_registered_specs(cls) -> tuple["AutoRegisteredModuleShapeSpec", ...]:
+    def all_registered_specs(cls) -> tuple[AutoRegisteredModuleShapeSpec, ...]:
         """Return all concrete specs reachable from descendant registry roots."""
         return tuple(
             (
@@ -1846,7 +1846,7 @@ class CollectedFamily(
 ):
     """Registered family of collected items keyed by a runtime item type."""
 
-    __registry__: ClassVar[dict[str, type["CollectedFamily"]]] = {}
+    __registry__: ClassVar[dict[str, type[CollectedFamily]]] = {}
     __skip_if_no_key__ = True
     item_type: ClassVar[type[ShapeItemT]]
     cache_payload_max_bytes: ClassVar[int | None] = None
@@ -2148,7 +2148,7 @@ class CollectedFamilyCacheContext:
         module_name: str,
         source: str,
         family_cache_dir: Path | None,
-    ) -> "CollectedFamilyCacheContext":
+    ) -> CollectedFamilyCacheContext:
         return cls(
             path=path,
             module_name=module_name,
@@ -2608,7 +2608,7 @@ class SentinelTypeObservationSpecRoot(AutoRegisteredModuleShapeSpec, ABC):
 
 
 def _parse_module_roots(
-    root_parser: "PythonModuleRootParser", paths: tuple[Path, ...]
+    root_parser: PythonModuleRootParser, paths: tuple[Path, ...]
 ) -> list[ParsedModule]:
     modules: list[ParsedModule] = []
     with suspend_cyclic_gc():
@@ -2619,7 +2619,7 @@ def _parse_module_roots(
 
 
 def _parse_module_roots_concurrently(
-    root_parser: "PythonModuleRootParser", paths: tuple[Path, ...]
+    root_parser: PythonModuleRootParser, paths: tuple[Path, ...]
 ) -> list[ParsedModule]:
     parse_workers = PythonParseWorkerPolicy(root_parser.parse_workers).worker_count
 
@@ -3082,7 +3082,7 @@ class ModuleSyntaxIndex:
         )
 
     @classmethod
-    def build(cls, module: ast.Module) -> "ModuleSyntaxIndex":
+    def build(cls, module: ast.Module) -> ModuleSyntaxIndex:
         nodes: list[ast.AST] = []
         parent_indices = array("i")
         scope_ids = array("I")

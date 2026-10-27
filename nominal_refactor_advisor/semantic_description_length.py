@@ -38,7 +38,7 @@ class SemanticDescription(SemanticRecord, ABC, metaclass=AutoRegisterMeta):
 
     @property
     @abstractmethod
-    def description_cost(self) -> "SemanticCostVector":
+    def description_cost(self) -> SemanticCostVector:
         raise NotImplementedError
 
 
@@ -73,7 +73,7 @@ class SemanticCostVector(SemanticRecord):
     def description_length(self) -> int:
         return sum(self.components)
 
-    def __add__(self, other: "SemanticCostVector") -> "SemanticCostVector":
+    def __add__(self, other: SemanticCostVector) -> SemanticCostVector:
         return SemanticCostVector(
             grammar_objects=self.grammar_objects + other.grammar_objects,
             residual_objects=self.residual_objects + other.residual_objects,
@@ -162,7 +162,7 @@ class CompressionCertificate(SemanticDescription):
         provenance_object_count: int = 0,
         independent_source_count: int = 1,
         max_collision_fiber_size: int = 1,
-    ) -> "CompressionCertificate":
+    ) -> CompressionCertificate:
         axes = sorted_tuple(
             frozenset((structural_key(axis) for axis in semantic_axes)), key=repr
         )
@@ -196,7 +196,7 @@ class CompressionCertificate(SemanticDescription):
         residual_object_count: int | None = None,
         independent_source_count: int = 1,
         max_collision_fiber_size: int = 1,
-    ) -> "CompressionCertificate":
+    ) -> CompressionCertificate:
         return cls.from_object_family(
             manual_object_count=partition.object_count,
             replacement_shape=replacement_shape,
@@ -268,7 +268,7 @@ class ClassFamilyCompressionProfile(SemanticDescription):
         shared_statement_count: int,
         hook_count: int = 0,
         classvar_count: int = 0,
-    ) -> "ClassFamilyCompressionProfile":
+    ) -> ClassFamilyCompressionProfile:
         return cls(
             class_count=class_count,
             shared_method_count=1,

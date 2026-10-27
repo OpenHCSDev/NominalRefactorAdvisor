@@ -47,7 +47,7 @@ class CodemodSourceContext(IndexedSourceAuthority):
         cls,
         modules: Iterable[ParsedModule],
         findings: Iterable[RefactorFinding] = (),
-    ) -> "CodemodSourceContext":
+    ) -> CodemodSourceContext:
         module_tuple = tuple(modules)
         source_index_artifacts = build_source_index_artifacts(
             module_tuple,
@@ -81,7 +81,7 @@ class CodemodSourceContext(IndexedSourceAuthority):
         findings: Iterable[RefactorFinding],
         *,
         parse_workers: int = 1,
-    ) -> "CodemodSourceSnapshot":
+    ) -> CodemodSourceSnapshot:
         module_tuple = self.parsed_modules_for_findings(
             tuple(findings),
             parse_workers=parse_workers,

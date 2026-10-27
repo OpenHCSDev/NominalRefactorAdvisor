@@ -126,7 +126,7 @@ class RefactorEvidenceEconomics(DataclassJsonReport):
         cls,
         findings: Iterable[RefactorFinding],
         plans: Iterable[RefactorPlan] = (),
-    ) -> "RefactorEvidenceEconomics":
+    ) -> RefactorEvidenceEconomics:
         finding_tuple = tuple(findings)
         plan_tuple = tuple(plans)
         certificates = tuple(
@@ -245,7 +245,7 @@ class ScanEconomicsProof(DataclassJsonReport):
         scan_budget_seconds: float,
         findings: Iterable[RefactorFinding],
         plans: Iterable[RefactorPlan],
-    ) -> "ScanEconomicsProof":
+    ) -> ScanEconomicsProof:
         finding_tuple = tuple(findings)
         plan_tuple = tuple(plans)
         production_findings = tuple(
@@ -311,7 +311,7 @@ class EconomicsProofReport(DataclassJsonReport):
 
     package_scan: ScanEconomicsProof
     repository_scan: ScanEconomicsProof
-    change_budget: "RepositoryChangeBudget"
+    change_budget: RepositoryChangeBudget
 
     @json_report_property()
     def proof_passes(self) -> bool:
@@ -359,7 +359,7 @@ class RepositoryChangeBudget(DataclassJsonReport):
     @classmethod
     def unavailable(
         cls, reason: str, *, compare_ref: str = "HEAD"
-    ) -> "RepositoryChangeBudget":
+    ) -> RepositoryChangeBudget:
         return cls(compare_ref=compare_ref, unavailable_reason=reason)
 
     @classmethod
@@ -368,7 +368,7 @@ class RepositoryChangeBudget(DataclassJsonReport):
         rows: Iterable[str],
         *,
         compare_ref: str = "HEAD",
-    ) -> "RepositoryChangeBudget":
+    ) -> RepositoryChangeBudget:
         budgets = {
             "advisor_backend": LineChangeBudget(),
             "detectors": LineChangeBudget(),
@@ -398,7 +398,7 @@ class RepositoryChangeBudget(DataclassJsonReport):
         start_path: Path,
         *,
         compare_ref: str = "HEAD",
-    ) -> "RepositoryChangeBudget":
+    ) -> RepositoryChangeBudget:
         repo_result = _run_git_command(
             start_path,
             "rev-parse",

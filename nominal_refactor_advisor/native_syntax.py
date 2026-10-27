@@ -93,7 +93,7 @@ class NativePythonSyntaxIndex:
     )
 
     @classmethod
-    def from_source(cls, source: str) -> "NativePythonSyntaxIndex":
+    def from_source(cls, source: str) -> NativePythonSyntaxIndex:
         source_bytes = source.encode("utf-8")
         return cls(
             source_bytes=source_bytes,

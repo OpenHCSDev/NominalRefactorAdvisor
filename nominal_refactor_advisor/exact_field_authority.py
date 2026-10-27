@@ -47,7 +47,7 @@ class ExactDataclassDecorator:
         binding_snapshot: ModuleNominalBindingSnapshot,
         source_segments: SourceLineSegmentAuthority,
         comment_lines: SourceCommentLineIndex,
-    ) -> "ExactDataclassDecorator":
+    ) -> ExactDataclassDecorator:
         decorators = indexed_class.node.decorator_list
         if len(decorators) != 1:
             raise ValueError(
@@ -121,7 +121,7 @@ class ExactDataclassFieldSemantics:
         class_bound_names: frozenset[str],
         comment_lines: SourceCommentLineIndex,
         annotation_mode: type[ModuleAnnotationEvaluationMode],
-    ) -> "ExactDataclassFieldSemantics":
+    ) -> ExactDataclassFieldSemantics:
         if not isinstance(statement.target, ast.Name) or statement.value is not None:
             raise ValueError("Promoted dataclass fields must be default-free names")
         if comment_lines.intersects(statement) or (
@@ -233,7 +233,7 @@ class ExactDataclassFieldAuthorityComponentBuilder:
         parsed_modules: tuple[ParsedModule, ...],
         *,
         class_index: ClassFamilyIndex | None = None,
-    ) -> "ExactDataclassFieldAuthorityComponentBuilder":
+    ) -> ExactDataclassFieldAuthorityComponentBuilder:
         return cls(
             parsed_modules=parsed_modules,
             class_index=(

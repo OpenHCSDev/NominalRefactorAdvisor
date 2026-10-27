@@ -1044,7 +1044,7 @@ class ProjectEntryPoints:
     SCRIPT_TABLES = ("scripts", "gui-scripts")
 
     @classmethod
-    def declared_for(cls, source_paths: Iterable[Path]) -> "ProjectEntryPoints":
+    def declared_for(cls, source_paths: Iterable[Path]) -> ProjectEntryPoints:
         pyprojects = {
             pyproject
             for source_path in source_paths
@@ -1074,7 +1074,7 @@ class UnreachedModules:
     module_names: frozenset[str]
 
     @classmethod
-    def from_facts(cls, facts: Sequence[ModuleReferenceFacts]) -> "UnreachedModules":
+    def from_facts(cls, facts: Sequence[ModuleReferenceFacts]) -> UnreachedModules:
         entry_points = ProjectEntryPoints.declared_for(
             Path(module.file_path) for module in facts
         )
@@ -1121,7 +1121,7 @@ class ReferenceIndex:
     uses_by_name: Mapping[str, tuple[tuple[str, int], ...]]
 
     @classmethod
-    def from_facts(cls, facts: Sequence[ModuleReferenceFacts]) -> "ReferenceIndex":
+    def from_facts(cls, facts: Sequence[ModuleReferenceFacts]) -> ReferenceIndex:
         uses: dict[str, list[tuple[str, int]]] = defaultdict(list)
         for module in facts:
             for name, line in module.referenced:

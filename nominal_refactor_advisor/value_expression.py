@@ -175,7 +175,7 @@ class LexicalValueReference(CompactValueExpression):
     ) -> TargetResolutionT:
         return resolver._lexical_value_resolution(self, context)
 
-    def is_prefix_of(self, other: "LexicalValueReference") -> bool:
+    def is_prefix_of(self, other: LexicalValueReference) -> bool:
         """Whether replacing this reference can replace the other's value."""
         return (
             self.root_name == other.root_name

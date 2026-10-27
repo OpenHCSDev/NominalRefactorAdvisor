@@ -66,7 +66,7 @@ class InjectiveTypeRegistryProof:
         registered_type_names: Iterable[str],
         reverse_lookup_names: Iterable[str] = (),
         consumer_symbols: Iterable[str] = (),
-    ) -> "InjectiveTypeRegistryProof":
+    ) -> InjectiveTypeRegistryProof:
         """Group proven native keys; source labels are diagnostic, never equality."""
         groups: dict[Hashable, list[tuple[str, tuple[str, ...]]]] = {}
         for key, label, type_names in key_entries:
@@ -109,7 +109,7 @@ class InjectiveTypeRegistryProof:
         unresolved_type_names: Iterable[str],
         reverse_lookup_names: Iterable[str] = (),
         consumer_symbols: Iterable[str] = (),
-    ) -> "InjectiveTypeRegistryProof | None":
+    ) -> (InjectiveTypeRegistryProof | None):
         """Retain only a decisive counterexample from an incomplete key family.
 
         Unresolved types cannot establish either injectivity or missing keys. A
@@ -141,7 +141,7 @@ class InjectiveTypeRegistryProof:
         registered_type_names: Iterable[str],
         reverse_lookup_names: Iterable[str] = (),
         consumer_symbols: Iterable[str] = (),
-    ) -> "InjectiveTypeRegistryProof":
+    ) -> InjectiveTypeRegistryProof:
         """Use actual string-domain keys, not rendered source expressions."""
         return cls.from_key_entries(
             key_axis_name=key_axis_name,
@@ -166,7 +166,7 @@ class ExhaustivePolicyCatalog(Generic[KeyT, RowT]):
         enum_type: type[EnumT],
         rows: Iterable[RowT],
         key_of: Callable[[RowT], EnumT],
-    ) -> "ExhaustivePolicyCatalog[EnumT, RowT]":
+    ) -> ExhaustivePolicyCatalog[EnumT, RowT]:
         return cls(tuple(rows), key_of, frozenset(enum_type))
 
     def __post_init__(self) -> None:
@@ -261,7 +261,7 @@ class ProjectionSurfaceCatalog(Generic[KeyT, RowT]):
         surface_of: Callable[[RowT], str],
         key_of: Callable[[RowT], EnumT],
         decompression_key_of: Callable[[str], str],
-    ) -> "ProjectionSurfaceCatalog[EnumT, RowT]":
+    ) -> ProjectionSurfaceCatalog[EnumT, RowT]:
         return cls(
             tuple(rows),
             surface_of,

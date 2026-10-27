@@ -84,14 +84,14 @@ class ClassScopeDependency(StrEnum):
         cls,
         value: str,
         predicate: Callable[[tuple[ast.AST, ...]], bool],
-    ) -> "ClassScopeDependency":
+    ) -> ClassScopeDependency:
         member = str.__new__(cls, value)
         member._value_ = value
         member.predicate = predicate
         return member
 
     @classmethod
-    def from_node(cls, node: ast.AST) -> tuple["ClassScopeDependency", ...]:
+    def from_node(cls, node: ast.AST) -> tuple[ClassScopeDependency, ...]:
         nodes = tuple(ast.walk(node))
         return tuple(dependency for dependency in cls if dependency.predicate(nodes))
 
@@ -108,7 +108,7 @@ class ModuleBindingResolutionPhase(StrEnum):
         cls,
         value: str,
         snapshot_line_resolver: Callable[[int], int | None],
-    ) -> "ModuleBindingResolutionPhase":
+    ) -> ModuleBindingResolutionPhase:
         member = str.__new__(cls, value)
         member._value_ = value
         member.snapshot_line_resolver = snapshot_line_resolver
@@ -150,7 +150,7 @@ class DeclarationDependencyUse(StrEnum):
         phase_resolver: Callable[
             [ModuleBindingResolutionPhase, bool], ModuleBindingResolutionPhase
         ],
-    ) -> "DeclarationDependencyUse":
+    ) -> DeclarationDependencyUse:
         member = str.__new__(cls, value)
         member._value_ = value
         member.is_direct_source = is_direct_source
@@ -199,7 +199,7 @@ class DeclarationDependencyProjection:
     def from_declarations(
         cls,
         declarations: tuple[MovableDeclaration, ...],
-    ) -> "DeclarationDependencyProjection":
+    ) -> DeclarationDependencyProjection:
         projection = ModuleLexicalDependencyProjection.from_module(
             ast.Module(body=list(declarations), type_ignores=[])
         )
@@ -285,7 +285,7 @@ class ModuleLexicalDependencyProjection:
     def from_module(
         cls,
         module: ast.Module,
-    ) -> "ModuleLexicalDependencyProjection":
+    ) -> ModuleLexicalDependencyProjection:
         collector = _DeclarationDependencyCollector()
         collector.visit(module)
         return cls(

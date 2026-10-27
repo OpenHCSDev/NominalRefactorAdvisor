@@ -119,7 +119,7 @@ class MissingValueMode(Enum):
         carries_literal: bool,
         decision_selector: AbsentDecisionSelector,
         source_selector: AbsentSourceSelector,
-    ) -> "MissingValueMode":
+    ) -> MissingValueMode:
         member = object.__new__(cls)
         member._value_ = label
         member._accepts_boolean_or_fallback = accepts_boolean_or_fallback
@@ -136,7 +136,7 @@ class MissingValueMode(Enum):
     def carries_literal(self) -> bool:
         return self._carries_literal
 
-    def with_resolved_literal(self, literal: str | None) -> "MissingValueMode":
+    def with_resolved_literal(self, literal: str | None) -> MissingValueMode:
         return type(self).LITERAL if literal is not None else self
 
     def select_absent_decision(
@@ -188,7 +188,7 @@ class _EnvironmentImportAliases:
         return self.imported_member_names.get(read_kind.os_member_name, frozenset())
 
     @classmethod
-    def from_module(cls, module: ast.Module) -> "_EnvironmentImportAliases":
+    def from_module(cls, module: ast.Module) -> _EnvironmentImportAliases:
         os_modules: set[str] = set()
         imported_members: dict[str, set[str]] = {}
         for statement in module.body:
@@ -309,7 +309,7 @@ class _LiteralResolver:
     values_by_name: dict[str, ast.AST]
 
     @classmethod
-    def for_scope(cls, scope: _FunctionScope) -> "_LiteralResolver":
+    def for_scope(cls, scope: _FunctionScope) -> _LiteralResolver:
         assignments: list[ast.Assign | ast.AnnAssign] = list(
             scope.assignment_nodes(scope.module.module.body)
         )
@@ -383,7 +383,7 @@ class _EnvironmentRead(_MissingValueSemantics):
     def identity(self) -> tuple[int, int, EnvironmentReadKind]:
         return (self.line, self.column, self.kind)
 
-    def with_missing_literal(self, literal: str) -> "_EnvironmentRead":
+    def with_missing_literal(self, literal: str) -> _EnvironmentRead:
         return type(self)(
             line=self.line,
             column=self.column,
@@ -406,7 +406,7 @@ class _EnvironmentReadSyntax(_MissingValueSemantics):
         cls,
         kind: EnvironmentReadKind,
         node: ast.Call,
-    ) -> "_EnvironmentReadSyntax | None":
+    ) -> (_EnvironmentReadSyntax | None):
         keyword_values = {
             keyword.arg: keyword.value
             for keyword in node.keywords
@@ -461,7 +461,7 @@ class _EnvironmentReadSyntax(_MissingValueSemantics):
 
 class _EnvironmentReadRecognizer(ABC, metaclass=AutoRegisterMeta):
     __registry__: ClassVar[
-        dict[EnvironmentReadKind, type["_EnvironmentReadRecognizer"]]
+        dict[EnvironmentReadKind, type[_EnvironmentReadRecognizer]]
     ] = {}
     __registry_key__ = "kind"
     __skip_if_no_key__ = True
@@ -469,7 +469,7 @@ class _EnvironmentReadRecognizer(ABC, metaclass=AutoRegisterMeta):
     kind: ClassVar[EnvironmentReadKind | None] = None
 
     @classmethod
-    def recognizer_types(cls) -> tuple[type["_EnvironmentReadRecognizer"], ...]:
+    def recognizer_types(cls) -> tuple[type[_EnvironmentReadRecognizer], ...]:
         return tuple(cls.__registry__.values())
 
     @classmethod
@@ -777,7 +777,7 @@ class EnvironmentValueNormalizer(Enum):
         cls,
         method_name: str,
         normalizer: Callable[[str], str],
-    ) -> "EnvironmentValueNormalizer":
+    ) -> EnvironmentValueNormalizer:
         member = object.__new__(cls)
         member._value_ = method_name
         member.normalizer: Callable[[str], str] = normalizer
@@ -791,7 +791,7 @@ class EnvironmentValueNormalizer(Enum):
         return self.normalizer(value)
 
     @classmethod
-    def from_method_name(cls, method_name: str) -> "EnvironmentValueNormalizer | None":
+    def from_method_name(cls, method_name: str) -> (EnvironmentValueNormalizer | None):
         return next(
             (normalizer for normalizer in cls if normalizer.method_name == method_name),
             None,
@@ -879,7 +879,7 @@ class _EnvironmentAbsentSemantics:
         overrides: dict[str, _MissingOverride],
         token_values: tuple[str, ...],
         matched_decision: bool,
-    ) -> "_EnvironmentAbsentSemantics":
+    ) -> _EnvironmentAbsentSemantics:
         method_chain = EnvironmentValueNormalizationAuthority.method_chain(
             value_expression,
             frozenset(source_names),
@@ -1289,7 +1289,7 @@ class _EnvironmentBooleanModuleProjection:
         cls,
         scopes: tuple[_FunctionScope, ...],
         aliases: _EnvironmentImportAliases,
-    ) -> "_EnvironmentBooleanModuleProjection":
+    ) -> _EnvironmentBooleanModuleProjection:
         environment_read_names = aliases.environment_read_names
         return cls(
             parser_sites=(

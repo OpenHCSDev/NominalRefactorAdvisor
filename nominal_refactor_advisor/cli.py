@@ -718,7 +718,7 @@ class JsonExecutionPlanPayloadMode(Enum):
         cls,
         value: str,
         payload_builder: Callable[[RefactorExecutionPlanReport], JsonObject],
-    ) -> "JsonExecutionPlanPayloadMode":
+    ) -> JsonExecutionPlanPayloadMode:
         member = object.__new__(cls)
         member._value_ = value
         member._payload_builder = payload_builder
@@ -823,7 +823,7 @@ class JsonPayloadProfile(Enum):
     )
 
     @classmethod
-    def from_cli_value(cls, raw_value: str) -> "JsonPayloadProfile":
+    def from_cli_value(cls, raw_value: str) -> JsonPayloadProfile:
         try:
             return cls[raw_value]
         except KeyError as error:
@@ -889,7 +889,7 @@ class JsonPreparseCachePayloadMode(Enum):
         value: str,
         evidence_local_partial: bool,
         focused_evidence_local_partial: bool,
-    ) -> "JsonPreparseCachePayloadMode":
+    ) -> JsonPreparseCachePayloadMode:
         member = object.__new__(cls)
         member._value_ = value
         return member
@@ -1089,7 +1089,7 @@ class JsonScanMode(StrEnum):
         "validated_cache_covers_the_complete_requested_detector_roster",
     )
 
-    def __new__(cls, value: str, complete: bool, reason: str) -> "JsonScanMode":
+    def __new__(cls, value: str, complete: bool, reason: str) -> JsonScanMode:
         member = str.__new__(cls, value)
         member._value_ = value
         member._complete = complete
@@ -1130,7 +1130,7 @@ class JsonScanStatus(DataclassJsonReport):
     omitted_detector_count: int
 
     @classmethod
-    def exact_cache(cls, identity: AnalysisCacheIdentity) -> "JsonScanStatus":
+    def exact_cache(cls, identity: AnalysisCacheIdentity) -> JsonScanStatus:
         """Derive coverage from the roster authenticated by the cache lookup."""
         return cls(
             mode=JsonScanMode.exact_cache,
@@ -1147,7 +1147,7 @@ class JsonScanStatus(DataclassJsonReport):
         return self.mode.reason
 
     @classmethod
-    def exact_compact_global(cls, detector_count: int) -> "JsonScanStatus":
+    def exact_compact_global(cls, detector_count: int) -> JsonScanStatus:
         """Build the complete compact-scan contract for one detector roster."""
 
         return cls(
@@ -1407,7 +1407,7 @@ class JsonDocumentInputSet:
     def from_option_paths(
         cls,
         option_paths: tuple[tuple[str, tuple[Path | None, ...]], ...],
-    ) -> "JsonDocumentInputSet":
+    ) -> JsonDocumentInputSet:
         return cls(
             tuple(
                 JsonDocumentInput(option_name, path)
@@ -2426,7 +2426,7 @@ class CodemodScanCliCommand(CliCommand, ABC):
     report_roots: tuple[Path, ...]
     parse_cache_dir: Path | None
     semantic_descent_source: SemanticDescentGraphAnalysisSource
-    execution_request: "CodemodPlanExecutionRequest"
+    execution_request: CodemodPlanExecutionRequest
 
 
 class CodemodValidatePlanCliCommand(
@@ -2774,7 +2774,7 @@ class CodemodCliExecution(
     parser: argparse.ArgumentParser
     args: argparse.Namespace
     source_snapshot: CodemodSourceSnapshot | None
-    execution_request: "CodemodPlanExecutionRequest"
+    execution_request: CodemodPlanExecutionRequest
     workflow_scan: CodemodWorkflowScan | None = None
 
     def run(self) -> int | None:
@@ -2963,7 +2963,7 @@ class CodemodExecutionMode(Enum):
         cls,
         args: argparse.Namespace,
         parser: argparse.ArgumentParser,
-    ) -> "CodemodExecutionMode":
+    ) -> CodemodExecutionMode:
         selected = tuple(
             mode
             for mode, supplied in (
@@ -3034,7 +3034,7 @@ class CodemodPlanExecutionRequest:
     def for_sequence(
         self,
         sequence: CodemodPlanSequence,
-    ) -> "CodemodPlanExecutionRequest":
+    ) -> CodemodPlanExecutionRequest:
         return replace(self, sequence=sequence)
 
     def json_report_requested(self, json_flag: bool) -> bool:
@@ -3081,7 +3081,7 @@ class CodemodRecipePlanSourceFile(SourcePathCandidateAuthority):
         requested_path: str,
         roots: tuple[Path, ...],
         cwd: Path,
-    ) -> "CodemodRecipePlanSourceFile":
+    ) -> CodemodRecipePlanSourceFile:
         return cls(
             requested_path=requested_path,
             candidate_set=SourcePathCandidateSet.from_paths(
@@ -3202,7 +3202,7 @@ class CodemodSynthesisExecutionCliCommand(
     def synthesis_execution(
         self,
         snapshot: CodemodSourceSnapshot,
-    ) -> "CodemodSynthesisExecution":
+    ) -> CodemodSynthesisExecution:
         raise NotImplementedError
 
 
@@ -3218,7 +3218,7 @@ class CodemodSynthesizePlanCliCommand(CodemodSynthesisExecutionCliCommand):
     def synthesis_execution(
         self,
         snapshot: CodemodSourceSnapshot,
-    ) -> "FindingRecipePlanSynthesisExecution":
+    ) -> FindingRecipePlanSynthesisExecution:
         plan = snapshot.plan_from_findings(
             self.findings,
             detector_ids=tuple(self.args.codemod_goal_detectors),
@@ -3246,7 +3246,7 @@ class CodemodSynthesizeClassPlanCliCommand(CodemodSynthesisExecutionCliCommand):
     def synthesis_execution(
         self,
         snapshot: CodemodSourceSnapshot,
-    ) -> "FindingRecipeClassPlanSynthesisExecution":
+    ) -> FindingRecipeClassPlanSynthesisExecution:
         report = codemod_class_plan_from_findings(
             self.findings,
             root=self.roots[0],

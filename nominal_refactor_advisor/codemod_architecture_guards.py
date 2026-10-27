@@ -72,7 +72,7 @@ class ArchitectureGuardConstraint(
 ):
     """Registered owner of one architecture invariant and its AST evidence."""
 
-    __registry__: ClassVar[dict[str, type["ArchitectureGuardConstraint"]]] = {}
+    __registry__: ClassVar[dict[str, type[ArchitectureGuardConstraint]]] = {}
     __registry_key__ = "constraint_key_value"
     __skip_if_no_key__ = True
     discriminator_field_name: ClassVar[str] = "constraint"
@@ -478,7 +478,7 @@ class ArchitectureGuardViolationTarget(DataclassJsonReport):
         cls,
         location: SourceLocation,
         target: AstTargetDigest | None,
-    ) -> "ArchitectureGuardViolationTarget":
+    ) -> ArchitectureGuardViolationTarget:
         if target is None:
             return cls(file_path=location.file_path)
         return cls(
@@ -497,7 +497,7 @@ class ArchitectureGuardViolation(DataclassJsonReport):
         included=False
     )
     location: SourceLocation = json_report_field(included=False)
-    target_context: "ArchitectureGuardViolationTarget" = json_report_field(
+    target_context: ArchitectureGuardViolationTarget = json_report_field(
         flattened=True
     )
     detail: str = ""
@@ -538,7 +538,7 @@ class ArchitectureGuardSuite:
     rules: tuple[ArchitectureGuardRule, ...] = ()
 
     @classmethod
-    def from_json_value(cls, value: JsonValue | None) -> "ArchitectureGuardSuite":
+    def from_json_value(cls, value: JsonValue | None) -> ArchitectureGuardSuite:
         if value is None:
             return cls()
         if not isinstance(value, (list, tuple)):
@@ -549,10 +549,10 @@ class ArchitectureGuardSuite:
     def is_empty(self) -> bool:
         return not self.rules
 
-    def with_rule(self, rule: ArchitectureGuardRule) -> "ArchitectureGuardSuite":
+    def with_rule(self, rule: ArchitectureGuardRule) -> ArchitectureGuardSuite:
         return replace(self, rules=(*self.rules, rule))
 
-    def merge(self, *suites: "ArchitectureGuardSuite") -> "ArchitectureGuardSuite":
+    def merge(self, *suites: ArchitectureGuardSuite) -> ArchitectureGuardSuite:
         return replace(
             self,
             rules=tuple(

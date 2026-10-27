@@ -22,7 +22,7 @@ class ExactSourcePathResolution:
     @staticmethod
     def matching_paths(
         requested_path: str,
-        projection: "SourcePathCandidateSet",
+        projection: SourcePathCandidateSet,
     ) -> tuple[str, ...]:
         return tuple(
             candidate for candidate in projection.paths if candidate == requested_path
@@ -36,7 +36,7 @@ class NormalizedSourcePathResolution(ExactSourcePathResolution):
     def matching_paths(
         cls,
         requested_path: str,
-        projection: "SourcePathCandidateSet",
+        projection: SourcePathCandidateSet,
     ) -> tuple[str, ...]:
         exact_matches = super().matching_paths(requested_path, projection)
         if exact_matches:
@@ -56,7 +56,7 @@ class ResolvedSourcePathResolution(NormalizedSourcePathResolution):
     def matching_paths(
         cls,
         requested_path: str,
-        projection: "SourcePathCandidateSet",
+        projection: SourcePathCandidateSet,
     ) -> tuple[str, ...]:
         textual_matches = super().matching_paths(requested_path, projection)
         if textual_matches:
@@ -76,7 +76,7 @@ class RelativeSuffixSourcePathResolution(ResolvedSourcePathResolution):
     def matching_paths(
         cls,
         requested_path: str,
-        projection: "SourcePathCandidateSet",
+        projection: SourcePathCandidateSet,
     ) -> tuple[str, ...]:
         resolved_matches = super().matching_paths(requested_path, projection)
         if resolved_matches:
@@ -100,7 +100,7 @@ class SourcePathCandidateSet:
     def from_paths(
         cls,
         candidate_paths: tuple[str, ...],
-    ) -> "SourcePathCandidateSet":
+    ) -> SourcePathCandidateSet:
         del cls
         return _source_path_candidate_set(candidate_paths)
 
@@ -137,7 +137,7 @@ class SourcePathCandidateAuthority:
         cls,
         requested_path: str,
         source_index: SourceIndex,
-    ) -> "SourcePathResolutionAuthority":
+    ) -> SourcePathResolutionAuthority:
         return cls(
             requested_path=requested_path,
             candidate_set=SourcePathCandidateSet.from_paths(

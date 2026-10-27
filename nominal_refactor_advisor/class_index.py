@@ -160,7 +160,7 @@ class IndexedClass(ClassDeclaration, ClassNamespaceDeclaration):
         qualname: str,
         node: ast.ClassDef,
         module_binding_snapshot: ModuleNominalBindingSnapshot,
-    ) -> "IndexedClass":
+    ) -> IndexedClass:
         return cls(
             symbol=f"{parsed_module.module_name}.{qualname}",
             module_name=parsed_module.module_name,
@@ -218,7 +218,7 @@ class CompactNominalReference(NamedTuple):
     """One source reference together with its declaration-time root binding."""
 
     source_parts: tuple[str, ...]
-    root_binding: "CompactNominalBinding | None"
+    root_binding: (CompactNominalBinding | None)
 
     @property
     def resolved_parts(self) -> tuple[str, ...]:
@@ -272,8 +272,8 @@ class CompactClassMemberDeclaration(NamedTuple):
 
     def resolve_mapping_key(
         self,
-        resolver: MappingKeyResolverABC["CompactIndexedClass"],
-        owner: "CompactIndexedClass",
+        resolver: MappingKeyResolverABC[CompactIndexedClass],
+        owner: CompactIndexedClass,
     ) -> Hashable:
         """Project this value through its literal or declaration-owned semantics."""
 
@@ -846,7 +846,7 @@ class CompactExplicitPublicExportContract(CompactModulePublicExportContract):
     def from_declaration(
         cls,
         declaration: ModulePublicExportSourceAuthority,
-    ) -> "CompactExplicitPublicExportContract | None":
+    ) -> (CompactExplicitPublicExportContract | None):
         references = declaration.literal_references
         if references is None:
             return None
@@ -1046,9 +1046,9 @@ class CompactRepositoryPublicExposureIndex(RepositoryPublicExposureAuthority):
 class CompactClassSyntaxFacets:
     """Class-family views derived together from the shared module traversal."""
 
-    closed_axis_branch_functions: tuple["CompactClosedAxisBranchFunction", ...] = ()
-    exact_type_guards: tuple["CompactExactTypeGuard", ...] = ()
-    autoregister_reference_index: "CompactAutoRegisterReferenceIndex | None" = None
+    closed_axis_branch_functions: tuple[CompactClosedAxisBranchFunction, ...] = ()
+    exact_type_guards: tuple[CompactExactTypeGuard, ...] = ()
+    autoregister_reference_index: (CompactAutoRegisterReferenceIndex | None) = None
 
 
 @dataclass(frozen=True)
@@ -1058,17 +1058,17 @@ class CompactModuleClassProjection(
 ):
     """One module's class declarations and import aliases, without its AST."""
 
-    sorted_key_calls: tuple["CompactSortedKeyCall", ...] = ()
-    keyed_table_axes: tuple["CompactKeyedTableAxis", ...] = ()
-    manual_selector_axes: tuple["CompactManualSelectorAxis", ...] = ()
+    sorted_key_calls: tuple[CompactSortedKeyCall, ...] = ()
+    keyed_table_axes: tuple[CompactKeyedTableAxis, ...] = ()
+    manual_selector_axes: tuple[CompactManualSelectorAxis, ...] = ()
     top_level_definitions: tuple[tuple[str, int], ...] = ()
-    repeated_keyed_family_roots: tuple["CompactRepeatedKeyedFamilyRoot", ...] = ()
-    manual_subclass_roster_roots: tuple["CompactManualSubclassRosterRoot", ...] = ()
-    latent_rosters: tuple["LatentRosterObservation", ...] = ()
-    named_projection_surfaces: tuple["CompactNamedProjectionSurface", ...] = ()
-    class_methods: tuple["CompactClassMethod", ...] = ()
+    repeated_keyed_family_roots: tuple[CompactRepeatedKeyedFamilyRoot, ...] = ()
+    manual_subclass_roster_roots: tuple[CompactManualSubclassRosterRoot, ...] = ()
+    latent_rosters: tuple[LatentRosterObservation, ...] = ()
+    named_projection_surfaces: tuple[CompactNamedProjectionSurface, ...] = ()
+    class_methods: tuple[CompactClassMethod, ...] = ()
 
-    def header_core(self) -> "CompactModuleClassProjection":
+    def header_core(self) -> CompactModuleClassProjection:
         """Project only the class declarations required by the family index."""
 
         return replace(
@@ -1208,7 +1208,7 @@ class ClassMethodReceiverRequirements:
     def from_method(
         cls,
         method: ast.FunctionDef | ast.AsyncFunctionDef,
-    ) -> "ClassMethodReceiverRequirements":
+    ) -> ClassMethodReceiverRequirements:
         receiver_name = cls.receiver_name(method)
         if receiver_name is None:
             return cls(frozenset())
@@ -1438,7 +1438,7 @@ class ClassMethodPromotionSafetyProfile:
         class_bound_names: frozenset[str] = frozenset(),
         *,
         source_lines: tuple[str, ...],
-    ) -> "ClassMethodPromotionSafetyProfile":
+    ) -> ClassMethodPromotionSafetyProfile:
         inspection = MethodPromotionInspection(
             method,
             module_bound_names,
@@ -1567,7 +1567,7 @@ class LatentRosterObservation:
     def from_module(
         cls,
         parsed_module: ParsedModule,
-    ) -> tuple["LatentRosterObservation", ...]:
+    ) -> tuple[LatentRosterObservation, ...]:
         observations: list[LatentRosterObservation] = []
         for statement in _trim_leading_docstring(list(parsed_module.module.body)):
             observations.extend(cls.from_statement(parsed_module, statement))
@@ -1594,7 +1594,7 @@ class LatentRosterObservation:
         statement: ast.stmt,
         *,
         roster_prefix: str | None = None,
-    ) -> tuple["LatentRosterObservation", ...]:
+    ) -> tuple[LatentRosterObservation, ...]:
         if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef)):
             body = _trim_leading_docstring(list(statement.body))
             if (
@@ -1632,7 +1632,7 @@ class LatentRosterObservation:
         cls,
         parsed_module: ParsedModule,
         statement: ast.stmt,
-    ) -> tuple["LatentRosterObservation", ...]:
+    ) -> tuple[LatentRosterObservation, ...]:
         if not (
             isinstance(statement, ast.Expr)
             and isinstance(statement.value, ast.Call)
@@ -1660,7 +1660,7 @@ class LatentRosterObservation:
         *,
         roster_name: str,
         value: ast.AST,
-    ) -> tuple["LatentRosterObservation", ...]:
+    ) -> tuple[LatentRosterObservation, ...]:
         if isinstance(value, ast.Dict):
             return tuple(
                 cls.from_members(
@@ -1701,7 +1701,7 @@ class LatentRosterObservation:
         value: ast.AST,
         projection_role: str,
         member_names: tuple[str, ...],
-    ) -> "LatentRosterObservation":
+    ) -> LatentRosterObservation:
         return cls(
             file_path=parsed_module.file_path,
             roster_name=roster_name,
@@ -1741,7 +1741,7 @@ class LatentRosterObservation:
             }
         )
 
-    def for_mutation(self, mutation_name: str) -> "LatentRosterObservation":
+    def for_mutation(self, mutation_name: str) -> LatentRosterObservation:
         return replace(
             self,
             roster_kind=f"inline_{self.roster_kind}.{mutation_name}",
@@ -1822,7 +1822,7 @@ class SelectionGuardKind(StrEnum):
     @classmethod
     def proves_exact_selection(
         cls,
-        guard_kinds: set["SelectionGuardKind | None"],
+        guard_kinds: set[(SelectionGuardKind | None)],
     ) -> bool:
         """Return whether the observed guards prove exactly one selected item."""
 
@@ -1840,7 +1840,7 @@ class SelectionGuardKind(StrEnum):
         cls,
         node: ast.AST,
         match_name: str,
-    ) -> "SelectionGuardKind | None":
+    ) -> (SelectionGuardKind | None):
         if (
             isinstance(node, ast.UnaryOp)
             and isinstance(node.op, ast.Not)
@@ -1879,7 +1879,7 @@ class ClsRegistryMembership:
     key_expr: str
 
     @classmethod
-    def from_node(cls, node: ast.AST) -> "ClsRegistryMembership | None":
+    def from_node(cls, node: ast.AST) -> (ClsRegistryMembership | None):
         if not (
             isinstance(node, ast.Compare)
             and len(node.ops) == 1
@@ -1935,7 +1935,7 @@ class RegistryLookupShape:
     def from_method(
         cls,
         method: ast.FunctionDef | ast.AsyncFunctionDef,
-    ) -> "RegistryLookupShape | None":
+    ) -> (RegistryLookupShape | None):
         body = _trim_method_docstring(method)
         if len(body) == 1 and isinstance(body[0], ast.Try):
             try_node = body[0]
@@ -2470,7 +2470,7 @@ class ClosedLeafMethodAuthorityViolation(StrEnum):
     def explanation(self) -> str:
         return self._explanation
 
-    def is_violated_by(self, proof: "ClosedLeafMethodAuthorityProof") -> bool:
+    def is_violated_by(self, proof: ClosedLeafMethodAuthorityProof) -> bool:
         return self._predicate(proof)
 
 
@@ -2552,7 +2552,7 @@ class ClassFamilyIndex(ClassDeclarationIndex[IndexedClass]):
         self,
         projected_modules: Iterable[ParsedModule],
         changed_modules: Iterable[ParsedModule],
-    ) -> "ClassFamilyIndex":
+    ) -> ClassFamilyIndex:
         """Derive an exact projected index using an overlay only when closed."""
 
         projected_module_tuple = tuple(projected_modules)
@@ -2624,7 +2624,7 @@ class _UniqueKnownSymbolSuffixIndex:
     def from_terminal_buckets(
         cls,
         symbols_by_terminal_name: dict[str, tuple[str, ...]],
-    ) -> "_UniqueKnownSymbolSuffixIndex":
+    ) -> _UniqueKnownSymbolSuffixIndex:
         index = cls.__new__(cls)
         index._symbols_by_terminal_name = symbols_by_terminal_name
         index._matches_by_suffix = {}
@@ -2748,7 +2748,7 @@ class ModulePublicExportSourceAuthority:
     def from_statement(
         cls,
         statement: ast.stmt,
-    ) -> "ModulePublicExportSourceAuthority | None":
+    ) -> (ModulePublicExportSourceAuthority | None):
         if (
             isinstance(statement, ast.Assign)
             and len(statement.targets) == 1
@@ -2769,7 +2769,7 @@ class ModulePublicExportSourceAuthority:
     def from_module(
         cls,
         module: ast.Module,
-    ) -> "ModulePublicExportSourceAuthority | None":
+    ) -> (ModulePublicExportSourceAuthority | None):
         declarations = tuple(
             declaration
             for statement in module.body
@@ -3377,7 +3377,7 @@ class ModuleNominalBindingView(ABC):
         *,
         line: int,
         preceding_class_bound_names: frozenset[str],
-    ) -> "ModuleNominalBindingWitness | None":
+    ) -> (ModuleNominalBindingWitness | None):
         raise NotImplementedError
 
     @abstractmethod
@@ -3387,7 +3387,7 @@ class ModuleNominalBindingView(ABC):
         reference: ast.expr,
         *,
         line: int,
-    ) -> "ModuleNominalBindingWitness | None":
+    ) -> (ModuleNominalBindingWitness | None):
         raise NotImplementedError
 
 
@@ -6503,7 +6503,7 @@ class CompactClassReferenceResolver:
     unique_symbols_by_suffix: _UniqueKnownSymbolSuffixIndex
 
     @classmethod
-    def from_index(cls, projections: Sequence[CompactModuleClassHeader], class_index: CompactClassFamilyIndex) -> 'CompactClassReferenceResolver':
+    def from_index(cls, projections: Sequence[CompactModuleClassHeader], class_index: CompactClassFamilyIndex) -> CompactClassReferenceResolver:
         return cls(
             import_aliases_by_module_name={
                 projection.module_name: dict(projection.import_aliases)
