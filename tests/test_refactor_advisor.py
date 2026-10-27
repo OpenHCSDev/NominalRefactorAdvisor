@@ -13911,7 +13911,8 @@ def test_preserves_runtime_materialization_boundary(tmp_path: Path) -> None:
         "\nfrom dataclasses import dataclass\nfrom enum import Enum, auto\n\n\nclass StrategyId(Enum):\n    ALPHA = auto()\n\n\nclass ActionId(Enum):\n    DEFAULT = auto()\n\n\nclass AlphaStrategy:\n    pass\n\n\nclass DefaultAction:\n    pass\n\n\n@dataclass(frozen=True)\nclass BaseSpec:\n    priority: int\n    dependencies: tuple[str, ...] = ()\n    strategy_id: StrategyId | None = None\n    action_id: ActionId | None = None\n\n\n@dataclass(frozen=True)\nclass RuntimeSpec:\n    priority: int = 0\n    dependencies: tuple[str, ...] = ()\n    strategy: object | None = None\n    action: object | None = None\n\n\nSTRATEGY_BY_ID = {StrategyId.ALPHA: AlphaStrategy()}\nACTION_BY_ID = {ActionId.DEFAULT: DefaultAction()}\n\n\ndef runtime_spec_for(spec: BaseSpec | None) -> RuntimeSpec:\n    if spec is None:\n        return RuntimeSpec()\n    return RuntimeSpec(\n        priority=spec.priority,\n        dependencies=spec.dependencies,\n        strategy=STRATEGY_BY_ID.get(spec.strategy_id)\n        if spec.strategy_id is not None\n        else None,\n        action=ACTION_BY_ID.get(spec.action_id) if spec.action_id is not None else None,\n    )\n",
     )
     findings = analyze_path(tmp_path)
-    assert findings == []
+    # No mapping mirror here, but `spec.strategy_id is not None` and `spec.action_id is not None` probe BaseSpec's optional state from outside BaseSpec: a restated fact, which is not what this fixture preserves.
+    assert [finding.detector_id for finding in findings] == ["foreign_absence_probe"]
 
 
 def test_preserves_external_kwargs_projection_boundary(tmp_path: Path) -> None:
@@ -13921,7 +13922,8 @@ def test_preserves_external_kwargs_projection_boundary(tmp_path: Path) -> None:
         '\nfrom dataclasses import dataclass\n\n\n@dataclass(frozen=True)\nclass OptionSpec:\n    help: str\n    action: str | None = None\n    default: object | None = None\n    dest: str | None = None\n\n\ndef option_kwargs(spec: OptionSpec) -> dict[str, object]:\n    kwargs = {"help": spec.help}\n    if spec.action is not None:\n        kwargs["action"] = spec.action\n    if spec.default is not None:\n        kwargs["default"] = spec.default\n    if spec.dest is not None:\n        kwargs["dest"] = spec.dest\n    return kwargs\n\n\ndef add_option(parser, name: str, spec: OptionSpec):\n    parser.add_argument(name, **option_kwargs(spec))\n',
     )
     findings = analyze_path(tmp_path)
-    assert findings == []
+    # The external kwargs boundary is preserved, but option_kwargs probes four optional fields of OptionSpec one by one from outside OptionSpec: the restated fact is which of its fields are set.
+    assert [finding.detector_id for finding in findings] == ["foreign_absence_probe"]
 
 
 def test_detects_manual_structural_record_mechanics(tmp_path: Path) -> None:
@@ -25474,7 +25476,8 @@ def test_preserves_nominal_identity_of_forwarding_wrapper(tmp_path: Path) -> Non
         "\nfrom abc import ABC, abstractmethod\nfrom dataclasses import dataclass\n\n\nclass ProbeRoute(ABC):\n    @abstractmethod\n    def generate(self, request):\n        raise NotImplementedError\n\n    @abstractmethod\n    def score(self, request, batch):\n        raise NotImplementedError\n\n\n@dataclass(frozen=True)\nclass ProbeRouteWitness:\n    route: ProbeRoute\n\n    def generate(self, request):\n        return self.route.generate(request)\n\n    def score(self, request, batch):\n        return self.route.score(request, batch)\n\n\ndef execute_witness(witness: ProbeRouteWitness, request, batch):\n    generated = witness.generate(request)\n    return generated, witness.score(request, batch)\n",
     )
     findings = analyze_path(tmp_path)
-    assert findings == []
+    # No nominal identity is lost, but ProbeRouteWitness forwards generate and score unchanged to the route it holds: a facade that restates ProbeRoute's members.
+    assert [finding.detector_id for finding in findings] == ["forwarding_facade"]
 
 
 def test_detects_repeated_finding_assembly_pipeline(tmp_path: Path) -> None:

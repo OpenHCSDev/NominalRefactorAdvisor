@@ -378,6 +378,11 @@ def test_a_module_nothing_imports_is_dead(tmp_path: Path):
     assert _dead(tmp_path, sources) == ["orphan", "user"]
 
 
+def test_modules_that_never_import_each_other_are_standalone_not_dead(tmp_path: Path):
+    sources = {"one": "VALUE = 1\n", "two": "VALUE = 2\n"}
+    assert _dead(tmp_path, sources) == []
+
+
 def test_imported_named_main_guarded_and_declared_modules_are_reached(tmp_path: Path):
     (tmp_path / "pyproject.toml").write_text(
         '[project]\nname = "x"\n\n[project.scripts]\ncli = "pkg.declared:main"\n'
@@ -392,6 +397,7 @@ def test_imported_named_main_guarded_and_declared_modules_are_reached(tmp_path: 
         "guarded": "def main():\n    return 0\n\n\nif __name__ == '__main__':\n    main()\n",
         "loaded": "VALUE = 1\n",
         "loader": "import importlib\nMODULE = importlib.import_module('pkg.loaded')\n",
+        "anchor": "import pkg.guarded\n",
     }
     for name, source in sources.items():
         (package / f"{name}.py").write_text(source)
@@ -400,7 +406,7 @@ def test_imported_named_main_guarded_and_declared_modules_are_reached(tmp_path: 
         for finding in analyze_path(tmp_path)
         if finding.detector_id == DeadModuleDetector.effective_detector_id()
     ]
-    assert dead == ["pkg.loader"]
+    assert dead == ["pkg.anchor", "pkg.loader"]
 
 
 def test_a_loader_that_lists_a_package_reaches_every_module_in_it(tmp_path: Path):
@@ -412,12 +418,16 @@ def test_a_loader_that_lists_a_package_reaches_every_module_in_it(tmp_path: Path
     )
     (package / "verb.py").write_text("VALUE = 1\n")
     (tmp_path / "outside.py").write_text("VALUE = 1\n")
+    (tmp_path / "anchor.py").write_text(
+        "import outside\n\n\nif __name__ == '__main__':\n    print(outside.VALUE)\n"
+    )
+    (tmp_path / "orphan.py").write_text("VALUE = 1\n")
     dead = [
         finding.evidence[0].symbol
         for finding in analyze_path(tmp_path)
         if finding.detector_id == DeadModuleDetector.effective_detector_id()
     ]
-    assert dead == ["outside"]
+    assert dead == ["orphan"]
 
 
 # ---- forwarding facades

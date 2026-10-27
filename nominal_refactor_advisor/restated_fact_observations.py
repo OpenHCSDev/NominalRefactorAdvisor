@@ -1075,6 +1075,15 @@ class UnreachedModules:
         entry_points = ProjectEntryPoints.declared_for(
             Path(module.file_path) for module in facts
         )
+        known = {module.module_name for module in facts}
+        # With no import between scanned modules there is no import graph to be outside of:
+        # a lone module, or modules that never use each other, are standalone scripts.
+        if not any(
+            name in known and name != module.module_name
+            for module in facts
+            for name in module.imported
+        ):
+            return cls(frozenset())
         reached_by: dict[str, set[str]] = defaultdict(set)
         for module in facts:
             for name in (*module.imported, *module.named):
