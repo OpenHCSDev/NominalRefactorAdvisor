@@ -30,7 +30,7 @@ from ..models import (
     SourceLocation,
 )
 from ..observation_families import FieldObservationFamily
-from ..observation_shapes import FieldObservation, FieldOriginKind
+from ..observation_shapes import FieldObservation
 from ..patterns import PatternId
 from ..restated_fact_observations import (
     DeadModuleSiteFamily,
@@ -299,10 +299,7 @@ class DeclaredRecords:
         names: dict[tuple[str, str], set[str]] = defaultdict(set)
         first: dict[tuple[str, str], int] = {}
         for observed in fields:
-            if observed.origin_kind not in (
-                FieldOriginKind.DATACLASS_FIELD,
-                FieldOriginKind.CLASS_ANNOTATION,
-            ):
+            if not observed.origin_kind.declares_record_field:
                 continue
             key = (observed.file_path, observed.class_name)
             names[key].add(observed.field_name)

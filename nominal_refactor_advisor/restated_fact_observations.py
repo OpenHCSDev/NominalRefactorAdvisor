@@ -119,7 +119,9 @@ def _literal_strings(node: ast.expr) -> tuple[str, ...] | None:
                 | ast.Tuple(elts=elements)
                 | ast.List(elts=elements)
             ],
-        ) if name in (BuiltinCallName.SET, BuiltinCallName.FROZENSET):
+        ) if (
+            name in BuiltinCallName.set_constructor_names()
+        ):
             return _string_constants(elements)
     return None
 
@@ -241,7 +243,7 @@ class NamedAttributeSiteFamily(RestatingSiteFamily):
             spelled = cls.attribute_name(name_expression, constants)
             if spelled is None:
                 continue
-            defaulted = callee.id == BuiltinCallName.GETATTR and len(call.args) == 3
+            defaulted = BuiltinCallName(callee.id).carries_default(len(call.args))
             yield cls.site(
                 parsed_module,
                 call,
@@ -279,15 +281,7 @@ class NamedAttributeSiteFamily(RestatingSiteFamily):
 class _KeyViewSyntax:
     """Recognise a mapping's key collection and a literal key collection."""
 
-    WRAPPERS = frozenset(
-        (
-            BuiltinCallName.SET,
-            BuiltinCallName.FROZENSET,
-            BuiltinCallName.SORTED,
-            BuiltinCallName.LIST,
-            BuiltinCallName.TUPLE,
-        )
-    )
+    WRAPPERS = BuiltinCallName.key_view_wrapper_names()
     SET_METHODS = frozenset(
         ("issubset", "issuperset", "isdisjoint", "difference", "symmetric_difference")
     )
@@ -700,16 +694,18 @@ class LegacyWord(StrEnum):
     def stem(cls, identifier: str) -> str:
         """The identifier without these words: what the old path is the old form of."""
 
-        return "".join(word for word in cls.words(identifier) if word not in cls.spellings())
+        return "".join(
+            word for word in cls.words(identifier) if word not in cls.spellings()
+        )
 
     @classmethod
     def in_prose(cls, text: str) -> bool:
         """Whether prose says the path is old: one of these as a whole word, or an old-caller phrase."""
 
         lowered = text.lower()
-        return any(word in cls.spellings() for word in re.findall(r"[a-z]+", lowered)) or bool(
-            re.search(r"backwards?[ -]compatib", lowered)
-        )
+        return any(
+            word in cls.spellings() for word in re.findall(r"[a-z]+", lowered)
+        ) or bool(re.search(r"backwards?[ -]compatib", lowered))
 
 
 class LegacyMarkerSiteFamily(RestatingSiteFamily):

@@ -62,6 +62,15 @@ class FieldOriginKind(StrEnum):
     DATACLASS_FIELD = "dataclass_field"
     INIT_ASSIGNMENT = "init_assignment"
 
+    @property
+    def declares_record_field(self) -> bool:
+        """Whether this origin declares a field of a record class (not an assignment or init)."""
+
+        return self in (
+            FieldOriginKind.DATACLASS_FIELD,
+            FieldOriginKind.CLASS_ANNOTATION,
+        )
+
 
 @dataclass(frozen=True)
 class StructuralObservationTemplate(StructuralObservationCarrier, ABC):
