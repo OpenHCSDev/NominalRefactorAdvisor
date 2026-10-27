@@ -457,6 +457,16 @@ class PatternId(IntEnum):
         ),
         witness_capabilities=(CapabilityTag.PROVENANCE,),
     )
+    FORWARDING_FACADE = _pattern(
+        stable_id=36,
+        display_name="Forwarding Facade",
+        required_relation=(
+            "A class holds an object in an attribute and two or more of its "
+            "members only forward to that object, so the facade restates the "
+            "held class's members and goes stale when the held class changes."
+        ),
+        witness_capabilities=(CapabilityTag.PROVENANCE,),
+    )
 
     def __new__(
         cls,

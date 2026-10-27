@@ -16,6 +16,7 @@ from nominal_refactor_advisor.detectors import (
     DeadModuleDetector,
     ExactKeySetDetector,
     ForeignAbsenceProbeDetector,
+    ForwardingFacadeDetector,
     LegacyPathMarkerDetector,
     NamedAttributeDetector,
     StringKindDispatchDetector,
@@ -29,6 +30,7 @@ DETECTORS = (
     ForeignAbsenceProbeDetector,
     LegacyPathMarkerDetector,
     DeadModuleDetector,
+    ForwardingFacadeDetector,
 )
 
 
@@ -63,6 +65,18 @@ def test_every_finding_states_fact_and_owner_and_is_certified(detector):
 def test_a_recipe_exists_exactly_when_an_operation_is_declared(detector):
     operation = detector.restated.operation
     assert issubclass(detector, FindingRecipeEvaluator) is (operation is not None)
+
+
+def test_new_patterns_continue_the_stable_sequence():
+    assert [
+        PatternId.STRING_KIND_DISPATCH,
+        PatternId.ATTRIBUTE_ACCESS_BY_NAME,
+        PatternId.EXACT_KEY_SET,
+        PatternId.FOREIGN_ABSENCE_PROBE,
+        PatternId.LEGACY_PATH_MARKER,
+        PatternId.DEAD_MODULE,
+        PatternId.FORWARDING_FACADE,
+    ] == [PatternId(number) for number in range(30, 37)]
 
 
 # ---- string dispatch on a kind
@@ -406,6 +420,79 @@ def test_a_loader_that_lists_a_package_reaches_every_module_in_it(tmp_path: Path
 
 # ---- forwarding facades
 
+FACADE = (
+    "class Inner:\n    pass\n\n\n"
+    "class Facade:\n"
+    "    def __init__(self, inner: Inner):\n        self._inner = inner\n"
+    "    @property\n    def size(self):\n        return self._inner.size\n"
+    "    @property\n    def label(self):\n        return self._inner.name\n"
+    "    def run(self, a, *rest, mode=None, **extra):\n"
+    "        return self._inner.run(a, *rest, mode=mode, **extra)\n"
+)
+
+
+def test_members_that_only_forward_to_a_held_object_are_a_facade(tmp_path: Path):
+    (finding,) = _findings(tmp_path, ForwardingFacadeDetector, {"m": FACADE})
+    assert finding.pattern_id is PatternId.FORWARDING_FACADE
+    assert "`Facade` holds `self._inner` (of class `Inner`)" in finding.summary
+    assert "size -> _inner.size" in finding.summary
+    assert "label -> _inner.name" in finding.summary
+    assert "run -> _inner.run()" in finding.summary
+    assert [location.symbol for location in finding.evidence] == [
+        "Facade",
+        "Facade.size",
+        "Facade.label",
+        "Facade.run",
+    ]
+    assert finding.metrics.forwarded_member_count == 3
+    assert finding.metrics.impact_delta.lower_bound_removable_loc == 3
+    assert "No codemod operation performs this factoring yet" in finding.summary
+
+
+def test_a_constructed_held_object_names_its_constructor(tmp_path: Path):
+    source = (
+        "class Facade:\n"
+        "    def __init__(self):\n        self.held = build_inner()\n"
+        "    @property\n    def a(self):\n        return self.held.a\n"
+        "    @property\n    def b(self):\n        return self.held.b\n"
+    )
+    (finding,) = _findings(tmp_path, ForwardingFacadeDetector, {"m": source})
+    assert "`build_inner(...)`" in finding.summary
+
+
+def test_a_member_that_adds_behaviour_is_not_a_forward(tmp_path: Path):
+    source = (
+        "class Facade:\n"
+        "    def __init__(self, inner):\n        self._inner = inner\n"
+        "    @property\n    def a(self):\n        return self._inner.a\n"
+        "    @property\n    def doubled(self):\n        return self._inner.a * 2\n"
+        "    def run(self, a):\n        return self._inner.run(a + 1)\n"
+        "    def checked(self, a):\n        if a:\n            return self._inner.run(a)\n"
+        "    def reordered(self, a, b):\n        return self._inner.run(b, a)\n"
+    )
+    assert _findings(tmp_path, ForwardingFacadeDetector, {"m": source}) == []
+
+
+def test_two_forwards_to_two_different_held_objects_are_not_a_facade(tmp_path: Path):
+    source = (
+        "class Pair:\n"
+        "    def __init__(self, left, right):\n        self.left = left\n        self.right = right\n"
+        "    @property\n    def a(self):\n        return self.left.a\n"
+        "    @property\n    def b(self):\n        return self.right.b\n"
+    )
+    assert _findings(tmp_path, ForwardingFacadeDetector, {"m": source}) == []
+
+
+def test_forwarding_to_an_attribute_the_class_never_holds_is_not_a_facade(
+    tmp_path: Path,
+):
+    source = (
+        "class Mixin:\n"
+        "    @property\n    def a(self):\n        return self.inner.a\n"
+        "    @property\n    def b(self):\n        return self.inner.b\n"
+    )
+    assert _findings(tmp_path, ForwardingFacadeDetector, {"m": source}) == []
+
 
 def test_a_legacy_word_with_no_replacement_beside_it_is_not_a_marker(tmp_path: Path):
     source = (
@@ -422,3 +509,12 @@ def test_an_alias_of_a_replacement_under_a_legacy_name_is_a_marker(tmp_path: Pat
     assert "(alias, of load)" in finding.summary
 
 
+def test_an_annotated_held_class_is_named_without_its_metadata(tmp_path: Path):
+    source = (
+        "from typing import Annotated\n\n\nclass Facade:\n"
+        "    inner: Annotated[Inner, 'wire']\n"
+        "    @property\n    def a(self):\n        return self.inner.a\n"
+        "    @property\n    def b(self):\n        return self.inner.b\n"
+    )
+    (finding,) = _findings(tmp_path, ForwardingFacadeDetector, {"m": source})
+    assert "(of class `Inner`)" in finding.summary

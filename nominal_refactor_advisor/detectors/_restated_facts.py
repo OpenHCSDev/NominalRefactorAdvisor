@@ -23,13 +23,19 @@ from ..codemod import (
     RefactorRecipeOperation,
 )
 from ..codemod_legacy_path_recipe import LegacyPathErasureFindingRecipeSynthesizer
-from ..models import DispatchCountMetrics, RefactorFinding, SourceLocation
+from ..models import (
+    DispatchCountMetrics,
+    ForwardingFacadeMetrics,
+    RefactorFinding,
+    SourceLocation,
+)
 from ..observation_families import FieldObservationFamily
 from ..observation_shapes import FieldObservation, FieldOriginKind
 from ..patterns import PatternId
 from ..restated_fact_observations import (
     DeadModuleSiteFamily,
     ExactKeySetSiteFamily,
+    ForwardingFacadeSiteFamily,
     ForeignAbsenceSiteFamily,
     LegacyMarkerSiteFamily,
     ModuleReferenceFacts,
@@ -459,6 +465,61 @@ class LegacyPathMarkerDetector(
         )
 
 
+class ForwardingFacadeDetector(SingleFamilyRestatedFactDetector):
+    """A class holding an object in an attribute, with members that only forward to it.
+
+    It stands beside `RepeatedPropertyAliasHookDetector` and does not subsume it:
+    that detector matches `return self.x` hooks repeated across sibling
+    subclasses of one base (one fact, owned by the base), while this one matches
+    `return self.held.attr` and `return self.held.method(same args)` inside one
+    class (a different fact, owned by the held class).
+    """
+
+    module_projection_family = ForwardingFacadeSiteFamily
+    restated = RestatedFact(
+        fact="The forwarding members restate the held class's attribute and method set, so they silently go stale when the held class changes.",
+        owner="The owner is the held class: consumers read it directly, or the facade is-a held class and inherits it.",
+        factoring="Either consumers read the held object directly and the forwards are deleted, or, when the facade is-a the held thing, the held class becomes a parent and the forwards are deleted; never keep forwards for API compatibility.",
+    )
+    finding_spec = restated.spec(
+        PatternId.FORWARDING_FACADE,
+        "A facade forwards members to the object it holds",
+        "consumers reading the held class directly, or the held class as a parent, with the forwards deleted",
+        "a class holding an object in an attribute with two or more members that only forward to it: properties returning the held attribute's attribute, and methods returning the held attribute's method called with the member's own parameters",
+        (CapabilityTag.NOMINAL_IDENTITY,),
+        (ObservationTag.PROJECTION_HELPER,),
+    )
+
+    @staticmethod
+    def forwards(sites: Sequence[RestatingSite]) -> list[RestatingSite]:
+        return [site for site in sites if site.detail[0] != ForwardingFacadeSiteFamily.CLASS_SITE]
+
+    def describe(self, sites: Sequence[RestatingSite], context: None) -> str:
+        facade = sites[0]
+        held_class = facade.detail[1]
+        resolved = (
+            f"of class `{held_class}`" if held_class else "of a class neither annotated nor constructed in the facade"
+        )
+        forwarded = [f"{site.detail[0]} -> {site.detail[2]}" for site in self.forwards(sites)]
+        return (
+            f"`{facade.symbol}` holds `self.{facade.group}` ({resolved}) and forwards "
+            f"{len(forwarded)} member(s) to it: {_listed(forwarded)}."
+        )
+
+    def evidence(self, sites: Sequence[RestatingSite], context: None) -> tuple[SourceLocation, ...]:
+        facade, *members = sites
+        return (
+            facade.location,
+            *(
+                SourceLocation(site.file_path, site.lineno, f"{site.symbol}.{site.detail[0]}")
+                for site in members
+            ),
+        )
+
+    def finding_context(self, sites: Sequence[RestatingSite], context: None) -> dict[str, object]:
+        return {"metrics": ForwardingFacadeMetrics(len(self.forwards(sites)))}
+
+
 class DeadModuleDetector(JoinedRestatedFactDetector[UnreachedModules]):
     """A scanned module that nothing imports and that is not an entry point."""
 
@@ -494,6 +555,7 @@ __all__ = (
     "DeadModuleDetector",
     "ExactKeySetDetector",
     "ForeignAbsenceProbeDetector",
+    "ForwardingFacadeDetector",
     "LegacyPathMarkerDetector",
     "NamedAttributeDetector",
     "StringKindDispatchDetector",

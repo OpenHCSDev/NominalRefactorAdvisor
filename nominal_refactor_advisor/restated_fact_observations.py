@@ -418,6 +418,144 @@ class ForeignAbsenceSiteFamily(RestatingSiteFamily):
         return isinstance(owner, ast.ClassDef) and bool(arguments) and arguments[0].arg == root.id
 
 
+class ForwardingFacadeSiteFamily(RestatingSiteFamily):
+    """A class whose members only forward to an object it holds in an attribute.
+
+    The first site of a facade is the class itself (detail: held class, or "" when
+    unresolved); every further site is one forwarding member (detail: member name,
+    kind, target). A facade needs two forwards to one held attribute.
+    """
+
+    MIN_FORWARDS = 2
+    CLASS_SITE = "class"
+
+    @classmethod
+    def sites(cls, parsed_module: ParsedModule) -> Iterator[RestatingSite]:
+        index = module_syntax_index(parsed_module.module)
+        for node_index, node in index.indexed_nodes_of_type(ast.ClassDef):
+            held = cls.held_attributes(node)
+            forwards: dict[str, list[tuple[ast.FunctionDef, str, str]]] = defaultdict(list)
+            for member in node.body:
+                if isinstance(member, ast.FunctionDef):
+                    forwarded = cls.forward(member, frozenset(held))
+                    if forwarded is not None:
+                        forwards[forwarded[0]].append((member, forwarded[1], forwarded[2]))
+            outer = index.lexical_symbol(node_index)
+            symbol = node.name if outer == "<module>" else f"{outer}.{node.name}"
+            for attribute, members in forwards.items():
+                if len(members) < cls.MIN_FORWARDS:
+                    continue
+                yield cls.site(
+                    parsed_module, node, symbol, attribute, (cls.CLASS_SITE, held[attribute])
+                )
+                for member, kind, target in members:
+                    yield cls.site(
+                        parsed_module, member, symbol, attribute, (member.name, kind, target)
+                    )
+
+    @classmethod
+    def held_attributes(cls, node: ast.ClassDef) -> dict[str, str]:
+        """Attributes the class declares as fields or sets in __init__, with their class text."""
+
+        held: dict[str, str] = {}
+        for statement in node.body:
+            if isinstance(statement, ast.AnnAssign) and isinstance(statement.target, ast.Name):
+                held[statement.target.id] = cls.annotated_class(statement.annotation)
+            if isinstance(statement, ast.FunctionDef) and statement.name == "__init__":
+                annotations = {
+                    argument.arg: cls.annotated_class(argument.annotation)
+                    for argument in (*statement.args.posonlyargs, *statement.args.args, *statement.args.kwonlyargs)
+                    if argument.annotation is not None
+                }
+                for assigned in statement.body:
+                    match assigned:
+                        case ast.Assign(
+                            targets=[ast.Attribute(value=ast.Name(id="self"), attr=name)], value=value
+                        ) | ast.AnnAssign(
+                            target=ast.Attribute(value=ast.Name(id="self"), attr=name), value=value
+                        ) if value is not None:
+                            held.setdefault(name, cls.class_text(value, annotations))
+        return held
+
+    @staticmethod
+    def annotated_class(annotation: ast.expr) -> str:
+        """The class text of an annotation, without an `Annotated[...]` wrapper's metadata."""
+
+        match annotation:
+            case ast.Subscript(
+                value=ast.Name(id="Annotated") | ast.Attribute(attr="Annotated"),
+                slice=ast.Tuple(elts=[wrapped, *_]),
+            ):
+                return ast.unparse(wrapped)
+        return ast.unparse(annotation)
+
+    @staticmethod
+    def class_text(value: ast.expr, annotations: dict[str, str]) -> str:
+        match value:
+            case ast.Name(id=name):
+                return annotations.get(name, "")
+            case ast.Call(func=callee):
+                return f"{ast.unparse(callee)}(...)"
+        return ""
+
+    @classmethod
+    def forward(
+        cls, member: ast.FunctionDef, held: frozenset[str]
+    ) -> tuple[str, str, str] | None:
+        """(held attribute, kind, target) when the member only forwards to a held attribute."""
+
+        body = [
+            statement
+            for statement in member.body
+            if not (isinstance(statement, ast.Expr) and isinstance(statement.value, ast.Constant))
+        ]
+        match body:
+            case [ast.Return(value=value)] if value is not None:
+                pass
+            case _:
+                return None
+        decorators = [ast.unparse(decorator) for decorator in member.decorator_list]
+        match value, decorators:
+            case ast.Attribute(
+                value=ast.Attribute(value=ast.Name(id="self"), attr=attribute), attr=target
+            ), ["property"] if attribute in held:
+                return attribute, "property", f"{attribute}.{target}"
+            case ast.Call(
+                func=ast.Attribute(
+                    value=ast.Attribute(value=ast.Name(id="self"), attr=attribute), attr=target
+                ),
+                args=arguments,
+                keywords=keywords,
+            ), [] if attribute in held and cls.passes_own_parameters(member, arguments, keywords):
+                return attribute, "method", f"{attribute}.{target}()"
+        return None
+
+    @staticmethod
+    def passes_own_parameters(
+        member: ast.FunctionDef, arguments: list[ast.expr], keywords: list[ast.keyword]
+    ) -> bool:
+        """Whether the call passes exactly the member's own parameters, unchanged and in order."""
+
+        signature = member.args
+        own = [*signature.posonlyargs, *signature.args][1:]
+        expected_arguments = [ast.Name(id=argument.arg, ctx=ast.Load()) for argument in own]
+        if signature.vararg is not None:
+            expected_arguments.append(
+                ast.Starred(value=ast.Name(id=signature.vararg.arg, ctx=ast.Load()), ctx=ast.Load())
+            )
+        expected_keywords = [
+            ast.keyword(arg=argument.arg, value=ast.Name(id=argument.arg, ctx=ast.Load()))
+            for argument in signature.kwonlyargs
+        ]
+        if signature.kwarg is not None:
+            expected_keywords.append(
+                ast.keyword(arg=None, value=ast.Name(id=signature.kwarg.arg, ctx=ast.Load()))
+            )
+        return [ast.dump(item) for item in arguments] == [ast.dump(item) for item in expected_arguments] and [
+            ast.dump(item) for item in keywords
+        ] == [ast.dump(item) for item in expected_keywords]
+
+
 class LegacyWord(StrEnum):
     """Words with which a path declares itself the old one, kept for an old caller."""
 

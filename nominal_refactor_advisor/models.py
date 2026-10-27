@@ -390,6 +390,23 @@ class EmptyFindingMetrics(FindingMetrics):
 
 
 @dataclass(frozen=True)
+class ForwardingFacadeMetrics(FindingMetrics):
+    """Forwarding members of one facade; every one is deletable once consumers go direct."""
+
+    forwarded_member_count: int
+
+    @property
+    def impact_delta(self) -> ImpactDelta:
+        count = self.forwarded_member_count
+        return ImpactDelta(
+            lower_bound_removable_loc=count,
+            upper_bound_removable_loc=2 * count,
+            loci_of_change_before=count,
+            loci_of_change_after=0,
+        )
+
+
+@dataclass(frozen=True)
 class RepeatedMethodMetrics(BehaviorFindingMetrics):
     """Metrics describing a repeated method or hook family."""
 
