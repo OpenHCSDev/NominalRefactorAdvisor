@@ -4,20 +4,26 @@
 what that means and how sure NRA is: a ranked verdict with the receipts that
 produced it, in the #67 form.
 
-**The model.** Every receipt carries a fixed log-odds weight, stated on its
-kind below; the probability that the two classes are one concept is
-`1 / (1 + exp(-sum))` over the receipts, from even odds. Nothing else enters
-the score, so a reader can re-add it from the receipts.
+**The score.** Every receipt carries a fixed log-odds weight, stated on its
+kind below; the confidence score is `1 / (1 + exp(-sum))` over the receipts,
+from even odds. Nothing else enters it, so a reader can re-add it from the
+receipts. It is not a calibrated probability: the weights are set by hand and
+checked, not fitted, against the labeled verdicts in
+`tests/fixtures/class_overlap_labels.json`, whose test pins the score and its
+calibration error on that set so a weight cannot change unnoticed.
 
 Shared declarations raise it, weighted by how much each says (a method more
 than a valued declaration, a valued declaration more than a bare annotation).
-Few shared declarations, a name both declare with different answers, no
-consumer that uses both classes, different class construction, and any use
-that tells the classes apart by type lower it. Identity is the guard (#68):
-a class used as a type test, a class pattern, a type key, or registered or
-tagged by its class creation is a declaration of one fact even when its body
-is another class's. NRA never drops such a pair silently; it lowers the
-probability and names the use.
+A value two siblings share while a third sibling answers differently is a row
+of the family's value table, not a shared block, and counts for nothing. Few
+shared declarations, different class construction, and any use that tells the
+classes apart by type lower it; no consumer using both and no common ancestor
+are recorded but, on the labeled set, did not separate concepts from
+coincidences, so they weigh nothing. Identity is the guard (#68): a class used
+as a type test, a class pattern, a type key, or registered or tagged by its
+class creation is a declaration of one fact even when its body is another
+class's. NRA never drops such a pair silently; it lowers the score and names
+the use.
 
 **Moves.** When one body lies inside the other, the contained class owns the
 block: the other composes it (inherits it and drops the restated
@@ -128,20 +134,19 @@ class ExtractMixin(ClassOverlapMove):
         return ()
 
 
-
-
 class OverlapReceiptKind(StrEnum):
     """One kind of evidence and its fixed log-odds weight."""
 
     SHARED_METHOD = "shared_method", 1.5
     SHARED_VALUE = "shared_value", 1.0
     SHARED_FIELD = "shared_field", 0.5
+    FAMILY_AXIS_VALUE = "family_axis_value", 0.0
     FEW_DECLARATIONS = "few_declarations", -1.5
     KEPT_DIFFERENCE = "kept_difference", 0.0
     SHARED_CONSUMER = "shared_consumer", 1.0
-    NO_SHARED_CONSUMER = "no_shared_consumer", -1.0
+    NO_SHARED_CONSUMER = "no_shared_consumer", 0.0
     SAME_FAMILY = "same_family", 0.5
-    SEPARATE_FAMILIES = "separate_families", -0.5
+    SEPARATE_FAMILIES = "separate_families", 0.0
     SAME_CONSTRUCTION = "same_construction", 0.5
     DIFFERENT_CONSTRUCTION = "different_construction", -1.5
     IDENTITY_USED = "identity_used", -1.5
@@ -336,7 +341,9 @@ class ClassOverlapCandidate:
         return sum(receipt.weight for receipt in self.receipts)
 
     @property
-    def probability(self) -> float:
+    def confidence(self) -> float:
+        """The uncalibrated confidence score: the logistic of the receipts' summed weights."""
+
         return 1.0 / (1.0 + math.exp(-self.log_odds))
 
     @property
@@ -362,14 +369,14 @@ class ClassOverlapCandidate:
 
 @dataclass(frozen=True)
 class ClassOverlapMetrics(FindingMetrics):
-    """One verdict as finding metrics: the move, the probability and every receipt."""
+    """One verdict as finding metrics: the move, the confidence score and every receipt."""
 
     shape: ClassOverlapShape
     move: type[ClassOverlapMove]
     owner_symbol: str
     restating_symbol: str
     shared_declaration_names: tuple[str, ...]
-    probability: float
+    confidence_score: float
     receipts: tuple[OverlapReceipt, ...]
 
     @classmethod
@@ -380,7 +387,7 @@ class ClassOverlapMetrics(FindingMetrics):
             owner_symbol=candidate.owner.symbol,
             restating_symbol=candidate.restating.symbol,
             shared_declaration_names=candidate.shared_names,
-            probability=round(candidate.probability, 4),
+            confidence_score=round(candidate.confidence, 4),
             receipts=candidate.receipts,
         )
 
@@ -447,8 +454,11 @@ class ClassOverlapVerdicts:
         members = frozenset(
             (*first.direct_enum_member_names, *second.direct_enum_member_names)
         )
+        axis = self.family_axis_names(first, second, overlap)
         extractable = tuple(
-            shared for shared in overlap.shared if shared.name not in members
+            shared
+            for shared in overlap.shared
+            if shared.name not in members and shared.name not in axis
         )
         shared_receipts = tuple(
             OverlapReceipt(
@@ -462,6 +472,19 @@ class ClassOverlapVerdicts:
                 ),
             )
             for shared in extractable
+        )
+        axis_receipts = tuple(
+            OverlapReceipt(
+                OverlapReceiptKind.FAMILY_AXIS_VALUE,
+                f"`{shared.name}` is equal here but `{axis[shared.name]}` answers "
+                "it differently: a row of the family's value table, not a shared block",
+                (
+                    _location(first, shared.first_line, shared.name),
+                    _location(second, shared.second_line, shared.name),
+                ),
+            )
+            for shared in overlap.shared
+            if shared.name in axis
         )
         if sum(receipt.weight for receipt in shared_receipts) < MINIMUM_SHARED_WEIGHT:
             return None
@@ -497,6 +520,7 @@ class ClassOverlapVerdicts:
             overlap=overlap,
             receipts=(
                 *shared_receipts,
+                *axis_receipts,
                 *self._size_receipts(extractable, first, second),
                 *self._member_receipts(overlap, members),
                 *self._kept_difference_receipts(overlap),
@@ -506,6 +530,35 @@ class ClassOverlapVerdicts:
                 *self._identity_receipts(owner, restating, move),
             ),
         )
+
+    def family_axis_names(
+        self,
+        first: CompactIndexedClass,
+        second: CompactIndexedClass,
+        overlap: ClassBodyOverlap,
+    ) -> Mapping[str, str]:
+        """Shared names a third sibling of both declares differently, with that sibling."""
+
+        siblings = {
+            child
+            for base in set(first.resolved_base_symbols)
+            & set(second.resolved_base_symbols)
+            for child in self.class_index.children_by_symbol.get(base, ())
+        } - {first.symbol, second.symbol}
+        first_declarations = self.bodies.declarations_of(first.symbol)
+        axis: dict[str, str] = {}
+        for sibling in sorted(siblings):
+            if sibling not in self.bodies.classes_by_symbol:
+                continue
+            for name, declaration in self.bodies.declarations_of(sibling).items():
+                if (
+                    name not in axis
+                    and name in first_declarations
+                    and any(shared.name == name for shared in overlap.shared)
+                    and declaration.identity != first_declarations[name].identity
+                ):
+                    axis[name] = sibling.rsplit(".", 1)[-1]
+        return axis
 
     def sole_shared_base(
         self, first: CompactIndexedClass, second: CompactIndexedClass

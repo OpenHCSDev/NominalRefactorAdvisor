@@ -1,0 +1,1060 @@
+{
+ "brier": 0.0843,
+ "ece": 0.0909,
+ "verdicts": [
+  {
+   "repository": "nominal_refactor_advisor",
+   "classes": [
+    "ForwardedCarrierExpansion",
+    "ForwardedProductCallEdge"
+   ],
+   "same_concept": true,
+   "judgement": "both are the forwarded call edge: same fields and methods",
+   "verdict": true,
+   "receipts": [
+    "no_shared_consumer",
+    "same_construction",
+    "same_family",
+    "shared_field",
+    "shared_field",
+    "shared_method",
+    "shared_method"
+   ]
+  },
+  {
+   "repository": "nominal_refactor_advisor",
+   "classes": [
+    "_AttributeCallOwnedParts",
+    "AttributeCallMatch"
+   ],
+   "same_concept": true,
+   "judgement": "the match is the owned parts plus its argument",
+   "verdict": true,
+   "receipts": [
+    "same_construction",
+    "separate_families",
+    "shared_consumer",
+    "shared_field",
+    "shared_field",
+    "shared_field"
+   ]
+  },
+  {
+   "repository": "nominal_refactor_advisor",
+   "classes": [
+    "AbsentCompactProductAuthority",
+    "OpenCompactProductAuthority"
+   ],
+   "same_concept": false,
+   "judgement": "`authority = None` is a row of the resolution family's table; Resolved answers it",
+   "verdict": false,
+   "receipts": []
+  },
+  {
+   "repository": "nominal_refactor_advisor",
+   "classes": [
+    "MemberObservation",
+    "Consumer"
+   ],
+   "same_concept": true,
+   "judgement": "Consumer is a member observation with methods",
+   "verdict": true,
+   "receipts": [
+    "no_shared_consumer",
+    "same_construction",
+    "separate_families",
+    "shared_field",
+    "shared_field",
+    "shared_field",
+    "shared_field",
+    "shared_field",
+    "shared_field"
+   ]
+  },
+  {
+   "repository": "nominal_refactor_advisor",
+   "classes": [
+    "_ModuleInspection",
+    "SemanticInspectionReport"
+   ],
+   "same_concept": true,
+   "judgement": "the report carries every per-module inspection collection",
+   "verdict": true,
+   "receipts": [
+    "no_shared_consumer",
+    "same_construction",
+    "separate_families",
+    "shared_field",
+    "shared_field",
+    "shared_field",
+    "shared_field",
+    "shared_field",
+    "shared_field"
+   ]
+  },
+  {
+   "repository": "nominal_refactor_advisor",
+   "classes": [
+    "FunctionFamilyEvidenceSurface",
+    "FunctionEvidenceLocationsCandidate"
+   ],
+   "same_concept": true,
+   "judgement": "the candidate is a line witness plus exactly the surface",
+   "verdict": true,
+   "receipts": [
+    "no_shared_consumer",
+    "same_construction",
+    "separate_families",
+    "shared_field",
+    "shared_field",
+    "shared_value"
+   ]
+  },
+  {
+   "repository": "nominal_refactor_advisor",
+   "classes": [
+    "JsonReportAliasProperty",
+    "JsonReportFieldDeclaration"
+   ],
+   "same_concept": true,
+   "judgement": "both declare the report projection options",
+   "verdict": true,
+   "receipts": [
+    "identity_used",
+    "identity_used",
+    "same_construction",
+    "separate_families",
+    "shared_consumer",
+    "shared_value",
+    "shared_value",
+    "shared_value"
+   ]
+  },
+  {
+   "repository": "nominal_refactor_advisor",
+   "classes": [
+    "ManualRecordRegistrationShape",
+    "ManualKeyedRecordTableClassCandidate"
+   ],
+   "same_concept": true,
+   "judgement": "the candidate carries the registration shape",
+   "verdict": true,
+   "receipts": [
+    "no_shared_consumer",
+    "same_construction",
+    "separate_families",
+    "shared_field",
+    "shared_field",
+    "shared_field"
+   ]
+  },
+  {
+   "repository": "nominal_refactor_advisor",
+   "classes": [
+    "SemanticDescentModuleFamilySignature",
+    "ModuleSourceSignature"
+   ],
+   "same_concept": true,
+   "judgement": "both are a module's path identity",
+   "verdict": true,
+   "receipts": [
+    "no_shared_consumer",
+    "same_construction",
+    "separate_families",
+    "shared_field",
+    "shared_field",
+    "shared_field"
+   ]
+  },
+  {
+   "repository": "nominal_refactor_advisor",
+   "classes": [
+    "AstTargetGeometryKey",
+    "FunctionSummary"
+   ],
+   "same_concept": true,
+   "judgement": "the summary carries the target geometry",
+   "verdict": true,
+   "receipts": [
+    "no_shared_consumer",
+    "same_construction",
+    "separate_families",
+    "shared_field",
+    "shared_field",
+    "shared_field"
+   ]
+  },
+  {
+   "repository": "nominal_refactor_advisor",
+   "classes": [
+    "AstTargetGeometryKey",
+    "AstTargetDigest"
+   ],
+   "same_concept": true,
+   "judgement": "the digest carries the target geometry",
+   "verdict": true,
+   "receipts": [
+    "no_shared_consumer",
+    "same_construction",
+    "separate_families",
+    "shared_field",
+    "shared_field",
+    "shared_field"
+   ]
+  },
+  {
+   "repository": "nominal_refactor_advisor",
+   "classes": [
+    "ValueExpressionShapeABC",
+    "CompactAssignmentTargetABC"
+   ],
+   "same_concept": true,
+   "judgement": "both declare the abstract lexical-reference interface",
+   "verdict": true,
+   "receipts": [
+    "few_declarations",
+    "no_shared_consumer",
+    "same_construction",
+    "separate_families",
+    "shared_method"
+   ]
+  },
+  {
+   "repository": "nominal_refactor_advisor",
+   "classes": [
+    "CompactDataclassFieldDeclaration",
+    "CompactProductField"
+   ],
+   "same_concept": true,
+   "judgement": "a product field is a field declaration with its owner",
+   "verdict": true,
+   "receipts": [
+    "different_construction",
+    "no_shared_consumer",
+    "separate_families",
+    "shared_field",
+    "shared_field",
+    "shared_field"
+   ]
+  },
+  {
+   "repository": "nominal_refactor_advisor",
+   "classes": [
+    "JsonReportCachedProperty",
+    "JsonReportProperty"
+   ],
+   "same_concept": true,
+   "judgement": "the same report-projection constructor on two descriptors",
+   "verdict": true,
+   "receipts": [
+    "few_declarations",
+    "identity_used",
+    "identity_used",
+    "same_construction",
+    "separate_families",
+    "shared_consumer",
+    "shared_method"
+   ]
+  },
+  {
+   "repository": "nominal_refactor_advisor",
+   "classes": [
+    "NonLexicalValueShape",
+    "DynamicCallTargetReference"
+   ],
+   "same_concept": true,
+   "judgement": "a dynamic call target is a value with no lexical path",
+   "verdict": true,
+   "receipts": [
+    "different_construction",
+    "few_declarations",
+    "no_shared_consumer",
+    "separate_families",
+    "shared_method"
+   ]
+  },
+  {
+   "repository": "nominal_refactor_advisor",
+   "classes": [
+    "NonLexicalValueShape",
+    "ReceiverAttributeCallTargetReference"
+   ],
+   "same_concept": true,
+   "judgement": "a receiver-attribute target is a value with no lexical path",
+   "verdict": true,
+   "receipts": [
+    "different_construction",
+    "few_declarations",
+    "no_shared_consumer",
+    "separate_families",
+    "shared_method"
+   ]
+  },
+  {
+   "repository": "nominal_refactor_advisor",
+   "classes": [
+    "Miss",
+    "Partial"
+   ],
+   "same_concept": false,
+   "judgement": "cache-status flags: equal rows of the status table, not a capability",
+   "verdict": false,
+   "receipts": []
+  },
+  {
+   "repository": "nominal_refactor_advisor",
+   "classes": [
+    "AnalysisCacheFamilyIdentity",
+    "AnalysisCacheIdentity"
+   ],
+   "same_concept": true,
+   "judgement": "both are the cache identity over roots with one token",
+   "verdict": true,
+   "receipts": [
+    "kept_difference",
+    "kept_difference",
+    "same_construction",
+    "same_family",
+    "shared_consumer",
+    "shared_field",
+    "shared_method",
+    "shared_value"
+   ]
+  },
+  {
+   "repository": "nominal_refactor_advisor",
+   "classes": [
+    "Disabled",
+    "Miss"
+   ],
+   "same_concept": false,
+   "judgement": "cache-status flags: equal rows of the status table",
+   "verdict": false,
+   "receipts": []
+  },
+  {
+   "repository": "nominal_refactor_advisor",
+   "classes": [
+    "Hit",
+    "Miss"
+   ],
+   "same_concept": false,
+   "judgement": "cache-status flags: equal rows of the status table",
+   "verdict": false,
+   "receipts": []
+  },
+  {
+   "repository": "nominal_refactor_advisor",
+   "classes": [
+    "Hit",
+    "Partial"
+   ],
+   "same_concept": false,
+   "judgement": "cache-status flags: equal rows of the status table",
+   "verdict": false,
+   "receipts": []
+  },
+  {
+   "repository": "nominal_refactor_advisor",
+   "classes": [
+    "SemanticDescentGraphCacheFamilyIdentity",
+    "SemanticDescentGraphCacheIdentity"
+   ],
+   "same_concept": true,
+   "judgement": "both are the graph-cache identity",
+   "verdict": true,
+   "receipts": [
+    "kept_difference",
+    "kept_difference",
+    "same_construction",
+    "separate_families",
+    "shared_consumer",
+    "shared_field",
+    "shared_field",
+    "shared_field",
+    "shared_method",
+    "shared_value"
+   ]
+  },
+  {
+   "repository": "nominal_refactor_advisor",
+   "classes": [
+    "FunctionSummary",
+    "AstTargetDigest"
+   ],
+   "same_concept": true,
+   "judgement": "the summary restates the target address",
+   "verdict": true,
+   "receipts": [
+    "kept_difference",
+    "kept_difference",
+    "same_construction",
+    "same_family",
+    "shared_consumer",
+    "shared_field",
+    "shared_field",
+    "shared_field",
+    "shared_field",
+    "shared_field",
+    "shared_field"
+   ]
+  },
+  {
+   "repository": "nominal_refactor_advisor",
+   "classes": [
+    "ParsedModule",
+    "SourceModule"
+   ],
+   "same_concept": true,
+   "judgement": "a parsed module is a source module with its AST",
+   "verdict": true,
+   "receipts": [
+    "same_construction",
+    "same_family",
+    "shared_consumer",
+    "shared_field",
+    "shared_field",
+    "shared_field",
+    "shared_value"
+   ]
+  },
+  {
+   "repository": "nominal_refactor_advisor",
+   "classes": [
+    "FunctionSummary",
+    "ModuleSummary"
+   ],
+   "same_concept": true,
+   "judgement": "both locate a summary in a module and list its contained ids",
+   "verdict": true,
+   "receipts": [
+    "same_construction",
+    "same_family",
+    "shared_consumer",
+    "shared_field",
+    "shared_field",
+    "shared_field",
+    "shared_field",
+    "shared_field"
+   ]
+  },
+  {
+   "repository": "nominal_refactor_advisor",
+   "classes": [
+    "DeclaredCarrierExpansionAuthorityProof",
+    "ClosedParameterConveyorAuthorityProof"
+   ],
+   "same_concept": true,
+   "judgement": "both are the carrier-collapse authority proof",
+   "verdict": true,
+   "receipts": [
+    "kept_difference",
+    "kept_difference",
+    "no_shared_consumer",
+    "same_construction",
+    "same_family",
+    "shared_field",
+    "shared_field",
+    "shared_field",
+    "shared_field",
+    "shared_field",
+    "shared_method"
+   ]
+  },
+  {
+   "repository": "nominal_refactor_advisor",
+   "classes": [
+    "AdapterBindChainAuthority",
+    "StaticProjectionAuthority"
+   ],
+   "same_concept": true,
+   "judgement": "both are a codemod source-replacement context",
+   "verdict": true,
+   "receipts": [
+    "kept_difference",
+    "kept_difference",
+    "no_shared_consumer",
+    "same_construction",
+    "separate_families",
+    "shared_field",
+    "shared_field",
+    "shared_field"
+   ]
+  },
+  {
+   "repository": "nominal_refactor_advisor",
+   "classes": [
+    "KeyedRegistryAxisFact",
+    "NominalAuthorityShape"
+   ],
+   "same_concept": true,
+   "judgement": "both are a class's source location",
+   "verdict": true,
+   "receipts": [
+    "no_shared_consumer",
+    "same_construction",
+    "separate_families",
+    "shared_field",
+    "shared_field",
+    "shared_field"
+   ]
+  },
+  {
+   "repository": "nominal_refactor_advisor",
+   "classes": [
+    "FunctionSummary",
+    "ImportSummary"
+   ],
+   "same_concept": true,
+   "judgement": "both locate a record in a module",
+   "verdict": true,
+   "receipts": [
+    "same_construction",
+    "same_family",
+    "shared_consumer",
+    "shared_field",
+    "shared_field",
+    "shared_field"
+   ]
+  },
+  {
+   "repository": "nominal_refactor_advisor",
+   "classes": [
+    "SemanticAuthorityAffinityPolicy",
+    "SemanticDescentCertificateSummary"
+   ],
+   "same_concept": true,
+   "judgement": "both name the authority/projection pair",
+   "verdict": true,
+   "receipts": [
+    "no_shared_consumer",
+    "same_construction",
+    "separate_families",
+    "shared_field",
+    "shared_field",
+    "shared_field"
+   ]
+  },
+  {
+   "repository": "nominal_refactor_advisor",
+   "classes": [
+    "ForeignTypeTestShape",
+    "RestatingSite"
+   ],
+   "same_concept": true,
+   "judgement": "both are a source site location",
+   "verdict": true,
+   "receipts": [
+    "no_shared_consumer",
+    "same_construction",
+    "separate_families",
+    "shared_field",
+    "shared_field",
+    "shared_field"
+   ]
+  },
+  {
+   "repository": "nominal_refactor_advisor",
+   "classes": [
+    "ClassNameLineNumbersGroup",
+    "LineWitnessCandidate"
+   ],
+   "same_concept": true,
+   "judgement": "the same register-by-class-name configuration",
+   "verdict": true,
+   "receipts": [
+    "no_shared_consumer",
+    "same_construction",
+    "separate_families",
+    "shared_value",
+    "shared_value",
+    "shared_value"
+   ]
+  },
+  {
+   "repository": "nominal_refactor_advisor",
+   "classes": [
+    "ClassDeclaration",
+    "ImportSummary"
+   ],
+   "same_concept": true,
+   "judgement": "both locate a statement in a module",
+   "verdict": true,
+   "receipts": [
+    "no_shared_consumer",
+    "same_construction",
+    "separate_families",
+    "shared_field",
+    "shared_field",
+    "shared_field"
+   ]
+  },
+  {
+   "repository": "nominal_refactor_advisor",
+   "classes": [
+    "CallSiteDigest",
+    "AuthorityProofEdge"
+   ],
+   "same_concept": true,
+   "judgement": "both are a source site location",
+   "verdict": true,
+   "receipts": [
+    "no_shared_consumer",
+    "same_construction",
+    "separate_families",
+    "shared_field",
+    "shared_field",
+    "shared_field"
+   ]
+  },
+  {
+   "repository": "nominal_refactor_advisor",
+   "classes": [
+    "CachedPathAnalysisRequest",
+    "CodemodSimulationFindingProjection"
+   ],
+   "same_concept": true,
+   "judgement": "both carry the analysis request inputs",
+   "verdict": true,
+   "receipts": [
+    "kept_difference",
+    "kept_difference",
+    "no_shared_consumer",
+    "same_construction",
+    "separate_families",
+    "shared_field",
+    "shared_value",
+    "shared_value"
+   ]
+  },
+  {
+   "repository": "nominal_refactor_advisor",
+   "classes": [
+    "DeclaredClass",
+    "AstTargetDigest"
+   ],
+   "same_concept": false,
+   "judgement": "name, line and decorators of two unrelated statement records",
+   "verdict": true,
+   "receipts": [
+    "kept_difference",
+    "no_shared_consumer",
+    "same_construction",
+    "separate_families",
+    "shared_field",
+    "shared_field",
+    "shared_value"
+   ]
+  },
+  {
+   "repository": "nominal_refactor_advisor",
+   "classes": [
+    "ClassDeclaration",
+    "_TargetKey"
+   ],
+   "same_concept": true,
+   "judgement": "both are a definition's location",
+   "verdict": true,
+   "receipts": [
+    "no_shared_consumer",
+    "same_construction",
+    "separate_families",
+    "shared_field",
+    "shared_field",
+    "shared_field"
+   ]
+  },
+  {
+   "repository": "nominal_refactor_advisor",
+   "classes": [
+    "ForeignFamilySiteShape",
+    "ForeignTypeTestShape"
+   ],
+   "same_concept": true,
+   "judgement": "both are a source site location",
+   "verdict": true,
+   "receipts": [
+    "no_shared_consumer",
+    "same_construction",
+    "separate_families",
+    "shared_field",
+    "shared_field",
+    "shared_field"
+   ]
+  },
+  {
+   "repository": "nominal_refactor_advisor",
+   "classes": [
+    "ObservationGroup",
+    "SemanticDescription"
+   ],
+   "same_concept": true,
+   "judgement": "the same register-by-class-name configuration",
+   "verdict": true,
+   "receipts": [
+    "different_construction",
+    "no_shared_consumer",
+    "same_family",
+    "shared_value",
+    "shared_value",
+    "shared_value"
+   ]
+  },
+  {
+   "repository": "nominal_refactor_advisor",
+   "classes": [
+    "_EnvironmentBooleanParserSite",
+    "LocalEnvironmentBooleanParserMetrics"
+   ],
+   "same_concept": true,
+   "judgement": "the metrics restate the observed parser",
+   "verdict": true,
+   "receipts": [
+    "same_construction",
+    "separate_families",
+    "shared_consumer",
+    "shared_field",
+    "shared_field",
+    "shared_field"
+   ]
+  },
+  {
+   "repository": "nominal_refactor_advisor",
+   "classes": [
+    "EvidenceSummary",
+    "EvidenceDigest"
+   ],
+   "same_concept": true,
+   "judgement": "both are the evidence address row",
+   "verdict": true,
+   "receipts": [
+    "kept_difference",
+    "no_shared_consumer",
+    "same_construction",
+    "same_family",
+    "shared_field",
+    "shared_field",
+    "shared_field",
+    "shared_field",
+    "shared_field",
+    "shared_field"
+   ]
+  },
+  {
+   "repository": "nominal_refactor_advisor",
+   "classes": [
+    "BranchCountMetrics",
+    "DispatchCountMetrics"
+   ],
+   "same_concept": true,
+   "judgement": "both carry the dispatch axis, its cases and their plan aliases",
+   "verdict": true,
+   "receipts": [
+    "kept_difference",
+    "kept_difference",
+    "no_shared_consumer",
+    "same_construction",
+    "same_family",
+    "shared_value",
+    "shared_value",
+    "shared_value",
+    "shared_value"
+   ]
+  },
+  {
+   "repository": "nominal_refactor_advisor",
+   "classes": [
+    "FindingBuildContext",
+    "RefactorFinding"
+   ],
+   "same_concept": true,
+   "judgement": "the build context restates the finding's optional evidence fields",
+   "verdict": true,
+   "receipts": [
+    "kept_difference",
+    "same_construction",
+    "separate_families",
+    "shared_consumer",
+    "shared_value",
+    "shared_value",
+    "shared_value"
+   ]
+  },
+  {
+   "repository": "nominal_refactor_advisor",
+   "classes": [
+    "EnumDeclaration",
+    "Holder"
+   ],
+   "same_concept": true,
+   "judgement": "both are a class statement in its module",
+   "verdict": true,
+   "receipts": [
+    "same_construction",
+    "separate_families",
+    "shared_consumer",
+    "shared_field",
+    "shared_field",
+    "shared_method"
+   ]
+  },
+  {
+   "repository": "nominal_refactor_advisor",
+   "classes": [
+    "ClassMethodFamilyCandidate",
+    "ClassNameLineNumbersGroup"
+   ],
+   "same_concept": true,
+   "judgement": "the same register-by-class-name configuration",
+   "verdict": true,
+   "receipts": [
+    "no_shared_consumer",
+    "same_construction",
+    "separate_families",
+    "shared_field",
+    "shared_value",
+    "shared_value",
+    "shared_value"
+   ]
+  },
+  {
+   "repository": "nominal_refactor_advisor",
+   "classes": [
+    "ModuleExpressionShape",
+    "RestatingSite"
+   ],
+   "same_concept": true,
+   "judgement": "both are a source site location",
+   "verdict": true,
+   "receipts": [
+    "no_shared_consumer",
+    "same_construction",
+    "separate_families",
+    "shared_field",
+    "shared_field",
+    "shared_field"
+   ]
+  },
+  {
+   "repository": "nominal_refactor_advisor",
+   "classes": [
+    "NativeStoreStream",
+    "NativeValueStoreWindow"
+   ],
+   "same_concept": true,
+   "judgement": "both observe one code object's operations in a creation context",
+   "verdict": true,
+   "receipts": [
+    "kept_difference",
+    "kept_difference",
+    "no_shared_consumer",
+    "same_construction",
+    "separate_families",
+    "shared_field",
+    "shared_field",
+    "shared_value"
+   ]
+  },
+  {
+   "repository": "nominal_refactor_advisor",
+   "classes": [
+    "ForeignFamilySiteShape",
+    "ModuleExpressionShape"
+   ],
+   "same_concept": true,
+   "judgement": "both are a source site location",
+   "verdict": true,
+   "receipts": [
+    "no_shared_consumer",
+    "same_construction",
+    "separate_families",
+    "shared_field",
+    "shared_field",
+    "shared_field"
+   ]
+  },
+  {
+   "repository": "nominal_refactor_advisor",
+   "classes": [
+    "ForeignTypeTestShape",
+    "ModuleExpressionShape"
+   ],
+   "same_concept": true,
+   "judgement": "both are a source site location",
+   "verdict": true,
+   "receipts": [
+    "no_shared_consumer",
+    "same_construction",
+    "separate_families",
+    "shared_field",
+    "shared_field",
+    "shared_field"
+   ]
+  },
+  {
+   "repository": "nominal_refactor_advisor",
+   "classes": [
+    "_TargetKey",
+    "AstTargetDigest"
+   ],
+   "same_concept": true,
+   "judgement": "both key a definition's location",
+   "verdict": true,
+   "receipts": [
+    "kept_difference",
+    "same_construction",
+    "separate_families",
+    "shared_consumer",
+    "shared_field",
+    "shared_field",
+    "shared_field"
+   ]
+  },
+  {
+   "repository": "nominal_refactor_advisor",
+   "classes": [
+    "ForeignFamilySiteShape",
+    "RestatingSite"
+   ],
+   "same_concept": true,
+   "judgement": "both are a source site location",
+   "verdict": true,
+   "receipts": [
+    "no_shared_consumer",
+    "same_construction",
+    "separate_families",
+    "shared_field",
+    "shared_field",
+    "shared_field"
+   ]
+  },
+  {
+   "repository": "nominal_refactor_advisor",
+   "classes": [
+    "ClassDeclaration",
+    "AuthorityProofEdge"
+   ],
+   "same_concept": true,
+   "judgement": "both are a source site location",
+   "verdict": true,
+   "receipts": [
+    "no_shared_consumer",
+    "same_construction",
+    "separate_families",
+    "shared_field",
+    "shared_field",
+    "shared_field"
+   ]
+  },
+  {
+   "repository": "nominal_refactor_advisor",
+   "classes": [
+    "AuthorityProofEdge",
+    "EvidenceDigest"
+   ],
+   "same_concept": true,
+   "judgement": "both are a source site location",
+   "verdict": true,
+   "receipts": [
+    "no_shared_consumer",
+    "same_construction",
+    "same_family",
+    "shared_field",
+    "shared_field",
+    "shared_field"
+   ]
+  },
+  {
+   "repository": "nominal_refactor_advisor",
+   "classes": [
+    "FunctionSummary",
+    "EvidenceDigest"
+   ],
+   "same_concept": false,
+   "judgement": "a function summary and an evidence row share a location and finding ids by coincidence",
+   "verdict": true,
+   "receipts": [
+    "no_shared_consumer",
+    "same_construction",
+    "same_family",
+    "shared_field",
+    "shared_field",
+    "shared_field"
+   ]
+  },
+  {
+   "repository": "nominal_refactor_advisor",
+   "classes": [
+    "ClassDeclaration",
+    "EvidenceSummary"
+   ],
+   "same_concept": true,
+   "judgement": "both are a source site location",
+   "verdict": true,
+   "receipts": [
+    "no_shared_consumer",
+    "same_construction",
+    "separate_families",
+    "shared_field",
+    "shared_field",
+    "shared_field"
+   ]
+  },
+  {
+   "repository": "nominal_refactor_advisor",
+   "classes": [
+    "MemberObservation",
+    "ForeignFamilySiteShape"
+   ],
+   "same_concept": true,
+   "judgement": "both are a site naming one family's members",
+   "verdict": true,
+   "receipts": [
+    "no_shared_consumer",
+    "same_construction",
+    "separate_families",
+    "shared_field",
+    "shared_field",
+    "shared_field"
+   ]
+  },
+  {
+   "repository": "nominal_refactor_advisor",
+   "classes": [
+    "MemberObservation",
+    "ForeignTypeTestShape"
+   ],
+   "same_concept": true,
+   "judgement": "a member observation is read off the type-test site",
+   "verdict": true,
+   "receipts": [
+    "no_shared_consumer",
+    "same_construction",
+    "separate_families",
+    "shared_field",
+    "shared_field",
+    "shared_field"
+   ]
+  },
+  {
+   "repository": "agent_comms",
+   "classes": [
+    "TextContent",
+    "TextInput"
+   ],
+   "same_concept": false,
+   "judgement": "two wire records of different protocols with the same two fields; each `type` is its own tag",
+   "verdict": true,
+   "receipts": [
+    "different_construction",
+    "few_declarations",
+    "identity_declared",
+    "identity_declared",
+    "no_shared_consumer",
+    "separate_families",
+    "shared_field",
+    "shared_value"
+   ]
+  }
+ ]
+}

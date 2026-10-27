@@ -54,8 +54,8 @@ class ClassOverlapDetectorABC(
                 f"`{candidate.restating.qualname}` restates "
                 f"{len(candidate.overlap.shared)} declaration(s) of "
                 f"`{candidate.owner.qualname}` ({', '.join(candidate.shared_names)}); "
-                f"move: {candidate.move.value}; probability "
-                f"{candidate.probability:.2f} from receipts: {receipts}."
+                f"move: {candidate.move.value}; confidence score "
+                f"{candidate.confidence:.2f} (uncalibrated) from receipts: {receipts}."
             ),
             candidate.evidence,
             metrics=ClassOverlapMetrics.of(candidate),

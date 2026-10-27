@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import ast
+import json
+import math
 from pathlib import Path
 
 from nominal_refactor_advisor.ast_tools import ParsedModule
@@ -19,6 +21,9 @@ from nominal_refactor_advisor.class_overlap import (
     ClassOverlapVerdicts,
     OverlapReceiptKind,
 )
+
+
+LABELS = Path(__file__).parent / "fixtures" / "class_overlap_labels.json"
 
 
 def _module(module_name: str, source: str) -> ParsedModule:
@@ -80,7 +85,7 @@ def test_two_protocol_records_with_the_same_fields_are_a_coincidence():
         OverlapReceiptKind.DIFFERENT_CONSTRUCTION,
         OverlapReceiptKind.IDENTITY_DECLARED,
     } <= _kinds(candidate)
-    assert candidate.probability < 0.05
+    assert candidate.confidence < 0.05
     assert candidate.log_odds == sum(receipt.weight for receipt in candidate.receipts)
 
 
@@ -103,10 +108,10 @@ def test_a_class_restating_another_with_an_extra_base_composes_it():
     assert candidate.move is ComposeExisting
     assert candidate.owner.qualname == "FunctionFamilyEvidenceSurface"
     assert candidate.restating.qualname == "FunctionEvidenceLocationsCandidate"
-    assert candidate.probability > 0.5
+    assert candidate.confidence > 0.5
 
 
-def test_a_type_test_on_either_class_lowers_the_probability_and_says_where():
+def test_a_type_test_on_either_class_lowers_the_confidence_and_says_where():
     (plain,) = _verdicts(("pkg.surface", SURFACE))
     (tested,) = _verdicts(
         (
@@ -122,7 +127,7 @@ def test_a_type_test_on_either_class_lowers_the_probability_and_says_where():
         if receipt.kind is OverlapReceiptKind.IDENTITY_USED
     ]
     assert used and used[0].evidence[0].symbol == "is_family"
-    assert tested.probability < plain.probability
+    assert tested.confidence < plain.confidence
 
 
 def test_identical_bodies_bases_and_construction_delete_the_restating_class():
@@ -188,3 +193,39 @@ def test_one_shared_field_is_no_verdict():
         )
         == ()
     )
+
+
+def _score(kinds: list[str]) -> float:
+    return 1.0 / (1.0 + math.exp(-sum(OverlapReceiptKind(kind).weight for kind in kinds)))
+
+
+def test_the_receipt_weights_keep_their_error_on_the_labeled_verdicts():
+    """Hand-labeled verdicts (same concept or not, judged against the source).
+
+    The confidence score is not fitted: with 50 positives and 8 negatives the
+    labels cannot fit eleven weights. They pin the weights instead: changing
+    one changes the Brier score and the expected calibration error recorded
+    with the labels, and this test fails until the fixture is re-derived and
+    the change is justified against it. Labeled pairs NRA no longer reports
+    must all be negatives.
+    """
+
+    labels = json.loads(LABELS.read_text())
+    reported = [row for row in labels["verdicts"] if row["verdict"]]
+    assert all(not row["same_concept"] for row in labels["verdicts"] if not row["verdict"])
+    brier = sum(
+        (_score(row["receipts"]) - row["same_concept"]) ** 2 for row in reported
+    ) / len(reported)
+    bins: dict[int, list[tuple[float, bool]]] = {}
+    for row in reported:
+        score = _score(row["receipts"])
+        bins.setdefault(min(int(score * 5), 4), []).append((score, row["same_concept"]))
+    ece = (
+        sum(
+            abs(sum(s for s, _ in rows) - sum(y for _, y in rows))
+            for rows in bins.values()
+        )
+        / len(reported)
+    )
+    assert round(brier, 4) == labels["brier"]
+    assert round(ece, 4) == labels["ece"]
