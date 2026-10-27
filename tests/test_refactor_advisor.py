@@ -2095,11 +2095,9 @@ def test_finding_recipe_batch_combines_composable_disjoint_edits(
         frozenset(branch.candidate_indices): branch
         for branch in batch_evaluation.trajectory_frontier.branches
     }
-    assert set(branches_by_candidate_indices) == {
-        frozenset((0,)),
-        frozenset((1,)),
-        frozenset((0, 1)),
-    }
+    # Disjoint edits commute, so the subsets {0} and {1} reach nothing {0, 1}
+    # does not; the frontier holds only the maximal batch.
+    assert set(branches_by_candidate_indices) == {frozenset((0, 1))}
     for candidate_indices, branch in branches_by_candidate_indices.items():
         cached_result = batch_evaluation.simulate_recipe_set(
             tuple(sorted(candidate_indices))
@@ -2115,25 +2113,19 @@ def test_finding_recipe_trajectory_frontier_fails_closed_at_enumeration_budget(
 ) -> None:
     module_path = tmp_path / "pkg/mod.py"
     _write_module(tmp_path, "pkg/mod.py", "a = 1\nb = 1\n")
-    candidates = (
+    # Two conflicts of two alternatives each: four maximal batches, over a budget of two.
+    candidates = tuple(
         _direct_recipe_candidate(
-            detector_id="budget_a",
+            detector_id=f"budget_{name}_{value}",
             file_path=module_path.as_posix(),
-            subject_name="Alpha",
-            old_source="a = 1",
-            new_source="a = 2",
+            subject_name=f"{name}{value}",
+            old_source=f"{name} = 1",
+            new_source=f"{name} = {value}",
             before=5,
             after=1,
-        ),
-        _direct_recipe_candidate(
-            detector_id="budget_b",
-            file_path=module_path.as_posix(),
-            subject_name="Beta",
-            old_source="b = 1",
-            new_source="b = 2",
-            before=5,
-            after=1,
-        ),
+        )
+        for name in ("a", "b")
+        for value in (2, 3)
     )
     snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path), ())
     batch_result = CurrentSnapshotRecipeBatchEvaluation(

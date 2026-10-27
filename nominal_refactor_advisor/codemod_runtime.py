@@ -26,7 +26,7 @@ from dataclasses import (
 )
 from enum import StrEnum
 from functools import cached_property
-from itertools import combinations
+from itertools import combinations, product
 from pathlib import Path
 from typing import (
     ClassVar,
@@ -3136,6 +3136,82 @@ class CurrentSnapshotRecipeBatchEvaluation:
         )
 
     @cached_property
+    def maximal_batch_enumeration(self) -> FindingRecipeCandidateBatchEnumeration:
+        """Batches that take a maximal compatible choice from every conflict component.
+
+        Candidates in different components of the incompatibility graph are
+        pairwise compatible, so applying them together commutes with applying
+        any subset first and the rest later: a subset batch reaches no terminal
+        that a maximal batch's trajectory does not. Enumerating every subset of
+        independent candidates is therefore exponential work for one result
+        (2^n states for n independent rewrites, each holding a projected scan).
+        The frontier uses these batches when every one of them simulates
+        cleanly, and falls back to the full enumeration when one does not.
+        """
+
+        choices = tuple(
+            self.maximal_compatible_sets(component)
+            for component in self.components_for(
+                self.stable_participating_candidate_indices
+            )
+        )
+        batches: list[tuple[int, ...]] = []
+        for combination in product(*choices):
+            if len(batches) == self.frontier_budget.max_candidate_batches:
+                return FindingRecipeCandidateBatchEnumeration(
+                    candidate_index_batches=tuple(batches), truncated=True
+                )
+            batches.append(
+                tuple(
+                    sorted(
+                        (index for chosen in combination for index in chosen),
+                        key=lambda index: self.candidates[index].stable_identity_key,
+                    )
+                )
+            )
+        return FindingRecipeCandidateBatchEnumeration(
+            candidate_index_batches=tuple(batch for batch in batches if batch),
+            truncated=False,
+        )
+
+    def maximal_compatible_sets(
+        self, component: tuple[int, ...]
+    ) -> tuple[tuple[int, ...], ...]:
+        """The maximal pairwise-compatible subsets of one conflict component."""
+
+        incompatible = {
+            assessment.edge
+            for assessment in self.pair_assessments
+            if not assessment.disposition.compatible
+        }
+
+        def fits(chosen: tuple[int, ...], index: int) -> bool:
+            return all(
+                tuple(sorted((selected, index))) not in incompatible
+                for selected in chosen
+            )
+
+        sets: list[tuple[int, ...]] = [()]
+        for index in component:
+            sets = [
+                *sets,
+                *(
+                    (*chosen, index)
+                    for chosen in sets
+                    if fits(chosen, index)
+                ),
+            ]
+        maximal = [
+            chosen
+            for chosen in sets
+            if chosen
+            and not any(
+                set(chosen) < set(other) for other in sets if len(other) > len(chosen)
+            )
+        ]
+        return tuple(maximal)
+
+    @cached_property
     def trajectory_frontier(self) -> FindingRecipeTrajectoryFrontier:
         obstacles = [
             FindingRecipeTrajectoryObstacle(
@@ -3159,10 +3235,18 @@ class CurrentSnapshotRecipeBatchEvaluation:
             for assessment in self.pair_assessments
             if assessment.disposition.unproved
         )
+        maximal = self.maximal_batch_enumeration
+        enumeration = (
+            maximal
+            if not maximal.truncated
+            and all(
+                self.simulate_recipe_set(candidate_indices).assessment.disposition.clean
+                for candidate_indices in maximal.candidate_index_batches
+            )
+            else self.trajectory_batch_enumeration
+        )
         branches: list[FindingRecipeTrajectoryBranch] = []
-        for (
-            candidate_indices
-        ) in self.trajectory_batch_enumeration.candidate_index_batches:
+        for candidate_indices in enumeration.candidate_index_batches:
             simulation = self.simulate_recipe_set(candidate_indices)
             if simulation.assessment.disposition.clean:
                 branches.append(
@@ -3187,7 +3271,7 @@ class CurrentSnapshotRecipeBatchEvaluation:
                         reason=simulation.assessment.reason,
                     )
                 )
-        if self.trajectory_batch_enumeration.truncated:
+        if enumeration.truncated:
             obstacles.append(
                 FindingRecipeTrajectoryObstacle(
                     kind=FindingRecipeTrajectoryObstacleKind.ENUMERATION_BUDGET,
