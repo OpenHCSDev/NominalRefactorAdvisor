@@ -140,3 +140,7 @@ class ForeignAdapterBindChainConcept(ClassFamilyAuthorityConcept):
 
 class StaticProjectionAdapterConcept(ClassFamilyAuthorityConcept):
     """Answer a static projection class's questions from one declared adapter family."""
+
+
+class LegacyPathErasureConcept(NominalBoundaryConcept):
+    """Delete an old path once its replacement owns the behavior."""

@@ -9,11 +9,13 @@ from nominal_refactor_advisor.ast_tools import parse_python_modules
 from nominal_refactor_advisor.codemod import (
     CodemodSourceSnapshot,
     DispatchToPolymorphismOperation,
+    EraseDeadCompatibilityOperation,
     FindingRecipeEvaluator,
 )
 from nominal_refactor_advisor.detectors import (
     ExactKeySetDetector,
     ForeignAbsenceProbeDetector,
+    LegacyPathMarkerDetector,
     NamedAttributeDetector,
     StringKindDispatchDetector,
 )
@@ -24,6 +26,7 @@ DETECTORS = (
     NamedAttributeDetector,
     ExactKeySetDetector,
     ForeignAbsenceProbeDetector,
+    LegacyPathMarkerDetector,
 )
 
 
@@ -256,9 +259,106 @@ def test_own_state_modules_and_truth_tests_are_not_foreign_probes(tmp_path: Path
 # ---- legacy markers
 
 
+def test_a_legacy_function_lists_the_consumers_still_on_it(tmp_path: Path):
+    findings = _findings(
+        tmp_path,
+        LegacyPathMarkerDetector,
+        {
+            "old": "def load(path):\n    return path\n\n\ndef legacy_load(path):\n    return load(path)\n",
+            "user": "from old import legacy_load\n\n\ndef f():\n    return legacy_load('x')\n",
+        },
+    )
+    (finding,) = findings
+    assert finding.pattern_id is PatternId.LEGACY_PATH_MARKER
+    assert "still use the identifier `legacy_load`" in finding.summary
+    assert "user.py" in finding.summary
+    assert [location.symbol for location in finding.evidence][-1] == "uses legacy_load"
+    assert "EraseDeadCompatibilityOperation" in finding.summary
+
+
+def test_deprecation_warnings_docstrings_and_parameters_mark_the_old_path(
+    tmp_path: Path,
+):
+    source = (
+        "import warnings\n\n\n"
+        "def old(path):\n    warnings.warn('x', DeprecationWarning)\n    return path\n\n\n"
+        "def documented():\n    '''Deprecated: use new.'''\n\n\n"
+        "def f(path, mode=None, legacy_mode=False):\n    return path\n"
+    )
+    findings = _findings(tmp_path, LegacyPathMarkerDetector, {"m": source})
+    assert sorted(finding.evidence[0].symbol for finding in findings) == [
+        "documented",
+        "f.legacy_mode",
+        "old",
+    ]
+
+
+def test_only_the_summary_line_of_a_docstring_declares_the_path_old(tmp_path: Path):
+    source = (
+        "def parse(path):\n    '''Read a path.\n\n    Replaces the deprecated reader.\n    '''\n"
+        "    return path\n"
+    )
+    assert _findings(tmp_path, LegacyPathMarkerDetector, {"m": source}) == []
+
+
+def test_ordinary_declarations_and_plain_imports_of_marked_names_are_not_markers(
+    tmp_path: Path,
+):
+    source = (
+        "from elsewhere import legacy_thing\n\n\n"
+        "def load(path):\n    '''Read a path.'''\n    return legacy_thing(path)\n"
+    )
+    assert _findings(tmp_path, LegacyPathMarkerDetector, {"m": source}) == []
+
+
+def test_an_unused_legacy_function_gets_an_executable_erasure(tmp_path: Path):
+    (finding,) = _findings(
+        tmp_path,
+        LegacyPathMarkerDetector,
+        {
+            "m": "def load(path):\n    return path\n\n\n"
+            "def legacy_load(path):\n    return load(path)\n"
+        },
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    evaluation = LegacyPathMarkerDetector().evaluate_recipe_for_finding(
+        finding, snapshot
+    )
+    (operation,) = evaluation.executable_recipe.operations
+    assert isinstance(operation, EraseDeadCompatibilityOperation)
+
+
+def test_a_marked_parameter_is_not_widened_to_its_function(tmp_path: Path):
+    (finding,) = _findings(
+        tmp_path,
+        LegacyPathMarkerDetector,
+        {"m": "def f(path, mode=None, legacy_mode=False):\n    return path\n"},
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    evaluation = LegacyPathMarkerDetector().evaluate_recipe_for_finding(
+        finding, snapshot
+    )
+    assert "is not a function or class declaration" in evaluation.rejection_reason
+
+
 # ---- dead modules
 
 
 # ---- forwarding facades
+
+
+def test_a_legacy_word_with_no_replacement_beside_it_is_not_a_marker(tmp_path: Path):
+    source = (
+        "class LegacyWord:\n    LEGACY = 'legacy'\n\n\n"
+        "def parse_legacy_format(text):\n    return text\n\n\n"
+        "def f(path, legacy_mode=False):\n    return path\n"
+    )
+    assert _findings(tmp_path, LegacyPathMarkerDetector, {"m": source}) == []
+
+
+def test_an_alias_of_a_replacement_under_a_legacy_name_is_a_marker(tmp_path: Path):
+    source = "def load(path):\n    return path\n\n\nlegacy_load = load\n"
+    (finding,) = _findings(tmp_path, LegacyPathMarkerDetector, {"m": source})
+    assert "(alias, of load)" in finding.summary
 
 

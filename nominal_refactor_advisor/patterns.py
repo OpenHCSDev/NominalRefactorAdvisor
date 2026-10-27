@@ -438,6 +438,16 @@ class PatternId(IntEnum):
         ),
         witness_capabilities=(CapabilityTag.PROVENANCE,),
     )
+    LEGACY_PATH_MARKER = _pattern(
+        stable_id=34,
+        display_name="Legacy Path Kept Beside Its Replacement",
+        required_relation=(
+            "A declaration, parameter or warning names itself legacy, "
+            "compatibility or deprecated, so the old path is kept alive beside "
+            "its replacement."
+        ),
+        witness_capabilities=(CapabilityTag.PROVENANCE,),
+    )
 
     def __new__(
         cls,

@@ -418,3 +418,350 @@ class ForeignAbsenceSiteFamily(RestatingSiteFamily):
         return isinstance(owner, ast.ClassDef) and bool(arguments) and arguments[0].arg == root.id
 
 
+class LegacyWord(StrEnum):
+    """Words with which a path declares itself the old one, kept for an old caller."""
+
+    LEGACY = "legacy"
+    COMPAT = "compat"
+    BACKCOMPAT = "backcompat"
+    DEPRECATED = "deprecated"
+    DEPRECATE = "deprecate"
+    DEPRECATION = "deprecation"
+    SHIM = "shim"
+
+    @classmethod
+    def words(cls, identifier: str) -> list[str]:
+        return [
+            word.lower()
+            for word in re.findall(r"[A-Z]?[a-z0-9]+|[A-Z]+(?![a-z])", identifier)
+        ]
+
+    @classmethod
+    def in_identifier(cls, identifier: str) -> bool:
+        """Whether a snake_case or CamelCase identifier has one of these as a word."""
+
+        return any(word in cls for word in cls.words(identifier))
+
+    @classmethod
+    def stem(cls, identifier: str) -> str:
+        """The identifier without these words: what the old path is the old form of."""
+
+        return "".join(word for word in cls.words(identifier) if word not in cls)
+
+    @classmethod
+    def in_prose(cls, text: str) -> bool:
+        """Whether prose says the path is old: one of these as a whole word, or an old-caller phrase."""
+
+        lowered = text.lower()
+        return any(
+            word in cls for word in re.findall(r"[a-z]+", lowered)
+        ) or bool(re.search(r"backwards?[ -]compatib", lowered))
+
+
+class LegacyMarkerSiteFamily(RestatingSiteFamily):
+    """A path that says it is the old one, beside what replaces it.
+
+    Three self-declarations count: a deprecation mechanism (a `warn` of a
+    deprecation class, a deprecation decorator), prose in the docstring's summary line, and an
+    identifier with a marker word *beside a sibling of the same stem* (the old
+    path kept next to its replacement), or an alias `old = new` of a replacement.
+    A name that merely contains a marker word, with no sibling, is not one.
+    """
+
+    @classmethod
+    def sites(cls, parsed_module: ParsedModule) -> Iterator[RestatingSite]:
+        index = module_syntax_index(parsed_module.module)
+        for node_type in (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef):
+            for node_index, node in index.indexed_nodes_of_type(node_type):
+                yield from cls.declaration(parsed_module, index, node_index, node)
+        for node_index, node in index.indexed_nodes_of_type(ast.arguments):
+            siblings = {
+                argument.arg
+                for argument in (
+                    *node.posonlyargs,
+                    *node.args,
+                    *node.kwonlyargs,
+                    *([node.vararg] if node.vararg else []),
+                    *([node.kwarg] if node.kwarg else []),
+                )
+            }
+            for argument in sorted(siblings):
+                if cls.has_replacement(argument, siblings):
+                    argument_node = next(
+                        candidate
+                        for candidate in (*node.posonlyargs, *node.args, *node.kwonlyargs)
+                        if candidate.arg == argument
+                    )
+                    yield cls.site(
+                        parsed_module,
+                        argument_node,
+                        cls.declared_symbol(index.lexical_symbol(node_index), argument),
+                        argument,
+                        ("parameter", "beside its replacement"),
+                    )
+        for node_index, node in (
+            *index.indexed_nodes_of_type(ast.Assign),
+            *index.indexed_nodes_of_type(ast.AnnAssign),
+        ):
+            owner = index.parent_node(node_index)
+            if node.value is not None and isinstance(owner, (ast.Module, ast.ClassDef)):
+                replacement = cls.aliased(node.value)
+                for target in cls.assigned_names(node):
+                    if replacement is not None and LegacyWord.in_identifier(target):
+                        yield cls.site(
+                            parsed_module,
+                            node,
+                            cls.declared_symbol(index.lexical_symbol(node_index), target),
+                            target,
+                            ("alias", f"of {replacement}"),
+                        )
+        for node_index, node in index.indexed_nodes_of_type(ast.alias):
+            # An alias renames the old path; a plain import of a marked name is its consumer.
+            bound = node.asname or ""
+            if bound and LegacyWord.in_identifier(bound) and not LegacyWord.in_identifier(node.name):
+                yield cls.site(
+                    parsed_module,
+                    node,
+                    cls.declared_symbol(index.lexical_symbol(node_index), bound),
+                    bound,
+                    ("import alias", f"of {node.name}"),
+                )
+        for node_index, call in index.indexed_nodes_of_type(ast.Call):
+            warned = cls.warned_legacy_class(call)
+            if warned is not None:
+                symbol = index.lexical_symbol(node_index)
+                yield cls.site(parsed_module, call, symbol, symbol.rpartition(".")[2], ("warning", warned))
+
+    @classmethod
+    def declaration(
+        cls,
+        parsed_module: ParsedModule,
+        index,
+        node_index: int,
+        node: ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef,
+    ) -> Iterator[RestatingSite]:
+        parent = index.parent_node(node_index)
+        siblings = {
+            name
+            for statement in index.children_by_node.get(parent, ())
+            if isinstance(statement, ast.stmt)
+            for name in cls.declared_names(statement)
+        }
+        why = cls.reason(node, siblings)
+        if why is None:
+            return
+        symbol = cls.declared_symbol(index.lexical_symbol(node_index), node.name)
+        yield cls.site(
+            parsed_module, node, symbol, node.name, (type(node).__name__, why)
+        )
+
+    @staticmethod
+    def declared_symbol(owner: str, name: str) -> str:
+        """The dotted symbol of a name declared inside `owner`."""
+
+        return name if owner == "<module>" else f"{owner}.{name}"
+
+    @staticmethod
+    def has_replacement(name: str, siblings: set[str]) -> bool:
+        """Whether `name` has a marker word and a sibling of the same stem without one."""
+
+        stem = LegacyWord.stem(name)
+        return (
+            LegacyWord.in_identifier(name)
+            and bool(stem)
+            and any(
+                sibling != name
+                and not LegacyWord.in_identifier(sibling)
+                and LegacyWord.stem(sibling) == stem
+                for sibling in siblings
+            )
+        )
+
+    @classmethod
+    def reason(
+        cls,
+        node: ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef,
+        siblings: set[str],
+    ) -> str | None:
+        if cls.has_replacement(node.name, siblings):
+            return "named so, beside its replacement"
+        if any(
+            LegacyWord.in_identifier(ast.unparse(decorator)) for decorator in node.decorator_list
+        ):
+            return "decorated so"
+        docstring = ast.get_docstring(node)
+        # The summary line says what the thing is; later lines may merely discuss the idea.
+        if docstring is not None and LegacyWord.in_prose(docstring.splitlines()[0]):
+            return "documented so"
+        return None
+
+    @staticmethod
+    def declared_names(statement: ast.stmt) -> Iterator[str]:
+        match statement:
+            case ast.FunctionDef(name=name) | ast.AsyncFunctionDef(name=name) | ast.ClassDef(name=name):
+                yield name
+            case ast.Assign(targets=targets):
+                for target in targets:
+                    if isinstance(target, ast.Name):
+                        yield target.id
+            case ast.AnnAssign(target=ast.Name(id=name)):
+                yield name
+
+    @staticmethod
+    def aliased(value: ast.expr) -> str | None:
+        """The replacement an assignment aliases, when its value is a plain reference."""
+
+        return ast.unparse(value) if isinstance(value, (ast.Name, ast.Attribute)) else None
+
+    @staticmethod
+    def assigned_names(node: ast.Assign | ast.AnnAssign) -> Iterator[str]:
+        targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+        for target in targets:
+            if isinstance(target, ast.Name):
+                yield target.id
+
+    @staticmethod
+    def warned_legacy_class(call: ast.Call) -> str | None:
+        """The warning class, named for an old path, that a `warn(...)` call raises."""
+
+        match call.func:
+            case ast.Attribute(attr="warn") | ast.Name(id="warn"):
+                pass
+            case _:
+                return None
+        for argument in (*call.args, *(keyword.value for keyword in call.keywords)):
+            spelled = ast.unparse(argument)
+            if isinstance(argument, (ast.Name, ast.Attribute)) and LegacyWord.in_identifier(spelled):
+                return spelled
+        return None
+
+
+@dataclass(frozen=True)
+class ModuleReferenceFacts:
+    """What one module imports, names and uses, for finding who still reaches a path."""
+
+    module_name: str
+    file_path: str
+    is_package_init: bool
+    runs_as_script: bool
+    enumerates_modules: bool
+    imported: tuple[str, ...]
+    named: tuple[str, ...]
+    referenced: tuple[tuple[str, int], ...]
+
+    @property
+    def package_name(self) -> str:
+        """The package this module sits in (itself, if it is a package's `__init__`)."""
+
+        return self.module_name if self.is_package_init else self.module_name.rpartition(".")[0]
+
+    @property
+    def is_package_entry_file(self) -> bool:
+        """`__init__.py` and `__main__.py` are reached by their package, not by import."""
+
+        return self.is_package_init or Path(self.file_path).name == "__main__.py"
+
+
+class ModuleReferenceFamily(ShapeFamily[ModuleReferenceFacts]):
+    item_type = ModuleReferenceFacts
+    DOTTED_NAME = re.compile(r"[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)+")
+    ENUMERATORS = frozenset(("iter_modules", "walk_packages"))
+
+    @classmethod
+    def collect(cls, parsed_module: ParsedModule) -> list[ModuleReferenceFacts]:
+        index = module_syntax_index(parsed_module.module)
+        identity = PythonModulePathIdentity(
+            path=parsed_module.path,
+            import_name=parsed_module.module_name,
+            is_package_init=parsed_module.is_package_init,
+        )
+        imported: set[str] = set()
+        for _node_index, node in index.indexed_nodes_of_type(ast.Import):
+            for alias in node.names:
+                parts = alias.name.split(".")
+                imported.update(".".join(parts[: stop + 1]) for stop in range(len(parts)))
+        for _node_index, node in index.indexed_nodes_of_type(ast.ImportFrom):
+            base = identity.resolve_import_from_module(
+                imported_module=node.module, level=node.level
+            )
+            if base is None:
+                continue
+            imported.add(base)
+            imported.update(f"{base}.{alias.name}" for alias in node.names if alias.name != "*")
+        used: list[tuple[str, int]] = [
+            *((node.id, node.lineno) for _i, node in index.indexed_nodes_of_type(ast.Name)),
+            *((node.attr, node.lineno) for _i, node in index.indexed_nodes_of_type(ast.Attribute)),
+            *(
+                (node.arg, node.value.lineno)
+                for _i, node in index.indexed_nodes_of_type(ast.keyword)
+                if node.arg is not None
+            ),
+        ]
+        referenced: dict[str, int] = {}
+        for name, line in used:
+            referenced[name] = min(line, referenced.get(name, line))
+        named = {
+            node.value
+            for _node_index, node in index.indexed_nodes_of_type(ast.Constant)
+            if isinstance(node.value, str) and cls.DOTTED_NAME.fullmatch(node.value)
+        }
+        return [
+            ModuleReferenceFacts(
+                module_name=parsed_module.module_name,
+                file_path=parsed_module.file_path,
+                is_package_init=parsed_module.is_package_init,
+                runs_as_script=any(
+                    cls.is_main_guard(node)
+                    for node in parsed_module.module.body
+                    if isinstance(node, ast.If)
+                ),
+                enumerates_modules=any(
+                    cls.is_enumerator(call) for _i, call in index.indexed_nodes_of_type(ast.Call)
+                ),
+                imported=tuple(sorted(imported)),
+                named=tuple(sorted(named)),
+                referenced=tuple(sorted(referenced.items())),
+            )
+        ]
+
+    @classmethod
+    def is_enumerator(cls, call: ast.Call) -> bool:
+        """Whether the call lists a package's modules, which a loader then imports."""
+
+        match call.func:
+            case ast.Attribute(attr=name) | ast.Name(id=name):
+                return name in cls.ENUMERATORS
+        return False
+
+    @staticmethod
+    def is_main_guard(node: ast.If) -> bool:
+        match node.test:
+            case ast.Compare(
+                left=ast.Name(id="__name__"),
+                ops=[ast.Eq()],
+                comparators=[ast.Constant(value="__main__")],
+            ):
+                return True
+        return False
+
+
+@dataclass(frozen=True)
+class ReferenceIndex:
+    """Where scanned modules use each identifier: first use per module."""
+
+    uses_by_name: Mapping[str, tuple[tuple[str, int], ...]]
+
+    @classmethod
+    def from_facts(cls, facts: Sequence[ModuleReferenceFacts]) -> "ReferenceIndex":
+        uses: dict[str, list[tuple[str, int]]] = defaultdict(list)
+        for module in facts:
+            for name, line in module.referenced:
+                uses[name].append((module.file_path, line))
+        return cls({name: tuple(found) for name, found in uses.items()})
+
+    def consumers_of(self, name: str, declared_at: tuple[str, int]) -> tuple[tuple[str, int], ...]:
+        return tuple(
+            use for use in self.uses_by_name.get(name, ()) if use != declared_at
+        )
+
+

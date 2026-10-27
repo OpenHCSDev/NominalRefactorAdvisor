@@ -18,9 +18,11 @@ from typing import ClassVar, Generic, TypeVar, cast
 
 from ..codemod import (
     DispatchToPolymorphismOperation,
+    EraseDeadCompatibilityOperation,
     LiteralDispatchFindingRecipeSynthesizer,
     RefactorRecipeOperation,
 )
+from ..codemod_legacy_path_recipe import LegacyPathErasureFindingRecipeSynthesizer
 from ..models import DispatchCountMetrics, RefactorFinding, SourceLocation
 from ..observation_families import FieldObservationFamily
 from ..observation_shapes import FieldObservation, FieldOriginKind
@@ -28,7 +30,11 @@ from ..patterns import PatternId
 from ..restated_fact_observations import (
     ExactKeySetSiteFamily,
     ForeignAbsenceSiteFamily,
+    LegacyMarkerSiteFamily,
+    ModuleReferenceFacts,
+    ModuleReferenceFamily,
     NamedAttributeSiteFamily,
+    ReferenceIndex,
     RestatingSite,
     RestatingSiteFamily,
     RestatingSiteModule,
@@ -48,6 +54,8 @@ ContextT = TypeVar("ContextT")
 
 # A finding lists this many consumers or keys in its text; evidence keeps them all.
 LISTED_SITES = 8
+# Consumers of a legacy path are kept as evidence up to this many.
+EVIDENCED_CONSUMERS = 25
 
 
 @dataclass(frozen=True)
@@ -303,6 +311,16 @@ def _declared_records(projections_by_family: CompactProjectionGroups) -> Declare
     )
 
 
+def _reference_facts(
+    projections_by_family: CompactProjectionGroups,
+) -> Sequence[ModuleReferenceFacts]:
+    return cast(Sequence[ModuleReferenceFacts], projections_by_family[ModuleReferenceFamily])
+
+
+def _reference_index(projections_by_family: CompactProjectionGroups) -> ReferenceIndex:
+    return ReferenceIndex.from_facts(_reference_facts(projections_by_family))
+
+
 class ExactKeySetDetector(JoinedRestatedFactDetector[DeclaredRecords]):
     """A literal key collection compared with, or subtracted from, a mapping's keys."""
 
@@ -382,9 +400,63 @@ class ForeignAbsenceProbeDetector(SingleFamilyRestatedFactDetector):
         )
 
 
+class LegacyPathMarkerDetector(
+    JoinedRestatedFactDetector[ReferenceIndex], LegacyPathErasureFindingRecipeSynthesizer
+):
+    """A declaration, parameter, import alias or warning that says it is the old path."""
+
+    module_projection_families = (LegacyMarkerSiteFamily, ModuleReferenceFamily)
+    restated = RestatedFact(
+        fact="The path declares itself legacy, compatibility or deprecated, so it restates behaviour its replacement already owns.",
+        owner="The owner is the replacement; the old path has nothing left to own.",
+        factoring="Move the consumers listed onto the replacement, then delete the old path.",
+        operation=EraseDeadCompatibilityOperation,
+    )
+    finding_spec = restated.spec(
+        PatternId.LEGACY_PATH_MARKER,
+        "A legacy path is kept beside its replacement",
+        "the old path deleted once its consumers use the replacement",
+        "a function, class, parameter, assignment, import alias or warning that names itself legacy, compatibility, deprecated, backward or shim",
+        (),
+        (ObservationTag.PARTIAL_VIEW,),
+    )
+
+    compact_shared_group_context_builder = staticmethod(_reference_index)
+
+    def consumers(
+        self, sites: Sequence[RestatingSite], context: ReferenceIndex
+    ) -> tuple[tuple[str, int], ...]:
+        site = sites[0]
+        return context.consumers_of(site.group, (site.file_path, site.lineno))
+
+    def describe(self, sites: Sequence[RestatingSite], context: ReferenceIndex) -> str:
+        site = sites[0]
+        kind, why = site.detail
+        consumers = self.consumers(sites, context)
+        where = _listed(f"{path}:{line}" for path, line in consumers)
+        still = (
+            f"{len(consumers)} module(s) still use the identifier `{site.group}`: {where}."
+            if consumers
+            else f"no scanned module uses the identifier `{site.group}`."
+        )
+        return f"`{site.symbol}` ({kind}, {why}) is the old path; {still}"
+
+    def evidence(
+        self, sites: Sequence[RestatingSite], context: ReferenceIndex
+    ) -> tuple[SourceLocation, ...]:
+        return (
+            *super().evidence(sites, context),
+            *(
+                SourceLocation(path, line, f"uses {sites[0].group}")
+                for path, line in self.consumers(sites, context)[:EVIDENCED_CONSUMERS]
+            ),
+        )
+
+
 __all__ = (
     "ExactKeySetDetector",
     "ForeignAbsenceProbeDetector",
+    "LegacyPathMarkerDetector",
     "NamedAttributeDetector",
     "StringKindDispatchDetector",
 )
