@@ -47,7 +47,13 @@ should answer once. m consumers × n cases of restated decisions become m + n.
    that tests two or more members **on the same subject**, grouped by member set,
    and which of them bypass an owner that already exists. Largest bypassing group
    first. Tests on `x` and `x.value` are a structural path, not a case branch,
-   and do not count.
+   and do not count. Then run the full scan (`--json`, budget 600, `complete`, zero
+   omitted): its restated-fact detectors (string dispatch on a kind, attribute by
+   name, exact key sets, foreign absence probes, forwarding facades, legacy paths,
+   dead modules) each report the fact restated, the owner that should hold it and the
+   factoring; a finding whose recipe names an operation is fixable now, the rest are
+   the codemod backlog. They are findings, never "leads": a restated fact is slop by
+   definition, and only its fix can be unproved.
 2. **Pick the owner shape** for the top group:
    - consumers only ask *which nodes are in the set* → a `ForeignFamily`
      (`foreign_family.py`, e.g. `FunctionDefinition`): `within(nodes)` is the
