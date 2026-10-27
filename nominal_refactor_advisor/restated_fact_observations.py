@@ -25,6 +25,8 @@ from .python_module_identity import PythonModulePathIdentity
 
 # A subject needs this many distinct string arms before it is a family spelled out.
 STRING_DISPATCH_MIN_ARMS = 3
+# A key set needs this many keys before it is a record rather than one probe.
+EXACT_KEY_SET_MIN_KEYS = 2
 
 
 @dataclass(frozen=True)
@@ -245,5 +247,127 @@ class NamedAttributeSiteFamily(RestatingSiteFamily):
             case ast.Name(id=name):
                 return constants.get(name)
         return None
+
+
+class _KeyViewSyntax:
+    """Recognise a mapping's key collection and a literal key collection."""
+
+    WRAPPERS = frozenset(
+        (
+            BuiltinCallName.SET,
+            BuiltinCallName.FROZENSET,
+            BuiltinCallName.SORTED,
+            BuiltinCallName.LIST,
+            BuiltinCallName.TUPLE,
+        )
+    )
+    SET_METHODS = frozenset(
+        ("issubset", "issuperset", "isdisjoint", "difference", "symmetric_difference")
+    )
+    KEYS = "keys"
+
+    @classmethod
+    def mapping_of(cls, node: ast.expr) -> tuple[ast.expr, bool] | None:
+        """The expression whose keys `node` collects, and whether `.keys()` says it is a mapping.
+
+        A bare `set(x)` collects a mapping's keys only if `x` is a mapping, which the
+        caller must establish; `x.keys()` establishes it.
+        """
+
+        match node:
+            case ast.Call(func=ast.Attribute(value=receiver, attr=cls.KEYS), args=[]):
+                return receiver, True
+            case ast.Call(func=ast.Name(id=name), args=[inner]) if name in cls.WRAPPERS:
+                keys_of = cls.mapping_of(inner)
+                if keys_of is not None:
+                    return keys_of
+                if isinstance(inner, (ast.Name, ast.Attribute, ast.Subscript)):
+                    return inner, False
+        return None
+
+    @classmethod
+    def literal_keys(cls, node: ast.expr) -> tuple[str, ...] | None:
+        keys = _literal_strings(node)
+        if keys is None or len(set(keys)) < EXACT_KEY_SET_MIN_KEYS:
+            return None
+        return tuple(sorted(set(keys)))
+
+
+class ExactKeySetSiteFamily(RestatingSiteFamily):
+    """A literal key collection compared with, or subtracted from, a mapping's keys."""
+
+    @classmethod
+    def sites(cls, parsed_module: ParsedModule) -> Iterator[RestatingSite]:
+        index = module_syntax_index(parsed_module.module)
+        keyed = cls.string_keyed_receivers(index)
+        for node_index, node in (
+            *index.indexed_nodes_of_type(ast.Compare),
+            *index.indexed_nodes_of_type(ast.BinOp),
+            *index.indexed_nodes_of_type(ast.Call),
+            *index.indexed_nodes_of_type(ast.GeneratorExp),
+        ):
+            function = index.scopes[index.scope_ids[node_index]].executable_function_index
+            for mapping, keys in cls.restatements(node, keyed[function]):
+                yield cls.site(
+                    parsed_module,
+                    node,
+                    index.lexical_symbol(node_index),
+                    f"{node.lineno}:{node.col_offset}",
+                    (ast.unparse(mapping), *keys),
+                )
+
+    @staticmethod
+    def string_keyed_receivers(index) -> dict[int, set[str]]:
+        """Per function, the expressions it reads by a string key: those are mappings."""
+
+        keyed: dict[int, set[str]] = defaultdict(set)
+        for node_index, node in index.indexed_nodes_of_type(ast.Subscript):
+            if isinstance(node.slice, ast.Constant) and isinstance(node.slice.value, str):
+                function = index.scopes[index.scope_ids[node_index]].executable_function_index
+                keyed[function].add(ast.unparse(node.value))
+        for node_index, node in index.indexed_nodes_of_type(ast.Call):
+            match node:
+                case ast.Call(
+                    func=ast.Attribute(value=receiver, attr="get" | "pop" | "setdefault"),
+                    args=[ast.Constant(value=str()), *_],
+                ):
+                    function = index.scopes[index.scope_ids[node_index]].executable_function_index
+                    keyed[function].add(ast.unparse(receiver))
+        return keyed
+
+    @classmethod
+    def restatements(
+        cls, node: ast.AST, keyed: set[str]
+    ) -> Iterator[tuple[ast.expr, tuple[str, ...]]]:
+        match node:
+            case ast.Compare(left=left, ops=[ast.Eq() | ast.NotEq() | ast.Lt() | ast.LtE() | ast.Gt() | ast.GtE()], comparators=[right]):
+                yield from cls.pair(left, right, keyed)
+            case ast.BinOp(left=left, op=ast.Sub() | ast.BitAnd() | ast.BitOr() | ast.BitXor(), right=right):
+                yield from cls.pair(left, right, keyed)
+            case ast.Call(func=ast.Attribute(value=viewed, attr=method), args=[literal]) if (
+                method in _KeyViewSyntax.SET_METHODS
+            ):
+                yield from cls.pair(viewed, literal, keyed)
+            case ast.GeneratorExp(
+                elt=ast.Compare(left=ast.Name(id=key), ops=[ast.In() | ast.NotIn()], comparators=[mapping]),
+                generators=[ast.comprehension(target=ast.Name(id=target), iter=literal)],
+            ) if key == target:
+                keys = _KeyViewSyntax.literal_keys(literal)
+                if keys is not None and ast.unparse(mapping) in keyed:
+                    yield mapping, keys
+
+    @staticmethod
+    def pair(
+        first: ast.expr, second: ast.expr, keyed: set[str]
+    ) -> Iterator[tuple[ast.expr, tuple[str, ...]]]:
+        for viewed, literal in ((first, second), (second, first)):
+            found = _KeyViewSyntax.mapping_of(viewed)
+            keys = _KeyViewSyntax.literal_keys(literal)
+            if found is None or keys is None:
+                continue
+            mapping, by_keys_view = found
+            if by_keys_view or ast.unparse(mapping) in keyed:
+                yield mapping, keys
+                return
 
 

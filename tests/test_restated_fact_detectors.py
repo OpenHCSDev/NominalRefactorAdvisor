@@ -11,12 +11,17 @@ from nominal_refactor_advisor.codemod import (
     DispatchToPolymorphismOperation,
     FindingRecipeEvaluator,
 )
-from nominal_refactor_advisor.detectors import NamedAttributeDetector, StringKindDispatchDetector
+from nominal_refactor_advisor.detectors import (
+    ExactKeySetDetector,
+    NamedAttributeDetector,
+    StringKindDispatchDetector,
+)
 from nominal_refactor_advisor.patterns import PatternId
 
 DETECTORS = (
     StringKindDispatchDetector,
     NamedAttributeDetector,
+    ExactKeySetDetector,
 )
 
 
@@ -166,6 +171,59 @@ def test_a_shadowed_getattr_is_a_method_not_the_builtin(tmp_path: Path):
 
 
 # ---- exact key sets
+
+RECORD = (
+    "from dataclasses import dataclass\n\n\n@dataclass\nclass Row:\n"
+    "    id: int\n    name: str\n\n\n"
+)
+
+
+def test_mapping_keys_compared_with_a_literal_set_are_a_finding(tmp_path: Path):
+    source = (
+        "def check(payload):\n"
+        "    if set(payload) != {'id', 'name'}:\n        raise ValueError\n"
+        "    return payload.keys() <= {'id', 'name', 'x'} and payload['id']\n"
+    )
+    findings = _findings(tmp_path, ExactKeySetDetector, {"m": source})
+    assert [_lines([finding]) for finding in findings] == [[2], [4]]
+    assert findings[0].pattern_id is PatternId.EXACT_KEY_SET
+    assert "Owner: The owner is a record class whose fields are these keys." in (
+        findings[0].summary
+    )
+
+
+def test_a_dataclass_with_exactly_those_fields_is_the_resolved_owner(tmp_path: Path):
+    source = RECORD + (
+        "def check(payload):\n    return set(payload) == {'id', 'name'} and payload.get('id')\n"
+    )
+    (finding,) = _findings(tmp_path, ExactKeySetDetector, {"m": source})
+    assert "`Row`" in finding.summary and "already declares exactly these fields" in (
+        finding.summary
+    )
+    assert finding.authority_evidence is not None
+    assert finding.authority_evidence.symbol == "Row"
+
+
+def test_generator_membership_over_a_literal_is_a_finding(tmp_path: Path):
+    source = "def ok(m):\n    return all(k in m for k in ('id', 'name')) and m['id']\n"
+    assert len(_findings(tmp_path, ExactKeySetDetector, {"m": source})) == 1
+
+
+def test_the_characters_or_items_of_a_non_mapping_are_not_a_record(tmp_path: Path):
+    source = (
+        "def f(text, names):\n"
+        "    return set(text) & {'(', '['} or set(names) == {'a', 'b'}\n"
+    )
+    assert _findings(tmp_path, ExactKeySetDetector, {"m": source}) == []
+
+
+def test_one_key_or_a_non_literal_side_is_not_a_record(tmp_path: Path):
+    source = (
+        "KEYS = {'id', 'name'}\n"
+        "def check(payload, other):\n"
+        "    return set(payload) == {'id'} or set(payload) == KEYS or set(payload) == set(other)\n"
+    )
+    assert _findings(tmp_path, ExactKeySetDetector, {"m": source}) == []
 
 
 # ---- foreign absence probes

@@ -418,6 +418,16 @@ class PatternId(IntEnum):
         ),
         witness_capabilities=(CapabilityTag.PROVENANCE,),
     )
+    EXACT_KEY_SET = _pattern(
+        stable_id=32,
+        display_name="Exact Key Set",
+        required_relation=(
+            "A literal collection of string keys is compared with a mapping's "
+            "keys, so the site restates the field list of a record that has no "
+            "declaration or whose declaration it does not use."
+        ),
+        witness_capabilities=(CapabilityTag.PROVENANCE,),
+    )
 
     def __new__(
         cls,

@@ -22,8 +22,11 @@ from ..codemod import (
     RefactorRecipeOperation,
 )
 from ..models import DispatchCountMetrics, RefactorFinding, SourceLocation
+from ..observation_families import FieldObservationFamily
+from ..observation_shapes import FieldObservation, FieldOriginKind
 from ..patterns import PatternId
 from ..restated_fact_observations import (
+    ExactKeySetSiteFamily,
     NamedAttributeSiteFamily,
     RestatingSite,
     RestatingSiteFamily,
@@ -33,6 +36,8 @@ from ..restated_fact_observations import (
 from ..taxonomy import CapabilityTag, ObservationTag
 from ._base import (
     CompactModuleProjectionDetectorMixin,
+    CompactMultiModuleProjectionDetectorMixin,
+    CompactProjectionGroups,
     DetectorConfig,
     IssueDetector,
     high_confidence_certified_spec,
@@ -174,6 +179,34 @@ class SingleFamilyRestatedFactDetector(
         )
 
 
+class JoinedRestatedFactDetector(
+    CompactMultiModuleProjectionDetectorMixin, RestatedFactDetector[ContextT], ABC
+):
+    """A restated-fact detector that joins its sites with a second family.
+
+    The first of `module_projection_families` carries the sites;
+    `compact_shared_group_context_builder` builds what the other families add,
+    once per scan.
+    """
+
+    def _findings_from_compact_projection_groups_context(
+        self,
+        projections_by_family: CompactProjectionGroups,
+        context: ContextT,
+        config: DetectorConfig,
+    ) -> list[RefactorFinding]:
+        del config
+        (site_family, *_joined) = type(self).module_projection_families
+        return self.findings_from_sites(
+            (
+                site
+                for module in projections_by_family[site_family]
+                for site in module.sites
+            ),
+            context,
+        )
+
+
 class StringKindDispatchDetector(
     SingleFamilyRestatedFactDetector, LiteralDispatchFindingRecipeSynthesizer
 ):
@@ -236,7 +269,94 @@ class NamedAttributeDetector(SingleFamilyRestatedFactDetector):
         )
 
 
+@dataclass(frozen=True)
+class DeclaredRecords:
+    """Record classes of the scan by their exact field sets."""
+
+    owners_by_fields: dict[frozenset[str], tuple[SourceLocation, ...]]
+
+    @classmethod
+    def from_observations(cls, fields: Iterable[FieldObservation]) -> "DeclaredRecords":
+        names: dict[tuple[str, str], set[str]] = defaultdict(set)
+        first: dict[tuple[str, str], int] = {}
+        for observed in fields:
+            if observed.origin_kind not in (
+                FieldOriginKind.DATACLASS_FIELD,
+                FieldOriginKind.CLASS_ANNOTATION,
+            ):
+                continue
+            key = (observed.file_path, observed.class_name)
+            names[key].add(observed.field_name)
+            first[key] = min(first.get(key, observed.lineno), observed.lineno)
+        owners: dict[frozenset[str], list[SourceLocation]] = defaultdict(list)
+        for (file_path, class_name), found in sorted(names.items()):
+            owners[frozenset(found)].append(
+                SourceLocation(file_path, first[(file_path, class_name)], class_name)
+            )
+        return cls({fields: tuple(found) for fields, found in owners.items()})
+
+
+def _declared_records(projections_by_family: CompactProjectionGroups) -> DeclaredRecords:
+    return DeclaredRecords.from_observations(
+        cast(Sequence[FieldObservation], projections_by_family[FieldObservationFamily])
+    )
+
+
+class ExactKeySetDetector(JoinedRestatedFactDetector[DeclaredRecords]):
+    """A literal key collection compared with, or subtracted from, a mapping's keys."""
+
+    module_projection_families = (ExactKeySetSiteFamily, FieldObservationFamily)
+    restated = RestatedFact(
+        fact="The literal restates the field list of a record, a second copy of that record's fields.",
+        owner="The owner is a record class whose fields are these keys.",
+        factoring="Make a dataclass (or use the record class that already has these fields) whose fields are the key set, and decode the mapping into it once at the boundary.",
+    )
+    finding_spec = restated.spec(
+        PatternId.EXACT_KEY_SET,
+        "Exact key set restates a record's fields",
+        "a record class whose fields are the key set, decoded once at the boundary",
+        "a literal collection of two or more string keys compared with, subtracted from or checked against a mapping's keys",
+        (),
+        (ObservationTag.SEMANTIC_STRING_LITERAL,),
+    )
+
+    compact_shared_group_context_builder = staticmethod(_declared_records)
+
+    def describe(self, sites: Sequence[RestatingSite], context: DeclaredRecords) -> str:
+        (site,) = sites
+        mapping, *keys = site.detail
+        return (
+            f"The keys of `{mapping}` are checked against the literal "
+            f"{{{_listed(repr(key) for key in keys)}}} in {site.symbol}."
+        )
+
+    def declared(
+        self, sites: Sequence[RestatingSite], context: DeclaredRecords
+    ) -> tuple[SourceLocation, ...]:
+        (site,) = sites
+        return context.owners_by_fields.get(frozenset(site.detail[1:]), ())
+
+    def owner(self, sites: Sequence[RestatingSite], context: DeclaredRecords) -> str:
+        declared = self.declared(sites, context)
+        if not declared:
+            return self.restated.owner
+        names = _listed(f"`{location.symbol}` ({location.file_path}:{location.line})" for location in declared)
+        return f"{names} already declares exactly these fields."
+
+    def evidence(
+        self, sites: Sequence[RestatingSite], context: DeclaredRecords
+    ) -> tuple[SourceLocation, ...]:
+        return (*super().evidence(sites, context), *self.declared(sites, context))
+
+    def finding_context(
+        self, sites: Sequence[RestatingSite], context: DeclaredRecords
+    ) -> dict[str, object]:
+        declared = self.declared(sites, context)
+        return {} if not declared else {"authority_evidence": declared[0]}
+
+
 __all__ = (
+    "ExactKeySetDetector",
     "NamedAttributeDetector",
     "StringKindDispatchDetector",
 )
