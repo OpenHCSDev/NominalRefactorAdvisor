@@ -26,6 +26,7 @@ EXPECTED_CONCEPT_DECLARATIONS = frozenset(
         codemod.DataclassPayloadProjectionConcept,
         codemod.DerivedProjectionConcept,
         codemod.ClassFamilyAuthorityConcept,
+        codemod.ClassBodyCompositionConcept,
         codemod.AutoRegisterConcept,
         codemod.AutoRegisterClassRegistryConcept,
         codemod.AutoRegisterStrategyFamilyConcept,
@@ -116,6 +117,8 @@ EXPECTED_EXECUTABLE_CONCEPTS = {
     detectors.DirectBuildFindingRendererDetector: (
         codemod.ClassFamilyAuthorityConcept
     ),
+    detectors.DuplicateClassDetector: codemod.ClassBodyCompositionConcept,
+    detectors.MissingMixinDetector: codemod.ClassBodyCompositionConcept,
     detectors.ClosedParameterConveyorDetector: codemod.SemanticCarrierConcept,
     detectors.DeclaredCarrierExpansionDetector: codemod.SemanticCarrierConcept,
     codemod.EnumSubsetSemanticMirrorRecipeBuilder: (codemod.DerivedProjectionConcept),
@@ -232,6 +235,7 @@ def test_every_migrated_executable_declaration_has_one_intended_leaf() -> None:
                     codemod.DataclassPayloadProjectionConcept,
                     codemod.DerivedProjectionConcept,
                     codemod.ClassFamilyAuthorityConcept,
+                    codemod.ClassBodyCompositionConcept,
                     codemod.AutoRegisterConcept,
                     codemod.AutoRegisterClassRegistryConcept,
                     codemod.AutoRegisterStrategyFamilyConcept,
@@ -281,6 +285,7 @@ def test_every_migrated_executable_declaration_has_one_intended_leaf() -> None:
             frozenset(
                 {
                     codemod.ClassFamilyAuthorityConcept,
+                    codemod.ClassBodyCompositionConcept,
                     codemod.AutoRegisterConcept,
                     codemod.AutoRegisterClassRegistryConcept,
                     codemod.AutoRegisterStrategyFamilyConcept,

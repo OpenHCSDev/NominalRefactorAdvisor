@@ -379,6 +379,18 @@ class ClassOverlapCandidate:
         return tuple(shared.name for shared in self.overlap.shared)
 
     @property
+    def restating_classes(self) -> tuple[CompactIndexedClass, ...]:
+        return tuple(
+            indexed_class
+            for indexed_class in (self.restating, self.co_restating)
+            if indexed_class is not None
+        )
+
+    @property
+    def restating_symbols(self) -> frozenset[str]:
+        return frozenset(indexed_class.symbol for indexed_class in self.restating_classes)
+
+    @property
     def evidence(self) -> tuple[SourceLocation, ...]:
         first, second = self.overlap.first, self.overlap.second
         return (
@@ -416,9 +428,7 @@ class ClassOverlapMetrics(FindingMetrics):
             move=candidate.move,
             owner_symbol=candidate.owner.symbol,
             restating_symbols=tuple(
-                indexed_class.symbol
-                for indexed_class in (candidate.restating, candidate.co_restating)
-                if indexed_class is not None
+                indexed_class.symbol for indexed_class in candidate.restating_classes
             ),
             shared_declaration_names=candidate.shared_names,
             confidence_score=round(candidate.confidence, 4),

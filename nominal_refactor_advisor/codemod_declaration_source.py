@@ -554,6 +554,39 @@ class ClassBodySourceAuthority(ClassSourceAuthority):
         )
 
 
+    def declaration_block_replacement(
+        self, members: tuple[tuple[str, bool], ...]
+    ) -> SourceTextSpanReplacement:
+        """Insert members as a written block: fields and values contiguous, a
+        blank line on each side of a method. Each member is `(source, is_method)`.
+        """
+
+        if self.has_inline_suite:
+            return self.member_insertion_replacement(
+                tuple(source for source, _is_method in members)
+            )
+        rendered: list[str] = []
+        previous_is_method: bool | None = None
+        for source, is_method in members:
+            if previous_is_method is not None and (previous_is_method or is_method):
+                rendered.append("\n")
+            rendered.append(source.rstrip("\r\n") + "\n")
+            previous_is_method = is_method
+        offset = self.member_insertion_offset
+        prefix, suffix = self.source[:offset], self.source[offset:]
+        leading = "" if prefix.endswith((":\n", "\n\n")) else "\n"
+        trailing = (
+            "\n"
+            if offset < self.body_end_offset and not suffix.startswith("\n")
+            else ""
+        )
+        return SourceTextSpanReplacement.from_offsets(
+            start_offset=offset,
+            end_offset=offset,
+            replacement_source=leading + "".join(rendered) + trailing,
+        )
+
+
 class ClassBodyTailSourceAuthority(ClassBodySourceAuthority):
     """Append declarations after existing body execution, reusing suite geometry."""
 

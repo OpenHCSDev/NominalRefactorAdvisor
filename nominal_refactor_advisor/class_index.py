@@ -490,6 +490,19 @@ class CompactDataclassFieldRole(StrEnum):
             None,
         )
 
+    @property
+    def has_known_field_position(self) -> bool:
+        """Whether this member's place in the dataclass field order is known.
+
+        A KW_ONLY sentinel turns every later field keyword-only, and an
+        unresolved annotation may or may not declare a field.
+        """
+
+        return self not in (
+            CompactDataclassFieldRole.KEYWORD_ONLY_SENTINEL,
+            CompactDataclassFieldRole.UNRESOLVED,
+        )
+
 
 class CompactDataclassFieldDeclaration(NamedTuple):
     """One direct annotated member and its exact dataclass role."""
@@ -2091,6 +2104,79 @@ class ClassReferenceRole(StrEnum):
             ClassReferenceRole.CLASS_PATTERN,
             ClassReferenceRole.TYPE_KEY,
         )
+
+    @property
+    def binds_fields(self) -> bool:
+        """The read builds the class or matches against its fields."""
+
+        return self in (ClassReferenceRole.CONSTRUCTION, ClassReferenceRole.CLASS_PATTERN)
+
+    def positional_bindings(self, parent: ast.AST | None) -> int:
+        """How many arguments or subpatterns this read binds to fields by position."""
+
+        if self is ClassReferenceRole.CONSTRUCTION and isinstance(parent, ast.Call):
+            return len(parent.args)
+        if self is ClassReferenceRole.CLASS_PATTERN and isinstance(parent, ast.MatchClass):
+            return len(parent.patterns)
+        return 0
+
+    @classmethod
+    def of_reference(
+        cls,
+        node: ast.expr,
+        parent: ast.AST | None,
+        grandparent: ast.AST | None,
+        import_aliases: Mapping[str, str],
+    ) -> ClassReferenceRole:
+        """The role one read of a name plays, from the syntax around it."""
+
+        if isinstance(parent, ast.Call) and parent.func is node:
+            return cls.CONSTRUCTION
+        type_test_operand = (
+            parent.args[1]
+            if isinstance(parent, ast.Call)
+            and (_is_builtin_call(parent, "isinstance") or _is_builtin_call(parent, "issubclass"))
+            and len(parent.args) == 2
+            else None
+        )
+        if type_test_operand is node or (
+            isinstance(parent, ast.Tuple)
+            and isinstance(grandparent, ast.Call)
+            and (
+                _is_builtin_call(grandparent, "isinstance")
+                or _is_builtin_call(grandparent, "issubclass")
+            )
+            and len(grandparent.args) == 2
+            and grandparent.args[1] is parent
+        ):
+            return cls.TYPE_TEST
+        if (
+            isinstance(parent, ast.Compare)
+            and any(isinstance(op, (ast.Is, ast.IsNot, ast.Eq, ast.NotEq)) for op in parent.ops)
+            and any(
+                _is_builtin_call(operand, "type")
+                for operand in (parent.left, *parent.comparators)
+            )
+        ):
+            return cls.TYPE_TEST
+        if isinstance(parent, ast.MatchClass) and parent.cls is node:
+            return cls.CLASS_PATTERN
+        if isinstance(parent, ast.Dict) and any(key is node for key in parent.keys):
+            return cls.TYPE_KEY
+        if isinstance(parent, ast.Subscript) and parent.slice is node:
+            subscripted = ExpressionReference.decoded(parent.value).attribute_chain
+            root = (
+                None
+                if subscripted is None
+                else import_aliases.get(subscripted[0], subscripted[0])
+            )
+            if subscripted is not None and (
+                (subscripted[0] not in import_aliases and hasattr(builtins, subscripted[0]))
+                or (root is not None and root.split(".", 1)[0] in _GENERIC_ALIAS_ROOTS)
+            ):
+                return cls.OTHER
+            return cls.TYPE_KEY
+        return cls.OTHER
 
 
 class CompactClassReference(NamedTuple):
@@ -6081,7 +6167,7 @@ def _compact_class_references(
                 continue
             grandparent_index = parent_indices[parent_index] if parent is not None else -1
             grandparent = nodes[grandparent_index] if grandparent_index >= 0 else None
-            role = _class_reference_role(node, parent, grandparent, import_aliases)
+            role = ClassReferenceRole.of_reference(node, parent, grandparent, import_aliases)
             key = (".".join(scope.names), parts, role)
             positional, unpacked = (
                 (
@@ -6114,61 +6200,6 @@ def _is_builtin_call(node: ast.AST | None, name: str) -> bool:
         and isinstance(node.func, ast.Name)
         and node.func.id == name
     )
-
-
-def _class_reference_role(
-    node: ast.expr,
-    parent: ast.AST | None,
-    grandparent: ast.AST | None,
-    import_aliases: Mapping[str, str],
-) -> ClassReferenceRole:
-    if isinstance(parent, ast.Call) and parent.func is node:
-        return ClassReferenceRole.CONSTRUCTION
-    type_test_operand = (
-        parent.args[1]
-        if isinstance(parent, ast.Call)
-        and (_is_builtin_call(parent, "isinstance") or _is_builtin_call(parent, "issubclass"))
-        and len(parent.args) == 2
-        else None
-    )
-    if type_test_operand is node or (
-        isinstance(parent, ast.Tuple)
-        and isinstance(grandparent, ast.Call)
-        and (
-            _is_builtin_call(grandparent, "isinstance")
-            or _is_builtin_call(grandparent, "issubclass")
-        )
-        and len(grandparent.args) == 2
-        and grandparent.args[1] is parent
-    ):
-        return ClassReferenceRole.TYPE_TEST
-    if (
-        isinstance(parent, ast.Compare)
-        and any(isinstance(op, (ast.Is, ast.IsNot, ast.Eq, ast.NotEq)) for op in parent.ops)
-        and any(
-            _is_builtin_call(operand, "type")
-            for operand in (parent.left, *parent.comparators)
-        )
-    ):
-        return ClassReferenceRole.TYPE_TEST
-    if isinstance(parent, ast.MatchClass) and parent.cls is node:
-        return ClassReferenceRole.CLASS_PATTERN
-    if isinstance(parent, ast.Dict) and any(key is node for key in parent.keys):
-        return ClassReferenceRole.TYPE_KEY
-    if isinstance(parent, ast.Subscript) and parent.slice is node:
-        subscripted = ExpressionReference.decoded(parent.value).attribute_chain
-        root = (
-            None
-            if subscripted is None
-            else import_aliases.get(subscripted[0], subscripted[0])
-        )
-        if subscripted is not None and (
-            (subscripted[0] not in import_aliases and hasattr(builtins, subscripted[0]))
-            or (root is not None and root.split(".", 1)[0] in _GENERIC_ALIAS_ROOTS)
-        ):
-            return ClassReferenceRole.OTHER
-        return ClassReferenceRole.TYPE_KEY
-    return ClassReferenceRole.OTHER
 
 
 @lru_cache(maxsize=None)

@@ -745,6 +745,7 @@ from .refactor_concepts import (
     StaticProjectionAdapterConcept as StaticProjectionAdapterConcept,
     AutoRegisterStrategyFamilyConcept as AutoRegisterStrategyFamilyConcept,
     CallMappingAuthorityConcept as CallMappingAuthorityConcept,
+    ClassBodyCompositionConcept as ClassBodyCompositionConcept,
     ClassFamilyAuthorityConcept as ClassFamilyAuthorityConcept,
     ConstructorKwargCarrierProjectionConcept as ConstructorKwargCarrierProjectionConcept,
     ConstructorKwargCollapseConcept as ConstructorKwargCollapseConcept,

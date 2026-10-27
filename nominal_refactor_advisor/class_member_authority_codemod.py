@@ -1022,84 +1022,130 @@ class ExistingDataclassFieldAuthorityTargets:
         return self.authority.node.name
 
     @cached_property
-    def authority_span(self) -> SourceLineSpan:
-        return SourceTextGeometry(
-            self.participants.source_for(self.authority.file_path)
-        ).node_line_span(
-            SourceNodeSpan(
-                self.authority.node,
-                Include,
-            )
+    def relocation(self) -> ModuleDeclarationRelocation:
+        return ModuleDeclarationRelocation(
+            file_path=self.authority.file_path,
+            source=self.participants.source_for(self.authority.file_path),
+            declaration=self.authority.node,
+            insertion_line=self.participants.insertion_line,
+        )
+
+    def require_safe_relocation(self, snapshot: CodemodSourceSnapshot) -> None:
+        self.relocation.require_safe(snapshot)
+
+    def relocation_edits(self) -> tuple[PhysicalSourceEdit, ...]:
+        return self.relocation.source_edits(
+            f"Move field authority {self.authority_name!r} before its users."
+        )
+
+
+@dataclass(frozen=True)
+class ModuleDeclarationRelocation:
+    """Move one top-level declaration up to a line before its first user.
+
+    The move is safe when nothing between the two lines reads the declared
+    name eagerly, nothing before the new line binds it, and nothing between
+    rebinds a name the declaration itself reads while it is declared.
+    """
+
+    file_path: str
+    source: str
+    declaration: ast.ClassDef
+    insertion_line: int
+
+    @classmethod
+    def before_user(
+        cls,
+        snapshot: CodemodSourceSnapshot,
+        *,
+        declaration: ResolvedClassTarget,
+        user: ResolvedClassTarget,
+    ) -> ModuleDeclarationRelocation:
+        if declaration.file_path != user.file_path:
+            raise ValueError("Relocation stays within one module")
+        return cls(
+            file_path=declaration.file_path,
+            source=snapshot.sources_by_file_path[declaration.file_path],
+            declaration=declaration.node,
+            insertion_line=min(
+                (*(decorator.lineno for decorator in user.node.decorator_list), user.line)
+            ),
+        )
+
+    @property
+    def name(self) -> str:
+        return self.declaration.name
+
+    @cached_property
+    def span(self) -> SourceLineSpan:
+        return SourceTextGeometry(self.source).node_line_span(
+            SourceNodeSpan(self.declaration, Include)
         )
 
     @property
     def requires_relocation(self) -> bool:
-        return self.authority_span.start_line > self.participants.insertion_line
+        return self.span.start_line > self.insertion_line
 
-    def require_safe_relocation(self, snapshot: CodemodSourceSnapshot) -> None:
+    def require_safe(self, snapshot: CodemodSourceSnapshot) -> None:
         if not self.requires_relocation:
             return
-        source = self.participants.source_for(self.authority.file_path)
-        source_lines = source.splitlines()
+        source_lines = self.source.splitlines()
         preceding_separator = source_lines[
-            self.authority_span.start_line - 3 : self.authority_span.start_line - 1
+            self.span.start_line - 3 : self.span.start_line - 1
         ]
         if len(preceding_separator) != 2 or any(
             line.strip() for line in preceding_separator
         ):
             raise ValueError(
-                "Existing field authority relocation requires a complete "
-                "top-level separator"
+                f"Relocating {self.name!r} requires a complete top-level separator"
             )
-        module = snapshot.module_nodes_by_file_path[self.authority.file_path]
+        module = snapshot.module_nodes_by_file_path[self.file_path]
         intervening_statements = tuple(
             statement
             for statement in module.body
-            if self.participants.insertion_line
-            <= statement.lineno
-            < self.authority_span.start_line
+            if self.insertion_line <= statement.lineno < self.span.start_line
         )
-        if EagerNameLoadCollector.collect(
-            module,
-            self.authority_name,
-            intervening_statements,
-        ):
-            raise ValueError(
-                "Existing field authority is referenced before its current declaration"
-            )
+        if EagerNameLoadCollector.collect(module, self.name, intervening_statements):
+            raise ValueError(f"{self.name!r} is referenced before its current declaration")
         preceding_statements = tuple(
             statement
             for statement in module.body
-            if statement.lineno < self.participants.insertion_line
+            if statement.lineno < self.insertion_line
         )
-        if self.authority_name in LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(
+        if self.name in LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(
             preceding_statements
         ):
+            raise ValueError(f"{self.name!r} is already bound before the new position")
+        rebound = LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(intervening_statements)
+        read_while_declared = sorted(
+            name
+            for name in rebound
+            if EagerNameLoadCollector.collect(module, name, (self.declaration,))
+        )
+        if read_while_declared:
             raise ValueError(
-                "Existing field authority name is already bound before relocation"
+                f"{self.name!r} reads {read_while_declared} while declared, bound "
+                "only after the new position"
             )
 
-    def relocation_edits(self) -> tuple[PhysicalSourceEdit, ...]:
+    def source_edits(self, rationale: str) -> tuple[PhysicalSourceEdit, ...]:
         if not self.requires_relocation:
             return ()
-        source = self.participants.source_for(self.authority.file_path)
-        authority_source = self.authority_span.source_from(source)
-        rationale = f"Move field authority {self.authority_name!r} before its users."
         return (
             SourceInsertion(
-                file_path=self.authority.file_path,
-                insertion_line=self.participants.insertion_line,
+                file_path=self.file_path,
+                insertion_line=self.insertion_line,
                 inserted_lines=(
-                    *SourceTargetEditor.source_lines(authority_source),
+                    *SourceTargetEditor.source_lines(self.span.source_from(self.source)),
                     "\n",
                     "\n",
                 ),
                 rationale=rationale,
             ),
             SourceSpanDeletion(
-                file_path=self.authority.file_path,
-                start_line=self.authority_span.start_line - 2,
-                end_line=self.authority_span.end_line,
+                file_path=self.file_path,
+                start_line=self.span.start_line - 2,
+                end_line=self.span.end_line,
                 rationale=rationale,
             ),
         )

@@ -41,9 +41,12 @@ from .ast_tools import (
 )
 from .class_index import (
     ClassFamilyIndex,
+    CompactModuleClassProjectionFamily,
     RepositoryModuleBindingProof,
     build_class_family_index,
+    build_compact_class_family_index,
 )
+from .class_overlap import ClassOverlapVerdicts
 from .codemod_architecture_guards import (
     ArchitectureGuardReport,
     ArchitectureGuardRule,
@@ -196,6 +199,17 @@ class CodemodSourceSnapshot(CodemodSelectorContext):
         return ExactDataclassFieldAuthorityComponentBuilder.from_modules(
             self.parsed_modules,
             class_index=self.required_class_family_index,
+        )
+
+    @cached_property
+    def class_overlap_verdicts(self) -> ClassOverlapVerdicts:
+        """The scan's class-overlap verdicts, re-derived from this source state."""
+
+        projections = CompactModuleClassProjectionFamily.collect_modules(
+            self.parsed_modules
+        )
+        return ClassOverlapVerdicts(
+            projections, build_compact_class_family_index(projections)
         )
 
     @cached_property

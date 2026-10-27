@@ -20829,6 +20829,7 @@ def test_codemod_refactor_goal_reports_terminal_synthesis_failures(
         == "rejected_by_safety_check"
     )
     assert "synthesis_records" not in terminal_class_plan["classes"][0]
+    assert payload["trajectory_proof"]["dead_ends"][0]["reaching_stages"] == ()
 
 
 def test_semantic_carrier_goal_policy_derives_targets_from_concept_mro(

@@ -5,6 +5,7 @@ from __future__ import annotations
 from abc import ABC
 from typing import ClassVar
 
+from ..class_overlap_codemod import ClassOverlapFindingRecipeSynthesizer
 from ..class_overlap import (
     ClassOverlapCandidate,
     ClassOverlapMetrics,
@@ -23,7 +24,9 @@ from ._base import (
 
 
 class ClassOverlapDetectorABC(
-    CompactClassRepositoryCandidateDetector[ClassOverlapCandidate], ABC
+    CompactClassRepositoryCandidateDetector[ClassOverlapCandidate],
+    ClassOverlapFindingRecipeSynthesizer,
+    ABC,
 ):
     """One #68 shape read off the scan's shared class-overlap verdicts."""
 
@@ -53,9 +56,7 @@ class ClassOverlapDetectorABC(
         )
         refusals = "; ".join(receipt.detail for receipt in candidate.refusals)
         restating = ", ".join(
-            f"`{indexed_class.qualname}`"
-            for indexed_class in (candidate.restating, candidate.co_restating)
-            if indexed_class is not None
+            f"`{indexed_class.qualname}`" for indexed_class in candidate.restating_classes
         )
         return self.build_finding(
             (
