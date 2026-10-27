@@ -3,8 +3,7 @@
 from __future__ import annotations
 
 import ast
-import builtins
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import cached_property
 from itertools import combinations
 
@@ -14,12 +13,12 @@ from .ast_tools import (
     ParsedModule,
 )
 from .class_index import (
+    ClassBodyModuleScope,
+    ClassBodyNormalForm,
     ClassFamilyIndex,
     CompactDataclassFieldRole,
     IndexedClass,
-    ModuleNominalBindingAuthority,
     ModuleNominalBindingSnapshot,
-    ModuleNominalBindingWitness,
     build_class_family_index,
 )
 from .collection_algebra import sorted_tuple
@@ -107,17 +106,17 @@ class ExactDataclassDecorator:
 
 @dataclass(frozen=True)
 class ExactDataclassFieldSemantics:
-    """Exact field syntax plus the nominal bindings it evaluates against."""
+    """One default-free field's class-body normal form, bound only outside the class."""
 
     name: str
-    syntax: str
-    global_bindings: tuple[ModuleNominalBindingWitness, ...]
+    digest: str
+    normal_form: ClassBodyNormalForm = field(compare=False)
 
     @classmethod
     def from_statement(
         cls,
         statement: ast.AnnAssign,
-        binding_snapshot: ModuleNominalBindingSnapshot,
+        scope: ClassBodyModuleScope,
         class_bound_names: frozenset[str],
         comment_lines: SourceCommentLineIndex,
         annotation_mode: type[ModuleAnnotationEvaluationMode],
@@ -132,41 +131,24 @@ class ExactDataclassFieldSemantics:
             raise ValueError(
                 "Field authority factoring requires postponed annotation evaluation"
             )
-
-        global_bindings: list[ModuleNominalBindingWitness] = []
-        loaded_names = sorted(
-            {
-                node.id
-                for node in ast.walk(statement.annotation)
-                if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load)
-            }
+        (normal_form,) = ClassBodyNormalForm.of_assignment(
+            statement, scope, class_bound_names
         )
-        for name in loaded_names:
-            if name in class_bound_names:
-                raise ValueError(
-                    f"Field {statement.target.id!r} depends on class-local binding "
-                    f"{name!r}"
-                )
-            binding = binding_snapshot.binding_for(name)
-            if binding is not None:
-                global_bindings.append(
-                    ModuleNominalBindingWitness(binding.qualified_name, name)
-                )
-            elif binding_snapshot.resolves_unshadowed_builtin(name):
-                global_bindings.append(
-                    ModuleNominalBindingWitness(f"{builtins.__name__}.{name}", name)
-                )
-            else:
-                raise ValueError(
-                    f"Field {statement.target.id!r} has unresolved annotation "
-                    f"binding {name!r}"
-                )
-
-        return cls(
-            name=statement.target.id,
-            syntax=ast.dump(statement, include_attributes=False),
-            global_bindings=tuple(global_bindings),
+        if normal_form.class_scope_names:
+            raise ValueError(
+                f"Field {statement.target.id!r} depends on class-local binding "
+                f"{normal_form.class_scope_names[0]!r}"
+            )
+        unbound = (
+            *normal_form.unresolved_names,
+            *(deferred.name for deferred in normal_form.deferred_names),
         )
+        if unbound:
+            raise ValueError(
+                f"Field {statement.target.id!r} has unresolved annotation "
+                f"binding {unbound[0]!r}"
+            )
+        return cls(statement.target.id, normal_form.digest, normal_form)
 
 
 @dataclass(frozen=True)
@@ -253,9 +235,9 @@ class ExactDataclassFieldAuthorityComponentBuilder:
             )
         for parsed_module in self.parsed_modules:
             indexed_classes = tuple(classes_by_path.get(parsed_module.file_path, ()))
-            binding_snapshots = ModuleNominalBindingAuthority(
-                parsed_module
-            ).snapshots_before(item.line for item in indexed_classes)
+            scopes = ClassBodyModuleScope.for_lines(
+                parsed_module, (item.line for item in indexed_classes)
+            )
             source_segments = SourceLineSegmentAuthority(parsed_module.source)
             comment_lines = SourceCommentLineIndex.from_source(parsed_module.source)
             annotation_mode = ModuleAnnotationEvaluationMode.from_module(
@@ -265,7 +247,7 @@ class ExactDataclassFieldAuthorityComponentBuilder:
                 try:
                     participant = self._participant(
                         indexed_class,
-                        binding_snapshots[indexed_class.line],
+                        scopes[indexed_class.line],
                         source_segments,
                         comment_lines,
                         annotation_mode,
@@ -362,7 +344,7 @@ class ExactDataclassFieldAuthorityComponentBuilder:
     def _participant(
         self,
         indexed_class: IndexedClass,
-        binding_snapshot: ModuleNominalBindingSnapshot,
+        scope: ClassBodyModuleScope,
         source_segments: SourceLineSegmentAuthority,
         comment_lines: SourceCommentLineIndex,
         annotation_mode: type[ModuleAnnotationEvaluationMode],
@@ -419,7 +401,7 @@ class ExactDataclassFieldAuthorityComponentBuilder:
 
         decorator = ExactDataclassDecorator.from_class(
             indexed_class,
-            binding_snapshot,
+            scope.declaration,
             source_segments,
             comment_lines,
         )
@@ -427,7 +409,7 @@ class ExactDataclassFieldAuthorityComponentBuilder:
         fields = tuple(
             ExactDataclassFieldSemantics.from_statement(
                 statement,
-                binding_snapshot,
+                scope,
                 class_bound_names,
                 comment_lines,
                 annotation_mode,

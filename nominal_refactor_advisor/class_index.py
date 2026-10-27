@@ -70,7 +70,10 @@ from .value_expression import (
     LexicalValueReference,
     MappingKeyResolverABC,
 )
-from .declaration_dependencies import ClassScopeDependency
+from .declaration_dependencies import (
+    ClassScopeDependency,
+    ModuleLexicalDependencyProjection,
+)
 from .descriptor_algebra import AliasProperty
 from .enum_semantics import (
     PYTHON_ENUM_BASE_AUTHORITY,
@@ -652,6 +655,7 @@ class CompactIndexedClass(CompactClassHeader):
     keyed_registry_reverse_lookup_method_names: tuple[str, ...] = ()
     predicate_selected_methods: tuple[tuple[int, str, str, str], ...] = ()
     enum_declaration: PythonEnumDeclarationAuthority | None = None
+    body_declarations: tuple[ClassBodyDeclarationDigest, ...] = ()
 
     @property
     def has_class_creation_hook(self) -> bool:
@@ -3399,6 +3403,345 @@ class ModuleNominalBindingWitness:
     root_name: str
 
 
+class ClassBodyDeclarationKind(StrEnum):
+    """What one direct class-body statement declares."""
+
+    FIELD = "field"
+    VALUE = "value"
+    METHOD = "method"
+
+
+class _ReceiverAliasSubstitution(ast.NodeTransformer):
+    """Substitute one proven local receiver alias in a copied method tree."""
+
+    def __init__(self, alias_name: str, receiver_name: str) -> None:
+        self.alias_name = alias_name
+        self.receiver_name = receiver_name
+
+    def visit_Name(self, node: ast.Name) -> ast.AST:
+        if node.id != self.alias_name:
+            return node
+        if not isinstance(node.ctx, ast.Load):
+            raise ValueError("Receiver alias is rebound after its declaration")
+        return ast.copy_location(ast.Name(id=self.receiver_name, ctx=node.ctx), node)
+
+
+class StarDeferredName(NamedTuple):
+    """A free name a star import may rebind, with the binding it has if none does.
+
+    `unshadowed` is the qualified name the module binds without its star
+    imports (`None` when nothing does); the repository decides which applies.
+    """
+
+    name: str
+    unshadowed: str | None
+
+
+class ClassBodyDeclarationDigest(NamedTuple):
+    """One class-body declaration as the index compares it: no AST, one digest.
+
+    `digest` covers everything resolved inside the module; `deferred` lists the
+    free names only the repository's star-import exposure can resolve, and
+    `unbound` the free names nothing binds, which make it equal to nothing.
+    """
+
+    kind: ClassBodyDeclarationKind
+    name: str
+    line: int
+    digest: str
+    deferred: tuple[StarDeferredName, ...]
+    unbound: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class ClassBodyModuleScope:
+    """What a free name in one class body is bound to.
+
+    `declaration` is the module snapshot where the class statement runs and
+    `final` the module after import. A name bound at the class statement keeps
+    that binding; a name bound only later is read where evaluation is deferred
+    (method bodies, postponed annotations), and Python raises at import for any
+    other read of it, so code that imports reads the final binding. A name the
+    module binds by assignment rather than import or definition is identified by
+    the module that binds it.
+    """
+
+    module_name: str
+    declaration: ModuleNominalBindingSnapshot
+    final: ModuleNominalBindingSnapshot
+    star_blind_declaration: ModuleNominalBindingSnapshot
+    star_blind_final: ModuleNominalBindingSnapshot
+
+    @classmethod
+    def for_lines(
+        cls, parsed_module: ParsedModule, lines: Iterable[int]
+    ) -> dict[int, ClassBodyModuleScope]:
+        """One scope per class line, from two passes over the module's bindings."""
+
+        requested = tuple(dict.fromkeys(lines))
+        authority = ModuleNominalBindingAuthority(parsed_module)
+        exact = authority.snapshots_before((*requested, None))
+        star_blind = authority.snapshots_before(
+            (*requested, None),
+            policy=ModuleNominalBindingSnapshotPolicy.NAMED_IMPORT_PROJECTION,
+        )
+        return {
+            line: cls(
+                parsed_module.module_name,
+                exact[line],
+                exact[None],
+                star_blind[line],
+                star_blind[None],
+            )
+            for line in requested
+        }
+
+    def witness_for(self, name: str) -> ModuleNominalBindingWitness | None:
+        return self._witness_in(name, self.declaration, self.final)
+
+    def deferred_for(self, name: str) -> StarDeferredName | None:
+        """A name a star import hides, with its binding if no star import rebinds it."""
+
+        if not self.final.star_import_ambiguity:
+            return None
+        witness = self._witness_in(
+            name, self.star_blind_declaration, self.star_blind_final
+        )
+        return StarDeferredName(
+            name, None if witness is None else witness.qualified_name
+        )
+
+    def _witness_in(
+        self,
+        name: str,
+        declaration: ModuleNominalBindingSnapshot,
+        final: ModuleNominalBindingSnapshot,
+    ) -> ModuleNominalBindingWitness | None:
+        for snapshot in (declaration, final):
+            if (binding := snapshot.binding_for(name)) is not None:
+                return ModuleNominalBindingWitness(binding.qualified_name, name)
+        if declaration.resolves_unshadowed_builtin(name):
+            return ModuleNominalBindingWitness(f"{builtins.__name__}.{name}", name)
+        if name in declaration.unresolved_bound_names or name in final.unresolved_bound_names:
+            return ModuleNominalBindingWitness(f"{self.module_name}.{name}", name)
+        return None
+
+
+@dataclass(frozen=True)
+class ClassBodyNormalForm:
+    """One class-body declaration as Python evaluates it.
+
+    Two declarations are the same declaration when their kind, name, syntax
+    (positions and a leading docstring dropped, a method's `x: T = self`
+    receiver alias substituted) and the declaration each free name is bound to
+    are equal. A free name bound earlier in the class body is recorded by name,
+    so it is equal only to the same class-scope name; a free name the module
+    snapshot cannot bind leaves the declaration unresolved, and an unresolved
+    declaration equals nothing in the class-body index.
+    """
+
+    kind: ClassBodyDeclarationKind
+    name: str
+    line: int
+    syntax: str
+    global_bindings: tuple[ModuleNominalBindingWitness, ...]
+    class_scope_names: tuple[str, ...]
+    deferred_names: tuple[StarDeferredName, ...]
+    unresolved_names: tuple[str, ...]
+
+    @property
+    def is_resolved(self) -> bool:
+        """Every free name is bound inside the module, star imports aside."""
+
+        return not self.unresolved_names and not self.deferred_names
+
+    @cached_property
+    def digest(self) -> str:
+        return hashlib.blake2s(
+            repr(
+                (
+                    self.kind.value,
+                    self.name,
+                    self.syntax,
+                    tuple(
+                        (binding.qualified_name, binding.root_name)
+                        for binding in self.global_bindings
+                    ),
+                    self.class_scope_names,
+                )
+            ).encode("utf-8"),
+            digest_size=16,
+        ).hexdigest()
+
+    def compact(self) -> ClassBodyDeclarationDigest:
+        return ClassBodyDeclarationDigest(
+            self.kind,
+            self.name,
+            self.line,
+            self.digest,
+            self.deferred_names,
+            self.unresolved_names,
+        )
+
+    @classmethod
+    def of_class(
+        cls,
+        node: ast.ClassDef,
+        scope: ClassBodyModuleScope,
+    ) -> tuple[ClassBodyNormalForm, ...]:
+        """Every direct declaration of one class body, in source order."""
+
+        class_bound_names = LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(node.body)
+        declarations: list[ClassBodyNormalForm] = []
+        for statement in node.body:
+            if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                declarations.append(cls.of_method(statement, scope, class_bound_names))
+            elif isinstance(statement, (ast.AnnAssign, ast.Assign)):
+                declarations.extend(
+                    cls.of_assignment(statement, scope, class_bound_names)
+                )
+        return tuple(declarations)
+
+    @classmethod
+    def of_method(
+        cls,
+        method: ast.FunctionDef | ast.AsyncFunctionDef,
+        scope: ClassBodyModuleScope,
+        class_bound_names: frozenset[str] = frozenset(),
+    ) -> ClassBodyNormalForm:
+        """A method's header evaluates in the class scope and its body in the module's.
+
+        A free name the class body binds is recorded as a class-scope name and,
+        when the module binds it too, with that binding, so equality holds only
+        when both scopes agree.
+        """
+
+        normalized = cls._normalized_method(method)
+        return cls._of_statement(
+            ClassBodyDeclarationKind.METHOD,
+            method.name,
+            method,
+            normalized,
+            scope,
+            class_bound_names,
+        )
+
+    @classmethod
+    def of_assignment(
+        cls,
+        statement: ast.AnnAssign | ast.Assign,
+        scope: ClassBodyModuleScope,
+        class_bound_names: frozenset[str],
+    ) -> tuple[ClassBodyNormalForm, ...]:
+        if isinstance(statement, ast.AnnAssign):
+            if not isinstance(statement.target, ast.Name):
+                return ()
+            kind = ClassBodyDeclarationKind.FIELD
+            names: tuple[str, ...] = (statement.target.id,)
+        else:
+            kind = ClassBodyDeclarationKind.VALUE
+            names = tuple(
+                target.id for target in statement.targets if isinstance(target, ast.Name)
+            )
+        return tuple(
+            cls._of_statement(
+                kind,
+                name,
+                statement,
+                statement,
+                scope,
+                class_bound_names - {name},
+            )
+            for name in names
+        )
+
+    @classmethod
+    def _of_statement(
+        cls,
+        kind: ClassBodyDeclarationKind,
+        name: str,
+        statement: ast.stmt,
+        normalized: ast.stmt,
+        scope: ClassBodyModuleScope,
+        class_bound_names: frozenset[str],
+    ) -> ClassBodyNormalForm:
+        free_names = sorted(
+            {
+                reference.id
+                for reference in ModuleLexicalDependencyProjection.from_module(
+                    ast.Module(body=[normalized], type_ignores=[])
+                ).external_name_references
+            }
+        )
+        global_bindings: list[ModuleNominalBindingWitness] = []
+        class_scope_names: list[str] = []
+        deferred_names: list[StarDeferredName] = []
+        unresolved_names: list[str] = []
+        for free_name in free_names:
+            if free_name in class_bound_names:
+                class_scope_names.append(free_name)
+                if kind is not ClassBodyDeclarationKind.METHOD:
+                    continue
+            if (witness := scope.witness_for(free_name)) is not None:
+                global_bindings.append(witness)
+            elif free_name in class_bound_names:
+                continue
+            elif (deferred := scope.deferred_for(free_name)) is not None:
+                deferred_names.append(deferred)
+            else:
+                unresolved_names.append(free_name)
+        return cls(
+            kind=kind,
+            name=name,
+            line=statement.lineno,
+            syntax=ast.dump(normalized, include_attributes=False),
+            global_bindings=tuple(global_bindings),
+            class_scope_names=tuple(class_scope_names),
+            deferred_names=tuple(deferred_names),
+            unresolved_names=tuple(unresolved_names),
+        )
+
+    @classmethod
+    def _normalized_method(
+        cls,
+        method: ast.FunctionDef | ast.AsyncFunctionDef,
+    ) -> ast.FunctionDef | ast.AsyncFunctionDef:
+        normalized = copy.deepcopy(method)
+        normalized.body = _trim_leading_docstring(list(normalized.body)) or [
+            ast.Pass()
+        ]
+        positional = (*normalized.args.posonlyargs, *normalized.args.args)
+        receiver_name = positional[0].arg if positional else None
+        if receiver_name is None or len(normalized.body) != 2:
+            return normalized
+        alias_declaration, remaining_statement = normalized.body
+        if not (
+            isinstance(alias_declaration, ast.AnnAssign)
+            and alias_declaration.simple == 1
+            and isinstance(alias_declaration.target, ast.Name)
+            and isinstance(alias_declaration.value, ast.Name)
+            and alias_declaration.value.id == receiver_name
+            and alias_declaration.target.id != receiver_name
+        ):
+            return normalized
+        alias_name = alias_declaration.target.id
+        alias_references = tuple(
+            node
+            for node in ast.walk(remaining_statement)
+            if isinstance(node, ast.Name) and node.id == alias_name
+        )
+        if not alias_references or any(
+            not isinstance(reference.ctx, ast.Load) for reference in alias_references
+        ):
+            return normalized
+        normalized.body = [
+            _ReceiverAliasSubstitution(alias_name, receiver_name).visit(
+                remaining_statement
+            )
+        ]
+        return ast.fix_missing_locations(normalized)
+
+
 @dataclass(frozen=True)
 class RepositoryModuleBindingProof(
     RepositoryPublicExposureAuthority,
@@ -3949,6 +4292,13 @@ def _compact_indexed_classes(
         tuple(node.lineno for _qualname, node in indexed_class_nodes),
         include_final=False,
     )
+    body_scopes = (
+        ClassBodyModuleScope.for_lines(
+            parsed_module, (node.lineno for _qualname, node in indexed_class_nodes)
+        )
+        if include_body_facets
+        else {}
+    )
     return tuple(
         CompactIndexedClass(
             symbol=f"{parsed_module.module_name}.{qualname}",
@@ -4047,6 +4397,16 @@ def _compact_indexed_classes(
             ),
             predicate_selected_methods=(
                 _compact_predicate_selected_methods(node) if include_body_facets else ()
+            ),
+            body_declarations=(
+                tuple(
+                    declaration.compact()
+                    for declaration in ClassBodyNormalForm.of_class(
+                        node, body_scopes[node.lineno]
+                    )
+                )
+                if include_body_facets
+                else ()
             ),
         )
         for qualname, node in indexed_class_nodes
