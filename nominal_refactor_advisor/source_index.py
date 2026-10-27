@@ -84,7 +84,7 @@ class StableIdAuthority:
         self,
         *,
         file_path: str,
-        node_kind: "AstTargetNodeKind",
+        node_kind: AstTargetNodeKind,
         qualname: str,
         line: int,
         end_line: int,
@@ -110,7 +110,7 @@ class AstTargetNodeKind(StrEnum):
 
     def __new__(
         cls, value: str, node_types: tuple[type[ast.AST], ...],
-    ) -> "AstTargetNodeKind":
+    ) -> AstTargetNodeKind:
         member = str.__new__(cls, value)
         member._value_ = value
         member.node_types = node_types
@@ -148,7 +148,7 @@ class SourceFileDigest(DataclassJsonReport):
     module_path_identity: PythonModulePathIdentity = json_report_field(included=False)
 
     @classmethod
-    def from_module(cls, module: ParsedModule) -> "SourceFileDigest":
+    def from_module(cls, module: ParsedModule) -> SourceFileDigest:
         return cls(
             file_id=STABLE_ID_AUTHORITY.file_id(module.file_path),
             module_path_identity=module.module_path_identity,
@@ -293,7 +293,7 @@ class EvidenceTargetRelation:
     def from_evidence(
         cls,
         evidence_rows: Iterable[EvidenceDigest],
-    ) -> "EvidenceTargetRelation":
+    ) -> EvidenceTargetRelation:
         targets_by_finding = TupleSetIndexBuilder[str, str]()
         findings_by_target = TupleSetIndexBuilder[str, str]()
         for evidence in evidence_rows:
@@ -314,7 +314,7 @@ class TargetsByFileIndex:
     targets_by_file_path: TupleIndex[str, AstTargetDigest]
 
     @classmethod
-    def from_targets(cls, targets: Iterable[AstTargetDigest]) -> "TargetsByFileIndex":
+    def from_targets(cls, targets: Iterable[AstTargetDigest]) -> TargetsByFileIndex:
         builder = TupleListIndexBuilder[str, AstTargetDigest]()
         for target in targets:
             builder.append(target.file_path, target)
@@ -383,7 +383,7 @@ class EvidenceDigestBuilder:
         self,
         *,
         file_ids_by_path: dict[str, str],
-        target_resolver: "EvidenceTargetResolver",
+        target_resolver: EvidenceTargetResolver,
     ) -> tuple[EvidenceDigest, ...]:
         finding_ids_by_evidence = self._finding_ids_by_evidence_id.to_tuple_index()
         source_locations_by_id = self._source_location_index.values_by_handle()
@@ -641,7 +641,7 @@ class AstTargetNodeIndex:
         cls,
         source_index: SourceIndex,
         modules: Iterable[ParsedModule],
-    ) -> "AstTargetNodeIndex":
+    ) -> AstTargetNodeIndex:
         """Join stable indexed target addresses to freshly parsed AST nodes."""
 
         node_index = UniqueIdentityIndexAuthority[
@@ -679,7 +679,7 @@ class AstTargetNodeIndex:
         cls,
         source_index: SourceIndex,
         sources_by_file_path: Mapping[str, str],
-    ) -> "AstTargetNodeIndex":
+    ) -> AstTargetNodeIndex:
         """Parse indexed sources and derive their canonical node handles."""
 
         return cls.from_modules(
@@ -723,7 +723,7 @@ class SourceIndexBuildArtifacts:
         self,
         projected_modules: tuple[ParsedModule, ...],
         changed_modules: tuple[ParsedModule, ...],
-    ) -> "SourceIndexBuildArtifacts":
+    ) -> SourceIndexBuildArtifacts:
         """Reindex only changed modules while preserving exact target identity."""
 
         changed_modules_by_path = (

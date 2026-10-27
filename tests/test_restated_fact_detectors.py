@@ -19,6 +19,7 @@ from nominal_refactor_advisor.detectors import (
     ForwardingFacadeDetector,
     LegacyPathMarkerDetector,
     NamedAttributeDetector,
+    RestatedIdentityDetector,
     StringKindDispatchDetector,
 )
 from nominal_refactor_advisor.patterns import PatternId
@@ -31,6 +32,7 @@ DETECTORS = (
     LegacyPathMarkerDetector,
     DeadModuleDetector,
     ForwardingFacadeDetector,
+    RestatedIdentityDetector,
 )
 
 
@@ -63,8 +65,8 @@ def test_every_finding_states_fact_and_owner_and_is_certified(detector):
 
 @pytest.mark.parametrize("detector", DETECTORS)
 def test_a_recipe_exists_exactly_when_an_operation_is_declared(detector):
-    operation = detector.restated.operation
-    assert issubclass(detector, FindingRecipeEvaluator) is (operation is not None)
+    operations = detector.restated.operations
+    assert issubclass(detector, FindingRecipeEvaluator) is bool(operations)
 
 
 def test_new_patterns_continue_the_stable_sequence():
@@ -76,7 +78,8 @@ def test_new_patterns_continue_the_stable_sequence():
         PatternId.LEGACY_PATH_MARKER,
         PatternId.DEAD_MODULE,
         PatternId.FORWARDING_FACADE,
-    ] == [PatternId(number) for number in range(30, 37)]
+        PatternId.RESTATED_IDENTITY,
+    ] == [PatternId(number) for number in range(30, 38)]
 
 
 # ---- string dispatch on a kind
@@ -530,3 +533,167 @@ def test_an_annotated_held_class_is_named_without_its_metadata(tmp_path: Path):
     )
     (finding,) = _findings(tmp_path, ForwardingFacadeDetector, {"m": source})
     assert "(of class `Inner`)" in finding.summary
+
+
+# ---- restated identity
+
+IDENTITY_FAMILY = (
+    "class Outcome:\n    pass\n\n\n"
+    "class Complete(Outcome, declared_name='complete'):\n    pass\n\n\n"
+    "class Failed(Outcome, declared_name='failed'):\n"
+    "    def label(self):\n        return self.declared_name\n"
+)
+
+
+def test_a_quoted_class_name_and_a_passed_class_name_restate_the_class(tmp_path: Path):
+    source = (
+        "class TurnItem:\n    pass\n\n\n"
+        "def first(items: list['TurnItem']) -> 'TurnItem':\n    return items[0]\n\n\n"
+        "def declared():\n    return check('TurnItem', 'Item')\n"
+    )
+    first, declared = _findings(tmp_path, RestatedIdentityDetector, {"m": source})
+    assert first.pattern_id is PatternId.RESTATED_IDENTITY
+    assert "first spells class `TurnItem` 2 time(s)" in first.summary
+    assert "Declared at `TurnItem` (" in first.summary and "m.py:1)" in first.summary
+    assert "declared spells class `TurnItem` 1 time(s)" in declared.summary
+    assert "UnquoteResolvedTypeNamesOperation" in first.summary
+
+
+def test_a_compared_family_spelling_restates_the_member(tmp_path: Path):
+    source = IDENTITY_FAMILY + (
+        "\n\ndef finished(outcome):\n    return outcome.declared_name == 'complete'\n"
+    )
+    (finding,) = _findings(tmp_path, RestatedIdentityDetector, {"m": source})
+    assert (
+        "`declared_name` spelling of a family member 'complete' (`Complete`)"
+        in finding.summary
+    )
+
+
+def test_a_sentinel_class_constant_compared_elsewhere_restates_the_class(
+    tmp_path: Path,
+):
+    source = (
+        "class Alpha:\n    sigma = 'alpha'\n\n\n"
+        "class Beta:\n    sigma = 'beta'\n\n\n"
+        "class Gamma(Alpha):\n    sigma = 'gamma'\n\n\n"
+        "class Delta(Alpha):\n    sigma = 'delta'\n\n\n"
+        "def choose(obj):\n    if obj.sigma == 'gamma':\n        return 1\n    return 2\n"
+    )
+    (finding,) = _findings(tmp_path, RestatedIdentityDetector, {"m": source})
+    assert "'gamma' (`Gamma`)" in finding.summary
+
+
+def test_shared_constants_one_word_names_and_foreign_strings_are_not_identities(
+    tmp_path: Path,
+):
+    source = (
+        "class Read:\n    pass\n\n\n"
+        "class Small(Read):\n    unit = 'kb'\n\n\n"
+        "class Large(Read):\n    unit = 'kb'\n\n\n"
+        "def f(x, path):\n"
+        "    if x.unit == 'kb' or path.suffix == '.jsonl':\n        return send('Read')\n"
+        "    return x.status == 'completed'\n"
+    )
+    assert _findings(tmp_path, RestatedIdentityDetector, {"m": source}) == []
+
+
+def test_a_member_spelling_passed_as_text_is_flattened_but_its_own_read_is_not(
+    tmp_path: Path,
+):
+    source = (
+        IDENTITY_FAMILY
+        + "\n\ndef emit(send):\n    return send(Complete.declared_name)\n"
+    )
+    (finding,) = _findings(tmp_path, RestatedIdentityDetector, {"m": source})
+    assert "read off `Complete` as text" in finding.summary
+    assert 15 in _lines([finding])
+
+
+def test_a_module_name_given_to_an_importer_or_run_flag_restates_the_module(
+    tmp_path: Path,
+):
+    (tmp_path / "pkg").mkdir()
+    (tmp_path / "pkg" / "__init__.py").write_text("")
+    (tmp_path / "pkg" / "worker.py").write_text("X = 1\n")
+    source = (
+        "import sys\nfrom importlib import import_module\n\n\n"
+        "def load():\n    import_module('pkg.worker')\n"
+        "    return (sys.executable, '-m', 'pkg.worker', 'pkg.absent')\n"
+    )
+    (finding,) = _findings(tmp_path, RestatedIdentityDetector, {"pkg/run": source})
+    assert "load spells module `pkg.worker` 2 time(s)" in finding.summary
+
+
+def test_a_multiword_spelling_of_a_keyword_family_member_restates_it_anywhere(
+    tmp_path: Path,
+):
+    source = (
+        "from typing import ClassVar\n\n\n"
+        "class Family:\n"
+        "    def __init_subclass__(cls, *, declared_name=None):\n"
+        "        super().__init_subclass__()\n\n\n"
+        "class ClaimedWrite(Family):\n"
+        "    declared_name: ClassVar[str] = 'claimed_write'\n\n\n"
+        "def decode(name):\n"
+        "    if name != 'claimed_write':\n        raise ValueError(name)\n"
+        "    return name == 'main'\n"
+    )
+    (finding,) = _findings(tmp_path, RestatedIdentityDetector, {"m": source})
+    assert "'claimed_write' (`ClaimedWrite`)" in finding.summary
+    assert "line 14" in finding.summary and "'main'" not in finding.summary
+
+
+def test_a_classvar_slot_declares_the_spelling_every_member_fills(tmp_path: Path):
+    source = (
+        "from typing import ClassVar\n\n\n"
+        "class ToolCall:\n    declared_name: ClassVar[str]\n\n\n"
+        "class SelectedWrite(ToolCall):\n"
+        "    declared_name: ClassVar[str] = 'selected_write'\n\n\n"
+        "class Row:\n    def __init__(self):\n        self.created_at = 0\n\n\n"
+        "def decode(name, row):\n"
+        "    index(('selected_write', 'created_at'))\n"
+        "    return name != 'selected_write'\n"
+    )
+    (finding,) = _findings(tmp_path, RestatedIdentityDetector, {"m": source})
+    assert "'selected_write' (`SelectedWrite`)" in finding.summary
+    assert "1 time(s)" in finding.summary
+
+
+def test_a_quote_the_position_needs_is_not_a_restatement(tmp_path: Path):
+    eager = (
+        "from typing import ClassVar, TypeVar\n\n"
+        "Row = TypeVar('Row', bound='Table')\n\n\n"
+        "class Table:\n"
+        "    registry: ClassVar[dict[str, type['Table']]] = {}\n\n"
+        "    def copy(self) -> 'Table':\n        return self\n"
+    )
+    assert _findings(tmp_path, RestatedIdentityDetector, {"m": eager}) == []
+    (tmp_path / "m.py").unlink()
+    lazy = "from __future__ import annotations\n\n" + eager
+    findings = _findings(tmp_path, RestatedIdentityDetector, {"lazy": lazy})
+    assert sorted(finding.summary.split(" spells")[0] for finding in findings) == [
+        "Table",
+        "Table.copy",
+    ]
+
+
+@pytest.mark.parametrize(
+    ("requires_python", "found"), ((">=3.14,<3.15", 1), (">=3.11", 0))
+)
+def test_a_quoted_type_checking_name_is_restated_where_annotations_are_lazy(
+    tmp_path: Path, requires_python: str, found: int
+):
+    (tmp_path / "pyproject.toml").write_text(
+        f'[project]\nname = "p"\nrequires-python = "{requires_python}"\n'
+    )
+    (tmp_path / "pkg").mkdir()
+    (tmp_path / "pkg" / "__init__.py").write_text("")
+    (tmp_path / "pkg" / "threads.py").write_text("class Thread:\n    pass\n")
+    source = (
+        "from typing import TYPE_CHECKING\n\n"
+        "if TYPE_CHECKING:\n    from .threads import Thread\n\n\n"
+        "def resolve(thread: 'Thread') -> None:\n    return None\n"
+    )
+    findings = _findings(tmp_path, RestatedIdentityDetector, {"pkg/load": source})
+    assert len(findings) == found

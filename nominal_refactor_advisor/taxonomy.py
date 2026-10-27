@@ -43,7 +43,7 @@ class LabeledStrEnum(StrEnum):
 
     label: str
 
-    def __new__(cls, value: str, label: str) -> "LabeledStrEnum":
+    def __new__(cls, value: str, label: str) -> LabeledStrEnum:
         member = str.__new__(cls, value)
         member._value_ = value
         member.label = label
@@ -55,7 +55,7 @@ class CapabilityTag(LabeledStrEnum):
 
     distinction: str
 
-    def __new__(cls, value: str, label: str, distinction: str) -> "CapabilityTag":
+    def __new__(cls, value: str, label: str, distinction: str) -> CapabilityTag:
         member = str.__new__(cls, value)
         member._value_ = value
         member.label = label

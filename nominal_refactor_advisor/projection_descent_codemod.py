@@ -354,7 +354,7 @@ class _ProjectionLookupSequence:
         lookup_method_name: str,
         lookup_receiver_matches: Callable[[ast.expr], bool],
         behavior_method_names: frozenset[str],
-    ) -> "_ProjectionLookupSequence | None":
+    ) -> _ProjectionLookupSequence | None:
         statement_tuple = tuple(statements)
         if len(statement_tuple) != 3:
             return None
@@ -531,7 +531,7 @@ class _TypeKeyedBehaviorSourceDerivation:
         projection_root_symbol: str,
         *,
         operation: TypedMirror,
-    ) -> "_TypeKeyedBehaviorSourceDerivation":
+    ) -> _TypeKeyedBehaviorSourceDerivation:
         projections = CompactModuleClassProjectionFamily.collect_modules(
             snapshot.parsed_modules
         )

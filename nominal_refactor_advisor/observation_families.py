@@ -693,7 +693,7 @@ class RegistryMutatingDecoratorFactory:
         cls,
         function: ast.FunctionDef,
         registry_names: frozenset[str],
-    ) -> "RegistryMutatingDecoratorFactory | None":
+    ) -> RegistryMutatingDecoratorFactory | None:
         parameters = (*function.args.posonlyargs, *function.args.args)
         parameter_names = tuple(parameter.arg for parameter in parameters)
         nested_functions = tuple(
@@ -1227,7 +1227,7 @@ class FieldObservationFamily(
 _PUBLIC_EXPORT_POLICY = PublicExportPolicy(
     module_name=__name__,
     root_types=tuple(SharedRegistryRootBase.__subclasses__()),
-    explicit_names=frozenset({"AutoRegisteredModuleShapeSpec"}),
+    explicit_names=frozenset({AutoRegisteredModuleShapeSpec.__name__}),
 )
 
 

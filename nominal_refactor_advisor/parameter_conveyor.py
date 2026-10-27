@@ -54,7 +54,7 @@ class ParameterConveyorProductProjection:
     def from_field_mapping(
         cls,
         field_mapping: tuple[tuple[str, str], ...],
-    ) -> "ParameterConveyorProductProjection":
+    ) -> ParameterConveyorProductProjection:
         return cls(
             tuple(
                 (field_name, frozenset((LexicalValueReference(parameter_name),)))
@@ -258,7 +258,7 @@ class ClosedParameterConveyorAuthorityViolation(StrEnum):
     def explanation(self) -> str:
         return self._explanation
 
-    def is_violated_by(self, proof: "ClosedParameterConveyorAuthorityProof") -> bool:
+    def is_violated_by(self, proof: ClosedParameterConveyorAuthorityProof) -> bool:
         return self._predicate(proof)
 
 

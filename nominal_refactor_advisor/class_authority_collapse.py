@@ -65,7 +65,7 @@ class ClassBehaviorProofContext:
         cls,
         parsed_module: ParsedModule,
         owner: IndexedClass,
-    ) -> "ClassBehaviorProofContext":
+    ) -> ClassBehaviorProofContext:
         return cls(
             owner=owner,
             module_bound_names=LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(
@@ -93,7 +93,7 @@ class ClassMethodBehaviorAuthority:
         cls,
         context: ClassBehaviorProofContext,
         method: ast.FunctionDef | ast.AsyncFunctionDef,
-    ) -> "ClassMethodBehaviorAuthority":
+    ) -> ClassMethodBehaviorAuthority:
         safety_profile = ClassMethodPromotionSafetyProfile.from_method(
             method,
             context.module_bound_names,
@@ -239,7 +239,7 @@ class ClassBaseBehaviorAuthority:
     def from_declaration(
         cls,
         context: ClassBehaviorProofContext,
-    ) -> tuple["ClassBaseBehaviorAuthority", ...]:
+    ) -> tuple[ClassBaseBehaviorAuthority, ...]:
         authorities: list[ClassBaseBehaviorAuthority] = []
         for base in context.owner.node.bases:
             parts = ExpressionReference.decoded(base).attribute_chain
@@ -287,7 +287,7 @@ class ClassAuthorityCollapseProofContext:
         *,
         displaced_symbol: str,
         replacement_symbol: str,
-    ) -> "ClassAuthorityCollapseProofContext":
+    ) -> ClassAuthorityCollapseProofContext:
         displaced = cls.required_class(class_index, displaced_symbol)
         replacement = cls.required_class(class_index, replacement_symbol)
         if displaced_symbol == replacement_symbol:
@@ -479,7 +479,7 @@ class RedundantClassAuthorityCollapseProof:
         *,
         displaced_symbol: str,
         replacement_symbol: str,
-    ) -> "RedundantClassAuthorityCollapseProof":
+    ) -> RedundantClassAuthorityCollapseProof:
         context = ClassAuthorityCollapseProofContext.require(
             parsed_modules,
             class_index,
@@ -611,7 +611,7 @@ class IntermediateClassAuthorityCollapseProof:
         *,
         displaced_symbol: str,
         replacement_symbol: str,
-    ) -> "IntermediateClassAuthorityCollapseProof":
+    ) -> IntermediateClassAuthorityCollapseProof:
         context = ClassAuthorityCollapseProofContext.require(
             parsed_modules,
             class_index,

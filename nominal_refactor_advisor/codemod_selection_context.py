@@ -28,6 +28,10 @@ from .class_index import (
     ClassFamilyIndex,
     ModuleClassReferenceResolver,
 )
+from .class_identity_observations import (
+    DeclaredIdentities,
+    DeclaredIdentityFamily,
+)
 from .codemod_declaration_source import DirectClassDeclarationAuthority
 from .codemod_import_graph import SourceModuleImportGraph
 from .codemod_paths import (
@@ -72,7 +76,7 @@ class CodemodSelectorContext(IndexedSourceAuthority, ABC):
         compare=False,
     )
     _direct_class_declaration_indexes_by_file_path: dict[
-        str, "ClassDirectDeclarationIndex"
+        str, ClassDirectDeclarationIndex
     ] = field(default_factory=dict, init=False, repr=False, compare=False)
     _class_reference_resolvers_by_file_path: dict[str, ModuleClassReferenceResolver] = (
         field(default_factory=dict, init=False, repr=False, compare=False)
@@ -115,7 +119,7 @@ class CodemodSelectorContext(IndexedSourceAuthority, ABC):
         )
 
     @abstractmethod
-    def execution_snapshot(self) -> "CodemodSourceSnapshot":
+    def execution_snapshot(self) -> CodemodSourceSnapshot:
         """Return the concrete source authority used to execute rewrites."""
 
         raise NotImplementedError
@@ -155,10 +159,22 @@ class CodemodSelectorContext(IndexedSourceAuthority, ABC):
             module_nodes_by_file_path=self.module_nodes_by_file_path,
         )
 
+    @cached_property
+    def declared_identities(self) -> DeclaredIdentities:
+        """The identities this source state declares, as the restated-identity join reads them."""
+
+        return DeclaredIdentities.from_modules(
+            declared
+            for file_path in self.source_file_paths
+            for declared in DeclaredIdentityFamily.collect(
+                self.parsed_module_for_source_path(file_path)
+            )
+        )
+
     def direct_class_declaration_index_for_file(
         self,
         file_path: str,
-    ) -> "ClassDirectDeclarationIndex":
+    ) -> ClassDirectDeclarationIndex:
         cache = self._direct_class_declaration_indexes_by_file_path
         if file_path not in cache:
             cache[file_path] = ClassDirectDeclarationIndex.from_context_file(
@@ -380,7 +396,7 @@ class ClassDirectDeclarationIndex:
         cls,
         context: CodemodSelectorContext,
         file_path: str,
-    ) -> "ClassDirectDeclarationIndex":
+    ) -> ClassDirectDeclarationIndex:
         targets_by_file = context.source_index.targets_by_file
         if not targets_by_file.contains_file(file_path):
             return cls(declarations_by_target_id={})

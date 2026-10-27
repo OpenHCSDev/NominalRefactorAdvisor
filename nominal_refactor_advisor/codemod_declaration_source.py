@@ -568,7 +568,7 @@ class ClassMemberSource:
     source: str
 
     @classmethod
-    def from_source(cls, source: str, *, indentation: str) -> "ClassMemberSource":
+    def from_source(cls, source: str, *, indentation: str) -> ClassMemberSource:
         """Derive the member identity and indented text from one authored declaration."""
         try:
             block = PythonBlockSource(source)
@@ -613,7 +613,7 @@ class ClassMemberInsertion(NominalSourceEdit):
     def coalesced_with_peers(
         self,
         peers: tuple[NominalSourceEdit, ...],
-        context: "CodemodSelectorContext",
+        context: CodemodSelectorContext,
     ) -> tuple[NominalSourceEdit, ...]:
         del context
         insertions_by_target: dict[str, list[ClassMemberInsertion]] = defaultdict(list)
@@ -628,8 +628,8 @@ class ClassMemberInsertion(NominalSourceEdit):
     @classmethod
     def _coalesced_same_target(
         cls,
-        insertions: tuple["ClassMemberInsertion", ...],
-    ) -> "ClassMemberInsertion":
+        insertions: tuple[ClassMemberInsertion, ...],
+    ) -> ClassMemberInsertion:
         first = insertions[0]
         members_by_name: dict[str, ClassMemberSource] = {}
         for insertion in insertions:
@@ -652,7 +652,7 @@ class ClassMemberInsertion(NominalSourceEdit):
 
     def source_mutation(
         self,
-        context: "CodemodSelectorContext",
+        context: CodemodSelectorContext,
     ) -> SourceTextMutation:
         target = context.source_index.target_by_id.get(self.target_id)
         node = context.ast_target_nodes_by_id.get(self.target_id)
@@ -695,7 +695,7 @@ class _SingleLogicalLineSource:
     newline: str
 
     @classmethod
-    def parse(cls, original_line: str, role: str) -> "_SingleLogicalLineSource":
+    def parse(cls, original_line: str, role: str) -> _SingleLogicalLineSource:
         body = original_line.rstrip("\r\n")
         newline = original_line[len(body) :]
         stripped_body = body.lstrip()

@@ -98,21 +98,21 @@ class _ModuleImportDependencyResolution:
         candidates: Iterable[
             tuple[ModuleImportBinding, ModuleImportBindingIdentity]
         ] = (),
-    ) -> "_ModuleImportDependencyResolution":
+    ) -> _ModuleImportDependencyResolution:
         return cls(tuple(candidates))
 
     @classmethod
     def unresolved_star(
         cls,
         module_name: str | None,
-    ) -> "_ModuleImportDependencyResolution":
+    ) -> _ModuleImportDependencyResolution:
         return cls(unresolved_star_module_names=(module_name,))
 
     @classmethod
     def combine(
         cls,
-        resolutions: Iterable["_ModuleImportDependencyResolution"],
-    ) -> "_ModuleImportDependencyResolution":
+        resolutions: Iterable[_ModuleImportDependencyResolution],
+    ) -> _ModuleImportDependencyResolution:
         resolution_tuple = tuple(resolutions)
         return cls(
             candidates=tuple(
@@ -182,7 +182,7 @@ class _ModuleExportBindingAuthority:
         )
 
     @cached_property
-    def symbol_table(self) -> "ModuleSymbolTable":
+    def symbol_table(self) -> ModuleSymbolTable:
         return ModuleSymbolTable(
             file_path=self.source_file.file_path,
             source="",
@@ -192,7 +192,7 @@ class _ModuleExportBindingAuthority:
     def dependency_resolution(
         self,
         name: str,
-        binding: "_StarProjectedModuleImportBinding",
+        binding: _StarProjectedModuleImportBinding,
         import_graph: SourceModuleImportGraph,
     ) -> _ModuleImportDependencyResolution:
         exposure = module_public_export_contract(self.parsed_module).exposure_for(name)
@@ -264,7 +264,7 @@ class _ModuleStarImportProjection:
     def from_module(
         cls,
         module: ast.Module,
-    ) -> tuple["_ModuleStarImportProjection", ...]:
+    ) -> tuple[_ModuleStarImportProjection, ...]:
         return tuple(
             cls(statement, scope)
             for scope in ModuleImportScope
@@ -887,7 +887,7 @@ class SourceTopLevelSymbolMoveSelection:
         source_path: str,
         module: ast.Module,
         symbol_qualnames: Iterable[str],
-    ) -> "SourceTopLevelSymbolMoveSelection":
+    ) -> SourceTopLevelSymbolMoveSelection:
         declaration_index = SourceTopLevelDeclarationIndex(
             source_path=source_path,
             module=module,
@@ -905,7 +905,7 @@ class SourceTopLevelSymbolMoveSelection:
         source_path: str,
         module: ast.Module,
         root_symbol_qualnames: Iterable[str],
-    ) -> "SourceTopLevelSymbolMoveSelection":
+    ) -> SourceTopLevelSymbolMoveSelection:
         """Derive movable transitive source dependencies from semantic roots."""
 
         declaration_index = SourceTopLevelDeclarationIndex(

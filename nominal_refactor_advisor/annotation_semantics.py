@@ -157,7 +157,7 @@ class StringizedAnnotationSurface(ModuleNameReferenceScope):
         expression: ast.expr,
         *,
         owner_classes: tuple[ast.ClassDef, ...] = (),
-    ) -> tuple["StringizedAnnotationSurface", ...]:
+    ) -> tuple[StringizedAnnotationSurface, ...]:
         """Project string literals occupying type-expression positions."""
 
         return tuple(

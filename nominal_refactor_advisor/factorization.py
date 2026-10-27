@@ -53,7 +53,7 @@ class FactorizationRow:
         axis_values: Mapping[AxisName, object],
         *,
         source_name: str | None = None,
-    ) -> "FactorizationRow":
+    ) -> FactorizationRow:
         return cls(
             object_name=object_name,
             axis_values=_axis_signature(axis_values),
@@ -114,7 +114,7 @@ class FormalConcept:
     extent: frozenset[str]
     intent: frozenset[ConceptAttribute]
 
-    def refines(self, other: "FormalConcept") -> bool:
+    def refines(self, other: FormalConcept) -> bool:
         return self.extent <= other.extent and self.intent >= other.intent
 
     @property
@@ -130,7 +130,7 @@ class FormalConceptLattice(FiniteCoverRelation[FormalConcept]):
     cover_elements = AliasProperty[tuple[FormalConcept, ...]]("concepts")
 
     @classmethod
-    def from_rows(cls, rows: Iterable[FactorizationRow]) -> "FormalConceptLattice":
+    def from_rows(cls, rows: Iterable[FactorizationRow]) -> FormalConceptLattice:
         row_tuple = tuple(rows)
         objects = frozenset((row.object_name for row in row_tuple))
         attributes = frozenset(
@@ -235,7 +235,7 @@ class AxisIndependenceModel:
     axis_system: FiniteAxisSystem[str, AxisName]
 
     @classmethod
-    def from_rows(cls, rows: Iterable[FactorizationRow]) -> "AxisIndependenceModel":
+    def from_rows(cls, rows: Iterable[FactorizationRow]) -> AxisIndependenceModel:
         return cls(
             FiniteAxisSystem.from_rows(
                 ((row.object_name, dict(row.axis_values)) for row in rows)
@@ -318,7 +318,7 @@ class OwnershipClosure:
         rows: Iterable[FactorizationRow],
         *,
         owner_axis_name: AxisName = "owner",
-    ) -> "OwnershipClosure":
+    ) -> OwnershipClosure:
         projections: set[OwnershipProjection] = set()
         for row in rows:
             if owner_axis_name not in row.axis_names:
@@ -427,7 +427,7 @@ class OwnershipClosure:
 
     def projection_diagram(
         self, source_name: str, target_name: str
-    ) -> "ProjectionDiagram":
+    ) -> ProjectionDiagram:
         paths = frozenset(
             (
                 path[: path.index(target_name) + 1]
@@ -439,7 +439,7 @@ class OwnershipClosure:
 
     def commuting_projection_pairs(
         self,
-    ) -> tuple[tuple["ProjectionDiagram", "ProjectionDiagram"], ...]:
+    ) -> tuple[tuple[ProjectionDiagram, ProjectionDiagram], ...]:
         diagrams = tuple(
             (
                 self.projection_diagram(source, target)

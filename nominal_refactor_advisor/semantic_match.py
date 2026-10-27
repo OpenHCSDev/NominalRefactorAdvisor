@@ -62,25 +62,25 @@ class EffectCarrier(ABC, Generic[T]):
     """Nominal carrier for optional semantic extraction effects."""
 
     @abstractmethod
-    def bind_step(self, step: EffectStep[T, U]) -> "EffectCarrier[U]":
+    def bind_step(self, step: EffectStep[T, U]) -> EffectCarrier[U]:
         raise NotImplementedError
 
     @abstractmethod
-    def project(self, projector: Callable[[T], U | None]) -> "EffectCarrier[U]":
+    def project(self, projector: Callable[[T], U | None]) -> EffectCarrier[U]:
         raise NotImplementedError
 
     @abstractmethod
-    def map(self, projector: Callable[[T], U]) -> "EffectCarrier[U]":
+    def map(self, projector: Callable[[T], U]) -> EffectCarrier[U]:
         raise NotImplementedError
 
     @abstractmethod
-    def filter(self, predicate: Callable[[T], bool]) -> "EffectCarrier[T]":
+    def filter(self, predicate: Callable[[T], bool]) -> EffectCarrier[T]:
         raise NotImplementedError
 
     @abstractmethod
     def with_projection(
         self, projector: Callable[[T], U | None]
-    ) -> "EffectCarrier[tuple[T, U]]":
+    ) -> EffectCarrier[tuple[T, U]]:
         raise NotImplementedError
 
     @abstractmethod
@@ -88,7 +88,7 @@ class EffectCarrier(ABC, Generic[T]):
         self,
         projector: Callable[[T], U | None],
         combiner: Callable[[T, U], V],
-    ) -> "EffectCarrier[V]":
+    ) -> EffectCarrier[V]:
         raise NotImplementedError
 
     @abstractmethod
@@ -143,7 +143,7 @@ class AstPredicateRule(ABC, Generic[ContextT, AstT, U]):
         raise NotImplementedError
 
     @classmethod
-    def rules(cls) -> tuple["AstPredicateRule[ContextT, ast.AST, U]", ...]:
+    def rules(cls) -> tuple[AstPredicateRule[ContextT, ast.AST, U], ...]:
         return tuple(
             cast(AstPredicateRule[ContextT, ast.AST, U], rule_type())
             for rule_type in loaded_concrete_nominal_descendants(cls)
@@ -234,7 +234,7 @@ class AstNameTemplateMatch:
         template_expressions: Sequence[ast.expr],
         candidate_expressions: Sequence[ast.expr],
         bindable_names: Sequence[str],
-    ) -> "AstNameTemplateMatch | None":
+    ) -> AstNameTemplateMatch | None:
         if len(template_expressions) != len(candidate_expressions):
             return None
         ordered_names = tuple(dict.fromkeys(bindable_names))
@@ -427,32 +427,32 @@ class Maybe(EffectCarrier[T]):
     value: T | None
 
     @classmethod
-    def of(cls, value: T | None) -> "Maybe[T]":
+    def of(cls, value: T | None) -> Maybe[T]:
         return cls(value)
 
-    def bind_step(self, step: EffectStep[T, U]) -> "Maybe[U]":
+    def bind_step(self, step: EffectStep[T, U]) -> Maybe[U]:
         if self.value is None:
             return Maybe(None)
         return Maybe(step.apply(self.value))
 
-    def project(self, projector: Callable[[T], U | None]) -> "Maybe[U]":
+    def project(self, projector: Callable[[T], U | None]) -> Maybe[U]:
         if self.value is None:
             return Maybe(None)
         return Maybe(projector(self.value))
 
-    def map(self, projector: Callable[[T], U]) -> "Maybe[U]":
+    def map(self, projector: Callable[[T], U]) -> Maybe[U]:
         if self.value is None:
             return Maybe(None)
         return Maybe(projector(self.value))
 
-    def filter(self, predicate: Callable[[T], bool]) -> "Maybe[T]":
+    def filter(self, predicate: Callable[[T], bool]) -> Maybe[T]:
         if self.value is None or not predicate(self.value):
             return Maybe(None)
         return self
 
     def with_projection(
         self, projector: Callable[[T], U | None]
-    ) -> "Maybe[tuple[T, U]]":
+    ) -> Maybe[tuple[T, U]]:
         if self.value is None:
             return Maybe(None)
         projected = projector(self.value)
@@ -464,7 +464,7 @@ class Maybe(EffectCarrier[T]):
         self,
         projector: Callable[[T], U | None],
         combiner: Callable[[T, U], V],
-    ) -> "Maybe[V]":
+    ) -> Maybe[V]:
         if self.value is None:
             return Maybe(None)
         projected = projector(self.value)
@@ -472,13 +472,13 @@ class Maybe(EffectCarrier[T]):
             return Maybe(None)
         return Maybe(combiner(self.value, projected))
 
-    def bind_all(self, steps: Sequence[EffectStep[Any, Any]]) -> "Maybe[Any]":
+    def bind_all(self, steps: Sequence[EffectStep[Any, Any]]) -> Maybe[Any]:
         result: Maybe[Any] = cast(Maybe[Any], self)
         for step in steps:
             result = result.bind_step(step)
         return result
 
-    def bind(self, step: EffectStep[T, U]) -> "Maybe[U]":
+    def bind(self, step: EffectStep[T, U]) -> Maybe[U]:
         return self.bind_step(step)
 
     def unwrap_or_none(self) -> T | None:

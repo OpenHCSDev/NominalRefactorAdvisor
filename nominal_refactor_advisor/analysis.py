@@ -153,7 +153,7 @@ class AnalysisPathScope:
         context_roots: tuple[Path, ...] = (),
         *,
         auto_context: bool = True,
-    ) -> "AnalysisPathScope":
+    ) -> AnalysisPathScope:
         requested_roots, context_roots = (
             tuple(lexical_absolute_path(root) for root in group)
             for group in (requested_roots, context_roots)
@@ -440,7 +440,7 @@ class DetectorTypeShardRunner:
         *,
         analysis_workers: int,
         minimum_auto_work_items: int = 4,
-    ) -> "DetectorTypeShardRunner":
+    ) -> DetectorTypeShardRunner:
         return cls(
             worker_state=DetectorAnalysisWorkerState(modules, config),
             detector_types=detector_types,
@@ -624,7 +624,7 @@ class PerModuleDetectorBundlePlan:
     def from_detector_types(
         cls,
         detector_types: tuple[type[IssueDetector], ...],
-    ) -> "PerModuleDetectorBundlePlan":
+    ) -> PerModuleDetectorBundlePlan:
         grouped: dict[str, list[type[IssueDetector]]] = {}
         for detector_type in detector_types:
             grouped.setdefault(detector_type.__module__, []).append(detector_type)
@@ -715,7 +715,7 @@ class CompactGlobalProjectionAccumulator:
     def from_detector_types(
         cls,
         detector_types: tuple[type[IssueDetector], ...],
-    ) -> "CompactGlobalProjectionAccumulator":
+    ) -> CompactGlobalProjectionAccumulator:
         return cls(
             tuple(
                 detector_type
@@ -2515,7 +2515,7 @@ class EvidenceLocalPartialDetectorSelection:
     def from_detector_types(
         cls,
         detector_types: tuple[type[IssueDetector], ...],
-    ) -> "EvidenceLocalPartialDetectorSelection":
+    ) -> EvidenceLocalPartialDetectorSelection:
         partition = DetectorTypePartition(detector_types)
         graph_detector_types = tuple(
             detector_type
@@ -2658,7 +2658,7 @@ def analyze_modules(
     config: DetectorConfig | None = None,
     *,
     analysis_workers: int = 1,
-    semantic_descent_source: "SemanticDescentGraphAnalysisSource | None" = None,
+    semantic_descent_source: SemanticDescentGraphAnalysisSource | None = None,
 ) -> list[RefactorFinding]:
     """Run all registered detectors against parsed modules."""
 
@@ -2680,7 +2680,7 @@ def analyze_detector_types(
     *,
     detector_types: tuple[type[IssueDetector], ...],
     analysis_workers: int = 1,
-    semantic_descent_source: "SemanticDescentGraphAnalysisSource | None" = None,
+    semantic_descent_source: SemanticDescentGraphAnalysisSource | None = None,
     detector_type_minimum_auto_work_items: int = 64,
 ) -> list[RefactorFinding]:
     """Run selected detector classes against parsed modules."""
@@ -2739,7 +2739,7 @@ class SemanticDescentGraphCacheContext:
         parse_cache_dir: Path | None,
         use_cache: bool,
         source_policy: PythonSourcePathPolicy | None,
-    ) -> "SemanticDescentGraphCacheContext":
+    ) -> SemanticDescentGraphCacheContext:
         return cls(
             storage_root=(
                 semantic_descent_cache_sibling(parse_cache_dir)
@@ -2880,7 +2880,7 @@ class SemanticDescentGraphAnalysisSource:
             return self.cached_graph.overlay_modules(tuple(modules))
         return self.cache_context.graph_for_modules(modules)
 
-    def with_latest_cached_graph(self) -> "SemanticDescentGraphAnalysisSource":
+    def with_latest_cached_graph(self) -> SemanticDescentGraphAnalysisSource:
         if self.cached_graph is not None:
             return self
         cached_graph = self.cache_context.latest_graph()

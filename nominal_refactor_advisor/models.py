@@ -103,7 +103,7 @@ class SemanticFieldRole(StrEnum):
         mixin_name: str | None = None,
         required_carrier_coordinate: bool = False,
         carrier_naming_role: bool = False,
-    ) -> "SemanticFieldRole":
+    ) -> SemanticFieldRole:
         member = str.__new__(cls, value)
         member._value_ = value
         member.exact_field_names = frozenset(exact_field_names)
@@ -163,21 +163,21 @@ class SemanticFieldRole(StrEnum):
         )
 
     @classmethod
-    def for_field_name(cls, field_name: str) -> tuple["SemanticFieldRole", ...]:
+    def for_field_name(cls, field_name: str) -> tuple[SemanticFieldRole, ...]:
         """Derive every overlapping semantic role for one source field."""
 
         return tuple(role for role in cls if role.matches_field_name(field_name))
 
     @classmethod
-    def required_carrier_coordinates(cls) -> frozenset["SemanticFieldRole"]:
+    def required_carrier_coordinates(cls) -> frozenset[SemanticFieldRole]:
         return frozenset(role for role in cls if role.required_carrier_coordinate)
 
     @classmethod
-    def carrier_naming_roles(cls) -> frozenset["SemanticFieldRole"]:
+    def carrier_naming_roles(cls) -> frozenset[SemanticFieldRole]:
         return frozenset(role for role in cls if role.carrier_naming_role)
 
     @classmethod
-    def mixin_roles(cls) -> tuple["SemanticFieldRole", ...]:
+    def mixin_roles(cls) -> tuple[SemanticFieldRole, ...]:
         """Return roles whose reusable nominal mixin is declaration-owned."""
 
         return tuple(role for role in cls if role.mixin_name is not None)
@@ -273,7 +273,7 @@ class ImpactDelta(SemanticRecord):
     description_length_after: int = 0
     description_length_savings: int = 0
 
-    def __add__(self, other: "ImpactDelta") -> "ImpactDelta":
+    def __add__(self, other: ImpactDelta) -> ImpactDelta:
         return ImpactDelta(
             lower_bound_removable_loc=self.lower_bound_removable_loc
             + other.lower_bound_removable_loc,
@@ -301,7 +301,7 @@ class ImpactDelta(SemanticRecord):
     @classmethod
     def from_repeated_mapping_family(
         cls, owner_count: int, repeated_component_count: int
-    ) -> "ImpactDelta":
+    ) -> ImpactDelta:
         removable = max((owner_count - 1) * repeated_component_count, 0)
         return cls(
             lower_bound_removable_loc=removable,
@@ -387,6 +387,13 @@ DispatchFindingMetrics = CompositeClassSpec(
 @dataclass(frozen=True)
 class EmptyFindingMetrics(FindingMetrics):
     pass
+
+
+@dataclass(frozen=True)
+class DeclarationReferenceMetrics(FindingMetrics):
+    """The scan-wide reference rewrites this finding carries as their one candidate, each with its files."""
+
+    carried_rewrites: tuple[tuple[str, tuple[str, ...]], ...]
 
 
 @dataclass(frozen=True)
@@ -763,7 +770,7 @@ class DispatchCountMetrics(CountedDispatchMetrics):
     @classmethod
     def from_literal_family(
         cls, dispatch_axis: str | None, literal_cases: tuple[str, ...]
-    ) -> "DispatchCountMetrics":
+    ) -> DispatchCountMetrics:
         return cls(
             dispatch_site_count=len(literal_cases),
             dispatch_axis=dispatch_axis,
@@ -885,20 +892,20 @@ class FindingBuildContext:
     @classmethod
     def merge(
         cls,
-        base: "FindingBuildContext | None" = None,
+        base: FindingBuildContext | None = None,
         **overrides: Unpack[FindingBuildContextKwargs],
-    ) -> "FindingBuildContext":
+    ) -> FindingBuildContext:
         context = cls() if base is None else base
         return context if not overrides else replace(context, **overrides)
 
     def finding(
         self,
-        spec: "FindingSpec",
+        spec: FindingSpec,
         detector_id: str,
         summary: str,
         evidence: tuple[SourceLocation, ...],
         /,
-    ) -> "RefactorFinding":
+    ) -> RefactorFinding:
         """Apply this context once while constructing a concrete finding."""
 
         return RefactorFinding(
@@ -933,7 +940,7 @@ class FindingObligationClass(SemanticRecord):
         semantics: FindingSemantics,
         *,
         declaration: type[RequiredRelationDeclaration],
-    ) -> "FindingObligationClass":
+    ) -> FindingObligationClass:
         pattern_id = declaration.required_relation_pattern_id()
         if semantics.pattern_id is not pattern_id:
             raise ValueError(

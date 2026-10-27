@@ -1344,7 +1344,7 @@ class RepeatedBuilderCallProjectionDemand:
     def from_report_targets(
         cls,
         target_items: tuple[object, ...],
-    ) -> "RepeatedBuilderCallProjectionDemand":
+    ) -> RepeatedBuilderCallProjectionDemand:
         """Derive exact repository mapping keys from report-target shapes."""
 
         return cls(

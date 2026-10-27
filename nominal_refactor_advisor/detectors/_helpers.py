@@ -448,7 +448,7 @@ class NominalAuthorityIndex:
         shapes: Sequence[NominalAuthorityShape],
         *,
         base_lookup: dict[str, set[str]] | None = None,
-    ) -> "NominalAuthorityIndex":
+    ) -> NominalAuthorityIndex:
         active_base_lookup: dict[str, set[str]] = defaultdict(set)
         if base_lookup is None:
             for shape in shapes:
@@ -1803,7 +1803,7 @@ class _RegisteredUnionSurfaceSource:
     line: int
 
     @classmethod
-    def from_node(cls, node: ast.AST) -> "_RegisteredUnionSurfaceSource | None":
+    def from_node(cls, node: ast.AST) -> _RegisteredUnionSurfaceSource | None:
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             for statement in statements_without_docstring(node.body):
                 if isinstance(statement, ast.For):
@@ -2196,7 +2196,7 @@ class _MethodFamilyMethodGroupProfile(ResidueHookNamesCarrier):
         cls,
         method_name: str,
         class_methods: tuple[tuple[CompactIndexedClass, CompactClassMethod], ...],
-    ) -> "_MethodFamilyMethodGroupProfile | None":
+    ) -> _MethodFamilyMethodGroupProfile | None:
         if len(class_methods) < 2:
             return None
         methods = tuple(method for _, method in class_methods)
@@ -2255,7 +2255,7 @@ class _MethodFamilyMethodPlan(ClassFamilyWitnessCarrier):
         base_name: str,
         method_name: str,
         class_methods: tuple[tuple[CompactIndexedClass, CompactClassMethod], ...],
-    ) -> "_MethodFamilyMethodPlan | None":
+    ) -> _MethodFamilyMethodPlan | None:
         profile = _MethodFamilyMethodGroupProfile.from_class_methods(
             method_name,
             class_methods,
@@ -2280,7 +2280,7 @@ class _MethodFamilyMethodPlan(ClassFamilyWitnessCarrier):
 
     def is_more_specific_than(
         self,
-        incumbent: "_MethodFamilyMethodPlan",
+        incumbent: _MethodFamilyMethodPlan,
         class_index: CompactClassFamilyIndex,
     ) -> bool:
         return incumbent.base_symbol in class_index.ancestor_symbols(self.base_symbol)
@@ -2288,9 +2288,9 @@ class _MethodFamilyMethodPlan(ClassFamilyWitnessCarrier):
     @classmethod
     def most_specific(
         cls,
-        method_plans: Iterable["_MethodFamilyMethodPlan"],
+        method_plans: Iterable[_MethodFamilyMethodPlan],
         class_index: CompactClassFamilyIndex,
-    ) -> tuple["_MethodFamilyMethodPlan", ...]:
+    ) -> tuple[_MethodFamilyMethodPlan, ...]:
         plans_by_key: dict[
             _MethodFamilyMethodPlanKey,
             list[_MethodFamilyMethodPlan],
@@ -2362,7 +2362,7 @@ class _MethodFamilyMethodPlan(ClassFamilyWitnessCarrier):
         cls,
         projections: Sequence[CompactModuleClassProjection],
         class_index: CompactClassFamilyIndex,
-    ) -> tuple["_MethodFamilyMethodPlan", ...]:
+    ) -> tuple[_MethodFamilyMethodPlan, ...]:
         methods_by_class: dict[str, dict[str, CompactClassMethod]] = defaultdict(dict)
         for projection in projections:
             for method in projection.class_methods:
@@ -2413,7 +2413,7 @@ class _MethodFamilyMethodPlan(ClassFamilyWitnessCarrier):
 
     def semantic_overlap_candidate(
         self,
-        family: "_MethodFamilyEvidence",
+        family: _MethodFamilyEvidence,
     ) -> SemanticOverlapMethodCandidate:
         return SemanticOverlapMethodCandidate(
             file_path=self.file_paths[0],
@@ -2687,7 +2687,7 @@ class _MethodFamilyEvidence(_MethodPlanEvidenceABC):
     def from_method_plans(
         cls,
         method_plans: tuple[_MethodFamilyMethodPlan, ...],
-    ) -> tuple["_MethodFamilyEvidence", ...]:
+    ) -> tuple[_MethodFamilyEvidence, ...]:
         exact_groups: dict[
             _MethodFamilyKey,
             list[_MethodFamilyMethodPlan],
@@ -2806,7 +2806,7 @@ class _MethodFamilyBaseEvidence(_MethodPlanEvidenceABC):
     def from_families(
         cls,
         families: tuple[_MethodFamilyEvidence, ...],
-    ) -> tuple["_MethodFamilyBaseEvidence", ...]:
+    ) -> tuple[_MethodFamilyBaseEvidence, ...]:
         families_by_base: dict[str, list[_MethodFamilyEvidence]] = defaultdict(list)
         for family in families:
             families_by_base[family.base_symbol].append(family)
@@ -3002,7 +3002,7 @@ class CompactMethodFamilyContext:
         projections: Sequence[CompactModuleClassProjection],
         *,
         class_index: CompactClassFamilyIndex | None = None,
-    ) -> "CompactMethodFamilyContext":
+    ) -> CompactMethodFamilyContext:
         if class_index is None:
             class_index = build_compact_class_family_index(projections)
         method_plans = _MethodFamilyMethodPlan.from_projections(
@@ -3395,7 +3395,7 @@ def _pipeline_stage(statement: ast.stmt) -> PipelineAssemblyStage | None:
     )
 
 
-_STATIC_OBSERVATION_DETECTOR_BASE_NAMES = frozenset({"StaticModulePatternDetector"})
+_STATIC_OBSERVATION_DETECTOR_BASE_NAMES = frozenset({StaticModulePatternDetector.__name__})
 _STATIC_OBSERVATION_CONTROL_FLOW_NODES = (
     ast.If,
     ast.For,
@@ -3434,7 +3434,7 @@ def _typed_observation_collection_call(
 def _source_location_from_line_symbol_call(
     node: ast.AST,
 ) -> bool:
-    if not isinstance(node, ast.Call) or name_id(node.func) != "SourceLocation":
+    if not isinstance(node, ast.Call) or name_id(node.func) != SourceLocation.__name__:
         return False
     if len(node.args) < 3:
         return False

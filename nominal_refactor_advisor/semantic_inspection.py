@@ -67,7 +67,7 @@ class ImportSummaryKind(StrEnum):
         cls,
         value: str,
         identity_kind: SemanticInspectionIdentityKind,
-    ) -> "ImportSummaryKind":
+    ) -> ImportSummaryKind:
         member = str.__new__(cls, value)
         member._value_ = value
         member._identity_kind = identity_kind
@@ -125,7 +125,7 @@ class FunctionSummaryKind(StrEnum):
         value: str,
         target_kind: AstTargetNodeKind,
         is_async: bool,
-    ) -> "FunctionSummaryKind":
+    ) -> FunctionSummaryKind:
         member = str.__new__(cls, value)
         member._value_ = value
         member._target_kind = target_kind
@@ -138,7 +138,7 @@ class FunctionSummaryKind(StrEnum):
         target_kind: AstTargetNodeKind,
         *,
         is_async: bool,
-    ) -> "FunctionSummaryKind":
+    ) -> FunctionSummaryKind:
         """Resolve one declaration form from member-owned semantic coordinates."""
 
         matching_members = tuple(
@@ -967,14 +967,14 @@ _PUBLIC_EXPORT_POLICY = PublicExportPolicy(
     root_types=(SemanticInspectionRecord,),
     explicit_names=frozenset(
         {
-            "SourceIndexSemanticAstInspector",
-            "SemanticAstInspector",
-            "FunctionSummaryKind",
-            "ImportSummaryKind",
-            "SemanticInspectionIdentityKind",
-            "inspect_modules",
-            "inspect_path",
-            "inspect_paths",
+            SourceIndexSemanticAstInspector.__name__,
+            SemanticAstInspector.__name__,
+            FunctionSummaryKind.__name__,
+            ImportSummaryKind.__name__,
+            SemanticInspectionIdentityKind.__name__,
+            inspect_modules.__name__,
+            inspect_path.__name__,
+            inspect_paths.__name__,
         }
     ),
 )

@@ -61,7 +61,7 @@ class DetectorContributionRole(StrEnum):
         value: str,
         contract_type: type[ABC],
         description: str,
-    ) -> "DetectorContributionRole":
+    ) -> DetectorContributionRole:
         member = str.__new__(cls, value)
         member._value_ = value
         member._contract_type = contract_type
@@ -82,7 +82,7 @@ class DetectorContributionRole(StrEnum):
     def evidence_for(
         self,
         detector_type: type[IssueDetector],
-    ) -> "DetectorContributionEvidence | None":
+    ) -> DetectorContributionEvidence | None:
         """Recover this contribution and every abstract slot it fulfills."""
 
         if not self.applies_to(detector_type):
@@ -123,7 +123,7 @@ class NominalContractMemberEvidence(DataclassJsonReport):
         declaration_type: type[ABC],
         requirement_type: type[ABC],
         member_name: str,
-    ) -> "NominalContractMemberEvidence":
+    ) -> NominalContractMemberEvidence:
         if (
             requirement_type not in declaration_type.__mro__
             or member_name not in requirement_type.__abstractmethods__
@@ -269,7 +269,7 @@ class DetectorRefactorCapabilityReport(DataclassJsonReport):
     capabilities: tuple[DetectorRefactorCapability, ...]
 
     @classmethod
-    def from_registered_detectors(cls) -> "DetectorRefactorCapabilityReport":
+    def from_registered_detectors(cls) -> DetectorRefactorCapabilityReport:
         return cls(
             tuple(
                 DetectorRefactorCapability(detector_type)

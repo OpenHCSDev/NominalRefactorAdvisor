@@ -109,7 +109,7 @@ class TypeKeyedBehaviorProjectionComponentBuilder:
         cls,
         projections: Sequence[CompactModuleClassProjection],
         class_index: CompactClassFamilyIndex,
-    ) -> "TypeKeyedBehaviorProjectionComponentBuilder":
+    ) -> TypeKeyedBehaviorProjectionComponentBuilder:
         return cls(
             class_index=class_index,
             class_reference_resolver=CompactClassReferenceResolver.from_index(
