@@ -6136,12 +6136,20 @@ class EvidenceLocationsWitnessCandidate(LineWitnessCandidate):
 
 
 @dataclass(frozen=True)
-class FunctionEvidenceLocationsCandidate(LineWitnessCandidate):
+class FunctionFamilyEvidenceSurface:
     function_names: tuple[str, ...]
     line_numbers: tuple[int, ...]
     evidence_locations: ClassVar[ZippedSourceLocationEvidenceProperty] = (
         ZippedSourceLocationEvidenceProperty("line_numbers", "function_names")
     )
+
+
+@dataclass(frozen=True)
+class FunctionEvidenceLocationsCandidate(
+    FunctionFamilyEvidenceSurface,
+    LineWitnessCandidate,
+):
+    pass
 
 
 @dataclass(frozen=True)
@@ -7567,15 +7575,6 @@ class DataclassNamespaceCliMirrorCandidate(ClassLineWitnessCandidate):
     from_namespace_line: int
     argument_spec_file_path: str
     argument_spec_line: int
-
-
-@dataclass(frozen=True)
-class FunctionFamilyEvidenceSurface:
-    function_names: tuple[str, ...]
-    line_numbers: tuple[int, ...]
-    evidence_locations: ClassVar[ZippedSourceLocationEvidenceProperty] = (
-        ZippedSourceLocationEvidenceProperty("line_numbers", "function_names")
-    )
 
 
 @dataclass(frozen=True)

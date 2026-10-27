@@ -26,7 +26,6 @@ from .product_flow import (
     CompactValueUse,
 )
 from .product_flow_authority import (
-    CompactCallableComponentAuthorityProof,
     CompactFunctionCallIdentity,
     CompactFunctionCallResolution,
     CompactProductAuthority,
@@ -268,19 +267,14 @@ class ClosedParameterConveyorAuthorityProof(CarrierCollapseAuthorityProof):
 
     authority_symbols: tuple[str, ...]
     authority_field_names: tuple[str, ...]
-    projected_field_names_by_edge: tuple[tuple[str, ...], ...]
     non_injective_edge_ids: tuple[str, ...]
     ambiguous_root_call_ids: tuple[str, ...]
-    incompletely_consuming_participant_symbols: tuple[str, ...]
     open_value_alias_call_ids: tuple[str, ...]
     unresolved_complete_product_call_ids: tuple[str, ...]
-    conflicting_mapping_symbols: tuple[str, ...]
     non_dominating_root_symbols: tuple[str, ...]
     mutated_binding_symbols: tuple[str, ...]
     observed_root_carrier_symbols: tuple[str, ...]
     reevaluated_source_expression_symbols: tuple[str, ...]
-    callable_component: CompactCallableComponentAuthorityProof
-    batch_compression_delta: int
 
     @cached_property
     def authority_symbol_set(self) -> frozenset[str]:
@@ -303,10 +297,6 @@ class ClosedParameterConveyorAuthorityProof(CarrierCollapseAuthorityProof):
         return not any(
             violation.is_violated_by(self) for violation in ClosedParameterConveyorAuthorityViolation
         )
-
-    @property
-    def rejection_reason(self) -> str:
-        return "; ".join(violation.explanation for violation in self.violations)
 
 
 @dataclass(frozen=True)
