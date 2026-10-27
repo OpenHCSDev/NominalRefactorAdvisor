@@ -105,7 +105,7 @@ class FocusedScanBenchmark:
         command = [
             self.python_executable.as_posix(),
             "-m",
-            "nominal_refactor_advisor",
+            __package__,
             "--json",
             "--json-payload",
             "loop",

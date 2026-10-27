@@ -3395,7 +3395,7 @@ def _pipeline_stage(statement: ast.stmt) -> PipelineAssemblyStage | None:
     )
 
 
-_STATIC_OBSERVATION_DETECTOR_BASE_NAMES = frozenset({"StaticModulePatternDetector"})
+_STATIC_OBSERVATION_DETECTOR_BASE_NAMES = frozenset({StaticModulePatternDetector.__name__})
 _STATIC_OBSERVATION_CONTROL_FLOW_NODES = (
     ast.If,
     ast.For,
@@ -3434,7 +3434,7 @@ def _typed_observation_collection_call(
 def _source_location_from_line_symbol_call(
     node: ast.AST,
 ) -> bool:
-    if not isinstance(node, ast.Call) or name_id(node.func) != "SourceLocation":
+    if not isinstance(node, ast.Call) or name_id(node.func) != SourceLocation.__name__:
         return False
     if len(node.args) < 3:
         return False

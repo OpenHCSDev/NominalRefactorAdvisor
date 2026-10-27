@@ -967,14 +967,14 @@ _PUBLIC_EXPORT_POLICY = PublicExportPolicy(
     root_types=(SemanticInspectionRecord,),
     explicit_names=frozenset(
         {
-            "SourceIndexSemanticAstInspector",
-            "SemanticAstInspector",
-            "FunctionSummaryKind",
-            "ImportSummaryKind",
-            "SemanticInspectionIdentityKind",
-            "inspect_modules",
-            "inspect_path",
-            "inspect_paths",
+            SourceIndexSemanticAstInspector.__name__,
+            SemanticAstInspector.__name__,
+            FunctionSummaryKind.__name__,
+            ImportSummaryKind.__name__,
+            SemanticInspectionIdentityKind.__name__,
+            inspect_modules.__name__,
+            inspect_path.__name__,
+            inspect_paths.__name__,
         }
     ),
 )

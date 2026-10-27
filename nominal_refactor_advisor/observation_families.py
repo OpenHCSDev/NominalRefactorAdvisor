@@ -1227,7 +1227,7 @@ class FieldObservationFamily(
 _PUBLIC_EXPORT_POLICY = PublicExportPolicy(
     module_name=__name__,
     root_types=tuple(SharedRegistryRootBase.__subclasses__()),
-    explicit_names=frozenset({"AutoRegisteredModuleShapeSpec"}),
+    explicit_names=frozenset({AutoRegisteredModuleShapeSpec.__name__}),
 )
 
 
