@@ -1149,7 +1149,10 @@ class BuiltinCallName(StrEnum):
     DICT = "dict"
     ENUMERATE = "enumerate"
     FLOAT = "float"
+    DELATTR = "delattr"
     FROZENSET = "frozenset"
+    GETATTR = "getattr"
+    HASATTR = "hasattr"
     INT = "int"
     ISINSTANCE = "isinstance"
     ISSUBCLASS = "issubclass"
@@ -1166,12 +1169,19 @@ class BuiltinCallName(StrEnum):
     PRINT = "print"
     RANGE = "range"
     SET = "set"
+    SETATTR = "setattr"
     SORTED = "sorted"
     STR = "str"
     SUM = "sum"
     TUPLE = "tuple"
     TYPE = "type"
     ZIP = "zip"
+
+    @classmethod
+    def attribute_access_names(cls) -> frozenset["BuiltinCallName"]:
+        """The builtins that reach an attribute through a runtime name."""
+
+        return frozenset((cls.GETATTR, cls.HASATTR, cls.SETATTR, cls.DELATTR))
 
     @classmethod
     def type_test_names(cls) -> frozenset["BuiltinCallName"]:

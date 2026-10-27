@@ -408,6 +408,16 @@ class PatternId(IntEnum):
             CapabilityTag.PROVENANCE,
         ),
     )
+    ATTRIBUTE_ACCESS_BY_NAME = _pattern(
+        stable_id=31,
+        display_name="Attribute Access By Name",
+        required_relation=(
+            "A getattr, hasattr, setattr or delattr call names an attribute with "
+            "a string literal, or getattr supplies a default, so the call "
+            "restates which attributes the receiver's type declares."
+        ),
+        witness_capabilities=(CapabilityTag.PROVENANCE,),
+    )
 
     def __new__(
         cls,

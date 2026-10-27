@@ -11,11 +11,12 @@ from nominal_refactor_advisor.codemod import (
     DispatchToPolymorphismOperation,
     FindingRecipeEvaluator,
 )
-from nominal_refactor_advisor.detectors import StringKindDispatchDetector
+from nominal_refactor_advisor.detectors import NamedAttributeDetector, StringKindDispatchDetector
 from nominal_refactor_advisor.patterns import PatternId
 
 DETECTORS = (
     StringKindDispatchDetector,
+    NamedAttributeDetector,
 )
 
 
@@ -127,6 +128,41 @@ def test_literal_return_dispatch_is_wired_to_polymorphism_operation(tmp_path: Pa
 
 
 # ---- attribute access by name
+
+
+def test_attribute_access_by_literal_name_or_with_default_is_a_finding(tmp_path: Path):
+    source = (
+        "def f(obj):\n"
+        "    if hasattr(obj, 'name'):\n        return getattr(obj, 'size', 0)\n"
+        "    setattr(obj, 'seen', True)\n    delattr(obj, 'seen')\n"
+        "    return getattr(obj, KEY, None)\n"
+    )
+    (finding,) = _findings(tmp_path, NamedAttributeDetector, {"m": "KEY = 'owner'\n\n\n" + source})
+    assert finding.pattern_id is PatternId.ATTRIBUTE_ACCESS_BY_NAME
+    assert _lines([finding]) == [5, 6, 7, 8, 9]
+    assert "No codemod operation performs this factoring yet" in finding.summary
+
+
+def test_dynamic_names_without_a_default_and_plain_reads_are_not_findings(
+    tmp_path: Path,
+):
+    source = (
+        "def f(obj, name):\n"
+        "    setattr(obj, name, 1)\n    return getattr(obj, name, None) or obj.size\n"
+    )
+    assert _findings(tmp_path, NamedAttributeDetector, {"m": source}) == []
+
+
+def test_a_probe_of_an_imported_module_is_platform_detection_not_a_type_fact(
+    tmp_path: Path,
+):
+    source = "import os\n\n\ndef f():\n    return hasattr(os, 'pidfd_open')\n"
+    assert _findings(tmp_path, NamedAttributeDetector, {"m": source}) == []
+
+
+def test_a_shadowed_getattr_is_a_method_not_the_builtin(tmp_path: Path):
+    source = "def f(registry):\n    return registry.getattr('size', 0)\n"
+    assert _findings(tmp_path, NamedAttributeDetector, {"m": source}) == []
 
 
 # ---- exact key sets

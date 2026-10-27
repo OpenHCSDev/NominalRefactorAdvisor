@@ -187,3 +187,63 @@ def imported_module_names(parsed_module: ParsedModule) -> frozenset[str]:
     )
 
 
+class NamedAttributeSiteFamily(RestatingSiteFamily):
+    """getattr/hasattr/setattr/delattr by a literal name, or by a module constant holding one.
+
+    A name computed at run time (read from `_fields`, a loop variable) restates
+    nothing: the attribute list is whatever the owner supplies. A literal, or a
+    module-level string constant, spells one attribute of the receiver's type.
+    An imported module is not a type of ours: `hasattr(os, "pidfd_open")` asks
+    what this platform build provides, which no declaration of ours can hold.
+    """
+
+    @classmethod
+    def sites(cls, parsed_module: ParsedModule) -> Iterator[RestatingSite]:
+        index = module_syntax_index(parsed_module.module)
+        constants = cls.string_constants(parsed_module)
+        modules = imported_module_names(parsed_module)
+        names = BuiltinCallName.attribute_access_names()
+        for node_index, call in index.indexed_nodes_of_type(ast.Call):
+            callee = call.func
+            if not isinstance(callee, ast.Name) or callee.id not in names:
+                continue
+            if len(call.args) < 2:
+                continue
+            receiver, name_expression, *_rest = call.args
+            if isinstance(receiver, ast.Name) and receiver.id in modules:
+                continue
+            spelled = cls.attribute_name(name_expression, constants)
+            if spelled is None:
+                continue
+            defaulted = callee.id == BuiltinCallName.GETATTR and len(call.args) == 3
+            yield cls.site(
+                parsed_module,
+                call,
+                index.lexical_symbol(node_index),
+                ast.unparse(receiver),
+                (f"{callee.id}{' with default' if defaulted else ''}", spelled),
+            )
+
+    @staticmethod
+    def string_constants(parsed_module: ParsedModule) -> dict[str, str]:
+        """Module-level `NAME = "literal"` bindings."""
+
+        constants: dict[str, str] = {}
+        for statement in parsed_module.module.body:
+            match statement:
+                case ast.Assign(targets=[ast.Name(id=name)], value=ast.Constant(value=str() as value)) | ast.AnnAssign(
+                    target=ast.Name(id=name), value=ast.Constant(value=str() as value)
+                ):
+                    constants[name] = value
+        return constants
+
+    @staticmethod
+    def attribute_name(expression: ast.expr, constants: dict[str, str]) -> str | None:
+        match expression:
+            case ast.Constant(value=str() as value):
+                return value
+            case ast.Name(id=name):
+                return constants.get(name)
+        return None
+
+

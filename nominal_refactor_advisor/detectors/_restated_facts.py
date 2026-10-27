@@ -24,6 +24,7 @@ from ..codemod import (
 from ..models import DispatchCountMetrics, RefactorFinding, SourceLocation
 from ..patterns import PatternId
 from ..restated_fact_observations import (
+    NamedAttributeSiteFamily,
     RestatingSite,
     RestatingSiteFamily,
     RestatingSiteModule,
@@ -209,6 +210,33 @@ class StringKindDispatchDetector(
         return {"metrics": DispatchCountMetrics.from_literal_family(sites[0].group, arms)}
 
 
+class NamedAttributeDetector(SingleFamilyRestatedFactDetector):
+    """getattr, hasattr, setattr or delattr by a literal name, and getattr with a default."""
+
+    module_projection_family = NamedAttributeSiteFamily
+    restated = RestatedFact(
+        fact="Each call names an attribute the receiver's type should declare, a second copy of that type's attribute list.",
+        owner="The owner is the type that declares the attribute, or an adapter family or capability base when the receiver is another module's object.",
+        factoring="Declare the attribute on the type (an abstract property on the base or a dataclass field) and read it directly; for a foreign object's optional attribute, decode once into an adapter family (ForeignAdapter) or a capability base.",
+    )
+    finding_spec = restated.spec(
+        PatternId.ATTRIBUTE_ACCESS_BY_NAME,
+        "Attribute access by name restates a type's attributes",
+        "attributes declared on the receiver's type and read directly",
+        "getattr, hasattr, setattr or delattr with a string-literal name, or getattr with a default, on one receiver in one function",
+        (),
+        (ObservationTag.ATTRIBUTE_PROBE,),
+    )
+
+    def describe(self, sites: Sequence[RestatingSite], context: None) -> str:
+        spelled = [f"{site.detail[0]}(.., {site.detail[1]!r})" for site in sites]
+        return (
+            f"`{sites[0].group}` is reached by attribute name {len(sites)} time(s) in "
+            f"{sites[0].symbol}: {_listed(spelled)}."
+        )
+
+
 __all__ = (
+    "NamedAttributeDetector",
     "StringKindDispatchDetector",
 )
