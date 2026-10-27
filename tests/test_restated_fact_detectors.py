@@ -13,6 +13,7 @@ from nominal_refactor_advisor.codemod import (
 )
 from nominal_refactor_advisor.detectors import (
     ExactKeySetDetector,
+    ForeignAbsenceProbeDetector,
     NamedAttributeDetector,
     StringKindDispatchDetector,
 )
@@ -22,6 +23,7 @@ DETECTORS = (
     StringKindDispatchDetector,
     NamedAttributeDetector,
     ExactKeySetDetector,
+    ForeignAbsenceProbeDetector,
 )
 
 
@@ -227,6 +229,28 @@ def test_one_key_or_a_non_literal_side_is_not_a_record(tmp_path: Path):
 
 
 # ---- foreign absence probes
+
+
+def test_another_objects_attribute_compared_with_none_is_a_finding(tmp_path: Path):
+    source = (
+        "def f(goal):\n"
+        "    if goal.paused_at is None:\n        return 1\n"
+        "    return goal.paused_at is not None\n"
+    )
+    (finding,) = _findings(tmp_path, ForeignAbsenceProbeDetector, {"m": source})
+    assert finding.pattern_id is PatternId.FOREIGN_ABSENCE_PROBE
+    assert "`goal` is probed for absence 2 time(s)" in finding.summary
+
+
+def test_own_state_modules_and_truth_tests_are_not_foreign_probes(tmp_path: Path):
+    source = (
+        "import sys\n\n\nclass Goal:\n"
+        "    def mine(self):\n        return self.paused_at is None\n"
+        "    def other_name(this, other):\n        return this.paused_at is None\n"
+        "    def truthy(self, other):\n        return not other.paused_at\n"
+        "\n\ndef f():\n    return sys.stdout is None\n"
+    )
+    assert _findings(tmp_path, ForeignAbsenceProbeDetector, {"m": source}) == []
 
 
 # ---- legacy markers

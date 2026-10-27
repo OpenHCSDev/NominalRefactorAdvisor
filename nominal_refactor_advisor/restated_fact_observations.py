@@ -371,3 +371,50 @@ class ExactKeySetSiteFamily(RestatingSiteFamily):
                 return
 
 
+class ForeignAbsenceSiteFamily(RestatingSiteFamily):
+    """`other.attr is None` and `is not None` on an object that is not the method's own."""
+
+    @classmethod
+    def sites(cls, parsed_module: ParsedModule) -> Iterator[RestatingSite]:
+        index = module_syntax_index(parsed_module.module)
+        modules = imported_module_names(parsed_module)
+        for node_index, node in index.indexed_nodes_of_type(ast.Compare):
+            match node:
+                case ast.Compare(
+                    left=ast.Attribute(value=receiver, attr=attribute),
+                    ops=[ast.Is() | ast.IsNot() as operator],
+                    comparators=[ast.Constant(value=None)],
+                ):
+                    pass
+                case _:
+                    continue
+            if cls.is_own_or_module(receiver, node_index, index, modules):
+                continue
+            yield cls.site(
+                parsed_module,
+                node,
+                index.lexical_symbol(node_index),
+                ast.unparse(receiver),
+                (attribute, "is None" if isinstance(operator, ast.Is) else "is not None"),
+            )
+
+    @staticmethod
+    def is_own_or_module(
+        receiver: ast.expr, node_index: int, index, modules: frozenset[str]
+    ) -> bool:
+        root = receiver
+        while isinstance(root, ast.Attribute):
+            root = root.value
+        if not isinstance(root, ast.Name):
+            return False
+        if root.id in modules and root is receiver:
+            return True
+        function = index.scopes[index.scope_ids[node_index]].executable_function_index
+        if function < 0:
+            return False
+        method = index.depth_first_nodes[function]
+        owner = index.parent_node(function)
+        arguments = [*method.args.posonlyargs, *method.args.args]
+        return isinstance(owner, ast.ClassDef) and bool(arguments) and arguments[0].arg == root.id
+
+

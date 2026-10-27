@@ -428,6 +428,16 @@ class PatternId(IntEnum):
         ),
         witness_capabilities=(CapabilityTag.PROVENANCE,),
     )
+    FOREIGN_ABSENCE_PROBE = _pattern(
+        stable_id=33,
+        display_name="Foreign Absence Probe",
+        required_relation=(
+            "An attribute of another object is compared with None, so the site "
+            "restates a state of the other object's type that the type does not "
+            "declare as a variant."
+        ),
+        witness_capabilities=(CapabilityTag.PROVENANCE,),
+    )
 
     def __new__(
         cls,

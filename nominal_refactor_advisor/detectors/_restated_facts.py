@@ -27,6 +27,7 @@ from ..observation_shapes import FieldObservation, FieldOriginKind
 from ..patterns import PatternId
 from ..restated_fact_observations import (
     ExactKeySetSiteFamily,
+    ForeignAbsenceSiteFamily,
     NamedAttributeSiteFamily,
     RestatingSite,
     RestatingSiteFamily,
@@ -355,8 +356,35 @@ class ExactKeySetDetector(JoinedRestatedFactDetector[DeclaredRecords]):
         return {} if not declared else {"authority_evidence": declared[0]}
 
 
+class ForeignAbsenceProbeDetector(SingleFamilyRestatedFactDetector):
+    """`other.attr is None` or `is not None` on an object that is not the method's own."""
+
+    module_projection_family = ForeignAbsenceSiteFamily
+    restated = RestatedFact(
+        fact="Each probe restates a state of the other object's type, a second copy of that type's state that the type does not declare.",
+        owner="The owner is the other object's type: its states as subclasses, or a null member.",
+        factoring="Give the type its states as subclasses (for example PausedGoal and ActiveGoal) or a null member, and let the consumer call a method instead of probing the attribute.",
+    )
+    finding_spec = restated.spec(
+        PatternId.FOREIGN_ABSENCE_PROBE,
+        "Absence probes on another object restate its type's states",
+        "the other type's states declared as subclasses or a null member, and consumers calling a method",
+        "an attribute of an object that is neither the method's own nor an imported module compared with None",
+        (),
+        (ObservationTag.ATTRIBUTE_PROBE,),
+    )
+
+    def describe(self, sites: Sequence[RestatingSite], context: None) -> str:
+        probes = sorted({f"{site.detail[0]} {site.detail[1]}" for site in sites})
+        return (
+            f"`{sites[0].group}` is probed for absence {len(sites)} time(s) in "
+            f"{sites[0].symbol}: {_listed(probes)}."
+        )
+
+
 __all__ = (
     "ExactKeySetDetector",
+    "ForeignAbsenceProbeDetector",
     "NamedAttributeDetector",
     "StringKindDispatchDetector",
 )
