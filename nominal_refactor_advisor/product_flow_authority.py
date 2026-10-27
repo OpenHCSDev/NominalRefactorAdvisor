@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import builtins
 from abc import ABC, abstractmethod
 from collections.abc import (
     Callable,
@@ -13,6 +14,7 @@ from collections.abc import (
 from dataclasses import dataclass, replace
 from enum import StrEnum
 from functools import cached_property
+from pathlib import Path
 from typing import (
     ClassVar,
     Self,
@@ -36,6 +38,7 @@ from .captured_reference import (
     CapturedReferenceViolation,
     OpenCapturedReference,
 )
+from .closed_world import ClosedWorldPremise
 from .class_index import (
     CompactClassFamilyIndex,
     CompactClassMemberDeclaration,
@@ -63,6 +66,8 @@ from .native_declarations import NativeDeclaration
 from .native_compilation import NativePythonCompilation
 from .source_identity import source_path_text
 from .product_flow import (
+    CompactFunctionBindingKind,
+    ReceiverAttributeCallTargetReference,
     BareCallTargetReference,
     CompactBindingResolverABC,
     CompactBindingVisit,
@@ -439,7 +444,9 @@ class CompactDynamicFetch:
     attribute of their receiver; `getattr(x, "m")` fetches attribute `m`.
     `attribute_name` is that name, or None for any name; `receiver_classes`
     the classes whose functions the receiver can hold, or None when the receiver
-    is not proved.
+    is not proved. Only an attribute can be fetched: a method declared in a
+    class body or a module's top-level function. A nested function is reached
+    only after it escapes as a value, which the escape obligation holds.
     """
 
     context: CompactFlowContext
@@ -450,18 +457,19 @@ class CompactDynamicFetch:
     def reaches(
         self,
         symbols: frozenset[str],
-        owner_classes: Mapping[str, str | None],
+        attribute_owners: Mapping[str, str],
     ) -> frozenset[str]:
         return frozenset(
             symbol
             for symbol in symbols
-            if (
+            if symbol in attribute_owners
+            and (
                 self.attribute_name is None
                 or symbol.rpartition(".")[2] == self.attribute_name
             )
             and (
                 self.receiver_classes is None
-                or owner_classes.get(symbol) in self.receiver_classes
+                or attribute_owners[symbol] in self.receiver_classes
             )
         )
 
@@ -568,7 +576,7 @@ class CompactCallableComponentAuthorityProof:
                     for fetch in self.repository.dynamic_fetches
                     for symbol in fetch.reaches(
                         self._participant_symbol_set,
-                        self.repository.function_owner_classes,
+                        self.repository.function_attribute_owners,
                     )
                 }
             )
@@ -591,16 +599,42 @@ class CompactCallableComponentAuthorityProof:
 
     @cached_property
     def open_boundary_symbols(self) -> tuple[str, ...]:
+        """Participants callable from outside the scan: public, in a project not declared closed."""
+
         return tuple(
             sorted(
                 symbol
-                for symbol in self._participant_symbol_set
-                if symbol not in self.missing_declaration_symbols
-                and self.repository.callable_boundary_exposure(
-                    self.repository.function_declarations_by_symbol[symbol]
-                ).blocks_closed_boundary
+                for symbol in self._exposed_symbols
+                if symbol not in self.closed_world_premises
             )
         )
+
+    @cached_property
+    def _exposed_symbols(self) -> tuple[str, ...]:
+        return tuple(
+            symbol
+            for symbol in sorted(self._participant_symbol_set)
+            if symbol not in self.missing_declaration_symbols
+            and self.repository.callable_boundary_exposure(
+                self.repository.function_declarations_by_symbol[symbol]
+            ).blocks_closed_boundary
+        )
+
+    @cached_property
+    def closed_world_premises(self) -> dict[str, ClosedWorldPremise]:
+        """The declaration (file and digest) that closes each exposed participant to outside callers."""
+
+        premises: dict[str, ClosedWorldPremise] = {}
+        for symbol in self._exposed_symbols:
+            context = self.repository.flow_contexts_by_owner_symbol.get(symbol)
+            premise = (
+                None
+                if context is None
+                else ClosedWorldPremise.declared_for(Path(context.file_path))
+            )
+            if premise is not None:
+                premises[symbol] = premise
+        return premises
 
     @cached_property
     def incomplete_method_family_symbols(self) -> tuple[str, ...]:
@@ -1022,6 +1056,61 @@ class ProductFlowRepository(
             CompactFunctionTargetResolutionViolation.UNSUPPORTED_RECEIVER,
         )
 
+    SELF_TYPES: ClassVar[frozenset[str]] = frozenset(
+        ("Self", "typing.Self", "typing_extensions.Self")
+    )
+
+    def _returned_receiver_attribute_resolution(
+        self,
+        context: CompactFlowContext,
+        target: ReceiverAttributeCallTargetReference,
+    ) -> CompactCallTargetResolution:
+        """An attribute of a call's result, resolved on the class the call proves it returns.
+
+        `Cls.make(...)` returns an instance of exactly `Cls` when `make`, found
+        first in `Cls`'s MRO, is a classmethod declared `-> Self`: `cls` is
+        `Cls` there. The attribute is then looked up on `Cls` as an instance
+        attribute. Anything less certain leaves the receiver unknown.
+        """
+
+        unknown = self._through_attribute_suffix(
+            self._local_function_target_resolution(context, target),
+            (target.attribute_name,),
+        )
+        owner = self._self_returning_receiver(context, target)
+        if owner is None:
+            return unknown
+        resolution = self._class_method_resolution(owner, target.attribute_name)
+        if resolution.declaration is None:
+            return unknown
+        return resolution.through_descriptor(CompactDescriptorAccess.INSTANCE)
+
+    def _self_returning_receiver(
+        self,
+        context: CompactFlowContext,
+        target: ReceiverAttributeCallTargetReference,
+    ) -> CompactIndexedClass | None:
+        receiver_call = target.receiver_call
+        reference = None if receiver_call is None else receiver_call.lexical_reference
+        if reference is None or not reference.attribute_path:
+            return None
+        owner = self._class_for_reference(
+            context,
+            LexicalValueReference(reference.root_name, reference.attribute_path[:-1]),
+            line=target.receiver_line,
+        )
+        if owner is None:
+            return None
+        made = self._class_method_resolution(owner, reference.attribute_path[-1])
+        declaration = made.declaration
+        if (
+            declaration is None
+            or declaration.binding_kind is not CompactFunctionBindingKind.CLASS_METHOD
+            or declaration.return_annotation_expression not in self.SELF_TYPES
+        ):
+            return None
+        return owner
+
     @cached_property
     def dynamic_attribute_owners(self) -> tuple[str, ...]:
         """Classes and modules declaring `__getattr__` or `__getattribute__`.
@@ -1294,17 +1383,19 @@ class ProductFlowRepository(
     NAMESPACE_ATTRIBUTE: ClassVar[str] = "__dict__"
 
     @cached_property
-    def function_owner_classes(self) -> dict[str, str | None]:
-        """The class symbol owning each function declaration, or None for a module function."""
+    def function_attribute_owners(self) -> dict[str, str]:
+        """Each function bound as an attribute, with its owner: the class whose body or the module whose top level declares it."""
 
-        return {
-            symbol: (
-                None
-                if declaration.owner_class_qualname is None
-                else f"{declaration.identity.module_name}.{declaration.owner_class_qualname}"
-            )
-            for symbol, declaration in self.function_declarations_by_symbol.items()
-        }
+        owners: dict[str, str] = {}
+        for symbol, declaration in self.function_declarations_by_symbol.items():
+            module = declaration.identity.module_name
+            qualname = declaration.identity.qualname
+            owner_qualname, _dot, _name = qualname.rpartition(".")
+            if not owner_qualname:
+                owners[symbol] = module
+            elif owner_qualname == declaration.owner_class_qualname:
+                owners[symbol] = f"{module}.{owner_qualname}"
+        return owners
 
     @cached_property
     def dynamic_fetches(self) -> tuple[CompactDynamicFetch, ...]:
@@ -1332,6 +1423,7 @@ class ProductFlowRepository(
                                     reference.root_name, reference.attribute_path[:-1]
                                 ),
                                 use.line,
+                                use.position,
                             ),
                         )
                     )
@@ -1357,7 +1449,7 @@ class ProductFlowRepository(
         receiver_classes = (
             None
             if receiver is None
-            else self._receiver_classes(context, receiver, call.line)
+            else self._receiver_classes(context, receiver, call.line, call.position)
         )
         attribute_name = None
         if len(call.arguments.positional) >= 2:
@@ -1371,46 +1463,238 @@ class ProductFlowRepository(
         context: CompactFlowContext,
         receiver: LexicalValueReference,
         line: int,
+        position: CompactFlowPosition,
     ) -> frozenset[str] | None:
         """The classes whose functions a fetched receiver can hold, or None when unproved.
 
-        The method's own receiver (`self`, `cls`) is an instance or subclass of
-        its class, so its functions are those of the class, its ancestors and
-        its descendants; a class object reference holds its class's and
-        ancestors' functions. Anything else is unproved.
+        A name still holding its entry value is typed by its declaration: the
+        method's own receiver (`self`, `cls`) by its class, a parameter by its
+        annotation (`X`, `type[X]`, `X | None`, `Optional[X]`). Either can be
+        an instance or class object of a subclass, so it holds the functions of
+        the class family: the classes, their ancestors and descendants, and the
+        descendants' ancestors. The method's own `self.x` is typed by the
+        annotation its class declares for `x`, the same way. A local bound to
+        one call's unchanged result is typed by the class the call constructs
+        or its callee's declared return class, each as its family. A
+        class object reference holds its class's and ancestors' functions.
+        Anything else is unproved.
         """
 
         declaration = context.declaration
         if (
             declaration is not None
-            and declaration.owner_class_qualname is not None
             and not receiver.attribute_path
-            and receiver.root_name == declaration.nominal_receiver_name
+            and context.flow.value_origin_for(receiver, position).exact_origin
+            == receiver
+        ):
+            declared = self._declared_receiver_classes(context, receiver.root_name)
+            if declared is not None:
+                return self._class_families(declared)
+        member = self._own_member_classes(context, receiver)
+        if member is not None:
+            return self._class_families(member)
+        if not receiver.attribute_path:
+            produced = self._bound_result_classes(context, receiver, position)
+            if produced is not None:
+                return produced
+        found = self._class_for_reference(context, receiver, line=line)
+        if found is None:
+            return None
+        return frozenset(
+            (found.symbol, *self.class_index.ancestor_symbols(found.symbol))
+        )
+
+    def _own_member_classes(
+        self, context: CompactFlowContext, receiver: LexicalValueReference
+    ) -> tuple[str, ...] | None:
+        """`self.x`: the classes the method's class declares `x`'s annotation to admit."""
+
+        declaration = context.declaration
+        if (
+            declaration is None
+            or declaration.owner_class_qualname is None
+            or receiver.root_name != declaration.nominal_receiver_name
+            or len(receiver.attribute_path) != 1
+        ):
+            return None
+        owner = self.class_index.symbol_for(
+            file_path=context.file_path, qualname=declaration.owner_class_qualname
+        )
+        if owner is None:
+            return None
+        resolution = self._member_declarations_in_mro(owner, receiver.attribute_path[0])
+        if resolution.violation is not None or not resolution.candidates:
+            return None
+        declaring_class, member = resolution.candidates[0]
+        parts = member.annotation_reference_parts
+        if parts is None:
+            return None
+        return self._annotated_classes(
+            declaring_class.module_name, ast.parse(".".join(parts), mode="eval").body
+        )
+
+    def _bound_result_classes(
+        self,
+        context: CompactFlowContext,
+        receiver: LexicalValueReference,
+        position: CompactFlowPosition,
+    ) -> frozenset[str] | None:
+        call = context.flow.bound_call_result_for(receiver, position)
+        if call is None:
+            return None
+        target = self.resolve_function_call(context, call)
+        if isinstance(target.target_resolution, ResolvedCompactClassTarget):
+            return self._class_families(
+                (target.target_resolution.resolved_declaration.symbol,)
+            )
+        resolved = target.resolved_call
+        returned = (
+            None
+            if resolved is None
+            else self.declared_return_class_symbol_for(resolved)
+        )
+        return None if returned is None else self._class_families((returned,))
+
+    def _declared_receiver_classes(
+        self, context: CompactFlowContext, name: str
+    ) -> tuple[str, ...] | None:
+        declaration = context.declaration
+        if declaration is None:
+            return None
+        if (
+            name == declaration.nominal_receiver_name
+            and declaration.owner_class_qualname is not None
         ):
             owner = self.class_index.symbol_for(
                 file_path=context.file_path, qualname=declaration.owner_class_qualname
             )
-            if owner is None:
-                return None
-            descendants = self.class_index.descendant_symbols(owner)
-            return frozenset(
-                (
-                    owner,
-                    *self.class_index.ancestor_symbols(owner),
-                    *descendants,
-                    *(
-                        ancestor
-                        for descendant in descendants
-                        for ancestor in self.class_index.ancestor_symbols(descendant)
-                    ),
-                )
-            )
-        declared = self._class_for_reference(context, receiver, line=line)
-        if declared is None:
-            return None
-        return frozenset(
-            (declared.symbol, *self.class_index.ancestor_symbols(declared.symbol))
+            return None if owner is None else (owner,)
+        annotation = next(
+            (
+                parameter.annotation_expression
+                for parameter in declaration.signature.parameters
+                if parameter.name == name
+            ),
+            None,
         )
+        if annotation is None:
+            return None
+        try:
+            expression = ast.parse(annotation, mode="eval").body
+        except SyntaxError:
+            return None
+        return self._annotated_classes(declaration.identity.module_name, expression)
+
+    def _annotated_classes(
+        self, module_name: str, expression: ast.expr
+    ) -> tuple[str, ...] | None:
+        """The scanned classes an annotation admits, or None when one alternative is unresolved."""
+
+        classes: list[str] = []
+        for part in self._annotation_alternatives(expression):
+            if isinstance(part, ast.Constant) and part.value is None:
+                continue
+            reference = LexicalValueReference.from_expression(part)
+            if reference is None:
+                return None
+            symbol = self.class_resolver.symbol_for(
+                module_name=module_name,
+                reference_parts=reference.parts,
+                allow_unique_unqualified=False,
+            )
+            if symbol is not None:
+                classes.append(symbol)
+                continue
+            foreign = self._foreign_class(module_name, reference.parts)
+            if foreign is None:
+                return None
+            # An instance of a class outside the scan holds no function of the
+            # scan except one stored on it, which is an escape; only a scanned
+            # subclass of it brings scanned methods.
+            classes.extend(self.foreign_base_subclasses.get(foreign, ()))
+        return tuple(classes)
+
+    OPTIONAL: ClassVar[frozenset[str]] = frozenset(("Optional", "type", "Type"))
+
+    @classmethod
+    def _annotation_alternatives(cls, expression: ast.expr) -> list[ast.expr]:
+        """The classes an annotation admits: `A | B`, `Optional[A]` and `type[A]` unpacked."""
+
+        match expression:
+            case ast.BinOp(left=left, op=ast.BitOr(), right=right):
+                return [
+                    *cls._annotation_alternatives(left),
+                    *cls._annotation_alternatives(right),
+                ]
+            case ast.Subscript(value=wrapper, slice=inner) if (
+                reference := LexicalValueReference.from_expression(wrapper)
+            ) is not None and reference.terminal_name in cls.OPTIONAL:
+                return cls._annotation_alternatives(inner)
+        return [expression]
+
+    def _foreign_class(self, module_name: str, parts: tuple[str, ...]) -> str | None:
+        """The qualified name of a class outside the scan the reference names, or None.
+
+        The reference's root must be imported from a module outside the scan,
+        or be an unbound builtin name.
+        """
+
+        root, *rest = parts
+        imported = self.class_resolver.import_aliases_by_module_name.get(
+            module_name, {}
+        ).get(root)
+        if imported is not None:
+            qualified = ".".join((imported, *rest))
+            return (
+                None if qualified.partition(".")[0] in self.scanned_roots else qualified
+            )
+        if not rest and hasattr(builtins, root) and root not in self.scanned_roots:
+            module_bindings = self.module_flow_context_for_name(module_name)
+            if (
+                module_bindings is None
+                or root in module_bindings.flow.mutations_by_root_name
+            ):
+                return None
+            return f"{builtins.__name__}.{root}"
+        return None
+
+    @cached_property
+    def scanned_roots(self) -> frozenset[str]:
+        return frozenset(
+            projection.module_name.partition(".")[0]
+            for projection in self.class_projections
+        )
+
+    @cached_property
+    def foreign_base_subclasses(self) -> dict[str, tuple[str, ...]]:
+        """Scanned classes by each class outside the scan they directly inherit from."""
+
+        found: dict[str, list[str]] = {}
+        for projection in self.class_projections:
+            for indexed in projection.classes:
+                for base in indexed.base_references:
+                    parts = base.resolved_parts
+                    qualified = (
+                        f"{builtins.__name__}.{parts[0]}"
+                        if base.root_binding is None
+                        and len(parts) == 1
+                        and hasattr(builtins, parts[0])
+                        else ".".join(parts)
+                    )
+                    if qualified.partition(".")[0] not in self.scanned_roots:
+                        found.setdefault(qualified, []).append(indexed.symbol)
+        return {base: tuple(classes) for base, classes in found.items()}
+
+    def _class_families(self, classes: tuple[str, ...]) -> frozenset[str]:
+        family: set[str] = set()
+        for owner in classes:
+            descendants = self.class_index.descendant_symbols(owner)
+            family.update((owner, *self.class_index.ancestor_symbols(owner)))
+            for descendant in descendants:
+                family.update(
+                    (descendant, *self.class_index.ancestor_symbols(descendant))
+                )
+        return frozenset(family)
 
     @cached_property
     def callable_escapes(self) -> tuple[CompactCallableEscape, ...]:
