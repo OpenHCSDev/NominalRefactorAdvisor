@@ -33,6 +33,7 @@ EXPECTED_CONCEPT_DECLARATIONS = frozenset(
         codemod.ForeignAdapterBindChainConcept,
         codemod.ForeignFamilyRoutingConcept,
         codemod.StaticProjectionAdapterConcept,
+        codemod.LegacyPathErasureConcept,
     }
 )
 

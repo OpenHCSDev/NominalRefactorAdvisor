@@ -739,6 +739,7 @@ from .refactor_concepts import (
     AutoRegisterMroOrderingConcept as AutoRegisterMroOrderingConcept,
     ForeignAdapterBindChainConcept as ForeignAdapterBindChainConcept,
     ForeignFamilyRoutingConcept as ForeignFamilyRoutingConcept,
+    LegacyPathErasureConcept as LegacyPathErasureConcept,
     StaticProjectionAdapterConcept as StaticProjectionAdapterConcept,
     AutoRegisterStrategyFamilyConcept as AutoRegisterStrategyFamilyConcept,
     CallMappingAuthorityConcept as CallMappingAuthorityConcept,

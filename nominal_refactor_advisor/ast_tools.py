@@ -1149,7 +1149,10 @@ class BuiltinCallName(StrEnum):
     DICT = "dict"
     ENUMERATE = "enumerate"
     FLOAT = "float"
+    DELATTR = "delattr"
     FROZENSET = "frozenset"
+    GETATTR = "getattr"
+    HASATTR = "hasattr"
     INT = "int"
     ISINSTANCE = "isinstance"
     ISSUBCLASS = "issubclass"
@@ -1166,12 +1169,36 @@ class BuiltinCallName(StrEnum):
     PRINT = "print"
     RANGE = "range"
     SET = "set"
+    SETATTR = "setattr"
     SORTED = "sorted"
     STR = "str"
     SUM = "sum"
     TUPLE = "tuple"
     TYPE = "type"
     ZIP = "zip"
+
+    @classmethod
+    def set_constructor_names(cls) -> frozenset["BuiltinCallName"]:
+        """The builtins that build a set from one argument."""
+
+        return frozenset((cls.SET, cls.FROZENSET))
+
+    @classmethod
+    def key_view_wrapper_names(cls) -> frozenset["BuiltinCallName"]:
+        """The builtins that collect one argument's items into a set, list or tuple."""
+
+        return cls.set_constructor_names() | frozenset((cls.SORTED, cls.LIST, cls.TUPLE))
+
+    def carries_default(self, argument_count: int) -> bool:
+        """Whether a call of this builtin with that many arguments supplies a default."""
+
+        return self is BuiltinCallName.GETATTR and argument_count == 3
+
+    @classmethod
+    def attribute_access_names(cls) -> frozenset["BuiltinCallName"]:
+        """The builtins that reach an attribute through a runtime name."""
+
+        return frozenset((cls.GETATTR, cls.HASATTR, cls.SETATTR, cls.DELATTR))
 
     @classmethod
     def type_test_names(cls) -> frozenset["BuiltinCallName"]:
