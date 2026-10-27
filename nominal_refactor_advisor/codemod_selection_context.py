@@ -28,6 +28,10 @@ from .class_index import (
     ClassFamilyIndex,
     ModuleClassReferenceResolver,
 )
+from .class_identity_observations import (
+    DeclaredIdentities,
+    DeclaredIdentityFamily,
+)
 from .codemod_declaration_source import DirectClassDeclarationAuthority
 from .codemod_import_graph import SourceModuleImportGraph
 from .codemod_paths import (
@@ -153,6 +157,18 @@ class CodemodSelectorContext(IndexedSourceAuthority, ABC):
         return SourceModuleImportGraph(
             source_index=self.source_index,
             module_nodes_by_file_path=self.module_nodes_by_file_path,
+        )
+
+    @cached_property
+    def declared_identities(self) -> DeclaredIdentities:
+        """The identities this source state declares, as the restated-identity join reads them."""
+
+        return DeclaredIdentities.from_modules(
+            declared
+            for file_path in self.source_file_paths
+            for declared in DeclaredIdentityFamily.collect(
+                self.parsed_module_for_source_path(file_path)
+            )
         )
 
     def direct_class_declaration_index_for_file(

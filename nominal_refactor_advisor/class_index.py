@@ -946,7 +946,7 @@ class CompactModuleClassHeader(CompactModuleIdentity):
         return cls(
             module_name=parsed_module.module_name,
             file_path=parsed_module.file_path,
-            import_aliases=tuple(sorted(_module_import_aliases(parsed_module).items())),
+            import_aliases=tuple(sorted(module_import_aliases(parsed_module).items())),
             public_export_contract=module_public_export_contract(parsed_module),
             star_import_origins=module_star_import_origins(parsed_module),
             classes=_compact_indexed_classes(
@@ -3702,7 +3702,7 @@ def _module_import_bindings(
     }
 
 
-def _module_import_aliases(parsed_module: ParsedModule) -> dict[str, str]:
+def module_import_aliases(parsed_module: ParsedModule) -> dict[str, str]:
     return {
         local_name: binding.qualified_name
         for local_name, binding in _module_import_bindings(parsed_module).items()
@@ -4258,7 +4258,7 @@ class CompactModuleClassProjectionFamily(CollectedFamily[CompactModuleClassProje
                 module_name=parsed_module.module_name,
                 file_path=parsed_module.file_path,
                 import_aliases=tuple(
-                    sorted(_module_import_aliases(parsed_module).items())
+                    sorted(module_import_aliases(parsed_module).items())
                 ),
                 public_export_contract=module_public_export_contract(parsed_module),
                 star_import_origins=module_star_import_origins(parsed_module),
@@ -6667,7 +6667,7 @@ class ModuleClassReferenceResolver:
 
     @cached_property
     def import_aliases(self) -> dict[str, str]:
-        return _module_import_aliases(self.parsed_module)
+        return module_import_aliases(self.parsed_module)
 
     @cached_property
     def constructor_assignment_symbols(self) -> dict[str, str]:

@@ -13,6 +13,7 @@ from nominal_refactor_advisor.codemod import (
     codemod_plan_from_findings,
 )
 from nominal_refactor_advisor.codemod_declaration_reference import (
+    ReferenceClassNameOperation,
     ReferenceImportedModuleOperation,
     UnquoteResolvedTypeNamesOperation,
 )
@@ -202,7 +203,9 @@ def test_the_scan_rewrite_is_one_candidate_with_one_operation_per_file(
     ]
     assert len(executable) == 1
     operations = executable[0].candidate_recipes[0].operations
-    assert sorted(Path(operation.target.file_path).name for operation in operations) == [
+    assert sorted(
+        Path(operation.target.file_path).name for operation in operations
+    ) == [
         "a.py",
         "b.py",
     ]
@@ -219,3 +222,101 @@ def test_a_dunder_protocol_name_is_not_a_family_spelling(tmp_path: Path):
     )
     _write(tmp_path, {"m": source})
     assert _identity_findings(tmp_path) == []
+
+
+def test_a_class_name_spelled_as_a_value_becomes_its_name_attribute(tmp_path: Path):
+    _write(
+        tmp_path,
+        {
+            "pkg/__init__": "",
+            "pkg/models": (
+                "from dataclasses import dataclass\n\n\n"
+                "def renaming(cls):\n    cls.__name__ = 'Other'\n    return cls\n\n\n"
+                "@dataclass(frozen=True)\nclass SourceLocation:\n    line: int\n\n\n"
+                "@renaming\nclass Renamed:\n    pass\n\n\n"
+                "class WorkerPool:\n    pass\n"
+            ),
+            "pkg/run": (
+                "from pkg.models import Renamed, SourceLocation\n\n\n"
+                "def kind(node, cls):\n"
+                "    if cls.__name__ == 'Renamed':\n        return None\n"
+                "    if node.func == 'SourceLocation':\n"
+                "        return frozenset({'SourceLocation', 'WorkerPool', 'LaterClass'})\n"
+                "    return send('WorkerPool')\n\n\n"
+                "LATER = frozenset({'LaterClass'})\n\n\n"
+                "class LaterClass:\n    pass\n"
+            ),
+        },
+    )
+    records, rewritten = _replayed(tmp_path)
+    operations = [
+        operation
+        for record in records
+        for recipe in record.candidate_recipes
+        for operation in recipe.operations
+    ]
+    assert [type(operation) for operation in operations] == [
+        ReferenceClassNameOperation
+    ]
+    (source,) = rewritten.values()
+    assert "if node.func == SourceLocation.__name__:" in source
+    assert "frozenset({SourceLocation.__name__, 'WorkerPool', 'LaterClass'})" in source
+    # A decorator from the scan may return another object; a class the file
+    # does not import, or binds only after the statement holding the literal,
+    # stays spelled.
+    assert "cls.__name__ == 'Renamed'" in source
+    assert "send('WorkerPool')" in source
+    assert "LATER = frozenset({'LaterClass'})" in source
+
+
+def test_the_files_own_package_spelled_for_an_interpreter_is_dunder_package(
+    tmp_path: Path,
+):
+    _write(
+        tmp_path,
+        {
+            "pkg/__init__": "",
+            "pkg/worker": "X = 1\n",
+            "pkg/run": (
+                "import sys\n\nfrom . import worker\n\n\n"
+                "def command():\n    return (sys.executable, '-m', 'pkg')\n"
+            ),
+        },
+    )
+    records, rewritten = _replayed(tmp_path)
+    (source,) = rewritten.values()
+    assert "(sys.executable, '-m', __package__)" in source
+
+
+def test_a_class_its_from_statement_can_also_import_is_added_to_that_statement(
+    tmp_path: Path,
+):
+    _write(
+        tmp_path,
+        {
+            "pkg/__init__": "",
+            "pkg/stores": (
+                "class SingleFileStore:\n    pass\n\n\n"
+                "class SqliteStore:\n    pass\n\n\n"
+                "class MultiFileStore:\n    pass\n"
+            ),
+            "pkg/plan": (
+                "from pkg.stores import (\n    SqliteStore,\n)\n\n\n"
+                "def phases():\n"
+                "    return (SqliteStore, 'SingleFileStore', 'MultiFileStore')\n"
+            ),
+            # A star import binds names no source lists, so nothing here is
+            # known to be bound or unbound: the file keeps its spellings.
+            "pkg/starred": (
+                "from pkg.stores import SqliteStore\nfrom pkg.plan import *\n\n\n"
+                "def phases():\n    return (SqliteStore, 'SingleFileStore')\n"
+            ),
+        },
+    )
+    records, rewritten = _replayed(tmp_path)
+    (source,) = rewritten.values()
+    # SingleFileStore is bound before SqliteStore in its module, so the
+    # statement that imports SqliteStore can import it too; MultiFileStore is
+    # bound after, so importing it could fail where the statement did not.
+    assert "    SqliteStore, SingleFileStore,\n" in source
+    assert "(SqliteStore, SingleFileStore.__name__, 'MultiFileStore')" in source

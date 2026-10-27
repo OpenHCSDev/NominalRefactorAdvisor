@@ -141,7 +141,7 @@ from ..class_index import (
     ModuleNominalBindingAuthority,
     RegistryLookupShape,
     RegistryLookupStyle,
-    _module_import_aliases,
+    module_import_aliases,
     build_class_family_index,
     build_compact_class_family_index,
 )

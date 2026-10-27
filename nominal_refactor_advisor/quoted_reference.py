@@ -104,9 +104,11 @@ class ModuleReferenceScope:
     CAST = "cast"
     ANNOTATED = "Annotated"
     TYPE_METADATA = frozenset((ANNOTATED, "Literal"))
+    OWN_PACKAGE = "__package__"
 
-    def __init__(self, module: ast.Module) -> None:
+    def __init__(self, module: ast.Module, package: str = "") -> None:
         self.module = module
+        self.package = package
 
     @cached_property
     def lazy_annotations(self) -> bool:
@@ -223,11 +225,48 @@ class ModuleReferenceScope:
                 yield quoted
 
     def module_rewrite(self, spelled: SpelledModule) -> ReferenceRewrite:
-        """Whether the spelled module can be written as the reference the file already imports."""
+        """Whether the spelled module can be written as a reference the file already has."""
 
-        if spelled.replaced is not None and spelled.name in self.imported_modules:
+        if self.module_reference(spelled) is not None:
             return ReferenceRewrite.ANY_INTERPRETER
         return ReferenceRewrite.NONE
+
+    def module_reference(self, spelled: SpelledModule) -> str | None:
+        """The expression that stands where the spelled module is, or None.
+
+        A module the file imports eagerly is its import's reference. The file's
+        own package, where the string itself is the value, is `__package__`:
+        a module with a top-level relative import runs only as a submodule of
+        its package, and the import system sets `__package__` to that package's
+        name, so `__package__` is the string wherever the file does not
+        rebind it.
+        """
+
+        if spelled.replaced is None:
+            return None
+        if spelled.name in self.imported_modules:
+            return f"{self.imported_modules[spelled.name]}{spelled.suffix}"
+        if (
+            spelled.replaced is spelled.literal
+            and self.package
+            and spelled.name == self.package
+            and self.runs_in_package
+        ):
+            return self.OWN_PACKAGE
+        return None
+
+    @cached_property
+    def runs_in_package(self) -> bool:
+        """Whether the module imports relatively at top level and never rebinds `__package__`."""
+
+        return any(
+            isinstance(statement, ast.ImportFrom) and statement.level > 0
+            for statement in self.module.body
+        ) and not any(
+            bound == self.OWN_PACKAGE
+            for node in ast.walk(self.module)
+            for bound in self.bound_names(node)
+        )
 
     def type_expressions(self) -> Iterator[tuple[ast.expr, bool]]:
         """Each type position, and whether it is an annotation."""

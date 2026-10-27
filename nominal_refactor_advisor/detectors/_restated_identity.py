@@ -14,6 +14,7 @@ from ..class_identity_observations import (
 )
 from ..codemod_declaration_reference import (
     DeclarationReferenceFindingRecipeSynthesizer,
+    ReferenceClassNameOperation,
     ReferenceImportedModuleOperation,
     UnquoteResolvedTypeNamesOperation,
 )
@@ -49,6 +50,7 @@ class RestatedIdentityDetector(
         operations=(
             UnquoteResolvedTypeNamesOperation,
             ReferenceImportedModuleOperation,
+            ReferenceClassNameOperation,
         ),
     )
     finding_spec = restated.spec(

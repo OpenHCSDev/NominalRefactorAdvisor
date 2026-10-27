@@ -15,15 +15,19 @@ the spelling sit in different modules.
 from __future__ import annotations
 
 import ast
+import builtins
 import re
+import sys
 from abc import ABC, abstractmethod
-from collections import defaultdict
+from collections import Counter, defaultdict
 from collections.abc import Iterable, Iterator, Sequence
 from dataclasses import dataclass, field, replace
+from functools import cached_property
 from pathlib import Path
 from typing import ClassVar
 
 from .ast_tools import ModuleSyntaxIndex, ParsedModule, module_syntax_index
+from .class_index import module_import_aliases
 from .quoted_reference import (
     DeclaredInterpreter,
     ModuleReferenceScope,
@@ -49,6 +53,14 @@ class DeclaredClass:
     annotated field that is not a ClassVar, or `self.name = ...` in a method);
     `lookups` are its classmethods that return a member class of the family for
     an argument.
+
+    What decides whether the class object's `__name__` is the statement's name:
+    `top_level` (a module-level statement, so `module.Name` is its qualified
+    name), `decorators` and `origins` (its bases and metaclass), each as the
+    qualified name it resolves to in its module, or empty when it resolves to
+    nothing the module binds, and `writes_name`, whether anything inside the
+    class stores a `__name__` (a body binding, a metaclass or subclass hook
+    renaming the classes it makes).
     """
 
     name: str
@@ -60,15 +72,42 @@ class DeclaredClass:
     constants: tuple[tuple[str, str], ...]
     instance_attributes: tuple[str, ...]
     lookups: tuple[str, ...]
+    top_level: bool = False
+    decorators: tuple[str, ...] = ()
+    origins: tuple[str, ...] = ()
+    writes_name: bool = False
+
+
+@dataclass(frozen=True)
+class FromImport:
+    """A top-level `from module import a, b` statement: its index in the module body, the module, the names."""
+
+    index: int
+    module: str
+    names: tuple[str, ...]
 
 
 @dataclass(frozen=True)
 class ModuleDeclarations:
-    """What one module declares: its import name and its classes."""
+    """What one module declares: its import name, its classes, what it imports and binds, and which names it renames.
+
+    `imports` are the module's final import bindings with the qualified name
+    each resolves to, and `from_imports` its top-level `from` statements;
+    `bound_after` the line after which each top-level name is bound
+    (`ModuleReferenceScope.bound_after`), and `rebound` the names its module
+    scope binds more than once; `renamed` the qualified names whose
+    `__name__` the module stores (`X.__name__ = ...`,
+    `setattr(X, "__name__", ...)`).
+    """
 
     module_name: str
     file_path: str
     classes: tuple[DeclaredClass, ...]
+    imports: tuple[tuple[str, str], ...] = ()
+    from_imports: tuple[FromImport, ...] = ()
+    bound_after: tuple[tuple[str, int], ...] = ()
+    rebound: tuple[str, ...] = ()
+    renamed: tuple[str, ...] = ()
 
 
 class DeclaredIdentityFamily(ShapeFamily[ModuleDeclarations]):
@@ -79,19 +118,132 @@ class DeclaredIdentityFamily(ShapeFamily[ModuleDeclarations]):
     @classmethod
     def collect(cls, parsed_module: ParsedModule) -> list[ModuleDeclarations]:
         index = module_syntax_index(parsed_module.module)
+        names = QualifiedNames.of(parsed_module)
+        top_level = {
+            id(statement)
+            for statement in parsed_module.module.body
+            if isinstance(statement, ast.ClassDef)
+        }
         return [
             ModuleDeclarations(
                 module_name=parsed_module.module_name,
                 file_path=parsed_module.file_path,
                 classes=tuple(
-                    cls.declared_class(node)
+                    cls.declared_class(node, names, id(node) in top_level)
                     for _node_index, node in index.indexed_nodes_of_type(ast.ClassDef)
+                ),
+                imports=tuple(sorted(names.imports.items())),
+                from_imports=tuple(cls.from_imports(parsed_module)),
+                bound_after=tuple(
+                    sorted(
+                        ModuleReferenceScope(parsed_module.module).bound_after.items()
+                    )
+                ),
+                rebound=tuple(
+                    sorted(
+                        name
+                        for name, count in cls.module_scope_bindings(
+                            parsed_module.module
+                        ).items()
+                        if count > 1
+                    )
+                ),
+                renamed=tuple(
+                    sorted(
+                        {
+                            qualified
+                            for node in ast.walk(parsed_module.module)
+                            for receiver in cls.renamed_receivers(node)
+                            if (qualified := names.qualified(receiver))
+                        }
+                    )
                 ),
             )
         ]
 
+    NAME = "__name__"
+    STAR = "*"
+
     @classmethod
-    def declared_class(cls, node: ast.ClassDef) -> DeclaredClass:
+    def from_imports(cls, parsed_module: ParsedModule) -> Iterator[FromImport]:
+        for index, statement in enumerate(parsed_module.module.body):
+            match statement:
+                case ast.ImportFrom(module=imported, level=level, names=aliases) if all(
+                    alias.name != cls.STAR for alias in aliases
+                ):
+                    module = (
+                        parsed_module.module_path_identity.resolve_import_from_module(
+                            imported_module=imported, level=level
+                        )
+                    )
+                    if module is not None:
+                        yield FromImport(
+                            index,
+                            module,
+                            tuple(alias.asname or alias.name for alias in aliases),
+                        )
+
+    SCOPES = (
+        ast.FunctionDef,
+        ast.AsyncFunctionDef,
+        ast.ClassDef,
+        ast.Lambda,
+        ast.ListComp,
+        ast.SetComp,
+        ast.DictComp,
+        ast.GeneratorExp,
+    )
+
+    @classmethod
+    def module_scope_bindings(cls, module: ast.Module) -> Counter[str]:
+        """How many times the module scope binds each name: not inside functions, classes or lambdas."""
+
+        counts: Counter[str] = Counter()
+        pending: list[ast.AST] = list(module.body)
+        while pending:
+            node = pending.pop()
+            counts.update(ModuleReferenceScope.bound_names(node))
+            if not isinstance(node, cls.SCOPES):
+                pending.extend(ast.iter_child_nodes(node))
+        return counts
+
+    @classmethod
+    def renamed_receivers(cls, node: ast.AST) -> Iterator[ast.expr]:
+        """The objects whose `__name__` this node stores."""
+
+        match node:
+            case ast.Attribute(value=receiver, attr=attribute, ctx=ast.Store()) if (
+                attribute == cls.NAME
+            ):
+                yield receiver
+            case ast.Call(
+                func=ast.Name(id="setattr"),
+                args=[receiver, ast.Constant(value=attribute), *_],
+            ) if (
+                attribute == cls.NAME
+            ):
+                yield receiver
+
+    @classmethod
+    def writes_name(cls, node: ast.ClassDef) -> bool:
+        """Whether anything inside the class stores a `__name__`, on any object or namespace."""
+
+        for inner in ast.walk(node):
+            if any(True for _receiver in cls.renamed_receivers(inner)):
+                return True
+            match inner:
+                case ast.Name(id=name, ctx=ast.Store()) if name == cls.NAME:
+                    return True
+                case ast.Subscript(slice=ast.Constant(value=key), ctx=ast.Store()) if (
+                    key == cls.NAME
+                ):
+                    return True
+        return False
+
+    @classmethod
+    def declared_class(
+        cls, node: ast.ClassDef, names: QualifiedNames, top_level: bool
+    ) -> DeclaredClass:
         methods = [
             statement
             for statement in node.body
@@ -135,6 +287,22 @@ class DeclaredIdentityFamily(ShapeFamily[ModuleDeclarations]):
             lookups=tuple(
                 method.name for method in methods if cls.is_lookup(method, node.name)
             ),
+            top_level=top_level,
+            decorators=tuple(
+                names.qualified(decorator) for decorator in node.decorator_list
+            ),
+            origins=tuple(
+                names.qualified(origin)
+                for origin in (
+                    *node.bases,
+                    *(
+                        keyword.value
+                        for keyword in node.keywords
+                        if keyword.arg == "metaclass"
+                    ),
+                )
+            ),
+            writes_name=cls.writes_name(node),
         )
 
     @classmethod
@@ -204,6 +372,178 @@ class DeclaredIdentityFamily(ShapeFamily[ModuleDeclarations]):
         return False
 
 
+@dataclass(frozen=True)
+class QualifiedNames:
+    """What a module-level name or attribute chain names, as a qualified name.
+
+    An imported name resolves through the module's final import bindings, a
+    name the module binds itself to `module.name`, and a builtin to
+    `builtins.name`; a call (`dataclass(frozen=True)`) or a subscript
+    (`Generic[T]`) names what it calls or subscripts.
+    """
+
+    module_name: str
+    imports: dict[str, str]
+    local: frozenset[str]
+
+    @classmethod
+    def of(cls, parsed_module: ParsedModule) -> QualifiedNames:
+        return cls(
+            parsed_module.module_name,
+            module_import_aliases(parsed_module),
+            frozenset(ModuleReferenceScope(parsed_module.module).bound_after),
+        )
+
+    def qualified(self, expression: ast.expr) -> str:
+        match expression:
+            case ast.Call(func=called):
+                return self.qualified(called)
+            case ast.Subscript(value=generic):
+                return self.qualified(generic)
+            case ast.Attribute(value=owner, attr=attribute):
+                found = self.qualified(owner)
+                return f"{found}.{attribute}" if found else ""
+            case ast.Name(id=name):
+                if name in self.imports:
+                    return self.imports[name]
+                if name in self.local:
+                    return f"{self.module_name}.{name}"
+                if hasattr(builtins, name):
+                    return f"{builtins.__name__}.{name}"
+        return ""
+
+
+@dataclass(frozen=True)
+class ClassNameOwners:
+    """Which qualified names reach a scanned class whose `__name__` is its statement's name.
+
+    `type.__new__` names a class after its statement; a class keeps that name
+    unless something renames it: a decorator that returns another object, a
+    metaclass or `__init_subclass__` that stores `__name__`, or a store of
+    `X.__name__`. A class keeps its name here when nothing in it stores a
+    `__name__`, no scanned module renames it, every decorator is the
+    standard library's, and every base and metaclass is the standard library's
+    or a scanned class that keeps its name. Anything else, including a class
+    from outside the scan, is not known to keep it.
+    """
+
+    classes: dict[str, DeclaredClass]
+    imports: dict[str, dict[str, str]]
+    renamed: frozenset[str]
+    scanned_roots: frozenset[str]
+    bound_after: dict[str, dict[str, int]]
+    from_imports: dict[str, tuple[FromImport, ...]]
+    STANDARD: ClassVar[frozenset[str]] = frozenset(
+        (*sys.stdlib_module_names, builtins.__name__)
+    )
+    MAX_REEXPORTS: ClassVar[int] = 16
+
+    @classmethod
+    def from_modules(cls, modules: Iterable[ModuleDeclarations]) -> ClassNameOwners:
+        classes: dict[str, DeclaredClass] = {}
+        repeated: set[str] = set()
+        imports: dict[str, dict[str, str]] = {}
+        renamed: set[str] = set()
+        bound_after: dict[str, dict[str, int]] = {}
+        from_imports: dict[str, tuple[FromImport, ...]] = {}
+        for module in modules:
+            imports[module.module_name] = dict(module.imports)
+            bound_after[module.module_name] = dict(module.bound_after)
+            from_imports[module.file_path] = module.from_imports
+            renamed.update(module.renamed)
+            for declared in module.classes:
+                if not declared.top_level:
+                    continue
+                qualified = f"{module.module_name}.{declared.name}"
+                if qualified in classes or declared.name in module.rebound:
+                    repeated.add(qualified)
+                classes[qualified] = declared
+        owners = cls(
+            {name: found for name, found in classes.items() if name not in repeated},
+            imports,
+            frozenset(),
+            frozenset(name.partition(".")[0] for name in imports),
+            bound_after,
+            from_imports,
+        )
+        return replace(
+            owners,
+            renamed=frozenset(
+                filter(None, (owners.canonical(name) for name in renamed))
+            ),
+        )
+
+    def canonical(self, qualified: str) -> str | None:
+        """The scanned class a qualified name reaches through re-exports, if any."""
+
+        for _hop in range(self.MAX_REEXPORTS):
+            if qualified in self.classes:
+                return qualified
+            module, _dot, name = qualified.rpartition(".")
+            reexported = self.imports.get(module, {}).get(name)
+            if reexported is None:
+                return None
+            qualified = reexported
+        return None
+
+    def standard(self, qualified: str) -> bool:
+        root = qualified.partition(".")[0]
+        return root in self.STANDARD and root not in self.scanned_roots
+
+    def keeps_name(
+        self, qualified: str, visiting: frozenset[str] = frozenset()
+    ) -> bool:
+        declared = self.classes.get(qualified)
+        if declared is None or qualified in visiting or qualified in self.renamed:
+            return False
+        if declared.writes_name:
+            return False
+        if not all(self.standard(decorator) for decorator in declared.decorators):
+            return False
+        for origin in declared.origins:
+            if self.standard(origin):
+                continue
+            owner = self.canonical(origin)
+            if owner is None or not self.keeps_name(owner, visiting | {qualified}):
+                return False
+        return True
+
+    def references(self, binding: str, literal: str) -> bool:
+        """Whether `literal.__name__`, where the name is bound to `binding`, is the literal."""
+
+        owner = self.canonical(binding)
+        return (
+            owner is not None
+            and self.classes[owner].name == literal
+            and self.keeps_name(owner)
+        )
+
+    def importable(
+        self, file_path: str, holding: int, literal: str
+    ) -> FromImport | None:
+        """A `from` statement of the file that can also import the literal's class, or None.
+
+        The statement runs before the statement holding the literal, imports
+        from a scanned module that binds the class once, at top level, before
+        some name the statement already imports: whenever the statement
+        succeeds, the class is bound in that module, so adding it changes no
+        import order and fails nowhere the statement did not.
+        """
+
+        for statement in self.from_imports.get(file_path, ()):
+            if statement.index >= holding:
+                continue
+            bound = self.bound_after.get(statement.module, {})
+            line = bound.get(literal)
+            if (
+                line is not None
+                and self.references(f"{statement.module}.{literal}", literal)
+                and any(bound.get(name, 0) > line for name in statement.names)
+            ):
+                return statement
+        return None
+
+
 class IdentitySpelling(ABC):
     """How a literal in one kind of position spells an identity.
 
@@ -221,7 +561,9 @@ class IdentitySpelling(ABC):
         return (cls.tag, *(str(value) for value in values))
 
     @classmethod
-    def rewrite(cls, detail: Sequence[str]) -> ReferenceRewrite:
+    def rewrite(
+        cls, detail: Sequence[str], identities: DeclaredIdentities, file_path: str
+    ) -> ReferenceRewrite:
         """Where this site can be rewritten as its reference; most positions cannot."""
 
         return ReferenceRewrite.NONE
@@ -263,7 +605,7 @@ class TypeSpelling(IdentitySpelling):
     tag = "type"
 
     @classmethod
-    def rewrite(cls, detail):
+    def rewrite(cls, detail, identities, file_path):
         return ReferenceRewrite(detail[1])
 
     @classmethod
@@ -282,7 +624,7 @@ class LazyAnnotationSpelling(IdentitySpelling):
     tag = "annotation"
 
     @classmethod
-    def rewrite(cls, detail):
+    def rewrite(cls, detail, identities, file_path):
         return ReferenceRewrite(detail[1])
 
     @classmethod
@@ -310,8 +652,12 @@ class WordSpelling(IdentitySpelling):
     tag = "word"
 
     @classmethod
+    def rewrite(cls, detail, identities, file_path):
+        return ClassNameSpelling.rewrite(detail, identities, file_path)
+
+    @classmethod
     def resolve(cls, site, identities):
-        return identities.class_named(site.detail[2])
+        return identities.class_named(site.detail[-1])
 
 
 class ComparedWordSpelling(IdentitySpelling):
@@ -325,15 +671,39 @@ class ComparedWordSpelling(IdentitySpelling):
     tag = "compared word"
 
     @classmethod
+    def rewrite(cls, detail, identities, file_path):
+        return ClassNameSpelling.rewrite(detail, identities, file_path)
+
+    @classmethod
     def resolve(cls, site, identities):
-        literal = site.detail[1]
+        literal = site.detail[-1]
         return identities.class_named(literal) or identities.member_named(literal)
 
 
 class ClassNameSpelling(IdentitySpelling):
-    """A string compared with a `__name__` or `__qualname__`: a class name, one word or more."""
+    """A string compared with a `__name__` or `__qualname__`: a class name, one word or more.
+
+    Every value position that can hold a class name (this one, a passed or
+    returned word, a compared word) carries what the literal's name is where
+    the literal runs (`IdentityPositions.class_reference`): the qualified name
+    it is bound to, or, where the file binds the name nowhere, the index of the
+    top-level statement holding the literal. `Name.__name__` can stand there
+    when the binding reaches a scanned class that keeps its name, or when a
+    `from` statement before it can import such a class
+    (`ClassNameOwners.importable`).
+    """
 
     tag = "class name"
+
+    @classmethod
+    def rewrite(cls, detail, identities, file_path):
+        binding, holding, literal = detail[-3:]
+        owners = identities.class_names
+        if (binding and owners.references(binding, literal)) or (
+            holding and owners.importable(file_path, int(holding), literal)
+        ):
+            return ReferenceRewrite.ANY_INTERPRETER
+        return ReferenceRewrite.NONE
 
     @classmethod
     def resolve(cls, site, identities):
@@ -401,7 +771,7 @@ class ModuleSpelling(IdentitySpelling):
     tag = "module"
 
     @classmethod
-    def rewrite(cls, detail):
+    def rewrite(cls, detail, identities, file_path):
         return ReferenceRewrite(detail[1])
 
     @classmethod
@@ -410,6 +780,9 @@ class ModuleSpelling(IdentitySpelling):
 
 
 ModuleSpelling.rewrite_kind = ModuleSpelling
+ClassNameSpelling.rewrite_kind = ClassNameSpelling
+WordSpelling.rewrite_kind = ClassNameSpelling
+ComparedWordSpelling.rewrite_kind = ClassNameSpelling
 
 
 class LookupSpelling(IdentitySpelling):
@@ -496,11 +869,13 @@ class DeclaredIdentities:
     lookups: dict[str, tuple[str, ...]]
     bases: dict[str, tuple[str, ...]]
     instance_attributes: dict[str, frozenset[str]]
+    class_names: ClassNameOwners
     carriers: dict[tuple[str, str, str], tuple[str, ...]] = field(default_factory=dict)
     rewritten_files: dict[str, tuple[str, ...]] = field(default_factory=dict)
 
     @classmethod
     def from_modules(cls, modules: Iterable[ModuleDeclarations]) -> DeclaredIdentities:
+        modules = tuple(modules)
         classes: dict[str, list[SourceLocation]] = defaultdict(list)
         module_locations: dict[str, SourceLocation] = {}
         siblings: dict[tuple[str, str, bool], list[tuple[str, SourceLocation]]] = (
@@ -582,6 +957,7 @@ class DeclaredIdentities:
             instance_attributes={
                 name: frozenset(found) for name, found in instance_attributes.items()
             },
+            class_names=ClassNameOwners.from_modules(modules),
         ).with_family_values(explicit)
 
     def with_family_values(
@@ -761,7 +1137,7 @@ class DeclaredIdentities:
         files: dict[str, set[str]] = defaultdict(set)
         for site in sites:
             position = positions[site.detail[0]]
-            if not position.rewrite(site.detail).rewritable(
+            if not position.rewrite(site.detail, self, site.file_path).rewritable(
                 DeclaredInterpreter.of(Path(site.file_path))
             ):
                 continue
@@ -837,16 +1213,113 @@ class IdentityPositions:
             id(node): node_index
             for node_index, node in enumerate(self.index.depth_first_nodes)
         }
-        self.references = ModuleReferenceScope(parsed_module.module)
-
-    def site(self, node: ast.expr, detail: tuple[str, ...]) -> RestatingSite:
-        return RestatingSiteFamily.site(
-            self.parsed_module,
-            node,
-            self.index.lexical_symbol(self.node_indices[id(node)]),
-            detail[-1],
-            detail,
+        self.references = ModuleReferenceScope(
+            parsed_module.module, package=self.package_of(parsed_module)
         )
+
+    @staticmethod
+    def package_of(parsed_module: ParsedModule) -> str:
+        if parsed_module.is_package_init:
+            return parsed_module.module_name
+        return parsed_module.module_name.rpartition(".")[0]
+
+    @staticmethod
+    def site(
+        node: ast.expr, detail: tuple[str, ...]
+    ) -> tuple[ast.expr, tuple[str, ...]]:
+        return node, detail
+
+    def sites(self) -> Iterator[RestatingSite]:
+        for node, detail in self.spellings():
+            yield RestatingSiteFamily.site(
+                self.parsed_module,
+                node,
+                self.index.lexical_symbol(self.node_indices[id(node)]),
+                detail[-1],
+                detail,
+            )
+
+    @cached_property
+    def class_bindings(self) -> dict[str, tuple[int, str]]:
+        """Each name a top-level class statement or `from` import binds, and nothing else does.
+
+        The value is the binding statement's index in the module body and the
+        qualified name it binds; a name bound anywhere else too (a parameter, a
+        local, a second import) is left out, so no scope can shadow it.
+        """
+
+        counts = Counter(
+            bound
+            for node in ast.walk(self.parsed_module.module)
+            for bound in ModuleReferenceScope.bound_names(node)
+        )
+        imports = module_import_aliases(self.parsed_module)
+        found: dict[str, tuple[int, str]] = {}
+        for index, statement in enumerate(self.parsed_module.module.body):
+            match statement:
+                case ast.ClassDef(name=name):
+                    found[name] = (index, f"{self.parsed_module.module_name}.{name}")
+                case ast.ImportFrom(names=aliases):
+                    for alias in aliases:
+                        bound = alias.asname or alias.name
+                        if bound in imports:
+                            found[bound] = (index, imports[bound])
+        return {name: bound for name, bound in found.items() if counts[name] == 1}
+
+    @cached_property
+    def statement_indices(self) -> dict[int, int]:
+        return {
+            id(statement): index
+            for index, statement in enumerate(self.parsed_module.module.body)
+        }
+
+    @cached_property
+    def bound_anywhere(self) -> frozenset[str]:
+        return frozenset(
+            bound
+            for node in ast.walk(self.parsed_module.module)
+            for bound in ModuleReferenceScope.bound_names(node)
+        )
+
+    @cached_property
+    def star_imported(self) -> bool:
+        """Whether a `from module import *` binds names this module cannot list."""
+
+        return any(
+            alias.name == DeclaredIdentityFamily.STAR
+            for node in ast.walk(self.parsed_module.module)
+            if isinstance(node, ast.ImportFrom)
+            for alias in node.names
+        )
+
+    def class_reference(self, node_index: int, literal: str) -> tuple[str, str]:
+        """What the literal's name is where the literal runs: its binding, and where an import could go.
+
+        The first is the qualified name a top-level class statement or import
+        binds it to, when that runs before the top-level statement holding the
+        literal, so the name is bound whenever the literal is evaluated. The
+        second, when the file binds the name nowhere and it is no builtin, is
+        that holding statement's index: a `from` statement before it could
+        import the class. Both are empty otherwise, and in a module with a star
+        import, whose bindings no source lists.
+        """
+
+        holding = next(
+            (
+                index
+                for ancestor in self.index.ancestor_nodes(node_index)
+                if (index := self.statement_indices.get(id(ancestor))) is not None
+            ),
+            None,
+        )
+        if holding is None or self.star_imported:
+            return "", ""
+        bound = self.class_bindings.get(literal)
+        if bound is not None:
+            return (bound[1] if bound[0] < holding else ""), ""
+        if literal in self.bound_anywhere or hasattr(builtins, literal):
+            return "", ""
+        return "", str(holding)
 
     @classmethod
     def multiword(cls, literal: str) -> bool:
@@ -864,7 +1337,7 @@ class IdentityPositions:
 
     called = staticmethod(ModuleReferenceScope.called)
 
-    def sites(self) -> Iterator[RestatingSite]:
+    def spellings(self) -> Iterator[tuple[ast.expr, tuple[str, ...]]]:
         yield from self.type_sites()
         for node_index, node in self.index.indexed_nodes_of_type(ast.Compare):
             yield from self.compare_sites(node_index, node)
@@ -879,7 +1352,7 @@ class IdentityPositions:
 
     # Type positions -----------------------------------------------------------
 
-    def type_sites(self) -> Iterator[RestatingSite]:
+    def type_sites(self) -> Iterator[tuple[ast.expr, tuple[str, ...]]]:
         """Class names in quoted type strings: a reference wherever the name would resolve.
 
         Where it resolves on any interpreter the site is a `type` site; an
@@ -903,7 +1376,7 @@ class IdentityPositions:
 
     def compared(
         self, node_index: int, subject: ast.expr, literal_node: ast.expr
-    ) -> Iterator[RestatingSite]:
+    ) -> Iterator[tuple[ast.expr, tuple[str, ...]]]:
         literal = self.string(literal_node)
         if literal is None or isinstance(subject, ast.Constant):
             return
@@ -911,7 +1384,12 @@ class IdentityPositions:
             case ast.Attribute(attr=attribute) if (
                 attribute in self.CLASS_NAME_ATTRIBUTES
             ):
-                yield self.site(literal_node, ClassNameSpelling.detail(literal))
+                yield self.site(
+                    literal_node,
+                    ClassNameSpelling.detail(
+                        *self.class_reference(node_index, literal), literal
+                    ),
+                )
                 return
             case ast.Attribute(value=receiver, attr=attribute):
                 yield self.site(
@@ -923,11 +1401,16 @@ class IdentityPositions:
                     ),
                 )
         if self.multiword(literal):
-            yield self.site(literal_node, ComparedWordSpelling.detail(literal))
+            yield self.site(
+                literal_node,
+                ComparedWordSpelling.detail(
+                    *self.class_reference(node_index, literal), literal
+                ),
+            )
 
     def compare_sites(
         self, node_index: int, node: ast.Compare
-    ) -> Iterator[RestatingSite]:
+    ) -> Iterator[tuple[ast.expr, tuple[str, ...]]]:
         left = node.left
         for operator, right in zip(node.ops, node.comparators):
             match operator, right:
@@ -941,7 +1424,9 @@ class IdentityPositions:
                         yield from self.compared(node_index, left, item)
             left = right
 
-    def match_sites(self, node_index: int, node: ast.Match) -> Iterator[RestatingSite]:
+    def match_sites(
+        self, node_index: int, node: ast.Match
+    ) -> Iterator[tuple[ast.expr, tuple[str, ...]]]:
         for case in node.cases:
             for literal_node in self.pattern_literals(case.pattern):
                 yield from self.compared(node_index, node.subject, literal_node)
@@ -957,7 +1442,9 @@ class IdentityPositions:
 
     # Argument and return positions -----------------------------------------------
 
-    def call_sites(self, node_index: int, node: ast.Call) -> Iterator[RestatingSite]:
+    def call_sites(
+        self, node_index: int, node: ast.Call
+    ) -> Iterator[tuple[ast.expr, tuple[str, ...]]]:
         for argument in (*node.args, *(keyword.value for keyword in node.keywords)):
             yield from self.passed_sites(node_index, argument, "argument")
         match node:
@@ -972,11 +1459,16 @@ class IdentityPositions:
 
     def passed_sites(
         self, node_index: int, value: ast.expr, position: str
-    ) -> Iterator[RestatingSite]:
+    ) -> Iterator[tuple[ast.expr, tuple[str, ...]]]:
         for passed in self.passed_values(value):
             literal = self.string(passed)
             if literal is not None and self.multiword(literal):
-                yield self.site(passed, WordSpelling.detail(position, literal))
+                yield self.site(
+                    passed,
+                    WordSpelling.detail(
+                        position, *self.class_reference(node_index, literal), literal
+                    ),
+                )
             match passed:
                 case ast.Attribute(value=receiver, attr=attribute) if not self.own(
                     node_index, receiver
@@ -1137,7 +1629,7 @@ class IdentityPositions:
 
     # Module positions ---------------------------------------------------------
 
-    def module_sites(self) -> Iterator[RestatingSite]:
+    def module_sites(self) -> Iterator[tuple[ast.expr, tuple[str, ...]]]:
         for spelled in SpelledModules(self.parsed_module.module):
             yield self.site(
                 spelled.literal,
