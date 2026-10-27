@@ -79,7 +79,7 @@ def test_quoted_annotations_are_unquoted_by_one_file_recipe_and_replay_clean(
     )
     (source,) = rewritten.values()
     assert (
-        "def resolve(self, thread: (Thread | None), mode: Literal['Thread']) -> Owner:"
+        "def resolve(self, thread: Thread | None, mode: Literal['Thread']) -> Owner:"
         in source
     )
     assert (
@@ -320,3 +320,25 @@ def test_a_class_its_from_statement_can_also_import_is_added_to_that_statement(
     # bound after, so importing it could fail where the statement did not.
     assert "    SqliteStore, SingleFileStore,\n" in source
     assert "(SqliteStore, SingleFileStore.__name__, 'MultiFileStore')" in source
+
+
+def test_an_unquoted_union_keeps_its_own_text_and_gains_parentheses_only_as_an_operand(
+    tmp_path: Path,
+):
+    _write(
+        tmp_path,
+        {
+            "m": (
+                "class Source:\n    pass\n\n\n"
+                "class Holder:\n"
+                "    source: 'Source | None' = None\n"
+                "    pair: tuple['Source | None', int] = (None, 0)\n"
+                "    either: None | 'Source | int' = None\n"
+            )
+        },
+    )
+    _records, rewritten = _replayed(tmp_path)
+    (source,) = rewritten.values()
+    assert "    source: Source | None = None\n" in source
+    assert "    pair: tuple[Source | None, int] = (None, 0)\n" in source
+    assert "    either: None | (Source | int) = None\n" in source

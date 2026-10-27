@@ -46,6 +46,7 @@ from .models import DeclarationReferenceMetrics, RefactorFinding
 from .quoted_reference import (
     DeclaredInterpreter,
     ModuleReferenceScope,
+    QuotedTypeName,
     SpelledModules,
 )
 from .refactor_concepts import DeclarationReferenceConcept
@@ -236,22 +237,61 @@ class UnquoteResolvedTypeNamesOperation(DeclarationReferenceOperation):
         "Write quoted type names as the references they spell."
     )
 
+    OPERAND_PARENTS: ClassVar[tuple[type[ast.AST], ...]] = (
+        ast.BinOp,
+        ast.UnaryOp,
+        ast.BoolOp,
+        ast.Compare,
+        ast.Attribute,
+        ast.Subscript,
+        ast.Call,
+        ast.Await,
+        ast.Starred,
+    )
+    ATOMS: ClassVar[tuple[type[ast.expr], ...]] = (
+        ast.Name,
+        ast.Attribute,
+        ast.Subscript,
+        ast.Call,
+        ast.Constant,
+    )
+
     def rewrites(self, context, module, path):
+        parents = {
+            id(child): parent
+            for parent in ast.walk(module)
+            for child in ast.iter_child_nodes(parent)
+        }
         return tuple(
-            SpanRewrite(quoted.node, self.reference_source(quoted.expression))
+            SpanRewrite(
+                quoted.node,
+                self.reference_source(quoted, parents.get(id(quoted.node))),
+            )
             for quoted in ModuleReferenceScope(module).unquotable(
                 DeclaredInterpreter.of(Path(path))
             )
         )
 
-    @staticmethod
-    def reference_source(expression: ast.expr) -> str:
-        """The expression's source, parenthesized unless it is atomic where it lands."""
+    @classmethod
+    def reference_source(cls, quoted: QuotedTypeName, parent: ast.AST | None) -> str:
+        """The string's own text, parenthesized only where it lands as an operand.
 
-        source = ast.unparse(expression)
-        if isinstance(expression, (ast.Name, ast.Attribute, ast.Subscript)):
-            return source
-        return f"({source})"
+        An annotation, base, cast or TypeVar argument, or a subscript slice or
+        collection element, holds any expression bare, so `"A | None"` becomes
+        `A | None`. As the operand of an operator, attribute or call
+        (`None | "A | B"`), a compound expression needs its parentheses; the
+        replay proof rejects any rewrite whose parse differs.
+        """
+
+        text = quoted.node.value.strip()
+        if "\n" in text:
+            text = ast.unparse(quoted.expression)
+        if isinstance(quoted.expression, cls.ATOMS):
+            return text
+        operand = isinstance(parent, cls.OPERAND_PARENTS) and not (
+            isinstance(parent, ast.Subscript) and parent.slice is quoted.node
+        )
+        return f"({text})" if operand else text
 
 
 @dataclass(frozen=True, kw_only=True)
