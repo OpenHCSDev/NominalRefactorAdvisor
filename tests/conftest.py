@@ -72,3 +72,12 @@ def _isolated_default_advisor_cache() -> Iterator[None]:
                 os.environ.pop(environment_name, None)
             else:
                 os.environ[environment_name] = previous_cache_home
+
+
+def pytest_xdist_auto_num_workers(config: pytest.Config) -> int:
+    """`-n auto` takes the cores nobody else is using.
+
+    The suite shares its machine with other agents' runs. One-minute load average counts
+    the runnable processes already competing, so the free cores are the CPUs minus that
+    load, never fewer than one worker; `--maxprocesses` still caps the result."""
+    return max(1, (os.cpu_count() or 1) - round(os.getloadavg()[0]))
