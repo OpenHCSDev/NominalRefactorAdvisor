@@ -170,3 +170,36 @@ def test_a_closed_world_project_closes_public_functions_and_records_its_premise(
     premise = closed.closed_world_premises["pkg.calls.label"]
     assert premise.pyproject == str(tmp_path / "pyproject.toml")
     assert len(premise.digest) == 64
+
+
+def test_a_foreign_receiver_fetches_only_its_scanned_subclasses_methods():
+    repository = _repository(
+        "import argparse\n\n\n"
+        + CLASSES
+        + "class _Arguments(argparse.Namespace):\n"
+        + "    def _label(self):\n        return 'arguments'\n\n\n"
+        + "def _run(args: argparse.Namespace, name):\n    return vars(args)[name]()\n"
+    )
+    assert _closed(repository, "pkg.calls._Kind._other")
+    assert not _closed(repository, "pkg.calls._Arguments._label")
+
+
+def test_a_local_from_a_constructor_bounds_a_fetch_to_that_class_family():
+    repository = _repository(
+        CLASSES
+        + "class _Unrelated:\n    def _label(self):\n        return 'unrelated'\n\n\n"
+        + "def _run(name):\n    thing = _Unrelated()\n    return getattr(thing, name)()\n"
+    )
+    assert _closed(repository, "pkg.calls._Kind._other")
+    assert not _closed(repository, "pkg.calls._Unrelated._label")
+
+
+def test_an_annotated_member_of_self_bounds_a_fetch_to_its_class_family():
+    repository = _repository(
+        CLASSES
+        + "class _Unrelated:\n    def _label(self):\n        return 'unrelated'\n\n\n"
+        + "class _Holder:\n    held: _Unrelated\n\n"
+        + "    def _run(self, name):\n        return getattr(self.held, name)()\n"
+    )
+    assert _closed(repository, "pkg.calls._Kind._other")
+    assert not _closed(repository, "pkg.calls._Unrelated._label")

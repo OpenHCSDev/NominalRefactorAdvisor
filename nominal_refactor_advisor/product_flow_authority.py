@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import builtins
 from abc import ABC, abstractmethod
 from collections.abc import (
     Callable,
@@ -1471,8 +1472,12 @@ class ProductFlowRepository(
         annotation (`X`, `type[X]`, `X | None`, `Optional[X]`). Either can be
         an instance or class object of a subclass, so it holds the functions of
         the class family: the classes, their ancestors and descendants, and the
-        descendants' ancestors. A class object reference holds its class's and
-        ancestors' functions. Anything else is unproved.
+        descendants' ancestors. The method's own `self.x` is typed by the
+        annotation its class declares for `x`, the same way. A local bound to
+        one call's unchanged result is typed by the class the call constructs
+        or its callee's declared return class, each as its family. A
+        class object reference holds its class's and ancestors' functions.
+        Anything else is unproved.
         """
 
         declaration = context.declaration
@@ -1485,12 +1490,70 @@ class ProductFlowRepository(
             declared = self._declared_receiver_classes(context, receiver.root_name)
             if declared is not None:
                 return self._class_families(declared)
+        member = self._own_member_classes(context, receiver)
+        if member is not None:
+            return self._class_families(member)
+        if not receiver.attribute_path:
+            produced = self._bound_result_classes(context, receiver, position)
+            if produced is not None:
+                return produced
         found = self._class_for_reference(context, receiver, line=line)
         if found is None:
             return None
         return frozenset(
             (found.symbol, *self.class_index.ancestor_symbols(found.symbol))
         )
+
+    def _own_member_classes(
+        self, context: CompactFlowContext, receiver: LexicalValueReference
+    ) -> tuple[str, ...] | None:
+        """`self.x`: the classes the method's class declares `x`'s annotation to admit."""
+
+        declaration = context.declaration
+        if (
+            declaration is None
+            or declaration.owner_class_qualname is None
+            or receiver.root_name != declaration.nominal_receiver_name
+            or len(receiver.attribute_path) != 1
+        ):
+            return None
+        owner = self.class_index.symbol_for(
+            file_path=context.file_path, qualname=declaration.owner_class_qualname
+        )
+        if owner is None:
+            return None
+        resolution = self._member_declarations_in_mro(owner, receiver.attribute_path[0])
+        if resolution.violation is not None or not resolution.candidates:
+            return None
+        declaring_class, member = resolution.candidates[0]
+        parts = member.annotation_reference_parts
+        if parts is None:
+            return None
+        return self._annotated_classes(
+            declaring_class.module_name, ast.parse(".".join(parts), mode="eval").body
+        )
+
+    def _bound_result_classes(
+        self,
+        context: CompactFlowContext,
+        receiver: LexicalValueReference,
+        position: CompactFlowPosition,
+    ) -> frozenset[str] | None:
+        call = context.flow.bound_call_result_for(receiver, position)
+        if call is None:
+            return None
+        target = self.resolve_function_call(context, call)
+        if isinstance(target.target_resolution, ResolvedCompactClassTarget):
+            return self._class_families(
+                (target.target_resolution.resolved_declaration.symbol,)
+            )
+        resolved = target.resolved_call
+        returned = (
+            None
+            if resolved is None
+            else self.declared_return_class_symbol_for(resolved)
+        )
+        return None if returned is None else self._class_families((returned,))
 
     def _declared_receiver_classes(
         self, context: CompactFlowContext, name: str
@@ -1520,24 +1583,36 @@ class ProductFlowRepository(
             expression = ast.parse(annotation, mode="eval").body
         except SyntaxError:
             return None
+        return self._annotated_classes(declaration.identity.module_name, expression)
+
+    def _annotated_classes(
+        self, module_name: str, expression: ast.expr
+    ) -> tuple[str, ...] | None:
+        """The scanned classes an annotation admits, or None when one alternative is unresolved."""
+
         classes: list[str] = []
         for part in self._annotation_alternatives(expression):
             if isinstance(part, ast.Constant) and part.value is None:
                 continue
             reference = LexicalValueReference.from_expression(part)
-            symbol = (
-                None
-                if reference is None
-                else self.class_resolver.symbol_for(
-                    module_name=declaration.identity.module_name,
-                    reference_parts=reference.parts,
-                    allow_unique_unqualified=False,
-                )
-            )
-            if symbol is None:
+            if reference is None:
                 return None
-            classes.append(symbol)
-        return tuple(classes) or None
+            symbol = self.class_resolver.symbol_for(
+                module_name=module_name,
+                reference_parts=reference.parts,
+                allow_unique_unqualified=False,
+            )
+            if symbol is not None:
+                classes.append(symbol)
+                continue
+            foreign = self._foreign_class(module_name, reference.parts)
+            if foreign is None:
+                return None
+            # An instance of a class outside the scan holds no function of the
+            # scan except one stored on it, which is an escape; only a scanned
+            # subclass of it brings scanned methods.
+            classes.extend(self.foreign_base_subclasses.get(foreign, ()))
+        return tuple(classes)
 
     OPTIONAL: ClassVar[frozenset[str]] = frozenset(("Optional", "type", "Type"))
 
@@ -1556,6 +1631,59 @@ class ProductFlowRepository(
             ) is not None and reference.terminal_name in cls.OPTIONAL:
                 return cls._annotation_alternatives(inner)
         return [expression]
+
+    def _foreign_class(self, module_name: str, parts: tuple[str, ...]) -> str | None:
+        """The qualified name of a class outside the scan the reference names, or None.
+
+        The reference's root must be imported from a module outside the scan,
+        or be an unbound builtin name.
+        """
+
+        root, *rest = parts
+        imported = self.class_resolver.import_aliases_by_module_name.get(
+            module_name, {}
+        ).get(root)
+        if imported is not None:
+            qualified = ".".join((imported, *rest))
+            return (
+                None if qualified.partition(".")[0] in self.scanned_roots else qualified
+            )
+        if not rest and hasattr(builtins, root) and root not in self.scanned_roots:
+            module_bindings = self.module_flow_context_for_name(module_name)
+            if (
+                module_bindings is None
+                or root in module_bindings.flow.mutations_by_root_name
+            ):
+                return None
+            return f"{builtins.__name__}.{root}"
+        return None
+
+    @cached_property
+    def scanned_roots(self) -> frozenset[str]:
+        return frozenset(
+            projection.module_name.partition(".")[0]
+            for projection in self.class_projections
+        )
+
+    @cached_property
+    def foreign_base_subclasses(self) -> dict[str, tuple[str, ...]]:
+        """Scanned classes by each class outside the scan they directly inherit from."""
+
+        found: dict[str, list[str]] = {}
+        for projection in self.class_projections:
+            for indexed in projection.classes:
+                for base in indexed.base_references:
+                    parts = base.resolved_parts
+                    qualified = (
+                        f"{builtins.__name__}.{parts[0]}"
+                        if base.root_binding is None
+                        and len(parts) == 1
+                        and hasattr(builtins, parts[0])
+                        else ".".join(parts)
+                    )
+                    if qualified.partition(".")[0] not in self.scanned_roots:
+                        found.setdefault(qualified, []).append(indexed.symbol)
+        return {base: tuple(classes) for base, classes in found.items()}
 
     def _class_families(self, classes: tuple[str, ...]) -> frozenset[str]:
         family: set[str] = set()
