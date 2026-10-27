@@ -378,14 +378,10 @@ def test_declared_carrier_operation_rewrites_the_complete_forwarding_graph() -> 
 
     assert simulation.parse_validation.parse_valid
     rewritten_source = simulation.rewritten_sources[module.file_path]
-    assert (
-        "def _leaf(*, context: '_Context'):\n"
-        "    return context.first, context.second\n"
-    ) in rewritten_source
-    assert (
-        "def _middle(*, context: '_Context'):\n"
-        "    return _leaf(context=context)\n"
-    ) in rewritten_source
+    assert _carrier_parameter(rewritten_source, "_leaf") == ("context", "_Context")
+    assert _returned(rewritten_source, "_leaf") == "(context.first, context.second)"
+    assert _carrier_parameter(rewritten_source, "_middle") == ("context", "_Context")
+    assert _returned(rewritten_source, "_middle") == "_leaf(context=context)"
     assert "return _middle(context=context)" in rewritten_source
     original_namespace = {"__name__": "pkg.rewrite_original"}
     rewritten_namespace = {"__name__": "pkg.rewrite_rewritten"}
@@ -437,8 +433,30 @@ def test_declared_carrier_detector_synthesizes_the_atomic_operation() -> None:
     simulation = plan.document.simulate(snapshot)
     assert simulation.is_clean
     rewritten_source = simulation.simulation.rewritten_sources[module.file_path]
-    assert "def _middle(*, context: '_Context'):" in rewritten_source
+    assert _carrier_parameter(rewritten_source, "_middle") == ("context", "_Context")
     assert "return _middle(context=context)" in rewritten_source
+
+
+def _function(source: str, name: str) -> ast.FunctionDef:
+    return next(
+        node
+        for node in ast.walk(ast.parse(source))
+        if isinstance(node, ast.FunctionDef) and node.name == name
+    )
+
+
+def _carrier_parameter(source: str, name: str) -> tuple[str, str]:
+    """The function's one keyword-only parameter and the class its annotation names."""
+
+    (parameter,) = _function(source, name).args.kwonlyargs
+    assert isinstance(parameter.annotation, ast.Name)
+    return parameter.arg, parameter.annotation.id
+
+
+def _returned(source: str, name: str) -> str:
+    (statement,) = _function(source, name).body
+    assert isinstance(statement, ast.Return) and statement.value is not None
+    return ast.unparse(statement.value)
 
 
 def test_declared_carrier_operation_imports_cross_module_authority() -> None:

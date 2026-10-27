@@ -213,6 +213,8 @@ class IdentitySpelling(ABC):
     """
 
     tag: ClassVar[str]
+    rewrite_kind: ClassVar[type[IdentitySpelling]]
+    """The rewrite a rewritable site of this position belongs to, one recipe per scan."""
 
     @classmethod
     def detail(cls, *values: str) -> tuple[str, ...]:
@@ -290,6 +292,10 @@ class LazyAnnotationSpelling(IdentitySpelling):
         ):
             return None
         return identities.class_named(site.detail[-1])
+
+
+TypeSpelling.rewrite_kind = TypeSpelling
+LazyAnnotationSpelling.rewrite_kind = TypeSpelling
 
 
 class WordSpelling(IdentitySpelling):
@@ -403,6 +409,9 @@ class ModuleSpelling(IdentitySpelling):
         return identities.module_named(site.detail[-1])
 
 
+ModuleSpelling.rewrite_kind = ModuleSpelling
+
+
 class LookupSpelling(IdentitySpelling):
     """A string passed to a family's classmethod that returns the member it names."""
 
@@ -488,6 +497,7 @@ class DeclaredIdentities:
     bases: dict[str, tuple[str, ...]]
     instance_attributes: dict[str, frozenset[str]]
     carriers: dict[tuple[str, str, str], tuple[str, ...]] = field(default_factory=dict)
+    rewritten_files: dict[str, tuple[str, ...]] = field(default_factory=dict)
 
     @classmethod
     def from_modules(cls, modules: Iterable[ModuleDeclarations]) -> DeclaredIdentities:
@@ -533,13 +543,19 @@ class DeclaredIdentities:
         keyword_attributes: set[str] = set(consumers)
         for (attribute, base, by_keyword), group in siblings.items():
             values = [value for value, _location in group]
-            if len(values) >= 2 and len(set(values)) == len(values):
+            if (
+                len(values) >= 2
+                and len(set(values)) == len(values)
+                and not cls.protocol_name(attribute)
+            ):
                 members[attribute].extend(group)
                 family_bases[attribute].add(base)
                 if by_keyword:
                     keyword_attributes.add(attribute)
         for declaring_by_attribute in (consumers, slots):
             for attribute, declaring in declaring_by_attribute.items():
+                if cls.protocol_name(attribute):
+                    continue
                 family_bases[attribute].update(
                     location.symbol for location in declaring
                 )
@@ -598,9 +614,22 @@ class DeclaredIdentities:
             },
         )
 
+    @staticmethod
+    def protocol_name(name: str) -> bool:
+        """A dunder name belongs to Python's or a framework's protocol, not to a family.
+
+        `__registry_key__ = "kind"` configures the registry machinery, and a
+        literal `"__registry_key__"` names that protocol slot; neither is a
+        member's spelling, whatever family happens to hold the same text.
+        """
+
+        return len(name) > 4 and name.startswith("__") and name.endswith("__")
+
     def member_named(self, literal: str) -> ResolvedIdentity | None:
         """The family member whose explicit spelling the literal is."""
 
+        if self.protocol_name(literal):
+            return None
         for spellings in self.members.values():
             if any(value == literal for value, _location in spellings.members):
                 return spellings.spelled(literal)
@@ -719,39 +748,53 @@ class DeclaredIdentities:
         return None if resolved is None else resolved.restated_by(site)
 
     def with_carriers(self, sites: Sequence[RestatingSite]) -> DeclaredIdentities:
-        """Name, per file and rewritable position, the one finding that carries the file's rewrite.
+        """Name, per rewrite, the one finding that carries it for the whole scan, and the files it rewrites.
 
-        A rewrite is file-wide, so one finding per file and position carries it as
-        the candidate: the one whose site is the file's first rewritable site of
-        that position (by line, then identity).
+        A rewrite is one proved operation per file; the scan's rewrite of one kind
+        (quoted type names, or spelled modules) is one recipe, so it is one
+        candidate: carried by the finding at the scan's first rewritable site of
+        that kind (by file, line, then identity).
         """
 
         positions = IdentitySpelling.positions()
-        first: dict[tuple[str, str], RestatingSite] = {}
+        first: dict[str, RestatingSite] = {}
+        files: dict[str, set[str]] = defaultdict(set)
         for site in sites:
-            position = site.detail[0]
-            rewrite = positions[position].rewrite(site.detail)
-            if not rewrite.rewritable(DeclaredInterpreter.of(Path(site.file_path))):
+            position = positions[site.detail[0]]
+            if not position.rewrite(site.detail).rewritable(
+                DeclaredInterpreter.of(Path(site.file_path))
+            ):
                 continue
-            key = (site.file_path, position)
-            current = first.get(key)
-            if current is None or (site.lineno, site.group) < (
+            kind = position.rewrite_kind.tag
+            files[kind].add(site.file_path)
+            current = first.get(kind)
+            if current is None or (site.file_path, site.lineno, site.group) < (
+                current.file_path,
                 current.lineno,
                 current.group,
             ):
-                first[key] = site
+                first[kind] = site
         carriers: dict[tuple[str, str, str], list[str]] = defaultdict(list)
-        for (_file_path, position), site in sorted(first.items()):
-            carriers[(site.file_path, site.symbol, site.group)].append(position)
+        for kind, site in sorted(first.items()):
+            carriers[(site.file_path, site.symbol, site.group)].append(kind)
         return replace(
-            self, carriers={key: tuple(found) for key, found in carriers.items()}
+            self,
+            carriers={key: tuple(found) for key, found in carriers.items()},
+            rewritten_files={
+                kind: tuple(sorted(found)) for kind, found in files.items()
+            },
         )
 
-    def carried_positions(self, sites: Sequence[RestatingSite]) -> tuple[str, ...]:
-        """The positions whose file-wide rewrite this finding's sites carry."""
+    def carried_rewrites(
+        self, sites: Sequence[RestatingSite]
+    ) -> tuple[tuple[str, tuple[str, ...]], ...]:
+        """The rewrites this finding carries, each with the files it rewrites."""
 
-        return self.carriers.get(
-            (sites[0].file_path, sites[0].symbol, sites[0].group), ()
+        return tuple(
+            (kind, self.rewritten_files[kind])
+            for kind in self.carriers.get(
+                (sites[0].file_path, sites[0].symbol, sites[0].group), ()
+            )
         )
 
     def declarations_of(

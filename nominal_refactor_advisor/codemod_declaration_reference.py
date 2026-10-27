@@ -32,11 +32,7 @@ from .codemod_source_edits import (
     SourceTextSpanReplacement,
 )
 from .finding_recipe_actions import FindingRecipeActionKey
-from .class_identity_observations import (
-    LazyAnnotationSpelling,
-    ModuleSpelling,
-    TypeSpelling,
-)
+from .class_identity_observations import ModuleSpelling, TypeSpelling
 from .models import DeclarationReferenceMetrics, RefactorFinding
 from .quoted_reference import (
     DeclaredInterpreter,
@@ -121,9 +117,7 @@ class UnquoteResolvedTypeNamesOperation(DeclarationReferenceOperation):
     `ModuleReferenceScope.resolves`.
     """
 
-    position_tags: ClassVar[frozenset[str]] = frozenset(
-        (TypeSpelling.tag, LazyAnnotationSpelling.tag)
-    )
+    position_tags: ClassVar[frozenset[str]] = frozenset((TypeSpelling.tag,))
     default_rationale: ClassVar[str] = (
         "Write quoted type names as the references they spell."
     )
@@ -219,12 +213,12 @@ class ReferenceImportedModuleOperation(DeclarationReferenceOperation):
 class DeclarationReferenceFindingRecipeSynthesizer(
     FindingRecipeSynthesizer, DeclarationReferenceConcept, ABC
 ):
-    """One file-wide recipe per file and operation, offered on the finding that carries it.
+    """One recipe per scan-wide rewrite, offered on the finding the detector names as its carrier.
 
-    The detector names, per file and rewritable position, the one finding that
-    carries the file's rewrite (`DeclarationReferenceMetrics`); every other
-    finding the rewrite removes is rejected here as covered by that carrier, so
-    a file contributes one candidate per operation and no competing branches.
+    The detector names one finding per rewrite kind and the files that rewrite
+    touches (`DeclarationReferenceMetrics`). Its recipe holds one proved
+    operation per file, so the whole rewrite is one candidate; every other
+    finding it removes is rejected here as carried by that one.
     """
 
     reference_operations: tuple[type[DeclarationReferenceOperation], ...] = (
@@ -232,16 +226,17 @@ class DeclarationReferenceFindingRecipeSynthesizer(
         ReferenceImportedModuleOperation,
     )
 
-    def carried_operations(
+    def carried(
         self, finding: RefactorFinding
-    ) -> tuple[type[DeclarationReferenceOperation], ...]:
+    ) -> tuple[tuple[type[DeclarationReferenceOperation], tuple[str, ...]], ...]:
         metrics = finding.metrics
         if not isinstance(metrics, DeclarationReferenceMetrics):
             return ()
         return tuple(
-            operation
+            (operation, files)
+            for kind, files in metrics.carried_rewrites
             for operation in self.reference_operations
-            if operation.position_tags & frozenset(metrics.carried_positions)
+            if kind in operation.position_tags
         )
 
     def action_keys_for_finding(
@@ -254,7 +249,7 @@ class DeclarationReferenceFindingRecipeSynthesizer(
             finding,
             tuple(
                 (evidence.file_path, f"<{operation.operation_key()}>")
-                for operation in self.carried_operations(finding)
+                for operation, _files in self.carried(finding)
             ),
         )
 
@@ -268,29 +263,30 @@ class DeclarationReferenceFindingRecipeSynthesizer(
             return self.rejected_evaluation(
                 "a declaration reference needs the current source and a primary witness"
             )
-        carried = self.carried_operations(finding)
+        carried = self.carried(finding)
         if not carried:
             return self.rejected_evaluation(
-                "no recipe rewrites this site, or the file's rewrite is carried by "
-                "the finding at its first rewritable site"
+                "no recipe rewrites this site, or its rewrite is carried by the "
+                "finding at the scan's first rewritable site"
             )
-        operations = tuple(
-            operation(target=SourceRewriteTarget(file_path=evidence.file_path))
-            for operation in carried
-        )
-        for operation in operations:
-            try:
-                rewritten = operation.rewritten_lines(context)
-            except (SyntaxError, ValueError) as error:
-                return self.rejected_evaluation(f"{type(operation).__name__}: {error}")
-            if evidence.line not in rewritten:
-                return self.rejected_evaluation(
-                    f"{type(operation).__name__} no longer rewrites line {evidence.line}"
-                )
         recipe = RefactorRecipe(
             recipe_id=f"{finding.stable_id}-declaration-references",
-            reason="Write the file's spelled declarations as the references they spell.",
+            reason="Write the scan's spelled declarations as the references they spell.",
         )
-        for operation in operations:
-            recipe = recipe.with_operation(operation)
+        for operation_type, files in carried:
+            for file_path in files:
+                operation = operation_type(
+                    target=SourceRewriteTarget(file_path=file_path)
+                )
+                try:
+                    rewritten = operation.rewritten_lines(context)
+                except (SyntaxError, ValueError) as error:
+                    return self.rejected_evaluation(
+                        f"{operation_type.__name__} on {file_path}: {error}"
+                    )
+                if not rewritten:
+                    return self.rejected_evaluation(
+                        f"{operation_type.__name__} no longer rewrites {file_path}"
+                    )
+                recipe = recipe.with_operation(operation)
         return self.executable_evaluation(recipe)

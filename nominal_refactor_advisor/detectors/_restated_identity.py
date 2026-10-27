@@ -99,7 +99,7 @@ class RestatedIdentityDetector(
     def finding_context(
         self, sites: Sequence[RestatingSite], context: DeclaredIdentities
     ) -> dict[str, object]:
-        carried = context.carried_positions(sites)
+        carried = context.carried_rewrites(sites)
         return {"metrics": DeclarationReferenceMetrics(carried)} if carried else {}
 
 

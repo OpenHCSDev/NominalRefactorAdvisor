@@ -188,3 +188,34 @@ def test_loop_and_zip_targets_take_the_element_type_of_an_annotated_collection(
     assert "codec boundary: needs judgment" in summaries["runs"]
     assert "codec boundary: needs judgment" in summaries["arms"]
     assert "codec boundary" not in summaries["named"]
+
+
+def test_the_scan_rewrite_is_one_candidate_with_one_operation_per_file(
+    tmp_path: Path,
+):
+    _write(tmp_path, {"a": QUOTED, "b": QUOTED.replace("Owner", "Holder")})
+    records, rewritten = _replayed(tmp_path)
+    executable = [
+        record
+        for record in records
+        if record.status is FindingRecipeSynthesisStatus.EXECUTABLE_CANDIDATE
+    ]
+    assert len(executable) == 1
+    operations = executable[0].candidate_recipes[0].operations
+    assert sorted(Path(operation.target.file_path).name for operation in operations) == [
+        "a.py",
+        "b.py",
+    ]
+    assert len(rewritten) == 2
+
+
+def test_a_dunder_protocol_name_is_not_a_family_spelling(tmp_path: Path):
+    source = (
+        "class Root:\n    pass\n\n\n"
+        "class First(Root):\n    __registry_key__ = 'kind'\n    marker = '__registry_key__'\n\n\n"
+        "class Second(Root):\n    __registry_key__ = 'name'\n    marker = '__slots_key__'\n\n\n"
+        "def keyed(node):\n"
+        "    return node.attr == '__registry_key__' or node.attr == 'kind'\n"
+    )
+    _write(tmp_path, {"m": source})
+    assert _identity_findings(tmp_path) == []
