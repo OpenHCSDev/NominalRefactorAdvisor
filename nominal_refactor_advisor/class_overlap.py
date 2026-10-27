@@ -50,6 +50,7 @@ from .ast_projection import ExpressionReference
 from .case_root import Case
 from .class_body import (
     ClassBodyDeclaration,
+    SharedClassBodyDeclaration,
     ClassBodyIndex,
     ClassBodyOverlap,
 )
@@ -74,7 +75,14 @@ class ClassOverlapShape(StrEnum):
 
 
 class ClassOverlapMove(Case):
-    """The factoring an overlap calls for, and whose identities it changes."""
+    """The factoring an overlap calls for, and whose identities it changes.
+
+    `reorders_fields` says whether the move puts moved dataclass fields ahead of
+    the class's own, so a call passing fields by position would bind them to
+    other parameters.
+    """
+
+    reorders_fields: bool
 
     @classmethod
     @abstractmethod
@@ -90,6 +98,7 @@ class DeleteAndRedirect(ClassOverlapMove):
     """Delete the restating class and point its uses at the owner: its identity is gone."""
 
     value = "delete_and_redirect"
+    reorders_fields = False
 
     @classmethod
     def guarded_classes(
@@ -102,6 +111,7 @@ class ComposeExisting(ClassOverlapMove):
     """The restating class inherits the owner: the owner gains a descendant."""
 
     value = "compose_existing"
+    reorders_fields = False
 
     @classmethod
     def guarded_classes(
@@ -114,6 +124,7 @@ class PromoteToSharedBase(ClassOverlapMove):
     """The block moves into the base the two alone share: no identity changes."""
 
     value = "promote_to_shared_base"
+    reorders_fields = True
 
     @classmethod
     def guarded_classes(
@@ -126,6 +137,7 @@ class ExtractMixin(ClassOverlapMove):
     """Both compose a new mixin nobody tests yet: no identity changes."""
 
     value = "extract_mixin"
+    reorders_fields = True
 
     @classmethod
     def guarded_classes(
@@ -135,29 +147,34 @@ class ExtractMixin(ClassOverlapMove):
 
 
 class OverlapReceiptKind(StrEnum):
-    """One kind of evidence and its fixed log-odds weight."""
+    """One kind of evidence: a concept receipt with its fixed log-odds weight, or a
+    move guard that refuses the move and weighs nothing in the concept score."""
 
-    SHARED_METHOD = "shared_method", 1.5
-    SHARED_VALUE = "shared_value", 1.0
-    SHARED_FIELD = "shared_field", 0.5
-    FAMILY_AXIS_VALUE = "family_axis_value", 0.0
-    FEW_DECLARATIONS = "few_declarations", -1.5
-    KEPT_DIFFERENCE = "kept_difference", 0.0
-    SHARED_CONSUMER = "shared_consumer", 1.0
-    NO_SHARED_CONSUMER = "no_shared_consumer", 0.0
-    SAME_FAMILY = "same_family", 0.5
-    SEPARATE_FAMILIES = "separate_families", 0.0
-    SAME_CONSTRUCTION = "same_construction", 0.5
-    DIFFERENT_CONSTRUCTION = "different_construction", -1.5
-    IDENTITY_USED = "identity_used", -1.5
-    IDENTITY_DECLARED = "identity_declared", -1.5
+    SHARED_METHOD = "shared_method", 1.5, False
+    SHARED_VALUE = "shared_value", 1.0, False
+    SHARED_FIELD = "shared_field", 0.5, False
+    EXISTING_OWNER = "existing_owner", 1.0, False
+    FAMILY_AXIS_VALUE = "family_axis_value", 0.0, False
+    FEW_DECLARATIONS = "few_declarations", -1.5, False
+    KEPT_DIFFERENCE = "kept_difference", 0.0, False
+    SHARED_CONSUMER = "shared_consumer", 1.0, False
+    NO_SHARED_CONSUMER = "no_shared_consumer", 0.0, False
+    SAME_FAMILY = "same_family", 0.5, False
+    SEPARATE_FAMILIES = "separate_families", 0.0, False
+    SAME_CONSTRUCTION = "same_construction", 0.0, False
+    DIFFERENT_CONSTRUCTION = "different_construction", 0.0, True
+    IDENTITY_USED = "identity_used", 0.0, True
+    IDENTITY_DECLARED = "identity_declared", 0.0, True
+    POSITIONAL_CONSTRUCTION = "positional_construction", 0.0, True
 
     weight: float
+    guards: bool
 
-    def __new__(cls, value: str, weight: float) -> Self:
+    def __new__(cls, value: str, weight: float, guards: bool) -> Self:
         member = str.__new__(cls, value)
         member._value_ = value
         member.weight = weight
+        member.guards = guards
         return member
 
 
@@ -335,6 +352,17 @@ class ClassOverlapCandidate:
     restating: CompactIndexedClass
     overlap: ClassBodyOverlap
     receipts: tuple[OverlapReceipt, ...]
+    co_restating: CompactIndexedClass | None = None
+
+    @property
+    def refusals(self) -> tuple[OverlapReceipt, ...]:
+        """The move guards that fired: any one refuses the move."""
+
+        return tuple(receipt for receipt in self.receipts if receipt.kind.guards)
+
+    @property
+    def move_permitted(self) -> bool:
+        return not self.refusals
 
     @property
     def log_odds(self) -> float:
@@ -342,7 +370,7 @@ class ClassOverlapCandidate:
 
     @property
     def confidence(self) -> float:
-        """The uncalibrated confidence score: the logistic of the receipts' summed weights."""
+        """The uncalibrated concept score: are these one concept? Guards weigh nothing here."""
 
         return 1.0 / (1.0 + math.exp(-self.log_odds))
 
@@ -356,6 +384,7 @@ class ClassOverlapCandidate:
         return (
             _location(self.owner),
             _location(self.restating),
+            *(() if self.co_restating is None else (_location(self.co_restating),)),
             *(
                 location
                 for shared in self.overlap.shared
@@ -374,9 +403,10 @@ class ClassOverlapMetrics(FindingMetrics):
     shape: ClassOverlapShape
     move: type[ClassOverlapMove]
     owner_symbol: str
-    restating_symbol: str
+    restating_symbols: tuple[str, ...]
     shared_declaration_names: tuple[str, ...]
     confidence_score: float
+    move_permitted: bool
     receipts: tuple[OverlapReceipt, ...]
 
     @classmethod
@@ -385,9 +415,14 @@ class ClassOverlapMetrics(FindingMetrics):
             shape=candidate.shape,
             move=candidate.move,
             owner_symbol=candidate.owner.symbol,
-            restating_symbol=candidate.restating.symbol,
+            restating_symbols=tuple(
+                indexed_class.symbol
+                for indexed_class in (candidate.restating, candidate.co_restating)
+                if indexed_class is not None
+            ),
             shared_declaration_names=candidate.shared_names,
             confidence_score=round(candidate.confidence, 4),
+            move_permitted=candidate.move_permitted,
             receipts=candidate.receipts,
         )
 
@@ -403,7 +438,7 @@ class ClassOverlapMetrics(FindingMetrics):
 
     @property
     def plan_class_names(self) -> tuple[str, ...]:
-        return (self.owner_symbol, self.restating_symbol)
+        return (self.owner_symbol, *self.restating_symbols)
 
     @property
     def plan_field_names(self) -> tuple[str, ...]:
@@ -502,14 +537,20 @@ class ClassOverlapVerdicts:
                 and _construction(owner) == _construction(restating)
                 else ComposeExisting
             )
+            co_restating = None
         elif len(extractable) >= FEW_SHARED_DECLARATIONS:
             shape = ClassOverlapShape.MISSING_MIXIN
-            owner, restating = first, second
-            move = (
-                PromoteToSharedBase
-                if self.sole_shared_base(first, second) is not None
-                else ExtractMixin
-            )
+            existing = self.existing_owner(first, second, extractable)
+            if existing is not None:
+                owner, restating, co_restating = existing, first, second
+                move = ComposeExisting
+            else:
+                owner, restating, co_restating = first, second, None
+                move = (
+                    PromoteToSharedBase
+                    if self.sole_shared_base(first, second) is not None
+                    else ExtractMixin
+                )
         else:
             return None
         return ClassOverlapCandidate(
@@ -518,8 +559,21 @@ class ClassOverlapVerdicts:
             owner=owner,
             restating=restating,
             overlap=overlap,
+            co_restating=co_restating,
             receipts=(
                 *shared_receipts,
+                *(
+                    ()
+                    if co_restating is None
+                    else (
+                        OverlapReceipt(
+                            OverlapReceiptKind.EXISTING_OWNER,
+                            f"`{owner.qualname}` already declares the block; both "
+                            "classes restate it",
+                            (_location(owner),),
+                        ),
+                    )
+                ),
                 *axis_receipts,
                 *self._size_receipts(extractable, first, second),
                 *self._member_receipts(overlap, members),
@@ -528,8 +582,94 @@ class ClassOverlapVerdicts:
                 *self._family_receipts(first, second),
                 *self._construction_receipts(first, second),
                 *self._identity_receipts(owner, restating, move),
+                *self._positional_construction_receipts(
+                    move, (first, second)
+                ),
             ),
         )
+
+    def existing_owner(
+        self,
+        first: CompactIndexedClass,
+        second: CompactIndexedClass,
+        extractable: Sequence[SharedClassBodyDeclaration],
+    ) -> CompactIndexedClass | None:
+        """The smallest existing owner of the block: a scanned class other classes
+        already inherit, whose own or inherited declarations include the block.
+
+        A class that only restates the block too is not its owner; one that
+        other classes compose for it already is. The owner is never one of the
+        two classes, nor an ancestor or descendant of either. Between owners,
+        the one with the fewest effective declarations owns least beyond the
+        block.
+        """
+
+        first_declarations = self.bodies.declarations_of(first.symbol)
+        candidates: set[str] | None = None
+        for shared in extractable:
+            holders = set(
+                self.bodies.holders.get(first_declarations[shared.name].identity, ())
+            )
+            having = holders | {
+                descendant
+                for holder in holders
+                for descendant in self.class_index.descendant_symbols(holder)
+            }
+            candidates = having if candidates is None else candidates & having
+        excluded = {
+            first.symbol,
+            second.symbol,
+            *self.class_index.ancestor_symbols(first.symbol),
+            *self.class_index.ancestor_symbols(second.symbol),
+            *self.class_index.descendant_symbols(first.symbol),
+            *self.class_index.descendant_symbols(second.symbol),
+        }
+        options = sorted(
+            (
+                sum(
+                    len(self.bodies.declarations_of(symbol))
+                    for symbol in (candidate, *self.class_index.ancestor_symbols(candidate))
+                    if symbol in self.bodies.classes_by_symbol
+                ),
+                candidate,
+            )
+            for candidate in (candidates or set()) - excluded
+            if self.class_index.class_for(candidate) is not None
+            and self.class_index.children_by_symbol.get(candidate)
+        )
+        return self.class_index.class_for(options[0][1]) if options else None
+
+    def _positional_construction_receipts(
+        self,
+        move: type[ClassOverlapMove],
+        classes: Sequence[CompactIndexedClass],
+    ) -> tuple[OverlapReceipt, ...]:
+        """Calls that bind fields by position, for a move that reorders them."""
+
+        if not move.reorders_fields:
+            return ()
+        receipts = []
+        for indexed_class in classes:
+            positional = tuple(
+                use
+                for use in self.uses.uses_of(indexed_class)
+                if use.role is ClassReferenceRole.CONSTRUCTION
+                and (
+                    use.reference.positional_arguments
+                    or use.reference.unpacked_arguments
+                )
+            )
+            if positional:
+                receipts.append(
+                    OverlapReceipt(
+                        OverlapReceiptKind.POSITIONAL_CONSTRUCTION,
+                        f"`{indexed_class.qualname}` is constructed by position or "
+                        f"unpacking in {len(positional)} place(s); moving its fields "
+                        "ahead of its own would rebind them",
+                        tuple(use.location for use in positional[:4]),
+                    )
+                )
+        return tuple(receipts)
 
     def family_axis_names(
         self,

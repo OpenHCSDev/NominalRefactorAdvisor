@@ -2098,12 +2098,17 @@ class CompactClassReference(NamedTuple):
 
     `consumer` is the enclosing function or class qualname, or the module
     itself (empty); `reference_parts` the full name or attribute chain read.
+    For a call, `positional_arguments` is the most positional arguments any
+    call in the consumer passes and `unpacked_arguments` whether one unpacks
+    `*args` or `**kwargs`, which hides how it binds fields.
     """
 
     consumer: str
     reference_parts: tuple[str, ...]
     role: ClassReferenceRole
     line: int
+    positional_arguments: int = 0
+    unpacked_arguments: bool = False
 
 
 ClassDeclarationT = TypeVar("ClassDeclarationT", bound=ClassDeclaration)
@@ -6053,7 +6058,9 @@ def _compact_class_references(
     }
     nodes = syntax_index.depth_first_nodes
     parent_indices = syntax_index.parent_indices
-    references: dict[tuple[str, tuple[str, ...], ClassReferenceRole], int] = {}
+    references: dict[
+        tuple[str, tuple[str, ...], ClassReferenceRole], tuple[int, int, bool]
+    ] = {}
     for node_type in (ast.Name, ast.Attribute):
         for node_index in syntax_index.node_indices_by_type.get(node_type, ()):
             node = nodes[node_index]
@@ -6076,11 +6083,27 @@ def _compact_class_references(
             grandparent = nodes[grandparent_index] if grandparent_index >= 0 else None
             role = _class_reference_role(node, parent, grandparent, import_aliases)
             key = (".".join(scope.names), parts, role)
-            references[key] = min(references.get(key, node.lineno), node.lineno)
+            positional, unpacked = (
+                (
+                    len(parent.args),
+                    any(isinstance(argument, ast.Starred) for argument in parent.args)
+                    or any(keyword.arg is None for keyword in parent.keywords),
+                )
+                if role is ClassReferenceRole.CONSTRUCTION and isinstance(parent, ast.Call)
+                else (0, False)
+            )
+            line, seen_positional, seen_unpacked = references.get(
+                key, (node.lineno, 0, False)
+            )
+            references[key] = (
+                min(line, node.lineno),
+                max(seen_positional, positional),
+                seen_unpacked or unpacked,
+            )
     return tuple(
-        CompactClassReference(consumer, parts, role, line)
-        for (consumer, parts, role), line in sorted(
-            references.items(), key=lambda item: (item[1], item[0][0], item[0][1])
+        CompactClassReference(consumer, parts, role, *facts)
+        for (consumer, parts, role), facts in sorted(
+            references.items(), key=lambda item: (item[1][0], item[0][0], item[0][1])
         )
     )
 

@@ -53,10 +53,11 @@ def _kinds(candidate: ClassOverlapCandidate) -> set[OverlapReceiptKind]:
 def test_two_protocol_records_with_the_same_fields_are_a_coincidence():
     """agent-comms TextInput (opencode wire model) and TextContent (MCP dataclass).
 
-    Both declare `type: Literal['text'] = 'text'` and `text: str`. The receipts
-    show why that is not one concept: two declarations only, no consumer uses
-    both, no common ancestor, different class construction, and each field
-    `type` is a literal tag naming its own wire message.
+    Both declare `type: Literal['text'] = 'text'` and `text: str`. As a concept
+    the evidence is thin: two declarations only, no consumer uses both, no
+    common ancestor, so the concept score stays at even odds. The move guard
+    refuses outright: the classes are built differently, and each `type`
+    field is a literal tag naming its own wire message.
     """
 
     (candidate,) = _verdicts(
@@ -82,10 +83,13 @@ def test_two_protocol_records_with_the_same_fields_are_a_coincidence():
         OverlapReceiptKind.FEW_DECLARATIONS,
         OverlapReceiptKind.NO_SHARED_CONSUMER,
         OverlapReceiptKind.SEPARATE_FAMILIES,
+    } <= _kinds(candidate)
+    assert candidate.confidence <= 0.5
+    assert not candidate.move_permitted
+    assert {receipt.kind for receipt in candidate.refusals} == {
         OverlapReceiptKind.DIFFERENT_CONSTRUCTION,
         OverlapReceiptKind.IDENTITY_DECLARED,
-    } <= _kinds(candidate)
-    assert candidate.confidence < 0.05
+    }
     assert candidate.log_odds == sum(receipt.weight for receipt in candidate.receipts)
 
 
@@ -111,7 +115,7 @@ def test_a_class_restating_another_with_an_extra_base_composes_it():
     assert candidate.confidence > 0.5
 
 
-def test_a_type_test_on_either_class_lowers_the_confidence_and_says_where():
+def test_a_type_test_on_either_class_refuses_the_move_and_says_where():
     (plain,) = _verdicts(("pkg.surface", SURFACE))
     (tested,) = _verdicts(
         (
@@ -121,13 +125,11 @@ def test_a_type_test_on_either_class_lowers_the_confidence_and_says_where():
             + "    return isinstance(value, FunctionFamilyEvidenceSurface)\n",
         )
     )
-    used = [
-        receipt
-        for receipt in tested.receipts
-        if receipt.kind is OverlapReceiptKind.IDENTITY_USED
-    ]
-    assert used and used[0].evidence[0].symbol == "is_family"
-    assert tested.confidence < plain.confidence
+    assert plain.move_permitted
+    (refusal,) = tested.refusals
+    assert refusal.kind is OverlapReceiptKind.IDENTITY_USED
+    assert refusal.evidence[0].symbol == "is_family"
+    assert tested.confidence == plain.confidence
 
 
 def test_identical_bodies_bases_and_construction_delete_the_restating_class():
@@ -229,3 +231,36 @@ def test_the_receipt_weights_keep_their_error_on_the_labeled_verdicts():
     )
     assert round(brier, 4) == labels["brier"]
     assert round(ece, 4) == labels["ece"]
+
+
+def test_a_block_an_existing_owner_declares_is_composed_from_that_owner():
+    """Two records restating `file_path`/`line`/`symbol` restate the location
+    class other records already inherit, not a new mixin."""
+
+    candidates = _verdicts(
+        (
+            "pkg.sites",
+            "from dataclasses import dataclass\n\n\n"
+            "@dataclass(frozen=True)\nclass Location:\n"
+            "    file_path: str\n    line: int\n    symbol: str\n\n\n"
+            "@dataclass(frozen=True)\nclass Evidence(Location):\n    kind: str\n\n\n"
+            "@dataclass(frozen=True)\nclass CallSite:\n"
+            "    file_path: str\n    line: int\n    symbol: str\n    target: str\n\n\n"
+            "@dataclass(frozen=True)\nclass ProofEdge:\n"
+            "    file_path: str\n    line: int\n    symbol: str\n    authority: str\n",
+        )
+    )
+    assert {
+        (item.owner.qualname, item.restating.qualname, item.move) for item in candidates
+        if item.shape is ClassOverlapShape.DUPLICATE_CLASS
+    } == {("Location", "CallSite", ComposeExisting), ("Location", "ProofEdge", ComposeExisting)}
+    (candidate,) = (
+        item for item in candidates if item.shape is ClassOverlapShape.MISSING_MIXIN
+    )
+    assert candidate.move is ComposeExisting
+    assert candidate.owner.qualname == "Location"
+    assert {candidate.restating.qualname, candidate.co_restating.qualname} == {
+        "CallSite",
+        "ProofEdge",
+    }
+    assert OverlapReceiptKind.EXISTING_OWNER in _kinds(candidate)

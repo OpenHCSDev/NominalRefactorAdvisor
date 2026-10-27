@@ -46,16 +46,24 @@ class ClassOverlapDetectorABC(
         )
 
     def _finding_for_candidate(self, candidate: ClassOverlapCandidate) -> RefactorFinding:
-        receipts = "; ".join(
-            f"{receipt.weight:+.1f} {receipt.detail}" for receipt in candidate.receipts
+        concept = "; ".join(
+            f"{receipt.weight:+.1f} {receipt.detail}"
+            for receipt in candidate.receipts
+            if not receipt.kind.guards
+        )
+        refusals = "; ".join(receipt.detail for receipt in candidate.refusals)
+        restating = ", ".join(
+            f"`{indexed_class.qualname}`"
+            for indexed_class in (candidate.restating, candidate.co_restating)
+            if indexed_class is not None
         )
         return self.build_finding(
             (
-                f"`{candidate.restating.qualname}` restates "
-                f"{len(candidate.overlap.shared)} declaration(s) of "
-                f"`{candidate.owner.qualname}` ({', '.join(candidate.shared_names)}); "
-                f"move: {candidate.move.value}; confidence score "
-                f"{candidate.confidence:.2f} (uncalibrated) from receipts: {receipts}."
+                f"{restating} restate {len(candidate.overlap.shared)} declaration(s) "
+                f"of `{candidate.owner.qualname}` ({', '.join(candidate.shared_names)}); "
+                f"concept score {candidate.confidence:.2f} (uncalibrated) from: "
+                f"{concept}. Move {candidate.move.value}: "
+                + (f"refused: {refusals}." if refusals else "permitted.")
             ),
             candidate.evidence,
             metrics=ClassOverlapMetrics.of(candidate),

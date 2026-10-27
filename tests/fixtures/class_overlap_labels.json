@@ -1,6 +1,6 @@
 {
- "brier": 0.0843,
- "ece": 0.0909,
+ "brier": 0.0581,
+ "ece": 0.0576,
  "verdicts": [
   {
    "repository": "nominal_refactor_advisor",
@@ -19,7 +19,10 @@
     "shared_field",
     "shared_method",
     "shared_method"
-   ]
+   ],
+   "move": "compose_existing",
+   "owner": "ForwardedCarrierExpansion",
+   "move_permitted": true
   },
   {
    "repository": "nominal_refactor_advisor",
@@ -37,7 +40,10 @@
     "shared_field",
     "shared_field",
     "shared_field"
-   ]
+   ],
+   "move": "compose_existing",
+   "owner": "_AttributeCallOwnedParts",
+   "move_permitted": true
   },
   {
    "repository": "nominal_refactor_advisor",
@@ -48,7 +54,10 @@
    "same_concept": false,
    "judgement": "`authority = None` is a row of the resolution family's table; Resolved answers it",
    "verdict": false,
-   "receipts": []
+   "receipts": [],
+   "move": null,
+   "owner": null,
+   "move_permitted": null
   },
   {
    "repository": "nominal_refactor_advisor",
@@ -69,7 +78,10 @@
     "shared_field",
     "shared_field",
     "shared_field"
-   ]
+   ],
+   "move": "compose_existing",
+   "owner": "MemberObservation",
+   "move_permitted": true
   },
   {
    "repository": "nominal_refactor_advisor",
@@ -90,7 +102,10 @@
     "shared_field",
     "shared_field",
     "shared_field"
-   ]
+   ],
+   "move": "compose_existing",
+   "owner": "_ModuleInspection",
+   "move_permitted": true
   },
   {
    "repository": "nominal_refactor_advisor",
@@ -108,7 +123,10 @@
     "shared_field",
     "shared_field",
     "shared_value"
-   ]
+   ],
+   "move": "compose_existing",
+   "owner": "FunctionFamilyEvidenceSurface",
+   "move_permitted": true
   },
   {
    "repository": "nominal_refactor_advisor",
@@ -128,7 +146,10 @@
     "shared_value",
     "shared_value",
     "shared_value"
-   ]
+   ],
+   "move": "compose_existing",
+   "owner": "JsonReportAliasProperty",
+   "move_permitted": false
   },
   {
    "repository": "nominal_refactor_advisor",
@@ -146,7 +167,10 @@
     "shared_field",
     "shared_field",
     "shared_field"
-   ]
+   ],
+   "move": "compose_existing",
+   "owner": "ManualRecordRegistrationShape",
+   "move_permitted": true
   },
   {
    "repository": "nominal_refactor_advisor",
@@ -164,7 +188,10 @@
     "shared_field",
     "shared_field",
     "shared_field"
-   ]
+   ],
+   "move": "compose_existing",
+   "owner": "SemanticDescentModuleFamilySignature",
+   "move_permitted": true
   },
   {
    "repository": "nominal_refactor_advisor",
@@ -182,7 +209,10 @@
     "shared_field",
     "shared_field",
     "shared_field"
-   ]
+   ],
+   "move": "compose_existing",
+   "owner": "AstTargetGeometryKey",
+   "move_permitted": true
   },
   {
    "repository": "nominal_refactor_advisor",
@@ -200,7 +230,10 @@
     "shared_field",
     "shared_field",
     "shared_field"
-   ]
+   ],
+   "move": "compose_existing",
+   "owner": "AstTargetGeometryKey",
+   "move_permitted": true
   },
   {
    "repository": "nominal_refactor_advisor",
@@ -217,7 +250,10 @@
     "same_construction",
     "separate_families",
     "shared_method"
-   ]
+   ],
+   "move": "compose_existing",
+   "owner": "ValueExpressionShapeABC",
+   "move_permitted": true
   },
   {
    "repository": "nominal_refactor_advisor",
@@ -235,7 +271,10 @@
     "shared_field",
     "shared_field",
     "shared_field"
-   ]
+   ],
+   "move": "compose_existing",
+   "owner": "CompactDataclassFieldDeclaration",
+   "move_permitted": false
   },
   {
    "repository": "nominal_refactor_advisor",
@@ -254,7 +293,10 @@
     "separate_families",
     "shared_consumer",
     "shared_method"
-   ]
+   ],
+   "move": "compose_existing",
+   "owner": "JsonReportCachedProperty",
+   "move_permitted": false
   },
   {
    "repository": "nominal_refactor_advisor",
@@ -271,7 +313,10 @@
     "no_shared_consumer",
     "separate_families",
     "shared_method"
-   ]
+   ],
+   "move": "compose_existing",
+   "owner": "NonLexicalValueShape",
+   "move_permitted": false
   },
   {
    "repository": "nominal_refactor_advisor",
@@ -288,7 +333,10 @@
     "no_shared_consumer",
     "separate_families",
     "shared_method"
-   ]
+   ],
+   "move": "compose_existing",
+   "owner": "NonLexicalValueShape",
+   "move_permitted": false
   },
   {
    "repository": "nominal_refactor_advisor",
@@ -299,7 +347,10 @@
    "same_concept": false,
    "judgement": "cache-status flags: equal rows of the status table, not a capability",
    "verdict": false,
-   "receipts": []
+   "receipts": [],
+   "move": null,
+   "owner": null,
+   "move_permitted": null
   },
   {
    "repository": "nominal_refactor_advisor",
@@ -319,7 +370,10 @@
     "shared_field",
     "shared_method",
     "shared_value"
-   ]
+   ],
+   "move": "extract_mixin",
+   "owner": "AnalysisCacheFamilyIdentity",
+   "move_permitted": true
   },
   {
    "repository": "nominal_refactor_advisor",
@@ -330,7 +384,10 @@
    "same_concept": false,
    "judgement": "cache-status flags: equal rows of the status table",
    "verdict": false,
-   "receipts": []
+   "receipts": [],
+   "move": null,
+   "owner": null,
+   "move_permitted": null
   },
   {
    "repository": "nominal_refactor_advisor",
@@ -341,7 +398,10 @@
    "same_concept": false,
    "judgement": "cache-status flags: equal rows of the status table",
    "verdict": false,
-   "receipts": []
+   "receipts": [],
+   "move": null,
+   "owner": null,
+   "move_permitted": null
   },
   {
    "repository": "nominal_refactor_advisor",
@@ -352,7 +412,10 @@
    "same_concept": false,
    "judgement": "cache-status flags: equal rows of the status table",
    "verdict": false,
-   "receipts": []
+   "receipts": [],
+   "move": null,
+   "owner": null,
+   "move_permitted": null
   },
   {
    "repository": "nominal_refactor_advisor",
@@ -374,7 +437,10 @@
     "shared_field",
     "shared_method",
     "shared_value"
-   ]
+   ],
+   "move": "extract_mixin",
+   "owner": "SemanticDescentGraphCacheFamilyIdentity",
+   "move_permitted": true
   },
   {
    "repository": "nominal_refactor_advisor",
@@ -397,7 +463,10 @@
     "shared_field",
     "shared_field",
     "shared_field"
-   ]
+   ],
+   "move": "extract_mixin",
+   "owner": "FunctionSummary",
+   "move_permitted": true
   },
   {
    "repository": "nominal_refactor_advisor",
@@ -409,6 +478,7 @@
    "judgement": "a parsed module is a source module with its AST",
    "verdict": true,
    "receipts": [
+    "positional_construction",
     "same_construction",
     "same_family",
     "shared_consumer",
@@ -416,7 +486,10 @@
     "shared_field",
     "shared_field",
     "shared_value"
-   ]
+   ],
+   "move": "extract_mixin",
+   "owner": "ParsedModule",
+   "move_permitted": false
   },
   {
    "repository": "nominal_refactor_advisor",
@@ -436,7 +509,10 @@
     "shared_field",
     "shared_field",
     "shared_field"
-   ]
+   ],
+   "move": "extract_mixin",
+   "owner": "FunctionSummary",
+   "move_permitted": true
   },
   {
    "repository": "nominal_refactor_advisor",
@@ -459,7 +535,10 @@
     "shared_field",
     "shared_field",
     "shared_method"
-   ]
+   ],
+   "move": "promote_to_shared_base",
+   "owner": "DeclaredCarrierExpansionAuthorityProof",
+   "move_permitted": true
   },
   {
    "repository": "nominal_refactor_advisor",
@@ -479,7 +558,10 @@
     "shared_field",
     "shared_field",
     "shared_field"
-   ]
+   ],
+   "move": "extract_mixin",
+   "owner": "AdapterBindChainAuthority",
+   "move_permitted": true
   },
   {
    "repository": "nominal_refactor_advisor",
@@ -497,7 +579,10 @@
     "shared_field",
     "shared_field",
     "shared_field"
-   ]
+   ],
+   "move": "extract_mixin",
+   "owner": "KeyedRegistryAxisFact",
+   "move_permitted": true
   },
   {
    "repository": "nominal_refactor_advisor",
@@ -509,13 +594,17 @@
    "judgement": "both locate a record in a module",
    "verdict": true,
    "receipts": [
+    "existing_owner",
     "same_construction",
     "same_family",
     "shared_consumer",
     "shared_field",
     "shared_field",
     "shared_field"
-   ]
+   ],
+   "move": "compose_existing",
+   "owner": "ScopedAstEventReference",
+   "move_permitted": true
   },
   {
    "repository": "nominal_refactor_advisor",
@@ -533,7 +622,10 @@
     "shared_field",
     "shared_field",
     "shared_field"
-   ]
+   ],
+   "move": "extract_mixin",
+   "owner": "SemanticAuthorityAffinityPolicy",
+   "move_permitted": true
   },
   {
    "repository": "nominal_refactor_advisor",
@@ -545,13 +637,17 @@
    "judgement": "both are a source site location",
    "verdict": true,
    "receipts": [
+    "existing_owner",
     "no_shared_consumer",
     "same_construction",
     "separate_families",
     "shared_field",
     "shared_field",
     "shared_field"
-   ]
+   ],
+   "move": "compose_existing",
+   "owner": "ForeignFamilySiteShape",
+   "move_permitted": true
   },
   {
    "repository": "nominal_refactor_advisor",
@@ -563,13 +659,19 @@
    "judgement": "the same register-by-class-name configuration",
    "verdict": true,
    "receipts": [
+    "existing_owner",
+    "identity_declared",
+    "identity_declared",
     "no_shared_consumer",
     "same_construction",
     "separate_families",
     "shared_value",
     "shared_value",
     "shared_value"
-   ]
+   ],
+   "move": "compose_existing",
+   "owner": "ClassMethodFamilyCandidate",
+   "move_permitted": false
   },
   {
    "repository": "nominal_refactor_advisor",
@@ -581,13 +683,17 @@
    "judgement": "both locate a statement in a module",
    "verdict": true,
    "receipts": [
+    "existing_owner",
     "no_shared_consumer",
     "same_construction",
     "separate_families",
     "shared_field",
     "shared_field",
     "shared_field"
-   ]
+   ],
+   "move": "compose_existing",
+   "owner": "ScopedAstEventReference",
+   "move_permitted": true
   },
   {
    "repository": "nominal_refactor_advisor",
@@ -599,13 +705,18 @@
    "judgement": "both are a source site location",
    "verdict": true,
    "receipts": [
+    "existing_owner",
+    "identity_used",
     "no_shared_consumer",
     "same_construction",
     "separate_families",
     "shared_field",
     "shared_field",
     "shared_field"
-   ]
+   ],
+   "move": "compose_existing",
+   "owner": "SourceLocation",
+   "move_permitted": false
   },
   {
    "repository": "nominal_refactor_advisor",
@@ -625,7 +736,10 @@
     "shared_field",
     "shared_value",
     "shared_value"
-   ]
+   ],
+   "move": "extract_mixin",
+   "owner": "CachedPathAnalysisRequest",
+   "move_permitted": true
   },
   {
    "repository": "nominal_refactor_advisor",
@@ -644,7 +758,10 @@
     "shared_field",
     "shared_field",
     "shared_value"
-   ]
+   ],
+   "move": "extract_mixin",
+   "owner": "DeclaredClass",
+   "move_permitted": true
   },
   {
    "repository": "nominal_refactor_advisor",
@@ -656,13 +773,17 @@
    "judgement": "both are a definition's location",
    "verdict": true,
    "receipts": [
+    "existing_owner",
     "no_shared_consumer",
     "same_construction",
     "separate_families",
     "shared_field",
     "shared_field",
     "shared_field"
-   ]
+   ],
+   "move": "compose_existing",
+   "owner": "CompactQualifiedSourceLocation",
+   "move_permitted": true
   },
   {
    "repository": "nominal_refactor_advisor",
@@ -674,13 +795,17 @@
    "judgement": "both are a source site location",
    "verdict": true,
    "receipts": [
+    "existing_owner",
     "no_shared_consumer",
     "same_construction",
     "separate_families",
     "shared_field",
     "shared_field",
     "shared_field"
-   ]
+   ],
+   "move": "compose_existing",
+   "owner": "FunctionBodyLinenoSymbolObservationMixin",
+   "move_permitted": true
   },
   {
    "repository": "nominal_refactor_advisor",
@@ -693,12 +818,18 @@
    "verdict": true,
    "receipts": [
     "different_construction",
+    "existing_owner",
+    "identity_declared",
+    "identity_declared",
     "no_shared_consumer",
     "same_family",
     "shared_value",
     "shared_value",
     "shared_value"
-   ]
+   ],
+   "move": "compose_existing",
+   "owner": "ScopedShapeSpec",
+   "move_permitted": false
   },
   {
    "repository": "nominal_refactor_advisor",
@@ -716,7 +847,10 @@
     "shared_field",
     "shared_field",
     "shared_field"
-   ]
+   ],
+   "move": "extract_mixin",
+   "owner": "_EnvironmentBooleanParserSite",
+   "move_permitted": true
   },
   {
    "repository": "nominal_refactor_advisor",
@@ -738,7 +872,10 @@
     "shared_field",
     "shared_field",
     "shared_field"
-   ]
+   ],
+   "move": "extract_mixin",
+   "owner": "EvidenceSummary",
+   "move_permitted": true
   },
   {
    "repository": "nominal_refactor_advisor",
@@ -759,7 +896,10 @@
     "shared_value",
     "shared_value",
     "shared_value"
-   ]
+   ],
+   "move": "extract_mixin",
+   "owner": "BranchCountMetrics",
+   "move_permitted": true
   },
   {
    "repository": "nominal_refactor_advisor",
@@ -778,7 +918,10 @@
     "shared_value",
     "shared_value",
     "shared_value"
-   ]
+   ],
+   "move": "extract_mixin",
+   "owner": "FindingBuildContext",
+   "move_permitted": true
   },
   {
    "repository": "nominal_refactor_advisor",
@@ -790,13 +933,17 @@
    "judgement": "both are a class statement in its module",
    "verdict": true,
    "receipts": [
+    "positional_construction",
     "same_construction",
     "separate_families",
     "shared_consumer",
     "shared_field",
     "shared_field",
     "shared_method"
-   ]
+   ],
+   "move": "extract_mixin",
+   "owner": "EnumDeclaration",
+   "move_permitted": false
   },
   {
    "repository": "nominal_refactor_advisor",
@@ -808,6 +955,8 @@
    "judgement": "the same register-by-class-name configuration",
    "verdict": true,
    "receipts": [
+    "existing_owner",
+    "identity_declared",
     "no_shared_consumer",
     "same_construction",
     "separate_families",
@@ -815,7 +964,10 @@
     "shared_value",
     "shared_value",
     "shared_value"
-   ]
+   ],
+   "move": "compose_existing",
+   "owner": "FunctionEvidenceLocationsCandidate",
+   "move_permitted": false
   },
   {
    "repository": "nominal_refactor_advisor",
@@ -827,13 +979,18 @@
    "judgement": "both are a source site location",
    "verdict": true,
    "receipts": [
+    "existing_owner",
+    "identity_used",
     "no_shared_consumer",
     "same_construction",
     "separate_families",
     "shared_field",
     "shared_field",
     "shared_field"
-   ]
+   ],
+   "move": "compose_existing",
+   "owner": "ForeignFamilySiteShape",
+   "move_permitted": false
   },
   {
    "repository": "nominal_refactor_advisor",
@@ -853,7 +1010,10 @@
     "shared_field",
     "shared_field",
     "shared_value"
-   ]
+   ],
+   "move": "extract_mixin",
+   "owner": "NativeStoreStream",
+   "move_permitted": true
   },
   {
    "repository": "nominal_refactor_advisor",
@@ -865,13 +1025,17 @@
    "judgement": "both are a source site location",
    "verdict": true,
    "receipts": [
+    "existing_owner",
     "no_shared_consumer",
     "same_construction",
     "separate_families",
     "shared_field",
     "shared_field",
     "shared_field"
-   ]
+   ],
+   "move": "compose_existing",
+   "owner": "FunctionBodyLinenoSymbolObservationMixin",
+   "move_permitted": true
   },
   {
    "repository": "nominal_refactor_advisor",
@@ -883,13 +1047,17 @@
    "judgement": "both are a source site location",
    "verdict": true,
    "receipts": [
+    "existing_owner",
     "no_shared_consumer",
     "same_construction",
     "separate_families",
     "shared_field",
     "shared_field",
     "shared_field"
-   ]
+   ],
+   "move": "compose_existing",
+   "owner": "ForeignFamilySiteShape",
+   "move_permitted": true
   },
   {
    "repository": "nominal_refactor_advisor",
@@ -901,6 +1069,7 @@
    "judgement": "both key a definition's location",
    "verdict": true,
    "receipts": [
+    "existing_owner",
     "kept_difference",
     "same_construction",
     "separate_families",
@@ -908,7 +1077,10 @@
     "shared_field",
     "shared_field",
     "shared_field"
-   ]
+   ],
+   "move": "compose_existing",
+   "owner": "CompactQualifiedSourceLocation",
+   "move_permitted": true
   },
   {
    "repository": "nominal_refactor_advisor",
@@ -920,13 +1092,17 @@
    "judgement": "both are a source site location",
    "verdict": true,
    "receipts": [
+    "existing_owner",
     "no_shared_consumer",
     "same_construction",
     "separate_families",
     "shared_field",
     "shared_field",
     "shared_field"
-   ]
+   ],
+   "move": "compose_existing",
+   "owner": "FunctionBodyLinenoSymbolObservationMixin",
+   "move_permitted": true
   },
   {
    "repository": "nominal_refactor_advisor",
@@ -938,13 +1114,18 @@
    "judgement": "both are a source site location",
    "verdict": true,
    "receipts": [
+    "existing_owner",
+    "identity_used",
     "no_shared_consumer",
     "same_construction",
     "separate_families",
     "shared_field",
     "shared_field",
     "shared_field"
-   ]
+   ],
+   "move": "compose_existing",
+   "owner": "SourceLocation",
+   "move_permitted": false
   },
   {
    "repository": "nominal_refactor_advisor",
@@ -956,13 +1137,18 @@
    "judgement": "both are a source site location",
    "verdict": true,
    "receipts": [
+    "existing_owner",
+    "identity_used",
     "no_shared_consumer",
     "same_construction",
     "same_family",
     "shared_field",
     "shared_field",
     "shared_field"
-   ]
+   ],
+   "move": "compose_existing",
+   "owner": "SourceLocation",
+   "move_permitted": false
   },
   {
    "repository": "nominal_refactor_advisor",
@@ -980,7 +1166,10 @@
     "shared_field",
     "shared_field",
     "shared_field"
-   ]
+   ],
+   "move": "extract_mixin",
+   "owner": "FunctionSummary",
+   "move_permitted": true
   },
   {
    "repository": "nominal_refactor_advisor",
@@ -992,13 +1181,18 @@
    "judgement": "both are a source site location",
    "verdict": true,
    "receipts": [
+    "existing_owner",
+    "identity_used",
     "no_shared_consumer",
     "same_construction",
     "separate_families",
     "shared_field",
     "shared_field",
     "shared_field"
-   ]
+   ],
+   "move": "compose_existing",
+   "owner": "SourceLocation",
+   "move_permitted": false
   },
   {
    "repository": "nominal_refactor_advisor",
@@ -1016,7 +1210,10 @@
     "shared_field",
     "shared_field",
     "shared_field"
-   ]
+   ],
+   "move": "extract_mixin",
+   "owner": "MemberObservation",
+   "move_permitted": true
   },
   {
    "repository": "nominal_refactor_advisor",
@@ -1034,7 +1231,10 @@
     "shared_field",
     "shared_field",
     "shared_field"
-   ]
+   ],
+   "move": "extract_mixin",
+   "owner": "MemberObservation",
+   "move_permitted": true
   },
   {
    "repository": "agent_comms",
@@ -1054,7 +1254,10 @@
     "separate_families",
     "shared_field",
     "shared_value"
-   ]
+   ],
+   "move": "compose_existing",
+   "owner": "TextContent",
+   "move_permitted": false
   }
  ]
 }
