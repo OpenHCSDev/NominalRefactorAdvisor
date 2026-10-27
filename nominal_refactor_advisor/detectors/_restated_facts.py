@@ -28,6 +28,7 @@ from ..observation_families import FieldObservationFamily
 from ..observation_shapes import FieldObservation, FieldOriginKind
 from ..patterns import PatternId
 from ..restated_fact_observations import (
+    DeadModuleSiteFamily,
     ExactKeySetSiteFamily,
     ForeignAbsenceSiteFamily,
     LegacyMarkerSiteFamily,
@@ -39,6 +40,7 @@ from ..restated_fact_observations import (
     RestatingSiteFamily,
     RestatingSiteModule,
     StringDispatchSiteFamily,
+    UnreachedModules,
 )
 from ..taxonomy import CapabilityTag, ObservationTag
 from ._base import (
@@ -321,6 +323,10 @@ def _reference_index(projections_by_family: CompactProjectionGroups) -> Referenc
     return ReferenceIndex.from_facts(_reference_facts(projections_by_family))
 
 
+def _unreached_modules(projections_by_family: CompactProjectionGroups) -> UnreachedModules:
+    return UnreachedModules.from_facts(_reference_facts(projections_by_family))
+
+
 class ExactKeySetDetector(JoinedRestatedFactDetector[DeclaredRecords]):
     """A literal key collection compared with, or subtracted from, a mapping's keys."""
 
@@ -453,7 +459,39 @@ class LegacyPathMarkerDetector(
         )
 
 
+class DeadModuleDetector(JoinedRestatedFactDetector[UnreachedModules]):
+    """A scanned module that nothing imports and that is not an entry point."""
+
+    module_projection_families = (DeadModuleSiteFamily, ModuleReferenceFamily)
+    restated = RestatedFact(
+        fact="No scanned module imports or names this module, so whatever it holds is a second copy of what its readers use instead, or nothing.",
+        owner="The owner of its behaviour is the module the scan already imports; the dead module owns nothing.",
+        factoring="Delete the module.",
+    )
+    finding_spec = restated.spec(
+        PatternId.DEAD_MODULE,
+        "A module nothing imports",
+        "the module deleted, or imported by the entry point that needs it",
+        "a scanned module no other scanned module imports or names, that is not __init__ or __main__, is declared by no pyproject entry point, is listed by no package-enumerating loader, and has no main guard",
+        (),
+        (ObservationTag.PARTIAL_VIEW,),
+    )
+
+    compact_shared_group_context_builder = staticmethod(_unreached_modules)
+
+    def admits(self, sites: Sequence[RestatingSite], context: UnreachedModules) -> bool:
+        return sites[0].group in context.module_names
+
+    def describe(self, sites: Sequence[RestatingSite], context: UnreachedModules) -> str:
+        return (
+            f"`{sites[0].group}` ({sites[0].file_path}) is imported by no scanned "
+            "module, named by no string, listed by no module loader, declared by no "
+            "entry point, and has no main guard."
+        )
+
+
 __all__ = (
+    "DeadModuleDetector",
     "ExactKeySetDetector",
     "ForeignAbsenceProbeDetector",
     "LegacyPathMarkerDetector",

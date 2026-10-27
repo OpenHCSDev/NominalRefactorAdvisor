@@ -13,6 +13,7 @@ from nominal_refactor_advisor.codemod import (
     FindingRecipeEvaluator,
 )
 from nominal_refactor_advisor.detectors import (
+    DeadModuleDetector,
     ExactKeySetDetector,
     ForeignAbsenceProbeDetector,
     LegacyPathMarkerDetector,
@@ -27,6 +28,7 @@ DETECTORS = (
     ExactKeySetDetector,
     ForeignAbsenceProbeDetector,
     LegacyPathMarkerDetector,
+    DeadModuleDetector,
 )
 
 
@@ -342,6 +344,64 @@ def test_a_marked_parameter_is_not_widened_to_its_function(tmp_path: Path):
 
 
 # ---- dead modules
+
+
+def _dead(tmp_path: Path, sources: dict[str, str]) -> list[str]:
+    return sorted(
+        finding.evidence[0].symbol
+        for finding in _findings(tmp_path, DeadModuleDetector, sources)
+    )
+
+
+def test_a_module_nothing_imports_is_dead(tmp_path: Path):
+    sources = {
+        "used": "VALUE = 1\n",
+        "user": "import used\n\n\ndef f():\n    return used.VALUE\n",
+        "orphan": "def lonely():\n    return 1\n",
+    }
+    assert _dead(tmp_path, sources) == ["orphan", "user"]
+
+
+def test_imported_named_main_guarded_and_declared_modules_are_reached(tmp_path: Path):
+    (tmp_path / "pyproject.toml").write_text(
+        '[project]\nname = "x"\n\n[project.scripts]\ncli = "pkg.declared:main"\n'
+        '\n[project.entry-points."plugins"]\nextra = "pkg.plugged:load"\n'
+    )
+    package = tmp_path / "pkg"
+    package.mkdir()
+    (package / "__init__.py").write_text("")
+    sources = {
+        "declared": "def main():\n    return 0\n",
+        "plugged": "def load():\n    return 0\n",
+        "guarded": "def main():\n    return 0\n\n\nif __name__ == '__main__':\n    main()\n",
+        "loaded": "VALUE = 1\n",
+        "loader": "import importlib\nMODULE = importlib.import_module('pkg.loaded')\n",
+    }
+    for name, source in sources.items():
+        (package / f"{name}.py").write_text(source)
+    dead = [
+        finding.evidence[0].symbol
+        for finding in analyze_path(tmp_path)
+        if finding.detector_id == DeadModuleDetector.effective_detector_id()
+    ]
+    assert dead == ["pkg.loader"]
+
+
+def test_a_loader_that_lists_a_package_reaches_every_module_in_it(tmp_path: Path):
+    package = tmp_path / "pkg"
+    package.mkdir()
+    (package / "__init__.py").write_text("")
+    (package / "loader.py").write_text(
+        "import pkgutil\n\n\ndef load(path):\n    return list(pkgutil.iter_modules(path))\n"
+    )
+    (package / "verb.py").write_text("VALUE = 1\n")
+    (tmp_path / "outside.py").write_text("VALUE = 1\n")
+    dead = [
+        finding.evidence[0].symbol
+        for finding in analyze_path(tmp_path)
+        if finding.detector_id == DeadModuleDetector.effective_detector_id()
+    ]
+    assert dead == ["outside"]
 
 
 # ---- forwarding facades

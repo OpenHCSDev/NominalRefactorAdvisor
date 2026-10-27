@@ -448,6 +448,15 @@ class PatternId(IntEnum):
         ),
         witness_capabilities=(CapabilityTag.PROVENANCE,),
     )
+    DEAD_MODULE = _pattern(
+        stable_id=35,
+        display_name="Module Nothing Imports",
+        required_relation=(
+            "No scanned module imports or names this module, and it is not an "
+            "entry point declared by the project or by its own main guard."
+        ),
+        witness_capabilities=(CapabilityTag.PROVENANCE,),
+    )
 
     def __new__(
         cls,

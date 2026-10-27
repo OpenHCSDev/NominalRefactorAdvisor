@@ -746,6 +746,76 @@ class ModuleReferenceFamily(ShapeFamily[ModuleReferenceFacts]):
 
 
 @dataclass(frozen=True)
+class ProjectEntryPoints:
+    """Module names a project declares as entry points in its pyproject.toml."""
+
+    module_names: frozenset[str]
+
+    SCRIPT_TABLES = ("scripts", "gui-scripts")
+
+    @classmethod
+    def declared_for(cls, source_paths: Iterable[Path]) -> "ProjectEntryPoints":
+        pyprojects = {
+            pyproject
+            for source_path in source_paths
+            if (pyproject := DeclaredRoot.nearest_pyproject(source_path)) is not None
+        }
+        names: set[str] = set()
+        for pyproject in sorted(pyprojects):
+            project = tomllib.loads(pyproject.read_text()).get("project", {})
+            targets = [
+                target
+                for table in cls.SCRIPT_TABLES
+                for target in project.get(table, {}).values()
+            ]
+            targets += [
+                target
+                for group in project.get("entry-points", {}).values()
+                for target in group.values()
+            ]
+            names.update(target.partition(":")[0].strip() for target in targets)
+        return cls(frozenset(names))
+
+
+@dataclass(frozen=True)
+class UnreachedModules:
+    """Scanned modules that nothing imports, names, lists as a package member, or declares as an entry point."""
+
+    module_names: frozenset[str]
+
+    @classmethod
+    def from_facts(cls, facts: Sequence[ModuleReferenceFacts]) -> "UnreachedModules":
+        entry_points = ProjectEntryPoints.declared_for(
+            Path(module.file_path) for module in facts
+        )
+        reached_by: dict[str, set[str]] = defaultdict(set)
+        for module in facts:
+            for name in (*module.imported, *module.named):
+                reached_by[name].add(module.module_name)
+        # A loader that lists modules reaches those of the packages it can list: its
+        # own, and any a string names. Which one it lists is not decidable here.
+        listable = (
+            {module.package_name for module in facts if module.enumerates_modules}
+            | {name for module in facts for name in module.named}
+            if any(module.enumerates_modules for module in facts)
+            else set()
+        )
+        return cls(
+            frozenset(
+                module.module_name
+                for module in facts
+                if not module.is_package_entry_file
+                and not module.runs_as_script
+                and module.module_name not in entry_points.module_names
+                and not reached_by[module.module_name] - {module.module_name}
+                and not any(
+                    module.module_name.startswith(f"{package}.") for package in listable
+                )
+            )
+        )
+
+
+@dataclass(frozen=True)
 class ReferenceIndex:
     """Where scanned modules use each identifier: first use per module."""
 
@@ -765,3 +835,15 @@ class ReferenceIndex:
         )
 
 
+class DeadModuleSiteFamily(RestatingSiteFamily):
+    """A module's own site, so that a finding can point at the module file."""
+
+    @classmethod
+    def sites(cls, parsed_module: ParsedModule) -> Iterator[RestatingSite]:
+        yield RestatingSite(
+            file_path=parsed_module.file_path,
+            lineno=1,
+            symbol=parsed_module.module_name,
+            group=parsed_module.module_name,
+            detail=(),
+        )
