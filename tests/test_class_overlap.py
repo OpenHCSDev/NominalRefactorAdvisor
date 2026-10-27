@@ -12,7 +12,9 @@ from nominal_refactor_advisor.class_index import (
 )
 from nominal_refactor_advisor.class_overlap import (
     ClassOverlapCandidate,
-    ClassOverlapMove,
+    ComposeExisting,
+    DeleteAndRedirect,
+    PromoteToSharedBase,
     ClassOverlapShape,
     ClassOverlapVerdicts,
     OverlapReceiptKind,
@@ -98,7 +100,7 @@ SURFACE = (
 def test_a_class_restating_another_with_an_extra_base_composes_it():
     (candidate,) = _verdicts(("pkg.surface", SURFACE))
     assert candidate.shape is ClassOverlapShape.DUPLICATE_CLASS
-    assert candidate.move is ClassOverlapMove.COMPOSE_EXISTING
+    assert candidate.move is ComposeExisting
     assert candidate.owner.qualname == "FunctionFamilyEvidenceSurface"
     assert candidate.restating.qualname == "FunctionEvidenceLocationsCandidate"
     assert candidate.probability > 0.5
@@ -134,7 +136,7 @@ def test_identical_bodies_bases_and_construction_delete_the_restating_class():
             "def show(task: Task, job: Job):\n    return task.label(), job.label()\n",
         )
     )
-    assert candidate.move is ClassOverlapMove.DELETE_AND_REDIRECT
+    assert candidate.move is DeleteAndRedirect
     assert OverlapReceiptKind.SHARED_CONSUMER in _kinds(candidate)
 
 
@@ -155,7 +157,7 @@ def test_a_block_two_siblings_alone_share_moves_into_their_base():
         )
     )
     assert candidate.shape is ClassOverlapShape.MISSING_MIXIN
-    assert candidate.move is ClassOverlapMove.PROMOTE_TO_SHARED_BASE
+    assert candidate.move is PromoteToSharedBase
     assert candidate.shared_names == ("edges", "component", "delta", "reason")
     assert OverlapReceiptKind.SAME_FAMILY in _kinds(candidate)
 

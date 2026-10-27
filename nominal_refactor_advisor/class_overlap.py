@@ -34,12 +34,14 @@ import ast
 import math
 from collections import defaultdict
 from collections.abc import Iterable, Mapping, Sequence
+from abc import abstractmethod
 from dataclasses import dataclass
 from enum import StrEnum
 from functools import cached_property
 from typing import Self
 
 from .ast_projection import ExpressionReference
+from .case_root import Case
 from .class_body import (
     ClassBodyDeclaration,
     ClassBodyIndex,
@@ -65,13 +67,67 @@ class ClassOverlapShape(StrEnum):
     MISSING_MIXIN = "missing_mixin"
 
 
-class ClassOverlapMove(StrEnum):
-    """The factoring an overlap calls for."""
+class ClassOverlapMove(Case):
+    """The factoring an overlap calls for, and whose identities it changes."""
 
-    DELETE_AND_REDIRECT = "delete_and_redirect"
-    COMPOSE_EXISTING = "compose_existing"
-    PROMOTE_TO_SHARED_BASE = "promote_to_shared_base"
-    EXTRACT_MIXIN = "extract_mixin"
+    @classmethod
+    @abstractmethod
+    def guarded_classes(
+        cls, owner: CompactIndexedClass, restating: CompactIndexedClass
+    ) -> tuple[CompactIndexedClass, ...]:
+        """The classes whose type identity this move changes."""
+
+        raise NotImplementedError
+
+
+class DeleteAndRedirect(ClassOverlapMove):
+    """Delete the restating class and point its uses at the owner: its identity is gone."""
+
+    value = "delete_and_redirect"
+
+    @classmethod
+    def guarded_classes(
+        cls, owner: CompactIndexedClass, restating: CompactIndexedClass
+    ) -> tuple[CompactIndexedClass, ...]:
+        return (restating, owner)
+
+
+class ComposeExisting(ClassOverlapMove):
+    """The restating class inherits the owner: the owner gains a descendant."""
+
+    value = "compose_existing"
+
+    @classmethod
+    def guarded_classes(
+        cls, owner: CompactIndexedClass, restating: CompactIndexedClass
+    ) -> tuple[CompactIndexedClass, ...]:
+        return (restating, owner)
+
+
+class PromoteToSharedBase(ClassOverlapMove):
+    """The block moves into the base the two alone share: no identity changes."""
+
+    value = "promote_to_shared_base"
+
+    @classmethod
+    def guarded_classes(
+        cls, owner: CompactIndexedClass, restating: CompactIndexedClass
+    ) -> tuple[CompactIndexedClass, ...]:
+        return ()
+
+
+class ExtractMixin(ClassOverlapMove):
+    """Both compose a new mixin nobody tests yet: no identity changes."""
+
+    value = "extract_mixin"
+
+    @classmethod
+    def guarded_classes(
+        cls, owner: CompactIndexedClass, restating: CompactIndexedClass
+    ) -> tuple[CompactIndexedClass, ...]:
+        return ()
+
+
 
 
 class OverlapReceiptKind(StrEnum):
@@ -269,7 +325,7 @@ class ClassOverlapCandidate:
     """One verdict: which class owns the block, which restates it, the move, the receipts."""
 
     shape: ClassOverlapShape
-    move: ClassOverlapMove
+    move: type[ClassOverlapMove]
     owner: CompactIndexedClass
     restating: CompactIndexedClass
     overlap: ClassBodyOverlap
@@ -309,7 +365,7 @@ class ClassOverlapMetrics(FindingMetrics):
     """One verdict as finding metrics: the move, the probability and every receipt."""
 
     shape: ClassOverlapShape
-    move: ClassOverlapMove
+    move: type[ClassOverlapMove]
     owner_symbol: str
     restating_symbol: str
     shared_declaration_names: tuple[str, ...]
@@ -413,7 +469,7 @@ class ClassOverlapVerdicts:
             shape = ClassOverlapShape.DUPLICATE_CLASS
             owner, restating = self._owner_and_restating(overlap)
             move = (
-                ClassOverlapMove.DELETE_AND_REDIRECT
+                DeleteAndRedirect
                 if overlap.first_is_contained
                 and overlap.second_is_contained
                 and owner.base_resolution_is_complete
@@ -421,15 +477,15 @@ class ClassOverlapVerdicts:
                 and set(restating.resolved_base_symbols)
                 <= set(owner.resolved_base_symbols)
                 and _construction(owner) == _construction(restating)
-                else ClassOverlapMove.COMPOSE_EXISTING
+                else ComposeExisting
             )
         elif len(extractable) >= FEW_SHARED_DECLARATIONS:
             shape = ClassOverlapShape.MISSING_MIXIN
             owner, restating = first, second
             move = (
-                ClassOverlapMove.PROMOTE_TO_SHARED_BASE
+                PromoteToSharedBase
                 if self.sole_shared_base(first, second) is not None
-                else ClassOverlapMove.EXTRACT_MIXIN
+                else ExtractMixin
             )
         else:
             return None
@@ -617,23 +673,11 @@ class ClassOverlapVerdicts:
         self,
         owner: CompactIndexedClass,
         restating: CompactIndexedClass,
-        move: ClassOverlapMove,
+        move: type[ClassOverlapMove],
     ) -> tuple[OverlapReceipt, ...]:
-        """Uses that tell either class apart by type.
+        """Uses that tell apart, by type, a class whose identity the move changes."""
 
-        Deleting the restating class loses its identity, and composing makes the
-        owner an ancestor of the restating class, so a type test, class pattern,
-        type key or creation-time registration of either one is a fact the
-        merge would change. Extracting a mixin leaves both identities as they
-        are and adds an ancestor nobody tests yet, so it guards nothing.
-        """
-
-        if move in (
-            ClassOverlapMove.EXTRACT_MIXIN,
-            ClassOverlapMove.PROMOTE_TO_SHARED_BASE,
-        ):
-            return ()
-        guarded = (restating, owner)
+        guarded = move.guarded_classes(owner, restating)
         receipts: list[OverlapReceipt] = []
         for indexed_class in guarded:
             identity_uses = tuple(
@@ -683,6 +727,10 @@ def class_overlap_candidates(
 __all__ = (
     "ClassOverlapCandidate",
     "ClassOverlapMove",
+    "ComposeExisting",
+    "DeleteAndRedirect",
+    "ExtractMixin",
+    "PromoteToSharedBase",
     "ClassOverlapShape",
     "ClassOverlapVerdicts",
     "ClassUseIndex",
