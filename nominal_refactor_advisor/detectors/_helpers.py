@@ -3971,9 +3971,6 @@ def _field_only_frozen_dataclass_candidates(
 
 
 
-def _method_body_fingerprint(method: ast.FunctionDef | ast.AsyncFunctionDef) -> str:
-    body = statements_without_docstring(method.body)
-    return ast.dump(ast.Module(body=body, type_ignores=[]), include_attributes=False)
 
 
 

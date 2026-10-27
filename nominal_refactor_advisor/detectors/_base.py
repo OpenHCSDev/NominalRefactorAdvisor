@@ -84,7 +84,7 @@ from ..semantic_match import (
     single_return_value,
 )
 from ..semantic_description_length import CompressionCertificate
-from ..semantic_algebra import ObjectFamilyShape, DispatchAxisExpression
+from ..semantic_algebra import DispatchAxisExpression
 from ..factorization import ResidueHookNamesCarrier
 from ..semantic_shape_algebra import (
     InjectiveTypeRegistryProof,
@@ -3722,222 +3722,6 @@ def _dataclass_field_names(node: ast.ClassDef) -> tuple[str, ...]:
     return SYNTAX_PROJECTION_AUTHORITY.class_annassign_target_names(node)
 
 
-@lru_cache(maxsize=None)
-def _dataclass_field_signature_items(
-    node: ast.ClassDef,
-) -> tuple[tuple[str, str], ...]:
-    signatures: dict[str, str] = {}
-    for statement in node.body:
-        if not isinstance(statement, ast.AnnAssign) or not isinstance(
-            statement.target, ast.Name
-        ):
-            continue
-        annotation_text = ast.unparse(statement.annotation)
-        if annotation_text.startswith("ClassVar") or annotation_text.startswith(
-            "typing.ClassVar"
-        ):
-            continue
-        value_fingerprint = ""
-        if statement.value is not None:
-            value_fingerprint = ast.dump(statement.value, include_attributes=False)
-        signatures[statement.target.id] = f"{annotation_text}={value_fingerprint}"
-    return tuple(signatures.items())
-
-
-def _dataclass_field_signature_map(node: ast.ClassDef) -> dict[str, str]:
-    return dict(_dataclass_field_signature_items(node))
-
-
-@lru_cache(maxsize=4096)
-def _dataclass_name_tokens(class_name: str) -> frozenset[str]:
-    return frozenset(CLASS_NAME_ALGEBRA.ordered_tokens(class_name))
-
-
-def _dataclass_companion_surface_role(
-    authority_name: str, companion_name: str
-) -> str | None:
-    authority_tokens = _dataclass_name_tokens(authority_name)
-    companion_tokens = _dataclass_name_tokens(companion_name)
-    return (
-        Maybe.of((authority_tokens, companion_tokens))
-        .filter(lambda token_sets: bool(token_sets[0]) and bool(token_sets[1]))
-        .filter(lambda token_sets: token_sets[0] < token_sets[1])
-        .map(lambda token_sets: sorted_tuple(token_sets[1] - token_sets[0]))
-        .filter(bool)
-        .map(lambda role_tokens: "_".join(role_tokens))
-        .unwrap_or_none()
-    )
-
-
-_GENERATED_COMPANION_SURFACE_ROLE_NAMES = frozenset({"lazy"})
-
-
-def _is_generated_companion_surface_role(
-    surface_role_name: str, companion_fields: dict[str, str]
-) -> bool:
-    return (
-        surface_role_name in _GENERATED_COMPANION_SURFACE_ROLE_NAMES
-        or "inherited_fields" in companion_fields
-    )
-
-
-def _may_be_generated_companion_dataclass(node: ast.ClassDef) -> bool:
-    return bool(
-        _GENERATED_COMPANION_SURFACE_ROLE_NAMES & _dataclass_name_tokens(node.name)
-        or "inherited_fields" in _dataclass_field_names(node)
-    )
-
-
-def _manual_companion_dataclass_surface_certificate(
-    *,
-    authority_fields: dict[str, str],
-    companion_fields: dict[str, str],
-    shared_field_names: tuple[str, ...],
-) -> CompressionCertificate:
-    companion_residue = frozenset(companion_fields) - frozenset(shared_field_names)
-    authority_residue = frozenset(authority_fields) - frozenset(shared_field_names)
-    return CompressionCertificate.from_object_family(
-        manual_object_count=len(authority_fields) + len(companion_fields),
-        replacement_shape=ObjectFamilyShape(
-            shared_objects=("schema_authority", "companion_surface_generator")
-        ),
-        semantic_axes=(
-            (field_name, authority_fields[field_name])
-            for field_name in shared_field_names
-        ),
-        residual_object_count=len(companion_residue | authority_residue),
-        independent_source_count=2,
-    )
-
-
-CompanionDataclassSurfaceProjection: TypeAlias = tuple[
-    str,
-    dict[str, str],
-    dict[str, str],
-    tuple[str, ...],
-]
-
-
-def _companion_surface_role_unless_inherited(
-    authority_node: ast.ClassDef, companion_node: ast.ClassDef
-) -> str | None:
-    surface_role_name = _dataclass_companion_surface_role(
-        authority_node.name, companion_node.name
-    )
-    if surface_role_name is None:
-        return None
-    if authority_node.name in CLASS_NODE_AUTHORITY.declared_base_names(companion_node):
-        return None
-    return surface_role_name
-
-
-def _companion_dataclass_field_projection(
-    authority_node: ast.ClassDef, companion_node: ast.ClassDef
-) -> tuple[dict[str, str], dict[str, str], tuple[str, ...]] | None:
-    authority_fields = _dataclass_field_signature_map(authority_node)
-    companion_fields = _dataclass_field_signature_map(companion_node)
-    if not authority_fields or not companion_fields:
-        return None
-    shared_field_names = tuple(
-        (
-            field_name
-            for field_name, annotation_text in authority_fields.items()
-            if companion_fields.get(field_name) == annotation_text
-        )
-    )
-    if frozenset(shared_field_names) != frozenset(authority_fields):
-        return None
-    return authority_fields, companion_fields, shared_field_names
-
-
-def _companion_dataclass_surface_projection(
-    authority_node: ast.ClassDef, companion_node: ast.ClassDef
-) -> CompanionDataclassSurfaceProjection | None:
-    surface_role_name = _companion_surface_role_unless_inherited(
-        authority_node, companion_node
-    )
-    if surface_role_name is None:
-        return None
-    field_projection = _companion_dataclass_field_projection(
-        authority_node, companion_node
-    )
-    if field_projection is None:
-        return None
-    authority_fields, companion_fields, shared_field_names = field_projection
-    if not _is_generated_companion_surface_role(surface_role_name, companion_fields):
-        return None
-    return surface_role_name, authority_fields, companion_fields, shared_field_names
-
-
-def _manual_companion_dataclass_surface_candidate_for_pair(
-    module: ParsedModule, authority_node: ast.ClassDef, companion_node: ast.ClassDef
-) -> ManualCompanionDataclassSurfaceCandidate | None:
-    projection = _companion_dataclass_surface_projection(authority_node, companion_node)
-    if projection is None:
-        return None
-    surface_role_name, authority_fields, companion_fields, shared_field_names = (
-        projection
-    )
-    certificate = _manual_companion_dataclass_surface_certificate(
-        authority_fields=authority_fields,
-        companion_fields=companion_fields,
-        shared_field_names=shared_field_names,
-    )
-    if not certificate.pays_rent:
-        return None
-    return ManualCompanionDataclassSurfaceCandidate(
-        file_path=module.file_path,
-        line=companion_node.lineno,
-        authority_class_name=authority_node.name,
-        companion_class_name=companion_node.name,
-        surface_role_name=surface_role_name,
-        shared_field_names=shared_field_names,
-        companion_only_field_names=sorted_tuple(
-            frozenset(companion_fields) - frozenset(shared_field_names)
-        ),
-        authority_only_field_names=sorted_tuple(
-            frozenset(authority_fields) - frozenset(shared_field_names)
-        ),
-        compression_certificate=certificate,
-        evidence_locations=(
-            SourceLocation(
-                module.file_path, authority_node.lineno, authority_node.name
-            ),
-            SourceLocation(
-                module.file_path, companion_node.lineno, companion_node.name
-            ),
-        ),
-    )
-
-
-def _manual_companion_dataclass_surface_candidates(
-    module: ParsedModule,
-) -> tuple[ManualCompanionDataclassSurfaceCandidate, ...]:
-    dataclass_nodes = tuple(
-        (
-            node
-            for node in module.module.body
-            if isinstance(node, ast.ClassDef) and _is_dataclass_class(node)
-        )
-    )
-    candidates: list[ManualCompanionDataclassSurfaceCandidate] = []
-    for companion_node in dataclass_nodes:
-        if not _may_be_generated_companion_dataclass(companion_node):
-            continue
-        for authority_node in dataclass_nodes:
-            if authority_node is companion_node:
-                continue
-            candidate = _manual_companion_dataclass_surface_candidate_for_pair(
-                module, authority_node, companion_node
-            )
-            if candidate is not None:
-                candidates.append(candidate)
-    return sorted_tuple(
-        candidates,
-        key=lambda item: (item.file_path, item.line, item.companion_class_name),
-    )
-
-
 def _selection_helper_shape(
     function: ast.FunctionDef | ast.AsyncFunctionDef,
 ) -> _SelectionHelperShape | None:
@@ -6352,12 +6136,20 @@ class EvidenceLocationsWitnessCandidate(LineWitnessCandidate):
 
 
 @dataclass(frozen=True)
-class FunctionEvidenceLocationsCandidate(LineWitnessCandidate):
+class FunctionFamilyEvidenceSurface:
     function_names: tuple[str, ...]
     line_numbers: tuple[int, ...]
     evidence_locations: ClassVar[ZippedSourceLocationEvidenceProperty] = (
         ZippedSourceLocationEvidenceProperty("line_numbers", "function_names")
     )
+
+
+@dataclass(frozen=True)
+class FunctionEvidenceLocationsCandidate(
+    FunctionFamilyEvidenceSurface,
+    LineWitnessCandidate,
+):
+    pass
 
 
 @dataclass(frozen=True)
@@ -6728,18 +6520,6 @@ class DerivedWrapperSpecShadowCandidate(EvidenceLocationsWitnessCandidate):
     extra_field_names: tuple[str, ...]
     builder_names: tuple[str, ...]
     witness_name = AliasProperty[str]("derived_family_name")
-
-
-@dataclass(frozen=True)
-class ManualCompanionDataclassSurfaceCandidate(EvidenceLocationsWitnessCandidate):
-    authority_class_name: str
-    companion_class_name: str
-    surface_role_name: str
-    shared_field_names: tuple[str, ...]
-    companion_only_field_names: tuple[str, ...]
-    authority_only_field_names: tuple[str, ...]
-    compression_certificate: CompressionCertificate
-    witness_name = AliasProperty[str]("companion_class_name")
 
 
 class KeyedRecordInfrastructureCandidate(ABC):
@@ -7795,15 +7575,6 @@ class DataclassNamespaceCliMirrorCandidate(ClassLineWitnessCandidate):
     from_namespace_line: int
     argument_spec_file_path: str
     argument_spec_line: int
-
-
-@dataclass(frozen=True)
-class FunctionFamilyEvidenceSurface:
-    function_names: tuple[str, ...]
-    line_numbers: tuple[int, ...]
-    evidence_locations: ClassVar[ZippedSourceLocationEvidenceProperty] = (
-        ZippedSourceLocationEvidenceProperty("line_numbers", "function_names")
-    )
 
 
 @dataclass(frozen=True)

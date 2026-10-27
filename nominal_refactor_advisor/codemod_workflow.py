@@ -871,6 +871,24 @@ class CodemodRefactorUnjustifiedDebtTerminal(DataclassJsonReport):
         )
 
 @dataclass(frozen=True)
+class CodemodRefactorReachingStage(DataclassJsonReport):
+    """One stage on the path to a reported state: the recipes it ran and the
+    findings it removed or added."""
+
+    recipe_ids: tuple[str, ...]
+    finding_delta: CodemodFindingDelta
+
+    @classmethod
+    def of(cls, stage: CodemodRefactorGoalStage) -> CodemodRefactorReachingStage:
+        return cls(
+            recipe_ids=tuple(
+                recipe.recipe_id for recipe in stage.simulation.document.recipes
+            ),
+            finding_delta=stage.finding_delta,
+        )
+
+
+@dataclass(frozen=True)
 class CodemodRefactorTrajectoryDeadEnd(DataclassJsonReport):
     """One fully explored non-goal state with no executable transition."""
 
@@ -891,6 +909,12 @@ class CodemodRefactorTrajectoryDeadEnd(DataclassJsonReport):
     @json_report_property()
     def depth(self) -> int:
         return self.state.depth
+
+    @json_report_property()
+    def reaching_stages(self) -> tuple[CodemodRefactorReachingStage, ...]:
+        """The executed path here, so a finding a stage removed is never silently absent."""
+
+        return tuple(CodemodRefactorReachingStage.of(stage) for stage in self.state.stages)
 
 
 @dataclass(frozen=True)

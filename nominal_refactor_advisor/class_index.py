@@ -17,6 +17,7 @@ from abc import ABC, abstractmethod
 from collections import defaultdict, deque
 from collections.abc import (
     Hashable,
+    Mapping,
     Iterator,
     Sequence,
 )
@@ -70,7 +71,10 @@ from .value_expression import (
     LexicalValueReference,
     MappingKeyResolverABC,
 )
-from .declaration_dependencies import ClassScopeDependency
+from .declaration_dependencies import (
+    ClassScopeDependency,
+    ModuleLexicalDependencyProjection,
+)
 from .descriptor_algebra import AliasProperty
 from .enum_semantics import (
     PYTHON_ENUM_BASE_AUTHORITY,
@@ -486,6 +490,19 @@ class CompactDataclassFieldRole(StrEnum):
             None,
         )
 
+    @property
+    def has_known_field_position(self) -> bool:
+        """Whether this member's place in the dataclass field order is known.
+
+        A KW_ONLY sentinel turns every later field keyword-only, and an
+        unresolved annotation may or may not declare a field.
+        """
+
+        return self not in (
+            CompactDataclassFieldRole.KEYWORD_ONLY_SENTINEL,
+            CompactDataclassFieldRole.UNRESOLVED,
+        )
+
 
 class CompactDataclassFieldDeclaration(NamedTuple):
     """One direct annotated member and its exact dataclass role."""
@@ -652,6 +669,7 @@ class CompactIndexedClass(CompactClassHeader):
     keyed_registry_reverse_lookup_method_names: tuple[str, ...] = ()
     predicate_selected_methods: tuple[tuple[int, str, str, str], ...] = ()
     enum_declaration: PythonEnumDeclarationAuthority | None = None
+    body_declarations: tuple[ClassBodyDeclarationDigest, ...] = ()
 
     @property
     def has_class_creation_hook(self) -> bool:
@@ -1067,6 +1085,7 @@ class CompactModuleClassProjection(
     latent_rosters: tuple[LatentRosterObservation, ...] = ()
     named_projection_surfaces: tuple[CompactNamedProjectionSurface, ...] = ()
     class_methods: tuple[CompactClassMethod, ...] = ()
+    class_references: tuple[CompactClassReference, ...] = ()
 
     def header_core(self) -> CompactModuleClassProjection:
         """Project only the class declarations required by the family index."""
@@ -2065,6 +2084,117 @@ class CompactExactTypeGuard(CompactQualifiedSourceLocation):
             f"isinstance({self.subject_expression}, {self.type_reference_expression})"
         )
         return membership if self.matches_exact_type_when_true else f"not {membership}"
+
+
+class ClassReferenceRole(StrEnum):
+    """How one expression uses a module-level name that may be a class."""
+
+    TYPE_TEST = "type_test"
+    CLASS_PATTERN = "class_pattern"
+    TYPE_KEY = "type_key"
+    CONSTRUCTION = "construction"
+    OTHER = "other"
+
+    @property
+    def distinguishes_identity(self) -> bool:
+        """The use answers differently for two classes even when their bodies agree."""
+
+        return self in (
+            ClassReferenceRole.TYPE_TEST,
+            ClassReferenceRole.CLASS_PATTERN,
+            ClassReferenceRole.TYPE_KEY,
+        )
+
+    @property
+    def binds_fields(self) -> bool:
+        """The read builds the class or matches against its fields."""
+
+        return self in (ClassReferenceRole.CONSTRUCTION, ClassReferenceRole.CLASS_PATTERN)
+
+    def positional_bindings(self, parent: ast.AST | None) -> int:
+        """How many arguments or subpatterns this read binds to fields by position."""
+
+        if self is ClassReferenceRole.CONSTRUCTION and isinstance(parent, ast.Call):
+            return len(parent.args)
+        if self is ClassReferenceRole.CLASS_PATTERN and isinstance(parent, ast.MatchClass):
+            return len(parent.patterns)
+        return 0
+
+    @classmethod
+    def of_reference(
+        cls,
+        node: ast.expr,
+        parent: ast.AST | None,
+        grandparent: ast.AST | None,
+        import_aliases: Mapping[str, str],
+    ) -> ClassReferenceRole:
+        """The role one read of a name plays, from the syntax around it."""
+
+        if isinstance(parent, ast.Call) and parent.func is node:
+            return cls.CONSTRUCTION
+        type_test_operand = (
+            parent.args[1]
+            if isinstance(parent, ast.Call)
+            and (_is_builtin_call(parent, "isinstance") or _is_builtin_call(parent, "issubclass"))
+            and len(parent.args) == 2
+            else None
+        )
+        if type_test_operand is node or (
+            isinstance(parent, ast.Tuple)
+            and isinstance(grandparent, ast.Call)
+            and (
+                _is_builtin_call(grandparent, "isinstance")
+                or _is_builtin_call(grandparent, "issubclass")
+            )
+            and len(grandparent.args) == 2
+            and grandparent.args[1] is parent
+        ):
+            return cls.TYPE_TEST
+        if (
+            isinstance(parent, ast.Compare)
+            and any(isinstance(op, (ast.Is, ast.IsNot, ast.Eq, ast.NotEq)) for op in parent.ops)
+            and any(
+                _is_builtin_call(operand, "type")
+                for operand in (parent.left, *parent.comparators)
+            )
+        ):
+            return cls.TYPE_TEST
+        if isinstance(parent, ast.MatchClass) and parent.cls is node:
+            return cls.CLASS_PATTERN
+        if isinstance(parent, ast.Dict) and any(key is node for key in parent.keys):
+            return cls.TYPE_KEY
+        if isinstance(parent, ast.Subscript) and parent.slice is node:
+            subscripted = ExpressionReference.decoded(parent.value).attribute_chain
+            root = (
+                None
+                if subscripted is None
+                else import_aliases.get(subscripted[0], subscripted[0])
+            )
+            if subscripted is not None and (
+                (subscripted[0] not in import_aliases and hasattr(builtins, subscripted[0]))
+                or (root is not None and root.split(".", 1)[0] in _GENERIC_ALIAS_ROOTS)
+            ):
+                return cls.OTHER
+            return cls.TYPE_KEY
+        return cls.OTHER
+
+
+class CompactClassReference(NamedTuple):
+    """One read of a module-level name by one consumer, and the role it plays.
+
+    `consumer` is the enclosing function or class qualname, or the module
+    itself (empty); `reference_parts` the full name or attribute chain read.
+    For a call, `positional_arguments` is the most positional arguments any
+    call in the consumer passes and `unpacked_arguments` whether one unpacks
+    `*args` or `**kwargs`, which hides how it binds fields.
+    """
+
+    consumer: str
+    reference_parts: tuple[str, ...]
+    role: ClassReferenceRole
+    line: int
+    positional_arguments: int = 0
+    unpacked_arguments: bool = False
 
 
 ClassDeclarationT = TypeVar("ClassDeclarationT", bound=ClassDeclaration)
@@ -3399,6 +3529,352 @@ class ModuleNominalBindingWitness:
     root_name: str
 
 
+class ClassBodyDeclarationKind(StrEnum):
+    """What one direct class-body statement declares."""
+
+    FIELD = "field"
+    VALUE = "value"
+    METHOD = "method"
+
+
+class _ReceiverAliasSubstitution(ast.NodeTransformer):
+    """Substitute one proven local receiver alias in a copied method tree."""
+
+    def __init__(self, alias_name: str, receiver_name: str) -> None:
+        self.alias_name = alias_name
+        self.receiver_name = receiver_name
+
+    def visit_Name(self, node: ast.Name) -> ast.AST:
+        if node.id != self.alias_name:
+            return node
+        if not isinstance(node.ctx, ast.Load):
+            raise ValueError("Receiver alias is rebound after its declaration")
+        return ast.copy_location(ast.Name(id=self.receiver_name, ctx=node.ctx), node)
+
+
+class StarDeferredName(NamedTuple):
+    """A free name a star import may rebind, with the binding it has if none does.
+
+    `unshadowed` is the qualified name the module binds without its star
+    imports (`None` when nothing does); the repository decides which applies.
+    """
+
+    name: str
+    unshadowed: str | None
+
+
+class ClassBodyDeclarationDigest(NamedTuple):
+    """One class-body declaration as the index compares it: no AST, one digest.
+
+    `digest` covers everything resolved inside the module; `deferred` lists the
+    free names only the repository's star-import exposure can resolve, and
+    `unbound` the free names nothing binds, which make it equal to nothing.
+    """
+
+    kind: ClassBodyDeclarationKind
+    name: str
+    line: int
+    digest: str
+    deferred: tuple[StarDeferredName, ...]
+    unbound: tuple[str, ...]
+    assigns_value: bool
+
+
+@dataclass(frozen=True)
+class ClassBodyModuleScope:
+    """What a free name in one class body is bound to.
+
+    `declaration` is the module snapshot where the class statement runs and
+    `final` the module after import. A name bound at the class statement keeps
+    that binding; a name bound only later is read where evaluation is deferred
+    (method bodies, postponed annotations), and Python raises at import for any
+    other read of it, so code that imports reads the final binding. A name the
+    module binds by assignment rather than import or definition is identified by
+    the module that binds it.
+    """
+
+    module_name: str
+    declaration: ModuleNominalBindingSnapshot
+    final: ModuleNominalBindingSnapshot
+    star_blind_declaration: ModuleNominalBindingSnapshot
+    star_blind_final: ModuleNominalBindingSnapshot
+
+    @classmethod
+    def for_lines(
+        cls, parsed_module: ParsedModule, lines: Iterable[int]
+    ) -> dict[int, ClassBodyModuleScope]:
+        """One scope per class line, from two passes over the module's bindings."""
+
+        requested = tuple(dict.fromkeys(lines))
+        authority = ModuleNominalBindingAuthority(parsed_module)
+        exact = authority.snapshots_before((*requested, None))
+        star_blind = authority.snapshots_before(
+            (*requested, None),
+            policy=ModuleNominalBindingSnapshotPolicy.NAMED_IMPORT_PROJECTION,
+        )
+        return {
+            line: cls(
+                parsed_module.module_name,
+                exact[line],
+                exact[None],
+                star_blind[line],
+                star_blind[None],
+            )
+            for line in requested
+        }
+
+    def witness_for(self, name: str) -> ModuleNominalBindingWitness | None:
+        return self._witness_in(name, self.declaration, self.final)
+
+    def deferred_for(self, name: str) -> StarDeferredName | None:
+        """A name a star import hides, with its binding if no star import rebinds it."""
+
+        if not self.final.star_import_ambiguity:
+            return None
+        witness = self._witness_in(
+            name, self.star_blind_declaration, self.star_blind_final
+        )
+        return StarDeferredName(
+            name, None if witness is None else witness.qualified_name
+        )
+
+    def _witness_in(
+        self,
+        name: str,
+        declaration: ModuleNominalBindingSnapshot,
+        final: ModuleNominalBindingSnapshot,
+    ) -> ModuleNominalBindingWitness | None:
+        for snapshot in (declaration, final):
+            if (binding := snapshot.binding_for(name)) is not None:
+                return ModuleNominalBindingWitness(binding.qualified_name, name)
+        if declaration.resolves_unshadowed_builtin(name):
+            return ModuleNominalBindingWitness(f"{builtins.__name__}.{name}", name)
+        if name in declaration.unresolved_bound_names or name in final.unresolved_bound_names:
+            return ModuleNominalBindingWitness(f"{self.module_name}.{name}", name)
+        return None
+
+
+@dataclass(frozen=True)
+class ClassBodyNormalForm:
+    """One class-body declaration as Python evaluates it.
+
+    Two declarations are the same declaration when their kind, name, syntax
+    (positions and a leading docstring dropped, a method's `x: T = self`
+    receiver alias substituted) and the declaration each free name is bound to
+    are equal. A free name bound earlier in the class body is recorded by name,
+    so it is equal only to the same class-scope name; a free name the module
+    snapshot cannot bind leaves the declaration unresolved, and an unresolved
+    declaration equals nothing in the class-body index.
+    """
+
+    kind: ClassBodyDeclarationKind
+    name: str
+    line: int
+    assigns_value: bool
+    syntax: str
+    global_bindings: tuple[ModuleNominalBindingWitness, ...]
+    class_scope_names: tuple[str, ...]
+    deferred_names: tuple[StarDeferredName, ...]
+    unresolved_names: tuple[str, ...]
+
+    @property
+    def is_resolved(self) -> bool:
+        """Every free name is bound inside the module, star imports aside."""
+
+        return not self.unresolved_names and not self.deferred_names
+
+    @cached_property
+    def digest(self) -> str:
+        return hashlib.blake2s(
+            repr(
+                (
+                    self.kind.value,
+                    self.name,
+                    self.syntax,
+                    tuple(
+                        (binding.qualified_name, binding.root_name)
+                        for binding in self.global_bindings
+                    ),
+                    self.class_scope_names,
+                )
+            ).encode("utf-8"),
+            digest_size=16,
+        ).hexdigest()
+
+    def compact(self) -> ClassBodyDeclarationDigest:
+        return ClassBodyDeclarationDigest(
+            self.kind,
+            self.name,
+            self.line,
+            self.digest,
+            self.deferred_names,
+            self.unresolved_names,
+            self.assigns_value,
+        )
+
+    @classmethod
+    def of_class(
+        cls,
+        node: ast.ClassDef,
+        scope: ClassBodyModuleScope,
+    ) -> tuple[ClassBodyNormalForm, ...]:
+        """Every direct declaration of one class body, in source order."""
+
+        class_bound_names = LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(node.body)
+        declarations: list[ClassBodyNormalForm] = []
+        for statement in node.body:
+            if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                declarations.append(cls.of_method(statement, scope, class_bound_names))
+            elif isinstance(statement, (ast.AnnAssign, ast.Assign)):
+                declarations.extend(
+                    cls.of_assignment(statement, scope, class_bound_names)
+                )
+        return tuple(declarations)
+
+    @classmethod
+    def of_method(
+        cls,
+        method: ast.FunctionDef | ast.AsyncFunctionDef,
+        scope: ClassBodyModuleScope,
+        class_bound_names: frozenset[str] = frozenset(),
+    ) -> ClassBodyNormalForm:
+        """A method's header evaluates in the class scope and its body in the module's.
+
+        A free name the class body binds is recorded as a class-scope name and,
+        when the module binds it too, with that binding, so equality holds only
+        when both scopes agree.
+        """
+
+        normalized = cls._normalized_method(method)
+        return cls._of_statement(
+            ClassBodyDeclarationKind.METHOD,
+            method.name,
+            method,
+            normalized,
+            scope,
+            class_bound_names,
+        )
+
+    @classmethod
+    def of_assignment(
+        cls,
+        statement: ast.AnnAssign | ast.Assign,
+        scope: ClassBodyModuleScope,
+        class_bound_names: frozenset[str],
+    ) -> tuple[ClassBodyNormalForm, ...]:
+        if isinstance(statement, ast.AnnAssign):
+            if not isinstance(statement.target, ast.Name):
+                return ()
+            kind = ClassBodyDeclarationKind.FIELD
+            names: tuple[str, ...] = (statement.target.id,)
+        else:
+            kind = ClassBodyDeclarationKind.VALUE
+            names = tuple(
+                target.id for target in statement.targets if isinstance(target, ast.Name)
+            )
+        return tuple(
+            cls._of_statement(
+                kind,
+                name,
+                statement,
+                statement,
+                scope,
+                class_bound_names - {name},
+            )
+            for name in names
+        )
+
+    @classmethod
+    def _of_statement(
+        cls,
+        kind: ClassBodyDeclarationKind,
+        name: str,
+        statement: ast.stmt,
+        normalized: ast.stmt,
+        scope: ClassBodyModuleScope,
+        class_bound_names: frozenset[str],
+    ) -> ClassBodyNormalForm:
+        free_names = sorted(
+            {
+                reference.id
+                for reference in ModuleLexicalDependencyProjection.from_module(
+                    ast.Module(body=[normalized], type_ignores=[])
+                ).external_name_references
+            }
+        )
+        global_bindings: list[ModuleNominalBindingWitness] = []
+        class_scope_names: list[str] = []
+        deferred_names: list[StarDeferredName] = []
+        unresolved_names: list[str] = []
+        for free_name in free_names:
+            if free_name in class_bound_names:
+                class_scope_names.append(free_name)
+                if kind is not ClassBodyDeclarationKind.METHOD:
+                    continue
+            if (witness := scope.witness_for(free_name)) is not None:
+                global_bindings.append(witness)
+            elif free_name in class_bound_names:
+                continue
+            elif (deferred := scope.deferred_for(free_name)) is not None:
+                deferred_names.append(deferred)
+            else:
+                unresolved_names.append(free_name)
+        return cls(
+            kind=kind,
+            name=name,
+            line=statement.lineno,
+            assigns_value=(
+                isinstance(statement, (ast.Assign, ast.AnnAssign))
+                and statement.value is not None
+            ),
+            syntax=ast.dump(normalized, include_attributes=False),
+            global_bindings=tuple(global_bindings),
+            class_scope_names=tuple(class_scope_names),
+            deferred_names=tuple(deferred_names),
+            unresolved_names=tuple(unresolved_names),
+        )
+
+    @classmethod
+    def _normalized_method(
+        cls,
+        method: ast.FunctionDef | ast.AsyncFunctionDef,
+    ) -> ast.FunctionDef | ast.AsyncFunctionDef:
+        normalized = copy.deepcopy(method)
+        normalized.body = _trim_leading_docstring(list(normalized.body)) or [
+            ast.Pass()
+        ]
+        positional = (*normalized.args.posonlyargs, *normalized.args.args)
+        receiver_name = positional[0].arg if positional else None
+        if receiver_name is None or len(normalized.body) != 2:
+            return normalized
+        alias_declaration, remaining_statement = normalized.body
+        if not (
+            isinstance(alias_declaration, ast.AnnAssign)
+            and alias_declaration.simple == 1
+            and isinstance(alias_declaration.target, ast.Name)
+            and isinstance(alias_declaration.value, ast.Name)
+            and alias_declaration.value.id == receiver_name
+            and alias_declaration.target.id != receiver_name
+        ):
+            return normalized
+        alias_name = alias_declaration.target.id
+        alias_references = tuple(
+            node
+            for node in ast.walk(remaining_statement)
+            if isinstance(node, ast.Name) and node.id == alias_name
+        )
+        if not alias_references or any(
+            not isinstance(reference.ctx, ast.Load) for reference in alias_references
+        ):
+            return normalized
+        normalized.body = [
+            _ReceiverAliasSubstitution(alias_name, receiver_name).visit(
+                remaining_statement
+            )
+        ]
+        return ast.fix_missing_locations(normalized)
+
+
 @dataclass(frozen=True)
 class RepositoryModuleBindingProof(
     RepositoryPublicExposureAuthority,
@@ -3949,6 +4425,13 @@ def _compact_indexed_classes(
         tuple(node.lineno for _qualname, node in indexed_class_nodes),
         include_final=False,
     )
+    body_scopes = (
+        ClassBodyModuleScope.for_lines(
+            parsed_module, (node.lineno for _qualname, node in indexed_class_nodes)
+        )
+        if include_body_facets
+        else {}
+    )
     return tuple(
         CompactIndexedClass(
             symbol=f"{parsed_module.module_name}.{qualname}",
@@ -4047,6 +4530,16 @@ def _compact_indexed_classes(
             ),
             predicate_selected_methods=(
                 _compact_predicate_selected_methods(node) if include_body_facets else ()
+            ),
+            body_declarations=(
+                tuple(
+                    declaration.compact()
+                    for declaration in ClassBodyNormalForm.of_class(
+                        node, body_scopes[node.lineno]
+                    )
+                )
+                if include_body_facets
+                else ()
             ),
         )
         for qualname, node in indexed_class_nodes
@@ -4322,6 +4815,7 @@ class CompactModuleClassProjectionFamily(CollectedFamily[CompactModuleClassProje
                     parsed_module
                 ),
                 class_methods=class_methods,
+                class_references=_compact_class_references(parsed_module),
             )
         ]
 
@@ -5612,6 +6106,99 @@ def _compact_autoregister_reference_projection(
                 }
             )
         ),
+    )
+
+
+_GENERIC_ALIAS_ROOTS = frozenset(
+    ("builtins", "typing", "typing_extensions", "collections")
+)
+
+
+def _compact_class_references(
+    parsed_module: ParsedModule,
+) -> tuple[CompactClassReference, ...]:
+    """Every read of a module-level name chain, by consumer and role.
+
+    Only chains rooted at a name the module itself binds are kept, and a root a
+    function rebinds locally is that function's own. The join resolves the
+    chains against the class index; most name no class and are dropped there.
+    """
+
+    syntax_index = module_syntax_index(parsed_module.module)
+    module_bound_names = LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(
+        parsed_module.module.body
+    )
+    import_aliases = module_import_aliases(parsed_module)
+    locals_by_function_index = {
+        function_index: LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(function.body)
+        | LEXICAL_SCOPE_BINDING_AUTHORITY.argument_names(function)
+        for function_index in {
+            index
+            for scope in syntax_index.scopes
+            for index in scope.function_node_indices
+        }
+        if isinstance(
+            function := syntax_index.depth_first_nodes[function_index],
+            (ast.FunctionDef, ast.AsyncFunctionDef),
+        )
+    }
+    nodes = syntax_index.depth_first_nodes
+    parent_indices = syntax_index.parent_indices
+    references: dict[
+        tuple[str, tuple[str, ...], ClassReferenceRole], tuple[int, int, bool]
+    ] = {}
+    for node_type in (ast.Name, ast.Attribute):
+        for node_index in syntax_index.node_indices_by_type.get(node_type, ()):
+            node = nodes[node_index]
+            if not isinstance(getattr(node, "ctx", None), ast.Load):
+                continue
+            parent_index = parent_indices[node_index]
+            parent = nodes[parent_index] if parent_index >= 0 else None
+            if isinstance(parent, ast.Attribute) and parent.value is node:
+                continue
+            parts = ExpressionReference.decoded(node).attribute_chain
+            if parts is None or parts[0] not in module_bound_names:
+                continue
+            scope = syntax_index.scopes[syntax_index.scope_ids[node_index]]
+            if any(
+                parts[0] in locals_by_function_index.get(function_index, ())
+                for function_index in scope.function_node_indices
+            ):
+                continue
+            grandparent_index = parent_indices[parent_index] if parent is not None else -1
+            grandparent = nodes[grandparent_index] if grandparent_index >= 0 else None
+            role = ClassReferenceRole.of_reference(node, parent, grandparent, import_aliases)
+            key = (".".join(scope.names), parts, role)
+            positional, unpacked = (
+                (
+                    len(parent.args),
+                    any(isinstance(argument, ast.Starred) for argument in parent.args)
+                    or any(keyword.arg is None for keyword in parent.keywords),
+                )
+                if role is ClassReferenceRole.CONSTRUCTION and isinstance(parent, ast.Call)
+                else (0, False)
+            )
+            line, seen_positional, seen_unpacked = references.get(
+                key, (node.lineno, 0, False)
+            )
+            references[key] = (
+                min(line, node.lineno),
+                max(seen_positional, positional),
+                seen_unpacked or unpacked,
+            )
+    return tuple(
+        CompactClassReference(consumer, parts, role, *facts)
+        for (consumer, parts, role), facts in sorted(
+            references.items(), key=lambda item: (item[1][0], item[0][0], item[0][1])
+        )
+    )
+
+
+def _is_builtin_call(node: ast.AST | None, name: str) -> bool:
+    return (
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == name
     )
 
 

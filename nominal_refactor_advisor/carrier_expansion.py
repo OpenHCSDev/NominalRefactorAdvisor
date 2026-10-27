@@ -20,7 +20,6 @@ from .carrier_collapse import (
 from .class_index import CompactProductAuthority
 from .product_flow import CompactFlowPosition
 from .product_flow_authority import (
-    CompactCallableComponentAuthorityProof,
     CompactFunctionCallIdentity,
     CompactResolvedFunctionCall,
 )
@@ -237,14 +236,9 @@ class DeclaredCarrierExpansionAuthorityProof(CarrierCollapseAuthorityProof):
     """Fail-closed authority proof for one maximal carrier expansion graph."""
 
     carrier_authority: CompactProductAuthority | None
-    projected_field_names_by_edge: tuple[tuple[str, ...], ...]
     ambiguous_root_call_identities: tuple[CompactFunctionCallIdentity, ...]
-    incompletely_consuming_participant_symbols: tuple[str, ...]
-    conflicting_mapping_symbols: tuple[str, ...]
     competing_carrier_participant_symbols: tuple[str, ...]
     mutated_parameter_symbols: tuple[str, ...]
-    callable_component: CompactCallableComponentAuthorityProof
-    batch_compression_delta: int
 
     @cached_property
     def violations(self) -> tuple[DeclaredCarrierExpansionAuthorityViolation, ...]:
@@ -259,10 +253,6 @@ class DeclaredCarrierExpansionAuthorityProof(CarrierCollapseAuthorityProof):
         return not any(
             violation.is_violated_by(self) for violation in DeclaredCarrierExpansionAuthorityViolation
         )
-
-    @property
-    def rejection_reason(self) -> str:
-        return "; ".join(violation.explanation for violation in self.violations)
 
 
 @dataclass(frozen=True)

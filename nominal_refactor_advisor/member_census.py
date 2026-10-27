@@ -427,15 +427,8 @@ class ModuleCalls:
 
 
 @dataclass(frozen=True)
-class Consumer:
+class Consumer(MemberObservation):
     """A function and everything it names of one family."""
-
-    kind: CensusFamilyKind
-    family: str
-    file_path: str
-    symbol: str
-    subject: str
-    members: frozenset[str]
 
     @property
     def function(self) -> tuple[CensusFamilyKind, str, str, str]:

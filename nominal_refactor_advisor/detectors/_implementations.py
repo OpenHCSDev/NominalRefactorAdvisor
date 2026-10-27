@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from ._carrier_collapse import *
+from ._class_overlap import *
 from ._environment import *
 from ._heuristic_leads import *
 from ._semantic_descent import *

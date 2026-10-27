@@ -128,7 +128,9 @@ class StatementDeletionSource(StatementScopeSource):
                     raise ValueError(
                         "Statement deletion cannot own the preceding source on this line"
                     )
-                start, end = line_start, line_end
+                start, end = self.separator_owned_span(
+                    body, first_index, last_index, line_start, line_end
+                )
             replacements.append(
                 SourceTextSpanReplacement.from_offsets(
                     start_offset=start,
@@ -137,6 +139,39 @@ class StatementDeletionSource(StatementScopeSource):
                 )
             )
         return tuple(replacements)
+
+
+    def separator_owned_span(
+        self,
+        body: list[ast.stmt],
+        first_index: int,
+        last_index: int,
+        start: int,
+        end: int,
+    ) -> tuple[int, int]:
+        """Let a deleted run take one blank separator so two never meet.
+
+        With blank lines on both sides, or none before because the run opens
+        the body, the run takes the ones after it; when it closes the body it
+        takes the ones before it. Comments are never blank, so a separator
+        holding one stays.
+        """
+
+        preceding_start = start
+        if first_index > 0:
+            previous = body[first_index - 1]
+            previous_line_end = self.line_offsets[previous.end_lineno or previous.lineno]
+            if previous_line_end < start and not self.source[previous_line_end:start].strip():
+                preceding_start = previous_line_end
+        if last_index + 1 < len(body):
+            following = self.node_start_line(SourceNodeSpan(body[last_index + 1], Include))
+            following_start = self.line_offsets[following - 1]
+            if (first_index == 0 or preceding_start < start) and (
+                following_start > end and not self.source[end:following_start].strip()
+            ):
+                return start, following_start
+            return start, end
+        return preceding_start, end
 
 
 @dataclass(frozen=True)

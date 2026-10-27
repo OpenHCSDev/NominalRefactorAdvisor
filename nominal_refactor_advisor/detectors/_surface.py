@@ -88,44 +88,6 @@ declare_candidate_rule_detector(
 )
 
 
-declare_candidate_rule_detector(
-    ManualCompanionDataclassSurfaceCandidate,
-    high_confidence_certified_spec(
-        PatternId.AUTHORITATIVE_SCHEMA,
-        "Companion dataclass surface should be generated from the schema authority",
-        "A dataclass whose name is a role refinement of another dataclass and whose fields restate that authority's typed field surface is a manually maintained companion projection. The OpenHCS lazy-config pattern treats the eager schema as the authority and derives the companion surface by inspecting dataclass fields.",
-        "schema-owned companion generator/metaclass that derives fields, defaults, preservation, and materialization from the authoritative dataclass",
-        "companion dataclass manually repeats the authoritative dataclass field surface",
-        (
-            CapabilityTag.AUTHORITATIVE_MAPPING,
-            CapabilityTag.NOMINAL_IDENTITY,
-            CapabilityTag.PROVENANCE,
-        ),
-        (
-            ObservationTag.CLASS_FAMILY,
-            ObservationTag.NORMALIZED_AST,
-            ObservationTag.MANUAL_SYNCHRONIZATION,
-        ),
-    ),
-    summary=lambda candidate: (
-        f"`{candidate.companion_class_name}` is a `{candidate.surface_role_name}` companion of "
-        f"`{candidate.authority_class_name}` and repeats typed fields {candidate.shared_field_names}; "
-        "derive the companion surface from the schema authority instead of redeclaring it."
-    ),
-    evidence=lambda candidate: candidate.evidence_locations,
-    compression_certificate=lambda candidate: candidate.compression_certificate,
-    metrics=lambda candidate: MappingMetrics.from_field_names(
-        mapping_site_count=2,
-        mapping_name=candidate.companion_class_name,
-        field_names=candidate.shared_field_names,
-        source_name=candidate.authority_class_name,
-        identity_field_names=candidate.shared_field_names,
-    ),
-    detector_name="ManualCompanionDataclassSurfaceDetector",
-    candidate_collector=_manual_companion_dataclass_surface_candidates,
-)
-
-
 class FindingAssemblyPipelineDetector(PerModuleIssueDetector):
     finding_spec = high_confidence_spec(
         PatternId.SHARED_ALGORITHM_AUTHORITY,

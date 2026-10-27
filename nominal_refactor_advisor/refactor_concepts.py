@@ -130,6 +130,10 @@ class AutoRegisterMroOrderingConcept(AutoRegisterConcept):
     """Derive registered-family precedence from a declared MRO composition."""
 
 
+class ClassBodyCompositionConcept(ClassFamilyAuthorityConcept):
+    """Declare a restated class body once, in the class that owns it."""
+
+
 class ForeignFamilyRoutingConcept(ClassFamilyAuthorityConcept):
     """Route type tests on foreign classes through one declared family."""
 
