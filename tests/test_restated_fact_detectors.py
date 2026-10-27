@@ -163,7 +163,9 @@ def test_attribute_access_by_literal_name_or_with_default_is_a_finding(tmp_path:
         "    setattr(obj, 'seen', True)\n    delattr(obj, 'seen')\n"
         "    return getattr(obj, KEY, None)\n"
     )
-    (finding,) = _findings(tmp_path, NamedAttributeDetector, {"m": "KEY = 'owner'\n\n\n" + source})
+    (finding,) = _findings(
+        tmp_path, NamedAttributeDetector, {"m": "KEY = 'owner'\n\n\n" + source}
+    )
     assert finding.pattern_id is PatternId.ATTRIBUTE_ACCESS_BY_NAME
     assert _lines([finding]) == [5, 6, 7, 8, 9]
     assert "No codemod operation performs this factoring yet" in finding.summary

@@ -19,7 +19,10 @@ from .source_index import AstTargetNodeKind
 
 
 class LegacyPathErasureFindingRecipeSynthesizer(
-    PrimaryEvidenceActionKeysMixin, FindingRecipeSynthesizer, LegacyPathErasureConcept, ABC
+    PrimaryEvidenceActionKeysMixin,
+    FindingRecipeSynthesizer,
+    LegacyPathErasureConcept,
+    ABC,
 ):
     """Erase the function or class a finding marks, and forbid residual calls to it.
 

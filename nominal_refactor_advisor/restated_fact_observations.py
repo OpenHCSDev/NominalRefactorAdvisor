@@ -108,10 +108,17 @@ def _literal_strings(node: ast.expr) -> tuple[str, ...] | None:
     """The string keys of a literal set, tuple, list or frozenset/set call."""
 
     match node:
-        case ast.Set(elts=elements) | ast.Tuple(elts=elements) | ast.List(elts=elements):
+        case (
+            ast.Set(elts=elements) | ast.Tuple(elts=elements) | ast.List(elts=elements)
+        ):
             return _string_constants(elements)
         case ast.Call(
-            func=ast.Name(id=name), args=[ast.Set(elts=elements) | ast.Tuple(elts=elements) | ast.List(elts=elements)]
+            func=ast.Name(id=name),
+            args=[
+                ast.Set(elts=elements)
+                | ast.Tuple(elts=elements)
+                | ast.List(elts=elements)
+            ],
         ) if name in (BuiltinCallName.SET, BuiltinCallName.FROZENSET):
             return _string_constants(elements)
     return None
@@ -124,23 +131,34 @@ class StringDispatchSiteFamily(RestatingSiteFamily):
     def sites(cls, parsed_module: ParsedModule) -> Iterator[RestatingSite]:
         index = module_syntax_index(parsed_module.module)
         # (function, subject) -> node -> (symbol, literals compared at that node)
-        arms: dict[tuple[int, str], dict[ast.AST, tuple[str, set[str]]]] = defaultdict(dict)
+        arms: dict[tuple[int, str], dict[ast.AST, tuple[str, set[str]]]] = defaultdict(
+            dict
+        )
         for node_index, node in (
             *index.indexed_nodes_of_type(ast.Compare),
             *index.indexed_nodes_of_type(ast.Match),
         ):
-            function = index.scopes[index.scope_ids[node_index]].executable_function_index
+            function = index.scopes[
+                index.scope_ids[node_index]
+            ].executable_function_index
             if function < 0:
                 continue
             symbol = index.lexical_symbol(node_index)
             for subject, literal in cls.arms(node):
-                _symbol, literals = arms[(function, subject)].setdefault(node, (symbol, set()))
+                _symbol, literals = arms[(function, subject)].setdefault(
+                    node, (symbol, set())
+                )
                 literals.add(literal)
         for (_function, subject), nodes in arms.items():
-            if len(set().union(*(literals for _symbol, literals in nodes.values()))) < STRING_DISPATCH_MIN_ARMS:
+            if (
+                len(set().union(*(literals for _symbol, literals in nodes.values())))
+                < STRING_DISPATCH_MIN_ARMS
+            ):
                 continue
             for node, (symbol, literals) in nodes.items():
-                yield cls.site(parsed_module, node, symbol, subject, tuple(sorted(literals)))
+                yield cls.site(
+                    parsed_module, node, symbol, subject, tuple(sorted(literals))
+                )
 
     @classmethod
     def arms(cls, node: ast.AST) -> Iterator[tuple[str, str]]:
@@ -163,9 +181,13 @@ class StringDispatchSiteFamily(RestatingSiteFamily):
                     yield ast.unparse(left), literal
             case ast.Eq() | ast.NotEq(), ast.Constant(value=str() as literal), _:
                 yield ast.unparse(right), literal
-            case ast.In() | ast.NotIn(), _, ast.Set(elts=elements) | ast.Tuple(
-                elts=elements
-            ) | ast.List(elts=elements):
+            case (
+                ast.In() | ast.NotIn(),
+                _,
+                ast.Set(elts=elements)
+                | ast.Tuple(elts=elements)
+                | ast.List(elts=elements),
+            ):
                 for literal in _string_constants(elements) or ():
                     yield ast.unparse(left), literal
 
@@ -184,7 +206,9 @@ def imported_module_names(parsed_module: ParsedModule) -> frozenset[str]:
 
     return frozenset(
         alias.asname or alias.name.partition(".")[0]
-        for _node_index, node in module_syntax_index(parsed_module.module).indexed_nodes_of_type(ast.Import)
+        for _node_index, node in module_syntax_index(
+            parsed_module.module
+        ).indexed_nodes_of_type(ast.Import)
         for alias in node.names
     )
 
@@ -233,7 +257,10 @@ class NamedAttributeSiteFamily(RestatingSiteFamily):
         constants: dict[str, str] = {}
         for statement in parsed_module.module.body:
             match statement:
-                case ast.Assign(targets=[ast.Name(id=name)], value=ast.Constant(value=str() as value)) | ast.AnnAssign(
+                case ast.Assign(
+                    targets=[ast.Name(id=name)],
+                    value=ast.Constant(value=str() as value),
+                ) | ast.AnnAssign(
                     target=ast.Name(id=name), value=ast.Constant(value=str() as value)
                 ):
                     constants[name] = value
@@ -306,7 +333,9 @@ class ExactKeySetSiteFamily(RestatingSiteFamily):
             *index.indexed_nodes_of_type(ast.Call),
             *index.indexed_nodes_of_type(ast.GeneratorExp),
         ):
-            function = index.scopes[index.scope_ids[node_index]].executable_function_index
+            function = index.scopes[
+                index.scope_ids[node_index]
+            ].executable_function_index
             for mapping, keys in cls.restatements(node, keyed[function]):
                 yield cls.site(
                     parsed_module,
@@ -322,16 +351,24 @@ class ExactKeySetSiteFamily(RestatingSiteFamily):
 
         keyed: dict[int, set[str]] = defaultdict(set)
         for node_index, node in index.indexed_nodes_of_type(ast.Subscript):
-            if isinstance(node.slice, ast.Constant) and isinstance(node.slice.value, str):
-                function = index.scopes[index.scope_ids[node_index]].executable_function_index
+            if isinstance(node.slice, ast.Constant) and isinstance(
+                node.slice.value, str
+            ):
+                function = index.scopes[
+                    index.scope_ids[node_index]
+                ].executable_function_index
                 keyed[function].add(ast.unparse(node.value))
         for node_index, node in index.indexed_nodes_of_type(ast.Call):
             match node:
                 case ast.Call(
-                    func=ast.Attribute(value=receiver, attr="get" | "pop" | "setdefault"),
+                    func=ast.Attribute(
+                        value=receiver, attr="get" | "pop" | "setdefault"
+                    ),
                     args=[ast.Constant(value=str()), *_],
                 ):
-                    function = index.scopes[index.scope_ids[node_index]].executable_function_index
+                    function = index.scopes[
+                        index.scope_ids[node_index]
+                    ].executable_function_index
                     keyed[function].add(ast.unparse(receiver))
         return keyed
 
@@ -340,18 +377,36 @@ class ExactKeySetSiteFamily(RestatingSiteFamily):
         cls, node: ast.AST, keyed: set[str]
     ) -> Iterator[tuple[ast.expr, tuple[str, ...]]]:
         match node:
-            case ast.Compare(left=left, ops=[ast.Eq() | ast.NotEq() | ast.Lt() | ast.LtE() | ast.Gt() | ast.GtE()], comparators=[right]):
-                yield from cls.pair(left, right, keyed)
-            case ast.BinOp(left=left, op=ast.Sub() | ast.BitAnd() | ast.BitOr() | ast.BitXor(), right=right):
-                yield from cls.pair(left, right, keyed)
-            case ast.Call(func=ast.Attribute(value=viewed, attr=method), args=[literal]) if (
-                method in _KeyViewSyntax.SET_METHODS
+            case ast.Compare(
+                left=left,
+                ops=[
+                    ast.Eq() | ast.NotEq() | ast.Lt() | ast.LtE() | ast.Gt() | ast.GtE()
+                ],
+                comparators=[right],
             ):
+                yield from cls.pair(left, right, keyed)
+            case ast.BinOp(
+                left=left,
+                op=ast.Sub() | ast.BitAnd() | ast.BitOr() | ast.BitXor(),
+                right=right,
+            ):
+                yield from cls.pair(left, right, keyed)
+            case ast.Call(
+                func=ast.Attribute(value=viewed, attr=method), args=[literal]
+            ) if (method in _KeyViewSyntax.SET_METHODS):
                 yield from cls.pair(viewed, literal, keyed)
             case ast.GeneratorExp(
-                elt=ast.Compare(left=ast.Name(id=key), ops=[ast.In() | ast.NotIn()], comparators=[mapping]),
-                generators=[ast.comprehension(target=ast.Name(id=target), iter=literal)],
-            ) if key == target:
+                elt=ast.Compare(
+                    left=ast.Name(id=key),
+                    ops=[ast.In() | ast.NotIn()],
+                    comparators=[mapping],
+                ),
+                generators=[
+                    ast.comprehension(target=ast.Name(id=target), iter=literal)
+                ],
+            ) if (
+                key == target
+            ):
                 keys = _KeyViewSyntax.literal_keys(literal)
                 if keys is not None and ast.unparse(mapping) in keyed:
                     yield mapping, keys
@@ -395,7 +450,10 @@ class ForeignAbsenceSiteFamily(RestatingSiteFamily):
                 node,
                 index.lexical_symbol(node_index),
                 ast.unparse(receiver),
-                (attribute, "is None" if isinstance(operator, ast.Is) else "is not None"),
+                (
+                    attribute,
+                    "is None" if isinstance(operator, ast.Is) else "is not None",
+                ),
             )
 
     @staticmethod
@@ -415,7 +473,11 @@ class ForeignAbsenceSiteFamily(RestatingSiteFamily):
         method = index.depth_first_nodes[function]
         owner = index.parent_node(function)
         arguments = [*method.args.posonlyargs, *method.args.args]
-        return isinstance(owner, ast.ClassDef) and bool(arguments) and arguments[0].arg == root.id
+        return (
+            isinstance(owner, ast.ClassDef)
+            and bool(arguments)
+            and arguments[0].arg == root.id
+        )
 
 
 class ForwardingFacadeSiteFamily(RestatingSiteFamily):
@@ -434,23 +496,35 @@ class ForwardingFacadeSiteFamily(RestatingSiteFamily):
         index = module_syntax_index(parsed_module.module)
         for node_index, node in index.indexed_nodes_of_type(ast.ClassDef):
             held = cls.held_attributes(node)
-            forwards: dict[str, list[tuple[ast.FunctionDef, str, str]]] = defaultdict(list)
+            forwards: dict[str, list[tuple[ast.FunctionDef, str, str]]] = defaultdict(
+                list
+            )
             for member in node.body:
                 if isinstance(member, ast.FunctionDef):
                     forwarded = cls.forward(member, frozenset(held))
                     if forwarded is not None:
-                        forwards[forwarded[0]].append((member, forwarded[1], forwarded[2]))
+                        forwards[forwarded[0]].append(
+                            (member, forwarded[1], forwarded[2])
+                        )
             outer = index.lexical_symbol(node_index)
             symbol = node.name if outer == "<module>" else f"{outer}.{node.name}"
             for attribute, members in forwards.items():
                 if len(members) < cls.MIN_FORWARDS:
                     continue
                 yield cls.site(
-                    parsed_module, node, symbol, attribute, (cls.CLASS_SITE, held[attribute])
+                    parsed_module,
+                    node,
+                    symbol,
+                    attribute,
+                    (cls.CLASS_SITE, held[attribute]),
                 )
                 for member, kind, target in members:
                     yield cls.site(
-                        parsed_module, member, symbol, attribute, (member.name, kind, target)
+                        parsed_module,
+                        member,
+                        symbol,
+                        attribute,
+                        (member.name, kind, target),
                     )
 
     @classmethod
@@ -459,21 +533,33 @@ class ForwardingFacadeSiteFamily(RestatingSiteFamily):
 
         held: dict[str, str] = {}
         for statement in node.body:
-            if isinstance(statement, ast.AnnAssign) and isinstance(statement.target, ast.Name):
+            if isinstance(statement, ast.AnnAssign) and isinstance(
+                statement.target, ast.Name
+            ):
                 held[statement.target.id] = cls.annotated_class(statement.annotation)
             if isinstance(statement, ast.FunctionDef) and statement.name == "__init__":
                 annotations = {
                     argument.arg: cls.annotated_class(argument.annotation)
-                    for argument in (*statement.args.posonlyargs, *statement.args.args, *statement.args.kwonlyargs)
+                    for argument in (
+                        *statement.args.posonlyargs,
+                        *statement.args.args,
+                        *statement.args.kwonlyargs,
+                    )
                     if argument.annotation is not None
                 }
                 for assigned in statement.body:
                     match assigned:
                         case ast.Assign(
-                            targets=[ast.Attribute(value=ast.Name(id="self"), attr=name)], value=value
+                            targets=[
+                                ast.Attribute(value=ast.Name(id="self"), attr=name)
+                            ],
+                            value=value,
                         ) | ast.AnnAssign(
-                            target=ast.Attribute(value=ast.Name(id="self"), attr=name), value=value
-                        ) if value is not None:
+                            target=ast.Attribute(value=ast.Name(id="self"), attr=name),
+                            value=value,
+                        ) if (
+                            value is not None
+                        ):
                             held.setdefault(name, cls.class_text(value, annotations))
         return held
 
@@ -507,7 +593,10 @@ class ForwardingFacadeSiteFamily(RestatingSiteFamily):
         body = [
             statement
             for statement in member.body
-            if not (isinstance(statement, ast.Expr) and isinstance(statement.value, ast.Constant))
+            if not (
+                isinstance(statement, ast.Expr)
+                and isinstance(statement.value, ast.Constant)
+            )
         ]
         match body:
             case [ast.Return(value=value)] if value is not None:
@@ -517,16 +606,25 @@ class ForwardingFacadeSiteFamily(RestatingSiteFamily):
         decorators = [ast.unparse(decorator) for decorator in member.decorator_list]
         match value, decorators:
             case ast.Attribute(
-                value=ast.Attribute(value=ast.Name(id="self"), attr=attribute), attr=target
-            ), ["property"] if attribute in held:
+                value=ast.Attribute(value=ast.Name(id="self"), attr=attribute),
+                attr=target,
+            ), ["property"] if (
+                attribute in held
+            ):
                 return attribute, "property", f"{attribute}.{target}"
-            case ast.Call(
-                func=ast.Attribute(
-                    value=ast.Attribute(value=ast.Name(id="self"), attr=attribute), attr=target
+            case (
+                ast.Call(
+                    func=ast.Attribute(
+                        value=ast.Attribute(value=ast.Name(id="self"), attr=attribute),
+                        attr=target,
+                    ),
+                    args=arguments,
+                    keywords=keywords,
                 ),
-                args=arguments,
-                keywords=keywords,
-            ), [] if attribute in held and cls.passes_own_parameters(member, arguments, keywords):
+                [],
+            ) if attribute in held and cls.passes_own_parameters(
+                member, arguments, keywords
+            ):
                 return attribute, "method", f"{attribute}.{target}()"
         return None
 
@@ -538,22 +636,33 @@ class ForwardingFacadeSiteFamily(RestatingSiteFamily):
 
         signature = member.args
         own = [*signature.posonlyargs, *signature.args][1:]
-        expected_arguments = [ast.Name(id=argument.arg, ctx=ast.Load()) for argument in own]
+        expected_arguments = [
+            ast.Name(id=argument.arg, ctx=ast.Load()) for argument in own
+        ]
         if signature.vararg is not None:
             expected_arguments.append(
-                ast.Starred(value=ast.Name(id=signature.vararg.arg, ctx=ast.Load()), ctx=ast.Load())
+                ast.Starred(
+                    value=ast.Name(id=signature.vararg.arg, ctx=ast.Load()),
+                    ctx=ast.Load(),
+                )
             )
         expected_keywords = [
-            ast.keyword(arg=argument.arg, value=ast.Name(id=argument.arg, ctx=ast.Load()))
+            ast.keyword(
+                arg=argument.arg, value=ast.Name(id=argument.arg, ctx=ast.Load())
+            )
             for argument in signature.kwonlyargs
         ]
         if signature.kwarg is not None:
             expected_keywords.append(
-                ast.keyword(arg=None, value=ast.Name(id=signature.kwarg.arg, ctx=ast.Load()))
+                ast.keyword(
+                    arg=None, value=ast.Name(id=signature.kwarg.arg, ctx=ast.Load())
+                )
             )
-        return [ast.dump(item) for item in arguments] == [ast.dump(item) for item in expected_arguments] and [
-            ast.dump(item) for item in keywords
-        ] == [ast.dump(item) for item in expected_keywords]
+        return [ast.dump(item) for item in arguments] == [
+            ast.dump(item) for item in expected_arguments
+        ] and [ast.dump(item) for item in keywords] == [
+            ast.dump(item) for item in expected_keywords
+        ]
 
 
 class LegacyWord(StrEnum):
@@ -591,9 +700,9 @@ class LegacyWord(StrEnum):
         """Whether prose says the path is old: one of these as a whole word, or an old-caller phrase."""
 
         lowered = text.lower()
-        return any(
-            word in cls for word in re.findall(r"[a-z]+", lowered)
-        ) or bool(re.search(r"backwards?[ -]compatib", lowered))
+        return any(word in cls for word in re.findall(r"[a-z]+", lowered)) or bool(
+            re.search(r"backwards?[ -]compatib", lowered)
+        )
 
 
 class LegacyMarkerSiteFamily(RestatingSiteFamily):
@@ -627,7 +736,11 @@ class LegacyMarkerSiteFamily(RestatingSiteFamily):
                 if cls.has_replacement(argument, siblings):
                     argument_node = next(
                         candidate
-                        for candidate in (*node.posonlyargs, *node.args, *node.kwonlyargs)
+                        for candidate in (
+                            *node.posonlyargs,
+                            *node.args,
+                            *node.kwonlyargs,
+                        )
                         if candidate.arg == argument
                     )
                     yield cls.site(
@@ -649,14 +762,20 @@ class LegacyMarkerSiteFamily(RestatingSiteFamily):
                         yield cls.site(
                             parsed_module,
                             node,
-                            cls.declared_symbol(index.lexical_symbol(node_index), target),
+                            cls.declared_symbol(
+                                index.lexical_symbol(node_index), target
+                            ),
                             target,
                             ("alias", f"of {replacement}"),
                         )
         for node_index, node in index.indexed_nodes_of_type(ast.alias):
             # An alias renames the old path; a plain import of a marked name is its consumer.
             bound = node.asname or ""
-            if bound and LegacyWord.in_identifier(bound) and not LegacyWord.in_identifier(node.name):
+            if (
+                bound
+                and LegacyWord.in_identifier(bound)
+                and not LegacyWord.in_identifier(node.name)
+            ):
                 yield cls.site(
                     parsed_module,
                     node,
@@ -668,7 +787,13 @@ class LegacyMarkerSiteFamily(RestatingSiteFamily):
             warned = cls.warned_legacy_class(call)
             if warned is not None:
                 symbol = index.lexical_symbol(node_index)
-                yield cls.site(parsed_module, call, symbol, symbol.rpartition(".")[2], ("warning", warned))
+                yield cls.site(
+                    parsed_module,
+                    call,
+                    symbol,
+                    symbol.rpartition(".")[2],
+                    ("warning", warned),
+                )
 
     @classmethod
     def declaration(
@@ -724,7 +849,8 @@ class LegacyMarkerSiteFamily(RestatingSiteFamily):
         if cls.has_replacement(node.name, siblings):
             return "named so, beside its replacement"
         if any(
-            LegacyWord.in_identifier(ast.unparse(decorator)) for decorator in node.decorator_list
+            LegacyWord.in_identifier(ast.unparse(decorator))
+            for decorator in node.decorator_list
         ):
             return "decorated so"
         docstring = ast.get_docstring(node)
@@ -736,7 +862,11 @@ class LegacyMarkerSiteFamily(RestatingSiteFamily):
     @staticmethod
     def declared_names(statement: ast.stmt) -> Iterator[str]:
         match statement:
-            case ast.FunctionDef(name=name) | ast.AsyncFunctionDef(name=name) | ast.ClassDef(name=name):
+            case (
+                ast.FunctionDef(name=name)
+                | ast.AsyncFunctionDef(name=name)
+                | ast.ClassDef(name=name)
+            ):
                 yield name
             case ast.Assign(targets=targets):
                 for target in targets:
@@ -749,7 +879,9 @@ class LegacyMarkerSiteFamily(RestatingSiteFamily):
     def aliased(value: ast.expr) -> str | None:
         """The replacement an assignment aliases, when its value is a plain reference."""
 
-        return ast.unparse(value) if isinstance(value, (ast.Name, ast.Attribute)) else None
+        return (
+            ast.unparse(value) if isinstance(value, (ast.Name, ast.Attribute)) else None
+        )
 
     @staticmethod
     def assigned_names(node: ast.Assign | ast.AnnAssign) -> Iterator[str]:
@@ -769,7 +901,9 @@ class LegacyMarkerSiteFamily(RestatingSiteFamily):
                 return None
         for argument in (*call.args, *(keyword.value for keyword in call.keywords)):
             spelled = ast.unparse(argument)
-            if isinstance(argument, (ast.Name, ast.Attribute)) and LegacyWord.in_identifier(spelled):
+            if isinstance(
+                argument, (ast.Name, ast.Attribute)
+            ) and LegacyWord.in_identifier(spelled):
                 return spelled
         return None
 
@@ -791,7 +925,11 @@ class ModuleReferenceFacts:
     def package_name(self) -> str:
         """The package this module sits in (itself, if it is a package's `__init__`)."""
 
-        return self.module_name if self.is_package_init else self.module_name.rpartition(".")[0]
+        return (
+            self.module_name
+            if self.is_package_init
+            else self.module_name.rpartition(".")[0]
+        )
 
     @property
     def is_package_entry_file(self) -> bool:
@@ -817,7 +955,9 @@ class ModuleReferenceFamily(ShapeFamily[ModuleReferenceFacts]):
         for _node_index, node in index.indexed_nodes_of_type(ast.Import):
             for alias in node.names:
                 parts = alias.name.split(".")
-                imported.update(".".join(parts[: stop + 1]) for stop in range(len(parts)))
+                imported.update(
+                    ".".join(parts[: stop + 1]) for stop in range(len(parts))
+                )
         for _node_index, node in index.indexed_nodes_of_type(ast.ImportFrom):
             base = identity.resolve_import_from_module(
                 imported_module=node.module, level=node.level
@@ -825,10 +965,18 @@ class ModuleReferenceFamily(ShapeFamily[ModuleReferenceFacts]):
             if base is None:
                 continue
             imported.add(base)
-            imported.update(f"{base}.{alias.name}" for alias in node.names if alias.name != "*")
+            imported.update(
+                f"{base}.{alias.name}" for alias in node.names if alias.name != "*"
+            )
         used: list[tuple[str, int]] = [
-            *((node.id, node.lineno) for _i, node in index.indexed_nodes_of_type(ast.Name)),
-            *((node.attr, node.lineno) for _i, node in index.indexed_nodes_of_type(ast.Attribute)),
+            *(
+                (node.id, node.lineno)
+                for _i, node in index.indexed_nodes_of_type(ast.Name)
+            ),
+            *(
+                (node.attr, node.lineno)
+                for _i, node in index.indexed_nodes_of_type(ast.Attribute)
+            ),
             *(
                 (node.arg, node.value.lineno)
                 for _i, node in index.indexed_nodes_of_type(ast.keyword)
@@ -854,7 +1002,8 @@ class ModuleReferenceFamily(ShapeFamily[ModuleReferenceFacts]):
                     if isinstance(node, ast.If)
                 ),
                 enumerates_modules=any(
-                    cls.is_enumerator(call) for _i, call in index.indexed_nodes_of_type(ast.Call)
+                    cls.is_enumerator(call)
+                    for _i, call in index.indexed_nodes_of_type(ast.Call)
                 ),
                 imported=tuple(sorted(imported)),
                 named=tuple(sorted(named)),
@@ -967,7 +1116,9 @@ class ReferenceIndex:
                 uses[name].append((module.file_path, line))
         return cls({name: tuple(found) for name, found in uses.items()})
 
-    def consumers_of(self, name: str, declared_at: tuple[str, int]) -> tuple[tuple[str, int], ...]:
+    def consumers_of(
+        self, name: str, declared_at: tuple[str, int]
+    ) -> tuple[tuple[str, int], ...]:
         return tuple(
             use for use in self.uses_by_name.get(name, ()) if use != declared_at
         )

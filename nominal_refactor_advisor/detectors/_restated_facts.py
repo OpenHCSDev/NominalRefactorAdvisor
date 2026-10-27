@@ -213,7 +213,7 @@ class JoinedRestatedFactDetector(
         config: DetectorConfig,
     ) -> list[RefactorFinding]:
         del config
-        (site_family, *_joined) = type(self).module_projection_families
+        site_family, *_joined = type(self).module_projection_families
         return self.findings_from_sites(
             (
                 site
@@ -257,7 +257,9 @@ class StringKindDispatchDetector(
         self, sites: Sequence[RestatingSite], context: None
     ) -> dict[str, object]:
         arms = tuple(sorted({literal for site in sites for literal in site.detail}))
-        return {"metrics": DispatchCountMetrics.from_literal_family(sites[0].group, arms)}
+        return {
+            "metrics": DispatchCountMetrics.from_literal_family(sites[0].group, arms)
+        }
 
 
 class NamedAttributeDetector(SingleFamilyRestatedFactDetector):
@@ -313,7 +315,9 @@ class DeclaredRecords:
         return cls({fields: tuple(found) for fields, found in owners.items()})
 
 
-def _declared_records(projections_by_family: CompactProjectionGroups) -> DeclaredRecords:
+def _declared_records(
+    projections_by_family: CompactProjectionGroups,
+) -> DeclaredRecords:
     return DeclaredRecords.from_observations(
         cast(Sequence[FieldObservation], projections_by_family[FieldObservationFamily])
     )
@@ -322,14 +326,18 @@ def _declared_records(projections_by_family: CompactProjectionGroups) -> Declare
 def _reference_facts(
     projections_by_family: CompactProjectionGroups,
 ) -> Sequence[ModuleReferenceFacts]:
-    return cast(Sequence[ModuleReferenceFacts], projections_by_family[ModuleReferenceFamily])
+    return cast(
+        Sequence[ModuleReferenceFacts], projections_by_family[ModuleReferenceFamily]
+    )
 
 
 def _reference_index(projections_by_family: CompactProjectionGroups) -> ReferenceIndex:
     return ReferenceIndex.from_facts(_reference_facts(projections_by_family))
 
 
-def _unreached_modules(projections_by_family: CompactProjectionGroups) -> UnreachedModules:
+def _unreached_modules(
+    projections_by_family: CompactProjectionGroups,
+) -> UnreachedModules:
     return UnreachedModules.from_facts(_reference_facts(projections_by_family))
 
 
@@ -371,7 +379,10 @@ class ExactKeySetDetector(JoinedRestatedFactDetector[DeclaredRecords]):
         declared = self.declared(sites, context)
         if not declared:
             return self.restated.owner
-        names = _listed(f"`{location.symbol}` ({location.file_path}:{location.line})" for location in declared)
+        names = _listed(
+            f"`{location.symbol}` ({location.file_path}:{location.line})"
+            for location in declared
+        )
         return f"{names} already declares exactly these fields."
 
     def evidence(
@@ -413,7 +424,8 @@ class ForeignAbsenceProbeDetector(SingleFamilyRestatedFactDetector):
 
 
 class LegacyPathMarkerDetector(
-    JoinedRestatedFactDetector[ReferenceIndex], LegacyPathErasureFindingRecipeSynthesizer
+    JoinedRestatedFactDetector[ReferenceIndex],
+    LegacyPathErasureFindingRecipeSynthesizer,
 ):
     """A declaration, parameter, import alias or warning that says it is the old path."""
 
@@ -492,31 +504,45 @@ class ForwardingFacadeDetector(SingleFamilyRestatedFactDetector):
 
     @staticmethod
     def forwards(sites: Sequence[RestatingSite]) -> list[RestatingSite]:
-        return [site for site in sites if site.detail[0] != ForwardingFacadeSiteFamily.CLASS_SITE]
+        return [
+            site
+            for site in sites
+            if site.detail[0] != ForwardingFacadeSiteFamily.CLASS_SITE
+        ]
 
     def describe(self, sites: Sequence[RestatingSite], context: None) -> str:
         facade = sites[0]
         held_class = facade.detail[1]
         resolved = (
-            f"of class `{held_class}`" if held_class else "of a class neither annotated nor constructed in the facade"
+            f"of class `{held_class}`"
+            if held_class
+            else "of a class neither annotated nor constructed in the facade"
         )
-        forwarded = [f"{site.detail[0]} -> {site.detail[2]}" for site in self.forwards(sites)]
+        forwarded = [
+            f"{site.detail[0]} -> {site.detail[2]}" for site in self.forwards(sites)
+        ]
         return (
             f"`{facade.symbol}` holds `self.{facade.group}` ({resolved}) and forwards "
             f"{len(forwarded)} member(s) to it: {_listed(forwarded)}."
         )
 
-    def evidence(self, sites: Sequence[RestatingSite], context: None) -> tuple[SourceLocation, ...]:
+    def evidence(
+        self, sites: Sequence[RestatingSite], context: None
+    ) -> tuple[SourceLocation, ...]:
         facade, *members = sites
         return (
             facade.location,
             *(
-                SourceLocation(site.file_path, site.lineno, f"{site.symbol}.{site.detail[0]}")
+                SourceLocation(
+                    site.file_path, site.lineno, f"{site.symbol}.{site.detail[0]}"
+                )
                 for site in members
             ),
         )
 
-    def finding_context(self, sites: Sequence[RestatingSite], context: None) -> dict[str, object]:
+    def finding_context(
+        self, sites: Sequence[RestatingSite], context: None
+    ) -> dict[str, object]:
         return {"metrics": ForwardingFacadeMetrics(len(self.forwards(sites)))}
 
 
@@ -543,7 +569,9 @@ class DeadModuleDetector(JoinedRestatedFactDetector[UnreachedModules]):
     def admits(self, sites: Sequence[RestatingSite], context: UnreachedModules) -> bool:
         return sites[0].group in context.module_names
 
-    def describe(self, sites: Sequence[RestatingSite], context: UnreachedModules) -> str:
+    def describe(
+        self, sites: Sequence[RestatingSite], context: UnreachedModules
+    ) -> str:
         return (
             f"`{sites[0].group}` ({sites[0].file_path}) is imported by no scanned "
             "module, named by no string, listed by no module loader, declared by no "
