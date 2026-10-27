@@ -18,16 +18,23 @@ import ast
 import builtins
 import re
 import sys
+from importlib.machinery import PathFinder
 from abc import ABC, abstractmethod
 from collections import Counter, defaultdict
 from collections.abc import Iterable, Iterator, Sequence
 from dataclasses import dataclass, field, replace
-from functools import cached_property
+from functools import cache, cached_property
 from pathlib import Path
 from typing import ClassVar
 
-from .ast_tools import ModuleSyntaxIndex, ParsedModule, module_syntax_index
+from .ast_tools import (
+    ModuleSyntaxIndex,
+    ParsedModule,
+    SourceModule,
+    module_syntax_index,
+)
 from .class_index import module_import_aliases
+from .python_module_identity import PythonModulePathIdentity
 from .quoted_reference import (
     DeclaredInterpreter,
     ModuleReferenceScope,
@@ -97,7 +104,10 @@ class ModuleDeclarations:
     (`ModuleReferenceScope.bound_after`), and `rebound` the names its module
     scope binds more than once; `renamed` the qualified names whose
     `__name__` the module stores (`X.__name__ = ...`,
-    `setattr(X, "__name__", ...)`).
+    `setattr(X, "__name__", ...)`); `imported` each module any of its import
+    statements names, wherever the statement stands, with the names a `from`
+    statement takes from it (none for `import module`), and `last_import` the
+    index of its last top-level import statement (-1 without one).
     """
 
     module_name: str
@@ -108,6 +118,8 @@ class ModuleDeclarations:
     bound_after: tuple[tuple[str, int], ...] = ()
     rebound: tuple[str, ...] = ()
     renamed: tuple[str, ...] = ()
+    imported: tuple[tuple[str, tuple[str, ...]], ...] = ()
+    last_import: int = -1
 
 
 class DeclaredIdentityFamily(ShapeFamily[ModuleDeclarations]):
@@ -158,8 +170,37 @@ class DeclaredIdentityFamily(ShapeFamily[ModuleDeclarations]):
                         }
                     )
                 ),
+                imported=tuple(sorted(set(cls.imported(parsed_module)))),
+                last_import=max(
+                    (
+                        index
+                        for index, statement in enumerate(parsed_module.module.body)
+                        if isinstance(statement, (ast.Import, ast.ImportFrom))
+                    ),
+                    default=-1,
+                ),
             )
         ]
+
+    @staticmethod
+    def imported(
+        parsed_module: ParsedModule,
+    ) -> Iterator[tuple[str, tuple[str, ...]]]:
+        """Each module an import statement names, with the names a `from` takes from it."""
+
+        for node in ast.walk(parsed_module.module):
+            match node:
+                case ast.Import(names=aliases):
+                    for alias in aliases:
+                        yield alias.name, ()
+                case ast.ImportFrom(module=imported, level=level, names=aliases):
+                    module = (
+                        parsed_module.module_path_identity.resolve_import_from_module(
+                            imported_module=imported, level=level
+                        )
+                    )
+                    if module is not None:
+                        yield module, tuple(alias.name for alias in aliases)
 
     NAME = "__name__"
     STAR = "*"
@@ -414,67 +455,197 @@ class QualifiedNames:
 
 
 @dataclass(frozen=True)
+class InstalledModule:
+    """A module outside the scan, read from its installed source and never run.
+
+    The analysing interpreter's import path locates it (`PathFinder`, which
+    executes no package); only a `.py` source is read.
+    """
+
+    @staticmethod
+    def source_path(module_name: str) -> Path | None:
+        """The `.py` file a module name selects: the top package through `PathFinder`, each submodule under its package's directories."""
+
+        top, *rest = module_name.split(".")
+        spec = PathFinder.find_spec(top)
+        if spec is None or spec.origin is None and not spec.submodule_search_locations:
+            return None
+        found = None if spec.origin is None else Path(spec.origin)
+        locations = [
+            Path(location) for location in spec.submodule_search_locations or ()
+        ]
+        for part in rest:
+            found = next(
+                (
+                    candidate
+                    for location in locations
+                    for candidate in (
+                        location / part / "__init__.py",
+                        location / f"{part}.py",
+                    )
+                    if candidate.is_file()
+                ),
+                None,
+            )
+            if found is None:
+                return None
+            locations = [found.parent] if found.name == "__init__.py" else []
+        if found is None or found.suffix != ".py":
+            return None
+        return found
+
+    @staticmethod
+    @cache
+    def declarations(module_name: str) -> ModuleDeclarations | None:
+        path = InstalledModule.source_path(module_name)
+        if path is None:
+            return None
+        source = path.read_text()
+        try:
+            module = ast.parse(source, filename=str(path))
+        except SyntaxError:
+            return None
+        parsed = SourceModule.from_path_identity(
+            PythonModulePathIdentity(
+                path=path,
+                import_name=module_name,
+                is_package_init=path.name == "__init__.py",
+            ),
+            source,
+        ).parsed_module(module)
+        (declared,) = DeclaredIdentityFamily.collect(parsed)
+        return declared
+
+
+@dataclass(frozen=True)
 class ClassNameOwners:
-    """Which qualified names reach a scanned class whose `__name__` is its statement's name.
+    """Which qualified names reach a class whose `__name__` is its statement's name.
 
     `type.__new__` names a class after its statement; a class keeps that name
     unless something renames it: a decorator that returns another object, a
     metaclass or `__init_subclass__` that stores `__name__`, or a store of
     `X.__name__`. A class keeps its name here when nothing in it stores a
-    `__name__`, no scanned module renames it, every decorator is the
+    `__name__`, no module read here renames it, every decorator is the
     standard library's, and every base and metaclass is the standard library's
-    or a scanned class that keeps its name. Anything else, including a class
-    from outside the scan, is not known to keep it.
+    or a class that keeps its name. A base or metaclass from outside the scan is
+    read from its installed source (`InstalledModule`) and judged the same way;
+    one whose source cannot be found is not known to keep its name.
+
+    `modules` are the scanned modules and the installed ones read for them;
+    `scanned` names the scanned ones, the only ones a rewrite may import from.
     """
 
-    classes: dict[str, DeclaredClass]
-    imports: dict[str, dict[str, str]]
-    renamed: frozenset[str]
-    scanned_roots: frozenset[str]
-    bound_after: dict[str, dict[str, int]]
-    from_imports: dict[str, tuple[FromImport, ...]]
+    modules: dict[str, ModuleDeclarations]
+    scanned: frozenset[str]
     STANDARD: ClassVar[frozenset[str]] = frozenset(
         (*sys.stdlib_module_names, builtins.__name__)
     )
     MAX_REEXPORTS: ClassVar[int] = 16
+    MAX_INSTALLED: ClassVar[int] = 64
 
     @classmethod
     def from_modules(cls, modules: Iterable[ModuleDeclarations]) -> ClassNameOwners:
-        classes: dict[str, DeclaredClass] = {}
-        repeated: set[str] = set()
-        imports: dict[str, dict[str, str]] = {}
-        renamed: set[str] = set()
-        bound_after: dict[str, dict[str, int]] = {}
-        from_imports: dict[str, tuple[FromImport, ...]] = {}
-        for module in modules:
-            imports[module.module_name] = dict(module.imports)
-            bound_after[module.module_name] = dict(module.bound_after)
-            from_imports[module.file_path] = module.from_imports
-            renamed.update(module.renamed)
-            for declared in module.classes:
-                if not declared.top_level:
-                    continue
-                qualified = f"{module.module_name}.{declared.name}"
-                if qualified in classes or declared.name in module.rebound:
-                    repeated.add(qualified)
-                classes[qualified] = declared
-        owners = cls(
-            {name: found for name, found in classes.items() if name not in repeated},
-            imports,
-            frozenset(),
-            frozenset(name.partition(".")[0] for name in imports),
-            bound_after,
-            from_imports,
-        )
-        return replace(
-            owners,
-            renamed=frozenset(
-                filter(None, (owners.canonical(name) for name in renamed))
-            ),
+        loaded = {module.module_name: module for module in modules}
+        owners = cls(dict(loaded), frozenset(loaded))
+        tried: set[str] = set()
+        for _round in range(cls.MAX_REEXPORTS):
+            missing = {
+                module
+                for origin in owners.foreign_origins()
+                if (module := owners.missing_module(origin)) is not None
+                and module not in tried
+            }
+            if not missing or len(tried) >= cls.MAX_INSTALLED:
+                break
+            tried |= missing
+            for module_name in missing:
+                found = InstalledModule.declarations(module_name)
+                if found is not None:
+                    loaded[module_name] = found
+            owners = cls(dict(loaded), owners.scanned)
+        return owners
+
+    @cached_property
+    def classes(self) -> dict[str, DeclaredClass]:
+        """Every top-level class bound once in its module, by qualified name."""
+
+        return {
+            f"{module.module_name}.{declared.name}": declared
+            for module in self.modules.values()
+            for declared in module.classes
+            if declared.top_level and declared.name not in module.rebound
+        }
+
+    @cached_property
+    def scanned_classes(self) -> dict[str, tuple[str, ...]]:
+        """The scanned classes of each name, by qualified name."""
+
+        found: dict[str, list[str]] = defaultdict(list)
+        for qualified, declared in self.classes.items():
+            if qualified.rpartition(".")[0] in self.scanned:
+                found[declared.name].append(qualified)
+        return {name: tuple(qualified) for name, qualified in found.items()}
+
+    @cached_property
+    def imports(self) -> dict[str, dict[str, str]]:
+        return {name: dict(module.imports) for name, module in self.modules.items()}
+
+    @cached_property
+    def renamed(self) -> frozenset[str]:
+        return frozenset(
+            filter(
+                None,
+                (
+                    self.canonical(name)
+                    for module in self.modules.values()
+                    for name in module.renamed
+                ),
+            )
         )
 
+    @cached_property
+    def scanned_roots(self) -> frozenset[str]:
+        return frozenset(name.partition(".")[0] for name in self.scanned)
+
+    @cached_property
+    def by_path(self) -> dict[str, ModuleDeclarations]:
+        return {
+            module.file_path: module
+            for name, module in self.modules.items()
+            if name in self.scanned
+        }
+
+    def foreign_origins(self) -> Iterator[str]:
+        """Decorators, bases and metaclasses that resolve to no class read here and are not the standard library's."""
+
+        for declared in self.classes.values():
+            for origin in (*declared.decorators, *declared.origins):
+                if (
+                    origin
+                    and not self.standard(origin)
+                    and self.canonical(origin) is None
+                ):
+                    yield origin
+
+    def missing_module(self, qualified: str) -> str | None:
+        """The first module a qualified name's re-export chain needs that is not read here."""
+
+        for _hop in range(self.MAX_REEXPORTS):
+            if qualified in self.classes:
+                return None
+            module, _dot, name = qualified.rpartition(".")
+            if not module:
+                return None
+            if module not in self.modules:
+                return module
+            reexported = self.imports[module].get(name)
+            if reexported is None:
+                return None
+            qualified = reexported
+        return None
+
     def canonical(self, qualified: str) -> str | None:
-        """The scanned class a qualified name reaches through re-exports, if any."""
+        """The class a qualified name reaches through re-exports, if any."""
 
         for _hop in range(self.MAX_REEXPORTS):
             if qualified in self.classes:
@@ -524,16 +695,18 @@ class ClassNameOwners:
         """A `from` statement of the file that can also import the literal's class, or None.
 
         The statement runs before the statement holding the literal, imports
-        from a scanned module that binds the class once, at top level, before
-        some name the statement already imports: whenever the statement
-        succeeds, the class is bound in that module, so adding it changes no
-        import order and fails nowhere the statement did not.
+        from a module that binds the class once, at top level, before some name
+        the statement already imports: whenever the statement succeeds, the
+        class is bound in that module, so adding it changes no import order and
+        fails nowhere the statement did not.
         """
 
-        for statement in self.from_imports.get(file_path, ()):
+        module = self.by_path.get(file_path)
+        for statement in () if module is None else module.from_imports:
             if statement.index >= holding:
                 continue
-            bound = self.bound_after.get(statement.module, {})
+            source = self.modules.get(statement.module)
+            bound = {} if source is None else dict(source.bound_after)
             line = bound.get(literal)
             if (
                 line is not None
@@ -542,6 +715,65 @@ class ClassNameOwners:
             ):
                 return statement
         return None
+
+    def new_import(self, file_path: str, holding: int, literal: str) -> str | None:
+        """The scanned module a new `from module import Literal` after the file's imports can come from, or None.
+
+        The one scanned class of that name keeps its name, the new statement
+        (placed after the file's last top-level import) runs before the
+        statement holding the literal, and importing the owner cannot reach
+        the file's module or a name of one of its half-run packages
+        (`imports_back`): the import binds the class, or fails only where
+        importing the owner fails anyway.
+        """
+
+        module = self.by_path.get(file_path)
+        owners = self.scanned_classes.get(literal, ())
+        if module is None or len(owners) != 1:
+            return None
+        if module.last_import < 0 or holding <= module.last_import:
+            return None
+        (owner,) = owners
+        owner_module = owner.rpartition(".")[0]
+        if owner_module == module.module_name or not self.keeps_name(owner):
+            return None
+        if self.imports_back(owner_module, module.module_name):
+            return None
+        return owner_module
+
+    def imports_back(self, owner_module: str, module_name: str) -> bool:
+        """Whether importing the owner, while `module_name` runs, can meet a module not yet finished.
+
+        When `module_name` runs, its packages have started already and are
+        never run again, so the walk does not enter them. It follows every
+        other scanned module the owner's imports can run (each named module,
+        its packages, and each name a `from` takes that is a scanned submodule)
+        and answers yes on reaching `module_name`, or a `from` statement taking
+        a name that is no submodule from one of its packages: that half-run
+        package may not have bound the name yet.
+        """
+
+        parts = module_name.split(".")
+        running = frozenset(".".join(parts[:stop]) for stop in range(1, len(parts)))
+        seen: set[str] = set()
+        pending = [owner_module]
+        for current in pending:
+            current_parts = current.split(".")
+            for stop in range(1, len(current_parts) + 1):
+                runs = ".".join(current_parts[:stop])
+                if runs == module_name:
+                    return True
+                if runs in running or runs not in self.scanned or runs in seen:
+                    continue
+                seen.add(runs)
+                for imported, names in self.modules[runs].imported:
+                    submodules = [f"{imported}.{name}" for name in names]
+                    if imported in running and any(
+                        submodule not in self.scanned for submodule in submodules
+                    ):
+                        return True
+                    pending.extend((imported, *submodules))
+        return False
 
 
 class IdentitySpelling(ABC):
@@ -690,7 +922,8 @@ class ClassNameSpelling(IdentitySpelling):
     top-level statement holding the literal. `Name.__name__` can stand there
     when the binding reaches a scanned class that keeps its name, or when a
     `from` statement before it can import such a class
-    (`ClassNameOwners.importable`).
+    (`ClassNameOwners.importable`), or a new `from` statement after the file's
+    imports can (`ClassNameOwners.new_import`).
     """
 
     tag = "class name"
@@ -700,7 +933,11 @@ class ClassNameSpelling(IdentitySpelling):
         binding, holding, literal = detail[-3:]
         owners = identities.class_names
         if (binding and owners.references(binding, literal)) or (
-            holding and owners.importable(file_path, int(holding), literal)
+            holding
+            and (
+                owners.importable(file_path, int(holding), literal)
+                or owners.new_import(file_path, int(holding), literal)
+            )
         ):
             return ReferenceRewrite.ANY_INTERPRETER
         return ReferenceRewrite.NONE
@@ -1274,11 +1511,16 @@ class IdentityPositions:
         }
 
     @cached_property
-    def bound_anywhere(self) -> frozenset[str]:
+    def named_anywhere(self) -> frozenset[str]:
+        """Every name the module binds or reads anywhere."""
+
         return frozenset(
-            bound
+            name
             for node in ast.walk(self.parsed_module.module)
-            for bound in ModuleReferenceScope.bound_names(node)
+            for name in (
+                *ModuleReferenceScope.bound_names(node),
+                *((node.id,) if isinstance(node, ast.Name) else ()),
+            )
         )
 
     @cached_property
@@ -1298,7 +1540,8 @@ class IdentityPositions:
         The first is the qualified name a top-level class statement or import
         binds it to, when that runs before the top-level statement holding the
         literal, so the name is bound whenever the literal is evaluated. The
-        second, when the file binds the name nowhere and it is no builtin, is
+        second, when the file binds and reads the name nowhere and it is no
+        builtin, is
         that holding statement's index: a `from` statement before it could
         import the class. Both are empty otherwise, and in a module with a star
         import, whose bindings no source lists.
@@ -1317,7 +1560,7 @@ class IdentityPositions:
         bound = self.class_bindings.get(literal)
         if bound is not None:
             return (bound[1] if bound[0] < holding else ""), ""
-        if literal in self.bound_anywhere or hasattr(builtins, literal):
+        if literal in self.named_anywhere or hasattr(builtins, literal):
             return "", ""
         return "", str(holding)
 

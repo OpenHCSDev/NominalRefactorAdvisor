@@ -59,8 +59,11 @@ class SpanRewrite:
     node: ast.AST
     replacement_source: str
 
+    def offsets(self, geometry: SourceTextGeometry) -> tuple[int, int]:
+        return geometry.required_node_offsets(self.node)
+
     def replacement(self, geometry: SourceTextGeometry) -> SourceTextSpanReplacement:
-        start_offset, end_offset = geometry.required_node_offsets(self.node)
+        start_offset, end_offset = self.offsets(geometry)
         return SourceTextSpanReplacement.from_offsets(
             start_offset=start_offset,
             end_offset=end_offset,
@@ -112,6 +115,39 @@ class ImportedNamesRewrite(SpanRewrite):
     def extended(self, statement: ast.ImportFrom) -> ast.ImportFrom:
         statement.names = [*statement.names, *(ast.alias(name) for name in self.added)]
         return statement
+
+
+@dataclass(frozen=True)
+class InsertedImportsRewrite(SpanRewrite):
+    """New `from module import a, b` statements written right after `node`, the file's last top-level import."""
+
+    inserted: tuple[ast.ImportFrom, ...]
+
+    @classmethod
+    def of(
+        cls, statement: ast.stmt, imports: dict[str, tuple[str, ...]]
+    ) -> InsertedImportsRewrite:
+        ordered = sorted(imports.items())
+        return cls(
+            statement,
+            "".join(
+                f"\nfrom {module} import {', '.join(names)}"
+                for module, names in ordered
+            ),
+            tuple(
+                ast.ImportFrom(
+                    module=module, names=[ast.alias(name) for name in names], level=0
+                )
+                for module, names in ordered
+            ),
+        )
+
+    def offsets(self, geometry: SourceTextGeometry) -> tuple[int, int]:
+        end = geometry.required_node_offsets(self.node)[1]
+        return end, end
+
+    def expected(self, node: ast.AST) -> ast.AST:
+        return node
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -186,10 +222,7 @@ class DeclarationReferenceOperation(SourceReprovedOperation, ABC):
         rewritten = source
         for start, end, replacement in sorted(
             (
-                (
-                    *geometry.required_node_offsets(rewrite.node),
-                    rewrite.replacement_source,
-                )
+                (*rewrite.offsets(geometry), rewrite.replacement_source)
                 for rewrite in rewrites
             ),
             reverse=True,
@@ -198,25 +231,35 @@ class DeclarationReferenceOperation(SourceReprovedOperation, ABC):
         references = {
             SpanRewrite.span(rewrite.node): rewrite
             for rewrite in rewrites
-            if not isinstance(rewrite, ImportedNamesRewrite)
+            if not isinstance(rewrite, (ImportedNamesRewrite, InsertedImportsRewrite))
         }
         imports = {
             SpanRewrite.span(rewrite.statement): rewrite
             for rewrite in rewrites
             if isinstance(rewrite, ImportedNamesRewrite)
         }
+        insertions = {
+            SpanRewrite.span(rewrite.node): rewrite
+            for rewrite in rewrites
+            if isinstance(rewrite, InsertedImportsRewrite)
+        }
 
         class Substituted(ast.NodeTransformer):
-            def visit(self, node: ast.AST) -> ast.AST:
+            def visit(self, node: ast.AST) -> ast.AST | list[ast.AST]:
                 if isinstance(node, ast.expr):
                     rewrite = references.get(SpanRewrite.span(node))
                     if rewrite is not None:
                         return rewrite.expected(node)
-                if isinstance(node, ast.ImportFrom):
-                    added = imports.get(SpanRewrite.span(node))
-                    if added is not None:
-                        return added.extended(node)
-                return super().visit(node)
+                if not isinstance(node, ast.stmt):
+                    return super().visit(node)
+                added = imports.get(SpanRewrite.span(node))
+                visited = (
+                    added.extended(node)
+                    if isinstance(node, ast.ImportFrom) and added is not None
+                    else super().visit(node)
+                )
+                inserted = insertions.get(SpanRewrite.span(node))
+                return visited if inserted is None else [visited, *inserted.inserted]
 
         expected = ast.dump(Substituted().visit(ast.parse(source)))
         if ast.dump(ast.parse(rewritten)) != expected:
@@ -337,9 +380,10 @@ class ReferenceClassNameOperation(DeclarationReferenceOperation):
     top-level class statement or `from` import that runs first and is shadowed
     nowhere, or the file binds the name nowhere and a `from` statement before
     the literal can also import the class without changing the import order
-    (`ClassNameOwners.importable`): the name is added to that statement. Any
-    other class name stays spelled: a new import statement changes when its
-    module runs, which no source proof here can settle.
+    (`ClassNameOwners.importable`): the name is added to that statement.
+    Otherwise a new `from owner import Name` goes after the file's last
+    top-level import when the owner module cannot import this one back
+    (`ClassNameOwners.new_import`).
     """
 
     position_tags: ClassVar[frozenset[str]] = frozenset((ClassNameSpelling.tag,))
@@ -353,6 +397,7 @@ class ReferenceClassNameOperation(DeclarationReferenceOperation):
         positions = IdentitySpelling.positions()
         found: dict[int, SpanRewrite] = {}
         imported: dict[int, dict[str, None]] = {}
+        created: dict[str, dict[str, None]] = {}
         for node, detail in IdentityPositions(
             context.parsed_module_for_source_path(path)
         ).spellings():
@@ -366,18 +411,33 @@ class ReferenceClassNameOperation(DeclarationReferenceOperation):
                 continue
             binding, holding, literal = detail[-3:]
             found[id(node)] = SpanRewrite(node, f"{literal}.{self.NAME_OF_CLASS}")
-            if not binding:
-                statement = identities.class_names.importable(
-                    path, int(holding), literal
-                )
-                if statement is not None:
-                    imported.setdefault(statement.index, {})[literal] = None
+            if binding:
+                continue
+            owners = identities.class_names
+            statement = owners.importable(path, int(holding), literal)
+            if statement is not None:
+                imported.setdefault(statement.index, {})[literal] = None
+                continue
+            owner = owners.new_import(path, int(holding), literal)
+            if owner is not None:
+                created.setdefault(owner, {})[literal] = None
         source = context.sources_by_file_path[path]
+        last_import = identities.class_names.by_path[path].last_import
         return (
             *found.values(),
             *(
                 ImportedNamesRewrite.of(source, module.body[index], tuple(names))
                 for index, names in sorted(imported.items())
+            ),
+            *(
+                (
+                    InsertedImportsRewrite.of(
+                        module.body[last_import],
+                        {owner: tuple(names) for owner, names in created.items()},
+                    ),
+                )
+                if created
+                else ()
             ),
         )
 

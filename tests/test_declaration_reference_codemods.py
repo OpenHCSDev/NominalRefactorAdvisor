@@ -260,12 +260,22 @@ def test_a_class_name_spelled_as_a_value_becomes_its_name_attribute(tmp_path: Pa
     ]
     (source,) = rewritten.values()
     assert "if node.func == SourceLocation.__name__:" in source
-    assert "frozenset({SourceLocation.__name__, 'WorkerPool', 'LaterClass'})" in source
-    # A decorator from the scan may return another object; a class the file
-    # does not import, or binds only after the statement holding the literal,
-    # stays spelled.
+    assert (
+        "frozenset({SourceLocation.__name__, WorkerPool.__name__, 'LaterClass'})"
+        in source
+    )
+    # WorkerPool is bound after both names the existing statement imports, so
+    # it gets a statement of its own after the file's imports; models imports
+    # nothing back, so that statement cannot meet this module half-initialised.
+    assert (
+        "from pkg.models import Renamed, SourceLocation\n"
+        "from pkg.models import WorkerPool\n" in source
+    )
+    assert "send(WorkerPool.__name__)" in source
+    # A decorator from the scan may return another object, and a class the
+    # file binds only after the statement holding the literal is not bound
+    # when it runs: both stay spelled.
     assert "cls.__name__ == 'Renamed'" in source
-    assert "send('WorkerPool')" in source
     assert "LATER = frozenset({'LaterClass'})" in source
 
 
@@ -317,9 +327,12 @@ def test_a_class_its_from_statement_can_also_import_is_added_to_that_statement(
     (source,) = rewritten.values()
     # SingleFileStore is bound before SqliteStore in its module, so the
     # statement that imports SqliteStore can import it too; MultiFileStore is
-    # bound after, so importing it could fail where the statement did not.
-    assert "    SqliteStore, SingleFileStore,\n" in source
-    assert "(SqliteStore, SingleFileStore.__name__, 'MultiFileStore')" in source
+    # bound after, so it gets a statement of its own after the imports.
+    assert (
+        "    SqliteStore, SingleFileStore,\n)\nfrom pkg.stores import MultiFileStore\n"
+        in source
+    )
+    assert "(SqliteStore, SingleFileStore.__name__, MultiFileStore.__name__)" in source
 
 
 def test_an_unquoted_union_keeps_its_own_text_and_gains_parentheses_only_as_an_operand(
@@ -342,3 +355,78 @@ def test_an_unquoted_union_keeps_its_own_text_and_gains_parentheses_only_as_an_o
     assert "    source: Source | None = None\n" in source
     assert "    pair: tuple[Source | None, int] = (None, 0)\n" in source
     assert "    either: None | (Source | int) = None\n" in source
+
+
+def test_a_new_import_from_a_module_that_imports_this_one_back_is_refused(
+    tmp_path: Path,
+):
+    _write(
+        tmp_path,
+        {
+            "pkg/__init__": "",
+            "pkg/owner": "import pkg.user\n\n\nclass LoopedClass:\n    pass\n",
+            "pkg/user": "import sys\n\n\ndef named():\n    return send('LoopedClass')\n",
+        },
+    )
+    _records, rewritten = _replayed(tmp_path)
+    assert rewritten == {}
+
+
+def test_a_metaclass_outside_the_scan_is_judged_from_its_installed_source(
+    tmp_path: Path, monkeypatch
+):
+    site = tmp_path / "site"
+    site.mkdir()
+    (site / "nra_test_keeping_meta.py").write_text(
+        "from abc import ABCMeta\n\n\nclass Keeping(ABCMeta):\n"
+        "    def __new__(mcs, name, bases, namespace):\n"
+        "        return super().__new__(mcs, name, bases, namespace)\n"
+    )
+    (site / "nra_test_renaming_meta.py").write_text(
+        "class Renaming(type):\n"
+        "    def __new__(mcs, name, bases, namespace):\n"
+        "        namespace['__name__'] = 'Other'\n"
+        "        return super().__new__(mcs, name, bases, namespace)\n"
+    )
+    monkeypatch.syspath_prepend(str(site))
+    root = tmp_path / "scan"
+    _write(
+        root,
+        {
+            "pkg/__init__": "",
+            "pkg/kinds": (
+                "from nra_test_keeping_meta import Keeping\n"
+                "from nra_test_renaming_meta import Renaming\n"
+                "from nra_test_missing_meta import Missing\n\n\n"
+                "class KeptKind(metaclass=Keeping):\n    pass\n\n\n"
+                "class RenamedKind(metaclass=Renaming):\n    pass\n\n\n"
+                "class UnknownKind(metaclass=Missing):\n    pass\n"
+            ),
+            "pkg/use": (
+                "from pkg.kinds import KeptKind, RenamedKind, UnknownKind\n\n\n"
+                "def names():\n"
+                "    return ('KeptKind', 'RenamedKind', 'UnknownKind')\n"
+            ),
+        },
+    )
+    _records, rewritten = _replayed(root)
+    (source,) = rewritten.values()
+    assert "return (KeptKind.__name__, 'RenamedKind', 'UnknownKind')" in source
+
+
+def test_a_new_import_may_take_submodules_from_the_running_package(tmp_path: Path):
+    # `from . import helper` in the owner names a submodule of the package the
+    # user is running under, not a name that package may not have bound yet.
+    _write(
+        tmp_path,
+        {
+            "pkg/__init__": "",
+            "pkg/helper": "X = 1\n",
+            "pkg/owner": "from . import helper\n\n\nclass NamedOwner:\n    pass\n",
+            "pkg/user": "import sys\n\n\ndef named():\n    return send('NamedOwner')\n",
+        },
+    )
+    _records, rewritten = _replayed(tmp_path)
+    (source,) = rewritten.values()
+    assert "import sys\nfrom pkg.owner import NamedOwner\n" in source
+    assert "send(NamedOwner.__name__)" in source
