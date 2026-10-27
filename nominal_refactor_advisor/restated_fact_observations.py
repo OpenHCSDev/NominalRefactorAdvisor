@@ -684,23 +684,30 @@ class LegacyWord(StrEnum):
         ]
 
     @classmethod
+    def spellings(cls) -> frozenset[str]:
+        """The member values: a word is one of them by value, which Python 3.11 cannot test
+        with ``str in EnumType``."""
+
+        return frozenset(member.value for member in cls)
+
+    @classmethod
     def in_identifier(cls, identifier: str) -> bool:
         """Whether a snake_case or CamelCase identifier has one of these as a word."""
 
-        return any(word in cls for word in cls.words(identifier))
+        return any(word in cls.spellings() for word in cls.words(identifier))
 
     @classmethod
     def stem(cls, identifier: str) -> str:
         """The identifier without these words: what the old path is the old form of."""
 
-        return "".join(word for word in cls.words(identifier) if word not in cls)
+        return "".join(word for word in cls.words(identifier) if word not in cls.spellings())
 
     @classmethod
     def in_prose(cls, text: str) -> bool:
         """Whether prose says the path is old: one of these as a whole word, or an old-caller phrase."""
 
         lowered = text.lower()
-        return any(word in cls for word in re.findall(r"[a-z]+", lowered)) or bool(
+        return any(word in cls.spellings() for word in re.findall(r"[a-z]+", lowered)) or bool(
             re.search(r"backwards?[ -]compatib", lowered)
         )
 
