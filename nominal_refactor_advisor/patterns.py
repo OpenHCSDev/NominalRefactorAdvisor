@@ -467,6 +467,20 @@ class PatternId(IntEnum):
         ),
         witness_capabilities=(CapabilityTag.PROVENANCE,),
     )
+    RESTATED_IDENTITY = _pattern(
+        stable_id=37,
+        display_name="Restated Identity",
+        required_relation=(
+            "A string literal equals the name of a declared class, the dotted name "
+            "of a scanned module, or a family member's distinct spelling, in a "
+            "position that types, compares, passes, returns or imports by it, so "
+            "the site holds a second copy of that declaration's identity."
+        ),
+        witness_capabilities=(
+            CapabilityTag.NOMINAL_IDENTITY,
+            CapabilityTag.PROVENANCE,
+        ),
+    )
 
     def __new__(
         cls,

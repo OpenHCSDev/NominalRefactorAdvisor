@@ -8,6 +8,7 @@ from ._heuristic_leads import *
 from ._semantic_descent import *
 from ._record_checks import *
 from ._restated_facts import *
+from ._restated_identity import *
 from ._systemic import *
 from ._structural import *
 from ._runtime import *
