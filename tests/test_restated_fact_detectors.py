@@ -65,8 +65,8 @@ def test_every_finding_states_fact_and_owner_and_is_certified(detector):
 
 @pytest.mark.parametrize("detector", DETECTORS)
 def test_a_recipe_exists_exactly_when_an_operation_is_declared(detector):
-    operation = detector.restated.operation
-    assert issubclass(detector, FindingRecipeEvaluator) is (operation is not None)
+    operations = detector.restated.operations
+    assert issubclass(detector, FindingRecipeEvaluator) is bool(operations)
 
 
 def test_new_patterns_continue_the_stable_sequence():
@@ -556,7 +556,7 @@ def test_a_quoted_class_name_and_a_passed_class_name_restate_the_class(tmp_path:
     assert "first spells class `TurnItem` 2 time(s)" in first.summary
     assert "Declared at `TurnItem` (" in first.summary and "m.py:1)" in first.summary
     assert "declared spells class `TurnItem` 1 time(s)" in declared.summary
-    assert "No codemod operation" in first.summary
+    assert "UnquoteResolvedTypeNamesOperation" in first.summary
 
 
 def test_a_compared_family_spelling_restates_the_member(tmp_path: Path):

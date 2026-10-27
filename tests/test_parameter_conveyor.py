@@ -300,7 +300,7 @@ def test_proven_finding_compiles_to_an_authority_keyed_atomic_rewrite() -> None:
     rewritten_source = simulation.rewritten_sources[module.file_path]
     assert rewritten_source == _base_source().replace(
         "def _build(left, right):\n    return left, right\n",
-        "def _build(*, cache_key: '_CacheKey'):\n"
+        "def _build(*, cache_key: _CacheKey):\n"
         "    return cache_key.left, cache_key.right\n",
     ).replace(
         "    return _build(left, right)\n",
@@ -402,7 +402,7 @@ def test_parameter_conveyor_goal_runner_proves_one_terminal_replay(
         _base_source()
         .replace(
             "def _build(left, right):\n    return left, right\n",
-            "def _build(*, cache_key: '_CacheKey'):\n"
+            "def _build(*, cache_key: _CacheKey):\n"
             "    return cache_key.left, cache_key.right\n",
         )
         .replace(
@@ -475,7 +475,7 @@ def test_parameter_conveyor_cli_proves_exports_and_applies_the_goal(
     assert application_payload["applied"] is True
     assert application_payload["applied_rewrite_count"] == 2
     rewritten_source = source_path.read_text(encoding="utf-8")
-    assert "def _build(*, cache_key: '_CacheKey'):" in rewritten_source
+    assert "def _build(*, cache_key: _CacheKey):" in rewritten_source
     assert "return _build(cache_key=key)" in rewritten_source
     compile(rewritten_source, source_path.as_posix(), "exec")
 
@@ -557,9 +557,9 @@ def test_parameter_conveyor_rewrite_collapses_a_multistep_chain() -> None:
     )
     rewritten_source = simulation.rewritten_sources[module.file_path]
 
-    assert "def _second(*, cache_key: '_CacheKey'):" in rewritten_source
+    assert "def _second(*, cache_key: _CacheKey):" in rewritten_source
     assert "return cache_key.left, cache_key.right" in rewritten_source
-    assert "def _first(*, cache_key: '_CacheKey'):" in rewritten_source
+    assert "def _first(*, cache_key: _CacheKey):" in rewritten_source
     assert "first_alias = cache_key.left" in rewritten_source
     assert "second_alias = cache_key.right" in rewritten_source
     assert "return _second(cache_key=cache_key)" in rewritten_source
@@ -629,7 +629,7 @@ def test_parameter_conveyor_rewrite_preserves_a_private_method_receiver() -> Non
     )
     rewritten_source = simulation.rewritten_sources[module.file_path]
 
-    assert "def _build(self, *, cache_key: '_CacheKey'):" in rewritten_source
+    assert "def _build(self, *, cache_key: _CacheKey):" in rewritten_source
     assert "return self._build(cache_key=key)" in rewritten_source
 
 
@@ -668,7 +668,7 @@ def test_parameter_conveyor_rewrite_preserves_cross_module_identity() -> None:
 
     assert tuple(simulation.rewritten_sources) == (worker_module.file_path,)
     assert (
-        "def _build(*, cache_key: '_CacheKey'):"
+        "def _build(*, cache_key: _CacheKey):"
         in simulation.rewritten_sources[worker_module.file_path]
     )
     assert (
@@ -705,7 +705,7 @@ def test_parameter_conveyor_rewrite_avoids_existing_carrier_name_bindings() -> N
     )
     rewritten_source = simulation.rewritten_sources[module.file_path]
 
-    assert "def _build(*, cache_key_2: '_CacheKey'):" in rewritten_source
+    assert "def _build(*, cache_key_2: _CacheKey):" in rewritten_source
     assert "return cache_key_2.left, cache_key_2.right, cache_key" in rewritten_source
     assert "return _build(cache_key_2=key)" in rewritten_source
 

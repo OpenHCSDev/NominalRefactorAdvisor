@@ -144,3 +144,7 @@ class StaticProjectionAdapterConcept(ClassFamilyAuthorityConcept):
 
 class LegacyPathErasureConcept(NominalBoundaryConcept):
     """Delete an old path once its replacement owns the behavior."""
+
+
+class DeclarationReferenceConcept(NominalBoundaryConcept):
+    """Write a spelled declaration as the reference it spells."""

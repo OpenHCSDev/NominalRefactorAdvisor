@@ -689,6 +689,7 @@ from .projection_descent_codemod import (
     TypedMirror as TypedMirror,
 )
 from .cases_family import CasesFamily
+from .quoted_reference import DeclaredInterpreter, ModuleReferenceScope
 from .descent import CasesFold, Descent, KeyedMirror
 from .registry_identity import (
     AUTOREGISTER_CONFIGURATION_ATTRIBUTE_NAMES,
@@ -740,6 +741,7 @@ from .refactor_concepts import (
     ForeignAdapterBindChainConcept as ForeignAdapterBindChainConcept,
     ForeignFamilyRoutingConcept as ForeignFamilyRoutingConcept,
     LegacyPathErasureConcept as LegacyPathErasureConcept,
+    DeclarationReferenceConcept as DeclarationReferenceConcept,
     StaticProjectionAdapterConcept as StaticProjectionAdapterConcept,
     AutoRegisterStrategyFamilyConcept as AutoRegisterStrategyFamilyConcept,
     CallMappingAuthorityConcept as CallMappingAuthorityConcept,
@@ -1150,7 +1152,7 @@ class _CarrierCollapseParticipantRewrite:
     node: ast.FunctionDef | ast.AsyncFunctionDef
     field_mapping: tuple[tuple[str, str], ...]
     carrier_parameter_name: str
-    carrier_annotation_source: str
+    carrier_annotation: ast.expr
 
     @property
     def fields_by_parameter_name(self) -> dict[str, str]:
@@ -1229,7 +1231,7 @@ class _CarrierCollapseParticipantRewrite:
         arguments.kwonlyargs.append(
             ast.arg(
                 arg=self.carrier_parameter_name,
-                annotation=ast.Constant(value=self.carrier_annotation_source),
+                annotation=self.carrier_annotation,
             )
         )
         arguments.kw_defaults.append(None)
@@ -1316,10 +1318,29 @@ class _ClosedCarrierCollapseSourceRewrite:
                             for _field_name, parameter_name in field_mapping
                         ),
                     ),
-                    carrier_annotation_source=self.authority_target.name,
+                    carrier_annotation=self._carrier_annotation(target, node),
                 )
             )
         return tuple(rewrites)
+
+    def _carrier_annotation(
+        self,
+        target: AstTargetDigest,
+        node: ast.FunctionDef | ast.AsyncFunctionDef,
+    ) -> ast.expr:
+        """The carrier class as a reference where the participant's module resolves it, else quoted."""
+
+        name = self.authority_target.name
+        if ModuleReferenceScope(
+            self.context.module_nodes_by_file_path[target.file_path]
+        ).resolves(
+            name,
+            node.lineno,
+            annotation=True,
+            interpreter=DeclaredInterpreter.of(Path(target.file_path)),
+        ):
+            return ast.Name(id=name, ctx=ast.Load())
+        return ast.Constant(value=name)
 
     @cached_property
     def participant_rewrites_by_symbol(

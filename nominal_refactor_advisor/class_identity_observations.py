@@ -16,18 +16,20 @@ from __future__ import annotations
 
 import ast
 import re
-import tomllib
 from abc import ABC, abstractmethod
 from collections import defaultdict
 from collections.abc import Iterable, Iterator, Sequence
-from dataclasses import dataclass, replace
-from functools import cache
-from itertools import pairwise
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import ClassVar
 
 from .ast_tools import ModuleSyntaxIndex, ParsedModule, module_syntax_index
-from .declared_root import DeclaredRoot
+from .quoted_reference import (
+    DeclaredInterpreter,
+    ModuleReferenceScope,
+    ReferenceRewrite,
+    SpelledModules,
+)
 from .models import SourceLocation
 from .observation_families import ShapeFamily
 from .restated_fact_observations import RestatingSite, RestatingSiteFamily
@@ -214,7 +216,13 @@ class IdentitySpelling(ABC):
 
     @classmethod
     def detail(cls, *values: str) -> tuple[str, ...]:
-        return (cls.tag, *values)
+        return (cls.tag, *(str(value) for value in values))
+
+    @classmethod
+    def rewrite(cls, detail: Sequence[str]) -> ReferenceRewrite:
+        """Where this site can be rewritten as its reference; most positions cannot."""
+
+        return ReferenceRewrite.NONE
 
     @classmethod
     def spelling(cls, detail: Sequence[str]) -> str:
@@ -253,8 +261,12 @@ class TypeSpelling(IdentitySpelling):
     tag = "type"
 
     @classmethod
+    def rewrite(cls, detail):
+        return ReferenceRewrite(detail[1])
+
+    @classmethod
     def resolve(cls, site, identities):
-        return identities.class_named(site.detail[1])
+        return identities.class_named(site.detail[-1])
 
 
 class LazyAnnotationSpelling(IdentitySpelling):
@@ -268,44 +280,16 @@ class LazyAnnotationSpelling(IdentitySpelling):
     tag = "annotation"
 
     @classmethod
+    def rewrite(cls, detail):
+        return ReferenceRewrite(detail[1])
+
+    @classmethod
     def resolve(cls, site, identities):
-        if not DeclaredInterpreter.of(Path(site.file_path)).lazy_annotations:
+        if not ReferenceRewrite.LAZY_INTERPRETER.rewritable(
+            DeclaredInterpreter.of(Path(site.file_path))
+        ):
             return None
-        return identities.class_named(site.detail[1])
-
-
-@dataclass(frozen=True)
-class DeclaredInterpreter:
-    """The Python a project declares in its pyproject's `requires-python`."""
-
-    lowest: tuple[int, int] | None
-
-    LAZY_ANNOTATIONS = (3, 14)
-    LOWER_BOUND = re.compile(r"(?:>=|==|~=)\s*(\d+)\.(\d+)")
-
-    @property
-    def lazy_annotations(self) -> bool:
-        """Whether every interpreter the project allows evaluates annotations lazily."""
-
-        return self.lowest is not None and self.lowest >= self.LAZY_ANNOTATIONS
-
-    @classmethod
-    def of(cls, source: Path) -> DeclaredInterpreter:
-        return cls.declared_by(DeclaredRoot.nearest_pyproject(source))
-
-    @classmethod
-    @cache
-    def declared_by(cls, pyproject: Path | None) -> DeclaredInterpreter:
-        if pyproject is None:
-            return cls(None)
-        declared = tomllib.loads(pyproject.read_text()).get("project", {})
-        bounds = [
-            (int(major), int(minor))
-            for major, minor in cls.LOWER_BOUND.findall(
-                declared.get("requires-python", "")
-            )
-        ]
-        return cls(max(bounds) if bounds else None)
+        return identities.class_named(site.detail[-1])
 
 
 class WordSpelling(IdentitySpelling):
@@ -347,7 +331,7 @@ class ClassNameSpelling(IdentitySpelling):
 
     @classmethod
     def resolve(cls, site, identities):
-        return identities.class_named(site.detail[1])
+        return identities.class_named(site.detail[-1])
 
 
 @dataclass(frozen=True)
@@ -400,7 +384,9 @@ class FlattenedSpelling(IdentitySpelling):
         _tag, attribute, *receiver = site.detail
         read = Receiver.from_detail(receiver)
         found = identities.member_attribute(attribute, read)
-        return None if found is None else found.read_off(read.text)
+        if found is None:
+            return None
+        return found.read_off(read.text, identities.reads_any_member(read, found))
 
 
 class ModuleSpelling(IdentitySpelling):
@@ -409,8 +395,12 @@ class ModuleSpelling(IdentitySpelling):
     tag = "module"
 
     @classmethod
+    def rewrite(cls, detail):
+        return ReferenceRewrite(detail[1])
+
+    @classmethod
     def resolve(cls, site, identities):
-        return identities.module_named(site.detail[1])
+        return identities.module_named(site.detail[-1])
 
 
 class LookupSpelling(IdentitySpelling):
@@ -451,13 +441,24 @@ class MemberSpellings:
     def identity(self) -> str:
         return f"the `{self.attribute}` spelling of a family member"
 
-    def read_off(self, receiver: str) -> ResolvedIdentity | None:
-        """A keyword spelling read as text; a class constant read is only a value."""
+    CODEC_BOUNDARY = (
+        " (codec boundary: needs judgment — the one wire decode may spell the tag)"
+    )
+
+    def read_off(self, receiver: str, any_member: bool) -> ResolvedIdentity | None:
+        """A keyword spelling read as text; a class constant read is only a value.
+
+        Reading it off one named member restates that member. Reading it off
+        whichever member arrives (a receiver typed by the family's base, or not
+        typed) is what a codec does at its boundary, so the finding says it
+        needs judgment.
+        """
 
         if not self.declared_by_keyword:
             return None
+        boundary = self.CODEC_BOUNDARY if any_member else ""
         return ResolvedIdentity(
-            f"{self.identity}, read off `{receiver}` as text",
+            f"{self.identity}, read off `{receiver}` as text{boundary}",
             self.declared_at[:LISTED_DECLARATIONS],
         )
 
@@ -486,6 +487,7 @@ class DeclaredIdentities:
     lookups: dict[str, tuple[str, ...]]
     bases: dict[str, tuple[str, ...]]
     instance_attributes: dict[str, frozenset[str]]
+    carriers: dict[tuple[str, str, str], tuple[str, ...]] = field(default_factory=dict)
 
     @classmethod
     def from_modules(cls, modules: Iterable[ModuleDeclarations]) -> DeclaredIdentities:
@@ -670,6 +672,24 @@ class DeclaredIdentities:
             return None
         return spellings if spellings.members else None
 
+    def resolved_class(self, receiver: Receiver) -> str:
+        """The scanned class the receiver is, or is an instance of, by its declared type."""
+
+        return next(
+            (
+                name
+                for name in (receiver.name, receiver.class_object, receiver.instance)
+                if name in self.classes
+            ),
+            "",
+        )
+
+    def reads_any_member(self, receiver: Receiver, spellings: MemberSpellings) -> bool:
+        """Whether the receiver is whichever member arrives rather than one named member."""
+
+        resolved = self.resolved_class(receiver)
+        return not resolved or resolved in spellings.family_bases
+
     def member_looked_up(
         self, receiver: str, method: str, literal: str
     ) -> ResolvedIdentity | None:
@@ -698,6 +718,42 @@ class DeclaredIdentities:
         resolved = position.resolve(site, self)
         return None if resolved is None else resolved.restated_by(site)
 
+    def with_carriers(self, sites: Sequence[RestatingSite]) -> DeclaredIdentities:
+        """Name, per file and rewritable position, the one finding that carries the file's rewrite.
+
+        A rewrite is file-wide, so one finding per file and position carries it as
+        the candidate: the one whose site is the file's first rewritable site of
+        that position (by line, then identity).
+        """
+
+        positions = IdentitySpelling.positions()
+        first: dict[tuple[str, str], RestatingSite] = {}
+        for site in sites:
+            position = site.detail[0]
+            rewrite = positions[position].rewrite(site.detail)
+            if not rewrite.rewritable(DeclaredInterpreter.of(Path(site.file_path))):
+                continue
+            key = (site.file_path, position)
+            current = first.get(key)
+            if current is None or (site.lineno, site.group) < (
+                current.lineno,
+                current.group,
+            ):
+                first[key] = site
+        carriers: dict[tuple[str, str, str], list[str]] = defaultdict(list)
+        for (_file_path, position), site in sorted(first.items()):
+            carriers[(site.file_path, site.symbol, site.group)].append(position)
+        return replace(
+            self, carriers={key: tuple(found) for key, found in carriers.items()}
+        )
+
+    def carried_positions(self, sites: Sequence[RestatingSite]) -> tuple[str, ...]:
+        """The positions whose file-wide rewrite this finding's sites carry."""
+
+        return self.carriers.get(
+            (sites[0].file_path, sites[0].symbol, sites[0].group), ()
+        )
+
     def declarations_of(
         self, sites: Sequence[RestatingSite]
     ) -> tuple[SourceLocation, ...]:
@@ -714,17 +770,22 @@ class IdentityPositions:
 
     MULTIWORD = re.compile(r"[A-Z]+(?![a-z])|[A-Z]?[a-z0-9]+")
     IDENTIFIER = re.compile(r"[A-Za-z_]\w*")
-    DOTTED = re.compile(r"[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*")
     CLASS_NAME_ATTRIBUTES = frozenset(("__name__", "__qualname__"))
-    IMPORTERS = frozenset(("import_module", "__import__", "find_spec", "files"))
-    MODULE_TABLE = "sys.modules"
-    MODULE_TABLE_METHODS = frozenset(("get", "pop", "setdefault"))
-    RUN_MODULE = "-m"
-    TYPE_VARIABLE = "TypeVar"
-    CAST = "cast"
-    TYPE_METADATA = frozenset(("Annotated", "Literal"))
-    FUTURE = "__future__"
-    LAZY_ANNOTATIONS = "annotations"
+    COLLECTIONS = frozenset(
+        (
+            "tuple",
+            "list",
+            "set",
+            "frozenset",
+            "Sequence",
+            "MutableSequence",
+            "Iterable",
+            "Iterator",
+            "Collection",
+            "AbstractSet",
+            "MutableSet",
+        )
+    )
 
     def __init__(self, parsed_module: ParsedModule) -> None:
         self.parsed_module = parsed_module
@@ -733,63 +794,7 @@ class IdentityPositions:
             id(node): node_index
             for node_index, node in enumerate(self.index.depth_first_nodes)
         }
-        self.lazy_annotations = any(
-            isinstance(statement, ast.ImportFrom)
-            and statement.module == self.FUTURE
-            and any(alias.name == self.LAZY_ANNOTATIONS for alias in statement.names)
-            for statement in parsed_module.module.body
-        )
-        self.bound_after = self.module_bindings(parsed_module.module)
-
-    @staticmethod
-    def module_bindings(module: ast.Module) -> dict[str, int]:
-        """The line after which each module-level name is bound at run time.
-
-        A class or function is bound when its statement ends, so a reference
-        inside its own body still runs before the name exists. Names bound only
-        under a condition (`if TYPE_CHECKING:`) are not bound here.
-        """
-
-        bound: dict[str, int] = {}
-        for statement in module.body:
-            match statement:
-                case (
-                    ast.ClassDef(name=name)
-                    | ast.FunctionDef(name=name)
-                    | ast.AsyncFunctionDef(name=name)
-                ):
-                    bound.setdefault(name, statement.end_lineno or statement.lineno)
-                case ast.Import(names=aliases):
-                    for alias in aliases:
-                        bound.setdefault(
-                            alias.asname or alias.name.partition(".")[0],
-                            statement.lineno,
-                        )
-                case ast.ImportFrom(names=aliases):
-                    for alias in aliases:
-                        bound.setdefault(alias.asname or alias.name, statement.lineno)
-                case ast.Assign(targets=targets):
-                    for target in targets:
-                        if isinstance(target, ast.Name):
-                            bound.setdefault(target.id, statement.lineno)
-                case ast.AnnAssign(target=ast.Name(id=name), value=value) if (
-                    value is not None
-                ):
-                    bound.setdefault(name, statement.lineno)
-        return bound
-
-    def unquotable(self, root: str, line: int, annotation: bool) -> bool:
-        """Whether the quoted name could be written as a reference at this position.
-
-        A lazily evaluated annotation (`from __future__ import annotations`) can
-        name anything; an eagerly evaluated position can name what the module has
-        already bound when the position runs.
-        """
-
-        if annotation and self.lazy_annotations:
-            return True
-        bound = self.bound_after.get(root)
-        return bound is not None and bound < line
+        self.references = ModuleReferenceScope(parsed_module.module)
 
     def site(self, node: ast.expr, detail: tuple[str, ...]) -> RestatingSite:
         return RestatingSiteFamily.site(
@@ -814,12 +819,7 @@ class IdentityPositions:
                 return value
         return None
 
-    @staticmethod
-    def called(node: ast.expr) -> str:
-        match node:
-            case ast.Name(id=name) | ast.Attribute(attr=name):
-                return name
-        return ""
+    called = staticmethod(ModuleReferenceScope.called)
 
     def sites(self) -> Iterator[RestatingSite]:
         yield from self.type_sites()
@@ -836,90 +836,25 @@ class IdentityPositions:
 
     # Type positions -----------------------------------------------------------
 
-    def type_expressions(self) -> Iterator[tuple[ast.expr, bool]]:
-        """Each type position, and whether it is an annotation (lazy under the future import)."""
-
-        for node in self.index.depth_first_nodes:
-            match node:
-                case ast.FunctionDef(
-                    args=arguments, returns=returns
-                ) | ast.AsyncFunctionDef(args=arguments, returns=returns):
-                    if returns is not None:
-                        yield returns, True
-                    for argument in (
-                        *arguments.posonlyargs,
-                        *arguments.args,
-                        *arguments.kwonlyargs,
-                        *filter(None, (arguments.vararg, arguments.kwarg)),
-                    ):
-                        if argument.annotation is not None:
-                            yield argument.annotation, True
-                case ast.AnnAssign(annotation=annotation):
-                    yield annotation, True
-                case ast.ClassDef(bases=bases):
-                    for base in bases:
-                        yield base, False
-                case ast.Call(func=callee, args=[first, *rest], keywords=keywords):
-                    called = self.called(callee)
-                    if called == self.TYPE_VARIABLE:
-                        for bound in (*rest, *(keyword.value for keyword in keywords)):
-                            yield bound, False
-                    elif called == self.CAST:
-                        yield first, False
-
     def type_sites(self) -> Iterator[RestatingSite]:
-        for expression, annotation in self.type_expressions():
-            metadata = {
-                id(part)
-                for node in ast.walk(expression)
-                if isinstance(node, ast.Subscript)
-                and self.called(node.value) in self.TYPE_METADATA
-                for part in self.metadata_parts(node)
-            }
-            for node in ast.walk(expression):
-                literal = self.string(node)
-                if literal is None or id(node) in metadata:
-                    continue
-                for name, root in self.annotation_names(literal):
-                    if self.unquotable(root, node.lineno, annotation):
-                        yield self.site(node, TypeSpelling.detail(name))
-                    elif annotation:
-                        yield self.site(node, LazyAnnotationSpelling.detail(name))
+        """Class names in quoted type strings: a reference wherever the name would resolve.
 
-    def metadata_parts(self, node: ast.Subscript) -> Iterator[ast.AST]:
-        """`Literal[...]` is all values; `Annotated[T, ...]` is T and then metadata."""
+        Where it resolves on any interpreter the site is a `type` site; an
+        annotation that resolves only when evaluated lazily is an `annotation`
+        site, which the join keeps only for projects whose Python is lazy.
+        """
 
-        elements = (
-            node.slice.elts if isinstance(node.slice, ast.Tuple) else [node.slice]
-        )
-        kept = 1 if self.called(node.value) == "Annotated" else 0
-        for element in elements[kept:]:
-            yield from ast.walk(element)
-
-    @staticmethod
-    def annotation_names(literal: str) -> tuple[tuple[str, str], ...]:
-        """The names a quoted annotation refers to, each with the module-level name it starts from."""
-
-        try:
-            parsed = ast.parse(literal, mode="eval")
-        except SyntaxError:
-            return ()
-        found: dict[tuple[str, str], None] = {}
-        attributes = [
-            node for node in ast.walk(parsed) if isinstance(node, ast.Attribute)
-        ]
-        inner = {id(node.value) for node in attributes}
-        for node in ast.walk(parsed):
-            match node:
-                case ast.Name(id=name) if id(node) not in inner:
-                    found[(name, name)] = None
-                case ast.Attribute(attr=name) if id(node) not in inner:
-                    root = node.value
-                    while isinstance(root, ast.Attribute):
-                        root = root.value
-                    if isinstance(root, ast.Name):
-                        found[(name, root.id)] = None
-        return tuple(found)
+        for quoted in self.references.quoted_type_names():
+            rewrite = self.references.rewrite_of(quoted)
+            for name, root in quoted.names:
+                if self.references.resolves_eagerly(
+                    root, quoted.node.lineno, quoted.annotation
+                ):
+                    yield self.site(quoted.node, TypeSpelling.detail(rewrite, name))
+                elif quoted.annotation:
+                    yield self.site(
+                        quoted.node, LazyAnnotationSpelling.detail(rewrite, name)
+                    )
 
     # Comparison and match positions ---------------------------------------------
 
@@ -1011,22 +946,37 @@ class IdentityPositions:
                     )
 
     def receiver(self, node_index: int, receiver: ast.expr) -> Receiver:
-        """The receiver's text, last segment, and the type an enclosing parameter declares for it."""
+        """The receiver's text, last segment, and the type its binding declares for it."""
 
         class_object = instance = ""
         if isinstance(receiver, ast.Name):
-            annotation = self.parameter_annotation(node_index, receiver.id)
-            match annotation:
-                case ast.Subscript(value=ast.Name(id="type"), slice=declared):
-                    class_object = self.called(declared)
+            declared = self.declared_type(node_index, receiver.id)
+            match declared:
+                case ast.Subscript(value=ast.Name(id="type"), slice=element):
+                    class_object = self.called(element)
                 case ast.Name() | ast.Attribute():
-                    instance = self.called(annotation)
+                    instance = self.called(declared)
         return Receiver(
             ast.unparse(receiver), self.called(receiver), class_object, instance
         )
 
-    def parameter_annotation(self, node_index: int, name: str) -> ast.expr | None:
+    def declared_type(self, node_index: int, name: str) -> ast.expr | None:
+        """The type the nearest binding of `name` around this node declares.
+
+        A parameter declares its annotation; a `for` or comprehension target
+        declares the element type of what it iterates, when that is a parameter
+        annotated as a collection (or a `zip` of such), unpacked by the target.
+        Nothing wider: no assignment or flow is followed.
+        """
+
         for ancestor in reversed(self.index.ancestor_nodes(node_index)):
+            for target, iterated in self.loops(ancestor):
+                if name in self.target_names(target):
+                    return self.unpacked(
+                        target,
+                        self.elements(self.node_indices[id(ancestor)], iterated),
+                        name,
+                    )
             match ancestor:
                 case ast.FunctionDef(args=arguments) | ast.AsyncFunctionDef(
                     args=arguments
@@ -1038,6 +988,75 @@ class IdentityPositions:
                     ):
                         if argument.arg == name:
                             return argument.annotation
+        return None
+
+    @staticmethod
+    def loops(node: ast.AST) -> Iterator[tuple[ast.expr, ast.expr]]:
+        match node:
+            case ast.For(target=target, iter=iterated) | ast.AsyncFor(
+                target=target, iter=iterated
+            ):
+                yield target, iterated
+            case (
+                ast.ListComp(generators=generators)
+                | ast.SetComp(generators=generators)
+                | ast.GeneratorExp(generators=generators)
+                | ast.DictComp(generators=generators)
+            ):
+                for generator in generators:
+                    yield generator.target, generator.iter
+
+    @staticmethod
+    def target_names(target: ast.expr) -> frozenset[str]:
+        return frozenset(
+            node.id for node in ast.walk(target) if isinstance(node, ast.Name)
+        )
+
+    def elements(self, node_index: int, iterated: ast.expr) -> ast.expr | None:
+        """The element type of an iterated parameter, or a tuple of them for `zip`."""
+
+        match iterated:
+            case ast.Name(id=name):
+                return self.collection_element(self.declared_type(node_index, name))
+            case ast.Call(func=ast.Name(id="zip"), args=arguments):
+                return ast.Tuple(
+                    elts=[
+                        self.elements(node_index, argument) or ast.Constant(None)
+                        for argument in arguments
+                    ]
+                )
+        return None
+
+    @classmethod
+    def collection_element(cls, annotation: ast.expr | None) -> ast.expr | None:
+        match annotation:
+            case ast.Subscript(
+                value=collection,
+                slice=ast.Tuple(elts=[element, ast.Constant(value=builtins_ellipsis)]),
+            ) if (
+                builtins_ellipsis is Ellipsis
+                and cls.called(collection) in cls.COLLECTIONS
+            ):
+                return element
+            case ast.Subscript(value=collection, slice=element) if cls.called(
+                collection
+            ) in cls.COLLECTIONS and not isinstance(element, ast.Tuple):
+                return element
+        return None
+
+    @classmethod
+    def unpacked(
+        cls, target: ast.expr, element: ast.expr | None, name: str
+    ) -> ast.expr | None:
+        match target, element:
+            case ast.Name(id=bound), _ if bound == name:
+                return element
+            case ast.Tuple(elts=targets), ast.Tuple(elts=elements) | ast.Subscript(
+                value=ast.Name(id="tuple"), slice=ast.Tuple(elts=elements)
+            ) if len(targets) == len(elements):
+                for inner, inner_element in zip(targets, elements):
+                    if name in cls.target_names(inner):
+                        return cls.unpacked(inner, inner_element, name)
         return None
 
     @classmethod
@@ -1075,37 +1094,14 @@ class IdentityPositions:
 
     # Module positions ---------------------------------------------------------
 
-    def module_expressions(self) -> Iterator[ast.expr]:
-        for _node_index, node in self.index.indexed_nodes_of_type(ast.Call):
-            match node:
-                case ast.Call(func=callee, args=[first, *_]) if (
-                    self.called(callee) in self.IMPORTERS
-                ):
-                    yield first
-                case ast.Call(
-                    func=ast.Attribute(value=table, attr=method), args=[first, *_]
-                ) if (
-                    method in self.MODULE_TABLE_METHODS
-                    and ast.unparse(table) == self.MODULE_TABLE
-                ):
-                    yield first
-        for _node_index, node in self.index.indexed_nodes_of_type(ast.Subscript):
-            if ast.unparse(node.value) == self.MODULE_TABLE:
-                yield node.slice
-        for _node_index, node in self.index.indexed_nodes_of_type(ast.Compare):
-            if self.MODULE_TABLE in map(ast.unparse, node.comparators):
-                yield node.left
-        for node_type in (ast.Tuple, ast.List):
-            for _node_index, node in self.index.indexed_nodes_of_type(node_type):
-                for option, argument in pairwise(node.elts):
-                    if self.string(option) == self.RUN_MODULE:
-                        yield argument
-
     def module_sites(self) -> Iterator[RestatingSite]:
-        for expression in self.module_expressions():
-            literal = self.string(expression)
-            if literal is not None and self.DOTTED.fullmatch(literal):
-                yield self.site(expression, ModuleSpelling.detail(literal))
+        for spelled in SpelledModules(self.parsed_module.module):
+            yield self.site(
+                spelled.literal,
+                ModuleSpelling.detail(
+                    self.references.module_rewrite(spelled), spelled.name
+                ),
+            )
 
 
 class IdentitySpellingFamily(RestatingSiteFamily):

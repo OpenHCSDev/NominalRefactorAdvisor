@@ -390,6 +390,13 @@ class EmptyFindingMetrics(FindingMetrics):
 
 
 @dataclass(frozen=True)
+class DeclarationReferenceMetrics(FindingMetrics):
+    """The positions whose file-wide reference rewrite this finding carries as the file's one candidate."""
+
+    carried_positions: tuple[str, ...]
+
+
+@dataclass(frozen=True)
 class ForwardingFacadeMetrics(FindingMetrics):
     """Forwarding members of one facade; every one is deletable once consumers go direct."""
 

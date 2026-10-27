@@ -12,7 +12,12 @@ from ..class_identity_observations import (
     IdentitySpellingFamily,
     ModuleDeclarations,
 )
-from ..models import RefactorFinding, SourceLocation
+from ..codemod_declaration_reference import (
+    DeclarationReferenceFindingRecipeSynthesizer,
+    ReferenceImportedModuleOperation,
+    UnquoteResolvedTypeNamesOperation,
+)
+from ..models import DeclarationReferenceMetrics, RefactorFinding, SourceLocation
 from ..patterns import PatternId
 from ..restated_fact_observations import RestatingSite
 from ..taxonomy import CapabilityTag, ObservationTag
@@ -30,7 +35,10 @@ def _declared_identities(
     )
 
 
-class RestatedIdentityDetector(JoinedRestatedFactDetector[DeclaredIdentities]):
+class RestatedIdentityDetector(
+    JoinedRestatedFactDetector[DeclaredIdentities],
+    DeclarationReferenceFindingRecipeSynthesizer,
+):
     """A string literal that spells a declared class, module or family member in a position that uses it."""
 
     module_projection_families = (IdentitySpellingFamily, DeclaredIdentityFamily)
@@ -38,6 +46,10 @@ class RestatedIdentityDetector(JoinedRestatedFactDetector[DeclaredIdentities]):
         fact="The string spells a declared identity (a class name, a module's dotted name, or a family member's distinct spelling), a second copy of it that a rename or a same-spelled sibling breaks silently.",
         owner="The owner is the declaration itself: the class object, the imported module, or a method the family declares.",
         factoring="Reference the declaration instead of spelling it: name the class (an unquoted annotation, or the class object passed or compared), import the module and pass it or its `__name__`, and replace a comparison of member spellings with the member class or a method the family declares; keep the spelling only in the family's boundary decoder.",
+        operations=(
+            UnquoteResolvedTypeNamesOperation,
+            ReferenceImportedModuleOperation,
+        ),
     )
     finding_spec = restated.spec(
         PatternId.RESTATED_IDENTITY,
@@ -53,10 +65,10 @@ class RestatedIdentityDetector(JoinedRestatedFactDetector[DeclaredIdentities]):
     def findings_from_sites(
         self, sites: Iterable[RestatingSite], context: DeclaredIdentities
     ) -> list[RefactorFinding]:
-        resolved = (context.resolve(site) for site in sites)
-        return super().findings_from_sites(
-            (site for site in resolved if site is not None), context
-        )
+        resolved = [
+            found for site in sites if (found := context.resolve(site)) is not None
+        ]
+        return super().findings_from_sites(resolved, context.with_carriers(resolved))
 
     def describe(
         self, sites: Sequence[RestatingSite], context: DeclaredIdentities
@@ -83,6 +95,12 @@ class RestatedIdentityDetector(JoinedRestatedFactDetector[DeclaredIdentities]):
         self, sites: Sequence[RestatingSite], context: DeclaredIdentities
     ) -> tuple[SourceLocation, ...]:
         return (*super().evidence(sites, context), *context.declarations_of(sites))
+
+    def finding_context(
+        self, sites: Sequence[RestatingSite], context: DeclaredIdentities
+    ) -> dict[str, object]:
+        carried = context.carried_positions(sites)
+        return {"metrics": DeclarationReferenceMetrics(carried)} if carried else {}
 
 
 __all__ = ("RestatedIdentityDetector",)

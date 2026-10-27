@@ -71,14 +71,14 @@ class RestatedFact:
     """The claim every restated-fact finding makes.
 
     `fact` is what the sites restate, `owner` is what should hold it, `factoring`
-    is the move from one to the other, and `operation` is the existing codemod
-    operation that performs it, or None when only the prescription exists.
+    is the move from one to the other, and `operations` are the codemod
+    operations that perform it, empty when only the prescription exists.
     """
 
     fact: str
     owner: str
     factoring: str
-    operation: type[RefactorRecipeOperation] | None = None
+    operations: tuple[type[RefactorRecipeOperation], ...] = ()
 
     @property
     def why(self) -> str:
@@ -86,9 +86,10 @@ class RestatedFact:
 
     @property
     def recipe_status(self) -> str:
-        if self.operation is None:
+        if not self.operations:
             return "No codemod operation performs this factoring yet; this finding is the prescription."
-        return f"Recipe: `{self.operation.__name__}`, proved against current source before it is offered."
+        named = " or ".join(f"`{operation.__name__}`" for operation in self.operations)
+        return f"Recipe: {named}, proved against current source before it is offered; a site no recipe rewrites keeps this prescription."
 
     def spec(
         self,
@@ -234,7 +235,7 @@ class StringKindDispatchDetector(
         fact="Each comparison restates which strings belong to the kind, a second copy of the family's membership that can disagree with the family.",
         owner="The owner is the class family of the kind: an abstract base with one subclass per string.",
         factoring="Declare an abstract base per kind and one subclass per string with the behaviour on the subclass, fill the registry at class creation (AutoRegisterMeta), and keep the strings only in the boundary decoder.",
-        operation=DispatchToPolymorphismOperation,
+        operations=(DispatchToPolymorphismOperation,),
     )
     finding_spec = restated.spec(
         PatternId.STRING_KIND_DISPATCH,
@@ -431,7 +432,7 @@ class LegacyPathMarkerDetector(
         fact="The path declares itself legacy, compatibility or deprecated, so it restates behaviour its replacement already owns.",
         owner="The owner is the replacement; the old path has nothing left to own.",
         factoring="Move the consumers listed onto the replacement, then delete the old path.",
-        operation=EraseDeadCompatibilityOperation,
+        operations=(EraseDeadCompatibilityOperation,),
     )
     finding_spec = restated.spec(
         PatternId.LEGACY_PATH_MARKER,
