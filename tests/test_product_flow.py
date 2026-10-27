@@ -29,6 +29,7 @@ from nominal_refactor_advisor.product_flow import (
     CurrentClassMemberMethodReference,
     CurrentClassMethodReference,
     DynamicCallTargetReference,
+    ReceiverAttributeCallTargetReference,
     ExactCompactValueOrigin,
     LexicalValueReference,
     OpenCompactValueOrigin,
@@ -753,7 +754,9 @@ def test_opaque_attribute_reads_remain_explicit_flow_evidence() -> None:
     flow = next(flow for flow in projection.flows if flow.owner.qualname == "run")
     assert len(flow.callable_reference_uses) == 1
     use = flow.callable_reference_uses[0]
-    assert isinstance(use.target, DynamicCallTargetReference)
+    # The receiver is opaque, but the read still names attribute `callback`.
+    assert isinstance(use.target, ReceiverAttributeCallTargetReference)
+    assert use.target.terminal_name == "callback"
     assert flow.calls[0].position.dominates(use.position)
 
 

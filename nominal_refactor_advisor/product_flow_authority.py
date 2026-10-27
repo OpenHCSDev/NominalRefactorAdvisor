@@ -14,6 +14,7 @@ from dataclasses import dataclass, replace
 from enum import StrEnum
 from functools import cached_property
 from typing import (
+    ClassVar,
     Self,
     cast,
 )
@@ -62,6 +63,7 @@ from .native_declarations import NativeDeclaration
 from .native_compilation import NativePythonCompilation
 from .source_identity import source_path_text
 from .product_flow import (
+    BareCallTargetReference,
     CompactBindingResolverABC,
     CompactBindingVisit,
     CompactCallArguments,
@@ -91,6 +93,11 @@ from .product_flow import (
 from .source_geometry import SourceByteSpan
 from .scan_cache import ScanCache
 from .value_expression import LexicalValueReference
+
+# Hooks through which a class or module answers any attribute name.
+DYNAMIC_ATTRIBUTE_HOOKS = frozenset(("__getattr__", "__getattribute__"))
+# Attributes whose access reaches something other than a function of that name.
+INDIRECT_ATTRIBUTES = DYNAMIC_ATTRIBUTE_HOOKS | frozenset(("__call__", "__get__"))
 
 
 @dataclass(frozen=True)
@@ -241,8 +248,9 @@ class OpenCompactFunctionTarget(CompactCallTargetResolution):
     def through_alias(
         self, alias: CompactExactValueAlias, context: CompactFlowContext
     ) -> CompactCallTargetResolution:
-        return type(self)(
-            tuple(
+        return replace(
+            self,
+            candidate_symbols=tuple(
                 dict.fromkeys(
                     (
                         f"{context.owner_symbol}.{alias.target.root_name}",
@@ -250,7 +258,6 @@ class OpenCompactFunctionTarget(CompactCallTargetResolution):
                     )
                 )
             ),
-            self.violation,
         )
 
 
@@ -259,6 +266,30 @@ class UnboundedCompactFunctionTarget(OpenCompactFunctionTarget):
 
     def candidate_symbols_within(self, symbols: frozenset[str]) -> frozenset[str]:
         return symbols
+
+
+@dataclass(frozen=True)
+class NamedAttributeCompactFunctionTarget(OpenCompactFunctionTarget):
+    """Attribute `attribute_name` of a receiver whose class is not proved.
+
+    Reading attribute `m` of an object yields what is bound as `m` on it, so
+    the access reaches only functions declared under that name. A function
+    bound under another name is reached only after it escapes as a value, which
+    the escape obligation already holds open; a computed fetch (`getattr` with
+    a computed name, `vars`, `__dict__`) is the dynamic fetch obligation's, and
+    a scan with a class or module `__getattr__` keeps every such access
+    unbounded (`ProductFlowRepository.attribute_target`).
+    """
+
+    attribute_name: str = ""
+
+    def candidate_symbols_within(self, symbols: frozenset[str]) -> frozenset[str]:
+        return frozenset(
+            symbol
+            for symbol in symbols
+            if symbol.rpartition(".")[2] == self.attribute_name
+            or symbol in self.candidate_symbols
+        )
 
 
 @dataclass(frozen=True)
@@ -400,6 +431,46 @@ class CompactCallableEscape:
 
 
 @dataclass(frozen=True)
+class CompactDynamicFetch:
+    """One expression that can return a function without naming it as an attribute.
+
+    `getattr(x, name)` with a computed name, `vars(x)`, `x.__dict__`,
+    `inspect.getmembers(x)` and `operator.attrgetter`/`methodcaller` fetch any
+    attribute of their receiver; `getattr(x, "m")` fetches attribute `m`.
+    `attribute_name` is that name, or None for any name; `receiver_classes`
+    the classes whose functions the receiver can hold, or None when the receiver
+    is not proved.
+    """
+
+    context: CompactFlowContext
+    line: int
+    attribute_name: str | None
+    receiver_classes: frozenset[str] | None
+
+    def reaches(
+        self,
+        symbols: frozenset[str],
+        owner_classes: Mapping[str, str | None],
+    ) -> frozenset[str]:
+        return frozenset(
+            symbol
+            for symbol in symbols
+            if (
+                self.attribute_name is None
+                or symbol.rpartition(".")[2] == self.attribute_name
+            )
+            and (
+                self.receiver_classes is None
+                or owner_classes.get(symbol) in self.receiver_classes
+            )
+        )
+
+    @property
+    def display_id(self) -> str:
+        return f"{self.context.file_path}:{self.line}"
+
+
+@dataclass(frozen=True)
 class CompactFunctionCallIdentity:
     """Repository-unique identity for one function-local call site."""
 
@@ -487,6 +558,23 @@ class CompactCallableComponentAuthorityProof:
         )
 
     @cached_property
+    def dynamically_fetched_symbols(self) -> tuple[str, ...]:
+        """Participants a computed fetch can return as a value, to be called anywhere."""
+
+        return tuple(
+            sorted(
+                {
+                    symbol
+                    for fetch in self.repository.dynamic_fetches
+                    for symbol in fetch.reaches(
+                        self._participant_symbol_set,
+                        self.repository.function_owner_classes,
+                    )
+                }
+            )
+        )
+
+    @cached_property
     def signature_hazard_symbols(self) -> tuple[str, ...]:
         return tuple(
             sorted(
@@ -531,6 +619,7 @@ class CompactCallableComponentAuthorityProof:
             or self.unresolved_consumer_symbols
             or self.incomplete_call_family_symbols
             or self.escaping_callable_symbols
+            or self.dynamically_fetched_symbols
             or self.signature_hazard_symbols
             or self.open_boundary_symbols
             or self.incomplete_method_family_symbols
@@ -927,9 +1016,52 @@ class ProductFlowRepository(
     ) -> CompactCallTargetResolution:
         if not attribute_path:
             return resolution
-        return UnboundedCompactFunctionTarget(
+        return self.attribute_target(
+            attribute_path[-1],
             (),
             CompactFunctionTargetResolutionViolation.UNSUPPORTED_RECEIVER,
+        )
+
+    @cached_property
+    def dynamic_attribute_owners(self) -> tuple[str, ...]:
+        """Classes and modules declaring `__getattr__` or `__getattribute__`.
+
+        Such an owner answers any attribute name with any object, so an
+        attribute access on an unproved receiver is bounded by nothing while one
+        exists in the scan.
+        """
+
+        return tuple(
+            sorted(
+                symbol
+                for symbol in self.function_declarations_by_symbol
+                if symbol.rpartition(".")[2] in DYNAMIC_ATTRIBUTE_HOOKS
+            )
+        )
+
+    @staticmethod
+    def is_protocol_attribute(attribute_name: str) -> bool:
+        """An attribute that returns or calls something not named by the access.
+
+        `f.__call__` is `f` itself, and `__get__`, `__getattr__` and
+        `__getattribute__` return whatever their owner chooses; any other
+        attribute, dunder or not, is looked up by its name.
+        """
+
+        return attribute_name in INDIRECT_ATTRIBUTES
+
+    def attribute_target(
+        self,
+        attribute_name: str,
+        candidate_symbols: tuple[str, ...],
+        violation: CompactFunctionTargetResolutionViolation,
+    ) -> CompactCallTargetResolution:
+        """An access to `attribute_name` on an unproved receiver, bounded by that name when sound."""
+
+        if self.dynamic_attribute_owners or self.is_protocol_attribute(attribute_name):
+            return UnboundedCompactFunctionTarget(candidate_symbols, violation)
+        return NamedAttributeCompactFunctionTarget(
+            candidate_symbols, violation, attribute_name
         )
 
     def _through_receiver_binding(
@@ -939,19 +1071,33 @@ class ProductFlowRepository(
         resolution: CompactCallTargetResolution,
     ) -> CompactCallTargetResolution:
         declaration = context.declaration
+        names = {symbol.rpartition(".")[2] for symbol in resolution.possible_symbols}
         if declaration is None or declaration.nominal_receiver_name is None:
-            return UnboundedCompactFunctionTarget(
+            return self._receiver_attribute_target(
+                names,
                 resolution.possible_symbols,
                 CompactFunctionTargetResolutionViolation.UNSUPPORTED_RECEIVER,
             )
         reference = LexicalValueReference(declaration.nominal_receiver_name)
         origin = context.flow.value_origin_for(reference, position)
         if origin.exact_origin != reference:
-            return UnboundedCompactFunctionTarget(
+            return self._receiver_attribute_target(
+                names,
                 resolution.possible_symbols,
                 CompactFunctionTargetResolutionViolation.DYNAMIC_BINDING,
             )
         return resolution
+
+    def _receiver_attribute_target(
+        self,
+        names: set[str],
+        candidate_symbols: tuple[str, ...],
+        violation: CompactFunctionTargetResolutionViolation,
+    ) -> CompactCallTargetResolution:
+        if len(names) != 1:
+            return UnboundedCompactFunctionTarget(candidate_symbols, violation)
+        (name,) = names
+        return self.attribute_target(name, candidate_symbols, violation)
 
     def _selected_class_resolution(
         self, symbol: str, binding: CompactMutation
@@ -1140,6 +1286,132 @@ class ProductFlowRepository(
             if (resolved := resolution.resolved_call) is not None
         )
 
+    # Builtins and standard calls that return attributes chosen by a value.
+    COMPUTED_FETCH_BUILTINS: ClassVar[frozenset[str]] = frozenset(("getattr", "vars"))
+    COMPUTED_FETCH_CALLS: ClassVar[frozenset[str]] = frozenset(
+        ("getmembers", "getmembers_static", "attrgetter", "methodcaller")
+    )
+    NAMESPACE_ATTRIBUTE: ClassVar[str] = "__dict__"
+
+    @cached_property
+    def function_owner_classes(self) -> dict[str, str | None]:
+        """The class symbol owning each function declaration, or None for a module function."""
+
+        return {
+            symbol: (
+                None
+                if declaration.owner_class_qualname is None
+                else f"{declaration.identity.module_name}.{declaration.owner_class_qualname}"
+            )
+            for symbol, declaration in self.function_declarations_by_symbol.items()
+        }
+
+    @cached_property
+    def dynamic_fetches(self) -> tuple[CompactDynamicFetch, ...]:
+        fetches: list[CompactDynamicFetch] = []
+        for context in self.flow_contexts:
+            for call in context.flow.calls:
+                fetch = self._dynamic_fetch_call(context, call)
+                if fetch is not None:
+                    fetches.append(fetch)
+            for use in context.flow.callable_reference_uses:
+                reference = use.lexical_reference
+                if (
+                    reference is not None
+                    and reference.attribute_path
+                    and reference.attribute_path[-1] == self.NAMESPACE_ATTRIBUTE
+                ):
+                    fetches.append(
+                        CompactDynamicFetch(
+                            context,
+                            use.line,
+                            None,
+                            self._receiver_classes(
+                                context,
+                                LexicalValueReference(
+                                    reference.root_name, reference.attribute_path[:-1]
+                                ),
+                                use.line,
+                            ),
+                        )
+                    )
+        return tuple(fetches)
+
+    def _dynamic_fetch_call(
+        self, context: CompactFlowContext, call: CompactFunctionCall
+    ) -> CompactDynamicFetch | None:
+        target = call.target
+        name = target.terminal_name
+        if name in self.COMPUTED_FETCH_CALLS:
+            return CompactDynamicFetch(context, call.line, None, None)
+        if (
+            not isinstance(target, BareCallTargetReference)
+            or name not in self.COMPUTED_FETCH_BUILTINS
+            or self._lexical_binding_exists(
+                context, LexicalValueReference(name), call.position
+            )
+            or not call.arguments.positional
+        ):
+            return None
+        receiver = call.arguments.positional[0].value.lexical_reference
+        receiver_classes = (
+            None
+            if receiver is None
+            else self._receiver_classes(context, receiver, call.line)
+        )
+        attribute_name = None
+        if len(call.arguments.positional) >= 2:
+            attribute_name = call.arguments.positional[1].value.value.constant_string
+        if self.dynamic_attribute_owners:
+            attribute_name = None
+        return CompactDynamicFetch(context, call.line, attribute_name, receiver_classes)
+
+    def _receiver_classes(
+        self,
+        context: CompactFlowContext,
+        receiver: LexicalValueReference,
+        line: int,
+    ) -> frozenset[str] | None:
+        """The classes whose functions a fetched receiver can hold, or None when unproved.
+
+        The method's own receiver (`self`, `cls`) is an instance or subclass of
+        its class, so its functions are those of the class, its ancestors and
+        its descendants; a class object reference holds its class's and
+        ancestors' functions. Anything else is unproved.
+        """
+
+        declaration = context.declaration
+        if (
+            declaration is not None
+            and declaration.owner_class_qualname is not None
+            and not receiver.attribute_path
+            and receiver.root_name == declaration.nominal_receiver_name
+        ):
+            owner = self.class_index.symbol_for(
+                file_path=context.file_path, qualname=declaration.owner_class_qualname
+            )
+            if owner is None:
+                return None
+            descendants = self.class_index.descendant_symbols(owner)
+            return frozenset(
+                (
+                    owner,
+                    *self.class_index.ancestor_symbols(owner),
+                    *descendants,
+                    *(
+                        ancestor
+                        for descendant in descendants
+                        for ancestor in self.class_index.ancestor_symbols(descendant)
+                    ),
+                )
+            )
+        declared = self._class_for_reference(context, receiver, line=line)
+        if declared is None:
+            return None
+        return frozenset(
+            (declared.symbol, *self.class_index.ancestor_symbols(declared.symbol))
+        )
+
     @cached_property
     def callable_escapes(self) -> tuple[CompactCallableEscape, ...]:
         return tuple(
@@ -1202,12 +1474,15 @@ class ProductFlowRepository(
                 candidate_symbols,
                 CompactFunctionTargetResolutionViolation.DYNAMIC_BINDING,
             )
+        # Until the member's class is proved, `self.member.method` is attribute
+        # `method` of an unproved object, not the current class's own method.
         owner_symbol = self.class_index.symbol_for(
             file_path=context.file_path,
             qualname=target.owner_class_qualname,
         )
         if owner_symbol is None:
-            return OpenCompactFunctionTarget(
+            return self.attribute_target(
+                target.method_name,
                 candidate_symbols,
                 CompactFunctionTargetResolutionViolation.UNSUPPORTED_RECEIVER,
             )
@@ -1216,14 +1491,16 @@ class ProductFlowRepository(
             target.member_name,
         )
         if member_resolution.violation is not None:
-            return OpenCompactFunctionTarget(
+            return self.attribute_target(
+                target.method_name,
                 candidate_symbols,
                 member_resolution.violation,
             )
         declaring_class, member_declaration = member_resolution.candidates[0]
         reference_parts = member_declaration.annotation_reference_parts
         if reference_parts is None:
-            return OpenCompactFunctionTarget(
+            return self.attribute_target(
+                target.method_name,
                 candidate_symbols,
                 CompactFunctionTargetResolutionViolation.MISSING_DECLARATION,
             )
@@ -1233,7 +1510,8 @@ class ProductFlowRepository(
             allow_unique_unqualified=False,
         )
         if member_type_symbol is None:
-            return OpenCompactFunctionTarget(
+            return self.attribute_target(
+                target.method_name,
                 candidate_symbols,
                 CompactFunctionTargetResolutionViolation.MISSING_DECLARATION,
             )
@@ -1580,9 +1858,16 @@ class ProductFlowRepository(
             ),
             violation,
         )
+        # An unproved value's attribute is attribute `name` of an unknown object.
+        attribute = (
+            (self.attribute_target(reference.attribute_path[-1], (), violation),)
+            if reference.attribute_path
+            else ()
+        )
         return AlternativeCompactFunctionTargets(
             (
                 local_and_imported,
+                *attribute,
                 *(
                     self._captured_alias_resolution(
                         alias,
