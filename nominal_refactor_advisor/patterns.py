@@ -395,6 +395,20 @@ class PatternId(IntEnum):
         witness_capabilities=(CapabilityTag.PROVENANCE,),
     )
 
+    STRING_KIND_DISPATCH = _pattern(
+        stable_id=30,
+        display_name="String Dispatch On A Kind",
+        required_relation=(
+            "One subject is compared against three or more string literals in one "
+            "function, so the function restates the membership of a family that "
+            "has no declaration."
+        ),
+        witness_capabilities=(
+            CapabilityTag.CLOSED_FAMILY_DISPATCH,
+            CapabilityTag.PROVENANCE,
+        ),
+    )
+
     def __new__(
         cls,
         stable_id: int,
