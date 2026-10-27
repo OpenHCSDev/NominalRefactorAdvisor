@@ -956,6 +956,15 @@ class CompactCallTargetResolverABC(
         raise NotImplementedError
 
     @abstractmethod
+    def _returned_receiver_attribute_resolution(
+        self,
+        context: ResolutionContextT,
+        target: ReceiverAttributeCallTargetReference,
+    ) -> TargetResolutionT:
+        """Resolve an attribute of a receiver expression, through what a receiver call returns when proved."""
+        raise NotImplementedError
+
+    @abstractmethod
     def _through_receiver_binding(
         self,
         context: ResolutionContextT,
@@ -1276,12 +1285,16 @@ class QualifiedCallTargetReference(LexicalCallTargetReference):
 class ReceiverAttributeCallTargetReference(CompactCallTargetReference):
     """`<expression>.name`, where the receiver is no lexical path (`f().name`, `x[0].name`).
 
-    The receiver is unknown, but the access still selects attribute `name`: the
-    target is that attribute of whatever the receiver evaluates to, so it is
-    resolved as an unknown receiver followed by the attribute.
+    The access still selects attribute `name` of whatever the receiver
+    evaluates to. When the receiver is a call (`Cls.make(...).name`),
+    `receiver_call` is that call's target and `receiver_line` its line, so a
+    resolver that proves what the call returns can resolve the attribute on it;
+    otherwise the receiver is unknown and only the name bounds the target.
     """
 
     attribute_name: str
+    receiver_call: CompactCallTargetReference | None = None
+    receiver_line: int = 0
 
     def resolve_target(
         self,
@@ -1289,10 +1302,7 @@ class ReceiverAttributeCallTargetReference(CompactCallTargetReference):
         context: ResolutionContextT,
         position: CompactFlowPosition,
     ) -> TargetResolutionT:
-        return resolver._through_attribute_suffix(
-            resolver._local_function_target_resolution(context, self),
-            (self.attribute_name,),
-        )
+        return resolver._returned_receiver_attribute_resolution(context, self)
 
     @property
     def terminal_name(self) -> str:
@@ -4202,7 +4212,16 @@ class _CompactFlowCollector(
             return member_method
         reference = LexicalValueReference.from_expression(expression)
         if reference is None and isinstance(expression, ast.Attribute):
-            return ReceiverAttributeCallTargetReference(expression.attr)
+            receiver = expression.value
+            return ReceiverAttributeCallTargetReference(
+                expression.attr,
+                (
+                    self._call_target(receiver.func)
+                    if isinstance(receiver, ast.Call)
+                    else None
+                ),
+                receiver.lineno,
+            )
         if reference is None:
             return DynamicCallTargetReference()
         if (
