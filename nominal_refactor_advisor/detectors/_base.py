@@ -497,7 +497,7 @@ class IssueDetector(RequiredRelationDeclaration, metaclass=AutoRegisterMeta):
     __skip_if_no_key__ = True
     detector_id: ClassVar[str | None] = None
     finding_spec: ClassVar[FindingSpec]
-    detector_declaration: ClassVar[(DetectorDeclaration[object] | None)] = None
+    detector_declaration: ClassVar[DetectorDeclaration[object] | None] = None
     cache_granularity: ClassVar[DetectorCacheGranularity] = (
         DetectorCacheGranularity.GLOBAL
     )
@@ -552,7 +552,7 @@ class IssueDetector(RequiredRelationDeclaration, metaclass=AutoRegisterMeta):
         raise TypeError(f"{cls.__name__} has no finding_spec declaration")
 
     @classmethod
-    def resolved_detector_declaration(cls) -> (DetectorDeclaration[object] | None):
+    def resolved_detector_declaration(cls) -> DetectorDeclaration[object] | None:
         """Return the generated detector's retained nominal authority, if any."""
 
         for declaration_type in cls.__mro__:
@@ -683,7 +683,7 @@ class IssueDetector(RequiredRelationDeclaration, metaclass=AutoRegisterMeta):
         summary: str,
         evidence: tuple[SourceLocation, ...],
         /,
-        context: (FindingBuildContext | None) = None,
+        context: FindingBuildContext | None = None,
         **overrides: Unpack[FindingBuildContextKwargs],
     ) -> RefactorFinding:
         detector_id = type(self).effective_detector_id()
@@ -1172,7 +1172,7 @@ class CompactMultiModuleProjectionDetectorMixin(
         projections_by_family: CompactProjectionGroups,
         context: object | None,
         config: DetectorConfig,
-    ) -> (CompactFindingStream | None):
+    ) -> CompactFindingStream | None:
         del projections_by_family, context, config
         return None
 
@@ -1670,7 +1670,7 @@ class ParameterizedBaseSource:
     parameter_source: str
 
     @classmethod
-    def from_node(cls, node: ast.AST) -> (ParameterizedBaseSource | None):
+    def from_node(cls, node: ast.AST) -> ParameterizedBaseSource | None:
         if not isinstance(node, ast.Subscript):
             return None
         base_name = ClassSymbolResolutionAuthority.declared_base_name(node.value)
@@ -1693,7 +1693,7 @@ class CandidateCollectorBaseReference:
         node: ast.expr,
         *,
         line: int,
-    ) -> (CandidateCollectorBaseReference | None):
+    ) -> CandidateCollectorBaseReference | None:
         source_name = ClassSymbolResolutionAuthority.declared_base_name(node)
         if source_name is None:
             return None
@@ -3871,7 +3871,7 @@ def _companion_dataclass_surface_projection(
 
 def _manual_companion_dataclass_surface_candidate_for_pair(
     module: ParsedModule, authority_node: ast.ClassDef, companion_node: ast.ClassDef
-) -> (ManualCompanionDataclassSurfaceCandidate | None):
+) -> ManualCompanionDataclassSurfaceCandidate | None:
     projection = _companion_dataclass_surface_projection(authority_node, companion_node)
     if projection is None:
         return None
@@ -7490,7 +7490,7 @@ class ConcreteCandidateDetectorShape:
         cls,
         module: ParsedModule,
         node: ast.ClassDef,
-    ) -> (ConcreteCandidateDetectorShape | None):
+    ) -> ConcreteCandidateDetectorShape | None:
         declares_detector_id = any(
             binding is not None
             and binding.name == DetectorDeclaration.detector_id_field_name
@@ -7635,7 +7635,7 @@ class DeclarativeDetectorClassCandidate(
         cls,
         module: ParsedModule,
         node: ast.ClassDef,
-    ) -> (DeclarativeDetectorClassCandidate | None):
+    ) -> DeclarativeDetectorClassCandidate | None:
         if node.end_lineno is None or len(node.bases) != 1:
             return None
         base = ParameterizedBaseSource.from_node(node.bases[0])
@@ -7727,7 +7727,7 @@ class FieldOnlyFrozenDataclassCandidate(ClassLineWitnessCandidate):
         cls,
         module: ParsedModule,
         node: ast.ClassDef,
-    ) -> (FieldOnlyFrozenDataclassCandidate | None):
+    ) -> FieldOnlyFrozenDataclassCandidate | None:
         if not _is_frozen_dataclass(node):
             return None
         product_fields: list[tuple[str, str, str | None]] = []

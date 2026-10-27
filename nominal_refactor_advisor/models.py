@@ -892,7 +892,7 @@ class FindingBuildContext:
     @classmethod
     def merge(
         cls,
-        base: (FindingBuildContext | None) = None,
+        base: FindingBuildContext | None = None,
         **overrides: Unpack[FindingBuildContextKwargs],
     ) -> FindingBuildContext:
         context = cls() if base is None else base

@@ -306,7 +306,7 @@ class CompactFunctionCallResolution(ABC):
 
     @property
     @abstractmethod
-    def resolved_call(self) -> (CompactResolvedFunctionCall | None):
+    def resolved_call(self) -> CompactResolvedFunctionCall | None:
         raise NotImplementedError
 
     @cached_property

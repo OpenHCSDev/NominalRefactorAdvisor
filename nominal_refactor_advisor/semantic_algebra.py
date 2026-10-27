@@ -263,7 +263,7 @@ class VertexIndexEdge:
     @classmethod
     def from_distinct_indices(
         cls, first_index: int, second_index: int
-    ) -> (VertexIndexEdge | None):
+    ) -> VertexIndexEdge | None:
         if first_index == second_index:
             return None
         return cls.from_indices(first_index, second_index)

@@ -406,7 +406,7 @@ class _EnvironmentReadSyntax(_MissingValueSemantics):
         cls,
         kind: EnvironmentReadKind,
         node: ast.Call,
-    ) -> (_EnvironmentReadSyntax | None):
+    ) -> _EnvironmentReadSyntax | None:
         keyword_values = {
             keyword.arg: keyword.value
             for keyword in node.keywords
@@ -791,7 +791,7 @@ class EnvironmentValueNormalizer(Enum):
         return self.normalizer(value)
 
     @classmethod
-    def from_method_name(cls, method_name: str) -> (EnvironmentValueNormalizer | None):
+    def from_method_name(cls, method_name: str) -> EnvironmentValueNormalizer | None:
         return next(
             (normalizer for normalizer in cls if normalizer.method_name == method_name),
             None,

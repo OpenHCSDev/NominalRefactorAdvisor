@@ -234,7 +234,7 @@ class AstNameTemplateMatch:
         template_expressions: Sequence[ast.expr],
         candidate_expressions: Sequence[ast.expr],
         bindable_names: Sequence[str],
-    ) -> (AstNameTemplateMatch | None):
+    ) -> AstNameTemplateMatch | None:
         if len(template_expressions) != len(candidate_expressions):
             return None
         ordered_names = tuple(dict.fromkeys(bindable_names))

@@ -1426,7 +1426,7 @@ class SemanticClassSupplement:
         node: ast.ClassDef,
         *,
         constructed_type_names: Iterable[str] | None = None,
-    ) -> (SemanticClassSupplement | None):
+    ) -> SemanticClassSupplement | None:
         """Project one class declaration into its compact semantic facts."""
 
         authority = AutoRegisterClassAuthority(node)
@@ -1676,7 +1676,7 @@ class SemanticAuthorityMatch(DataclassJsonReport):
         facts: tuple[SemanticFact, ...],
         matches_by_fact_id: dict[str, set[str]],
         fact_references_by_id: dict[str, SemanticFactReference] | None = None,
-    ) -> (SemanticAuthorityMatch | None):
+    ) -> SemanticAuthorityMatch | None:
         if len(facts) < 2:
             return None
         active_fact_references = (
@@ -4703,7 +4703,7 @@ class ProjectionTypeScope:
     def from_function(
         cls,
         node: ast.FunctionDef | ast.AsyncFunctionDef,
-        parent: (ProjectionTypeScope | None),
+        parent: ProjectionTypeScope | None,
     ) -> ProjectionTypeScope:
         type_names_by_value = dict(
             parent.type_names_by_value if parent is not None else {}

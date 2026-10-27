@@ -1803,7 +1803,7 @@ class _RegisteredUnionSurfaceSource:
     line: int
 
     @classmethod
-    def from_node(cls, node: ast.AST) -> (_RegisteredUnionSurfaceSource | None):
+    def from_node(cls, node: ast.AST) -> _RegisteredUnionSurfaceSource | None:
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             for statement in statements_without_docstring(node.body):
                 if isinstance(statement, ast.For):
@@ -2196,7 +2196,7 @@ class _MethodFamilyMethodGroupProfile(ResidueHookNamesCarrier):
         cls,
         method_name: str,
         class_methods: tuple[tuple[CompactIndexedClass, CompactClassMethod], ...],
-    ) -> (_MethodFamilyMethodGroupProfile | None):
+    ) -> _MethodFamilyMethodGroupProfile | None:
         if len(class_methods) < 2:
             return None
         methods = tuple(method for _, method in class_methods)
@@ -2255,7 +2255,7 @@ class _MethodFamilyMethodPlan(ClassFamilyWitnessCarrier):
         base_name: str,
         method_name: str,
         class_methods: tuple[tuple[CompactIndexedClass, CompactClassMethod], ...],
-    ) -> (_MethodFamilyMethodPlan | None):
+    ) -> _MethodFamilyMethodPlan | None:
         profile = _MethodFamilyMethodGroupProfile.from_class_methods(
             method_name,
             class_methods,

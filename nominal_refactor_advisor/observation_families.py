@@ -693,7 +693,7 @@ class RegistryMutatingDecoratorFactory:
         cls,
         function: ast.FunctionDef,
         registry_names: frozenset[str],
-    ) -> (RegistryMutatingDecoratorFactory | None):
+    ) -> RegistryMutatingDecoratorFactory | None:
         parameters = (*function.args.posonlyargs, *function.args.args)
         parameter_names = tuple(parameter.arg for parameter in parameters)
         nested_functions = tuple(

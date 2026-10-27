@@ -109,7 +109,7 @@ class InjectiveTypeRegistryProof:
         unresolved_type_names: Iterable[str],
         reverse_lookup_names: Iterable[str] = (),
         consumer_symbols: Iterable[str] = (),
-    ) -> (InjectiveTypeRegistryProof | None):
+    ) -> InjectiveTypeRegistryProof | None:
         """Retain only a decisive counterexample from an incomplete key family.
 
         Unresolved types cannot establish either injectivity or missing keys. A

@@ -461,7 +461,7 @@ class CodemodSourceSnapshot(CodemodSelectorContext):
         findings: Iterable[RefactorFinding],
         *,
         detector_ids: Iterable[str] = (),
-        frontier_budget: (FindingRecipeFrontierBudget | None) = None,
+        frontier_budget: FindingRecipeFrontierBudget | None = None,
     ) -> FindingRecipePlan:
         return codemod_plan_from_findings(
             findings,
@@ -982,7 +982,7 @@ class CodemodPlanRoot(JsonReport, ABC):
         snapshot: CodemodSourceSnapshot,
         *,
         backend: CodemodBackend | None = None,
-    ) -> (CodemodPlanDocumentSimulation | CodemodPlanSequenceSimulation):
+    ) -> CodemodPlanDocumentSimulation | CodemodPlanSequenceSimulation:
         """Simulate this plan against one complete source-state authority."""
 
         raise NotImplementedError
@@ -1996,7 +1996,7 @@ class FindingRecipeSynthesisRecord(DataclassJsonReport):
         return self.evaluation.evaluation_declaration_name
 
     @json_report_property()
-    def conflict_evidence(self) -> (CurrentSnapshotRecipeConflictEvidence | None):
+    def conflict_evidence(self) -> CurrentSnapshotRecipeConflictEvidence | None:
         return self.evaluation.conflict_evidence
 
     @json_report_property()

@@ -1206,7 +1206,7 @@ class CurrentClassMemberMethodReference(CurrentClassCallTargetReference):
         *,
         owner_class_qualname: str | None,
         receiver_name: str | None,
-    ) -> (CurrentClassMemberMethodReference | None):
+    ) -> CurrentClassMemberMethodReference | None:
         if (
             owner_class_qualname is None
             or receiver_name is None
@@ -2499,7 +2499,7 @@ class CompactFunctionCall(DataclassGraphValue):
     ) -> CompactCallBinding[CompactValueUse]:
         return self.arguments.bind_to(declaration)
 
-    def product_construction(self) -> (CompactProductConstruction | None):
+    def product_construction(self) -> CompactProductConstruction | None:
         if (
             self.result.binding is None
             or self.arguments.positional

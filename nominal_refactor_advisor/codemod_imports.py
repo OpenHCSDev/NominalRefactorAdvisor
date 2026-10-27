@@ -1156,7 +1156,7 @@ class RequestedImportStatement:
         return self.declaration.aliases
 
     @property
-    def module_name(self) -> (ImportFromModuleName | None):
+    def module_name(self) -> ImportFromModuleName | None:
         if not isinstance(self.statement, ast.ImportFrom):
             return None
         return ImportFromModuleName.from_node(self.statement)

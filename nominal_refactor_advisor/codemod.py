@@ -4153,7 +4153,7 @@ class DispatchPolymorphismSource:
     def from_function(
         cls,
         node: ast.FunctionDef,
-    ) -> (DispatchPolymorphismSource | None):
+    ) -> DispatchPolymorphismSource | None:
         candidates = DispatchPolymorphismFunction.derived_from_function(node)
         if len(candidates) != 1:
             return None
@@ -5443,7 +5443,7 @@ class ConsumerFamilyBuilderAuthorityCandidate:
 
     def invocation_signature(
         self,
-    ) -> (ConsumerFamilyBuilderInvocationSignature | None):
+    ) -> ConsumerFamilyBuilderInvocationSignature | None:
         arguments = self.method.args
         if (
             self.method.decorator_list
@@ -8032,7 +8032,7 @@ class SemanticMirrorFindingRecipeStrategy(ABC, metaclass=AutoRegisterMeta):
     def strategy_for(
         cls,
         metrics: FindingMetrics,
-    ) -> (SemanticMirrorFindingRecipeStrategy | None):
+    ) -> SemanticMirrorFindingRecipeStrategy | None:
         strategy_type = mro_registry_value(cls.__registry__, type(metrics))
         return strategy_type() if strategy_type is not None else None
 
@@ -8076,7 +8076,7 @@ class SemanticMirrorOperationTargets:
     def from_finding(
         context: CodemodSelectorContext,
         finding: RefactorFinding,
-    ) -> (SemanticMirrorOperationTargets | None):
+    ) -> SemanticMirrorOperationTargets | None:
         seed = SemanticMirrorRecipeSeedLocations.from_finding(finding)
         if seed is None:
             return None
@@ -8133,7 +8133,7 @@ class SemanticMirrorRecipeSeedLocations:
     def from_finding(
         cls,
         finding: RefactorFinding,
-    ) -> (SemanticMirrorRecipeSeedLocations | None):
+    ) -> SemanticMirrorRecipeSeedLocations | None:
         projection = finding.projection_evidence
         authority = finding.authority_evidence
         if projection is None or authority is None:
@@ -8153,7 +8153,7 @@ class SemanticMirrorImportBoundary:
         cls,
         seed: SemanticMirrorRecipeSeedLocations,
         context: CodemodSelectorContext,
-    ) -> (SemanticMirrorImportBoundary | None):
+    ) -> SemanticMirrorImportBoundary | None:
         projection_path = SourcePathResolutionAuthority.from_source_index(
             seed.projection.file_path,
             context.source_index,
@@ -8294,7 +8294,7 @@ class EnumStringMemberDeclaration:
     @classmethod
     def from_statement(
         cls, statement: ast.stmt
-    ) -> (EnumStringMemberDeclaration | None):
+    ) -> EnumStringMemberDeclaration | None:
         pair = SingleAssignmentAndValueNameProjection(statement).pair
         if pair is None:
             return None
@@ -8363,7 +8363,7 @@ class EnumSubsetProjection:
         statement: ast.stmt,
         authority: EnumStringAuthority,
         reference: ClassAuthorityReferenceProof,
-    ) -> (EnumSubsetProjection | None):
+    ) -> EnumSubsetProjection | None:
         pair = SingleAssignmentAndValueNameProjection(statement).pair
         if pair is None or pair[0] == "__all__":
             return None
@@ -8679,7 +8679,7 @@ class SemanticMirrorRecipeSelection:
     def from_builders(
         cls,
         builders: tuple[MappingSemanticMirrorRecipeBuilder, ...],
-    ) -> (SemanticMirrorRecipeSelection | None):
+    ) -> SemanticMirrorRecipeSelection | None:
         candidates = tuple(
             cls(builder=builder, recipe=recipe)
             for builder in builders
@@ -8759,7 +8759,7 @@ class ResolvedFunctionProjectionTarget(FunctionProjectionTarget):
         *,
         source_path: str,
         function_qualname: str,
-    ) -> (ResolvedFunctionProjectionTarget | None):
+    ) -> ResolvedFunctionProjectionTarget | None:
         target_ids = SourceIndexTargetSelector.for_function_or_method(
             file_path=source_path,
             qualname=function_qualname,
@@ -8778,7 +8778,7 @@ class ResolvedFunctionProjectionTarget(FunctionProjectionTarget):
         *,
         source_path: str,
         line: int,
-    ) -> (ResolvedFunctionProjectionTarget | None):
+    ) -> ResolvedFunctionProjectionTarget | None:
         target = context.source_index.targets_by_file.smallest_enclosing_target(
             source_path,
             line,
@@ -8798,7 +8798,7 @@ class ResolvedFunctionProjectionTarget(FunctionProjectionTarget):
         *,
         source_path: str,
         target: AstTargetDigest,
-    ) -> (ResolvedFunctionProjectionTarget | None):
+    ) -> ResolvedFunctionProjectionTarget | None:
         node = context.ast_target_nodes_by_id.get(target.target_id)
         if not isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
             return None
@@ -8823,7 +8823,7 @@ class FunctionReturnProjectionTarget(ResolvedFunctionProjectionTarget):
         source_path: str,
         function_qualname: str,
         line: int,
-    ) -> (FunctionReturnProjectionTarget | None):
+    ) -> FunctionReturnProjectionTarget | None:
         function = ResolvedFunctionProjectionTarget.from_function_identity(
             context,
             source_path=source_path,
@@ -9282,7 +9282,7 @@ class DataclassAuthorityReferenceProof:
         source_path: str,
         target: DataclassPayloadAuthorityTarget,
         generated_import_source: str | None,
-    ) -> (DataclassAuthorityReferenceProof | None):
+    ) -> DataclassAuthorityReferenceProof | None:
         try:
             reference = ClassAuthorityReferenceProof.from_context(
                 context,
@@ -9368,7 +9368,7 @@ class DataclassInstanceFieldProjection:
         cls,
         authority: DataclassPayloadAuthorityTarget,
         field_values: tuple[ReturnFieldValue, ...],
-    ) -> (DataclassInstanceFieldProjection | None):
+    ) -> DataclassInstanceFieldProjection | None:
         if (
             not field_values
             or tuple(field.field_name for field in field_values)
@@ -9611,7 +9611,7 @@ class DataclassInstanceFieldRunProjection:
         cls,
         authority: DataclassPayloadAuthorityTarget,
         projection: ReturnDictProjectionTarget,
-    ) -> (DataclassInstanceFieldRunProjection | None):
+    ) -> DataclassInstanceFieldRunProjection | None:
         instance = DataclassInstanceFieldProjection.from_field_values(
             authority,
             projection.field_values,
@@ -9690,7 +9690,7 @@ class DataclassKeyValueElementRunProjection:
         cls,
         authority: DataclassPayloadAuthorityTarget,
         projection: ReturnKeyValueSequenceProjectionTarget,
-    ) -> (DataclassKeyValueElementRunProjection | None):
+    ) -> DataclassKeyValueElementRunProjection | None:
         instance = DataclassInstanceFieldProjection.from_field_values(
             authority,
             projection.field_values,
@@ -9773,7 +9773,7 @@ class DataclassFieldNameCollectionProjectionTarget(ResolvedFunctionProjectionTar
         binding_name: str,
         line: int,
         field_names: frozenset[str],
-    ) -> (DataclassFieldNameCollectionProjectionTarget | None):
+    ) -> DataclassFieldNameCollectionProjectionTarget | None:
         function = ResolvedFunctionProjectionTarget.from_source_line(
             context,
             source_path=source_path,
@@ -9857,7 +9857,7 @@ class DataclassesModuleReference:
             ReturnCollectionProjectionTarget
             | DataclassFieldNameCollectionProjectionTarget
         ),
-    ) -> (DataclassesModuleReference | None):
+    ) -> DataclassesModuleReference | None:
         module = context.module_nodes_by_file_path.get(projection.source_path)
         source = context.sources_by_file_path.get(projection.source_path)
         if module is None or source is None:
@@ -10594,7 +10594,7 @@ class SourceDerivedDataclassProjectionRecipeParts(
         context: CodemodSelectorContext,
         authority: DataclassPayloadAuthorityTarget,
         operation: SourceDerivedDataclassProjectionOperation[ProjectionTargetT],
-    ) -> (SourceDerivedDataclassProjectionRecipeParts[ProjectionTargetT] | None):
+    ) -> SourceDerivedDataclassProjectionRecipeParts[ProjectionTargetT] | None:
         try:
             operation.required_derivation(context)
         except ValueError:
@@ -10885,7 +10885,7 @@ class NominalConstructorCall:
         source_path: str,
         scope: ast.FunctionDef | ast.AsyncFunctionDef | None,
         call_node: ast.Call,
-    ) -> (NominalConstructorCall | None):
+    ) -> NominalConstructorCall | None:
         if call_node.args or any(keyword.arg is None for keyword in call_node.keywords):
             return None
         keyword_arguments = tuple(call_node.keywords)
@@ -10992,7 +10992,7 @@ class DataclassConstructorProjectionMethod:
         method_node: ast.FunctionDef,
         constructor_symbol: str,
         remaining_keyword_names: tuple[str, ...],
-    ) -> (DataclassConstructorProjectionMethod | None):
+    ) -> DataclassConstructorProjectionMethod | None:
         body = statements_without_docstring(method_node.body)
         if (
             method_node.decorator_list
@@ -11652,7 +11652,7 @@ class ClassFamilyCollectionMembershipProjection(StrEnum):
         declares_autoregister_meta: bool,
         covers_complete_family: bool,
         all_members_are_direct: bool,
-    ) -> (ClassFamilyCollectionMembershipProjection | None):
+    ) -> ClassFamilyCollectionMembershipProjection | None:
         return single_item(
             tuple(
                 projection

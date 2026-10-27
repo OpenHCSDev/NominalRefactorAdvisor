@@ -758,7 +758,7 @@ class AutoRegisterInstanceViewComponent(RegistryEntries):
         authority_node: ast.ClassDef,
         statement: ast.stmt,
         class_graph: DirectModuleClassGraph,
-    ) -> (AutoRegisterInstanceViewComponent | None):
+    ) -> AutoRegisterInstanceViewComponent | None:
         if not isinstance(statement, RegistryAssignment):
             return None
         try:

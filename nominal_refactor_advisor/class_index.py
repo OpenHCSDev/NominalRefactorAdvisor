@@ -218,7 +218,7 @@ class CompactNominalReference(NamedTuple):
     """One source reference together with its declaration-time root binding."""
 
     source_parts: tuple[str, ...]
-    root_binding: (CompactNominalBinding | None)
+    root_binding: CompactNominalBinding | None
 
     @property
     def resolved_parts(self) -> tuple[str, ...]:
@@ -846,7 +846,7 @@ class CompactExplicitPublicExportContract(CompactModulePublicExportContract):
     def from_declaration(
         cls,
         declaration: ModulePublicExportSourceAuthority,
-    ) -> (CompactExplicitPublicExportContract | None):
+    ) -> CompactExplicitPublicExportContract | None:
         references = declaration.literal_references
         if references is None:
             return None
@@ -1048,7 +1048,7 @@ class CompactClassSyntaxFacets:
 
     closed_axis_branch_functions: tuple[CompactClosedAxisBranchFunction, ...] = ()
     exact_type_guards: tuple[CompactExactTypeGuard, ...] = ()
-    autoregister_reference_index: (CompactAutoRegisterReferenceIndex | None) = None
+    autoregister_reference_index: CompactAutoRegisterReferenceIndex | None = None
 
 
 @dataclass(frozen=True)
@@ -1822,7 +1822,7 @@ class SelectionGuardKind(StrEnum):
     @classmethod
     def proves_exact_selection(
         cls,
-        guard_kinds: set[(SelectionGuardKind | None)],
+        guard_kinds: set[SelectionGuardKind | None],
     ) -> bool:
         """Return whether the observed guards prove exactly one selected item."""
 
@@ -1840,7 +1840,7 @@ class SelectionGuardKind(StrEnum):
         cls,
         node: ast.AST,
         match_name: str,
-    ) -> (SelectionGuardKind | None):
+    ) -> SelectionGuardKind | None:
         if (
             isinstance(node, ast.UnaryOp)
             and isinstance(node.op, ast.Not)
@@ -1879,7 +1879,7 @@ class ClsRegistryMembership:
     key_expr: str
 
     @classmethod
-    def from_node(cls, node: ast.AST) -> (ClsRegistryMembership | None):
+    def from_node(cls, node: ast.AST) -> ClsRegistryMembership | None:
         if not (
             isinstance(node, ast.Compare)
             and len(node.ops) == 1
@@ -1935,7 +1935,7 @@ class RegistryLookupShape:
     def from_method(
         cls,
         method: ast.FunctionDef | ast.AsyncFunctionDef,
-    ) -> (RegistryLookupShape | None):
+    ) -> RegistryLookupShape | None:
         body = _trim_method_docstring(method)
         if len(body) == 1 and isinstance(body[0], ast.Try):
             try_node = body[0]
@@ -2748,7 +2748,7 @@ class ModulePublicExportSourceAuthority:
     def from_statement(
         cls,
         statement: ast.stmt,
-    ) -> (ModulePublicExportSourceAuthority | None):
+    ) -> ModulePublicExportSourceAuthority | None:
         if (
             isinstance(statement, ast.Assign)
             and len(statement.targets) == 1
@@ -2769,7 +2769,7 @@ class ModulePublicExportSourceAuthority:
     def from_module(
         cls,
         module: ast.Module,
-    ) -> (ModulePublicExportSourceAuthority | None):
+    ) -> ModulePublicExportSourceAuthority | None:
         declarations = tuple(
             declaration
             for statement in module.body
@@ -3377,7 +3377,7 @@ class ModuleNominalBindingView(ABC):
         *,
         line: int,
         preceding_class_bound_names: frozenset[str],
-    ) -> (ModuleNominalBindingWitness | None):
+    ) -> ModuleNominalBindingWitness | None:
         raise NotImplementedError
 
     @abstractmethod
@@ -3387,7 +3387,7 @@ class ModuleNominalBindingView(ABC):
         reference: ast.expr,
         *,
         line: int,
-    ) -> (ModuleNominalBindingWitness | None):
+    ) -> ModuleNominalBindingWitness | None:
         raise NotImplementedError
 
 

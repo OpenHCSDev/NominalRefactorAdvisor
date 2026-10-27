@@ -524,7 +524,7 @@ class _CatalogInstallingMixinShape:
     def from_method(
         cls,
         method: ast.FunctionDef,
-    ) -> (_CatalogInstallingMixinShape | None):
+    ) -> _CatalogInstallingMixinShape | None:
         return (
             Maybe.of(method)
             .filter(lambda function: function.name == "__init_subclass__")

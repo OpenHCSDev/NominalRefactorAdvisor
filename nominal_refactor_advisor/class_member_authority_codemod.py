@@ -159,7 +159,7 @@ class ClassMemberPromotionTargets(CodemodSourceSnapshot):
         *,
         source_path: str | None,
         class_names: tuple[str, ...],
-    ) -> (ClassMemberPromotionTargets | None):
+    ) -> ClassMemberPromotionTargets | None:
         nodes_by_target_id = context.ast_target_nodes_by_id
         targets: list[ResolvedClassTarget] = []
         for class_name in class_names:
@@ -1348,7 +1348,7 @@ class ClassMemberPromotionStatement(ABC):
     def for_statement(
         cls,
         statement: ast.stmt,
-    ) -> (ClassMemberPromotionStatement | None):
+    ) -> ClassMemberPromotionStatement | None:
         """Resolve one promotable member through its nominal statement family."""
 
         matches = tuple(

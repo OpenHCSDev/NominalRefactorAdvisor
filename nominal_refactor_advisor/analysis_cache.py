@@ -819,7 +819,7 @@ class AnalysisCacheIdentity(AnalysisCacheEntryContext):
         config: DetectorConfig,
         *,
         source_policy: PythonSourcePathPolicy | None = None,
-        source_signature_cache: (SourceFileSignatureCache | None) = None,
+        source_signature_cache: SourceFileSignatureCache | None = None,
         report_roots: tuple[Path, ...] = (),
         detector_types: tuple[type[IssueDetector], ...] | None = None,
     ) -> AnalysisCacheIdentity:
@@ -843,7 +843,7 @@ class AnalysisCacheIdentity(AnalysisCacheEntryContext):
         source_paths: tuple[Path, ...],
         config: DetectorConfig,
         *,
-        source_signature_cache: (SourceFileSignatureCache | None) = None,
+        source_signature_cache: SourceFileSignatureCache | None = None,
         report_roots: tuple[Path, ...] = (),
         detector_types: tuple[type[IssueDetector], ...] | None = None,
     ) -> AnalysisCacheIdentity:

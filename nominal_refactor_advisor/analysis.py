@@ -2658,7 +2658,7 @@ def analyze_modules(
     config: DetectorConfig | None = None,
     *,
     analysis_workers: int = 1,
-    semantic_descent_source: (SemanticDescentGraphAnalysisSource | None) = None,
+    semantic_descent_source: SemanticDescentGraphAnalysisSource | None = None,
 ) -> list[RefactorFinding]:
     """Run all registered detectors against parsed modules."""
 
@@ -2680,7 +2680,7 @@ def analyze_detector_types(
     *,
     detector_types: tuple[type[IssueDetector], ...],
     analysis_workers: int = 1,
-    semantic_descent_source: (SemanticDescentGraphAnalysisSource | None) = None,
+    semantic_descent_source: SemanticDescentGraphAnalysisSource | None = None,
     detector_type_minimum_auto_work_items: int = 64,
 ) -> list[RefactorFinding]:
     """Run selected detector classes against parsed modules."""

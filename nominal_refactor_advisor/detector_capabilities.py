@@ -82,7 +82,7 @@ class DetectorContributionRole(StrEnum):
     def evidence_for(
         self,
         detector_type: type[IssueDetector],
-    ) -> (DetectorContributionEvidence | None):
+    ) -> DetectorContributionEvidence | None:
         """Recover this contribution and every abstract slot it fulfills."""
 
         if not self.applies_to(detector_type):

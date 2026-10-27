@@ -272,7 +272,7 @@ class _RegexGroupExtractorMethod:
     def from_method(
         cls,
         method: ast.FunctionDef,
-    ) -> (_RegexGroupExtractorMethod | None):
+    ) -> _RegexGroupExtractorMethod | None:
         statements = ast_sequence(
             statements_without_docstring(method.body), ast.Assign, ast.Return
         )
