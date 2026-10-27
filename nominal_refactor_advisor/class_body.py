@@ -29,10 +29,9 @@ from .class_index import (
 
 
 class ClassBodyDeclarationIdentity(NamedTuple):
-    """What makes two class-body declarations the same declaration."""
+    """What makes two class-body declarations the same declaration: the module-local
+    digest (which covers kind and name) and how the repository bound its star-hidden names."""
 
-    kind: ClassBodyDeclarationKind
-    name: str
     digest: str
     star_bindings: tuple[tuple[str, str], ...]
 
@@ -257,12 +256,7 @@ class ClassBodyIndex:
             if qualified_name is None:
                 return None
             star_bindings.append((deferred.name, qualified_name))
-        return ClassBodyDeclarationIdentity(
-            declaration.kind,
-            declaration.name,
-            declaration.digest,
-            tuple(star_bindings),
-        )
+        return ClassBodyDeclarationIdentity(declaration.digest, tuple(star_bindings))
 
     def _star_binding(self, module_name: str, deferred: StarDeferredName) -> str | None:
         """What a star-hidden name is bound to, when the repository's exports decide it.

@@ -17,6 +17,7 @@ from abc import ABC, abstractmethod
 from collections import defaultdict, deque
 from collections.abc import (
     Hashable,
+    Mapping,
     Iterator,
     Sequence,
 )
@@ -1071,6 +1072,7 @@ class CompactModuleClassProjection(
     latent_rosters: tuple[LatentRosterObservation, ...] = ()
     named_projection_surfaces: tuple[CompactNamedProjectionSurface, ...] = ()
     class_methods: tuple[CompactClassMethod, ...] = ()
+    class_references: tuple[CompactClassReference, ...] = ()
 
     def header_core(self) -> CompactModuleClassProjection:
         """Project only the class declarations required by the family index."""
@@ -2069,6 +2071,39 @@ class CompactExactTypeGuard(CompactQualifiedSourceLocation):
             f"isinstance({self.subject_expression}, {self.type_reference_expression})"
         )
         return membership if self.matches_exact_type_when_true else f"not {membership}"
+
+
+class ClassReferenceRole(StrEnum):
+    """How one expression uses a module-level name that may be a class."""
+
+    TYPE_TEST = "type_test"
+    CLASS_PATTERN = "class_pattern"
+    TYPE_KEY = "type_key"
+    CONSTRUCTION = "construction"
+    OTHER = "other"
+
+    @property
+    def distinguishes_identity(self) -> bool:
+        """The use answers differently for two classes even when their bodies agree."""
+
+        return self in (
+            ClassReferenceRole.TYPE_TEST,
+            ClassReferenceRole.CLASS_PATTERN,
+            ClassReferenceRole.TYPE_KEY,
+        )
+
+
+class CompactClassReference(NamedTuple):
+    """One read of a module-level name by one consumer, and the role it plays.
+
+    `consumer` is the enclosing function or class qualname, or the module
+    itself (empty); `reference_parts` the full name or attribute chain read.
+    """
+
+    consumer: str
+    reference_parts: tuple[str, ...]
+    role: ClassReferenceRole
+    line: int
 
 
 ClassDeclarationT = TypeVar("ClassDeclarationT", bound=ClassDeclaration)
@@ -3451,6 +3486,7 @@ class ClassBodyDeclarationDigest(NamedTuple):
     digest: str
     deferred: tuple[StarDeferredName, ...]
     unbound: tuple[str, ...]
+    assigns_value: bool
 
 
 @dataclass(frozen=True)
@@ -3543,6 +3579,7 @@ class ClassBodyNormalForm:
     kind: ClassBodyDeclarationKind
     name: str
     line: int
+    assigns_value: bool
     syntax: str
     global_bindings: tuple[ModuleNominalBindingWitness, ...]
     class_scope_names: tuple[str, ...]
@@ -3581,6 +3618,7 @@ class ClassBodyNormalForm:
             self.digest,
             self.deferred_names,
             self.unresolved_names,
+            self.assigns_value,
         )
 
     @classmethod
@@ -3694,6 +3732,10 @@ class ClassBodyNormalForm:
             kind=kind,
             name=name,
             line=statement.lineno,
+            assigns_value=(
+                isinstance(statement, (ast.Assign, ast.AnnAssign))
+                and statement.value is not None
+            ),
             syntax=ast.dump(normalized, include_attributes=False),
             global_bindings=tuple(global_bindings),
             class_scope_names=tuple(class_scope_names),
@@ -4682,6 +4724,7 @@ class CompactModuleClassProjectionFamily(CollectedFamily[CompactModuleClassProje
                     parsed_module
                 ),
                 class_methods=class_methods,
+                class_references=_compact_class_references(parsed_module),
             )
         ]
 
@@ -5973,6 +6016,136 @@ def _compact_autoregister_reference_projection(
             )
         ),
     )
+
+
+_GENERIC_ALIAS_ROOTS = frozenset(
+    ("builtins", "typing", "typing_extensions", "collections")
+)
+
+
+def _compact_class_references(
+    parsed_module: ParsedModule,
+) -> tuple[CompactClassReference, ...]:
+    """Every read of a module-level name chain, by consumer and role.
+
+    Only chains rooted at a name the module itself binds are kept, and a root a
+    function rebinds locally is that function's own. The join resolves the
+    chains against the class index; most name no class and are dropped there.
+    """
+
+    syntax_index = module_syntax_index(parsed_module.module)
+    module_bound_names = LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(
+        parsed_module.module.body
+    )
+    import_aliases = module_import_aliases(parsed_module)
+    locals_by_function_index = {
+        function_index: LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(function.body)
+        | LEXICAL_SCOPE_BINDING_AUTHORITY.argument_names(function)
+        for function_index in {
+            index
+            for scope in syntax_index.scopes
+            for index in scope.function_node_indices
+        }
+        if isinstance(
+            function := syntax_index.depth_first_nodes[function_index],
+            (ast.FunctionDef, ast.AsyncFunctionDef),
+        )
+    }
+    nodes = syntax_index.depth_first_nodes
+    parent_indices = syntax_index.parent_indices
+    references: dict[tuple[str, tuple[str, ...], ClassReferenceRole], int] = {}
+    for node_type in (ast.Name, ast.Attribute):
+        for node_index in syntax_index.node_indices_by_type.get(node_type, ()):
+            node = nodes[node_index]
+            if not isinstance(getattr(node, "ctx", None), ast.Load):
+                continue
+            parent_index = parent_indices[node_index]
+            parent = nodes[parent_index] if parent_index >= 0 else None
+            if isinstance(parent, ast.Attribute) and parent.value is node:
+                continue
+            parts = ExpressionReference.decoded(node).attribute_chain
+            if parts is None or parts[0] not in module_bound_names:
+                continue
+            scope = syntax_index.scopes[syntax_index.scope_ids[node_index]]
+            if any(
+                parts[0] in locals_by_function_index.get(function_index, ())
+                for function_index in scope.function_node_indices
+            ):
+                continue
+            grandparent_index = parent_indices[parent_index] if parent is not None else -1
+            grandparent = nodes[grandparent_index] if grandparent_index >= 0 else None
+            role = _class_reference_role(node, parent, grandparent, import_aliases)
+            key = (".".join(scope.names), parts, role)
+            references[key] = min(references.get(key, node.lineno), node.lineno)
+    return tuple(
+        CompactClassReference(consumer, parts, role, line)
+        for (consumer, parts, role), line in sorted(
+            references.items(), key=lambda item: (item[1], item[0][0], item[0][1])
+        )
+    )
+
+
+def _is_builtin_call(node: ast.AST | None, name: str) -> bool:
+    return (
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == name
+    )
+
+
+def _class_reference_role(
+    node: ast.expr,
+    parent: ast.AST | None,
+    grandparent: ast.AST | None,
+    import_aliases: Mapping[str, str],
+) -> ClassReferenceRole:
+    if isinstance(parent, ast.Call) and parent.func is node:
+        return ClassReferenceRole.CONSTRUCTION
+    type_test_operand = (
+        parent.args[1]
+        if isinstance(parent, ast.Call)
+        and (_is_builtin_call(parent, "isinstance") or _is_builtin_call(parent, "issubclass"))
+        and len(parent.args) == 2
+        else None
+    )
+    if type_test_operand is node or (
+        isinstance(parent, ast.Tuple)
+        and isinstance(grandparent, ast.Call)
+        and (
+            _is_builtin_call(grandparent, "isinstance")
+            or _is_builtin_call(grandparent, "issubclass")
+        )
+        and len(grandparent.args) == 2
+        and grandparent.args[1] is parent
+    ):
+        return ClassReferenceRole.TYPE_TEST
+    if (
+        isinstance(parent, ast.Compare)
+        and any(isinstance(op, (ast.Is, ast.IsNot, ast.Eq, ast.NotEq)) for op in parent.ops)
+        and any(
+            _is_builtin_call(operand, "type")
+            for operand in (parent.left, *parent.comparators)
+        )
+    ):
+        return ClassReferenceRole.TYPE_TEST
+    if isinstance(parent, ast.MatchClass) and parent.cls is node:
+        return ClassReferenceRole.CLASS_PATTERN
+    if isinstance(parent, ast.Dict) and any(key is node for key in parent.keys):
+        return ClassReferenceRole.TYPE_KEY
+    if isinstance(parent, ast.Subscript) and parent.slice is node:
+        subscripted = ExpressionReference.decoded(parent.value).attribute_chain
+        root = (
+            None
+            if subscripted is None
+            else import_aliases.get(subscripted[0], subscripted[0])
+        )
+        if subscripted is not None and (
+            (subscripted[0] not in import_aliases and hasattr(builtins, subscripted[0]))
+            or (root is not None and root.split(".", 1)[0] in _GENERIC_ALIAS_ROOTS)
+        ):
+            return ClassReferenceRole.OTHER
+        return ClassReferenceRole.TYPE_KEY
+    return ClassReferenceRole.OTHER
 
 
 @lru_cache(maxsize=None)

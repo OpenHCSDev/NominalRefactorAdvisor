@@ -481,6 +481,33 @@ class PatternId(IntEnum):
             CapabilityTag.PROVENANCE,
         ),
     )
+    DUPLICATE_CLASS = _pattern(
+        stable_id=38,
+        display_name="Duplicate Class",
+        required_relation=(
+            "Every declaration of one class is a declaration another class "
+            "already makes, with the same syntax and the same bindings, so the "
+            "class restates a body that exists and is either that class or "
+            "should compose it."
+        ),
+        witness_capabilities=(
+            CapabilityTag.NOMINAL_IDENTITY,
+            CapabilityTag.SHARED_ALGORITHM_AUTHORITY,
+        ),
+    )
+    MISSING_MIXIN = _pattern(
+        stable_id=39,
+        display_name="Missing Mixin",
+        required_relation=(
+            "Two classes make the same block of declarations and each keeps "
+            "declarations of its own, so the block is one capability declared "
+            "twice and belongs in one mixin or shared base both compose."
+        ),
+        witness_capabilities=(
+            CapabilityTag.SHARED_ALGORITHM_AUTHORITY,
+            CapabilityTag.MRO_ORDERING,
+        ),
+    )
 
     def __new__(
         cls,
