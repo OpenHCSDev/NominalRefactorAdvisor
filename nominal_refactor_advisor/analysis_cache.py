@@ -46,6 +46,7 @@ from .implementation_identity import (
 from .models import RefactorFinding, SourceLocation
 from .planner import RefactorExecutionPlanReport
 from .scan_cache import ScanCache
+from .semantic_descent import SemanticDescentModuleFamilySignature
 from .source_geometry import read_source_text
 from .source_identity import python_source_cache_signature
 
@@ -656,12 +657,9 @@ def semantic_module_hash(module: ParsedModule) -> str:
 
 
 @dataclass(frozen=True)
-class ModuleSourceSignature:
+class ModuleSourceSignature(SemanticDescentModuleFamilySignature):
     """Parsed-module identity used for per-module detector-output shards."""
 
-    path: str
-    parsed_import_name: str
-    is_package_init: bool
     source_hash: str
 
     @classmethod
