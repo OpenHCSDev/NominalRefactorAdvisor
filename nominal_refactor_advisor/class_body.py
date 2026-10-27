@@ -24,7 +24,6 @@ from .class_index import (
     CompactIndexedClass,
     CompactModuleClassHeader,
     CompactRepositoryPublicExposureIndex,
-    StarDeferredName,
 )
 
 
@@ -252,38 +251,13 @@ class ClassBodyIndex:
             return None
         star_bindings: list[tuple[str, str]] = []
         for deferred in declaration.deferred:
-            qualified_name = self._star_binding(module_name, deferred)
+            qualified_name = self.exposure.star_settled_binding(
+                module_name, deferred.name, deferred.unshadowed
+            )
             if qualified_name is None:
                 return None
             star_bindings.append((deferred.name, qualified_name))
         return ClassBodyDeclarationIdentity(declaration.digest, tuple(star_bindings))
-
-    def _star_binding(self, module_name: str, deferred: StarDeferredName) -> str | None:
-        """What a star-hidden name is bound to, when the repository's exports decide it.
-
-        No star import exposing the name leaves the module's own binding; the
-        last star import that exposes it rebinds it to that module's binding;
-        an origin whose exports are unknown decides nothing.
-        """
-
-        if self.exposure.star_imports_exclude(module_name, deferred.name):
-            return deferred.unshadowed
-        if not self.exposure.contains_module(module_name):
-            return None
-        for origin in reversed(self.exposure.star_import_origins_for(module_name)):
-            if origin.module_name is None:
-                return None
-            exposure = self.exposure.exposure_for(origin.module_name, deferred.name)
-            if exposure.proves_public_exposure:
-                origin_projection = self.exposure.projections_by_module_name[
-                    origin.module_name
-                ]
-                return dict(origin_projection.import_aliases).get(
-                    deferred.name, f"{origin.module_name}.{deferred.name}"
-                )
-            if exposure.introduces_uncertainty:
-                return None
-        return deferred.unshadowed
 
 
 __all__ = (

@@ -18,7 +18,6 @@ import ast
 import builtins
 import re
 import sys
-from importlib.machinery import PathFinder
 from abc import ABC, abstractmethod
 from collections import Counter, defaultdict
 from collections.abc import Iterable, Iterator, Sequence
@@ -30,11 +29,10 @@ from typing import ClassVar
 from .ast_tools import (
     ModuleSyntaxIndex,
     ParsedModule,
-    SourceModule,
     module_syntax_index,
 )
 from .class_index import module_import_aliases
-from .python_module_identity import PythonModulePathIdentity
+from .installed_source import InstalledModule
 from .quoted_reference import (
     DeclaredInterpreter,
     ModuleReferenceScope,
@@ -126,6 +124,17 @@ class DeclaredIdentityFamily(ShapeFamily[ModuleDeclarations]):
     item_type = ModuleDeclarations
 
     SUBCLASS_HOOK = "__init_subclass__"
+
+    @classmethod
+    @cache
+    def installed(cls, module_name: str) -> ModuleDeclarations | None:
+        """What a module outside the scan declares, read from its installed source."""
+
+        parsed = InstalledModule.parsed(module_name)
+        if parsed is None:
+            return None
+        (declared,) = cls.collect(parsed)
+        return declared
 
     @classmethod
     def collect(cls, parsed_module: ParsedModule) -> list[ModuleDeclarations]:
@@ -455,69 +464,6 @@ class QualifiedNames:
 
 
 @dataclass(frozen=True)
-class InstalledModule:
-    """A module outside the scan, read from its installed source and never run.
-
-    The analysing interpreter's import path locates it (`PathFinder`, which
-    executes no package); only a `.py` source is read.
-    """
-
-    @staticmethod
-    def source_path(module_name: str) -> Path | None:
-        """The `.py` file a module name selects: the top package through `PathFinder`, each submodule under its package's directories."""
-
-        top, *rest = module_name.split(".")
-        spec = PathFinder.find_spec(top)
-        if spec is None or spec.origin is None and not spec.submodule_search_locations:
-            return None
-        found = None if spec.origin is None else Path(spec.origin)
-        locations = [
-            Path(location) for location in spec.submodule_search_locations or ()
-        ]
-        for part in rest:
-            found = next(
-                (
-                    candidate
-                    for location in locations
-                    for candidate in (
-                        location / part / "__init__.py",
-                        location / f"{part}.py",
-                    )
-                    if candidate.is_file()
-                ),
-                None,
-            )
-            if found is None:
-                return None
-            locations = [found.parent] if found.name == "__init__.py" else []
-        if found is None or found.suffix != ".py":
-            return None
-        return found
-
-    @staticmethod
-    @cache
-    def declarations(module_name: str) -> ModuleDeclarations | None:
-        path = InstalledModule.source_path(module_name)
-        if path is None:
-            return None
-        source = path.read_text()
-        try:
-            module = ast.parse(source, filename=str(path))
-        except SyntaxError:
-            return None
-        parsed = SourceModule.from_path_identity(
-            PythonModulePathIdentity(
-                path=path,
-                import_name=module_name,
-                is_package_init=path.name == "__init__.py",
-            ),
-            source,
-        ).parsed_module(module)
-        (declared,) = DeclaredIdentityFamily.collect(parsed)
-        return declared
-
-
-@dataclass(frozen=True)
 class ClassNameOwners:
     """Which qualified names reach a class whose `__name__` is its statement's name.
 
@@ -559,7 +505,7 @@ class ClassNameOwners:
                 break
             tried |= missing
             for module_name in missing:
-                found = InstalledModule.declarations(module_name)
+                found = DeclaredIdentityFamily.installed(module_name)
                 if found is not None:
                     loaded[module_name] = found
             owners = cls(dict(loaded), owners.scanned)
