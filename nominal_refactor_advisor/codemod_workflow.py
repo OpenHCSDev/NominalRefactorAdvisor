@@ -4,12 +4,15 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from collections import Counter, deque
-from collections.abc import Callable, Hashable, Iterable
+from collections.abc import Callable, Hashable, Iterable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from functools import cached_property
 from pathlib import Path
-from typing import ClassVar, Generic, Self, TypeVar
+import sys
+import time
+from typing import ClassVar, Generic, Self, TextIO, TypeVar
 
 from .analysis import (
     AnalysisPathScope,
@@ -1564,6 +1567,29 @@ class CodemodSimulationFindingProjection:
         )
 
 
+@dataclass
+class CodemodGoalProgress:
+    """One line per goal phase on a stream, so a long run says where it is."""
+
+    stream: TextIO = field(default_factory=lambda: sys.stderr)
+    started: float = field(default_factory=time.perf_counter)
+
+    @contextmanager
+    def phase(self, label: str) -> Iterator[list[str]]:
+        """Time one phase; the caller may append details to the yielded list."""
+
+        start = time.perf_counter()
+        details: list[str] = []
+        yield details
+        print(
+            f"nra goal: {label} {time.perf_counter() - start:.1f}s"
+            + "".join(f" {detail}" for detail in details)
+            + f" (total {time.perf_counter() - self.started:.1f}s)",
+            file=self.stream,
+            flush=True,
+        )
+
+
 @dataclass(frozen=True, kw_only=True)
 class CodemodRefactorGoalRunner:
     """Prove virtual stages, then commit one revision-checked migration batch."""
@@ -1582,6 +1608,7 @@ class CodemodRefactorGoalRunner:
         default_factory=CodemodRefactorTrajectoryBudget
     )
     owner_picks: OwnerPicks | None = None
+    progress: CodemodGoalProgress = field(default_factory=CodemodGoalProgress)
     """A picker's owner choices, applied to every scan's extract-mixin findings."""
 
     def starting_scan(self) -> CodemodWorkflowScan:
@@ -1687,7 +1714,9 @@ class CodemodRefactorGoalRunner:
         return self.owner_picks.applied(scoped)[0]
 
     def run(self) -> CodemodRefactorGoalReport:
-        starting_scan = self.starting_scan()
+        with self.progress.phase("starting scan") as details:
+            starting_scan = self.starting_scan()
+            details.append(f"{len(starting_scan.findings)} findings")
         if self.owner_picks is not None:
             starting_scan = replace(
                 starting_scan,
@@ -1747,9 +1776,11 @@ class CodemodRefactorGoalRunner:
             state: CodemodRefactorTrajectoryState,
             class_plan_report: FindingRecipeClassPlanReport,
         ) -> None:
-            settled = self.partial_terminal_or_dead_end(
-                starting_scan, state, class_plan_report
-            )
+            with self.progress.phase(f"depth {state.depth} settle") as details:
+                settled = self.partial_terminal_or_dead_end(
+                    starting_scan, state, class_plan_report
+                )
+                details.append(type(settled).__name__)
             if isinstance(settled, CodemodRefactorPartialTerminal):
                 partial_terminals.append(settled)
             else:
@@ -1758,7 +1789,9 @@ class CodemodRefactorGoalRunner:
         while pending:
             state = pending.popleft()
             active_scan = state.scan
-            target_findings = self.target_findings(active_scan)
+            with self.progress.phase(f"depth {state.depth} targets") as details:
+                target_findings = self.target_findings(active_scan)
+                details.append(f"{len(target_findings)} targets")
             if not target_findings:
                 active_scan = self.exact_scan(active_scan)
                 target_findings = self.target_findings(active_scan)
@@ -1798,10 +1831,12 @@ class CodemodRefactorGoalRunner:
                     continue
 
             snapshot = active_scan.source_snapshot
-            plan = snapshot.plan_from_findings(
-                target_findings,
-                frontier_budget=self.trajectory_budget.recipe_frontier,
-            )
+            with self.progress.phase(f"depth {state.depth} plan") as details:
+                plan = snapshot.plan_from_findings(
+                    target_findings,
+                    frontier_budget=self.trajectory_budget.recipe_frontier,
+                )
+                details.append(f"{len(plan.trajectory_frontier.branches)} branches")
             class_plan_report = FindingRecipeClassPlanReport.from_finding_plan(
                 target_findings,
                 root=self.class_plan_root(),
@@ -1832,7 +1867,7 @@ class CodemodRefactorGoalRunner:
 
             valid_transition_count = 0
             analyzed_rewritten_source_digests: set[str] = set()
-            for branch in frontier.branches:
+            for branch_number, branch in enumerate(frontier.branches, start=1):
                 simulation = branch.document_simulation
                 if simulation.simulation.applied_rewrite_count == 0:
                     continue
@@ -1842,13 +1877,17 @@ class CodemodRefactorGoalRunner:
                 if rewritten_source_digest in analyzed_rewritten_source_digests:
                     continue
                 analyzed_rewritten_source_digests.add(rewritten_source_digest)
-                projected_scan = self.projected_target_scan(
-                    active_scan,
-                    simulation.simulation,
-                    target_findings,
-                )
-                if not self.target_findings(projected_scan):
-                    projected_scan = self.exact_scan(projected_scan)
+                with self.progress.phase(
+                    f"depth {state.depth} reproof {branch_number}/{len(frontier.branches)}"
+                ) as details:
+                    projected_scan = self.projected_target_scan(
+                        active_scan,
+                        simulation.simulation,
+                        target_findings,
+                    )
+                    if not self.target_findings(projected_scan):
+                        projected_scan = self.exact_scan(projected_scan)
+                    details.append(f"{len(projected_scan.findings)} findings")
                 stage = self.stage(
                     active_scan,
                     projected_scan,

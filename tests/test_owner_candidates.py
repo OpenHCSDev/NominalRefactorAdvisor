@@ -146,3 +146,25 @@ def test_a_finding_id_names_the_obligation_not_its_score() -> None:
         finding, metrics=replace(metrics, shared_declaration_names=("alpha",))
     )
     assert other_block.stable_id != finding.stable_id
+
+
+def test_a_finding_a_stage_does_not_touch_keeps_its_id_when_its_lines_move() -> None:
+    """A stage that inserts a class above a pair shifts every evidence line; the
+    pair's finding is the same obligation and keeps its id."""
+
+    from nominal_refactor_advisor.detectors._class_overlap import MissingMixinDetector
+
+    pair = (
+        "class First:\n" + BLOCK + "    own_first: int\n\n\n"
+        "class Second:\n" + BLOCK + "    own_second: int\n"
+    )
+    (before,) = _mixin_verdicts(("pkg.records", pair))
+    (after,) = _mixin_verdicts(
+        ("pkg.records", "class Inserted:\n    delta: int\n\n\n" + pair)
+    )
+    assert before.owner.line != after.owner.line
+    detector = MissingMixinDetector()
+    assert (
+        detector._finding_for_candidate(after).stable_id
+        == detector._finding_for_candidate(before).stable_id
+    )
