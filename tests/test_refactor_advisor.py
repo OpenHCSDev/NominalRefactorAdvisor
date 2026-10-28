@@ -17,6 +17,8 @@ from typing import cast
 from unittest.mock import Mock
 
 import pytest
+
+from nominal_refactor_advisor.ast_projection import CallKeyword
 from metaclass_registry import DuplicateRegistryKeyError
 
 from registry_test_sources import _type_keyed_behavior_projection_source
@@ -67,7 +69,6 @@ from nominal_refactor_advisor.analysis import (
 )
 from nominal_refactor_advisor.ast_projection import ExpressionReference
 from nominal_refactor_advisor.ast_tools import (
-    AstKeywordSourceProjection,
     AstNameFamily,
     BuiltinCallName,
     DynamicMethodInjectionObservationFamily,
@@ -10279,7 +10280,7 @@ def test_ast_keyword_source_projection_owns_keyword_rendering(
     expression = ast.parse(source, mode="eval").body
     assert isinstance(expression, ast.Call)
 
-    assert AstKeywordSourceProjection(expression.keywords[0]).source() == (
+    assert CallKeyword.decoded(expression.keywords[0]).source() == (
         expected_source
     )
 

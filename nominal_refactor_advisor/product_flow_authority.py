@@ -137,6 +137,10 @@ class CompactCallTargetResolution(ABC):
         """A declaration owned by another module or class than the one searched."""
         return False
 
+    def declares_symbol(self, symbol: str) -> bool:
+        """Whether this target is exactly the function declared at that symbol."""
+        return False
+
     @property
     @abstractmethod
     def possible_symbols(self) -> tuple[str, ...]:
@@ -222,6 +226,9 @@ class ResolvedCompactFunctionTarget(CompactCallTargetResolution):
 
     def declared_off_line(self, line: int) -> bool:
         return self.resolved_declaration.line != line
+
+    def declares_symbol(self, symbol: str) -> bool:
+        return self.resolved_declaration.identity.symbol == symbol
 
     def declared_outside(self, module_name: str, class_qualname: str) -> bool:
         return (
