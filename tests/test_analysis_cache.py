@@ -74,6 +74,9 @@ from nominal_refactor_advisor import (
     assignment_projection as assignment_projection_module,
 )
 from nominal_refactor_advisor import class_index as class_index_module
+from nominal_refactor_advisor import (
+    exact_method_authority as exact_method_authority_module,
+)
 from nominal_refactor_advisor import constructor_algebra as constructor_algebra_module
 from nominal_refactor_advisor.scan_cache import ScanCache
 from nominal_refactor_advisor import native_syntax as native_syntax_module
@@ -4368,41 +4371,41 @@ def test_compact_keyed_axis_projection_is_the_only_global_candidate_authority(
         )
     )
     config = DetectorConfig()
-    context = systemic_detectors.CompactClassRepositoryContext.from_projections(
+    context = base_detectors.CompactClassRepositoryContext.from_projections(
         projections,
         config,
     )
     family_specs = systemic_detectors._compact_keyed_family_axis_specs_from_context(
         context
     )
-    table_specs = systemic_detectors._compact_keyed_table_axis_specs(projections)
-    manual_selector_specs = systemic_detectors._compact_manual_selector_axis_specs(
+    table_specs = base_detectors._compact_keyed_table_axis_specs(projections)
+    manual_selector_specs = base_detectors._compact_manual_selector_axis_specs(
         projections
     )
     detectors_and_candidates = (
         (
             systemic_detectors.ParallelKeyedAxisFamilyDetector(),
-            systemic_detectors._parallel_keyed_axis_family_candidates_from_specs(
+            base_detectors._parallel_keyed_axis_family_candidates_from_specs(
                 family_specs
             ),
         ),
         (
             systemic_detectors.ParallelKeyedTableAndFamilyDetector(),
-            systemic_detectors._parallel_keyed_table_and_family_candidates_from_specs(
+            base_detectors._parallel_keyed_table_and_family_candidates_from_specs(
                 family_specs,
                 table_specs,
             ),
         ),
         (
             systemic_detectors.ResidualClosedAxisBranchingDetector(),
-            systemic_detectors._residual_closed_axis_branching_candidates_from_compact_specs(
+            base_detectors._residual_closed_axis_branching_candidates_from_compact_specs(
                 projections,
                 family_specs,
             ),
         ),
         (
             systemic_detectors.CrossModuleAxisShadowFamilyDetector(),
-            systemic_detectors._cross_module_axis_shadow_family_candidates_from_specs(
+            base_detectors._cross_module_axis_shadow_family_candidates_from_specs(
                 family_specs,
                 manual_selector_specs,
             ),
@@ -4427,11 +4430,11 @@ def test_compact_keyed_axis_projection_is_the_only_global_candidate_authority(
     ):
         assert not hasattr(systemic_detectors, removed_name)
     assert not hasattr(
-        systemic_detectors.DispatchAlgebraAuthority,
+        base_detectors.DispatchAlgebraAuthority,
         "keyed_family_axis_specs",
     )
     assert not hasattr(
-        systemic_detectors.DispatchAlgebraAuthority,
+        base_detectors.DispatchAlgebraAuthority,
         "module_keyed_table_axis_specs",
     )
 
@@ -4642,7 +4645,7 @@ def test_compact_keyed_registry_axis_facts_preserve_axis_semantics(
     tmp_path: Path,
 ) -> None:
     assert not hasattr(
-        systemic_detectors.DISPATCH_ALGEBRA_AUTHORITY,
+        base_detectors.DISPATCH_ALGEBRA_AUTHORITY,
         "keyed_registry_axis_fact_records",
     )
     assert not hasattr(base_detectors, "_keyed_type_registry_injectivity_proof")
@@ -4724,11 +4727,11 @@ def test_compact_registry_projection_candidates_preserve_projection_semantics(
     tmp_path: Path,
 ) -> None:
     assert not hasattr(
-        systemic_detectors._REGISTRY_PROJECTION_SURFACE_ANALYZER,
+        base_detectors._REGISTRY_PROJECTION_SURFACE_ANALYZER,
         "surface_candidates",
     )
     assert not hasattr(
-        systemic_detectors._REGISTRY_PROJECTION_SURFACE_ANALYZER,
+        base_detectors._REGISTRY_PROJECTION_SURFACE_ANALYZER,
         "policy_authority_candidates",
     )
 
@@ -4813,7 +4816,7 @@ def test_compact_registry_projection_candidates_preserve_projection_semantics(
 
 
 def test_registry_projection_role_ambiguity_fails_closed() -> None:
-    evidence = systemic_detectors.RegistryProjectionSurfaceEvidence(
+    evidence = base_detectors.RegistryProjectionSurfaceEvidence(
         surface_name="CLI_CONFIG_MODE_CHOICES",
         shared_key_names=("ALPHA", "BETA"),
         shared_type_names=(),
@@ -4822,10 +4825,10 @@ def test_registry_projection_role_ambiguity_fails_closed() -> None:
     )
 
     assert (
-        systemic_detectors.RegistryProjectionRole.for_surface(
+        base_detectors.RegistryProjectionRole.for_surface(
             evidence,
             file_path="pkg/options.py",
-            default=systemic_detectors.RegistryProjectionRole.OPTION_ROSTER,
+            default=base_detectors.RegistryProjectionRole.OPTION_ROSTER,
         )
         is None
     )
@@ -4917,7 +4920,7 @@ def test_compact_class_detectors_share_one_repository_inheritance_graph(
         systemic_detectors.AutoRegisterExplicitPriorityOrderingDetector,
     )
     calls = 0
-    original_builder = base_detectors.build_compact_class_family_index
+    original_builder = class_index_module.build_compact_class_family_index
 
     def counting_builder(projections):
         nonlocal calls
@@ -5045,7 +5048,7 @@ def test_bounded_multi_family_joins_reuse_the_single_class_anchor(
 
     calls = 0
     collect_cycles_calls: list[bool] = []
-    original_builder = base_detectors.build_compact_class_family_index
+    original_builder = class_index_module.build_compact_class_family_index
     original_release = analysis_module.release_module_analysis_memory
 
     def counting_builder(projections):
@@ -5392,12 +5395,12 @@ def test_concrete_family_detectors_share_one_compact_graph_context(
     )
     assert {
         detector_type.compact_shared_context_builder for detector_type in detector_types
-    } == {runtime_detectors.CompactClassRepositoryContext.from_projections}
+    } == {base_detectors.CompactClassRepositoryContext.from_projections}
 
     repository_calls = 0
     concrete_context_calls = 0
     original_repository_builder = (
-        runtime_detectors.CompactClassRepositoryContext.from_projections
+        base_detectors.CompactClassRepositoryContext.from_projections
     )
     original_concrete_context_builder = (
         runtime_detectors._compact_concrete_family_context
@@ -5794,17 +5797,17 @@ def test_compact_method_family_candidates_preserve_semantics_without_ast_shadow(
             modules
         )
     )
-    context = structural_detectors.CompactMethodFamilyContext.from_projections(
+    context = helper_detectors.CompactMethodFamilyContext.from_projections(
         projections
     )
     detector_candidate_pairs = (
         (
             structural_detectors.ExactTinyMethodRoleDetector,
-            structural_detectors.ExactMethodRoleComponent,
+            exact_method_authority_module.ExactMethodRoleComponent,
         ),
         (
             structural_detectors.ExactLeafMethodAncestorPromotionDetector,
-            structural_detectors.ExactLeafMethodAncestorPromotionComponent,
+            exact_method_authority_module.ExactLeafMethodAncestorPromotionComponent,
         ),
         (
             structural_detectors.SemanticOverlapMethodDetector,
@@ -5955,7 +5958,7 @@ def test_compact_method_family_profiles_are_derived_after_the_family_join(
     )
 
     assert profile_derivations == []
-    context = structural_detectors.CompactMethodFamilyContext.from_projections(
+    context = helper_detectors.CompactMethodFamilyContext.from_projections(
         projections
     )
 
@@ -5990,7 +5993,7 @@ def test_method_family_detectors_share_one_compact_context(
         structural_detectors.OverlappingInheritanceFamiliesDetector,
     )
     calls = 0
-    original_builder = structural_detectors.CompactMethodFamilyContext.from_projections
+    original_builder = helper_detectors.CompactMethodFamilyContext.from_projections
 
     def counting_builder(projections, config):
         nonlocal calls
@@ -6049,7 +6052,7 @@ def test_compact_semantic_descent_graph_matches_legacy_ast_graph(
     detector = semantic_descent_detectors.SemanticMirrorWithoutDescentDetector()
     groups = type(detector).compact_module_projection_groups(modules)
     semantic_projections = groups[CompactSemanticModuleProjectionFamily]
-    class_projections = groups[runtime_detectors.CompactModuleClassProjectionFamily]
+    class_projections = groups[class_index_module.CompactModuleClassProjectionFamily]
     legacy_supplements = tuple(
         supplement
         for module in modules
