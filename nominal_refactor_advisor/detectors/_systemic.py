@@ -3307,7 +3307,7 @@ class DeclarativeDetectorClassDetectorBase(
     """Compose declarative-shell detection with its executable replacement."""
 
 
-declare_candidate_rule_detector(
+DeclarativeDetectorClassDetector = declare_candidate_rule_detector(
     DeclarativeDetectorClassCandidate,
     high_confidence_certified_spec(
         PatternId.AUTHORITATIVE_SCHEMA,
@@ -3542,7 +3542,7 @@ class DirectBuildFindingRendererDetectorBase(
     """Compose direct-renderer detection with its executable replacement."""
 
 
-declare_candidate_rule_detector(
+DirectBuildFindingRendererDetector = declare_candidate_rule_detector(
     DirectBuildFindingRendererCandidate,
     high_confidence_spec(
         PatternId.SHARED_ALGORITHM_AUTHORITY,

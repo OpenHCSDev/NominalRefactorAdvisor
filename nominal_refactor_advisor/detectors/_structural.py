@@ -243,7 +243,7 @@ declare_candidate_rule_detector(
 )
 
 
-declare_candidate_rule_detector(
+ExactLeafMethodAncestorPromotionDetector = declare_candidate_rule_detector(
     ExactLeafMethodAncestorPromotionComponent,
     high_confidence_certified_spec(
         PatternId.SHARED_ALGORITHM_AUTHORITY,
