@@ -23,7 +23,9 @@ class _Right:
 
 
 def _generic(values):
-    return [dataclasses.fields(value) for value in values]
+    # A generator expression has its own frame on every Python version: the
+    # introspection still belongs to _generic.
+    return list(dataclasses.fields(value) for value in values)
 
 
 def _single():

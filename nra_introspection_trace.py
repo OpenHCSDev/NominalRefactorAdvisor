@@ -37,6 +37,8 @@ if TYPE_CHECKING:
 
 # Frames inside the introspection machinery itself; the consumer is the first frame past them.
 MACHINERY_MODULES = ("dataclasses", "typing", "inspect", "functools", __name__)
+# Before Python 3.12 (PEP 709) a comprehension runs in its own frame; it belongs to its function.
+COMPREHENSION_CODE_NAMES = frozenset(("<listcomp>", "<setcomp>", "<dictcomp>", "<genexpr>"))
 
 
 @dataclass(frozen=True)
@@ -113,8 +115,9 @@ class IntrospectionRecorder(Recording):
 
     def consumer(self, frame: FrameType | None) -> str | None:
         """The project function past the machinery frames, or None when it is foreign."""
-        while frame is not None and frame.f_globals.get("__name__", "").startswith(
-            MACHINERY_MODULES
+        while frame is not None and (
+            frame.f_globals.get("__name__", "").startswith(MACHINERY_MODULES)
+            or frame.f_code.co_name in COMPREHENSION_CODE_NAMES
         ):
             frame = frame.f_back
         if frame is None or not self.owns(frame.f_globals.get("__name__", "")):
