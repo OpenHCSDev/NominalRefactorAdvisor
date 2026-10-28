@@ -11,8 +11,12 @@ from dataclasses import dataclass
 from time import monotonic
 
 
-class ScanDeadlineExceeded(TimeoutError):
-    """Raised when a scan crosses its declared absolute wall-clock budget."""
+class ScanDeadlineExceeded(Exception):
+    """Raised when a scan crosses its declared absolute wall-clock budget.
+
+    A spent budget is not an operating-system failure: as an OSError it was
+    swallowed by the cache stores' ``except OSError`` whenever the wall timer
+    fired inside one."""
 
     def __init__(self, deadline: ScanDeadline) -> None:
         self.budget_seconds = deadline.budget_seconds
