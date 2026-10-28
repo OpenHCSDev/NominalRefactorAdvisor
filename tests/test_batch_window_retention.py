@@ -25,6 +25,7 @@ from nominal_refactor_advisor.codemod_source_edits import (
     PhysicalSourceEdit,
     SourceFileCreation,
     SourceInsertion,
+    SourceLineSpan,
     SourceSpanDeletion,
     SourceSpanReplacement,
     SourceTextGeometry,
@@ -99,7 +100,7 @@ def test_equal_output_intersects_actual_exact_and_opaque_evidence(opaque, revers
     other = exact(old="type", new="type")
     second = (
         SourceSpanReplacement(
-            file_path=PATH, start_line=1, end_line=1, replacement_lines=(SOURCE,)
+            file_path=PATH, span=SourceLineSpan(1, 1), replacement_lines=(SOURCE,)
         )
         if opaque
         else OtherExact(revision=other.revision, replacements=other.replacements)
@@ -125,7 +126,7 @@ def test_deletion_groups_preserve_sorted_overlap_and_pairwise_metadata_fold():
     source = "".join(f"value_{index} = object\n" for index in range(1, 8))
     first, second, third, isolated = tuple(
         SourceSpanDeletion(
-            file_path=PATH, start_line=start, end_line=end, rationale=rationale
+            file_path=PATH, span=SourceLineSpan(start, end), rationale=rationale
         )
         for start, end, rationale in (
             (1, 2, "A"),
@@ -263,7 +264,7 @@ def test_one_abstract_window_owner_and_one_physical_projection():
 @pytest.mark.parametrize("deletion", (False, True))
 def test_keyed_and_deletion_grouping_project_each_occurrence_once(deletion):
     peer = (
-        SourceSpanDeletion(file_path=PATH, start_line=1, end_line=2)
+        SourceSpanDeletion(file_path=PATH, span=SourceLineSpan(1, 2), )
         if deletion
         else insertion("typing")
     )

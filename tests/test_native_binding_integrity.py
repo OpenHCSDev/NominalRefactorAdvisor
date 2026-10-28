@@ -7,6 +7,7 @@ import sys
 
 import pytest
 
+from nominal_refactor_advisor.ast_tools import ParsedModuleSet
 from nominal_refactor_advisor.ast_tools import ParsedModule
 from nominal_refactor_advisor.codemod import (
     CodemodPlanSequence,
@@ -106,7 +107,7 @@ def test_changed_native_lookup_does_not_authorize_promotion(
     module = _module(header, decorator)
     assert _output(module.source) == "[False]"
     with pytest.raises(ValueError, match="(?i)unproved|binding|namespace|native"):
-        _promotion(module).simulate(CodemodSourceSnapshot.from_modules((module,)))
+        _promotion(module).simulate(CodemodSourceSnapshot.from_modules(ParsedModuleSet.of((module,))))
 
 
 @pytest.mark.parametrize(
@@ -132,7 +133,7 @@ def test_unchanged_captured_native_object_remains_usable(
     module = _module(header, decorator)
     before = _output(module.source)
     assert before == "[]"
-    result = _promotion(module).simulate(CodemodSourceSnapshot.from_modules((module,)))
+    result = _promotion(module).simulate(CodemodSourceSnapshot.from_modules(ParsedModuleSet.of((module,))))
     assert result.is_clean
     assert (
         _output(result.final_snapshot.sources_by_file_path[module.file_path]) == before
@@ -166,7 +167,7 @@ def test_rebound_builtin_dictionary_does_not_authenticate_class_body_property(
     # parent frame, which still uses that frame's earlier captured builtins.
     assert _output(module.source) == "[False]"
     with pytest.raises(ValueError, match="(?i)unproved|binding|namespace|native"):
-        _promotion(module).simulate(CodemodSourceSnapshot.from_modules((module,)))
+        _promotion(module).simulate(CodemodSourceSnapshot.from_modules(ParsedModuleSet.of((module,))))
 
 
 @pytest.mark.parametrize(
@@ -193,7 +194,7 @@ def test_rebound_builtin_dictionary_preserves_qualified_native_module_lookup(
     )
     before = _output(module.source)
     assert before == "[]"
-    result = _promotion(module).simulate(CodemodSourceSnapshot.from_modules((module,)))
+    result = _promotion(module).simulate(CodemodSourceSnapshot.from_modules(ParsedModuleSet.of((module,))))
     assert result.is_clean
     assert (
         _output(result.final_snapshot.sources_by_file_path[module.file_path]) == before
@@ -218,7 +219,7 @@ def test_generic_implicit_base_hook_mutation_does_not_authorize_promotion():
     # has no explicit base expressions. Only the isolated program is mutated.
     assert _output(module.source) == "[False]"
     with pytest.raises(ValueError, match="(?i)unproved|binding|namespace|native"):
-        _promotion(module).simulate(CodemodSourceSnapshot.from_modules((module,)))
+        _promotion(module).simulate(CodemodSourceSnapshot.from_modules(ParsedModuleSet.of((module,))))
 
 
 def test_native_class_body_builtins_are_captured_before_base_expression():

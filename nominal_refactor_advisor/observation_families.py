@@ -54,7 +54,6 @@ from .ast_tools import (
     ShapeEmission,
     SingleSpecCollectedFamily,
     SourceModule,
-    module_syntax_index,
     REGISTRATION_CALL_FAMILY,
     REGISTRATION_DECORATOR_FAMILY,
     _builder_call_shape,
@@ -601,9 +600,7 @@ class AssignmentRegistrationShapeSpec(KnownClassFamilyShapeSpec):
         known_class_family: AstNameFamily,
     ) -> list[RegistrationShape]:
         shapes: list[RegistrationShape] = []
-        for _node_index, node in module_syntax_index(
-            parsed_module.module
-        ).indexed_nodes_of_type(ast.Assign):
+        for _node_index, node in parsed_module.syntax_index.indexed_nodes_of_type(ast.Assign):
             if not isinstance(node.value, ast.Name):
                 continue
             if known_class_family.matching_name(node.value) is None:
@@ -991,7 +988,7 @@ def _module_expression_shapes(
     module_names = module_import_names(parsed_module)
     if not module_names:
         return []
-    index = module_syntax_index(parsed_module.module)
+    index = parsed_module.syntax_index
     shapes: list[ModuleExpressionShape] = []
     for node_index, node in sorted(
         (
@@ -1133,7 +1130,7 @@ class TypeArgumentResolver:
         arguments = BuiltinCallName.isinstance_arguments(call)
         if arguments is None:
             return None
-        parents = module_syntax_index(self.parsed_module.module).parent_by_node
+        parents = self.parsed_module.syntax_index.parent_by_node
         ancestors = tuple(self._ancestors(parents, call))
         return self.qualified_names(arguments[1], _enclosing_function_names(ancestors))
 
@@ -1164,7 +1161,7 @@ def _foreign_type_test_shapes(
 ) -> list[ForeignTypeTestShape]:
     """Collect type tests whose classes all come from one imported owner module."""
 
-    index = module_syntax_index(parsed_module.module)
+    index = parsed_module.syntax_index
     resolver = TypeArgumentResolver(parsed_module)
     shapes: list[ForeignTypeTestShape] = []
     for node_index, node in index.indexed_nodes_of_type(ast.Call):

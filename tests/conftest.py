@@ -11,7 +11,7 @@ from collections.abc import Iterator
 
 import pytest
 
-from nominal_refactor_advisor.ast_tools import ParsedModule
+from nominal_refactor_advisor.ast_tools import ParsedModule, ParsedModuleSet
 from nominal_refactor_advisor.detectors import _base as collector_runtime
 from nominal_refactor_advisor.source_geometry import read_source_text
 
@@ -55,6 +55,13 @@ def native_collector_module() -> ParsedModule:
         module=ast.parse(source),
         source=source,
     )
+
+
+@pytest.fixture(scope="session")
+def no_modules() -> ParsedModuleSet:
+    """The module set of a run that parsed nothing."""
+
+    return ParsedModuleSet(())
 
 
 @pytest.fixture(scope="session", autouse=True)

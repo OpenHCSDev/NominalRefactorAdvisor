@@ -57,9 +57,7 @@ def test_declaration_and_rich_consumers_keep_the_same_inheritance_and_proof_answ
         )
 
 
-def test_original_source_consumer_does_not_construct_method_comparison_surfaces(
-    monkeypatch,
-):
+def test_original_source_consumer_does_not_construct_method_comparison_surfaces():
     module = parsed(
         "sample",
         "from dataclasses import dataclass\n@dataclass(frozen=True)\n"
@@ -67,11 +65,6 @@ def test_original_source_consumer_does_not_construct_method_comparison_surfaces(
         "    def project(self): return self.left, self.right\n",
     )
 
-    def unused_analysis(*args, **kwargs):
-        raise AssertionError("Declaration consumer requested unrelated analysis")
-
-    monkeypatch.setattr(class_index, "_compact_class_syntax_facets", unused_analysis)
-    monkeypatch.setattr(class_index, "_compact_class_methods", unused_analysis)
     with ScanCache.scope():
         repository = SourceProductFlowRepository.from_modules((module,))
         authority = repository.declared_product_authorities_by_symbol["sample.Pair"]
@@ -79,6 +72,9 @@ def test_original_source_consumer_does_not_construct_method_comparison_surfaces(
         assert repository.class_index.class_for("sample.Pair").method_names == (
             "project",
         )
+    held_facts = vars(module).get("_facts", {})
+    assert class_index.ModuleClassSyntaxFacets not in held_facts
+    assert class_index.ModuleClassSyntaxFacetsWithoutAutoregister not in held_facts
 
 
 def test_changed_original_source_reproves_declarations_within_the_same_invocation():

@@ -20,7 +20,7 @@ from pathlib import Path
 from .ast_field_decoders import ParameterAnnotations
 from .lexical_bindings import ImportAlias, ImportBoundNameProjection
 from .ast_projection import CallKeywords, StatementValues
-from .ast_tools import BuiltinCallName, ParsedModule, module_syntax_index
+from .ast_tools import BuiltinCallName, ParsedModule
 from .declared_root import DeclaredRoot
 from .models import SourceLocation
 from .class_index import ModuleNominalBindingAuthority
@@ -136,7 +136,7 @@ class StringDispatchSiteFamily(RestatingSiteFamily):
 
     @classmethod
     def sites(cls, parsed_module: ParsedModule) -> Iterator[RestatingSite]:
-        index = module_syntax_index(parsed_module.module)
+        index = parsed_module.syntax_index
         # (function, subject) -> node -> (symbol, literals compared at that node)
         arms: dict[tuple[int, str], dict[ast.AST, tuple[str, set[str]]]] = defaultdict(
             dict
@@ -213,9 +213,7 @@ def imported_module_names(parsed_module: ParsedModule) -> frozenset[str]:
 
     return frozenset(
         name
-        for _node_index, node in module_syntax_index(
-            parsed_module.module
-        ).indexed_nodes_of_type(ast.Import)
+        for _node_index, node in parsed_module.syntax_index.indexed_nodes_of_type(ast.Import)
         for name in ImportBoundNameProjection(node).names()
     )
 
@@ -232,7 +230,7 @@ class NamedAttributeSiteFamily(RestatingSiteFamily):
 
     @classmethod
     def sites(cls, parsed_module: ParsedModule) -> Iterator[RestatingSite]:
-        index = module_syntax_index(parsed_module.module)
+        index = parsed_module.syntax_index
         constants = cls.string_constants(parsed_module)
         modules = imported_module_names(parsed_module)
         names = BuiltinCallName.attribute_access_names()
@@ -324,7 +322,7 @@ class ExactKeySetSiteFamily(RestatingSiteFamily):
 
     @classmethod
     def sites(cls, parsed_module: ParsedModule) -> Iterator[RestatingSite]:
-        index = module_syntax_index(parsed_module.module)
+        index = parsed_module.syntax_index
         keyed = cls.string_keyed_receivers(index)
         for node_index, node in (
             *index.indexed_nodes_of_type(ast.Compare),
@@ -455,7 +453,7 @@ class ForeignAbsenceSiteFamily(RestatingSiteFamily):
 
     @classmethod
     def sites(cls, parsed_module: ParsedModule) -> Iterator[ForeignAbsenceSite]:
-        index = module_syntax_index(parsed_module.module)
+        index = parsed_module.syntax_index
         modules = imported_module_names(parsed_module)
         resolver = ProbeOwnerResolver(
             parsed_module.file_path, ModuleNominalBindingAuthority(parsed_module)
@@ -525,7 +523,7 @@ class ForwardingFacadeSiteFamily(RestatingSiteFamily):
 
     @classmethod
     def sites(cls, parsed_module: ParsedModule) -> Iterator[RestatingSite]:
-        index = module_syntax_index(parsed_module.module)
+        index = parsed_module.syntax_index
         for node_index, node in index.indexed_nodes_of_type(ast.ClassDef):
             held = cls.held_attributes(node)
             forwards: dict[str, list[tuple[ast.FunctionDef, str, str]]] = defaultdict(
@@ -761,7 +759,7 @@ class LegacyMarkerSiteFamily(RestatingSiteFamily):
 
     @classmethod
     def sites(cls, parsed_module: ParsedModule) -> Iterator[RestatingSite]:
-        index = module_syntax_index(parsed_module.module)
+        index = parsed_module.syntax_index
         for node_type in (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef):
             for node_index, node in index.indexed_nodes_of_type(node_type):
                 yield from cls.declaration(parsed_module, index, node_index, node)
@@ -989,7 +987,7 @@ class ModuleReferenceFamily(ShapeFamily[ModuleReferenceFacts]):
 
     @classmethod
     def collect(cls, parsed_module: ParsedModule) -> list[ModuleReferenceFacts]:
-        index = module_syntax_index(parsed_module.module)
+        index = parsed_module.syntax_index
         identity = PythonModulePathIdentity(
             path=parsed_module.path,
             import_name=parsed_module.module_name,

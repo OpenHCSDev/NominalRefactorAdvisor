@@ -85,7 +85,7 @@ class ClassMethodGroupsShapeProjector(Generic[_ParsedFamilyMethod, _ShapeKey]):
         groups: list[tuple[ast.ClassDef, tuple[_ParsedFamilyMethod, ...]]] = []
         for class_node in (
             node
-            for node in _walk_nodes(module.module)
+            for node in module.syntax_index.breadth_first_nodes
             if isinstance(node, ast.ClassDef)
         ):
             grouped: dict[_ShapeKey, list[_ParsedFamilyMethod]] = defaultdict(list)
@@ -322,7 +322,7 @@ def _regex_group_extractor_family_candidates(
 ) -> tuple[RegexGroupExtractorFamilyCandidate, ...]:
     candidates: list[RegexGroupExtractorFamilyCandidate] = []
     for class_node in (
-        node for node in _walk_nodes(module.module) if isinstance(node, ast.ClassDef)
+        node for node in module.syntax_index.breadth_first_nodes if isinstance(node, ast.ClassDef)
     ):
         methods = tuple(
             (

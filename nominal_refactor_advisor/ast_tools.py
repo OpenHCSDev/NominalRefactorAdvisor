@@ -26,10 +26,10 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field, fields, is_dataclass
 from enum import Enum, StrEnum
 from fnmatch import fnmatchcase
-from functools import cached_property, lru_cache
+from functools import cached_property
 from pathlib import Path
 from types import EllipsisType
-from typing import Callable, ClassVar, Generic, TypeAlias, TypeVar, cast
+from typing import Callable, ClassVar, Generic, Self, TypeAlias, TypeVar, cast
 
 from metaclass_registry import AutoRegisterMeta
 
@@ -77,6 +77,7 @@ from .observation_graph import (
     StructuralExecutionLevel,
     StructuralObservation,
     StructuralObservationCarrier,
+    collect_structural_observations,
 )
 from .observation_shapes import (
     BuilderCallShape,
@@ -757,6 +758,22 @@ class CompactModuleIdentity:
     file_path: str
 
 
+class ParsedModuleFact(ABC):
+    """A fact derived from one parse, held by that parse and released with it.
+
+    A layer that cannot be named by `ParsedModule` declares its per-parse facts
+    as subclasses; `ParsedModule.fact(kind)` derives each kind once.
+    """
+
+    @classmethod
+    @abstractmethod
+    def derive(cls, parsed_module: ParsedModule) -> Self:
+        raise NotImplementedError
+
+
+ParsedModuleFactT = TypeVar("ParsedModuleFactT", bound=ParsedModuleFact)
+
+
 @dataclass(frozen=True)
 class ParsedModule(SourceFileIdentity):
     """Parsed Python module together with its source text and path."""
@@ -798,6 +815,79 @@ class ParsedModule(SourceFileIdentity):
         )
 
     @cached_property
+    def syntax_index(self) -> ModuleSyntaxIndex:
+        """The one syntax traversal of this module's tree, held by the parse."""
+
+        return ModuleSyntaxIndex.build(self.module)
+
+    @cached_property
+    def _facts(self) -> dict[type[ParsedModuleFact], ParsedModuleFact]:
+        return {}
+
+    def fact(self, kind: type[ParsedModuleFactT]) -> ParsedModuleFactT:
+        """This parse's fact of one declared kind, derived once."""
+
+        facts = self._facts
+        if kind not in facts:
+            facts[kind] = kind.derive(self)
+        return cast(ParsedModuleFactT, facts[kind])
+
+    @cached_property
+    def _family_batches(self) -> dict[type[CollectedFamily], CollectedFamilyBatch]:
+        return {}
+
+    def family_batch(
+        self, family: type[CollectedFamily[ShapeItemT]]
+    ) -> CollectedFamilyBatch[ShapeItemT]:
+        """One family's items from this parse, collected once and retaining the
+        signature returned by the cache authority."""
+
+        batches = self._family_batches
+        if family not in batches:
+            cached_items = self.collected_family_cache.load_items(family)
+            if cached_items is not None:
+                batches[family] = CollectedFamilyBatch(
+                    cached_items,
+                    self.collected_family_cache.load_content_signature(family),
+                )
+            else:
+                items = tuple(
+                    item
+                    for item in COLLECTED_ITEM_PROJECTION.flatten(family.collect(self))
+                    if isinstance(item, family.item_type)
+                )
+                batches[family] = CollectedFamilyBatch(
+                    items, self.collected_family_cache.store_items(family, items)
+                )
+        return cast(CollectedFamilyBatch[ShapeItemT], batches[family])
+
+    @cached_property
+    def scoped_observations(self) -> tuple[ScopedAstObservation, ...]:
+        """Every located node with its innermost class and function names."""
+
+        index = self.syntax_index
+        return tuple(
+            ScopedAstObservation(
+                node=node,
+                class_name=(scope.class_names[-1] if scope.class_names else None),
+                function_name=(scope.function_names[-1] if scope.function_names else None),
+            )
+            for node, scope_id in zip(index.depth_first_nodes, index.scope_ids, strict=True)
+            for scope in (index.scopes[scope_id],)
+            if "lineno" in node._attributes
+        )
+
+    @cached_property
+    def class_names(self) -> frozenset[str]:
+        """The names of every class this module declares, at any depth."""
+
+        return frozenset(
+            node.name
+            for node in self.syntax_index.breadth_first_nodes
+            if isinstance(node, ast.ClassDef)
+        )
+
+    @cached_property
     def source_segments(self) -> SourceLineSegmentAuthority:
         """Return the exact source-span projector owned by this parsed module."""
 
@@ -821,6 +911,66 @@ class ParsedModule(SourceFileIdentity):
             source,
             family_cache_dir=self.family_cache_dir,
         ).parse()
+
+
+class ParsedModuleSetFact(ABC):
+    """A fact derived from one run's module set, held by that set.
+
+    A layer that `ast_tools` cannot name declares its set facts as subclasses;
+    `ParsedModuleSet.fact(kind)` derives each kind once.
+    """
+
+    @classmethod
+    @abstractmethod
+    def derive(cls, modules: ParsedModuleSet) -> Self:
+        raise NotImplementedError
+
+
+ParsedModuleSetFactT = TypeVar("ParsedModuleSetFactT", bound=ParsedModuleSetFact)
+
+
+@dataclass(frozen=True)
+class ParsedModuleSet(Sequence[ParsedModule]):
+    """The parses one run or scan analyzes, and the facts derived from them as
+    a set. The parse functions construct it; a later stage over the same
+    parses is handed this object, so the set's facts are shared by identity."""
+
+    modules: tuple[ParsedModule, ...]
+
+    @classmethod
+    def of(cls, modules: Iterable[ParsedModule]) -> ParsedModuleSet:
+        return cls(tuple(modules))
+
+    def __len__(self) -> int:
+        return len(self.modules)
+
+    def __getitem__(self, index):
+        return self.modules[index]
+
+    def __iter__(self) -> Iterator[ParsedModule]:
+        return iter(self.modules)
+
+    @cached_property
+    def _facts(self) -> dict[type[ParsedModuleSetFact], ParsedModuleSetFact]:
+        return {}
+
+    def fact(self, kind: type[ParsedModuleSetFactT]) -> ParsedModuleSetFactT:
+        """This set's fact of one declared kind, derived once."""
+
+        facts = self._facts
+        if kind not in facts:
+            facts[kind] = kind.derive(self)
+        return cast(ParsedModuleSetFactT, facts[kind])
+
+    @cached_property
+    def observation_graph(self) -> ObservationGraph:
+        return ObservationGraph(
+            tuple(
+                observation
+                for module in self.modules
+                for observation in collect_structural_observations(module)
+            )
+        )
 
 
 @dataclass(frozen=True)
@@ -2395,37 +2545,12 @@ class CollectedFamilyBatch(Generic[ShapeItemT]):
     content_signature: str | None
 
 
-@lru_cache(maxsize=None)
-def collect_family_batch(
-    parsed_module: ParsedModule, family: type[CollectedFamily[ShapeItemT]]
-) -> CollectedFamilyBatch[ShapeItemT]:
-    """Collect once, retaining the signature returned by the cache authority."""
-
-    cached_items = parsed_module.collected_family_cache.load_items(family)
-    if cached_items is not None:
-        return CollectedFamilyBatch(
-            cached_items,
-            parsed_module.collected_family_cache.load_content_signature(family),
-        )
-    items = tuple(
-        (
-            item
-            for item in COLLECTED_ITEM_PROJECTION.flatten(family.collect(parsed_module))
-            if isinstance(item, family.item_type)
-        )
-    )
-    return CollectedFamilyBatch(
-        items,
-        parsed_module.collected_family_cache.store_items(family, items),
-    )
-
-
 def collect_family_items(
     parsed_module: ParsedModule,
     family: type[CollectedFamily[ShapeItemT]],
 ) -> list[ShapeItemT]:
     """Collect and flatten items from one registered family."""
-    return list(collect_family_batch(parsed_module, family).items)
+    return list(parsed_module.family_batch(family).items)
 
 
 class RegisteredSpecCollectedFamily(
@@ -2855,14 +2980,18 @@ def parse_python_modules(
     use_parse_cache: bool = True,
     parse_workers: int = _DEFAULT_PARSE_WORKERS,
     source_policy: PythonSourcePathPolicy | None = None,
-) -> list[ParsedModule]:
+) -> ParsedModuleSet:
     """Parse one path (file or directory) into canonical ParsedModule records."""
-    return PythonModuleRootParser.parse(
-        root,
-        cache_dir=cache_dir,
-        use_parse_cache=use_parse_cache,
-        parse_workers=parse_workers,
-        source_policy=source_policy,
+    return ParsedModuleSet(
+        tuple(
+            PythonModuleRootParser.parse(
+                root,
+                cache_dir=cache_dir,
+                use_parse_cache=use_parse_cache,
+                parse_workers=parse_workers,
+                source_policy=source_policy,
+            )
+        )
     )
 
 
@@ -2873,7 +3002,7 @@ def parse_python_module_roots(
     use_parse_cache: bool = True,
     parse_workers: int = _DEFAULT_PARSE_WORKERS,
     source_policy: PythonSourcePathPolicy | None = None,
-) -> list[ParsedModule]:
+) -> ParsedModuleSet:
     """Parse multiple file or directory roots into one de-duplicated module set."""
     modules: list[ParsedModule] = []
     seen_paths: set[Path] = set()
@@ -2893,7 +3022,7 @@ def parse_python_module_roots(
             seen_paths.add(normalized_path)
             admitted_paths.append(path)
         modules.extend(parser.parsed_source_paths(tuple(admitted_paths)))
-    return modules
+    return ParsedModuleSet(tuple(modules))
 
 
 def python_module_path_identities_for_roots(
@@ -3027,6 +3156,26 @@ class ModuleSyntaxIndex:
     def node_membership(self) -> frozenset[ast.AST]:
         """Actual nodes of this tree, shared by source-ownership checks."""
         return frozenset(self.depth_first_nodes)
+
+    def instances_of(self, node_type: type[SyntaxNodeT]) -> tuple[SyntaxNodeT, ...]:
+        """Nodes that are instances of ``node_type``, in ``ast.walk`` order."""
+
+        return tuple(
+            cast(SyntaxNodeT, node)
+            for node in self.breadth_first_nodes
+            if isinstance(node, node_type)
+        )
+
+    @cached_property
+    def function_walks(
+        self,
+    ) -> dict[ast.FunctionDef | ast.AsyncFunctionDef, tuple[ast.AST, ...]]:
+        """Each named function's ``ast.walk``, held for the module's lifetime."""
+
+        return {
+            function: tuple(ast.walk(function))
+            for _, function in self.named_functions
+        }
 
     def indexed_nodes_of_type(
         self,
@@ -3162,28 +3311,15 @@ class ModuleSyntaxIndex:
         )
 
 
-@lru_cache(maxsize=32768)
-def module_syntax_index(module: ast.Module) -> ModuleSyntaxIndex:
-    """Return the single syntax traversal authority for one live module AST."""
-
-    return ModuleSyntaxIndex.build(module)
-
-
-@lru_cache(maxsize=32768)
 def _walk_nodes(node: ast.AST) -> tuple[ast.AST, ...]:
-    if isinstance(node, ast.Module):
-        return module_syntax_index(node).breadth_first_nodes
     return tuple(ast.walk(node))
 
 
-@lru_cache(maxsize=32768)
-def walk_function_body_nodes(
-    function: ast.FunctionDef | ast.AsyncFunctionDef,
-) -> tuple[ast.AST, ...]:
-    """Return one bounded, reusable walk that excludes nested definition bodies."""
+def walk_function_body_nodes(body: list[ast.stmt]) -> tuple[ast.AST, ...]:
+    """Walk a function body without entering nested definition bodies."""
 
     nodes: list[ast.AST] = []
-    stack = list(reversed(statements_without_docstring(function.body)))
+    stack = list(reversed(statements_without_docstring(body)))
     while stack:
         node = stack.pop()
         nodes.append(node)
@@ -3191,15 +3327,6 @@ def walk_function_body_nodes(
             continue
         stack.extend(reversed(tuple(ast.iter_child_nodes(node))))
     return tuple(nodes)
-
-
-@lru_cache(maxsize=32768)
-def named_function_nodes(
-    module: ast.Module,
-) -> tuple[tuple[str, ast.FunctionDef | ast.AsyncFunctionDef], ...]:
-    """Return one shared class-qualified function traversal for a module AST."""
-
-    return module_syntax_index(module).named_functions
 
 
 def active_path_descends_through(
@@ -3218,7 +3345,7 @@ def _iter_attribute_family_calls(
     parsed_module: ParsedModule, family: AstNameFamily
 ) -> tuple[AstCallObservation, ...]:
     observations: list[AstCallObservation] = []
-    for node in _walk_nodes(parsed_module.module):
+    for node in parsed_module.syntax_index.breadth_first_nodes:
         if not isinstance(node, ast.Call):
             continue
         matched_name = _attribute_call_family_name(node, family)
@@ -3238,7 +3365,7 @@ def _iter_class_decorator_family_calls(
     parsed_module: ParsedModule, family: AstNameFamily
 ) -> tuple[tuple[ast.ClassDef, ast.Call, str], ...]:
     observations: list[tuple[ast.ClassDef, ast.Call, str]] = []
-    for node in _walk_nodes(parsed_module.module):
+    for node in parsed_module.syntax_index.breadth_first_nodes:
         if not isinstance(node, ast.ClassDef):
             continue
         for decorator in node.decorator_list:
@@ -3255,35 +3382,13 @@ def _node_display_name(node: ast.AST) -> str:
     return ExpressionReference.decoded(node).terminal_name or node.__class__.__name__
 
 
-@lru_cache(maxsize=None)
-def _collect_all_scoped_observations(
-    parsed_module: ParsedModule,
-) -> tuple[ScopedAstObservation, ...]:
-    index = module_syntax_index(parsed_module.module)
-    return tuple(
-        ScopedAstObservation(
-            node=node,
-            class_name=(scope.class_names[-1] if scope.class_names else None),
-            function_name=(scope.function_names[-1] if scope.function_names else None),
-        )
-        for node, scope_id in zip(
-            index.depth_first_nodes,
-            index.scope_ids,
-            strict=True,
-        )
-        for scope in (index.scopes[scope_id],)
-        if "lineno" in node._attributes
-    )
-
-
-@lru_cache(maxsize=None)
 def collect_scoped_observations(
     parsed_module: ParsedModule, node_types: tuple[type[ast.AST], ...]
 ) -> tuple[ScopedAstObservation, ...]:
     return tuple(
         (
             observation
-            for observation in _collect_all_scoped_observations(parsed_module)
+            for observation in parsed_module.scoped_observations
             if isinstance(observation.node, node_types)
         )
     )
@@ -3362,9 +3467,7 @@ def _known_class_family(parsed_module: ParsedModule) -> AstNameFamily:
     return AstNameFamily.from_names(
         {
             node.name
-            for _node_index, node in module_syntax_index(
-                parsed_module.module
-            ).indexed_nodes_of_type(ast.ClassDef)
+            for _node_index, node in parsed_module.syntax_index.indexed_nodes_of_type(ast.ClassDef)
         }
     )
 
@@ -3681,12 +3784,11 @@ def _inline_literal_dispatch_groups(
     return sorted_tuple(observations, key=lambda item: item.line)
 
 
-@lru_cache(maxsize=None)
 def _literal_dispatch_observations(
     parsed_module: ParsedModule,
     literal_kind: LiteralKind,
 ) -> tuple[LiteralDispatchObservation, ...]:
-    syntax_index = module_syntax_index(parsed_module.module)
+    syntax_index = parsed_module.syntax_index
     observations: list[LiteralDispatchObservation] = []
     for node_index, node in syntax_index.indexed_nodes_of_type(ast.If):
         parent = syntax_index.parent_node(node_index)
@@ -3722,12 +3824,11 @@ def _literal_dispatch_observations_for_kind(
     return _literal_dispatch_observations(parsed_module, literal_kind)
 
 
-@lru_cache(maxsize=None)
 def _inline_literal_dispatch_observations(
     parsed_module: ParsedModule,
     literal_kind: LiteralKind,
 ) -> tuple[LiteralDispatchObservation, ...]:
-    syntax_index = module_syntax_index(parsed_module.module)
+    syntax_index = parsed_module.syntax_index
     observations: list[LiteralDispatchObservation] = []
     statement_blocks = (
         (None, parsed_module.module.body),
@@ -3799,7 +3900,7 @@ def _is_type_call_constructor(node: ast.AST) -> bool:
 def _sentinel_type_usage_observations(
     parsed_module: ParsedModule,
 ) -> tuple[SentinelTypeObservation, ...]:
-    syntax_index = module_syntax_index(parsed_module.module)
+    syntax_index = parsed_module.syntax_index
     sentinel_names = {
         item.sentinel_name
         for _node_index, node in syntax_index.indexed_nodes_of_type(ast.Assign)
@@ -3837,7 +3938,7 @@ def _dynamic_method_injection_observations(
     function: ast.FunctionDef | ast.AsyncFunctionDef,
 ) -> tuple[DynamicMethodInjectionObservation, ...]:
     observations: list[DynamicMethodInjectionObservation] = []
-    for node in walk_function_body_nodes(function):
+    for node in walk_function_body_nodes(function.body):
         if not isinstance(node, ast.Call):
             continue
         if ExpressionReference.decoded(node.func).terminal_name != _SETATTR_BUILTIN:
@@ -3863,15 +3964,6 @@ def _literal_dispatch_value(node: ast.AST) -> LiteralConstantValue:
     return None
 
 
-@lru_cache(maxsize=None)
-def _module_class_names(parsed_module: ParsedModule) -> frozenset[str]:
-    return frozenset(
-        node.name
-        for node in _walk_nodes(parsed_module.module)
-        if isinstance(node, ast.ClassDef)
-    )
-
-
 def _builder_call_shape(
     parsed_module: ParsedModule,
     node: ast.AST,
@@ -3879,7 +3971,7 @@ def _builder_call_shape(
     function_name: str | None,
     module_class_names: frozenset[str] | None = None,
 ) -> BuilderCallShape | None:
-    module_class_names = module_class_names or _module_class_names(parsed_module)
+    module_class_names = module_class_names or parsed_module.class_names
 
     def owned_builder_authority_call(call: ast.Call) -> bool:
         if not isinstance(call.func, ast.Attribute):

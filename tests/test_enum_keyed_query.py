@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 
+from nominal_refactor_advisor.ast_tools import ParsedModuleSet
 from nominal_refactor_advisor.analysis import analyze_compact_roots_with_cache
 from nominal_refactor_advisor.analysis_cache import Hit
 from nominal_refactor_advisor.ast_tools import parse_python_modules
@@ -111,7 +112,7 @@ def _findings(tmp_path: Path):
     modules = parse_python_modules(tmp_path)
     findings = tuple(
         EnumKeyedDerivedMapFacadeDetector().detect(
-            list(modules),
+            ParsedModuleSet.of(list(modules)),
             DetectorConfig(),
         )
     )
@@ -173,7 +174,7 @@ def test_keyed_mirror_deletes_enum_and_map_and_preserves_behavior(
     source = _enum_keyed_facade_source()
     module_path = _write_package_module(tmp_path, source)
     modules, findings = _findings(tmp_path)
-    snapshot = CodemodSourceSnapshot.from_modules(modules, findings)
+    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(modules), findings)
 
     plan = snapshot.plan_from_findings(
         findings,
@@ -350,7 +351,7 @@ def test_keyed_mirror_refuses_reads_the_family_cannot_answer(
 ) -> None:
     _write_package_module(tmp_path, _enum_keyed_facade_source() + appended)
     modules, findings = _findings(tmp_path)
-    snapshot = CodemodSourceSnapshot.from_modules(modules, findings)
+    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(modules), findings)
 
     plan = snapshot.plan_from_findings(
         findings,
@@ -386,7 +387,7 @@ def test_keyed_mirror_refuses_an_enum_keying_two_maps(
         _with_second_facade(_enum_keyed_facade_source(), value_name=value_name),
     )
     modules, findings = _findings(tmp_path)
-    snapshot = CodemodSourceSnapshot.from_modules(modules, findings)
+    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(modules), findings)
 
     plan = snapshot.plan_from_findings(
         findings,

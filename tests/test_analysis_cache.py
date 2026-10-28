@@ -15,6 +15,7 @@ import weakref
 import pytest
 
 
+from nominal_refactor_advisor.ast_tools import ParsedModuleSet
 from nominal_refactor_advisor.class_index import (
     ResolvedStarImportOrigin,
     UnresolvedStarImportOrigin,
@@ -36,7 +37,6 @@ from nominal_refactor_advisor.analysis import (
     analyze_path,
     accumulate_compact_global_projections_for_roots,
     default_detector_types_for_analysis,
-    release_module_analysis_memory,
 )
 from nominal_refactor_advisor.analysis_cache import (
     AnalysisCacheIdentity,
@@ -74,6 +74,9 @@ from nominal_refactor_advisor import (
     assignment_projection as assignment_projection_module,
 )
 from nominal_refactor_advisor import class_index as class_index_module
+from nominal_refactor_advisor import (
+    exact_method_authority as exact_method_authority_module,
+)
 from nominal_refactor_advisor import constructor_algebra as constructor_algebra_module
 from nominal_refactor_advisor.scan_cache import ScanCache
 from nominal_refactor_advisor import native_syntax as native_syntax_module
@@ -233,13 +236,13 @@ def test_codemod_source_context_cache_preserves_its_nominal_entry(
 ) -> None:
     module_path = tmp_path / "module.py"
     module_path.write_text("class Example:\n    pass\n", encoding="utf-8", newline="")
-    modules = tuple(parse_python_modules(tmp_path, use_parse_cache=False))
+    modules = parse_python_modules(tmp_path, use_parse_cache=False)
     identity = AnalysisCacheIdentity.from_modules(
         (tmp_path,),
         modules,
         DetectorConfig(),
     )
-    context = CodemodSourceContext.from_modules(modules)
+    context = CodemodSourceContext.from_modules(ParsedModuleSet.of(modules))
     cache = CodemodSourceContextCache(tmp_path / "cache")
 
     assert cache.load(identity).status is Miss
@@ -371,35 +374,6 @@ def test_cache_retention_throttles_repeated_tree_walks(tmp_path: Path) -> None:
     assert late_root.is_dir()
 
 
-def test_module_analysis_memory_release_clears_ast_bound_lru_caches() -> None:
-    module = ast_tools_module.ast.parse("def project():\n    return source + 1\n")
-    function = module.body[0]
-    assert isinstance(function, ast.FunctionDef)
-    ast_tools_module._walk_nodes(module)
-    ast_tools_module.walk_function_body_nodes(function)
-    assert ast_tools_module.named_function_nodes(module) == (("project", function),)
-    ast_tools_module.module_syntax_index(module)
-
-    cleared_cache_count = release_module_analysis_memory()
-
-    assert cleared_cache_count > 0
-    assert ast_tools_module._walk_nodes.cache_info().currsize == 0
-    assert ast_tools_module.walk_function_body_nodes.cache_info().currsize == 0
-    assert ast_tools_module.named_function_nodes.cache_info().currsize == 0
-    assert ast_tools_module.module_syntax_index.cache_info().currsize == 0
-
-
-def test_module_analysis_memory_release_preserves_compiled_native_queries() -> None:
-    query_source = "(class_definition) @class"
-    syntax_index = NativePythonSyntaxIndex.from_source("class Role: pass\n")
-    expected_query = native_syntax_module._python_query(query_source)
-    assert syntax_index.captures(query_source)["class"]
-
-    release_module_analysis_memory()
-
-    assert native_syntax_module._python_query(query_source) is expected_query
-
-
 def test_native_syntax_index_shares_frozen_captures_between_families() -> None:
     syntax_index = NativePythonSyntaxIndex.from_source(
         "class Role:\n    def build(self): return Role()\n"
@@ -430,11 +404,10 @@ def test_function_body_consumers_share_bounded_projection_authority(
     module = parse_python_modules(package_root, use_parse_cache=False)[0]
     scope = environment_detectors._function_scopes(module)[0]
 
-    environment_nodes = scope.nodes()
-    authority_nodes = ast_tools_module.walk_function_body_nodes(scope.node)
+    environment_nodes = scope.nodes
 
-    assert environment_nodes is scope.nodes()
-    assert environment_nodes is authority_nodes
+    assert environment_nodes is scope.nodes
+    assert environment_nodes == ast_tools_module.walk_function_body_nodes(scope.node.body)
     assert isinstance(environment_nodes[0], ast.Assign)
     assert not any(
         isinstance(node, ast.Constant)
@@ -458,16 +431,12 @@ def test_class_and_detector_collectors_share_named_function_projection(
     )
     module = parse_python_modules(package_root, use_parse_cache=False)[0]
 
-    class_functions = class_index_module._named_functions(module.module)
-    detector_functions = base_detectors._iter_named_functions(module)
+    class_functions = module.syntax_index.named_functions
+    detector_functions = module.syntax_index.named_functions
     base_detectors._module_builder_call_shapes(module)
 
     assert class_functions is detector_functions
     assert tuple(name for name, _ in class_functions) == ("Outer.Inner.build",)
-    function = class_functions[0][1]
-    assert ast_tools_module.walk_function_body_nodes(function) is (
-        ast_tools_module.walk_function_body_nodes(function)
-    )
 
 
 def test_module_syntax_index_projects_nodes_from_its_owned_traversal() -> None:
@@ -477,7 +446,7 @@ def test_module_syntax_index_projects_nodes_from_its_owned_traversal() -> None:
         "        def build(self):\n"
         "            return Result()\n"
     )
-    syntax_index = ast_tools_module.module_syntax_index(module)
+    syntax_index = ast_tools_module.ModuleSyntaxIndex.build(module)
 
     indexed_classes = syntax_index.indexed_nodes_of_type(ast.ClassDef)
     indexed_calls = syntax_index.indexed_nodes_of_type(ast.Call)
@@ -1883,7 +1852,7 @@ def test_graph_detector_uses_cached_repo_graph_for_changed_module_analysis(
 
     changed_module = parse_python_module_roots((package_root / "b.py",))[0]
     result = analyze_modules(
-        [changed_module],
+        ParsedModuleSet.of([changed_module]),
         DetectorConfig(),
         semantic_descent_source=SemanticDescentGraphAnalysisSource(
             cache_context=SemanticDescentGraphCacheContext(
@@ -2151,7 +2120,6 @@ def test_uncertified_family_cache_payload_is_invalidated(
             protocol=pickle.HIGHEST_PROTOCOL,
         )
     )
-    release_module_analysis_memory()
 
     reloaded_module = parse_python_modules(package_root, cache_dir=cache_dir)[0]
     actual_items = collect_family_items(reloaded_module, BuilderCallShapeFamily)
@@ -2210,7 +2178,7 @@ def test_collected_family_can_opt_into_a_larger_bounded_cache_payload(
     monkeypatch.setattr(
         BuilderCallShapeFamily, "cache_payload_max_bytes", payload_bound
     )
-    ast_tools_module.collect_family_batch.cache_clear()
+    module = module.with_source(module.source)
     assert collect_family_items(module, BuilderCallShapeFamily)
     payload_paths = tuple(family_cache_dir.glob("*.pickle"))
 
@@ -2240,7 +2208,6 @@ def test_generated_boundary_global_projection_reuses_compact_module_cache(
         first_module,
         runtime_detectors.GeneratedBoundarySemanticConstantSiteFamily,
     )
-    release_module_analysis_memory()
 
     def unexpected_collection(
         cls: type,
@@ -2290,7 +2257,6 @@ def test_warm_compact_projection_stream_skips_ast_deserialization(
         cache_dir=cache_dir,
     )
     assert first.projection_count == 1
-    release_module_analysis_memory()
 
     def unexpected_ast_load(self, paths):
         del self, paths
@@ -3130,7 +3096,6 @@ def test_class_candidate_anchor_witnesses_follow_reported_seed_locations() -> No
 
 def test_class_demand_omits_unreportable_autoregister_reference_graph(
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     package_root = tmp_path / "pkg"
     package_root.mkdir()
@@ -3160,30 +3125,13 @@ def test_class_demand_omits_unreportable_autoregister_reference_graph(
     assert isinstance(demand, class_index_module.CompactClassProjectionDemand)
     assert demand.include_autoregister_references is False
 
-    collect_autoregister_values: list[bool] = []
-    original_collector = class_index_module._compact_class_syntax_facets
-
-    def recording_syntax_facets(
-        selected_module,
-        *,
-        collect_autoregister: bool = True,
-    ):
-        collect_autoregister_values.append(collect_autoregister)
-        return original_collector(
-            selected_module,
-            collect_autoregister=collect_autoregister,
-        )
-
-    monkeypatch.setattr(
-        class_index_module,
-        "_compact_class_syntax_facets",
-        recording_syntax_facets,
-    )
     demanded = family.collect_demanded(parsed_module, demand)
+    held_facts = vars(parsed_module).get("_facts", {})
 
     assert demanded is not None
     assert demanded[0].autoregister_reference_index is None
-    assert collect_autoregister_values == [False]
+    assert class_index_module.ModuleClassSyntaxFacetsWithoutAutoregister in held_facts
+    assert class_index_module.ModuleClassSyntaxFacets not in held_facts
 
     target_root = class_index_module.CompactIndexedClass(
         symbol="pkg.target.TargetRegistry",
@@ -4361,48 +4309,48 @@ def test_compact_keyed_axis_projection_is_the_only_global_candidate_authority(
         encoding="utf-8",
         newline="",
     )
-    modules = tuple(parse_python_modules(package_root, use_parse_cache=False))
+    modules = parse_python_modules(package_root, use_parse_cache=False)
     projections = (
         systemic_detectors.ParallelKeyedAxisFamilyDetector.compact_module_projections(
             modules
         )
     )
     config = DetectorConfig()
-    context = systemic_detectors.CompactClassRepositoryContext.from_projections(
+    context = base_detectors.CompactClassRepositoryContext.from_projections(
         projections,
         config,
     )
     family_specs = systemic_detectors._compact_keyed_family_axis_specs_from_context(
         context
     )
-    table_specs = systemic_detectors._compact_keyed_table_axis_specs(projections)
-    manual_selector_specs = systemic_detectors._compact_manual_selector_axis_specs(
+    table_specs = base_detectors._compact_keyed_table_axis_specs(projections)
+    manual_selector_specs = base_detectors._compact_manual_selector_axis_specs(
         projections
     )
     detectors_and_candidates = (
         (
             systemic_detectors.ParallelKeyedAxisFamilyDetector(),
-            systemic_detectors._parallel_keyed_axis_family_candidates_from_specs(
+            base_detectors._parallel_keyed_axis_family_candidates_from_specs(
                 family_specs
             ),
         ),
         (
             systemic_detectors.ParallelKeyedTableAndFamilyDetector(),
-            systemic_detectors._parallel_keyed_table_and_family_candidates_from_specs(
+            base_detectors._parallel_keyed_table_and_family_candidates_from_specs(
                 family_specs,
                 table_specs,
             ),
         ),
         (
             systemic_detectors.ResidualClosedAxisBranchingDetector(),
-            systemic_detectors._residual_closed_axis_branching_candidates_from_compact_specs(
+            base_detectors._residual_closed_axis_branching_candidates_from_compact_specs(
                 projections,
                 family_specs,
             ),
         ),
         (
             systemic_detectors.CrossModuleAxisShadowFamilyDetector(),
-            systemic_detectors._cross_module_axis_shadow_family_candidates_from_specs(
+            base_detectors._cross_module_axis_shadow_family_candidates_from_specs(
                 family_specs,
                 manual_selector_specs,
             ),
@@ -4427,11 +4375,11 @@ def test_compact_keyed_axis_projection_is_the_only_global_candidate_authority(
     ):
         assert not hasattr(systemic_detectors, removed_name)
     assert not hasattr(
-        systemic_detectors.DispatchAlgebraAuthority,
+        base_detectors.DispatchAlgebraAuthority,
         "keyed_family_axis_specs",
     )
     assert not hasattr(
-        systemic_detectors.DispatchAlgebraAuthority,
+        base_detectors.DispatchAlgebraAuthority,
         "module_keyed_table_axis_specs",
     )
 
@@ -4472,7 +4420,7 @@ def test_compact_dataclass_cli_projection_preserves_semantics_without_ast_shadow
         encoding="utf-8",
         newline="",
     )
-    modules = tuple(parse_python_modules(package_root, use_parse_cache=False))
+    modules = parse_python_modules(package_root, use_parse_cache=False)
     projections = systemic_detectors.DataclassNamespaceCliMirrorDetector.compact_module_projections(
         modules
     )
@@ -4542,7 +4490,7 @@ def test_compact_exact_type_guard_projection_matches_legacy_ast_candidates(
         encoding="utf-8",
         newline="",
     )
-    modules = tuple(parse_python_modules(package_root, use_parse_cache=False))
+    modules = parse_python_modules(package_root, use_parse_cache=False)
     detector = runtime_detectors.ExactTypeGuardInheritanceRetreatDetector()
     projections = detector.compact_module_projections(modules)
     candidates = (
@@ -4605,7 +4553,7 @@ def test_compact_autoregister_projection_retains_neutral_registry_evidence(
         encoding="utf-8",
         newline="",
     )
-    modules = tuple(parse_python_modules(package_root, use_parse_cache=False))
+    modules = parse_python_modules(package_root, use_parse_cache=False)
     projections = class_index_module.CompactModuleClassProjectionFamily.collect_modules(
         modules
     )
@@ -4642,7 +4590,7 @@ def test_compact_keyed_registry_axis_facts_preserve_axis_semantics(
     tmp_path: Path,
 ) -> None:
     assert not hasattr(
-        systemic_detectors.DISPATCH_ALGEBRA_AUTHORITY,
+        base_detectors.DISPATCH_ALGEBRA_AUTHORITY,
         "keyed_registry_axis_fact_records",
     )
     assert not hasattr(base_detectors, "_keyed_type_registry_injectivity_proof")
@@ -4683,7 +4631,7 @@ def test_compact_keyed_registry_axis_facts_preserve_axis_semantics(
         encoding="utf-8",
         newline="",
     )
-    modules = tuple(parse_python_modules(package_root, use_parse_cache=False))
+    modules = parse_python_modules(package_root, use_parse_cache=False)
     config = DetectorConfig()
     projections = tuple(
         replace(
@@ -4724,11 +4672,11 @@ def test_compact_registry_projection_candidates_preserve_projection_semantics(
     tmp_path: Path,
 ) -> None:
     assert not hasattr(
-        systemic_detectors._REGISTRY_PROJECTION_SURFACE_ANALYZER,
+        base_detectors._REGISTRY_PROJECTION_SURFACE_ANALYZER,
         "surface_candidates",
     )
     assert not hasattr(
-        systemic_detectors._REGISTRY_PROJECTION_SURFACE_ANALYZER,
+        base_detectors._REGISTRY_PROJECTION_SURFACE_ANALYZER,
         "policy_authority_candidates",
     )
 
@@ -4778,7 +4726,7 @@ def test_compact_registry_projection_candidates_preserve_projection_semantics(
         encoding="utf-8",
         newline="",
     )
-    modules = tuple(parse_python_modules(package_root, use_parse_cache=False))
+    modules = parse_python_modules(package_root, use_parse_cache=False)
     config = DetectorConfig()
     projections = (
         systemic_detectors.RegistryProjectionSurfaceDetector.compact_module_projections(
@@ -4813,7 +4761,7 @@ def test_compact_registry_projection_candidates_preserve_projection_semantics(
 
 
 def test_registry_projection_role_ambiguity_fails_closed() -> None:
-    evidence = systemic_detectors.RegistryProjectionSurfaceEvidence(
+    evidence = base_detectors.RegistryProjectionSurfaceEvidence(
         surface_name="CLI_CONFIG_MODE_CHOICES",
         shared_key_names=("ALPHA", "BETA"),
         shared_type_names=(),
@@ -4822,10 +4770,10 @@ def test_registry_projection_role_ambiguity_fails_closed() -> None:
     )
 
     assert (
-        systemic_detectors.RegistryProjectionRole.for_surface(
+        base_detectors.RegistryProjectionRole.for_surface(
             evidence,
             file_path="pkg/options.py",
-            default=systemic_detectors.RegistryProjectionRole.OPTION_ROSTER,
+            default=base_detectors.RegistryProjectionRole.OPTION_ROSTER,
         )
         is None
     )
@@ -4917,7 +4865,7 @@ def test_compact_class_detectors_share_one_repository_inheritance_graph(
         systemic_detectors.AutoRegisterExplicitPriorityOrderingDetector,
     )
     calls = 0
-    original_builder = base_detectors.build_compact_class_family_index
+    original_builder = class_index_module.build_compact_class_family_index
 
     def counting_builder(projections):
         nonlocal calls
@@ -5027,7 +4975,7 @@ def test_bounded_multi_family_joins_reuse_the_single_class_anchor(
         systemic_detectors.RepeatedConcreteTypeCaseAnalysisDetector,
         semantic_descent_detectors.SemanticMirrorWithoutDescentDetector,
     )
-    modules = tuple(parse_python_modules(package_root, use_parse_cache=False))
+    modules = parse_python_modules(package_root, use_parse_cache=False)
     manifest = analysis_module.BoundedCompactProjectionManifest(detector_types)
     projections_by_family = {
         family: tuple(
@@ -5044,9 +4992,7 @@ def test_bounded_multi_family_joins_reuse_the_single_class_anchor(
     )
 
     calls = 0
-    collect_cycles_calls: list[bool] = []
-    original_builder = base_detectors.build_compact_class_family_index
-    original_release = analysis_module.release_module_analysis_memory
+    original_builder = class_index_module.build_compact_class_family_index
 
     def counting_builder(projections):
         nonlocal calls
@@ -5055,10 +5001,6 @@ def test_bounded_multi_family_joins_reuse_the_single_class_anchor(
 
     def forbidden_builder(_projections):
         raise AssertionError("multi-family detector rebuilt the compact class graph")
-
-    def observing_release(*, collect_cycles=True):
-        collect_cycles_calls.append(collect_cycles)
-        return original_release(collect_cycles=collect_cycles)
 
     monkeypatch.setattr(
         base_detectors,
@@ -5075,17 +5017,11 @@ def test_bounded_multi_family_joins_reuse_the_single_class_anchor(
             "build_compact_class_family_index",
             forbidden_builder,
         )
-    monkeypatch.setattr(
-        analysis_module,
-        "release_module_analysis_memory",
-        observing_release,
-    )
 
     findings = manifest.findings_by_detector(DetectorConfig())
 
     assert calls == 1
     assert set(findings) == set(detector_types)
-    assert collect_cycles_calls[-1] is True
 
 
 def test_compact_repeated_keyed_family_preserves_grouping_semantics(
@@ -5118,7 +5054,7 @@ def test_compact_repeated_keyed_family_preserves_grouping_semantics(
             encoding="utf-8",
             newline="",
         )
-    modules = tuple(parse_python_modules(package_root, use_parse_cache=False))
+    modules = parse_python_modules(package_root, use_parse_cache=False)
     config = DetectorConfig()
     projections = (
         systemic_detectors.RepeatedKeyedFamilyDetector.compact_module_projections(
@@ -5211,7 +5147,7 @@ def test_compact_concrete_family_candidates_preserve_semantics(
         encoding="utf-8",
         newline="",
     )
-    modules = tuple(parse_python_modules(package_root, use_parse_cache=False))
+    modules = parse_python_modules(package_root, use_parse_cache=False)
     config = DetectorConfig()
     projections = runtime_detectors.PredicateSelectedConcreteFamilyDetector.compact_module_projections(
         modules
@@ -5327,7 +5263,7 @@ def test_compact_roster_candidates_preserve_semantics(
         encoding="utf-8",
         newline="",
     )
-    modules = tuple(parse_python_modules(package_root, use_parse_cache=False))
+    modules = parse_python_modules(package_root, use_parse_cache=False)
     config = DetectorConfig()
     projections = runtime_detectors.ManualConcreteSubclassRosterDetector.compact_module_projections(
         modules
@@ -5392,12 +5328,12 @@ def test_concrete_family_detectors_share_one_compact_graph_context(
     )
     assert {
         detector_type.compact_shared_context_builder for detector_type in detector_types
-    } == {runtime_detectors.CompactClassRepositoryContext.from_projections}
+    } == {base_detectors.CompactClassRepositoryContext.from_projections}
 
     repository_calls = 0
     concrete_context_calls = 0
     original_repository_builder = (
-        runtime_detectors.CompactClassRepositoryContext.from_projections
+        base_detectors.CompactClassRepositoryContext.from_projections
     )
     original_concrete_context_builder = (
         runtime_detectors._compact_concrete_family_context
@@ -5605,7 +5541,6 @@ def test_compact_class_method_projection_reuses_exact_tiny_roles_from_warm_cache
     assert cold_methods[0].promotion_hazards == ()
     assert tuple((cache_dir / "collected-family").glob("*.pickle"))
 
-    release_module_analysis_memory()
     warm_module = parse_python_modules(package_root, cache_dir=cache_dir)[0]
     cached = warm_module.collected_family_cache.load_items(family)
     warm = collect_family_items(warm_module, family)
@@ -5787,24 +5722,24 @@ def test_compact_method_family_candidates_preserve_semantics_without_ast_shadow(
 ) -> None:
     package_root = tmp_path / "pkg"
     _write_compact_method_family_fixture(package_root)
-    modules = tuple(parse_python_modules(package_root, use_parse_cache=False))
+    modules = parse_python_modules(package_root, use_parse_cache=False)
     config = DetectorConfig()
     projections = (
         structural_detectors.SemanticOverlapMethodDetector.compact_module_projections(
             modules
         )
     )
-    context = structural_detectors.CompactMethodFamilyContext.from_projections(
+    context = helper_detectors.CompactMethodFamilyContext.from_projections(
         projections
     )
     detector_candidate_pairs = (
         (
             structural_detectors.ExactTinyMethodRoleDetector,
-            structural_detectors.ExactMethodRoleComponent,
+            exact_method_authority_module.ExactMethodRoleComponent,
         ),
         (
             structural_detectors.ExactLeafMethodAncestorPromotionDetector,
-            structural_detectors.ExactLeafMethodAncestorPromotionComponent,
+            exact_method_authority_module.ExactLeafMethodAncestorPromotionComponent,
         ),
         (
             structural_detectors.SemanticOverlapMethodDetector,
@@ -5932,7 +5867,7 @@ def test_compact_method_family_profiles_are_derived_after_the_family_join(
 ) -> None:
     package_root = tmp_path / "pkg"
     _write_compact_method_family_fixture(package_root)
-    modules = tuple(parse_python_modules(package_root, use_parse_cache=False))
+    modules = parse_python_modules(package_root, use_parse_cache=False)
     projection_family = class_index_module.CompactModuleClassProjectionFamily
     projections = tuple(
         projection
@@ -5955,7 +5890,7 @@ def test_compact_method_family_profiles_are_derived_after_the_family_join(
     )
 
     assert profile_derivations == []
-    context = structural_detectors.CompactMethodFamilyContext.from_projections(
+    context = helper_detectors.CompactMethodFamilyContext.from_projections(
         projections
     )
 
@@ -5990,7 +5925,7 @@ def test_method_family_detectors_share_one_compact_context(
         structural_detectors.OverlappingInheritanceFamiliesDetector,
     )
     calls = 0
-    original_builder = structural_detectors.CompactMethodFamilyContext.from_projections
+    original_builder = helper_detectors.CompactMethodFamilyContext.from_projections
 
     def counting_builder(projections, config):
         nonlocal calls
@@ -6045,11 +5980,11 @@ def test_compact_semantic_descent_graph_matches_legacy_ast_graph(
         encoding="utf-8",
         newline="",
     )
-    modules = tuple(parse_python_modules(package_root, use_parse_cache=False))
+    modules = parse_python_modules(package_root, use_parse_cache=False)
     detector = semantic_descent_detectors.SemanticMirrorWithoutDescentDetector()
     groups = type(detector).compact_module_projection_groups(modules)
     semantic_projections = groups[CompactSemanticModuleProjectionFamily]
-    class_projections = groups[runtime_detectors.CompactModuleClassProjectionFamily]
+    class_projections = groups[class_index_module.CompactModuleClassProjectionFamily]
     legacy_supplements = tuple(
         supplement
         for module in modules
@@ -6073,7 +6008,7 @@ def test_compact_semantic_descent_graph_matches_legacy_ast_graph(
         == legacy_supplements
     )
 
-    legacy_graph = build_semantic_descent_graph(list(modules), use_cache=False)
+    legacy_graph = build_semantic_descent_graph(modules, use_cache=False)
     compact_graph = build_compact_semantic_descent_graph(
         semantic_projections,
         class_projections,
@@ -6136,7 +6071,7 @@ def test_compact_semantic_descent_graph_matches_legacy_ast_graph(
     )
     expected_findings = detector._collect_findings_from_graph(
         legacy_graph,
-        list(modules),
+        modules,
         config,
     )
     assert (

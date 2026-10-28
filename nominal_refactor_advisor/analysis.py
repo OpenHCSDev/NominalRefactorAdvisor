@@ -59,7 +59,6 @@ from .ast_tools import (
     SourceModule,
     collected_family_demand_cache_signature,
     collected_family_items_content_signature,
-    collect_family_batch,
     collect_family_items,
     parse_python_module_roots,
     parse_python_modules,
@@ -83,6 +82,7 @@ from .class_index import (
     CompactModuleClassProjection,
     CompactModuleClassProjectionFamily,
 )
+from .ast_tools import ParsedModuleSet
 from .detectors import (
     CompactClassRepositoryContext,
     CompactFindingStream,
@@ -327,7 +327,7 @@ class DetectorAnalysisWorkerPlan:
 class DetectorWorkerContext:
     """Immutable parsed source and configuration shared by detector workers."""
 
-    modules: tuple[ParsedModule, ...]
+    modules: ParsedModuleSet
     config: DetectorConfig
 
 
@@ -336,7 +336,7 @@ class DetectorAnalysisWorkerState(DetectorWorkerContext):
     """Process-local parsed source and config for detector worker tasks."""
 
     def detect_with(self, detector_type: type[IssueDetector]) -> list[RefactorFinding]:
-        return detector_type().detect(list(self.modules), self.config)
+        return detector_type().detect(self.modules, self.config)
 
 
 detector_analysis_worker_state: DetectorAnalysisWorkerState | None = None
@@ -392,7 +392,7 @@ class PerModuleDetectorShardWorkerState(DetectorWorkerContext):
     ) -> list[RefactorFinding]:
         module_index, detector_types = task
         return analyze_detector_types(
-            [self.modules[module_index]],
+            ParsedModuleSet((self.modules[module_index],)),
             self.config,
             detector_types=detector_types,
             analysis_workers=1,
@@ -434,7 +434,7 @@ class DetectorTypeShardRunner:
     @classmethod
     def from_modules(
         cls,
-        modules: tuple[ParsedModule, ...],
+        modules: ParsedModuleSet,
         config: DetectorConfig,
         detector_types: tuple[type[IssueDetector], ...],
         *,
@@ -470,7 +470,7 @@ class DetectorTypeShardRunner:
                 )
         return [
             detector_type().detect(
-                list(self.worker_state.modules),
+                self.worker_state.modules,
                 self.worker_state.config,
             )
             for detector_type in self.detector_types
@@ -490,68 +490,6 @@ def default_detector_types_for_analysis() -> tuple[type[IssueDetector], ...]:
     """Return registered detector classes in the default analysis order."""
 
     return tuple(type(detector) for detector in default_detectors())
-
-
-_MODULE_ANALYSIS_SCANNED_CLASS_IDS: set[int] = set()
-_MODULE_ANALYSIS_CLASS_CACHE_CALLABLES: dict[int, object] = {}
-
-
-def release_module_analysis_memory(*, collect_cycles: bool = True) -> int:
-    """Clear AST-bound scan caches after a module-isolated analysis shard."""
-
-    cleared_cache_count = 0
-    seen_cache_ids: set[int] = set()
-
-    def clear_cached_callable(candidate: object) -> None:
-        nonlocal cleared_cache_count
-        candidate_id = id(candidate)
-        if candidate_id in seen_cache_ids:
-            return
-        seen_cache_ids.add(candidate_id)
-        cache_clear = getattr(candidate, "cache_clear", None)
-        cache_info = getattr(candidate, "cache_info", None)
-        if cache_clear is None or cache_info is None:
-            return
-        try:
-            cache_state = cache_info()
-        except (AttributeError, TypeError):
-            return
-        if cache_state.maxsize == 1 or cache_state.currsize == 0:
-            return
-        cache_clear()
-        cleared_cache_count += 1
-
-    for cached_callable in _MODULE_ANALYSIS_CLASS_CACHE_CALLABLES.values():
-        clear_cached_callable(cached_callable)
-
-    for module_name, module in tuple(sys.modules.items()):
-        if not module_name.startswith("nominal_refactor_advisor") or module is None:
-            continue
-        for candidate in vars(module).values():
-            clear_cached_callable(candidate)
-            if not isinstance(candidate, type):
-                continue
-            candidate_id = id(candidate)
-            if candidate_id in _MODULE_ANALYSIS_SCANNED_CLASS_IDS:
-                continue
-            _MODULE_ANALYSIS_SCANNED_CLASS_IDS.add(candidate_id)
-            for class_attribute in vars(candidate).values():
-                cached_callable = (
-                    class_attribute.__func__
-                    if isinstance(class_attribute, (classmethod, staticmethod))
-                    else class_attribute
-                )
-                if (
-                    getattr(cached_callable, "cache_clear", None) is not None
-                    and getattr(cached_callable, "cache_info", None) is not None
-                ):
-                    _MODULE_ANALYSIS_CLASS_CACHE_CALLABLES[id(cached_callable)] = (
-                        cached_callable
-                    )
-                clear_cached_callable(cached_callable)
-    if collect_cycles:
-        gc.collect()
-    return cleared_cache_count
 
 
 @dataclass(frozen=True)
@@ -989,7 +927,6 @@ def accumulate_compact_global_projections_for_roots(
                         tuple(collect_family_items(module, family)),
                     )
                 del module
-            release_module_analysis_memory(collect_cycles=False)
     gc.collect()
     return accumulator
 
@@ -1248,7 +1185,7 @@ def build_compact_projection_shard(
                 (
                     *local_findings,
                     *analyze_detector_types(
-                        [module],
+                        ParsedModuleSet((module,)),
                         request.config,
                         detector_types=fallback_local_detector_types,
                         analysis_workers=1,
@@ -1266,7 +1203,7 @@ def build_compact_projection_shard(
             if demanded_projections is not None:
                 projections = tuple(demanded_projections)
             else:
-                full_batch = collect_family_batch(module, family)
+                full_batch = module.family_batch(family)
                 full_projections = full_batch.items
                 projections = (
                     family.project_cached_demand(full_projections, demand)
@@ -1293,7 +1230,6 @@ def build_compact_projection_shard(
         and not request.family_demands
         and source.bundle_is_complete(request.bundle_families)
     )
-    release_module_analysis_memory(collect_cycles=False)
     return CompactProjectionBuildResult(
         path=source.path,
         projection_batches=(
@@ -1639,7 +1575,6 @@ class BoundedCompactProjectionManifest:
             if CompactGlobalProjectionAccumulator._retains_ast(projection):
                 raise TypeError(f"{family.__name__} repaired projection retains an AST")
         del module
-        release_module_analysis_memory(collect_cycles=False)
         return repaired
 
     @suspend_cyclic_gc()
@@ -1772,10 +1707,8 @@ class BoundedCompactProjectionManifest:
                 remaining_groups.remove(families)
                 del projections_by_family
                 del projections
-                release_module_analysis_memory(collect_cycles=False)
             del anchor_projections
             shared_contexts.clear()
-            release_module_analysis_memory(collect_cycles=True)
 
         for families in detector_types_by_families:
             if families not in remaining_groups:
@@ -1788,7 +1721,6 @@ class BoundedCompactProjectionManifest:
                 projections_by_family,
             )
             del projections_by_family
-            release_module_analysis_memory(collect_cycles=False)
         gc.collect()
         return findings
 
@@ -2088,7 +2020,6 @@ def analyze_compact_roots_with_cache(
                 class_demand,
                 header_core_only=True,
             )
-        release_module_analysis_memory(collect_cycles=False)
     projection_manifest.family_demands = report_family_demands
     projection_manifest.report_scope = report_scope
     local_findings: list[RefactorFinding] = []
@@ -2654,7 +2585,7 @@ class EvidenceLocalFindingReuseAuthority:
 
 
 def analyze_modules(
-    modules: list,
+    modules: ParsedModuleSet,
     config: DetectorConfig | None = None,
     *,
     analysis_workers: int = 1,
@@ -2675,7 +2606,7 @@ def analyze_modules(
 
 @ScanCache.scope()
 def analyze_detector_types(
-    modules: list[ParsedModule],
+    modules: ParsedModuleSet,
     config: DetectorConfig,
     *,
     detector_types: tuple[type[IssueDetector], ...],
@@ -2699,7 +2630,7 @@ def analyze_detector_types(
     if non_graph_detector_types:
         findings.extend(
             DetectorTypeShardRunner.from_modules(
-                modules=tuple(modules),
+                modules=modules,
                 config=config,
                 detector_types=non_graph_detector_types,
                 analysis_workers=analysis_workers,
@@ -2800,7 +2731,7 @@ class SemanticDescentGraphCacheContext:
         cache.store(identity, graph)
         self._loaded_graphs_by_token[identity.cache_token] = graph
 
-    def graph_for_modules(self, modules: list[ParsedModule]) -> SemanticDescentGraph:
+    def graph_for_modules(self, modules: ParsedModuleSet) -> SemanticDescentGraph:
         cached_graph = self.cached_graph()
         if cached_graph is not None:
             return cached_graph
@@ -2808,7 +2739,7 @@ class SemanticDescentGraphCacheContext:
         if cache is None:
             return build_semantic_descent_graph(modules, use_cache=False)
         identity = SemanticDescentGraphCacheIdentity.from_modules(
-            tuple(modules),
+            modules,
             roots=self.roots,
         )
         module_cache_graph = cache.load(identity).graph
@@ -2875,7 +2806,7 @@ class SemanticDescentGraphAnalysisSource:
         default_factory=SemanticDescentGraphCacheContext
     )
 
-    def graph_for_modules(self, modules: list[ParsedModule]) -> SemanticDescentGraph:
+    def graph_for_modules(self, modules: ParsedModuleSet) -> SemanticDescentGraph:
         if self.cached_graph is not None:
             return self.cached_graph.overlay_modules(tuple(modules))
         return self.cache_context.graph_for_modules(modules)
@@ -2956,7 +2887,7 @@ class AnalysisCacheResolutionAuthority(
         self,
         *,
         roots: tuple[Path, ...],
-        modules: list,
+        modules: ParsedModuleSet,
         config: DetectorConfig,
         cache_result: CachedAnalysisResult,
         analysis_cache_dir: Path | None,
@@ -3179,7 +3110,7 @@ def analyze_module_detector_types_with_cache(
             Hit,
         )
     new_findings = analyze_detector_types(
-        [module],
+        ParsedModuleSet((module,)),
         config,
         detector_types=detector_bundle_plan.missing_detector_types(
             cache_lookup.findings_by_bundle
@@ -3207,7 +3138,7 @@ class IncrementalAnalysisCacheResolver:
         self,
         *,
         cache_identity: AnalysisCacheIdentity,
-        modules: list[ParsedModule],
+        modules: ParsedModuleSet,
         config: DetectorConfig,
         analysis_cache: AnalysisFindingCache,
         analysis_workers: int,
@@ -3231,9 +3162,6 @@ class IncrementalAnalysisCacheResolver:
         try:
             return self._result_without_cyclic_gc()
         finally:
-            # Detector caches may retain repository AST projections after their
-            # findings have been materialized. They are not part of the result.
-            release_module_analysis_memory(collect_cycles=False)
             if cyclic_gc_was_enabled:
                 gc.enable()
                 gc.collect()
@@ -3348,7 +3276,7 @@ class IncrementalAnalysisCacheResolver:
         )
         if worker_plan.uses_process_pool:
             state = PerModuleDetectorShardWorkerState(
-                modules=tuple(missing_modules),
+                modules=ParsedModuleSet.of(missing_modules),
                 config=self._config,
             )
             tasks = tuple(enumerate(detector_types_by_module))
@@ -3376,7 +3304,7 @@ class IncrementalAnalysisCacheResolver:
         ):
             findings_by_module.append(
                 analyze_detector_types(
-                    [module],
+                    ParsedModuleSet((module,)),
                     self._config,
                     detector_types=detector_types,
                     analysis_workers=1,
@@ -3394,7 +3322,7 @@ class IncrementalAnalysisCacheResolver:
 
         findings: list[RefactorFinding] = []
         hit_count = 0
-        module_context = tuple(self._modules)
+        module_context = self._modules
         for detector_type in detector_types:
             scan_deadline_checkpoint("contextual_module_signature")
             if not issubclass(detector_type, ContextualModuleIssueDetector):
@@ -3434,15 +3362,15 @@ class IncrementalAnalysisCacheResolver:
         cache_status = AnalysisCacheStatus.from_reused_item_count(hit_count)
         return IncrementalAnalysisResult(findings, cache_status)
 
-    def _local_detector_modules(self) -> list[ParsedModule]:
+    def _local_detector_modules(self) -> ParsedModuleSet:
         scope = self._report_scope
         if scope is None or not scope.has_report_filter:
             return self._modules
-        return [
+        return ParsedModuleSet.of(
             module
             for module in self._modules
             if scope.includes_report_path(module.path)
-        ]
+        )
 
     def _global_findings(self) -> IncrementalAnalysisResult:
         detector_types = self._detector_partition.detector_types_for(
@@ -3487,7 +3415,7 @@ class IncrementalAnalysisCacheResolver:
         missing_detector_types: tuple[type[IssueDetector], ...],
     ) -> list[list[RefactorFinding]]:
         return DetectorTypeShardRunner.from_modules(
-            modules=tuple(self._modules),
+            modules=self._modules,
             config=self._config,
             detector_types=missing_detector_types,
             analysis_workers=self._analysis_workers,
@@ -3502,7 +3430,7 @@ class IncrementalAnalysisCacheResolver:
 
         findings: list[RefactorFinding] = []
         hit_count = 0
-        module_context = tuple(self._modules)
+        module_context = self._modules
         for detector_type in detector_types:
             detector_label = (
                 detector_type.effective_detector_id() or detector_type.__qualname__
@@ -3632,7 +3560,7 @@ class IncrementalAnalysisCacheResolver:
 @ScanCache.scope()
 def analyze_modules_with_cache(
     roots: tuple[Path, ...],
-    modules: list[ParsedModule],
+    modules: ParsedModuleSet,
     config: DetectorConfig | None = None,
     *,
     analysis_cache_dir: Path | None = None,
@@ -3961,7 +3889,7 @@ class FastCachedPathAnalysisAuthority:
             report_roots=self._request.report_roots,
         ).filter_findings(findings)
 
-    def _changed_modules(self, changed_paths: frozenset[str]) -> list[ParsedModule]:
+    def _changed_modules(self, changed_paths: frozenset[str]) -> ParsedModuleSet:
         modules: list[ParsedModule] = []
         seen_paths: set[Path] = set()
         for root, paths in (
@@ -3985,7 +3913,7 @@ class FastCachedPathAnalysisAuthority:
                     continue
                 seen_paths.add(normalized_path)
                 modules.append(module)
-        return modules
+        return ParsedModuleSet(tuple(modules))
 
 
 @dataclass(frozen=True)

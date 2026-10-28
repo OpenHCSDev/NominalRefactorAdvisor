@@ -5,9 +5,10 @@ import weakref
 
 import pytest
 
+from nominal_refactor_advisor.ast_tools import ParsedModuleSet
 from nominal_refactor_advisor import analysis
 from nominal_refactor_advisor.analysis_cache import AnalysisCacheIdentity, AnalysisFindingCache
-from nominal_refactor_advisor.ast_tools import ParsedModule, module_syntax_index
+from nominal_refactor_advisor.ast_tools import ParsedModule
 from nominal_refactor_advisor.detectors import ClosedParameterConveyorDetector
 from nominal_refactor_advisor.detectors._base import DetectorConfig
 from nominal_refactor_advisor.detectors._heuristic_leads import LongConditionFactoringLeadDetector
@@ -31,12 +32,12 @@ def test_original_source_facts_reach_late_consumer_and_release_after_result(
     consumers = []
 
     def observe_local(self, module, config):
-        original_facts[module.file_path] = weakref.ref(module_syntax_index(module.module))
+        original_facts[module.file_path] = weakref.ref(module.syntax_index)
         return original_local(self, module, config)
 
     def observe_global(self, modules, config):
         for module in modules:
-            assert original_facts[module.file_path]() is module_syntax_index(module.module)
+            assert original_facts[module.file_path]() is module.syntax_index
         consumers.append("global")
         if fail_global:
             raise RuntimeError("late source consumer failed")
@@ -51,7 +52,7 @@ def test_original_source_facts_reach_late_consumer_and_release_after_result(
     config = DetectorConfig()
     resolver = analysis.IncrementalAnalysisCacheResolver(
         cache_identity=AnalysisCacheIdentity.from_modules((tmp_path,), tuple(modules), config),
-        modules=modules, config=config, analysis_cache=AnalysisFindingCache(None),
+        modules=ParsedModuleSet.of(modules), config=config, analysis_cache=AnalysisFindingCache(None),
         analysis_workers=1,
         semantic_descent_source=analysis.SemanticDescentGraphAnalysisSource(),
     )
@@ -61,4 +62,3 @@ def test_original_source_facts_reach_late_consumer_and_release_after_result(
     else:
         assert resolver.result().findings == []
     assert consumers == ["global"]
-    assert module_syntax_index.cache_info().currsize == 0

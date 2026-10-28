@@ -1,5 +1,6 @@
 """Regex observations require imported declaration and lexical ownership evidence."""
 
+import gc
 import ast
 from inspect import Parameter
 from pathlib import Path
@@ -7,8 +8,8 @@ import weakref
 
 import pytest
 
+from nominal_refactor_advisor.ast_tools import ParsedModuleSet
 from nominal_refactor_advisor.ast_tools import ParsedModule
-from nominal_refactor_advisor.analysis import release_module_analysis_memory
 from nominal_refactor_advisor.detectors import DetectorConfig
 from nominal_refactor_advisor.detectors._runtime import RepeatedLocalRegexBundleDetector
 from nominal_refactor_advisor.detectors._regex_bundle import (
@@ -61,7 +62,7 @@ def test_import_aliases_and_keyword_arguments_identify_the_same_patterns(header,
     exec(compile(module.source, str(module.path), "exec"), namespace)
     assert tuple(pattern.pattern for pattern in namespace["first"]()) == PATTERNS
     assert tuple(pattern.pattern for pattern in namespace["second"]()) == PATTERNS
-    findings = RepeatedLocalRegexBundleDetector().detect([module], DetectorConfig())
+    findings = RepeatedLocalRegexBundleDetector().detect(ParsedModuleSet.of([module]), DetectorConfig())
     assert len(findings) == 1
     assert findings[0].authority_evidence is None
 
@@ -85,7 +86,7 @@ def test_spelling_cannot_claim_a_regex_origin(header, parameters, prefix, suffix
         local_prefix=prefix,
         local_suffix=suffix,
     )
-    assert RepeatedLocalRegexBundleDetector().detect([module], DetectorConfig()) == []
+    assert RepeatedLocalRegexBundleDetector().detect(ParsedModuleSet.of([module]), DetectorConfig()) == []
 
 
 @pytest.mark.parametrize(
@@ -98,7 +99,7 @@ def test_spelling_cannot_claim_a_regex_origin(header, parameters, prefix, suffix
 )
 def test_unproved_argument_bindings_do_not_count_as_pattern_uses(call):
     module = _module("import re\n", call)
-    assert RepeatedLocalRegexBundleDetector().detect([module], DetectorConfig()) == []
+    assert RepeatedLocalRegexBundleDetector().detect(ParsedModuleSet.of([module]), DetectorConfig()) == []
 
 
 @pytest.mark.parametrize("operation", tuple(RegexPatternOperation))
@@ -115,7 +116,7 @@ def test_operation_arguments_derive_from_the_native_declaration(operation):
     exec(compile(module.source, str(module.path), "exec"), namespace)
     assert len(namespace["first"]()) == 3
     assert (
-        len(RepeatedLocalRegexBundleDetector().detect([module], DetectorConfig())) == 1
+        len(RepeatedLocalRegexBundleDetector().detect(ParsedModuleSet.of([module]), DetectorConfig())) == 1
     )
 
 
@@ -130,8 +131,8 @@ def test_unrelated_imports_do_not_force_lexical_or_declaration_projection():
 
 def test_cached_source_projection_does_not_cache_configuration_or_retain_released_modules():
     module = _module("import re\n", "re.compile({pattern})")
-    projection = RegexBundleModuleProjection.from_module(module)
-    assert RegexBundleModuleProjection.from_module(module) is projection
+    projection = module.fact(RegexBundleModuleProjection)
+    assert module.fact(RegexBundleModuleProjection) is projection
     assert len(RegexBundleModuleProjection.collect(module, DetectorConfig())) == 1
     assert (
         RegexBundleModuleProjection.collect(
@@ -141,7 +142,5 @@ def test_cached_source_projection_does_not_cache_configuration_or_retain_release
     )
     retained = weakref.ref(module)
     del module, projection
-    assert retained() is not None
-    release_module_analysis_memory()
-    assert RegexBundleModuleProjection.from_module.cache_info().currsize == 0
+    gc.collect()
     assert retained() is None

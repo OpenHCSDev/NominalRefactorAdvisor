@@ -60,12 +60,13 @@ from .ast_tools import (
     CollectedFamily,
     LexicalSyntaxScope,
     ParsedModule,
+    ParsedModuleFact,
+    ParsedModuleSet,
+    ParsedModuleSetFact,
     PythonSourcePathPolicy,
     SourceModule,
     _walk_nodes,
     collect_family_items,
-    module_syntax_index,
-    named_function_nodes,
 )
 from .class_namespace import ClassNamespaceExecutionEvidence, NATIVE_METHOD_DECORATORS
 from .collection_algebra import (
@@ -3387,7 +3388,11 @@ def declared_nominal_base_count(declaration: ClassDeclaration) -> int:
 
 
 @dataclass(frozen=True)
-class ClassFamilyIndex(ClassDeclarationIndex[IndexedClass]):
+class ClassFamilyIndex(ClassDeclarationIndex[IndexedClass], ParsedModuleSetFact):
+    @classmethod
+    def derive(cls, modules: ParsedModuleSet) -> ClassFamilyIndex:
+        return ClassFamilyIndexBuilder(modules.modules).build()
+
     def class_records_excluding_files(
         self,
         file_paths: frozenset[str],
@@ -3968,9 +3973,7 @@ class FunctionNominalParameterBindingAuthority:
 
     @cached_property
     def class_bound_names(self) -> frozenset[str]:
-        parents = module_syntax_index(
-            self.module_bindings.parsed_module.module
-        ).parent_by_node
+        parents = self.module_bindings.parsed_module.syntax_index.parent_by_node
         names: set[str] = set()
         current: ast.AST = self.function
         while (parent := parents.get(current)) is not None:
@@ -4021,9 +4024,7 @@ class FunctionNominalParameterBindingAuthority:
     def comprehension_owner_for_reference(
         self, reference: ast.Name
     ) -> ast.ListComp | ast.SetComp | ast.DictComp | ast.GeneratorExp | None:
-        parents = module_syntax_index(
-            self.module_bindings.parsed_module.module
-        ).parent_by_node
+        parents = self.module_bindings.parsed_module.syntax_index.parent_by_node
         return next(
             (
                 node
@@ -4063,9 +4064,7 @@ class FunctionNominalParameterBindingAuthority:
         names = set(self.class_bound_names)
         names.update(LEXICAL_SCOPE_BINDING_AUTHORITY.argument_names(self.function))
         names.update(LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(self.function.body))
-        parents = module_syntax_index(
-            self.module_bindings.parsed_module.module
-        ).parent_by_node
+        parents = self.module_bindings.parsed_module.syntax_index.parent_by_node
         for scope in LEXICAL_SCOPE_BINDING_AUTHORITY.enclosing_comprehensions(
             reference, self.function, parents
         ):
@@ -4087,7 +4086,7 @@ class FunctionNominalParameterBindingAuthority:
         rebound = receiver in LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(
             self.function.body
         )
-        syntax = module_syntax_index(self.module_bindings.parsed_module.module)
+        syntax = self.module_bindings.parsed_module.syntax_index
         writes: dict[str, list[ast.AST | None]] = defaultdict(list)
         for index, target in syntax.indexed_nodes_of_type(ast.Attribute):
             if self.function not in syntax.ancestor_nodes(index):
@@ -4883,26 +4882,32 @@ def _module_nominal_binding_snapshots(
     return snapshots
 
 
-@lru_cache(maxsize=None)
-def _module_import_bindings(
-    parsed_module: ParsedModule,
-) -> dict[str, CompactNominalBinding]:
-    return {
-        local_name: binding
-        for local_name, binding in _module_nominal_binding_snapshots(
-            ModuleNominalBindingAuthority(parsed_module),
-            (),
-            include_final=True,
-            policy=ModuleNominalBindingSnapshotPolicy.NAMED_IMPORT_PROJECTION,
-        )[None].bindings_by_name.items()
-        if binding.kind.projects_as_import_alias
-    }
+@dataclass(frozen=True)
+class ModuleImportBindings(ParsedModuleFact):
+    """The import aliases one module binds, by local name."""
+
+    bindings: dict[str, CompactNominalBinding]
+
+    @classmethod
+    def derive(cls, parsed_module: ParsedModule) -> Self:
+        return cls(
+            {
+                local_name: binding
+                for local_name, binding in _module_nominal_binding_snapshots(
+                    ModuleNominalBindingAuthority(parsed_module),
+                    (),
+                    include_final=True,
+                    policy=ModuleNominalBindingSnapshotPolicy.NAMED_IMPORT_PROJECTION,
+                )[None].bindings_by_name.items()
+                if binding.kind.projects_as_import_alias
+            }
+        )
 
 
 def module_import_aliases(parsed_module: ParsedModule) -> dict[str, str]:
     return {
         local_name: binding.qualified_name
-        for local_name, binding in _module_import_bindings(parsed_module).items()
+        for local_name, binding in parsed_module.fact(ModuleImportBindings).bindings.items()
     }
 
 
@@ -4911,7 +4916,7 @@ def module_import_names(parsed_module: ParsedModule) -> frozenset[str]:
 
     return frozenset(
         local_name
-        for local_name, binding in _module_import_bindings(parsed_module).items()
+        for local_name, binding in parsed_module.fact(ModuleImportBindings).bindings.items()
         if binding.kind.binds_module
     )
 
@@ -5516,12 +5521,11 @@ class CompactModuleClassProjectionFamily(CollectedFamily[CompactModuleClassProje
     ) -> list[CompactModuleClassProjection]:
         del cls
         declarations = CompactModuleClassHeader.from_module(parsed_module)
-        syntax_facets = _compact_class_syntax_facets(
-            parsed_module,
-            collect_autoregister=(
-                demand is None or demand.include_autoregister_references
-            ),
-        )
+        syntax_facets = parsed_module.fact(
+            ModuleClassSyntaxFacets
+            if demand is None or demand.include_autoregister_references
+            else ModuleClassSyntaxFacetsWithoutAutoregister
+        ).facets
         indexed_class_nodes = iter_class_definitions(list(parsed_module.module.body))
         class_methods = _compact_class_methods(
             parsed_module,
@@ -5711,7 +5715,7 @@ def _compact_manual_subclass_roster_roots(
                             file_path,
                         )
                     )
-            for function_qualname, function in _named_functions(parsed_module.module):
+            for function_qualname, function in parsed_module.syntax_index.named_functions:
                 if "." in function_qualname:
                     continue
                 if _compact_uses_named_registry(
@@ -6290,7 +6294,7 @@ def _compact_manual_selector_axes(
         if len(case_names) >= 2
     )
     axes: list[CompactManualSelectorAxis] = []
-    for node in _walk_nodes(parsed_module.module):
+    for node in parsed_module.syntax_index.breadth_first_nodes:
         if not isinstance(node, ast.ClassDef):
             continue
         for method in FunctionDefinition.within(node.body):
@@ -6411,12 +6415,6 @@ def _fail_loud_block(statements: list[ast.stmt]) -> bool:
             for statement in statements[:-1]
         )
     )
-
-
-def _named_functions(
-    module: ast.Module,
-) -> tuple[tuple[str, ast.FunctionDef | ast.AsyncFunctionDef], ...]:
-    return named_function_nodes(module)
 
 
 @dataclass
@@ -6912,7 +6910,7 @@ def _compact_class_references(
     chains against the class index; most name no class and are dropped there.
     """
 
-    syntax_index = module_syntax_index(parsed_module.module)
+    syntax_index = parsed_module.syntax_index
     module_bound_names = LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(
         parsed_module.module.body
     )
@@ -7003,13 +7001,35 @@ def _is_builtin_call(node: ast.AST | None, name: str) -> bool:
     )
 
 
-@lru_cache(maxsize=None)
+@dataclass(frozen=True)
+class ModuleClassSyntaxFacets(ParsedModuleFact):
+    """One module's class syntax facets, autoregister references included."""
+
+    collects_autoregister: ClassVar[bool] = True
+    facets: CompactClassSyntaxFacets
+
+    @classmethod
+    def derive(cls, parsed_module: ParsedModule) -> Self:
+        return cls(
+            _compact_class_syntax_facets(
+                parsed_module, collect_autoregister=cls.collects_autoregister
+            )
+        )
+
+
+@dataclass(frozen=True)
+class ModuleClassSyntaxFacetsWithoutAutoregister(ModuleClassSyntaxFacets):
+    """One module's class syntax facets, for a demand without autoregister."""
+
+    collects_autoregister: ClassVar[bool] = False
+
+
 def _compact_class_syntax_facets(
     parsed_module: ParsedModule,
     *,
     collect_autoregister: bool = True,
 ) -> CompactClassSyntaxFacets:
-    syntax_index = module_syntax_index(parsed_module.module)
+    syntax_index = parsed_module.syntax_index
     file_path = parsed_module.file_path
     collect_autoregister = (
         collect_autoregister
@@ -7775,7 +7795,7 @@ def _compact_sorted_key_calls(
     parsed_module: ParsedModule,
 ) -> tuple[CompactSortedKeyCall, ...]:
     calls: list[CompactSortedKeyCall] = []
-    for node in _walk_nodes(parsed_module.module):
+    for node in parsed_module.syntax_index.breadth_first_nodes:
         if not (
             isinstance(node, ast.Call)
             and isinstance(node.func, ast.Name)
@@ -8308,8 +8328,10 @@ def _single_assignment_target_name(node: ast.Assign | ast.AnnAssign) -> str | No
     return None
 
 
-def build_class_family_index(modules: list[ParsedModule]) -> ClassFamilyIndex:
-    return _build_class_family_index_cached(tuple(modules))
+def build_class_family_index(modules: Sequence[ParsedModule]) -> ClassFamilyIndex:
+    """Build one class-family index; the caller that owns the modules holds it."""
+
+    return ClassFamilyIndexBuilder(tuple(modules)).build()
 
 
 def overlay_class_family_index(
@@ -8324,13 +8346,6 @@ def overlay_class_family_index(
         changed_modules,
         base_records=unchanged_records,
     ).build()
-
-
-@lru_cache(maxsize=None)
-def _build_class_family_index_cached(
-    modules: tuple[ParsedModule, ...],
-) -> ClassFamilyIndex:
-    return ClassFamilyIndexBuilder(modules).build()
 
 
 @dataclass(frozen=True)

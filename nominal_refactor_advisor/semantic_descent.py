@@ -49,8 +49,8 @@ from .ast_tools import (
     CollectedFamily,
     CompactModuleIdentity,
     ParsedModule,
+    ParsedModuleSet,
     PythonSourcePathPolicy,
-    module_syntax_index,
     python_module_path_identities_for_roots,
 )
 from .cache_checkout import (
@@ -73,7 +73,6 @@ from .class_index import (
     CompactModuleClassProjectionFamily,
     IndexedClass,
     ModuleClassReferenceResolver,
-    build_class_family_index,
     build_compact_class_family_index,
     iter_class_definitions,
     overlay_class_family_index,
@@ -598,7 +597,7 @@ class SemanticDescentGraphCacheIdentity:
     @classmethod
     def from_modules(
         cls,
-        modules: tuple[ParsedModule, ...],
+        modules: ParsedModuleSet,
         *,
         roots: tuple[Path | str, ...] | None = None,
     ) -> SemanticDescentGraphCacheIdentity:
@@ -1622,13 +1621,19 @@ class ProjectionSuppressionPolicy:
         )
 
 
-@dataclass(frozen=True)
-class SemanticAuthorityAffinityPolicy:
-    """Compare authority/projection names without generic role-token affinity."""
+@dataclass(frozen=True, kw_only=True)
+class AuthorityProjectionNames:
+    """The affinity policy compares exactly the names a certificate summary reports."""
 
     authority_name: str
     projection_label: str
     projection_owner_symbol: str
+
+
+@dataclass(frozen=True, kw_only=True)
+class SemanticAuthorityAffinityPolicy(AuthorityProjectionNames):
+    """Compare authority/projection names without generic role-token affinity."""
+
     projection_location_symbol: str
 
     @cached_property
@@ -2956,15 +2961,12 @@ class SemanticDescentProjectionKindCount(SemanticRecord):
     count: int
 
 
-@dataclass(frozen=True)
-class SemanticDescentCertificateSummary(SemanticRecord):
+@dataclass(frozen=True, kw_only=True)
+class SemanticDescentCertificateSummary(AuthorityProjectionNames, SemanticRecord):
     """Compact report row for one missing semantic-descent certificate."""
 
-    authority_name: str
     authority_kind: SemanticAuthorityKind
-    projection_label: str
     projection_kind: PresentationProjectionKind
-    projection_owner_symbol: str
     file_path: str
     line: int
     matched_fact_count: int
@@ -3108,9 +3110,9 @@ class FindingBackedSemanticDescentGraphRequest:
 
     findings: tuple[RefactorFinding, ...]
 
-    @lru_cache(maxsize=16)
+    @cached_property
     def graph(self) -> SemanticDescentGraph:
-        """Derive and cache the graph owned by this immutable request."""
+        """The graph this immutable request derives, held by the request."""
 
         authorities: list[SemanticAuthority] = []
         facts: list[SemanticFact] = []
@@ -3337,7 +3339,7 @@ def build_finding_backed_semantic_descent_graph(
 ) -> SemanticDescentGraph:
     """Project semantic-mirror detector findings into descent graph certificates."""
 
-    return FindingBackedSemanticDescentGraphRequest(findings).graph()
+    return FindingBackedSemanticDescentGraphRequest(findings).graph
 
 
 class FindingAuthorityNamePolicy:
@@ -3835,14 +3837,14 @@ class SemanticDescentGraphCache:
 class SemanticDescentGraphBuildRequest:
     """Immutable authority for deriving one repository semantic-descent graph."""
 
-    modules: tuple[ParsedModule, ...]
+    modules: ParsedModuleSet
 
-    @lru_cache(maxsize=None)
+    @cached_property
     def graph(self) -> SemanticDescentGraph:
-        """Build this request's graph once across equal source snapshots."""
+        """This request's graph, built once and held by the request."""
 
         scan_deadline_checkpoint("semantic_descent_class_index")
-        class_index = build_class_family_index(list(self.modules))
+        class_index = self.modules.fact(ClassFamilyIndex)
         scan_deadline_checkpoint("semantic_descent_authorities")
         authority_catalog = SemanticAuthorityBuilder.from_class_index(
             class_index
@@ -3873,14 +3875,14 @@ class SemanticDescentGraphBuildRequest:
 
 
 def build_semantic_descent_graph(
-    modules: list[ParsedModule],
+    modules: ParsedModuleSet,
     *,
     cache_dir: Path | None = None,
     use_cache: bool = True,
 ) -> SemanticDescentGraph:
     """Build the cached semantic-descent graph for parsed modules."""
 
-    request = SemanticDescentGraphBuildRequest(tuple(modules))
+    request = SemanticDescentGraphBuildRequest(modules)
     resolved_cache_dir = (
         cache_dir
         if cache_dir is not None
@@ -3892,10 +3894,10 @@ def build_semantic_descent_graph(
         cache_lookup = cache.load(identity)
         if cache_lookup.graph is not None:
             return cache_lookup.graph
-        graph = request.graph()
+        graph = request.graph
         cache.store(identity, graph)
         return graph
-    return request.graph()
+    return request.graph
 
 
 def load_cached_semantic_descent_graph_for_roots(
@@ -3940,7 +3942,7 @@ def load_latest_semantic_descent_graph_for_roots(
 class SemanticDescentGraphCacheDirAuthority:
     """Resolve the default persistent graph-cache directory for parsed modules."""
 
-    modules: tuple[ParsedModule, ...]
+    modules: ParsedModuleSet
 
     def cache_dir(self) -> Path | None:
         if not self.modules:
@@ -4233,7 +4235,7 @@ class SemanticAuthorityProvider(DataclassSemanticAuthorityProvider):
 class SemanticProjectionCollector:
     """Collect presentation-level projections from parsed modules."""
 
-    modules: tuple[ParsedModule, ...]
+    modules: Sequence[ParsedModule]
     class_index: ClassFamilyIndex
 
     def collect(self) -> tuple[PresentationProjection, ...]:
@@ -4277,7 +4279,7 @@ class CompactSemanticModuleProjectionFamily(
                 )
 
         constructed_type_names_by_class_id: dict[int, set[str]] = {}
-        syntax_index = module_syntax_index(parsed_module.module)
+        syntax_index = parsed_module.syntax_index
         for node_index, call in syntax_index.indexed_nodes_of_type(ast.Call):
             type_names = (
                 PresentationAuthorityConstructionCollector.construction_type_names(

@@ -31,11 +31,12 @@ from nominal_refactor_advisor.codemod_source_correspondence import (
 )
 from nominal_refactor_advisor.codemod_source_edits import (
     CodemodSourceRevision,
-    SourceTextMutation,
-    SourceTextSpanReplacement,
     SourceInsertion,
+    SourceLineSpan,
     SourceSpanReplacement,
     SourceTextGeometry,
+    SourceTextMutation,
+    SourceTextSpanReplacement,
 )
 from nominal_refactor_advisor.native_declarations import NativeDeclaration
 from nominal_refactor_advisor.source_execution import SourceModuleExecution
@@ -363,8 +364,7 @@ def test_equal_opaque_document_output_does_not_create_exact_read_provenance(reve
     )
     opaque = SourceSpanReplacement(
         file_path=PATH,
-        start_line=1,
-        end_line=1,
+        span=SourceLineSpan(1, 1),
         replacement_lines=(source.replace("left", "renamed"),),
     )
     document = document_for(source, (opaque, exact) if reverse else (exact, opaque))

@@ -43,7 +43,6 @@ from .ast_tools import (
     ParsedModule,
     VariableAnnotationVisitorABC,
     is_docstring_statement,
-    module_syntax_index,
 )
 from .call_binding import (
     CallValueT,
@@ -632,6 +631,8 @@ class CompactDefinitionBindingOperation(CompactBindingOperationABC):
 
 class CompactMutationKind(StrEnum):
     """Source operations with one declaration-owned binding interpretation."""
+
+    binding_operation: CompactBindingOperationABC
 
     ASSIGNMENT = "assignment", CompactAssignmentBindingOperation()
     AUGMENTED_ASSIGNMENT = "augmented_assignment"
@@ -3927,7 +3928,7 @@ class SourceProductFlowProjection:
         return original.entry
 
     def __post_init__(self) -> None:
-        nodes = module_syntax_index(self.module.module).node_membership
+        nodes = self.module.syntax_index.node_membership
         if any(
             site.node not in nodes for site in chain(self.operations, self.evaluations)
         ):

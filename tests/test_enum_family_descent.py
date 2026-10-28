@@ -170,7 +170,7 @@ def test_external_enum_case_recovery_sees_the_pre_images_and_not_the_family(
     _staged(tmp_path, form)
 
     found = ExternalEnumCaseRecoveryDetector().detect(
-        list(parse_python_modules(tmp_path)), DetectorConfig()
+        parse_python_modules(tmp_path), DetectorConfig()
     )
 
     assert [evidence.symbol for finding in found for evidence in finding.evidence] == (
@@ -254,7 +254,7 @@ def test_external_enum_case_recovery_sees_the_family_pre_image_only(
     _family_staged(tmp_path, form)
 
     found = ExternalEnumCaseRecoveryDetector().detect(
-        list(parse_python_modules(tmp_path)), DetectorConfig()
+        parse_python_modules(tmp_path), DetectorConfig()
     )
 
     assert [

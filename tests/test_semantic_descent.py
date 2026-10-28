@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+from nominal_refactor_advisor.ast_tools import ParsedModuleSet
 import nominal_refactor_advisor.semantic_descent as semantic_descent_module
 import nominal_refactor_advisor.semantic_refactor_gate as semantic_refactor_gate_module
 from nominal_refactor_advisor.json_reports import json_report_object
@@ -649,7 +650,7 @@ def test_semantic_graph_overlay_remaps_line_shifted_projection_identity(
     module_path.write_text(f"\n{source}", encoding="utf-8", newline="")
     overlay = SemanticDescentGraphModuleOverlay(
         base_graph,
-        tuple(parse_python_modules(tmp_path)),
+        parse_python_modules(tmp_path),
     )
     updated_graph = overlay.graph()
     updated_projection = next(
@@ -691,7 +692,7 @@ def test_semantic_graph_overlay_recomputes_positive_proof_locations(
 
     module_path.write_text(f"\n{source}", encoding="utf-8", newline="")
     updated_graph = base_graph.overlay_modules(
-        tuple(parse_python_modules(tmp_path, use_parse_cache=False))
+        parse_python_modules(tmp_path, use_parse_cache=False)
     )
     updated_proof = next(
         certificate.proof_edges[0]
@@ -904,7 +905,7 @@ def test_semantic_mirror_detector_uses_semantic_descent_context_signature(
         "\n"
         "STEP_TABLE = {'load': LoadStep}\n",
     )
-    modules = tuple(parse_python_modules(tmp_path))
+    modules = parse_python_modules(tmp_path)
 
     assert (
         SemanticMirrorWithoutDescentDetector.cache_granularity
@@ -1706,9 +1707,9 @@ def test_autoregister_priority_ordering_synthesizes_one_proven_mro_batch(
         for operation in plan.document.recipes[0].operations
     )
     projected_findings = analyze_modules(
-        snapshot.with_virtual_sources(
+        ParsedModuleSet.of(snapshot.with_virtual_sources(
             simulation.simulation.rewritten_sources
-        ).parsed_modules,
+        ).parsed_modules),
         DetectorConfig(),
     )
     namespace: dict[str, object] = {}
@@ -2127,7 +2128,7 @@ def test_semantic_mirror_registry_proposal_resolves_absolute_finding_paths(
     )
     findings = tuple(
         SemanticMirrorWithoutDescentDetector().detect(
-            snapshot.parsed_modules,
+            ParsedModuleSet.of(snapshot.parsed_modules),
             DetectorConfig(),
         )
     )
@@ -5269,7 +5270,7 @@ def test_semantic_mirror_enum_subset_recipe_resolves_absolute_finding_paths(
     )
     findings = tuple(
         SemanticMirrorWithoutDescentDetector().detect(
-            snapshot.parsed_modules,
+            ParsedModuleSet.of(snapshot.parsed_modules),
             DetectorConfig(),
         )
     )
@@ -6385,7 +6386,7 @@ def test_semantic_descent_graph_cache_preserves_positive_proof_relations(
         semantic_descent_module.SemanticDescentGraphCache(graph_cache_dir)
         .load(
             SemanticDescentGraphCacheIdentity.from_modules(
-                tuple(parse_python_modules(tmp_path, use_parse_cache=False))
+                parse_python_modules(tmp_path, use_parse_cache=False)
             )
         )
         .graph

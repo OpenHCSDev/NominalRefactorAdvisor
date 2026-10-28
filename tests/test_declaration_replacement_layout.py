@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+from nominal_refactor_advisor.ast_tools import ParsedModuleSet
 from nominal_refactor_advisor.ast_tools import ParsedModule
 from nominal_refactor_advisor.codemod import (
     CodemodPlanSequence,
@@ -30,7 +31,7 @@ def replace_method(source: str, payload: str, qualname: str = "Owner.run") -> st
             ),
         )
     )
-    result = plan.simulate(CodemodSourceSnapshot.from_modules((module,)))
+    result = plan.simulate(CodemodSourceSnapshot.from_modules(ParsedModuleSet.of((module,))))
     assert result.is_clean
     return result.final_snapshot.sources_by_file_path["layout.py"]
 

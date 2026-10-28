@@ -7,6 +7,7 @@ import sys
 
 import pytest
 
+from nominal_refactor_advisor.ast_tools import ParsedModuleSet
 from nominal_refactor_advisor.ast_tools import ParsedModule, parse_python_modules
 from nominal_refactor_advisor.codemod import (
     CodemodPlanSequence,
@@ -162,7 +163,7 @@ def test_migration_preserves_native_outcome_or_refuses_without_writing(
     try:
         simulation = plan.simulate(
             CodemodSourceSnapshot.from_modules(
-                (*parse_python_modules(tmp_path), native_collector_module)
+                ParsedModuleSet.of((*parse_python_modules(tmp_path), native_collector_module))
             )
         )
     except ValueError:

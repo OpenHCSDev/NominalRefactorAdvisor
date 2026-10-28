@@ -32,7 +32,6 @@ from .ast_projection import CallKeywords
 from .ast_tools import (
     ModuleSyntaxIndex,
     ParsedModule,
-    module_syntax_index,
 )
 from .class_index import module_import_aliases
 from .installed_source import InstalledModule
@@ -141,7 +140,7 @@ class DeclaredIdentityFamily(ShapeFamily[ModuleDeclarations]):
 
     @classmethod
     def collect(cls, parsed_module: ParsedModule) -> list[ModuleDeclarations]:
-        index = module_syntax_index(parsed_module.module)
+        index = parsed_module.syntax_index
         names = QualifiedNames.of(parsed_module)
         top_level = {
             id(statement)
@@ -1395,7 +1394,7 @@ class IdentityPositions:
 
     def __init__(self, parsed_module: ParsedModule) -> None:
         self.parsed_module = parsed_module
-        self.index: ModuleSyntaxIndex = module_syntax_index(parsed_module.module)
+        self.index: ModuleSyntaxIndex = parsed_module.syntax_index
         self.node_indices = {
             id(node): node_index
             for node_index, node in enumerate(self.index.depth_first_nodes)

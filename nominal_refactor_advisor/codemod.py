@@ -537,6 +537,7 @@ from .codemod_source_edits import (
     SimulatedSourceRewrite as SimulatedSourceRewrite,
     SourceEditWindowABC as SourceEditWindowABC,
     SourceIntervalProjectionABC as SourceIntervalProjectionABC,
+    SourceLineSpan,
     SourceOffsetSpan as SourceOffsetSpan,
     SourceRetainedSpanIndex as SourceRetainedSpanIndex,
     SourceRewriteDelta as SourceRewriteDelta,
@@ -892,8 +893,7 @@ class ReplaceTargetOperation(SourceReprovedOperation):
         return (
             SourceSpanReplacement(
                 file_path=target.file_path,
-                start_line=span.start_line,
-                end_line=span.end_line,
+                span=SourceLineSpan(span.start_line, span.end_line),
                 replacement_lines=SourceTargetEditor.source_lines(
                     self.replacement_block.indented_source(
                         declaration.declaration_indentation,
@@ -1471,7 +1471,7 @@ class _ClosedCarrierCollapseSourceRewrite:
             )
         nested_scopes = tuple(
             nested
-            for nested in walk_function_body_nodes(node)
+            for nested in walk_function_body_nodes(node.body)
             if isinstance(nested, self._nested_scope_types)
         )
         if nested_scopes:
@@ -1501,7 +1501,7 @@ class _ClosedCarrierCollapseSourceRewrite:
         }
         occupied_names.update(
             name.id
-            for name in walk_function_body_nodes(node)
+            for name in walk_function_body_nodes(node.body)
             if isinstance(name, ast.Name) and name.id not in mapped_parameter_names
         )
         occupied_names.update(
@@ -1598,7 +1598,7 @@ class _ClosedCarrierCollapseSourceRewrite:
         geometry = self.geometries_by_file_path[rewrite.target.file_path]
         excluded_spans = tuple(call_spans)
         replacements = []
-        for node in walk_function_body_nodes(rewrite.node):
+        for node in walk_function_body_nodes(rewrite.node.body):
             if not (
                 isinstance(node, ast.Name)
                 and isinstance(node.ctx, ast.Load)
@@ -3480,8 +3480,7 @@ class DeriveAutoregisterInstanceViewOperation(
             assignment_source = f"{component.assignment_name} = {value_source}"
         return SourceSpanReplacement(
             file_path=source_path,
-            start_line=statement.lineno,
-            end_line=statement.end_lineno or statement.lineno,
+            span=SourceLineSpan(statement.lineno, statement.end_lineno or statement.lineno),
             replacement_lines=SourceTargetEditor.source_lines(assignment_source),
             rationale=self.rationale_text(
                 f"Derive {component.assignment_name!r} from "
@@ -3833,8 +3832,7 @@ class ConvertManualRegistryToAutoregisterOperation(
             replacements.append(
                 SourceSpanReplacement(
                     file_path=source_path,
-                    start_line=statement.lineno,
-                    end_line=statement.end_lineno or statement.lineno,
+                    span=SourceLineSpan(statement.lineno, statement.end_lineno or statement.lineno),
                     replacement_lines=SourceTargetEditor.source_lines(
                         self.derived_registry_assignment_source(statement, component)
                     ),
@@ -3848,8 +3846,7 @@ class ConvertManualRegistryToAutoregisterOperation(
             *(
                 SourceSpanDeletion(
                     file_path=source_path,
-                    start_line=statement.lineno,
-                    end_line=statement.end_lineno or statement.lineno,
+                    span=SourceLineSpan(statement.lineno, statement.end_lineno or statement.lineno),
                     rationale=self.rationale_text("Delete manual registry write."),
                 )
                 for statement in component.registration_statements
@@ -3964,7 +3961,7 @@ class DispatchPolymorphismFunction:
             or self.axis_parameter not in self.node.args.args
             or any(
                 isinstance(node, (ast.Yield, ast.YieldFrom))
-                for node in walk_function_body_nodes(self.node)
+                for node in walk_function_body_nodes(self.node.body)
             )
         )
 
@@ -4228,7 +4225,7 @@ class DispatchPolymorphismSource:
     def source_names(self) -> frozenset[str]:
         return frozenset(
             node.id
-            for node in walk_function_body_nodes(self.dispatch_function.node)
+            for node in walk_function_body_nodes(self.dispatch_function.node.body)
             if isinstance(node, ast.Name)
         ) | frozenset(self.dispatch_function.parameter_names)
 
@@ -4488,8 +4485,7 @@ class DispatchToPolymorphismOperation(SourceReprovedOperation):
         ).indentation_for_line(body_start)
         return SourceSpanReplacement(
             file_path=target_digest.file_path,
-            start_line=body_start,
-            end_line=body_end,
+            span=SourceLineSpan(body_start, body_end),
             replacement_lines=tuple(
                 f"{body_indent}{line}\n" for line in source.dispatch_call_lines()
             ),
@@ -5889,8 +5885,7 @@ class RepeatedBuilderSourceDerivation(ABC):
             edits.append(
                 SourceSpanReplacement(
                     file_path=participant.source_path,
-                    start_line=participant.target.line,
-                    end_line=participant.target.end_line,
+                    span=SourceLineSpan(participant.target.line, participant.target.end_line),
                     replacement_lines=SourceTargetEditor.source_lines(
                         geometry.target_source_with_replacements(
                             participant.target,
@@ -6174,7 +6169,7 @@ class RepeatedBuilderCallFindingRecipeSynthesizer(
         resolver = context.class_reference_resolver_for_source_path(source_path)
         nominal_calls = tuple(
             child
-            for child in walk_function_body_nodes(node)
+            for child in walk_function_body_nodes(node.body)
             if isinstance(child, ast.Call)
             and child.lineno == evidence.line
             and resolver.symbol_for_reference(child.func) is not None
@@ -6203,7 +6198,7 @@ class RepeatedBuilderCallFindingRecipeSynthesizer(
             )
             if sum(
                 1
-                for call in walk_function_body_nodes(node)
+                for call in walk_function_body_nodes(node.body)
                 if isinstance(call, ast.Call)
                 and context.class_reference_resolver_for_source_path(
                     target.file_path
@@ -7016,7 +7011,7 @@ class RepeatedBuilderAuthorityDerivation(
                 continue
             call_sites.extend(
                 RepeatedBuilderCallSite(call=node, participant=participant)
-                for node in walk_function_body_nodes(participant.node)
+                for node in walk_function_body_nodes(participant.node.body)
                 if isinstance(node, ast.Call)
                 and resolver.symbol_for_reference(node.func) == authority_symbol
                 and not node.args
@@ -7067,8 +7062,7 @@ class RepeatedBuilderAuthorityDerivation(
         return (
             SourceSpanReplacement(
                 file_path=self.authority.file_path,
-                start_line=self.authority.target.line,
-                end_line=self.authority.target.end_line,
+                span=SourceLineSpan(self.authority.target.line, self.authority.target.end_line),
                 replacement_lines=SourceTargetEditor.source_lines(constructor_source),
                 rationale=(
                     "Insert the source-derived builder on its constructor authority."
@@ -8633,8 +8627,7 @@ class DeriveEnumSubsetOperation(SourceDerivedAuthorityProjectionOperation):
         edits.append(
             SourceSpanReplacement(
                 file_path=derivation.projection_path,
-                start_line=statement.lineno,
-                end_line=statement.end_lineno or statement.lineno,
+                span=SourceLineSpan(statement.lineno, statement.end_lineno or statement.lineno),
                 replacement_lines=SourceTargetEditor.source_lines(
                     derivation.assignment_source()
                 ),
@@ -8900,7 +8893,7 @@ class FunctionReturnProjectionTarget(ResolvedFunctionProjectionTarget):
             return None
         matches = tuple(
             child
-            for child in walk_function_body_nodes(function.node)
+            for child in walk_function_body_nodes(function.node.body)
             if isinstance(child, ast.Return) and child.lineno == line
         )
         if len(matches) != 1:
@@ -9824,7 +9817,7 @@ class DataclassFieldNameCollectionProjectionTarget(ResolvedFunctionProjectionTar
                 node=function.node,
                 collection_node=collection,
             )
-            for statement in walk_function_body_nodes(function.node)
+            for statement in walk_function_body_nodes(function.node.body)
             if (pair := SingleAssignmentAndValueNameProjection(statement).pair)
             is not None
             if isinstance((collection := pair[1]), ast.Tuple | ast.List)
@@ -10173,7 +10166,7 @@ class DataclassPayloadProjectionDerivation(
         )
         candidates = tuple(
             candidate
-            for node in walk_function_body_nodes(boundary.function.node)
+            for node in walk_function_body_nodes(boundary.function.node.body)
             if isinstance(node, ast.Return) and isinstance(node.value, ast.Dict)
             if (
                 candidate := cls.candidate_from_return(
@@ -10415,7 +10408,7 @@ class DataclassKeyValueSequenceProjectionDerivation(
         )
         candidates = tuple(
             candidate
-            for node in walk_function_body_nodes(boundary.function.node)
+            for node in walk_function_body_nodes(boundary.function.node.body)
             if isinstance(node, ast.Return)
             if (
                 candidate := cls.candidate_from_return(
@@ -11186,7 +11179,7 @@ class DataclassConstructorProjectionDerivation(
         boundary.authority.require_transparent_direct_construction()
         candidates = tuple(
             candidate
-            for node in walk_function_body_nodes(boundary.function.node)
+            for node in walk_function_body_nodes(boundary.function.node.body)
             if isinstance(node, ast.Return)
             for call_node in StatementValue.of(node).walk()
             if isinstance(call_node, ast.Call)
@@ -11984,8 +11977,7 @@ class DeriveClassFamilyCollectionOperation(SourceDerivedAuthorityProjectionOpera
         edits.append(
             SourceSpanReplacement(
                 file_path=derivation.projection_path,
-                start_line=statement.lineno,
-                end_line=statement.end_lineno or statement.lineno,
+                span=SourceLineSpan(statement.lineno, statement.end_lineno or statement.lineno),
                 replacement_lines=SourceTargetEditor.source_lines(
                     derivation.replacement_source()
                 ),

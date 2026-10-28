@@ -8,6 +8,7 @@ from textwrap import indent
 
 import pytest
 
+from nominal_refactor_advisor.ast_tools import ParsedModuleSet
 from nominal_refactor_advisor.ast_tools import ParsedModule
 from nominal_refactor_advisor.codemod import (
     CodemodPlanSequence,
@@ -182,7 +183,7 @@ def test_declared_call_edit_does_not_ignore_an_unbounded_receiver_call() -> None
         )
     )
     with pytest.raises(ValueError, match="authority is unresolved"):
-        plan.simulate(CodemodSourceSnapshot.from_modules((module_for(source),)))
+        plan.simulate(CodemodSourceSnapshot.from_modules(ParsedModuleSet.of((module_for(source),))))
 
 
 def test_shadowed_runtime_type_lookup_has_no_proved_receiver_bound() -> None:

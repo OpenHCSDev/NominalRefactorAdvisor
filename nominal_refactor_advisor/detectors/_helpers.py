@@ -70,8 +70,99 @@ from ..semantic_description_length import (
     CompressionCertificate,
 )
 from ..semantic_identity import InheritanceIdentityAttributeProjection
-from ._base import *
-from ._substrate_support import *
+import ast
+from collections import Counter
+from typing import Iterable
+from ..ast_tools import (
+    _walk_nodes,
+    is_docstring_statement,
+    ParsedModule,
+    ScopedAstObservation,
+    statements_without_docstring,
+)
+from ..class_index import ClassFamilyIndex, IndexedClass
+from ..collection_algebra import sorted_tuple
+from ..models import SourceLocation
+from ..name_algebra import CLASS_NAME_ALGEBRA
+from ..observation_shapes import BuilderCallShape, RegistrationShape
+from ..semantic_match import (
+    as_ast,
+    attribute_call_match,
+    constant_value,
+    Maybe,
+    name_id,
+    named_call_assignment,
+    named_value_binding,
+    NamedCallAssignment,
+    return_call,
+    single_assign_target,
+    single_item,
+    single_named_call_argument,
+    single_return_call,
+    single_return_value,
+)
+from ._base import (
+    _GETATTR_BUILTIN,
+    _HASATTR_BUILTIN,
+    _is_classmethod,
+    _module_builder_call_shapes,
+    _PIPELINE_ASSIGN_STAGE,
+    _PIPELINE_RETURN_STAGE,
+    _REFLECTIVE_SELF_BUILTINS,
+    _self_attr_name,
+    _string_constant_expression,
+    CANDIDATE_COLLECTION_AUTHORITY,
+    ClassFamilyWitnessCarrier,
+    ClassMethodLineWitnessCandidate,
+    ConcreteCandidateDetectorShape,
+    ConcreteConfigFieldProbeCandidate,
+    ConcreteTypeUnionContractCandidate,
+    DerivedQueryIndexCandidate,
+    DetectorConfig,
+    DISPATCH_ALGEBRA_AUTHORITY,
+    DynamicSelfFieldSelectionCandidate,
+    EnumMetadataTableCandidate,
+    FieldOnlyFrozenDataclassCandidate,
+    FindingAssemblyPipelineCandidate,
+    FragmentedFamilyAuthorityCandidate,
+    GuardedDelegatorCandidate,
+    GuardedWrapperSpecPair,
+    IssueDetector,
+    NamedFunctionNode,
+    NominalAuthorityShape,
+    OverlappingInheritanceFamiliesCandidate,
+    PipelineAssemblyStage,
+    PropertyAliasHookGroup,
+    ReflectiveSelfAttributeCandidate,
+    RegisteredUnionSurfaceCandidate,
+    RepeatedBaseBundleCandidate,
+    RepeatedResultAssemblyPipelineCandidate,
+    ResultAssemblyPipelineFunction,
+    SchemaAccessorFamilyCandidate,
+    SemanticOverlapMethodCandidate,
+    SemanticOverlapMethodFamilyCandidate,
+    SemanticOverlapResidueAxisCandidate,
+    StaticModulePatternDetector,
+    StaticTypedObservationDetectorCandidate,
+    StringBackedReflectiveNominalLookupCandidate,
+    StructuralObservationPropertyCandidate,
+    SUPPORT_PROJECTION_AUTHORITY,
+    SYNTAX_PROJECTION_AUTHORITY,
+    TupleIndexSemanticOpacityCandidate,
+    TypedCandidateCastBoilerplateCandidate,
+)
+from ._substrate_support import (
+    _annotation_type_names,
+    _constant_string,
+    _IGNORED_ANCESTOR_NAMES,
+    _IGNORED_BASE_NAMES,
+    _is_abstract_method,
+    _is_private_symbol_name,
+    _module_class_defs_by_name,
+    _selector_attribute_name,
+    CLASS_INDEX_PROJECTION,
+    CLASS_NODE_AUTHORITY,
+)
 from ._substrate_support import _class_ancestor_name_map
 
 BaseBundleClassGroups: TypeAlias = dict[tuple[str, ...], list[ast.ClassDef]]
@@ -353,7 +444,7 @@ def _nominal_authority_shapes_without_ancestors(
 ) -> tuple[NominalAuthorityShape, ...]:
     shapes_without_ancestors: list[NominalAuthorityShape] = []
     for module in modules:
-        for node in _walk_nodes(module.module):
+        for node in module.syntax_index.breadth_first_nodes:
             if not isinstance(node, ast.ClassDef):
                 continue
             field_type_map = HELPER_SYNTAX_PROJECTION_AUTHORITY.typed_field_map(node)
@@ -626,7 +717,6 @@ def _finding_assembly_pipeline_candidates(
 ) -> tuple[FindingAssemblyPipelineCandidate, ...]:
     return CANDIDATE_COLLECTION_AUTHORITY.ast_node_candidates(
         module,
-        module.module,
         ast.ClassDef,
         _finding_assembly_pipeline_candidates_for_class,
     )
@@ -720,7 +810,6 @@ def _guarded_delegator_candidates(
 ) -> tuple[GuardedDelegatorCandidate, ...]:
     return CANDIDATE_COLLECTION_AUTHORITY.ast_node_candidates(
         module,
-        module.module,
         ast.ClassDef,
         _guarded_delegator_candidates_for_class,
     )
@@ -882,7 +971,7 @@ def _derived_query_index_candidates(
     module: ParsedModule,
 ) -> tuple[DerivedQueryIndexCandidate, ...]:
     grouped: DerivedQuerySpecsBySignature = defaultdict(list)
-    for qualname, function in _iter_named_functions(module):
+    for qualname, function in module.syntax_index.named_functions:
         signature = _linear_query_signature(function)
         if signature is None:
             continue
@@ -969,7 +1058,6 @@ def _structural_observation_property_candidates(
 ) -> tuple[StructuralObservationPropertyCandidate, ...]:
     return CANDIDATE_COLLECTION_AUTHORITY.ast_node_candidates(
         module,
-        module.module,
         ast.ClassDef,
         _structural_observation_property_candidates_for_class,
     )
@@ -1047,7 +1135,7 @@ def _property_alias_hook_groups(
     module: ParsedModule,
 ) -> tuple[PropertyAliasHookGroup, ...]:
     grouped: dict[tuple[str, str, str], list[tuple[str, int]]] = defaultdict(list)
-    for node in _walk_nodes(module.module):
+    for node in module.syntax_index.breadth_first_nodes:
         if not isinstance(node, ast.ClassDef):
             continue
         base_names = tuple(
@@ -1140,7 +1228,6 @@ def _reflective_self_attribute_candidates(
 ) -> tuple[ReflectiveSelfAttributeCandidate, ...]:
     return CANDIDATE_COLLECTION_AUTHORITY.ast_node_candidates(
         module,
-        module.module,
         ast.ClassDef,
         _reflective_self_attribute_candidates_for_class,
     )
@@ -1268,7 +1355,7 @@ def _dynamic_self_field_selection_candidates_for_class(
     for statement in node.body:
         if not isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef)):
             continue
-        for subnode in _walk_nodes(statement):
+        for subnode in module.syntax_index.function_walks[statement]:
             if not isinstance(subnode, ast.Call):
                 continue
             builtin_name = ExpressionReference.decoded(subnode.func).terminal_name
@@ -1303,7 +1390,6 @@ def _dynamic_self_field_selection_candidates(
 ) -> tuple[DynamicSelfFieldSelectionCandidate, ...]:
     return CANDIDATE_COLLECTION_AUTHORITY.ast_node_candidates(
         module,
-        module.module,
         ast.ClassDef,
         _dynamic_self_field_selection_candidates_for_class,
     )
@@ -1842,8 +1928,8 @@ def _registered_union_surface_candidates(
         node.name: node for node in module.module.body if isinstance(node, ast.ClassDef)
     }
     source_nodes: tuple[ast.AST, ...] = (
-        *(function for _, function in _iter_named_functions(module)),
-        *_typed_ast_nodes(module.module, ast.Assign),
+        *(function for _, function in module.syntax_index.named_functions),
+        *module.syntax_index.instances_of(ast.Assign),
     )
     return tuple(
         candidate
@@ -3145,12 +3231,6 @@ def _autoregister_patch(
     )
 
 
-def _iter_functions(module: ast.Module) -> list[ast.FunctionDef | ast.AsyncFunctionDef]:
-    return [
-        node
-        for node in _walk_nodes(module)
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-    ]
 
 
 @dataclass(frozen=True)
@@ -3654,7 +3734,6 @@ def _finding_spec_build_boilerplate_candidates(
 ) -> tuple[ClassMethodLineWitnessCandidate, ...]:
     return CANDIDATE_COLLECTION_AUTHORITY.ast_node_candidates(
         module,
-        module.module,
         ast.ClassDef,
         _finding_spec_build_boilerplate_class_candidates,
     )
@@ -3721,7 +3800,7 @@ class HelperSyntaxProjectionAuthority:
         candidate_factory: ClassShapeCandidateFactory[ClassShapeT, BuiltCandidateT],
     ) -> tuple[BuiltCandidateT, ...]:
         candidates: list[BuiltCandidateT] = []
-        for node in _walk_nodes(module.module):
+        for node in module.syntax_index.breadth_first_nodes:
             if not isinstance(node, ast.ClassDef):
                 continue
             shape = shape_projector(node)
@@ -3926,7 +4005,7 @@ def _field_only_frozen_dataclass_candidates(
 ) -> tuple[FieldOnlyFrozenDataclassCandidate, ...]:
     return tuple(
         candidate
-        for node in _walk_nodes(module.module)
+        for node in module.syntax_index.breadth_first_nodes
         if isinstance(node, ast.ClassDef)
         for candidate in (FieldOnlyFrozenDataclassCandidate.from_class(module, node),)
         if candidate is not None
@@ -4046,7 +4125,7 @@ class TupleIndexSemanticOpacityCandidateCollector:
         qualname: str,
         function: NamedFunctionNode,
     ) -> tuple[TupleIndexSemanticOpacityCandidate, ...]:
-        body_nodes = walk_function_body_nodes(function)
+        body_nodes = walk_function_body_nodes(function.body)
         carrier_call_names = sorted_tuple(
             {
                 call_name
@@ -4204,7 +4283,7 @@ def _result_assembly_pipeline_functions(
     module: ParsedModule,
 ) -> tuple[ResultAssemblyPipelineFunction, ...]:
     functions: list[ResultAssemblyPipelineFunction] = []
-    for qualname, function in _iter_named_functions(module):
+    for qualname, function in module.syntax_index.named_functions:
         stages = _pipeline_body_stages(function)
         if stages is None:
             continue
@@ -4493,7 +4572,7 @@ def _schema_accessor_family_candidates(
     module: ParsedModule,
 ) -> tuple[SchemaAccessorFamilyCandidate, ...]:
     candidates: list[SchemaAccessorFamilyCandidate] = []
-    for class_node in _typed_ast_nodes(module.module, ast.ClassDef):
+    for class_node in module.syntax_index.instances_of(ast.ClassDef):
         grouped_rows: dict[str, list[tuple[str, str, str, str, str, int, int]]] = (
             defaultdict(list)
         )

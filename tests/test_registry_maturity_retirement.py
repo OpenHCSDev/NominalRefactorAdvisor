@@ -7,6 +7,7 @@ from types import ModuleType
 import pytest
 
 from registry_test_sources import keyed_registry_source
+from nominal_refactor_advisor.ast_tools import ParsedModuleSet
 from nominal_refactor_advisor.analysis import analyze_modules
 from nominal_refactor_advisor.ast_tools import ParsedModule
 from nominal_refactor_advisor.class_index import CompactModuleClassProjectionFamily
@@ -33,7 +34,7 @@ def test_registry_consumer_spelling_does_not_create_maturity_obligations(
     parsed = ParsedModule(
         Path("/repo/family.py"), "family", False, ast.parse(source), source
     )
-    findings = analyze_modules([parsed], DetectorConfig())
+    findings = analyze_modules(ParsedModuleSet.of([parsed]), DetectorConfig())
     assert all(f.detector_id != "premature_registry_infrastructure" for f in findings)
     (projection,) = CompactModuleClassProjectionFamily.collect_modules((parsed,))
     assert projection.autoregister_reference_index is not None

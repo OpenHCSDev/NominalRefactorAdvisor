@@ -27,9 +27,9 @@ from ..ast_tools import (
     CollectedFamily,
     LITERAL_DISPATCH_CASE_MATCHER,
     ParsedModule,
+    ParsedModuleSet,
     SourceModule,
     collect_family_items,
-    module_syntax_index,
     walk_function_body_nodes,
 )
 from ..native_syntax import NativePythonSyntaxIndex
@@ -95,9 +95,54 @@ from ..type_keyed_behavior import (
     TypeKeyedBehaviorProjectionComponent,
     TypeKeyedBehaviorProjectionComponentBuilder,
 )
-from ._base import *
+from abc import ABC
+from pathlib import Path
+from typing import ClassVar
+from ..ast_tools import _builder_call_shape, statements_without_docstring
+from ..models import DispatchCountMetrics, MappingMetrics, RegistrationMetrics
+from ..observation_families import (
+    NumericLiteralDispatchObservationFamily,
+    RegistrationShapeFamily,
+)
+from ..observation_shapes import (
+    BuilderCallShape,
+    LiteralDispatchObservation,
+    RegistrationShape,
+)
+from ._base import (
+    ModuleBuilderCallShapes,
+    _module_builder_call_shapes,
+    CANDIDATE_COLLECTION_AUTHORITY,
+    certified_spec,
+    CompactClassRepositoryCandidateDetector,
+    CompactClassRepositoryContext,
+    CompactContextCandidateDetector,
+    CompactGroupedShapeIssueDetector,
+    CompactModuleProjectionDetectorMixin,
+    CompactMultiProjectionCandidateDetector,
+    CompactProjectionGroups,
+    ConcreteConfigFieldProbeCandidate,
+    ConfiguredModuleCollectorCandidateDetector,
+    DetectorConfig,
+    finding_spec_template,
+    FlattenedModuleCollectorCandidateDetector,
+    high_confidence_spec,
+    IssueDetector,
+    LatentImplementationRosterCandidate,
+    LineWitnessCandidate,
+    ManualConcreteSubclassRosterCandidate,
+    ModuleCollectorCandidateDetector,
+    PerModuleIssueDetector,
+    PredicateSelectedConcreteFamilyCandidate,
+    SemanticMirrorIssueDetector,
+    SsotAuthorityBoundaryDetector,
+)
+from ._helpers import (
+    _concrete_config_field_probe_candidates,
+    _guarded_wrapper_spec_pairs,
+)
+from ._substrate_support import _constant_string
 from ._base import high_confidence_certified_spec
-from ._helpers import *
 
 
 def _literal_dispatch_authority_patch(
@@ -483,7 +528,7 @@ FormalBoundaryExternalSitesByValue: TypeAlias = dict[
 
 
 def _module_formal_boundary_string_constants(
-    modules: list[ParsedModule],
+    modules: ParsedModuleSet,
 ) -> FormalBoundaryStringConstantRecords:
     return tuple(
         constant
@@ -631,7 +676,7 @@ class FormalBoundaryExternalStringRegistryMirrorAuthority:
     def findings(
         cls,
         detector: IssueDetector,
-        modules: list[ParsedModule],
+        modules: ParsedModuleSet,
     ) -> list[RefactorFinding]:
         constants = _module_formal_boundary_string_constants(modules)
         return cls.findings_from_constants(detector, constants)
@@ -822,7 +867,7 @@ class GeneratedBoundarySemanticConstantAuthority:
     def findings(
         cls,
         detector: IssueDetector,
-        modules: list[ParsedModule],
+        modules: ParsedModuleSet,
     ) -> list[RefactorFinding]:
         sites = tuple(
             site
@@ -1392,7 +1437,7 @@ def _collect_repeated_builder_call_ast_demand(
         for _file_path, callee_name, *_remainder in demand.exact_mapping_keys
     )
     return list(
-        demand.project(tuple(_module_builder_call_shapes(module, callee_names)))
+        demand.project(module.fact(ModuleBuilderCallShapes).calling(callee_names))
     )
 
 
@@ -1477,7 +1522,7 @@ class RepeatedBuilderCallDetector(
         ),
     )
 
-    candidate_collector = staticmethod(_module_builder_call_shapes)
+    candidate_collector = _module_builder_call_shapes
     candidate_sort_key = staticmethod(
         lambda item: (item.file_path, item.lineno, item.symbol)
     )
@@ -1578,7 +1623,7 @@ class ManualClassRegistrationDetector(
     )
 
     def _collect_shapes(
-        self, modules: list[ParsedModule], config: DetectorConfig
+        self, modules: ParsedModuleSet, config: DetectorConfig
     ) -> list[RegistrationShape]:
         return [
             shape
@@ -2617,7 +2662,7 @@ class StringLiteralDispatchOwnershipLeadDetector(PerModuleIssueDetector):
     def _findings_for_module(
         self, module: ParsedModule, config: DetectorConfig
     ) -> list[RefactorFinding]:
-        index = module_syntax_index(module.module)
+        index = module.syntax_index
         lines = module.source.splitlines()
         findings: list[RefactorFinding] = []
         for node_index, root in index.indexed_nodes_of_type(ast.If):
@@ -2722,7 +2767,7 @@ class GuardedStringCaseOwnershipLeadDetector(PerModuleIssueDetector):
     def _findings_for_module(
         self, module: ParsedModule, config: DetectorConfig
     ) -> list[RefactorFinding]:
-        index = module_syntax_index(module.module)
+        index = module.syntax_index
         lines = module.source.splitlines()
         # Preserve original whole tests and roots even though only selected
         # direct conjuncts are recognized; this is not an exhaustive inventory.

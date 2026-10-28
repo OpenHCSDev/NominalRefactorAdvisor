@@ -7,6 +7,7 @@ from types import ModuleType
 import pytest
 from registry_test_sources import _type_keyed_behavior_projection_source
 
+from nominal_refactor_advisor.ast_tools import ParsedModuleSet
 from nominal_refactor_advisor.ast_tools import ParsedModule, parse_python_modules
 from nominal_refactor_advisor.codemod import (
     CodemodPlanSequence,
@@ -76,7 +77,7 @@ def _helper_method_source(source: str):
         for node in ast.walk(parsed.module)
         if isinstance(node, ast.FunctionDef) and node.name == "projection_for"
     )
-    return parsed, method, CodemodSourceSnapshot.from_modules((parsed,))
+    return parsed, method, CodemodSourceSnapshot.from_modules(ParsedModuleSet.of((parsed,)))
 
 
 def test_requirements_retain_exact_native_reads_and_declaration_owners() -> None:

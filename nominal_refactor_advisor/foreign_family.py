@@ -52,9 +52,19 @@ class ForeignFamily(DeclaredFamily, metaclass=ForeignFamilyMeta):
 
 
 class FunctionDefinition(ForeignFamily):
-    """A def or async def statement."""
+    """A def or async def statement.
+
+    Both members store these fields; the family declares the ones its sites read.
+    """
 
     members = (ast.FunctionDef, ast.AsyncFunctionDef)
+
+    name: str
+    args: ast.arguments
+    body: list[ast.stmt]
+    decorator_list: list[ast.expr]
+    lineno: int
+    col_offset: int
 
 
 class AssignmentStatement(ForeignAdapter):
