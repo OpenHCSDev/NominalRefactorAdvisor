@@ -83,7 +83,9 @@ def test_an_installed_owner_is_found_by_what_its_source_does(tmp_path: Path) -> 
 def test_owner_packages_absent_declares_nothing(tmp_path: Path) -> None:
     root = _project(tmp_path / "repo", "[project]\nname = 'plugins'\n")
 
-    assert OwnerPackagesDeclaration.declared_for(root / "plugins" / "family.py") is None
+    assert OwnerPackagesDeclaration.declared_for(
+        root / "plugins" / "family.py"
+    ) == OwnerPackagesDeclaration()
     assert _summaries(root, detectors.HandRolledRegistrationDetector) == []
     (manual,) = _summaries(root, detectors.ManualClassRegistrationDetector)
     assert "No installed dependency declares a class-creation registration owner (gap)" in manual

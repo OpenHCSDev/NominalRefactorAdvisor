@@ -100,37 +100,56 @@ class RegistrationRole(StrEnum):
 
 @dataclass(frozen=True)
 class OwnerPackagesDeclaration:
-    """The ``owner-packages`` a project declares, with the declaring file's sha256."""
+    """The ``owner-packages`` a project declares. A project without the key
+    declares none, so only the packages it imports count."""
 
-    pyproject: str
-    digest: str
-    packages: tuple[str, ...]
+    packages: tuple[str, ...] = ()
 
-    @classmethod
-    def declared_for(cls, source: Path) -> OwnerPackagesDeclaration | None:
+    @property
+    def premise(self) -> str:
+        return "owner-packages: not declared"
+
+    @staticmethod
+    def declared_for(source: Path) -> OwnerPackagesDeclaration:
         pyproject = DeclaredRoot.nearest_pyproject(source)
         if pyproject is None:
-            return None
+            return OwnerPackagesDeclaration()
         status = pyproject.stat()
-        return cls.read(pyproject, status.st_mtime_ns, status.st_size)
+        return OwnerPackagesDeclaration.read(
+            pyproject, status.st_mtime_ns, status.st_size
+        )
 
-    @classmethod
+    @staticmethod
     @cache
-    def read(
-        cls, pyproject: Path, modified_ns: int, size: int
-    ) -> OwnerPackagesDeclaration | None:
+    def read(pyproject: Path, modified_ns: int, size: int) -> OwnerPackagesDeclaration:
         """The declaration in one version of the file; a rewrite is read again."""
 
         del modified_ns, size
         content = pyproject.read_bytes()
         match tomllib.loads(content.decode()):
             case {"tool": {"nominal-refactor-advisor": {"owner-packages": list(names)}}}:
-                return cls(
+                return DeclaredOwnerPackages(
+                    tuple(sorted({str(name) for name in names})),
                     str(pyproject),
                     hashlib.sha256(content).hexdigest(),
-                    tuple(sorted({str(name) for name in names})),
                 )
-        return None
+        return OwnerPackagesDeclaration()
+
+
+@dataclass(frozen=True)
+class DeclaredOwnerPackages(OwnerPackagesDeclaration):
+    """Owner packages a pyproject declares, recorded with the file's sha256 so a
+    changed declaration is a different premise."""
+
+    pyproject: str = ""
+    digest: str = ""
+
+    @property
+    def premise(self) -> str:
+        return (
+            f"owner-packages {list(self.packages)} declared in "
+            f"{self.pyproject} (sha256 {self.digest[:12]})"
+        )
 
 
 @dataclass(frozen=True)
@@ -196,13 +215,11 @@ class InstalledDistributionOwners:
 
     @classmethod
     @cache
-    def of(cls, distribution_name: str) -> InstalledDistributionOwners | None:
-        """The distribution's owners, from the cache when its files are unchanged."""
+    def of(cls, distribution_name: str) -> InstalledDistributionOwners:
+        """The distribution's owners, from the cache when its files are unchanged.
+        Raises `metadata.PackageNotFoundError` when it is not installed."""
 
-        try:
-            distribution = metadata.distribution(distribution_name)
-        except metadata.PackageNotFoundError:
-            return None
+        distribution = metadata.distribution(distribution_name)
         record = distribution.read_text("RECORD") or ""
         name = distribution.metadata["Name"]
         version = distribution.version
@@ -295,35 +312,34 @@ class RegistrationOwners:
     """The distributions the scanned package already imports; a declared one
     it does not import yet is a dependency the move adds."""
     gaps: tuple[str, ...]
-    declaration: OwnerPackagesDeclaration | None
+    declaration: OwnerPackagesDeclaration
 
     @classmethod
     def for_scan(
         cls,
         imported_top_levels: Iterable[str],
-        source: Path | None,
+        source: Path,
     ) -> RegistrationOwners:
-        declaration = (
-            None if source is None else OwnerPackagesDeclaration.declared_for(source)
-        )
+        declaration = OwnerPackagesDeclaration.declared_for(source)
         by_top_level = _distributions_by_top_level()
         wanted = {
             distribution
             for top_level in set(imported_top_levels)
             for distribution in by_top_level.get(top_level, ())
         }
-        declared = () if declaration is None else declaration.packages
+        declared = declaration.packages
         found: list[InstalledDistributionOwners] = []
         imported: set[str] = set()
         gaps: list[str] = []
         for distribution in sorted(wanted | set(declared)):
-            owners = InstalledDistributionOwners.of(distribution)
-            if owners is None:
+            try:
+                owners = InstalledDistributionOwners.of(distribution)
+            except metadata.PackageNotFoundError:
                 if distribution in declared:
                     gaps.append(
                         f"`{distribution}` is declared in owner-packages "
-                        f"({declaration.pyproject if declaration else ''}) "
-                        "but is not installed for the interpreter running NRA"
+                        "but is not installed for the interpreter running NRA "
+                        f"({declaration.premise})"
                     )
                 continue
             found.append(owners)
@@ -413,12 +429,7 @@ class RegistrationOwners:
 
     @property
     def premise(self) -> str:
-        if self.declaration is None:
-            return "owner-packages: not declared"
-        return (
-            f"owner-packages {list(self.declaration.packages)} declared in "
-            f"{self.declaration.pyproject} (sha256 {self.declaration.digest[:12]})"
-        )
+        return self.declaration.premise
 
 
 @cache
@@ -430,6 +441,7 @@ def _distributions_by_top_level() -> dict[str, tuple[str, ...]]:
 
 
 __all__ = (
+    "DeclaredOwnerPackages",
     "InstalledDistributionOwners",
     "InstalledOwner",
     "InstalledRegistrationOwner",
