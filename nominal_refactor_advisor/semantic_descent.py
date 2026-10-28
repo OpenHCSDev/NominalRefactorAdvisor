@@ -37,7 +37,13 @@ from .ast_projection import ExpressionReference
 from .foreign_family import FunctionDefinition
 from .interpreter import PythonVersion
 from .assignment_projection import SingleAssignmentAndValueNameProjection
-from .ast_projection import AbsentStatementValue, CallKeywords, StatementValue
+from .ast_projection import (
+    CallKeywords,
+    NoStatementValue,
+    StatementValue,
+    StatementValueQuestion,
+    SuppliedValue,
+)
 from .ast_tools import (
     ClassFunctionStackNodeVisitor,
     CollectedFamily,
@@ -4791,6 +4797,42 @@ class CompactSemanticClassSupplementFrame:
     constructed_type_names: set[str] = field(default_factory=set)
 
 
+@dataclass(frozen=True)
+class _AnnotatedPresentation(StatementValueQuestion[None]):
+    """A valued annotation may present a projection; anything else is descended."""
+
+    visitor: _ProjectionVisitor
+    statement: ast.AnnAssign
+
+    def supplied(self, value: SuppliedValue) -> None:
+        if not self.visitor._collect_assignment_projection(
+            self.statement,
+            value.value,
+            axis_type_names=ProjectionTypeScope.annotation_type_names(
+                self.statement.annotation
+            ),
+        ):
+            self.visitor.generic_visit(self.statement)
+
+    def bare(self, value: NoStatementValue) -> None:
+        self.visitor.generic_visit(self.statement)
+
+
+@dataclass(frozen=True)
+class _ReturnedPresentation(StatementValueQuestion[None]):
+    """A valued return may present a projection; anything else is descended."""
+
+    visitor: _ProjectionVisitor
+    statement: ast.Return
+
+    def supplied(self, value: SuppliedValue) -> None:
+        if not self.visitor._collect_return_projection(self.statement, value.value):
+            self.visitor.generic_visit(self.statement)
+
+    def bare(self, value: NoStatementValue) -> None:
+        self.visitor.generic_visit(self.statement)
+
+
 class _ProjectionVisitor(ClassFunctionStackNodeVisitor):
     def __init__(
         self,
@@ -5042,31 +5084,13 @@ class _ProjectionVisitor(ClassFunctionStackNodeVisitor):
         if not self.include_presentations:
             self.generic_visit(node)
             return
-        try:
-            value = StatementValue.of(node).require_value("a bare annotation")
-        except AbsentStatementValue:
-            self.generic_visit(node)
-            return
-        if self._collect_assignment_projection(
-            node,
-            value,
-            axis_type_names=ProjectionTypeScope.annotation_type_names(node.annotation),
-        ):
-            return
-        self.generic_visit(node)
+        StatementValue.of(node).answer(_AnnotatedPresentation(self, node))
 
     def visit_Return(self, node: ast.Return) -> None:
         if not self.include_presentations:
             self.generic_visit(node)
             return
-        try:
-            value = StatementValue.of(node).require_value("a bare return")
-        except AbsentStatementValue:
-            self.generic_visit(node)
-            return
-        if self._collect_return_projection(node, value):
-            return
-        self.generic_visit(node)
+        StatementValue.of(node).answer(_ReturnedPresentation(self, node))
 
     def visit_If(self, node: ast.If) -> None:
         if not self.include_presentations:

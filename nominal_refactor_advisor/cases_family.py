@@ -33,7 +33,13 @@ from metaclass_registry import AutoRegisterMeta
 
 from .ast_field_decoders import declared_annotations
 from .value_expression import CompactValueExpression
-from .ast_projection import StatementValue
+from .ast_projection import (
+    NoStatementValue,
+    StatementValue,
+    StatementValueQuestion,
+    StatementValues,
+    SuppliedValue,
+)
 from .lexical_bindings import ImportBoundNameProjection
 from .ast_tools import (
     AstParentIndex,
@@ -188,6 +194,22 @@ class IsNotComparison(IdentityComparison):
 
 def handback(module: ParsedModule, node: ast.AST, reason: str) -> ValueError:
     return ValueError(f"handback: {module.file_path}:{node.lineno}: {reason}")
+
+
+ENUM_BODY_STATEMENT_UNMODELED = "enum body statement is neither member, field, nor method"
+
+
+@dataclass(frozen=True)
+class EnumBodyAnnotation(StatementValueQuestion[None]):
+    """A bare annotation in an enum body is a field; a valued one is unmodeled."""
+
+    module: ParsedModule
+
+    def supplied(self, value: SuppliedValue) -> None:
+        raise handback(self.module, value.statement, ENUM_BODY_STATEMENT_UNMODELED)
+
+    def bare(self, value: NoStatementValue) -> None:
+        """A bare annotation declares a field the family form keeps."""
 
 
 def body_without_docstring(statements: list[ast.stmt]) -> list[ast.stmt]:
@@ -965,17 +987,10 @@ class CasesFamily(Cases, Descent):
                 raise handback(
                     module, statement, "async enum method; no family form derived"
                 )
-            if not isinstance(
-                statement, ast.Assign | ast.AnnAssign | ast.FunctionDef
-            ) or (
-                isinstance(statement, ast.AnnAssign)
-                and StatementValue.of(statement).supplies_value
-            ):
-                raise handback(
-                    module,
-                    statement,
-                    "enum body statement is neither member, field, nor method",
-                )
+            if not isinstance(statement, ast.Assign | ast.AnnAssign | ast.FunctionDef):
+                raise handback(module, statement, ENUM_BODY_STATEMENT_UNMODELED)
+            if isinstance(statement, ast.AnnAssign):
+                StatementValue.of(statement).answer(EnumBodyAnnotation(module))
             if isinstance(statement, ast.Assign) and not all(
                 isinstance(argument, ast.expr)
                 for member in enum.members
@@ -1212,28 +1227,30 @@ class CasesFamily(Cases, Descent):
     def fold_properties(self, model: CaseModel) -> None:
         """Properties whose one return every member answers with a literal become data."""
 
-        pending = [
-            function
+        properties = (
+            (function, body_without_docstring(function.body))
             for function in model.enum.methods
             if isinstance(function, ast.FunctionDef)
             and decorator_names(function) == ("property",)
             and function.name not in model.forwarded.values()
-        ]
+        )
+        # Only a property whose whole body returns a value can fold.
+        pending = dict(
+            StatementValues.keyed(
+                (function, body[0])
+                for function, body in properties
+                if len(body) == 1 and isinstance(body[0], ast.Return)
+            ).supplied
+        )
         progressed = True
         while progressed:
             progressed = False
-            for function in list(pending):
-                body = body_without_docstring(function.body)
-                if (
-                    len(body) != 1
-                    or not isinstance(body[0], ast.Return)
-                    or not StatementValue.of(body[0]).supplies_value
-                ):
-                    pending.remove(function)
-                    continue
+            for function, returned in list(pending.items()):
                 receiver = function.args.args[0].arg
                 values = {
-                    member.name: self.evaluated(model, member, receiver, body[0].value)
+                    member.name: self.evaluated(
+                        model, member, receiver, returned.value
+                    )
                     for member in model.members
                 }
                 if any(value is UNKNOWN for value in values.values()):
@@ -1243,7 +1260,7 @@ class CasesFamily(Cases, Descent):
                 model.folded[function.name] = (
                     None if function.returns is None else ast.unparse(function.returns)
                 )
-                pending.remove(function)
+                del pending[function]
                 progressed = True
 
     def evaluated(
