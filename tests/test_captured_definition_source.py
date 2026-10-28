@@ -77,16 +77,21 @@ def test_open_capture_preserves_its_original_refusal_in_source_projection():
     assert caught.value.__cause__ is cause
 
 
-def test_projection_still_demands_creation_protocol(monkeypatch):
-    environment = execution()
-    captured, _, _ = result(environment)
+@pytest.mark.parametrize(
+    "source",
+    (
+        "class Original(Unknown): pass\n",
+        "class Original(metaclass=Unknown): pass\n",
+        "@unknown\nclass Original: pass\n",
+        "class Original:\n    x = unknown()\n",
+    ),
+)
+def test_unproved_class_creation_yields_no_source_definition(source):
+    """A class whose creation protocol is not proved has no captured
+    definition to project: the result is refused, not projected."""
 
-    def reject(self, node):
-        raise ValueError("creation protocol not admitted")
-
-    monkeypatch.setattr(SourceModuleExecution, "require_class_creation", reject)
-    with pytest.raises(ValueError, match="creation protocol not admitted"):
-        captured.source_definition()
+    with pytest.raises(CapturedReferenceRejection):
+        result(execution(source))
 
 
 def test_retained_alias_producer_is_not_current_name_binding():
