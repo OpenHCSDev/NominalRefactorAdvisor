@@ -799,12 +799,41 @@ class CompactDataclassFieldRole(StrEnum):
         )
 
 
+class DataclassInitBinding(StrEnum):
+    """How a dataclass field binds as an `__init__` parameter.
+
+    `kw_only` comes from the field's own `field(kw_only=...)`, else from a
+    preceding `KW_ONLY` sentinel, else from the decorator's `kw_only=`. A value
+    that is not a literal bool leaves the binding unknown.
+    """
+
+    POSITIONAL = "positional"
+    KEYWORD_ONLY = "keyword_only"
+    UNKNOWN = "unknown"
+
+    @classmethod
+    def of_keywords(
+        cls, keywords: Iterable[ast.keyword], otherwise: DataclassInitBinding
+    ) -> DataclassInitBinding:
+        """The binding a call's `kw_only=` keyword declares, or `otherwise`."""
+
+        values = tuple(keyword.value for keyword in keywords if keyword.arg == "kw_only")
+        if not values:
+            return otherwise
+        if len(values) > 1 or not (
+            isinstance(values[0], ast.Constant) and isinstance(values[0].value, bool)
+        ):
+            return cls.UNKNOWN
+        return cls.KEYWORD_ONLY if values[0].value else cls.POSITIONAL
+
+
 class CompactDataclassFieldDeclaration(NamedTuple):
-    """One direct annotated member and its exact dataclass role."""
+    """One direct annotated member, its exact dataclass role and its binding."""
 
     name: str
     line: int
     role: CompactDataclassFieldRole
+    binding: DataclassInitBinding
 
 
 class CompactProductDeclarationFailure(NamedTuple):
@@ -820,6 +849,7 @@ class CompactProductField:
 
     name: str
     role: CompactDataclassFieldRole
+    binding: DataclassInitBinding
     declaring_class_symbol: str
     file_path: str
     line: int
@@ -851,6 +881,27 @@ class CompactProductAuthority(ProductDeclarationSite):
     @property
     def field_names(self) -> tuple[str, ...]:
         return tuple(field.name for field in self.fields)
+
+    def positional_parameter_names(self) -> tuple[str, ...]:
+        """The generated `__init__`'s positional parameters, in order: every
+        field not keyword-only, in field order. Raises when a field's binding
+        is unknown."""
+
+        unknown = tuple(
+            field.name
+            for field in self.fields
+            if field.binding is DataclassInitBinding.UNKNOWN
+        )
+        if unknown:
+            raise ValueError(
+                f"`{self.class_symbol}` has field(s) {list(unknown)} whose "
+                "keyword-only-ness is not a literal"
+            )
+        return tuple(
+            field.name
+            for field in self.fields
+            if field.binding is DataclassInitBinding.POSITIONAL
+        )
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -2884,6 +2935,7 @@ class _ProductLineageComposer:
             fields_by_name[field_declaration.name] = CompactProductField(
                 name=field_declaration.name,
                 role=field_declaration.role,
+                binding=field_declaration.binding,
                 declaring_class_symbol=class_symbol,
                 file_path=indexed_class.file_path,
                 line=field_declaration.line,
@@ -7217,6 +7269,7 @@ def _dataclass_plain_annotation_is_resolved(
 def _dataclass_fields(
     module_binding_snapshot: ModuleNominalBindingSnapshot,
     node: ast.ClassDef,
+    class_binding: DataclassInitBinding,
 ) -> tuple[CompactDataclassFieldDeclaration, ...]:
     fields: list[CompactDataclassFieldDeclaration] = []
     preceding_bound_names: set[str] = set()
@@ -7226,18 +7279,29 @@ def _dataclass_fields(
             statement.target,
             ast.Name,
         ):
+            role = _dataclass_field_role(
+                module_binding_snapshot,
+                class_aliases,
+                statement,
+                frozenset(preceding_bound_names),
+            )
             fields.append(
                 CompactDataclassFieldDeclaration(
                     name=statement.target.id,
                     line=statement.lineno,
-                    role=_dataclass_field_role(
-                        module_binding_snapshot,
-                        class_aliases,
-                        statement,
-                        frozenset(preceding_bound_names),
+                    role=role,
+                    binding=DataclassInitBinding.of_keywords(
+                        (
+                            statement.value.keywords
+                            if isinstance(statement.value, ast.Call)
+                            else ()
+                        ),
+                        class_binding,
                     ),
                 )
             )
+            if role is CompactDataclassFieldRole.KEYWORD_ONLY_SENTINEL:
+                class_binding = DataclassInitBinding.KEYWORD_ONLY
         direct_aliases: dict[str, str] = {}
         if isinstance(statement, ast.Assign | ast.AnnAssign):
             alias_name = _single_assignment_target_name(statement)
@@ -7405,7 +7469,15 @@ def _dataclass_declaration(
     if not dataclass_candidate_indexes:
         return NoDataclassDeclaration()
 
-    fields = _dataclass_fields(module_binding_snapshot, node)
+    decorator = node.decorator_list[min(dataclass_candidate_indexes)]
+    fields = _dataclass_fields(
+        module_binding_snapshot,
+        node,
+        DataclassInitBinding.of_keywords(
+            decorator.keywords if isinstance(decorator, ast.Call) else (),
+            DataclassInitBinding.POSITIONAL,
+        ),
+    )
     failures: list[CompactProductDeclarationFailure] = []
     if not dataclass_decorator_indexes:
         failures.extend(
