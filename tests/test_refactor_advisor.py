@@ -10883,7 +10883,7 @@ def test_finding_build_context_remains_nominal_through_spec_construction() -> No
     )
 
 
-def test_finding_stable_id_is_derived_from_source_coordinates(no_modules: ParsedModuleSet) -> None:
+def test_finding_stable_id_is_derived_from_subject_not_lines(no_modules: ParsedModuleSet) -> None:
     spec = _finding_spec(
         PatternId.SHARED_ALGORITHM_AUTHORITY,
         "Collapse repeated class family",
@@ -10911,7 +10911,15 @@ def test_finding_stable_id_is_derived_from_source_coordinates(no_modules: Parsed
             (SourceLocation("pkg/mod.py", 12, "Alpha.run"),),
         ).stable_id
     )
-    assert finding.stable_id != moved.stable_id
+    assert finding.stable_id == moved.stable_id
+    assert (
+        finding.stable_id
+        != spec.build(
+            "orbit_detector",
+            "manual family compresses through one ABC",
+            (SourceLocation("pkg/mod.py", 12, "Beta.run"),),
+        ).stable_id
+    )
     assert f"Stable id: {finding.stable_id}" in MARKDOWN_RENDERER.report([finding])
     assert json_report_object(finding)["stable_id"] == finding.stable_id
     assert (

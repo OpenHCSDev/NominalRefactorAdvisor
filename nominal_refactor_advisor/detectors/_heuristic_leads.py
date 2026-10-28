@@ -76,7 +76,7 @@ class LongConditionFactoringLeadDetector(PerModuleIssueDetector):
             )
             findings.append(
                 self.build_finding(
-                    f"{module.path} decision in {symbol} at line {node.lineno} has "
+                    f"decision in {symbol} has "
                     f"{len(original_terms)} direct {'and' if isinstance(test.op, ast.And) else 'or'} "
                     f"terms in source order {original_terms}; common fact or owner, "
                     "reachability, short-circuit effects and replacement OPEN.",

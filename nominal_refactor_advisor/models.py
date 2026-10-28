@@ -239,6 +239,12 @@ class SourceLocation(SourceLineReference, SemanticRecord):
     def subject_symbol(self) -> str:
         return EvidenceSymbol(self.symbol).subject
 
+    @property
+    def subject_key(self) -> str:
+        """The file and symbol this evidence sits in, without its line."""
+
+        return f"{self.file_path}::{self.symbol}"
+
 @dataclass(frozen=True)
 class SourceLocationZipDescriptorShape(SemanticRecord):
     """Shared schema for zipped source-location descriptor declarations."""
@@ -355,16 +361,18 @@ class FindingMetrics(SemanticRecord, ABC):
     def finding_identity(
         self, summary: str, evidence: tuple[SourceLocation, ...]
     ) -> tuple[str, ...]:
-        """What makes a finding the same finding across scans.
+        """What makes a finding the same finding across scans and edits.
 
-        By default that is its rendered summary and evidence sites. Metrics
-        whose summary carries derived scores override this with the obligation
-        itself, so rescoring does not re-key the finding.
+        By default that is its rendered summary and the symbols its evidence
+        sits in. Line numbers are evidence, not identity: an edit that only
+        moves a finding keeps its id. Metrics whose summary carries derived
+        scores override this with the obligation itself, so rescoring does not
+        re-key the finding.
         """
 
         return (
             summary,
-            "|".join(stable_source_location_id(item) for item in evidence),
+            "|".join(sorted(item.subject_key for item in evidence)),
         )
 
 
@@ -1085,7 +1093,7 @@ class RefactorFinding(FindingSemantics):
 
     @json_report_cached_property()
     def stable_id(self) -> str:
-        """Source-derived finding id for compact, repeatable agent targeting."""
+        """The finding's subject as a compact id; line moves keep it."""
 
         payload = "|".join(
             (
