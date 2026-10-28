@@ -118,10 +118,23 @@ class CompactCallTargetResolution(ABC):
         """Project potentially referenced participants through this target's bound."""
         return symbols.intersection(self.possible_symbols)
 
-    @property
-    def declaration(self) -> CompactFunctionDeclaration | None:
-        """The function declaration, when this target denotes a function."""
-        return None
+    def instance_access_or(
+        self, unknown: CompactCallTargetResolution
+    ) -> CompactCallTargetResolution:
+        """Instance access through a declared method; without one, the caller's bound."""
+        return unknown
+
+    def returns_own_class(self, self_types: frozenset[str]) -> bool:
+        """A classmethod declared to return `Self`; no declaration proves it."""
+        return False
+
+    def declared_off_line(self, line: int) -> bool:
+        """A declaration at another line than the selected binding."""
+        return False
+
+    def declared_outside(self, module_name: str, class_qualname: str) -> bool:
+        """A declaration owned by another module or class than the one searched."""
+        return False
 
     @property
     @abstractmethod
@@ -193,6 +206,27 @@ class ResolvedCompactFunctionTarget(CompactCallTargetResolution):
     @property
     def declaration(self) -> CompactFunctionDeclaration:
         return self.resolved_declaration
+
+    def instance_access_or(
+        self, unknown: CompactCallTargetResolution
+    ) -> CompactCallTargetResolution:
+        return self.through_descriptor(CompactDescriptorAccess.INSTANCE)
+
+    def returns_own_class(self, self_types: frozenset[str]) -> bool:
+        return (
+            self.resolved_declaration.binding_kind
+            is CompactFunctionBindingKind.CLASS_METHOD
+            and self.resolved_declaration.return_annotation_expression in self_types
+        )
+
+    def declared_off_line(self, line: int) -> bool:
+        return self.resolved_declaration.line != line
+
+    def declared_outside(self, module_name: str, class_qualname: str) -> bool:
+        return (
+            self.resolved_declaration.identity.module_name != module_name
+            or self.resolved_declaration.owner_class_qualname != class_qualname
+        )
 
     @property
     def possible_symbols(self) -> tuple[str, ...]:
@@ -1137,10 +1171,9 @@ class ProductFlowRepository(
         owner = self._self_returning_receiver(context, target)
         if owner is None:
             return unknown
-        resolution = self._class_method_resolution(owner, target.attribute_name)
-        if resolution.declaration is None:
-            return unknown
-        return resolution.through_descriptor(CompactDescriptorAccess.INSTANCE)
+        return self._class_method_resolution(
+            owner, target.attribute_name
+        ).instance_access_or(unknown)
 
     def _self_returning_receiver(
         self,
@@ -1159,14 +1192,7 @@ class ProductFlowRepository(
         if owner is None:
             return None
         made = self._class_method_resolution(owner, reference.attribute_path[-1])
-        declaration = made.declaration
-        if (
-            declaration is None
-            or declaration.binding_kind is not CompactFunctionBindingKind.CLASS_METHOD
-            or declaration.return_annotation_expression not in self.SELF_TYPES
-        ):
-            return None
-        return owner
+        return owner if made.returns_own_class(self.SELF_TYPES) else None
 
     @cached_property
     def dynamic_attribute_owners(self) -> tuple[str, ...]:
@@ -2273,10 +2299,7 @@ class ProductFlowRepository(
         """A selected definition must identify this function's source declaration."""
 
         resolution = self._declared_function_resolution(symbol)
-        if (
-            resolution.declaration is not None
-            and resolution.declaration.line != binding.line
-        ):
+        if resolution.declared_off_line(binding.line):
             return OpenCompactFunctionTarget(
                 (symbol,),
                 CompactFunctionTargetResolutionViolation.DYNAMIC_BINDING,
@@ -2323,11 +2346,7 @@ class ProductFlowRepository(
             )
             if resolution is None:
                 continue
-            declaration = resolution.declaration
-            if declaration is not None and (
-                declaration.identity.module_name != current.module_name
-                or declaration.owner_class_qualname != current.qualname
-            ):
+            if resolution.declared_outside(current.module_name, current.qualname):
                 return OpenCompactFunctionTarget(
                     resolution.possible_symbols,
                     CompactFunctionTargetResolutionViolation.UNSUPPORTED_RECEIVER,
