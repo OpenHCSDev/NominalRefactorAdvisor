@@ -14,6 +14,7 @@ frozen-ness and, for the fold, every way a moved field can be bound.
 from __future__ import annotations
 
 import ast
+from abc import ABC, abstractmethod
 import keyword as keyword_module
 from collections.abc import Iterable
 from dataclasses import dataclass
@@ -76,25 +77,34 @@ NATIVE_METACLASS_BASES = frozenset(("builtins.type", "abc.ABCMeta"))
 
 
 @dataclass(frozen=True)
-class OverlapClass:
+class OverlapClass(ABC):
     """One class of an overlap: its current source node and its compact facts."""
 
     target: ResolvedClassTarget
     facts: CompactIndexedClass
 
+    @staticmethod
+    def of(target: ResolvedClassTarget, facts: CompactIndexedClass) -> OverlapClass:
+        """The decorator's dataclass arguments, read once, pick the class kind."""
+
+        options = target.dataclass_argument_sources
+        if options is None:
+            return PlainOverlapClass(target, facts)
+        return DataclassOverlapClass(target, facts, options)
+
     @classmethod
     def require(
         cls, snapshot: CodemodSourceSnapshot, reference: SourceRewriteTarget
-    ) -> Self:
+    ) -> OverlapClass:
         target = ResolvedClassTarget.from_rewrite_target(snapshot, reference)
         symbol = target.required_symbol(snapshot)
         facts = snapshot.class_overlap_verdicts.class_index.class_for(symbol)
         if facts is None:
             raise ValueError(f"Class {target.qualname!r} has no compact class facts")
-        return cls(target, facts)
+        return cls.of(target, facts)
 
     @classmethod
-    def for_symbol(cls, snapshot: CodemodSourceSnapshot, symbol: str) -> Self:
+    def for_symbol(cls, snapshot: CodemodSourceSnapshot, symbol: str) -> OverlapClass:
         facts = snapshot.class_overlap_verdicts.class_index.class_for(symbol)
         if facts is None:
             raise ValueError(f"Class {symbol!r} has no compact class facts")
@@ -173,24 +183,83 @@ class OverlapClass:
             if field.role.contributes_semantic_field
         )
 
-    @property
-    def dataclass_options(self) -> tuple[str, ...] | None:
-        """The dataclass decorator's arguments, or None for an undecorated class."""
-
+    def _require_single_decorator(self) -> None:
         decorators = self.node.decorator_list
         if len(decorators) > 1:
             raise ValueError(f"`{self.qualname}` has {len(decorators)} decorators")
-        options = self.target.dataclass_argument_sources
-        if decorators and options is None:
+
+    @property
+    @abstractmethod
+    def dataclass_options_key(self) -> tuple[tuple[str, ...], ...]:
+        """The dataclass decorator's arguments, if decorated, for kind comparison."""
+        raise NotImplementedError
+
+    @property
+    @abstractmethod
+    def adds_decorator(self) -> bool:
+        """Whether becoming a dataclass base needs a decorator added."""
+        raise NotImplementedError
+
+    @abstractmethod
+    def option(self, name: str) -> str:
+        raise NotImplementedError
+
+    @abstractmethod
+    def require_dataclass(self) -> None:
+        raise NotImplementedError
+
+
+@dataclass(frozen=True)
+class PlainOverlapClass(OverlapClass):
+    """An overlap class with no dataclass decorator."""
+
+    @property
+    def dataclass_options_key(self) -> tuple[tuple[str, ...], ...]:
+        self._require_single_decorator()
+        if self.node.decorator_list:
             raise ValueError(f"`{self.qualname}` has a non-dataclass decorator")
-        return options
+        return ()
+
+    @property
+    def adds_decorator(self) -> bool:
+        self.dataclass_options_key
+        return True
 
     def option(self, name: str) -> str:
-        for option in self.dataclass_options or ():
+        self.dataclass_options_key
+        return "False"
+
+    def require_dataclass(self) -> None:
+        self.dataclass_options_key
+        raise ValueError(f"`{self.qualname}` is not a dataclass")
+
+
+@dataclass(frozen=True)
+class DataclassOverlapClass(OverlapClass):
+    """An overlap class decorated `@dataclass(...)`, with its argument sources."""
+
+    options: tuple[str, ...]
+
+    @property
+    def dataclass_options_key(self) -> tuple[tuple[str, ...], ...]:
+        self._require_single_decorator()
+        return (self.options,)
+
+    @property
+    def adds_decorator(self) -> bool:
+        self._require_single_decorator()
+        return False
+
+    def option(self, name: str) -> str:
+        self._require_single_decorator()
+        for option in self.options:
             key, separator, value = option.partition("=")
             if separator and key.strip() == name:
                 return value.strip()
         return "False"
+
+    def require_dataclass(self) -> None:
+        self._require_single_decorator()
 
 
 def source_rewrite_target(indexed_class: CompactIndexedClass) -> SourceRewriteTarget:
@@ -762,7 +831,7 @@ class ClassComposition:
         ancestry = require_static_c3(self.snapshot, restating.facts)
         if any(ancestor.symbol == owner.symbol for ancestor in ancestry):
             raise ValueError(f"`{owner.qualname}` is already an ancestor")
-        if owner.dataclass_options != restating.dataclass_options:
+        if owner.dataclass_options_key != restating.dataclass_options_key:
             raise ValueError(
                 f"`{owner.qualname}` and `{restating.qualname}` differ as dataclasses"
             )
@@ -781,7 +850,7 @@ class ClassComposition:
         """
 
         restating = self.restating
-        if restating.dataclass_options is None:
+        if restating.adds_decorator:
             return
         class_index = self.snapshot.class_overlap_verdicts.class_index
         inherited = frozenset(
@@ -952,7 +1021,7 @@ class BaseFold:
 
     @property
     def adds_decorator(self) -> bool:
-        return self.base.dataclass_options is None
+        return self.base.adds_decorator
 
     def require_dataclass_family(self) -> None:
         base = self.base
@@ -974,8 +1043,7 @@ class BaseFold:
             raise ValueError(f"`{base.qualname}` inherits dataclass fields")
         for symbol in self.descendant_symbols:
             descendant = OverlapClass.for_symbol(self.snapshot, symbol)
-            if descendant.dataclass_options is None:
-                raise ValueError(f"`{descendant.qualname}` is not a dataclass")
+            descendant.require_dataclass()
             if descendant.option("frozen") != self.frozen:
                 raise ValueError(f"`{descendant.qualname}` differs in frozen-ness")
             if descendant.option("order") == "True":
