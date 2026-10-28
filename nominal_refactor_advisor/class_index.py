@@ -683,6 +683,27 @@ class _CompactProductLineage:
 
 
 @dataclass(frozen=True)
+class CompactClassBindingFacets:
+    """Class facts whose authority depends on one module binding snapshot."""
+
+    base_references: tuple[CompactNominalReference, ...]
+    base_references_are_complete: bool
+    class_decorators_are_promotion_safe: bool
+    dataclass_declaration: CompactDataclassDeclaration | None
+    enum_declaration: PythonEnumDeclarationAuthority | None
+
+    @property
+    def product_base_bindings_are_exact(self) -> bool:
+        return all(
+            reference.root_binding is not None
+            for reference in self.base_references
+            if ClassSymbolResolutionAuthority.establishes_nominal_family(
+                ".".join(reference.source_parts)
+            )
+        )
+
+
+@dataclass(frozen=True)
 class CompactStarResolvedFacets:
     """A class's binding-sensitive facts as they are when the module's star
     imports bind none of the names the class reads.
@@ -695,12 +716,7 @@ class CompactStarResolvedFacets:
     """
 
     root_names: frozenset[str]
-    base_references: tuple[CompactNominalReference, ...]
-    base_references_are_complete: bool
-    product_base_bindings_are_exact: bool
-    class_decorators_are_promotion_safe: bool
-    dataclass_declaration: CompactDataclassDeclaration | None
-    enum_declaration: PythonEnumDeclarationAuthority | None
+    facets: CompactClassBindingFacets
 
 
 @dataclass(frozen=True)
@@ -744,16 +760,17 @@ class CompactIndexedClass(CompactClassHeader):
             for name in resolution.root_names
         ):
             return replace(self, star_resolution=None)
+        facets = resolution.facets
         return replace(
             self,
-            base_references=resolution.base_references,
-            base_references_are_complete=resolution.base_references_are_complete,
-            product_base_bindings_are_exact=resolution.product_base_bindings_are_exact,
+            base_references=facets.base_references,
+            base_references_are_complete=facets.base_references_are_complete,
+            product_base_bindings_are_exact=facets.product_base_bindings_are_exact,
             class_decorators_are_promotion_safe=(
-                resolution.class_decorators_are_promotion_safe
+                facets.class_decorators_are_promotion_safe
             ),
-            dataclass_declaration=resolution.dataclass_declaration,
-            enum_declaration=resolution.enum_declaration,
+            dataclass_declaration=facets.dataclass_declaration,
+            enum_declaration=facets.enum_declaration,
             star_resolution=None,
         )
 
@@ -4484,26 +4501,6 @@ def _compact_base_references(
     )
 
 
-@dataclass(frozen=True)
-class _CompactClassBindingFacets:
-    """Class facts whose authority depends on one module binding snapshot."""
-
-    base_references: tuple[CompactNominalReference, ...]
-    class_decorators_are_promotion_safe: bool
-    dataclass_declaration: CompactDataclassDeclaration | None
-    enum_declaration: PythonEnumDeclarationAuthority | None
-
-    @property
-    def product_base_bindings_are_exact(self) -> bool:
-        return all(
-            reference.root_binding is not None
-            for reference in self.base_references
-            if ClassSymbolResolutionAuthority.establishes_nominal_family(
-                ".".join(reference.source_parts)
-            )
-        )
-
-
 def _compact_class_binding_facets(
     node: ast.ClassDef,
     module_binding_snapshot: ModuleNominalBindingSnapshot,
@@ -4511,7 +4508,7 @@ def _compact_class_binding_facets(
     qualname: str,
     *,
     include_body_facets: bool,
-) -> _CompactClassBindingFacets:
+) -> CompactClassBindingFacets:
     try:
         enum_declaration = PYTHON_ENUM_BASE_AUTHORITY.declaration_from_node(
             node,
@@ -4527,8 +4524,10 @@ def _compact_class_binding_facets(
         )
     except ValueError:
         enum_declaration = None
-    return _CompactClassBindingFacets(
-        base_references=_compact_base_references(node, module_binding_snapshot),
+    base_references = _compact_base_references(node, module_binding_snapshot)
+    return CompactClassBindingFacets(
+        base_references=base_references,
+        base_references_are_complete=len(base_references) == len(node.bases),
         class_decorators_are_promotion_safe=all(
             ClassMethodPromotionSafeDecorator.for_qualified_name(
                 _class_scope_qualified_import_name(
@@ -4613,8 +4612,7 @@ def _compact_indexed_classes(
                 )
                 is not None
             ),
-            base_references_are_complete=len(binding_facets.base_references)
-            == len(node.bases),
+            base_references_are_complete=binding_facets.base_references_are_complete,
             product_base_bindings_are_exact=(
                 binding_facets.product_base_bindings_are_exact
             ),
@@ -4738,17 +4736,15 @@ def _star_resolved_facets(
     *,
     include_body_facets: bool,
 ) -> CompactStarResolvedFacets:
-    facets = _compact_class_binding_facets(
-        node, star_snapshot, module_name, qualname, include_body_facets=include_body_facets
-    )
     return CompactStarResolvedFacets(
         root_names=_class_reference_root_names(node),
-        base_references=facets.base_references,
-        base_references_are_complete=len(facets.base_references) == len(node.bases),
-        product_base_bindings_are_exact=facets.product_base_bindings_are_exact,
-        class_decorators_are_promotion_safe=facets.class_decorators_are_promotion_safe,
-        dataclass_declaration=facets.dataclass_declaration,
-        enum_declaration=facets.enum_declaration,
+        facets=_compact_class_binding_facets(
+            node,
+            star_snapshot,
+            module_name,
+            qualname,
+            include_body_facets=include_body_facets,
+        ),
     )
 
 
