@@ -558,6 +558,15 @@ class PatternId(IntEnum):
         ),
         witness_capabilities=(CapabilityTag.PROVENANCE,),
     )
+    IDENTICAL_ARMS = _pattern(
+        stable_id=45,
+        display_name="Identical Arms",
+        required_relation=(
+            "Every arm of one branch runs the same code, so its tests "
+            "distinguish cases that the code then treats identically."
+        ),
+        witness_capabilities=(CapabilityTag.PROVENANCE,),
+    )
 
     def __new__(
         cls,

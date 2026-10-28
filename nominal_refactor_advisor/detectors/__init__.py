@@ -36,6 +36,9 @@ from ._class_overlap import (
 from ._environment import (
     EnvironmentBooleanAuthorityDriftDetector,
 )
+from ._false_distinctions import (
+    IdenticalArmsDetector,
+)
 from ._record_checks import (
     RedundantTypeCheckDetector,
 )
@@ -108,6 +111,7 @@ __all__ = (
     "EnvironmentBooleanAuthorityDriftDetector",
     "ExactKeySetDetector",
     "HandRolledRegistrationDetector",
+    "IdenticalArmsDetector",
     "ExactLeafMethodAncestorPromotionDetector",
     "ExternalEnumCaseRecoveryDetector",
     "ForeignAbsenceProbeDetector",
