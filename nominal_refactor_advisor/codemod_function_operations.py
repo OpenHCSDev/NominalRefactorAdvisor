@@ -122,16 +122,11 @@ class AliasFunctionOperation(RepositorySourceReprovedOperation):
         )
         if len(target_mutations) != 1:
             raise ValueError("Function alias target has no unique definition binding")
-        declaration = repository.resolve_function_target(
+        if not repository.resolve_function_target(
             context,
             BareCallTargetReference(implementation_node.name),
             target_mutations[0].position,
-        ).declaration
-        if (
-            declaration is None
-            or declaration.identity.symbol
-            != snapshot.source_index.symbol_for_target(implementation)
-        ):
+        ).declares_symbol(snapshot.source_index.symbol_for_target(implementation)):
             raise ValueError(
                 "Alias implementation is not the selected preceding definition"
             )

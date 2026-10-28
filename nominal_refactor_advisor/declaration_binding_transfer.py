@@ -111,11 +111,7 @@ class DeclarationModuleBindingTransfer:
 
         source = self.source.reference_for(source_surface)
         destination = self.destination.reference_for(destination_surface)
-        if (
-            source.root_binding is None
-            or destination.root_binding is None
-            or source.qualified_name != destination.qualified_name
-        ):
+        if not source.shares_binding_with(destination):
             raise ValueError(
                 f"module dependency {source_surface.reference.id!r} has no shared "
                 "binding authority at the source and destination"

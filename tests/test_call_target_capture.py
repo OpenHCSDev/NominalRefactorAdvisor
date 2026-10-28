@@ -1,5 +1,6 @@
 """Compare compact target capture with Python's actual evaluation order."""
 
+from nominal_refactor_advisor.product_flow_authority import ResolvedCompactFunctionTarget
 import ast
 from pathlib import Path
 import sys
@@ -57,7 +58,7 @@ def test_callable_is_captured_before_argument_rebinding(arguments: str) -> None:
     context = repository.flow_contexts_by_owner_symbol["capture.run"]
     call = context.flow.calls[-1]
     resolution = repository.resolve_function_call(context, call)
-    assert resolution.target_resolution.declaration is not None
+    assert isinstance(resolution.target_resolution, ResolvedCompactFunctionTarget)
     assert (
         resolution.target_resolution.declaration.identity.symbol == "capture.original"
     )
@@ -80,7 +81,7 @@ def test_argument_binding_does_not_make_an_unbound_local_callable_available() ->
     repository = repository_for(source)
     context = repository.flow_contexts_by_owner_symbol["capture.run"]
     resolution = repository.resolve_function_call(context, context.flow.calls[0])
-    assert resolution.target_resolution.declaration is None
+    assert not isinstance(resolution.target_resolution, ResolvedCompactFunctionTarget)
 
 
 def test_constructor_capture_precedes_keyword_argument_rebinding(
@@ -144,9 +145,9 @@ def test_capture_does_not_survive_as_the_binding_for_a_later_call() -> None:
         repository.resolve_function_call(context, call).target_resolution
         for call in context.flow.calls
     )
-    assert first.declaration is not None
+    assert isinstance(first, ResolvedCompactFunctionTarget)
     assert first.declaration.identity.symbol == "capture.original"
-    assert second.declaration is None
+    assert not isinstance(second, ResolvedCompactFunctionTarget)
 
 
 @pytest.mark.parametrize(

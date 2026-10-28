@@ -36,6 +36,7 @@ from .ast_projection import ExpressionReference
 from .foreign_family import FunctionDefinition
 from .interpreter import PythonVersion
 from .assignment_projection import SingleAssignmentAndValueNameProjection
+from .ast_projection import AbsentStatementValue, CallKeywords, StatementValue
 from .ast_tools import (
     ClassFunctionStackNodeVisitor,
     CollectedFamily,
@@ -55,6 +56,7 @@ from .cache_checkout import (
 from .cache_paths import default_semantic_descent_cache_dir
 from .case_root import Case
 from .class_index import (
+    NotStandardDataclass,
     ClassDeclaration,
     ClassFamilyIndex,
     CompactClassFamilyIndex,
@@ -1336,8 +1338,13 @@ class MappingReadConstructor:
     ) -> str | None:
         symbol = resolve_class(self.reference_parts)
         owner = None if symbol is None else class_index.class_for(symbol)
-        declaration = None if owner is None else owner.dataclass_declaration
-        if declaration is None or not declaration.is_standard_dataclass:
+        if owner is None:
+            return None
+        try:
+            declaration = owner.dataclass_declaration.require_standard(
+                "a mapping schema is a standard dataclass"
+            )
+        except NotStandardDataclass:
             return None
         fields = tuple(
             field.name
@@ -4169,21 +4176,22 @@ class DataclassSemanticAuthorityProvider(ClassFamilySemanticAuthorityProvider):
         declaration: SemanticAuthorityDeclaration,
     ) -> SemanticAuthorityProviderResult | None:
         indexed_class = declaration.indexed_class
-        dataclass_declaration = indexed_class.dataclass_declaration
-        if (
-            dataclass_declaration is not None
-            and dataclass_declaration.is_standard_dataclass
-        ):
-            facts = tuple(
-                SemanticFact.dataclass_field(indexed_class, field.name, field.line)
-                for field in dataclass_declaration.fields
-                if field.role.contributes_semantic_field
+        try:
+            dataclass_declaration = indexed_class.dataclass_declaration.require_standard(
+                "a dataclass schema is a standard dataclass"
             )
-            if len(facts) >= 2:
-                return SemanticAuthorityProviderResult(
-                    SemanticAuthorityKind.DATACLASS_SCHEMA,
-                    facts,
-                )
+        except NotStandardDataclass:
+            return super().provide(declaration)
+        facts = tuple(
+            SemanticFact.dataclass_field(indexed_class, field.name, field.line)
+            for field in dataclass_declaration.fields
+            if field.role.contributes_semantic_field
+        )
+        if len(facts) >= 2:
+            return SemanticAuthorityProviderResult(
+                SemanticAuthorityKind.DATACLASS_SCHEMA,
+                facts,
+            )
         return super().provide(declaration)
 
 
@@ -4672,8 +4680,11 @@ class MappingReadProjectionCollector(ast.NodeVisitor):
             if not parts:
                 continue
             child = self.parents[index + 1]
-            if isinstance(child, ast.keyword) and child.arg is not None:
-                constructions.add(KeywordMappingReadArgument(parts, key, child.arg))
+            if isinstance(child, ast.keyword):
+                for keyword in CallKeywords.of((child,)).named:
+                    constructions.add(
+                        KeywordMappingReadArgument(parts, key, keyword.name)
+                    )
             for position, argument in enumerate(ancestor.args):
                 if argument is child:
                     constructions.add(
@@ -5031,9 +5042,14 @@ class _ProjectionVisitor(ClassFunctionStackNodeVisitor):
         if not self.include_presentations:
             self.generic_visit(node)
             return
-        if node.value is not None and self._collect_assignment_projection(
+        try:
+            value = StatementValue.of(node).require_value("a bare annotation")
+        except AbsentStatementValue:
+            self.generic_visit(node)
+            return
+        if self._collect_assignment_projection(
             node,
-            node.value,
+            value,
             axis_type_names=ProjectionTypeScope.annotation_type_names(node.annotation),
         ):
             return
@@ -5043,7 +5059,12 @@ class _ProjectionVisitor(ClassFunctionStackNodeVisitor):
         if not self.include_presentations:
             self.generic_visit(node)
             return
-        if node.value is not None and self._collect_return_projection(node, node.value):
+        try:
+            value = StatementValue.of(node).require_value("a bare return")
+        except AbsentStatementValue:
+            self.generic_visit(node)
+            return
+        if self._collect_return_projection(node, value):
             return
         self.generic_visit(node)
 
@@ -6759,15 +6780,15 @@ class CallPresentationTokenProjector(PresentationTokenNodeProjector):
                     arg, PresentationTokenRole.CALL_ARGUMENT
                 )
             )
-        for keyword in node.keywords:
-            if keyword.arg is not None:
+        for keyword in CallKeywords.of(node.keywords).entries:
+            for name in keyword.names:
                 tokens.extend(
                     PresentationToken(
                         value,
                         PresentationTokenKind.STRING_LITERAL,
                         PresentationTokenRole.CALL_KEYWORD_NAME,
                     )
-                    for value in normalized_name_variants(keyword.arg)
+                    for value in normalized_name_variants(name)
                 )
             tokens.extend(
                 PresentationTokenProjection.tokens_for_node(
@@ -6917,9 +6938,7 @@ class PresentationAuthorityConstructionCollector:
 
     @classmethod
     def constructor_field_tokens(cls, node: ast.Call) -> tuple[str, ...]:
-        field_names = [
-            keyword.arg for keyword in node.keywords if keyword.arg is not None
-        ]
+        field_names = list(CallKeywords.of(node.keywords).names)
         field_names.extend(cls.argument_field_name(argument) for argument in node.args)
         return sorted_tuple(
             variant

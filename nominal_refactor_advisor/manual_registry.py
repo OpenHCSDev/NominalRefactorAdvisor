@@ -13,6 +13,7 @@ from typing import (
     TypeAlias,
 )
 
+from .ast_projection import AbsentStatementValue, StatementValue
 from .ast_projection import ExpressionReference
 from .ast_tools import (
     EagerNameLoadCollector,
@@ -21,6 +22,7 @@ from .ast_tools import (
     REGISTRATION_DECORATOR_FAMILY,
 )
 from .class_index import ModuleNominalBindingAuthority
+from .class_mro import UnboundReference
 from .collection_algebra import UniqueIdentityIndexAuthority
 from .descriptor_algebra import CollectionAttributeProjection
 from .lexical_bindings import LEXICAL_SCOPE_BINDING_AUTHORITY
@@ -142,8 +144,11 @@ class SourceModuleMappingKeyAuthority(MappingKeyResolverABC[ast.Module]):
                 parts = ExpressionReference.decoded(reference).attribute_chain
                 if not parts or parts[0] in shadowed_names:
                     return None
-                nominal = snapshot.reference_for(parts)
-                return None if nominal.root_binding is None else nominal.qualified_name
+                try:
+                    return snapshot.reference_for(parts).require_bound_name()
+                except UnboundReference:
+                    # QualifiedReferenceResolver's str | None protocol.
+                    return None
 
             try:
                 declarations[name] = PYTHON_ENUM_BASE_AUTHORITY.declaration_from_node(
@@ -913,8 +918,11 @@ def _class_declares_non_null_name(node: ast.ClassDef, name: str) -> bool:
             isinstance(statement, ast.AnnAssign)
             and ExpressionReference.decoded(statement.target).identifier == name
         ):
-            value = statement.value
+            try:
+                value = StatementValue.of(statement).require_value("a bare annotation")
+            except AbsentStatementValue:
+                return True
         else:
             continue
-        return not (isinstance(value, ast.Constant) and value.value is None)
+        return not CompactValueExpression.project(value).value_is_none_literal
     return False

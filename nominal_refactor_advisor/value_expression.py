@@ -20,6 +20,7 @@ from typing import (
 )
 
 ValueExpressionNode: TypeAlias = ast.expr | ast.Slice
+WriteT = TypeVar("WriteT")
 
 
 @dataclass(frozen=True)
@@ -153,6 +154,10 @@ class CompactValueExpression(ValueExpressionShapeABC):
     def project(expression: ValueExpressionNode) -> CompactValueExpression:
         return _project_value_expression(expression)
 
+    def record_write(self, writes: dict[str, WriteT], name: str, row: WriteT) -> None:
+        """An assigned value is the latest direct write of its name."""
+        writes[name] = row
+
 
 @dataclass(frozen=True)
 class LexicalValueReference(CompactValueExpression):
@@ -246,6 +251,24 @@ class OpaqueValueExpression(NonLexicalValueShape, CompactValueExpression):
         context: ResolutionContextT,
     ) -> TargetResolutionT:
         return resolver._unproved_value_resolution(context)
+
+
+@dataclass(frozen=True)
+class UnassignedValueExpression(OpaqueValueExpression):
+    """A declaration that assigns nothing (a bare annotation): no key, no write."""
+
+    def require_mapping_key(self) -> Hashable:
+        raise ValueError("Class member has no assigned key value")
+
+    def resolve_mapping_key(
+        self,
+        resolver: MappingKeyResolverABC[ResolutionContextT],
+        context: ResolutionContextT,
+    ) -> Hashable:
+        raise ValueError("Class member has no assigned key value")
+
+    def record_write(self, writes: dict[str, WriteT], name: str, row: WriteT) -> None:
+        return None
 
 
 @dataclass(frozen=True)

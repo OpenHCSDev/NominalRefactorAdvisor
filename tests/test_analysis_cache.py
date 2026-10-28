@@ -15,6 +15,10 @@ import weakref
 import pytest
 
 
+from nominal_refactor_advisor.class_index import (
+    ResolvedStarImportOrigin,
+    UnresolvedStarImportOrigin,
+)
 from nominal_refactor_advisor.json_reports import json_report_object
 from nominal_refactor_advisor.analysis import (
     AnalysisPathScope,
@@ -3192,7 +3196,7 @@ def test_class_demand_omits_unreportable_autoregister_reference_graph(
         base_references=(),
         registry_facts=class_index_module.ClassRegistryFacts(
             metaclass_references=(
-                class_index_module.CompactNominalReference(("AutoRegisterMeta",), None),
+                class_index_module.UnboundNominalReference(("AutoRegisterMeta",)),
             ),
         ),
     )
@@ -3392,17 +3396,11 @@ def test_compact_module_star_import_origins_preserve_all_module_scope_edges() ->
         ).parse()
     )[0]
 
-    assert tuple(origin.module_name for origin in projection.star_import_origins) == (
-        "pkg.source",
-        "external",
-        "pkg.optional",
-        None,
-    )
-    assert tuple(origin.is_resolved for origin in projection.star_import_origins) == (
-        True,
-        True,
-        True,
-        False,
+    assert projection.star_import_origins == (
+        ResolvedStarImportOrigin("pkg.source"),
+        ResolvedStarImportOrigin("external"),
+        ResolvedStarImportOrigin("pkg.optional"),
+        UnresolvedStarImportOrigin(),
     )
 
 

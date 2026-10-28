@@ -10,6 +10,7 @@ from enum import Enum, Flag, IntEnum, IntFlag, StrEnum
 from functools import cached_property
 from typing import Callable, Self
 
+from .ast_projection import StatementValue
 from .value_expression import LiteralExpressionEffects
 
 QualifiedReferenceResolver = Callable[[ast.expr, frozenset[str]], str | None]
@@ -132,8 +133,32 @@ class PythonEnumMemberDeclaration:
     value: PythonEnumMemberValueABC
 
 
+class PythonEnumDeclarationFacet(ABC):
+    """A class's enum facet: a closed standard Enum declaration, or none."""
+
+    @abstractmethod
+    def identity_reason_or(self, fallback: str | None) -> str | None:
+        """Why class creation makes this class an identity, else the fallback reason."""
+        raise NotImplementedError
+
+    @abstractmethod
+    def require_mapping_key(self, member_name: str) -> Hashable:
+        raise NotImplementedError
+
+
 @dataclass(frozen=True)
-class PythonEnumDeclarationAuthority:
+class NoEnumDeclaration(PythonEnumDeclarationFacet):
+    """A class that is not a closed standard Enum: no mapping-key semantics."""
+
+    def identity_reason_or(self, fallback: str | None) -> str | None:
+        return fallback
+
+    def require_mapping_key(self, member_name: str) -> Hashable:
+        raise ValueError("Mapping key declaration semantics remain unproved")
+
+
+@dataclass(frozen=True)
+class PythonEnumDeclarationAuthority(PythonEnumDeclarationFacet):
     """Native mapping-key equality derived from one closed standard Enum declaration."""
 
     identity: str
@@ -164,6 +189,9 @@ class PythonEnumDeclarationAuthority:
         for member in members.values():
             hash(member)
         return members
+
+    def identity_reason_or(self, fallback: str | None) -> str | None:
+        return "its members are enum identities"
 
     def require_mapping_key(self, member_name: str) -> Hashable:
         try:
@@ -236,7 +264,10 @@ class PythonEnumBaseAuthority:
                 and type(statement.value.value) is str
             ):
                 continue
-            if isinstance(statement, ast.AnnAssign) and statement.value is None:
+            if (
+                isinstance(statement, ast.AnnAssign)
+                and not StatementValue.of(statement).supplies_value
+            ):
                 continue
             targets: tuple[ast.expr, ...]
             value: ast.expr | None

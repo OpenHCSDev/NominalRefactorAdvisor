@@ -2242,7 +2242,7 @@ def _compact_keyed_registry_axis_facts(
                     continue
                 key_entries.append(
                     (
-                        member.resolve_mapping_key(
+                        member.value.resolve_mapping_key(
                             mapping_key_authority,
                             descendant,
                         ),

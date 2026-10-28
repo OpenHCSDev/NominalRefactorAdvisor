@@ -22,8 +22,10 @@ from typing import (
     cast,
 )
 
+from ..value_expression import CompactValueExpression
 from ..annotation_semantics import CLASSVAR_ANNOTATION_AUTHORITY
 from ..ast_projection import ExpressionReference
+from ..ast_projection import AbsentStatementValue, CallKeywords, StatementValue
 from ..ast_tools import (
     BuiltinCallName,
     SourceModule,
@@ -193,7 +195,7 @@ class HelperSupportProjectionAuthority:
         if (
             len(body) != 1
             or not isinstance(body[0], ast.Return)
-            or body[0].value is None
+            or not StatementValue.of(body[0]).supplies_value
         ):
             return None
         returned = body[0].value
@@ -225,8 +227,7 @@ class HelperSupportProjectionAuthority:
         return bool(
             len(node.body) == 1
             and isinstance(node.body[0], ast.Return)
-            and isinstance(node.body[0].value, ast.Constant)
-            and (node.body[0].value.value is None)
+            and StatementValue.of(node.body[0]).supplies_none_literal
             and (not node.orelse)
         )
 
@@ -556,7 +557,7 @@ def _build_call_keyword_helper_name(
     build_call: ast.Call, keyword_name: str
 ) -> str | None:
     for keyword in build_call.keywords:
-        if keyword.arg != keyword_name or keyword.value is None:
+        if keyword.arg != keyword_name:
             continue
         if isinstance(keyword.value, ast.Call):
             return _call_display_name(keyword.value)
@@ -695,9 +696,13 @@ def _guarded_delegator_candidates_for_class(
             guard, ast.If
         ) or not HELPER_SUPPORT_PROJECTION_AUTHORITY.if_returns_none_only(guard):
             continue
-        if not isinstance(return_stmt, ast.Return) or return_stmt.value is None:
+        if not isinstance(return_stmt, ast.Return):
             continue
-        delegate_name = _delegate_name_from_return(return_stmt.value)
+        try:
+            returned = StatementValue.of(return_stmt).require_value("a bare return")
+        except AbsentStatementValue:
+            continue
+        delegate_name = _delegate_name_from_return(returned)
         if delegate_name is None:
             continue
         yield GuardedDelegatorCandidate(
@@ -806,11 +811,16 @@ def _linear_query_loop(body: list[ast.stmt]) -> ast.For | None:
 
 
 def _linear_query_return_expr(loop: ast.For, result_name: str) -> ast.AST | None:
-    return_exprs = [
-        current.value
-        for current in _walk_nodes(loop)
-        if isinstance(current, ast.Return) and current.value is not None
-    ]
+    return_exprs: list[ast.expr] = []
+    for current in _walk_nodes(loop):
+        if not isinstance(current, ast.Return):
+            continue
+        try:
+            return_exprs.append(
+                StatementValue.of(current).require_value("a bare return")
+            )
+        except AbsentStatementValue:
+            continue
     if len(return_exprs) != 1 or not _name_mentions(return_exprs[0], result_name):
         return None
     return return_exprs[0]
@@ -954,9 +964,7 @@ def _structural_observation_property_candidates_for_class(
         constructor_name = ExpressionReference.decoded(returned.func).terminal_name
         if constructor_name is None:
             continue
-        keyword_names = sorted_tuple(
-            keyword.arg for keyword in returned.keywords if keyword.arg is not None
-        )
+        keyword_names = sorted_tuple(CallKeywords.of(returned.keywords).names)
         if len(keyword_names) < 6:
             continue
         yield StructuralObservationPropertyCandidate(
@@ -1188,7 +1196,9 @@ def _guarded_wrapper_function_candidates(
             guard, ast.If
         ) or not HELPER_SUPPORT_PROJECTION_AUTHORITY.if_returns_none_only(guard):
             continue
-        if not isinstance(return_stmt, ast.Return) or return_stmt.value is None:
+        if not isinstance(return_stmt, ast.Return) or not StatementValue.of(
+            return_stmt
+        ).supplies_value:
             continue
         node_types = _guarded_wrapper_node_types(guard)
         if not node_types:
@@ -1225,9 +1235,8 @@ def _guarded_wrapper_spec_pairs(
             continue
         referenced_functions = [
             keyword.value.id
-            for keyword in value.keywords
-            if keyword.arg is not None
-            and isinstance(keyword.value, ast.Name)
+            for keyword in CallKeywords.of(value.keywords).named
+            if isinstance(keyword.value, ast.Name)
             and keyword.value.id in wrapper_functions
         ]
         if len(referenced_functions) != 1:
@@ -1602,10 +1611,10 @@ def _is_declarative_class_value(node: ast.AST) -> bool:
         return (
             _is_declarative_class_value(node.func)
             and all((_is_declarative_class_value(item) for item in node.args))
+            and not CallKeywords.of(node.keywords).splats
             and all(
                 (
-                    keyword.arg is not None
-                    and _is_declarative_class_value(keyword.value)
+                    _is_declarative_class_value(keyword.value)
                     for keyword in node.keywords
                 )
             )
@@ -3361,9 +3370,7 @@ def _pipeline_stage(statement: ast.stmt) -> PipelineAssemblyStage | None:
     )
     if source is None or callee_name is None:
         return None
-    keyword_names = tuple(
-        (keyword.arg for keyword in source.call.keywords if keyword.arg is not None)
-    )
+    keyword_names = CallKeywords.of(source.call.keywords).names
     return PipelineAssemblyStage(
         kind=source.kind,
         callee_name=callee_name,
@@ -3684,9 +3691,11 @@ class HelperSyntaxProjectionAuthority:
             target = single_assign_target(assignment)
             return None if target is None else (target, assignment.value)
         annotated_assignment = as_ast(statement, ast.AnnAssign)
-        if annotated_assignment is None or annotated_assignment.value is None:
+        if annotated_assignment is None:
             return None
-        return annotated_assignment.target, annotated_assignment.value
+        return StatementValue.of(annotated_assignment).paired_with(
+            annotated_assignment.target
+        )
 
     def abstract_method_names(self, node: ast.ClassDef) -> tuple[str, ...]:
         return sorted_tuple(
@@ -3917,9 +3926,10 @@ class HelperSyntaxProjectionAuthority:
                     forwarded.append(argument.id)
                 continue
             return None
-        for keyword in call.keywords:
-            if keyword.arg is None:
-                return None
+        keywords = CallKeywords.of(call.keywords)
+        if keywords.splats:
+            return None
+        for keyword in keywords.named:
             if (
                 isinstance(keyword.value, ast.Name)
                 and keyword.value.id in parameter_names
@@ -4147,13 +4157,7 @@ def _from_namespace_keyword_names(
             continue
         for call in _walk_nodes(statement):
             if isinstance(call, ast.Call) and name_id(call.func) == "cls":
-                keyword_names = tuple(
-                    (
-                        keyword.arg
-                        for keyword in call.keywords
-                        if keyword.arg is not None
-                    )
-                )
+                keyword_names = CallKeywords.of(call.keywords).names
                 if keyword_names:
                     return (statement.lineno, keyword_names)
     return None
@@ -4385,10 +4389,12 @@ def _schema_accessor_fetch_assignment(
     elif isinstance(statement, ast.AnnAssign) and isinstance(
         statement.target, ast.Name
     ):
-        if statement.value is None:
+        try:
+            value = StatementValue.of(statement).require_value("a bare annotation")
+        except AbsentStatementValue:
             return None
         target_name = statement.target.id
-        fetch = _schema_accessor_fetch_call(statement.value)
+        fetch = _schema_accessor_fetch_call(value)
     else:
         return None
     if fetch is None:
@@ -4407,7 +4413,7 @@ def _node_mentions_name(node: ast.AST, local_name: str) -> bool:
 def _compare_mentions_none(node: ast.Compare, local_name: str) -> bool:
     operands = (node.left, *node.comparators)
     return _node_mentions_name(node, local_name) and any(
-        isinstance(operand, ast.Constant) and operand.value is None
+        CompactValueExpression.project(operand).value_is_none_literal
         for operand in operands
     )
 
@@ -4444,12 +4450,16 @@ def _schema_accessor_coercion_kinds(
 def _schema_accessor_returns_local(
     function: ast.FunctionDef | ast.AsyncFunctionDef, local_name: str
 ) -> bool:
-    return any(
-        isinstance(node, ast.Return)
-        and node.value is not None
-        and _node_mentions_name(node.value, local_name)
-        for node in _walk_nodes(function)
-    )
+    for node in _walk_nodes(function):
+        if not isinstance(node, ast.Return):
+            continue
+        try:
+            returned = StatementValue.of(node).require_value("a bare return")
+        except AbsentStatementValue:
+            continue
+        if _node_mentions_name(returned, local_name):
+            return True
+    return False
 
 
 def _schema_accessor_method_row(

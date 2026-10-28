@@ -25,6 +25,7 @@ from typing import (
 
 from metaclass_registry import AutoRegisterMeta
 
+from .value_expression import CompactValueExpression
 from .ast_projection import ExpressionReference
 from .ast_tools import BuiltinCallName
 from .codemod_paths import SourcePathCandidateSet, SourcePathResolutionAuthority
@@ -196,7 +197,10 @@ class ArchitectureGuardDispatchSubject:
     @classmethod
     def accepts_value_case(cls, expression: ast.AST) -> bool:
         return (
-            (isinstance(expression, ast.Constant) and expression.value is not None)
+            (
+                isinstance(expression, ast.Constant)
+                and not CompactValueExpression.project(expression).value_is_none_literal
+            )
             or isinstance(expression, ast.Attribute)
             or (
                 isinstance(expression, (ast.Tuple, ast.List, ast.Set))

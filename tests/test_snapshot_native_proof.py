@@ -1,5 +1,6 @@
 """Source snapshots retain native proofs only for their own parsed source state."""
 
+from nominal_refactor_advisor.product_flow_authority import ResolvedCompactFunctionTarget
 import pytest
 
 from nominal_refactor_advisor.codemod_runtime import CodemodSourceSnapshot
@@ -95,7 +96,7 @@ def test_virtual_edit_retains_only_unaffected_module_proofs_and_rebuilds_global_
     consumer_source = repository.source_projection(consumer)
     consumer_execution = repository.native_reference_environment(consumer)
     original_call = repository.function_call_resolutions[0]
-    assert original_call.target_resolution.declaration is not None
+    assert isinstance(original_call.target_resolution, ResolvedCompactFunctionTarget)
 
     changed = snapshot.with_virtual_sources(
         {
@@ -120,7 +121,7 @@ def test_virtual_edit_retains_only_unaffected_module_proofs_and_rebuilds_global_
     assert "function_call_resolutions" not in vars(changed_repository)
 
     changed_call = changed_repository.function_call_resolutions[0]
-    assert changed_call.target_resolution.declaration is None
+    assert not isinstance(changed_call.target_resolution, ResolvedCompactFunctionTarget)
     assert repository.function_call_resolutions[0] is original_call
 
 
