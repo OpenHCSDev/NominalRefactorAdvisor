@@ -2023,6 +2023,18 @@ class CollectedFamily(
     report_demand_context_predicate: ClassVar[Callable[[object], bool] | None] = None
 
     @classmethod
+    def modules_in(
+        cls, groups: Mapping[type[CollectedFamily], Sequence[object]]
+    ) -> Sequence[ShapeItemT]:
+        """This family's items out of a scan's projections grouped by family.
+
+        The grouping holds every family's items under one value type; the
+        family's own item type is what its entry holds.
+        """
+
+        return cast(Sequence[ShapeItemT], groups[cls])
+
+    @classmethod
     def registered_families(cls) -> CollectedFamilyTypes:
         """Return concrete families registered directly under this root."""
         return REGISTERED_TYPE_LINEAGE.direct_registered_types(

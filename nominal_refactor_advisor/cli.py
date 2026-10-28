@@ -23,6 +23,7 @@ from typing import ClassVar, Self, TypeAlias, cast
 
 from metaclass_registry import AutoRegisterMeta
 
+from .type_checker_session import TypeCheckerTimingLedger
 from .ast_tools import ParsedModuleSet
 from .scan_cache import ScanCache
 
@@ -1306,6 +1307,7 @@ class JsonPayloadBuilder:
                 planning_seconds=timing.planning_seconds,
                 source_index_seconds=built_source_index_seconds,
                 analysis_cache_status=timing.analysis_cache_status,
+                type_checker=timing.type_checker,
             )
         if timing is not None:
             payload["timing"] = json_report_object(timing)
@@ -3644,6 +3646,7 @@ class CodemodRefactorGoalCliCommand(
         return 0 if report.stop_reason.completed else 1
 
 
+@TypeCheckerTimingLedger.scope()
 def _main_without_deadline(invocation: CliArguments) -> int:
     """Run the command-line interface and return a process status code."""
     parser, args = invocation.parser, invocation.args
@@ -4190,6 +4193,7 @@ def _main_without_deadline(invocation: CliArguments) -> int:
         planning_seconds=planning_seconds,
         source_index_seconds=source_index_seconds,
         analysis_cache_status=analysis_cache_status,
+        type_checker=TypeCheckerTimingLedger.active().timing,
     )
 
     codemod_execution_result = CodemodCliExecution(

@@ -3056,14 +3056,8 @@ class RepeatedConcreteTypeCaseAnalysisDetector(
         config: DetectorConfig,
     ) -> list[RefactorFinding]:
         candidates = _compact_repeated_concrete_type_case_candidates(
-            cast(
-                Sequence[CompactRemainingSystemicModuleProjection],
-                projections_by_family[CompactRemainingSystemicModuleProjectionFamily],
-            ),
-            cast(
-                Sequence[CompactModuleClassProjection],
-                projections_by_family[CompactModuleClassProjectionFamily],
-            ),
+            CompactRemainingSystemicModuleProjectionFamily.modules_in(projections_by_family),
+            CompactModuleClassProjectionFamily.modules_in(projections_by_family),
             config,
             class_index=CompactClassFamilyIndex.require(context),
         )
@@ -3145,14 +3139,8 @@ class ImplicitSelfContractMixinDetector(
         config: DetectorConfig,
     ) -> list[RefactorFinding]:
         candidates = _compact_implicit_self_contract_mixin_candidates(
-            cast(
-                Sequence[CompactRemainingSystemicModuleProjection],
-                projections_by_family[CompactRemainingSystemicModuleProjectionFamily],
-            ),
-            cast(
-                Sequence[CompactModuleClassProjection],
-                projections_by_family[CompactModuleClassProjectionFamily],
-            ),
+            CompactRemainingSystemicModuleProjectionFamily.modules_in(projections_by_family),
+            CompactModuleClassProjectionFamily.modules_in(projections_by_family),
             config,
             class_index=CompactClassFamilyIndex.require(context),
         )

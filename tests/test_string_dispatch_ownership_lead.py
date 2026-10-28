@@ -41,7 +41,7 @@ def test_async_method_reports_original_order_and_fallback_without_recipe_claim()
     assert [(place.line, place.symbol) for place in finding.evidence] == [
         (4, "Rpc.handle"), (6, "Rpc.handle"), (9, "Rpc.handle")
     ]
-    assert "chain-local else rows (9,)" in finding.summary
+    assert "chain-local else rows 1," in finding.summary
     assert "domain relation OPEN" in finding.summary
     assert "no automatic async or method recipe" in finding.capability_gap
     assert FindingRecipeEvaluator.for_finding(finding) is None
@@ -109,9 +109,9 @@ def test_nested_else_if_and_all_else_rows_remain_open():
     assert len(findings) == 1
     finding = findings[0]
     assert [place.line for place in finding.evidence] == [2, 4, 7, 9, 10]
-    assert "chain-local else rows (7, 9)" in finding.summary
+    assert "chain-local else rows 2," in finding.summary
     assert "else_nested_if True OPEN" in finding.summary
-    assert "trailing sibling rows (10,) OPEN" in finding.summary
+    assert "trailing sibling rows 1 OPEN" in finding.summary
 
 
 def test_single_nested_else_if_is_not_mislabeled_as_a_terminal_fallback():
@@ -142,7 +142,7 @@ def test_root_guard_is_explicitly_unmatched_not_called_intervening():
     )
     assert len(findings) == 1
     assert [place.line for place in findings[0].evidence] == [2, 4, 6]
-    assert "unmatched original guards (including root) ('line 2: authorized(action)',)" in findings[0].summary
+    assert "unmatched original guards (including root) ('branch 1: authorized(action)',)" in findings[0].summary
 
 
 def test_intervening_membership_guard_is_retained_open_not_dropped():
@@ -162,9 +162,9 @@ def test_intervening_membership_guard_is_retained_open_not_dropped():
     finding = findings[0]
     assert finding.metrics.literal_cases == ("'set_goal'", "'ping'")
     assert [place.line for place in finding.evidence] == [3, 5, 7, 10]
-    assert "line 5: action in" in finding.summary
+    assert "branch 2: action in" in finding.summary
     assert "'clear_goal'" in finding.summary
-    assert "chain-local else rows (10,)" in finding.summary
+    assert "chain-local else rows 1," in finding.summary
 
 
 def test_duplicate_case_key_stays_an_ordered_source_row_not_a_closed_set():
@@ -182,7 +182,7 @@ def test_duplicate_case_key_stays_an_ordered_source_row_not_a_closed_set():
         "'set_goal'", "'set_goal'", "'clear_goal'"
     )
     assert [place.line for place in findings[0].evidence] == [2, 4, 6]
-    assert "chain-local else rows ()" in findings[0].summary
+    assert "chain-local else rows 0," in findings[0].summary
 
 
 def test_guarded_event_case_lead_retains_distinct_roots_without_a_recipe():
@@ -208,8 +208,8 @@ def test_guarded_event_case_lead_retains_distinct_roots_without_a_recipe():
         "'chunk'", "'committed_progress'", "'tool_end'", "'done'"
     )
     assert [site.line for site in finding.evidence] == [3, 5, 7, 9]
-    assert "original decision roots (3, 3, 7, 9)" in finding.summary
-    assert "conjunctive guard lines (3, 5, 7)" in finding.summary
+    assert "decision root of each test (1, 1, 2, 3)" in finding.summary
+    assert "conjunctive guards at tests (1, 2, 3)" in finding.summary
     assert "reply_targets and kind == 'committed_progress'" in finding.summary
     assert "domain relation OPEN" in finding.summary
     assert FindingRecipeEvaluator.for_finding(finding) is None

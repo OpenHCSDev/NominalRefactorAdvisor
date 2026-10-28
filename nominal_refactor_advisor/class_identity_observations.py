@@ -43,7 +43,11 @@ from .quoted_reference import (
 )
 from .models import SourceLocation
 from .observation_families import ShapeFamily
-from .restated_fact_observations import RestatingSite, RestatingSiteFamily
+from .restated_fact_observations import (
+    RestatingSite,
+    RestatingSiteFamily,
+    RestatingSiteModule,
+)
 
 
 @dataclass(frozen=True)
@@ -1832,8 +1836,10 @@ class IdentityPositions:
             )
 
 
-class IdentitySpellingFamily(RestatingSiteFamily):
+class IdentitySpellingFamily(RestatingSiteFamily[RestatingSiteModule]):
     """Literals in positions where a string can stand for a declared identity."""
+
+    item_type = RestatingSiteModule
 
     @classmethod
     def sites(cls, parsed_module: ParsedModule) -> Iterator[RestatingSite]:

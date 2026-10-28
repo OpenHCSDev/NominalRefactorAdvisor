@@ -16,7 +16,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 from functools import lru_cache
-from typing import Generic, TypeAlias, TypeVar, cast
+from typing import Generic, TypeAlias, TypeVar
 
 from tree_sitter import Node
 
@@ -2188,14 +2188,8 @@ def _type_keyed_behavior_projection_components(
 def _enum_keyed_derived_map_facade_components(
     projections_by_family: dict[type[CollectedFamily], Sequence[object]],
 ) -> tuple[EnumKeyedDerivedMapFacadeComponent, ...]:
-    facade_projections = cast(
-        Sequence[EnumKeyedDerivedMapFacadeModuleProjection],
-        projections_by_family[EnumKeyedDerivedMapFacadeModuleProjectionFamily],
-    )
-    class_projections = cast(
-        Sequence[CompactModuleClassProjection],
-        projections_by_family[CompactModuleClassProjectionFamily],
-    )
+    facade_projections = EnumKeyedDerivedMapFacadeModuleProjectionFamily.modules_in(projections_by_family)
+    class_projections = CompactModuleClassProjectionFamily.modules_in(projections_by_family)
     exposure_authority = CompactRepositoryPublicExposureIndex(class_projections)
     return sorted_tuple(
         (
@@ -2688,18 +2682,18 @@ class StringLiteralDispatchOwnershipLeadDetector(PerModuleIssueDetector):
             axis_expression: str | None = None
             literal_cases: list[str] = []
             unresolved: list[str] = []
-            for item in chain:
+            for branch, item in enumerate(chain, start=1):
                 matched = LITERAL_DISPATCH_CASE_MATCHER.match(item.test, str)
                 if matched is None:
                     original_test = ast.get_source_segment(module.source, item.test)
-                    unresolved.append(f"line {item.lineno}: {original_test or ast.unparse(item.test)}")
+                    unresolved.append(f"branch {branch}: {original_test or ast.unparse(item.test)}")
                     continue
                 fingerprint, expression, literal_case = matched
                 if axis_fingerprint is None:
                     axis_fingerprint, axis_expression = fingerprint, expression
                 if fingerprint != axis_fingerprint:
                     original_test = ast.get_source_segment(module.source, item.test)
-                    unresolved.append(f"line {item.lineno}: {original_test or ast.unparse(item.test)}")
+                    unresolved.append(f"branch {branch}: {original_test or ast.unparse(item.test)}")
                     continue
                 literal_cases.append(literal_case)
             if len(literal_cases) < max(2, config.min_string_cases):
@@ -2714,11 +2708,11 @@ class StringLiteralDispatchOwnershipLeadDetector(PerModuleIssueDetector):
             )
             findings.append(
                 self.build_finding(
-                    f"{module.path} has source-ordered string cases {tuple(literal_cases)} on `{axis_expression}` in {symbol}; "
+                    f"source-ordered string cases {tuple(literal_cases)} on `{axis_expression}` in {symbol}; "
                     f"unmatched original guards (including root) {tuple(unresolved)}; "
-                    f"chain-local else rows {tuple(item.lineno for item in chain_else)}, "
+                    f"chain-local else rows {len(chain_else)}, "
                     f"else_nested_if {any(isinstance(item, ast.If) for item in chain_else)} OPEN, "
-                    f"trailing sibling rows {tuple(item.lineno for item in trailing)} OPEN; "
+                    f"trailing sibling rows {len(trailing)} OPEN; "
                     "binding, effects and domain relation OPEN.",
                     evidence,
                     metrics=DispatchCountMetrics.from_literal_family(
@@ -2740,9 +2734,6 @@ class _OriginalGuardedStringCase:
 
     def location(self, module: ParsedModule, symbol: str) -> SourceLocation:
         return SourceLocation(module.file_path, self.line, symbol)
-
-    def test_label(self) -> str:
-        return f"line {self.line}: {self.source_test}"
 
 
 class GuardedStringCaseOwnershipLeadDetector(PerModuleIssueDetector):
@@ -2833,15 +2824,23 @@ class GuardedStringCaseOwnershipLeadDetector(PerModuleIssueDetector):
             ordered = sorted(entries, key=lambda entry: entry.line)
             evidence = tuple(entry.location(module, symbol) for entry in ordered)
             cases = tuple(entry.literal_case for entry in ordered)
-            roots = tuple(entry.root_line for entry in ordered)
+            root_ordinals = {
+                root_line: ordinal
+                for ordinal, root_line in enumerate(
+                    sorted({entry.root_line for entry in ordered}), start=1
+                )
+            }
+            roots = tuple(root_ordinals[entry.root_line] for entry in ordered)
             guarded_tests = tuple(
-                entry.line for entry in ordered if entry.is_guarded
+                position
+                for position, entry in enumerate(ordered, start=1)
+                if entry.is_guarded
             )
-            original_tests = tuple(entry.test_label() for entry in ordered)
+            original_tests = tuple(entry.source_test for entry in ordered)
             findings.append(
                 self.build_finding(
-                    f"{module.path} has selected string cases {cases} on `{ordered[0].axis}` in {symbol}; "
-                    f"original decision roots {roots}, conjunctive guard lines {guarded_tests}, "
+                    f"selected string cases {cases} on `{ordered[0].axis}` in {symbol}; "
+                    f"decision root of each test {roots}, conjunctive guards at tests {guarded_tests}, "
                     f"original whole tests {original_tests}; "
                     "unselected source tests, short-circuit reachability, effects, "
                     "priority, binding and domain relation OPEN.",

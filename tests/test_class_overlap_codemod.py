@@ -11,6 +11,7 @@ import pytest
 from nominal_refactor_advisor.ast_tools import parse_python_modules
 from nominal_refactor_advisor.class_overlap_codemod import (
     ComposeExistingClassOperation,
+    ComposeExistingClassesOperation,
     FoldSharedDeclarationsIntoBaseOperation,
 )
 from nominal_refactor_advisor.codemod import (
@@ -262,3 +263,54 @@ def test_the_fold_refuses_a_class_handed_on_as_a_value(tmp_path: Path) -> None:
     snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     with pytest.raises(CodemodOperationPreflightError, match="as a value"):
         _fold(tmp_path).source_edits(snapshot)
+
+
+COVERED_OWNERS = (
+    "from dataclasses import dataclass\n\n\n"
+    "@dataclass(frozen=True)\nclass SourceLineReference:\n    file_path: str\n    line: int\n\n\n"
+    "@dataclass(frozen=True)\nclass ClassNameMixin:\n    class_name: str\n\n\n"
+    "@dataclass(frozen=True)\nclass ClassLine(ClassNameMixin, SourceLineReference):\n    pass\n"
+)
+COVERED_FACTS = (
+    "from dataclasses import dataclass, fields\n\n\n"
+    "@dataclass(frozen=True)\nclass AxisFact:\n"
+    "    file_path: str\n    line: int\n    class_name: str\n    signals: tuple[str, ...]\n\n\n"
+    "@dataclass(frozen=True)\nclass AuthorityShape:\n"
+    "    file_path: str\n    line: int\n    class_name: str\n    method_names: tuple[str, ...]\n"
+)
+COVERED_PROBE = (
+    "from dataclasses import fields\n"
+    "from pkg.facts import AxisFact, AuthorityShape\n"
+    "for cls, extra in ((AxisFact, ('s',)), (AuthorityShape, ('m',))):\n"
+    "    value = cls('f.py', 3, 'C', extra)\n"
+    "    print(cls.__name__, [field.name for field in fields(cls)], value)\n"
+)
+
+
+def test_classes_restating_a_block_owned_by_two_classes_compose_both(tmp_path: Path) -> None:
+    _write(
+        tmp_path,
+        {"pkg/__init__.py": "", "pkg/owners.py": COVERED_OWNERS, "pkg/facts.py": COVERED_FACTS},
+    )
+    before = _run(tmp_path, COVERED_PROBE)
+    facts = (tmp_path / "pkg/facts.py").as_posix()
+    owners = (tmp_path / "pkg/owners.py").as_posix()
+
+    rewritten = _apply(
+        tmp_path,
+        ComposeExistingClassesOperation(
+            target=SourceRewriteTarget(file_path=facts, qualname="AxisFact"),
+            owners=(
+                SourceRewriteTarget(file_path=owners, qualname="ClassNameMixin"),
+                SourceRewriteTarget(file_path=owners, qualname="SourceLineReference"),
+            ),
+            composers=(SourceRewriteTarget(file_path=facts, qualname="AuthorityShape"),),
+        ),
+    )
+
+    assert _run(tmp_path, COVERED_PROBE) == before
+    source = rewritten[facts]
+    assert "class AxisFact(ClassNameMixin, SourceLineReference):" in source
+    assert "class AuthorityShape(ClassNameMixin, SourceLineReference):" in source
+    assert "file_path: str" not in source
+    assert source.count("from pkg.owners import") + source.count("from .owners import") == 1
