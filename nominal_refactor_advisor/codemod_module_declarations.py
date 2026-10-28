@@ -51,6 +51,7 @@ from .codemod_imports import (
 )
 from .codemod_source_edits import (
     Include,
+    SourceLineSpan,
     SourceNodeSpan,
     SourceSpanDeletion,
     SourceTextGeometry,
@@ -1005,7 +1006,6 @@ class MovedTopLevelDeclarationSource(SourceTextGeometry):
             deletion_end_line += 1
         return SourceSpanDeletion(
             file_path=self.declaration.source_path,
-            start_line=deletion_start_line,
-            end_line=deletion_end_line,
+            span=SourceLineSpan(deletion_start_line, deletion_end_line),
             rationale=rationale or f"Remove moved declaration {self.name!r}.",
         )

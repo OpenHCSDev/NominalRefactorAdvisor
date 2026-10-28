@@ -791,8 +791,7 @@ class _ExactLeafMethodAncestorPromotionSourceRewrite:
         )
         return SourceSpanReplacement(
             file_path=authority.file_path,
-            start_line=authority.target.line,
-            end_line=authority.target.end_line,
+            span=SourceLineSpan(authority.target.line, authority.target.end_line),
             replacement_lines=SourceTargetEditor.source_lines(replacement_source),
             rationale=self.rationale
             or f"Move exact shared methods to {authority.qualname!r}.",
@@ -1144,8 +1143,7 @@ class ModuleDeclarationRelocation:
             ),
             SourceSpanDeletion(
                 file_path=self.file_path,
-                start_line=self.span.start_line - 2,
-                end_line=self.span.end_line,
+                span=SourceLineSpan(self.span.start_line - 2, self.span.end_line),
                 rationale=rationale,
             ),
         )
