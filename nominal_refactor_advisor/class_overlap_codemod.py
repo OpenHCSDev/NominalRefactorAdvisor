@@ -16,11 +16,11 @@ from __future__ import annotations
 import ast
 from abc import ABC, abstractmethod
 import keyword as keyword_module
-from collections.abc import Callable, Iterable
+from collections.abc import Iterable
 from dataclasses import dataclass
 from functools import cached_property
 from importlib import import_module
-from typing import Self, TypeVar
+from typing import Self
 
 from .ast_tools import ParsedModule, is_docstring_statement, module_syntax_index
 from .class_index import (
@@ -74,7 +74,6 @@ from .refactor_concepts import ClassBodyCompositionConcept
 from .semantic_descent import AuthorityClaim, SemanticAuthorityKind
 
 NATIVE_METACLASS_BASES = frozenset(("builtins.type", "abc.ABCMeta"))
-_KindFoldT = TypeVar("_KindFoldT")
 
 
 @dataclass(frozen=True)
@@ -194,17 +193,20 @@ class OverlapClass(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def fold_kind(
-        self,
-        plain: Callable[[], _KindFoldT],
-        dataclass: Callable[[], _KindFoldT],
-    ) -> _KindFoldT:
-        """Split on the class kind, after its decorators pass validation."""
+    def require_field_order_kept_by(self, composition: ClassComposition) -> None:
+        """Composing keeps this class's dataclass field order; a plain class has none."""
         raise NotImplementedError
 
     @abstractmethod
-    def require_fold_base(self, frozen: str) -> None:
-        """This class can become the dataclass base of a fold with this frozen-ness."""
+    def require_accepts_moved_fields(self, frozen: str) -> None:
+        """As a fold base, this class can hold the moved fields with this frozen-ness."""
+        raise NotImplementedError
+
+    @abstractmethod
+    def decorator_edits_for(
+        self, fold: BaseFold, indentation: str, rationale: str
+    ) -> tuple[NominalSourceEdit, ...]:
+        """The edits that make this fold base a dataclass, if it is not one."""
         raise NotImplementedError
 
     @abstractmethod
@@ -227,15 +229,26 @@ class PlainOverlapClass(OverlapClass):
             raise ValueError(f"`{self.qualname}` has a non-dataclass decorator")
         return ()
 
-    def fold_kind(
-        self,
-        plain: Callable[[], _KindFoldT],
-        dataclass: Callable[[], _KindFoldT],
-    ) -> _KindFoldT:
+    def require_field_order_kept_by(self, composition: ClassComposition) -> None:
         self.dataclass_options_key
-        return plain()
 
-    def require_fold_base(self, frozen: str) -> None:
+    def decorator_edits_for(
+        self, fold: BaseFold, indentation: str, rationale: str
+    ) -> tuple[NominalSourceEdit, ...]:
+        self.dataclass_options_key
+        return (
+            SourceInsertion(
+                file_path=self.file_path,
+                insertion_line=self.node.lineno,
+                inserted_lines=(
+                    f"{indentation}@dataclass(frozen={fold.frozen}, kw_only=True)\n",
+                ),
+                rationale=rationale,
+            ),
+            *fold.dataclass_import_edits(rationale),
+        )
+
+    def require_accepts_moved_fields(self, frozen: str) -> None:
         self.dataclass_options_key
         if any(isinstance(statement, ast.AnnAssign) for statement in self.node.body):
             raise ValueError(
@@ -262,15 +275,17 @@ class DataclassOverlapClass(OverlapClass):
         self._require_single_decorator()
         return (self.options,)
 
-    def fold_kind(
-        self,
-        plain: Callable[[], _KindFoldT],
-        dataclass: Callable[[], _KindFoldT],
-    ) -> _KindFoldT:
+    def require_field_order_kept_by(self, composition: ClassComposition) -> None:
         self._require_single_decorator()
-        return dataclass()
+        composition.require_dataclass_field_order()
 
-    def require_fold_base(self, frozen: str) -> None:
+    def decorator_edits_for(
+        self, fold: BaseFold, indentation: str, rationale: str
+    ) -> tuple[NominalSourceEdit, ...]:
+        self._require_single_decorator()
+        return ()
+
+    def require_accepts_moved_fields(self, frozen: str) -> None:
         if self.option("kw_only") != "True" or self.option("frozen") != frozen:
             raise ValueError(f"`{self.qualname}` is a dataclass of another kind")
 
@@ -873,9 +888,9 @@ class ClassComposition:
         then the class's remaining ones, after.
         """
 
-        self.restating.fold_kind(lambda: None, self._require_dataclass_field_order)
+        self.restating.require_field_order_kept_by(self)
 
-    def _require_dataclass_field_order(self) -> None:
+    def require_dataclass_field_order(self) -> None:
         restating = self.restating
         class_index = self.snapshot.class_overlap_verdicts.class_index
         inherited = frozenset(
@@ -1047,7 +1062,7 @@ class BaseFold:
         base = self.base
         if frozenset(self.names) & base.target.bound_names:
             raise ValueError(f"`{base.qualname}` already binds a moved name")
-        base.require_fold_base(self.frozen)
+        base.require_accepts_moved_fields(self.frozen)
         class_index = self.snapshot.class_overlap_verdicts.class_index
         for symbol in class_index.ancestor_symbols(base.symbol):
             if (ancestor := class_index.class_for(symbol)) is not None:
@@ -1148,20 +1163,7 @@ class BaseFold:
         header_line = source.splitlines(keepends=True)[base.node.lineno - 1]
         indentation = header_line[: len(header_line) - len(header_line.lstrip())]
         return (
-            *base.fold_kind(
-                lambda: (
-                    SourceInsertion(
-                        file_path=base.file_path,
-                        insertion_line=base.node.lineno,
-                        inserted_lines=(
-                            f"{indentation}@dataclass(frozen={self.frozen}, kw_only=True)\n",
-                        ),
-                        rationale=rationale,
-                    ),
-                    *self.dataclass_import_edits(rationale),
-                ),
-                tuple,
-            ),
+            *base.decorator_edits_for(self, indentation, rationale),
             *body.geometry.physical_edits(
                 file_path=base.file_path,
                 replacements=(
