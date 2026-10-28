@@ -2049,6 +2049,16 @@ class MarkdownReportRenderer(ABC):
             f"members, {item.owner_using} use it"
             for item in report.owners[:MEMBER_AWARENESS_LISTING_LIMIT]
         )
+        lines.append(
+            f"   - Add-member cost: {report.add_member_edits} edit(s) outside declarations "
+            f"across {len(report.add_member_costs)} famil(ies); correct maintenance is 0"
+        )
+        for cost in report.add_member_costs[:MEMBER_AWARENESS_LISTING_LIMIT]:
+            lines.append(f"   - add to [{cost.kind.value}] {cost.family}: {cost.edits} edit(s)")
+            lines.extend(
+                f"       edit: {consumer.file_path}::{consumer.qualname}"
+                for consumer in cost.consumers[:MEMBER_AWARENESS_BYPASS_LIMIT]
+            )
         return "\n".join(lines)
 
     def scan_proof(self, scan: ScanEconomicsProof) -> list[str]:

@@ -29,6 +29,7 @@ from .observation_shapes import (
     FieldObservation,
     ForeignTypeTestModule,
     ForeignTypeTestShape,
+    TypeTestShape,
     LiteralDispatchObservation,
     LiteralKind,
     ModuleExpressionShape,
@@ -1156,14 +1157,11 @@ def _enclosing_function_names(ancestors: Sequence[ast.AST]) -> frozenset[str]:
     )
 
 
-def _foreign_type_test_shapes(
-    parsed_module: ParsedModule,
-) -> list[ForeignTypeTestShape]:
-    """Collect type tests whose classes all come from one imported owner module."""
+def type_test_shapes(parsed_module: ParsedModule) -> Iterator[TypeTestShape]:
+    """Every `isinstance`/`issubclass` call of the module whose classes resolve."""
 
     index = parsed_module.syntax_index
     resolver = TypeArgumentResolver(parsed_module)
-    shapes: list[ForeignTypeTestShape] = []
     for node_index, node in index.indexed_nodes_of_type(ast.Call):
         arguments = BuiltinCallName.type_test_arguments(node)
         if arguments is None:
@@ -1171,22 +1169,32 @@ def _foreign_type_test_shapes(
         names = resolver.qualified_names(
             arguments[1], _enclosing_function_names(index.ancestor_nodes(node_index))
         )
-        if names is None:
-            continue
-        owners = {name.rpartition(".")[0] for name in names}
-        if len(owners) != 1 or "" in owners:
-            continue
-        shapes.append(
-            ForeignTypeTestShape(
+        if names is not None:
+            yield TypeTestShape(
                 file_path=parsed_module.file_path,
                 lineno=node.lineno,
                 symbol=index.lexical_symbol(node_index),
-                owner=owners.pop(),
                 type_names=names,
                 subject=ast.dump(arguments[0]),
             )
+
+
+def _foreign_type_test_shapes(
+    parsed_module: ParsedModule,
+) -> list[ForeignTypeTestShape]:
+    """Collect type tests whose classes all come from one imported owner module."""
+
+    return [
+        ForeignTypeTestShape(
+            file_path=shape.file_path,
+            lineno=shape.lineno,
+            symbol=shape.symbol,
+            type_names=shape.type_names,
+            subject=shape.subject,
         )
-    return shapes
+        for shape in type_test_shapes(parsed_module)
+        if len(shape.owners) == 1 and "" not in shape.owners
+    ]
 
 
 class ForeignTypeTestModuleFamily(ShapeFamily[ForeignTypeTestModule]):

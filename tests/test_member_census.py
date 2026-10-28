@@ -215,3 +215,40 @@ def test_nested_def_branching_belongs_to_the_nested_def_only(tmp_path: Path):
         "        return isinstance(child, ast.Name) or isinstance(child, ast.Attribute)\n"
         "    return inner(node)\n",
     ) == ["outer.inner"]
+
+
+def test_own_class_family_consumers_cost_one_edit_each_to_add_a_member(tmp_path: Path):
+    """A function that tests the project's own classes one by one enumerates their
+    family: declaring one more member forces an edit there. Polymorphic dispatch
+    through the family's own method costs nothing."""
+    _write(
+        tmp_path,
+        {
+            "shapes": (
+                "class Shape:\n"
+                "    def area(self):\n"
+                "        raise NotImplementedError\n"
+                "class Square(Shape):\n"
+                "    def area(self):\n"
+                "        return 1\n"
+                "class Circle(Shape):\n"
+                "    def area(self):\n"
+                "        return 3\n"
+            ),
+            "consumers": (
+                "from shapes import Circle, Shape, Square\n"
+                "def hand_rolled(shape):\n"
+                "    if isinstance(shape, Square):\n"
+                "        return 1\n"
+                "    if isinstance(shape, Circle):\n"
+                "        return 3\n"
+                "def derived(shape: Shape):\n"
+                "    return shape.area()\n"
+            ),
+        },
+    )
+    report = build_member_awareness_census(tmp_path)
+    [cost] = [cost for cost in report.add_member_costs if cost.kind is CensusFamilyKind.CLASS]
+    assert cost.family == "shapes.Shape"
+    assert [consumer.qualname for consumer in cost.consumers] == ["hand_rolled"]
+    assert report.add_member_edits == sum(item.edits for item in report.add_member_costs)

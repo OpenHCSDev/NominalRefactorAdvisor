@@ -37,8 +37,8 @@ from .detectors._systemic import (
 from .declared_family import ForeignAdapter
 from .foreign_family import ForeignFamily
 from .json_reports import SemanticRecord, json_report_property
-from .observation_families import ForeignTypeTestModuleFamily, TypeArgumentResolver
-from .observation_shapes import ForeignTypeTestShape
+from .observation_families import TypeArgumentResolver, type_test_shapes
+from .observation_shapes import TypeTestShape
 
 
 class CensusFamilyKind(StrEnum):
@@ -46,6 +46,7 @@ class CensusFamilyKind(StrEnum):
 
     FOREIGN_MODULE = "foreign_module"
     ENUM = "enum"
+    CLASS = "class"
 
 
 @dataclass(frozen=True)
@@ -97,6 +98,21 @@ class OwnerCensus(SemanticRecord):
 
 
 @dataclass(frozen=True)
+class FamilyAddCost(SemanticRecord):
+    """What declaring one more member of a family costs outside its declaration: every
+    function that names two or more of its members without asking an owner has to
+    learn the new one. Correct maintenance is zero."""
+
+    kind: CensusFamilyKind
+    family: str
+    consumers: tuple[CensusConsumer, ...]
+
+    @json_report_property()
+    def edits(self) -> int:
+        return len(self.consumers)
+
+
+@dataclass(frozen=True)
 class MemberAwarenessCensus(SemanticRecord):
     """Every family's consumers by exact member set, and owner use."""
 
@@ -104,6 +120,12 @@ class MemberAwarenessCensus(SemanticRecord):
     single_member_consumers: int
     groups: tuple[MemberSetGroup, ...]
     owners: tuple[OwnerCensus, ...]
+    add_member_costs: tuple[FamilyAddCost, ...]
+
+    @json_report_property()
+    def add_member_edits(self) -> int:
+        """Edits outside their declarations that one new member of every family costs."""
+        return sum(cost.edits for cost in self.add_member_costs)
 
     @json_report_property()
     def branching_consumers(self) -> int:
@@ -193,9 +215,20 @@ class MemberObservation:
 
 @dataclass(frozen=True)
 class CensusCorpus:
-    """The parsed modules every source reads."""
+    """The parsed modules every source reads, and their one class index."""
 
     modules: tuple[ParsedModule, ...]
+    config: DetectorConfig
+
+    @cached_property
+    def projections(self) -> tuple:
+        return CompactModuleClassProjectionFamily.collect_modules(self.modules)
+
+    @cached_property
+    def class_index(self) -> CompactClassFamilyIndex:
+        return CompactClassRepositoryContext.from_projections(
+            self.projections, self.config
+        ).class_index
 
     @cached_property
     def module_names(self) -> tuple[str, ...]:
@@ -231,9 +264,8 @@ class CensusCorpus:
 class MemberCensusSource(ABC):
     """One way a family's members are named, with the owners declared for them."""
 
-    def __init__(self, corpus: CensusCorpus, config: DetectorConfig) -> None:
+    def __init__(self, corpus: CensusCorpus) -> None:
         self.corpus = corpus
-        self.config = config
 
     @abstractmethod
     def owners(self) -> tuple[MemberOwner, ...]:
@@ -242,6 +274,24 @@ class MemberCensusSource(ABC):
     @abstractmethod
     def observations(self) -> Iterator[MemberObservation]:
         raise NotImplementedError
+
+    def shapes(self, module: ParsedModule) -> Iterator[TypeTestShape]:
+        """The module's type tests and class patterns whose classes resolve."""
+
+        yield from type_test_shapes(module)
+        index = module.syntax_index
+        resolver = self.corpus.resolvers[module.file_path]
+        for node_index, pattern in index.indexed_nodes_of_type(ast.MatchClass):
+            ancestors = index.ancestor_nodes(node_index)
+            name = resolver.qualified_class_at(pattern.cls, ancestors)
+            if name is not None and name.rpartition(".")[0]:
+                yield TypeTestShape(
+                    file_path=module.file_path,
+                    lineno=pattern.lineno,
+                    symbol=index.lexical_symbol(node_index),
+                    type_names=(name,),
+                    subject=_matched_subject(ancestors),
+                )
 
 
 def _own_definitions(owner: type) -> frozenset[tuple[str, str]]:
@@ -305,54 +355,25 @@ class ForeignModuleSource(MemberCensusSource):
 
     def observations(self) -> Iterator[MemberObservation]:
         for module in self.corpus.modules:
-            for shape in self._shapes(module):
-                yield MemberObservation(
-                    kind=CensusFamilyKind.FOREIGN_MODULE,
-                    family=shape.owner,
-                    file_path=shape.file_path,
-                    symbol=shape.symbol,
-                    subject=shape.subject,
-                    members=frozenset(shape.type_names),
-                )
-
-    def _shapes(self, module: ParsedModule) -> Iterator[ForeignTypeTestShape]:
-        tested = ForeignTypeTestModuleFamily.collect(module)[0].sites
-        yield from (
-            shape
-            for shape in chain(tested, self._pattern_shapes(module))
-            if shape.is_foreign_to(self.corpus.module_names)
-        )
-
-    def _pattern_shapes(self, module: ParsedModule) -> Iterator[ForeignTypeTestShape]:
-        index = module.syntax_index
-        resolver = self.corpus.resolvers[module.file_path]
-        for node_index, pattern in index.indexed_nodes_of_type(ast.MatchClass):
-            ancestors = index.ancestor_nodes(node_index)
-            name = resolver.qualified_class_at(pattern.cls, ancestors)
-            owner = "" if name is None else name.rpartition(".")[0]
-            if name is not None and owner:
-                yield ForeignTypeTestShape(
-                    file_path=module.file_path,
-                    lineno=pattern.lineno,
-                    symbol=index.lexical_symbol(node_index),
-                    owner=owner,
-                    type_names=(name,),
-                    subject=_matched_subject(ancestors),
-                )
+            for shape in self.shapes(module):
+                match tuple(shape.owners):
+                    case (owner,) if owner and shape.is_foreign_to(self.corpus.module_names):
+                        yield MemberObservation(
+                            kind=CensusFamilyKind.FOREIGN_MODULE,
+                            family=owner,
+                            file_path=shape.file_path,
+                            symbol=shape.symbol,
+                            subject=shape.subject,
+                            members=frozenset(shape.type_names),
+                        )
 
 
 class EnumSource(MemberCensusSource):
     """Enum cases recovered by branches outside the enum's declaration."""
 
-    @cached_property
-    def projections(self) -> tuple:
-        return CompactModuleClassProjectionFamily.collect_modules(self.corpus.modules)
-
-    @cached_property
+    @property
     def class_index(self) -> CompactClassFamilyIndex:
-        return CompactClassRepositoryContext.from_projections(
-            self.projections, self.config
-        ).class_index
+        return self.corpus.class_index
 
     @cached_property
     def enum_classes(self) -> dict[str, CompactIndexedClass]:
@@ -372,7 +393,7 @@ class EnumSource(MemberCensusSource):
         )
 
     def observations(self) -> Iterator[MemberObservation]:
-        for projection in self.projections:
+        for projection in self.corpus.projections:
             for function in projection.closed_axis_branch_functions:
                 for enum_name, site in recovered_enum_sites(
                     self.class_index, self.enum_classes, function
@@ -391,6 +412,68 @@ class EnumSource(MemberCensusSource):
                             subject="",
                             members=frozenset(site.case_names),
                         )
+
+
+class OwnClassSource(MemberCensusSource):
+    """The scanned project's own class families, named by type tests and class
+    patterns. A family is the nearest class every tested class inherits from."""
+
+    @property
+    def class_index(self) -> CompactClassFamilyIndex:
+        return self.corpus.class_index
+
+    def lineage(self, symbol: str) -> tuple[str, ...]:
+        """The class and its ancestors, nearest first."""
+
+        return (symbol, *self.class_index.ancestor_symbols(symbol))
+
+    def family_of(self, members: frozenset[str]) -> str:
+        """The nearest class every member is or inherits from; none for one class alone."""
+
+        if len(members) < 2:
+            return ""
+        first, *rest = sorted(members)
+        shared = set.intersection(*(set(self.lineage(member)) for member in rest))
+        return next((symbol for symbol in self.lineage(first) if symbol in shared), "")
+
+    def owners(self) -> tuple[MemberOwner, ...]:
+        return tuple(
+            ClassOwner(
+                kind=CensusFamilyKind.CLASS,
+                name=symbol,
+                covered=frozenset((symbol, *descendants)),
+                method_names=frozenset(self.class_index.classes_by_symbol[symbol].method_names),
+                aliases=self.corpus.aliases_of(symbol),
+                definitions=frozenset(
+                    (self.corpus.module_name_by_file[declared.file_path], declared.qualname)
+                    for declared in map(self.class_index.classes_by_symbol.__getitem__,
+                                        (symbol, *descendants))
+                ),
+            )
+            for symbol, descendants in self.class_index.descendants_by_symbol.items()
+            if len(descendants) >= 2 and symbol in self.class_index.classes_by_symbol
+        )
+
+    def observations(self) -> Iterator[MemberObservation]:
+        """One observation per function and tested value: the classes it tests across all
+        its sites, under the nearest family they share."""
+
+        tested: dict[tuple[str, str, str], set[str]] = defaultdict(set)
+        for module in self.corpus.modules:
+            for shape in self.shapes(module):
+                if set(shape.type_names) <= self.class_index.classes_by_symbol.keys():
+                    tested[shape.file_path, shape.symbol, shape.subject].update(shape.type_names)
+        for (file_path, symbol, subject), names in sorted(tested.items()):
+            members = frozenset(names)
+            if family := self.family_of(members):
+                yield MemberObservation(
+                    kind=CensusFamilyKind.CLASS,
+                    family=family,
+                    file_path=file_path,
+                    symbol=symbol,
+                    subject=subject,
+                    members=members,
+                )
 
 
 @dataclass(frozen=True)
@@ -451,10 +534,8 @@ class MemberAwarenessCensusBuilder:
     observations: tuple[MemberObservation, ...]
 
     @classmethod
-    def from_sources(cls, corpus: CensusCorpus, config: DetectorConfig) -> Self:
-        sources = tuple(
-            source(corpus, config) for source in MemberCensusSource.__subclasses__()
-        )
+    def from_sources(cls, corpus: CensusCorpus) -> Self:
+        sources = tuple(source(corpus) for source in MemberCensusSource.__subclasses__())
         return cls(
             corpus=corpus,
             owners=tuple(chain.from_iterable(source.owners() for source in sources)),
@@ -595,7 +676,23 @@ class MemberAwarenessCensusBuilder:
                 )
         return tuple(sorted(census, key=lambda item: (-item.consumers, item.owner)))
 
+    def add_member_costs(self, groups: tuple[MemberSetGroup, ...]) -> tuple[FamilyAddCost, ...]:
+        """Per family, the distinct functions that hand-name two or more of its members."""
+
+        bypassing: dict[tuple[CensusFamilyKind, str], dict[tuple[str, str], CensusConsumer]] = (
+            defaultdict(dict)
+        )
+        for group in groups:
+            for consumer in group.bypassing:
+                bypassing[group.kind, group.family][consumer.file_path, consumer.qualname] = consumer
+        return tuple(sorted(
+            (FamilyAddCost(kind, family, tuple(found[key] for key in sorted(found)))
+             for (kind, family), found in bypassing.items()),
+            key=lambda cost: (-cost.edits, cost.kind.value, cost.family),
+        ))
+
     def report(self) -> MemberAwarenessCensus:
+        groups = self.groups()
         return MemberAwarenessCensus(
             scanned_module_count=len(self.corpus.modules),
             single_member_consumers=len(
@@ -606,8 +703,9 @@ class MemberAwarenessCensusBuilder:
                     if len(consumer.members) >= 2
                 }
             ),
-            groups=self.groups(),
+            groups=groups,
             owners=self.owner_census(),
+            add_member_costs=self.add_member_costs(groups),
         )
 
 
@@ -629,8 +727,7 @@ def build_member_awareness_census(
                 use_parse_cache=use_parse_cache,
                 parse_workers=parse_workers,
             )
-        )
+        ),
+        config or DetectorConfig(),
     )
-    return MemberAwarenessCensusBuilder.from_sources(
-        corpus, config or DetectorConfig()
-    ).report()
+    return MemberAwarenessCensusBuilder.from_sources(corpus).report()
