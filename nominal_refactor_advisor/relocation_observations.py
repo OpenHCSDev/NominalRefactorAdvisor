@@ -3,8 +3,8 @@
 Removing an `x is None` probe or a kind comparison does not remove the branch
 when the fact moves somewhere a probe detector does not look: a family member
 that answers which member it is, a property that derives a fixed answer from
-the object's own state, an exception caught around one accessor, a method that
-takes both branches as callables, a 0/1 tuple, or an `X | None` parameter.
+the object's own state, a method that takes both branches as callables, a
+0/1 tuple, or an `X | None` parameter.
 These families collect each spelling so the count cannot drop while the branch
 stays.
 """
@@ -18,7 +18,7 @@ from dataclasses import dataclass
 
 from .ast_field_decoders import variadic_parameters
 from .ast_tools import ParsedModule
-from .class_index import ModuleNominalBindingAuthority
+from .class_index import ModuleNominalBindingAuthority, ModuleNominalBindingSnapshot
 from .observation_families import ShapeFamily
 from .restated_fact_observations import (
     RestatingSite,
@@ -31,11 +31,7 @@ PROPERTY_DECORATORS = frozenset(
     {"property", "cached_property", "functools.cached_property"}
 )
 ABSTRACT_DECORATORS = frozenset({"abstractmethod", "abc.abstractmethod"})
-BUILTIN_EXCEPTIONS = frozenset(
-    name
-    for name, value in vars(builtins).items()
-    if isinstance(value, type) and issubclass(value, BaseException)
-)
+
 
 
 def statements_of(scope: ast.AST) -> list[ast.stmt]:
@@ -486,31 +482,80 @@ class ConstantAnswerSiteFamily(RestatingSiteFamily[RestatingSiteModule]):
                 )
 
 
-def own_state_shape(expression: ast.expr) -> str:
-    """How a derived answer reads the object: an optional probe, a kind, or fields."""
+def reads_through_self(expression: ast.expr) -> bool:
+    """An attribute chain whose root is `self`: another of the record's own fields."""
 
-    shapes = []
+    match expression:
+        case ast.Name(id="self"):
+            return True
+        case ast.Attribute(value=inner):
+            return reads_through_self(inner)
+    return False
+
+
+def own_state_probes(expression: ast.expr) -> Iterator[str]:
+    """Each direct probe of one of the record's own fields: absence or a kind.
+
+    A kind is a constant, a name or another object's attribute; a comparison
+    with a computed value (`self.count == len(self.items)`) or with another own
+    field (`self.start == self.end`) is a relation, not a state.
+    """
+
     for node in ast.walk(expression):
         match node:
             case ast.Compare(
-                left=ast.Attribute(value=ast.Name(id="self")) as left,
+                left=ast.Attribute(value=ast.Name(id="self")) as field,
                 ops=[ast.Is() | ast.IsNot()],
                 comparators=[ast.Constant(value=None)],
             ):
-                shapes.append(f"probes `{ast.unparse(left)}` for absence")
-            case ast.Call(func=ast.Name(id="isinstance"), args=[subject, *_]):
-                shapes.append(f"tests the kind of `{ast.unparse(subject)}`")
-            case ast.Compare(
-                left=ast.Attribute(value=ast.Name(id="self")) as left,
-                ops=[ast.Eq() | ast.NotEq() | ast.Is() | ast.IsNot() | ast.In() | ast.NotIn()],
+                yield f"probes `{ast.unparse(field)}` for absence"
+            case ast.Call(
+                func=ast.Name(id="isinstance"),
+                args=[ast.Attribute(value=ast.Name(id="self")) as field, _],
             ):
-                shapes.append(f"compares `{ast.unparse(left)}` with a kind")
-    return shapes[0] if shapes else "derives it from the record's own fields"
+                yield f"tests the kind of `{ast.unparse(field)}`"
+            case ast.Compare(
+                left=ast.Attribute(value=ast.Name(id="self")),
+                comparators=[ast.Attribute() as other],
+            ) if reads_through_self(other):
+                pass
+            case ast.Compare(
+                left=ast.Attribute(value=ast.Name(id="self")) as field,
+                ops=[ast.Eq() | ast.NotEq() | ast.Is() | ast.IsNot() | ast.In() | ast.NotIn()],
+                comparators=[ast.Constant() | ast.Name() | ast.Attribute()],
+            ):
+                yield f"compares `{ast.unparse(field)}` with a kind"
+
+
+PURE_BUILTINS = frozenset(
+    ("all", "any", "bool", "frozenset", "isinstance", "issubclass", "len", "max", "min", "set", "sorted", "sum", "tuple")
+)
+
+
+def calls_only_pure_builtins(
+    expression: ast.expr, snapshot: ModuleNominalBindingSnapshot
+) -> bool:
+    """Every call in the expression is a pure builtin the module does not shadow.
+
+    A call of anything else (a method of a field, a global's accessor) can read
+    state the record does not hold, so the answer is not fixed at construction.
+    """
+
+    for node in ast.walk(expression):
+        match node:
+            case ast.Call(func=ast.Name(id=name)) if name in PURE_BUILTINS and (
+                snapshot.resolves_unshadowed_builtin(name)
+            ):
+                pass
+            case ast.Call():
+                return False
+    return True
 
 
 class OwnStateBoolSiteFamily(RestatingSiteFamily[RestatingSiteModule]):
     """A `-> bool` property or zero-argument method of a frozen record whose
-    answer is derived from the record's own state."""
+    answer is a state of the record: its one return probes an own field for
+    absence or a kind, and calls nothing but pure builtins."""
 
     item_type = RestatingSiteModule
 
@@ -531,12 +576,14 @@ class OwnStateBoolSiteFamily(RestatingSiteFamily[RestatingSiteModule]):
                     case _:
                         continue
                 match statements_after_docstring(body):
-                    case [ast.Return(value=ast.expr() as expression)] if not isinstance(
-                        expression, ast.Constant
-                    ) and any(
-                        isinstance(part, ast.Name) and part.id == "self"
-                        for part in ast.walk(expression)
+                    case [ast.Return(value=ast.expr() as expression)] if calls_only_pure_builtins(
+                        expression, bindings.snapshot_before(node.lineno)
                     ):
+                        probes = list(own_state_probes(expression))
+                    case _:
+                        continue
+                match probes:
+                    case [first, *_]:
                         accessed = (
                             "property"
                             if decorator_names(statement) & PROPERTY_DECORATORS
@@ -550,57 +597,9 @@ class OwnStateBoolSiteFamily(RestatingSiteFamily[RestatingSiteModule]):
                             (
                                 f"{parsed_module.module_name}.{qualname}",
                                 accessed,
-                                own_state_shape(expression),
+                                first,
                             ),
                         )
-
-
-def handled_types(handler: ast.ExceptHandler) -> list[ast.expr]:
-    match handler.type:
-        case ast.Tuple(elts=elements):
-            return elements
-        case ast.expr() as single:
-            return [single]
-    return []
-
-
-class ExceptionAbsenceSiteFamily(RestatingSiteFamily[RestatingSiteModule]):
-    """`try:` around one statement whose `except` arm is behaviour, not a re-raise.
-
-    `group` is the caught class's qualified name, resolved through the module's
-    bindings at the handler (a name that binds nothing is left out), and
-    `detail` the guarded statement; the join keeps the sites whose caught class
-    the class index derives from a builtin exception.
-    """
-
-    item_type = RestatingSiteModule
-
-    @classmethod
-    def sites(cls, parsed_module: ParsedModule) -> Iterator[RestatingSite]:
-        symbols = enclosing_symbols(parsed_module.module)
-        bindings = ModuleNominalBindingAuthority(parsed_module)
-        for node in ast.walk(parsed_module.module):
-            match node:
-                case ast.Try(body=[guarded], handlers=handlers) if any(
-                    isinstance(child, ast.Call) for child in ast.walk(guarded)
-                ):
-                    pass
-                case _:
-                    continue
-            spelled = ast.unparse(guarded).splitlines()[0]
-            for handler in handlers:
-                if all(isinstance(statement, ast.Raise) for statement in handler.body):
-                    continue
-                for caught in handled_types(handler):
-                    match bindings.qualified_name_at(caught, line=handler.lineno):
-                        case str() as qualified:
-                            yield RestatingSite(
-                                parsed_module.file_path,
-                                handler.lineno,
-                                symbols.get(id(node), "<module>"),
-                                qualified,
-                                (spelled,),
-                            )
 
 
 class LambdaFoldSiteFamily(RestatingSiteFamily[RestatingSiteModule]):
@@ -622,9 +621,10 @@ class LambdaFoldSiteFamily(RestatingSiteFamily[RestatingSiteModule]):
 
 
 class ZeroOneTupleSiteFamily(RestatingSiteFamily[RestatingSiteModule]):
-    """A function whose every return is `()` or a one-element tuple.
+    """A function whose every return is `()` or a one-element tuple, with both.
 
-    `detail` is the declaring class (empty for a module function) and the arities.
+    Overrides that each return one arity are left out: a family whose members
+    contribute zero or one item already splits present from absent.
     """
 
     item_type = RestatingSiteModule
@@ -632,20 +632,14 @@ class ZeroOneTupleSiteFamily(RestatingSiteFamily[RestatingSiteModule]):
     @classmethod
     def sites(cls, parsed_module: ParsedModule) -> Iterator[RestatingSite]:
         for definition in scoped_definitions(parsed_module.module):
-            arities = absence_tuple_arities(definition.node)
-            if not arities:
+            if absence_tuple_arities(definition.node) != {0, 1}:
                 continue
-            owner = (
-                f"{parsed_module.module_name}.{definition.qualname.rsplit('.', 1)[0]}"
-                if isinstance(definition.owner, ast.ClassDef)
-                else ""
-            )
             yield RestatingSite(
                 parsed_module.file_path,
                 definition.node.lineno,
                 definition.qualname,
                 definition.node.name,
-                (owner, *(str(arity) for arity in sorted(arities))),
+                (),
             )
 
 
@@ -679,17 +673,47 @@ def undefaulted_parameters(node: ast.FunctionDef | ast.AsyncFunctionDef) -> list
 
 
 class ThreadedAbsenceSiteFamily(RestatingSiteFamily[RestatingSiteModule]):
-    """An undefaulted `X | None` parameter that its own body compares with None."""
+    """An undefaulted `X | None` parameter that its own body compares with None.
+
+    A probe choosing between the parameter itself and a replacement
+    (`default if value is None else value`), or choosing the returned value of
+    a function whose declared return is not optional, is where absence is
+    decided, not asked again, so it is left out. So is a dunder method: the language's
+    protocol fixes its signature and the interpreter is its caller.
+    """
 
     item_type = RestatingSiteModule
 
     @classmethod
     def sites(cls, parsed_module: ParsedModule) -> Iterator[RestatingSite]:
         for definition in scoped_definitions(parsed_module.module):
+            name = definition.node.name
+            if name.startswith("__") and name.endswith("__"):
+                continue
             optional = {
                 argument.arg
                 for argument in undefaulted_parameters(definition.node)
                 if optional_annotation(argument.annotation)
+            }
+            match definition.node.returns:
+                case ast.expr() as declared:
+                    settles = not optional_annotation(declared)
+                case _:
+                    settles = False
+            deciding = {
+                id(node.test)
+                for node in function_nodes(definition.node)
+                if isinstance(node, ast.IfExp)
+                and any(
+                    isinstance(arm, ast.Name) and arm.id in optional
+                    for arm in (node.body, node.orelse)
+                )
+            } | {
+                id(node.value.test)
+                for node in function_nodes(definition.node)
+                if settles
+                and isinstance(node, ast.Return)
+                and isinstance(node.value, ast.IfExp)
             }
             for node in function_nodes(definition.node):
                 match node:
@@ -697,7 +721,7 @@ class ThreadedAbsenceSiteFamily(RestatingSiteFamily[RestatingSiteModule]):
                         left=ast.Name(id=name),
                         ops=[ast.Is() | ast.IsNot() as operator],
                         comparators=[ast.Constant(value=None)],
-                    ) if name in optional:
+                    ) if name in optional and id(node) not in deciding:
                         yield RestatingSite(
                             parsed_module.file_path,
                             node.lineno,

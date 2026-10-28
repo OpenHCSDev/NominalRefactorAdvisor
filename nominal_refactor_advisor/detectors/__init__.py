@@ -44,7 +44,6 @@ from ._registration_owners import (
 )
 from ._relocations import (
     ConstantSubtypeAnswerDetector,
-    ExceptionAsAbsenceDetector,
     LambdaFoldDetector,
     OwnStateBranchAnswerDetector,
     ThreadedAbsenceDetector,
@@ -125,7 +124,6 @@ __all__ = (
     "ResidualClosedAxisIndirectionDetector",
     "RestatedIdentityDetector",
     "ConstantSubtypeAnswerDetector",
-    "ExceptionAsAbsenceDetector",
     "LambdaFoldDetector",
     "OwnStateBranchAnswerDetector",
     "ThreadedAbsenceDetector",

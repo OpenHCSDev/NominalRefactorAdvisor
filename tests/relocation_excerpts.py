@@ -78,16 +78,6 @@ NRA = "nominal_refactor_advisor"
 GRAPH_PARAMETERS = Relocation(
     (Excerpt("c5b955e", f"{NRA}/cli.py", ("ColdScanAnalysis", "FastCacheScan")),)
 )
-# #110 (a3eed478): `is_owner` derived from the record's own fields, branched on.
-IS_OWNER = Relocation(
-    (
-        Excerpt(
-            "a3eed478",
-            f"{NRA}/codemod_optional_ast_field.py",
-            ("NamedOwnerDeclaration", "ProjectDecoderOwners"),
-        ),
-    )
-)
 # #77 (ac2a002d): `keyed_metaclass_family` probing an optional field, branched on.
 KEYED_METACLASS_FAMILY = Relocation(
     (
@@ -121,21 +111,6 @@ FOLD_BINDING = Relocation(
             f"{NRA}/class_index.py",
             ("CompactNominalReference", "BoundNominalReference", "UnboundNominalReference"),
         ),
-    )
-)
-# #81/#85 (580b14d4): the 16 `except AbsentStatementValue | UnboundReference` sites.
-EXCEPTION_ABSENCE = Relocation(
-    (
-        Excerpt("580b14d4", f"{NRA}/ast_projection.py", ("AbsentStatementValue",)),
-        Excerpt("580b14d4", f"{NRA}/class_mro.py", ("UnboundReference",), (231,)),
-        Excerpt("580b14d4", f"{NRA}/class_identity_observations.py", lines=(1542,)),
-        Excerpt("580b14d4", f"{NRA}/class_index.py", lines=(2072, 4817, 6980)),
-        Excerpt("580b14d4", f"{NRA}/detectors/_helpers.py", lines=(703, 822, 4394, 4458)),
-        Excerpt("580b14d4", f"{NRA}/manual_registry.py", lines=(149, 923)),
-        Excerpt("580b14d4", f"{NRA}/observation_families.py", lines=(1110,)),
-        Excerpt("580b14d4", f"{NRA}/product_flow.py", lines=(4437,)),
-        Excerpt("580b14d4", f"{NRA}/restated_fact_observations.py", lines=(767,)),
-        Excerpt("580b14d4", f"{NRA}/semantic_descent.py", lines=(5047, 5064)),
     )
 )
 # Main at 674a5ed9: `declared_annotations` returns `(annotation,)` or `()`.

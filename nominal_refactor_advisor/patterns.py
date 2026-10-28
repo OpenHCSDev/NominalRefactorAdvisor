@@ -528,18 +528,8 @@ class PatternId(IntEnum):
         ),
         witness_capabilities=(CapabilityTag.PROVENANCE,),
     )
-    EXCEPTION_AS_ABSENCE = _pattern(
-        stable_id=42,
-        display_name="Exception As Absence",
-        required_relation=(
-            "A handler catches an exception the scan declares around one "
-            "statement and does work instead of re-raising, so the except arm "
-            "restates an absent state as control flow."
-        ),
-        witness_capabilities=(CapabilityTag.PROVENANCE,),
-    )
     LAMBDA_FOLD = _pattern(
-        stable_id=43,
+        stable_id=42,
         display_name="Lambda Fold",
         required_relation=(
             "Each override of a method calls exactly one of the callables it "
@@ -549,17 +539,17 @@ class PatternId(IntEnum):
         witness_capabilities=(CapabilityTag.CLOSED_FAMILY_DISPATCH,),
     )
     ZERO_ONE_TUPLE = _pattern(
-        stable_id=44,
+        stable_id=43,
         display_name="Zero-Or-One Tuple",
         required_relation=(
-            "Every return of a function, or of a method's overrides, is an empty "
-            "or a one-element tuple, so presence and absence are spelled as a "
-            "collection that callers branch on by iterating."
+            "Every return of one function is an empty or a one-element tuple, "
+            "with both, so presence and absence are spelled as a collection "
+            "that callers branch on by iterating."
         ),
         witness_capabilities=(CapabilityTag.PROVENANCE,),
     )
     THREADED_ABSENCE = _pattern(
-        stable_id=45,
+        stable_id=44,
         display_name="Threaded Absence",
         required_relation=(
             "A parameter declared `X | None` without a default is compared with "

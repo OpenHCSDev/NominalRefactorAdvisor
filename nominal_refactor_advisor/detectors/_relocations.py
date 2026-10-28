@@ -1,9 +1,8 @@
 """Relocated probes: the shapes an absence or kind branch takes after its probe is removed.
 
 A count of `x is None` probes drops when the probe moves behind a family
-member's constant answer, a frozen record's derived bool, an exception caught
-around one accessor, a fold over call-site lambdas, a 0/1 tuple or an
-`X | None` parameter; the branch stays. Each detector here names one of those
+member's constant answer, a frozen record's derived bool, a fold over
+call-site lambdas, a 0/1 tuple or an `X | None` parameter; the branch stays. Each detector here names one of those
 spellings with the fact it restates, the owner, and the factoring. No codemod
 performs these factorings yet, so every finding carries the prescription.
 """
@@ -25,13 +24,11 @@ from ..class_index import (
 from ..models import RefactorFinding, SourceLocation
 from ..patterns import PatternId
 from ..relocation_observations import (
-    BUILTIN_EXCEPTIONS,
     BranchRead,
     ClassShape,
     ClassShapeFamily,
     ConstantAnswerSiteFamily,
     ConsumerShapeFamily,
-    ExceptionAbsenceSiteFamily,
     LambdaCall,
     LambdaFoldSiteFamily,
     OwnStateBoolSiteFamily,
@@ -103,21 +100,6 @@ class MemberFamilies:
                 computed[(self.family(symbol, member), member)].append(symbol)
         return dict(computed)
 
-    @cached_property
-    def exception_symbols(self) -> frozenset[str]:
-        """Scanned classes whose own or inherited bases bind a builtin exception."""
-
-        builtin = frozenset(f"builtins.{name}" for name in BUILTIN_EXCEPTIONS)
-        classes = self.class_index.classes_by_symbol
-        return frozenset(
-            symbol
-            for symbol in classes
-            if any(
-                reference.qualified_name in builtin
-                for lineage in (symbol, *self.class_index.ancestor_symbols(symbol))
-                for reference in classes[lineage].base_references
-            )
-        )
 
 
 @dataclass
@@ -236,7 +218,7 @@ class ConstantSubtypeAnswerDetector(FamilyMemberRelocationDetector):
         PatternId.CONSTANT_SUBTYPE_ANSWER,
         "A family's members answer which member they are",
         "a method per consumer's work, overridden on each member, instead of a constant answer the consumer branches on",
-        "a zero-argument method or property returning one bool or str constant, a bool class attribute, or a bool or str ClassVar, declared by two or more members of one class family and computed by none",
+        "a zero-argument method or property returning one bool or str constant, a bool class attribute, or a bool or str ClassVar, declared by two or more members of one class family, computed by none, and read by name in a branch test",
         (CapabilityTag.CLOSED_FAMILY_DISPATCH,),
         (ObservationTag.CLASS_FAMILY, ObservationTag.BRANCH_DISPATCH),
     )
@@ -249,7 +231,11 @@ class ConstantSubtypeAnswerDetector(FamilyMemberRelocationDetector):
         return context.families.computed_by_family.get((family, member), [])
 
     def admits(self, sites: Sequence[RestatingSite], context: RelocationIndex) -> bool:
-        return len(sites) >= 2 and not self.computed_elsewhere(sites, context)
+        return (
+            len(sites) >= 2
+            and not self.computed_elsewhere(sites, context)
+            and bool(self.consumers(sites, context))
+        )
 
     def consumers(
         self, sites: Sequence[RestatingSite], context: RelocationIndex
@@ -293,7 +279,7 @@ class OwnStateBranchAnswerDetector(RelocationDetector):
         PatternId.OWN_STATE_BRANCH_ANSWER,
         "A frozen record's derived bool selects its callers' branches",
         "the record's states declared as subtypes, with each caller's branch body as a method on them",
-        "a `-> bool` property or zero-argument method of a frozen dataclass or NamedTuple whose single return reads the record's own state, read by name in a branch test",
+        "a `-> bool` property or zero-argument method of a frozen dataclass or NamedTuple whose single return probes one of the record's own fields for absence or a kind and calls only pure builtins, read by name in a branch test",
         (CapabilityTag.CLOSED_FAMILY_DISPATCH,),
         (ObservationTag.BRANCH_DISPATCH, ObservationTag.ATTRIBUTE_PROBE),
     )
@@ -322,43 +308,6 @@ class OwnStateBranchAnswerDetector(RelocationDetector):
         return (
             *super().evidence(sites, context),
             *_consumer_locations(self.consumers(sites, context)),
-        )
-
-
-class ExceptionAsAbsenceDetector(RelocationDetector):
-    """`try:` around one statement catching an exception the scan declares, not re-raised."""
-
-    module_projection_families = (
-        ExceptionAbsenceSiteFamily,
-        CompactModuleClassProjectionFamily,
-        ClassShapeFamily,
-        ConsumerShapeFamily,
-    )
-    restated = RestatedFact(
-        fact="The handler restates the guarded value's absent state as control flow: the exception is the scan's own, raised by its accessor to say the value is not there, and the except arm is the absent branch.",
-        owner="The owner is the family of the value the accessor reads: a present member and an absent member.",
-        factoring="Give the value present and absent members; the try arm becomes the present member's method and the except arm the absent member's, the caller calls that method, and the exception and the try are deleted.",
-    )
-    finding_spec = restated.spec(
-        PatternId.EXCEPTION_AS_ABSENCE,
-        "An exception the scan declares stands for absence",
-        "present and absent members of the value's family, with the try and except arms as their methods",
-        "a try statement guarding one statement that calls, with a handler for a class the scan declares as an exception whose body is not only a raise",
-        (),
-        (ObservationTag.BRANCH_DISPATCH,),
-    )
-
-    def group_of(self, site: RestatingSite, context: RelocationIndex) -> tuple[str, str, str]:
-        return (site.file_path, site.symbol, site.group)
-
-    def admits(self, sites: Sequence[RestatingSite], context: RelocationIndex) -> bool:
-        return sites[0].group in context.families.exception_symbols
-
-    def describe(self, sites: Sequence[RestatingSite], context: RelocationIndex) -> str:
-        guarded = _listed(f"line {site.lineno}: `{site.detail[0]}`" for site in sites)
-        return (
-            f"{sites[0].symbol} catches `{sites[0].group}`, an exception the scan "
-            f"declares, {len(sites)} time(s) around one statement: {guarded}."
         )
 
 
@@ -413,15 +362,10 @@ class LambdaFoldDetector(FamilyMemberRelocationDetector):
         )
 
 
-class ZeroOneTupleDetector(RelocationDetector):
-    """Returns that are all `()` or `(x,)`, in one function or across a family's overrides."""
+class ZeroOneTupleDetector(SingleFamilyRestatedFactDetector):
+    """A function whose returns are all `()` or `(x,)`, with both."""
 
-    module_projection_families = (
-        ZeroOneTupleSiteFamily,
-        CompactModuleClassProjectionFamily,
-        ClassShapeFamily,
-        ConsumerShapeFamily,
-    )
+    module_projection_family = ZeroOneTupleSiteFamily
     restated = RestatedFact(
         fact="Returning `()` or a one-element tuple spells present and absent as a collection, so each caller that iterates it branches on absence without naming it.",
         owner="The owner is a family with a present member and an absent member (or a null member) that the function returns instead.",
@@ -431,26 +375,13 @@ class ZeroOneTupleDetector(RelocationDetector):
         PatternId.ZERO_ONE_TUPLE,
         "A 0/1 tuple stands for presence and absence",
         "a present/absent family returned instead of the tuple",
-        "a function whose every return is `()` or a one-element tuple with both arities, or a method whose overrides in one family return only `()` and only one-element tuples",
+        "a function whose every return is `()` or a one-element tuple, with both",
         (),
         (ObservationTag.BRANCH_DISPATCH,),
     )
 
-    def group_of(self, site: RestatingSite, context: RelocationIndex) -> tuple[str, str, str]:
-        owner = site.detail[0]
-        if not owner:
-            return (site.file_path, site.symbol, site.group)
-        return (context.families.family(owner, site.group), site.group, "")
-
-    def admits(self, sites: Sequence[RestatingSite], context: RelocationIndex) -> bool:
-        return {arity for site in sites for arity in site.detail[1:]} == {"0", "1"}
-
-    def describe(self, sites: Sequence[RestatingSite], context: RelocationIndex) -> str:
-        declared = _listed(
-            f"{site.symbol} returns {' or '.join('()' if arity == '0' else '(x,)' for arity in site.detail[1:])}"
-            for site in sites
-        )
-        return f"`{sites[0].group}` encodes absence as a 0/1 tuple: {declared}."
+    def describe(self, sites: Sequence[RestatingSite], context: None) -> str:
+        return f"`{sites[0].symbol}` encodes absence as a 0/1 tuple: it returns `()` on one path and `(x,)` on another."
 
 
 class ThreadedAbsenceDetector(SingleFamilyRestatedFactDetector):
@@ -466,7 +397,7 @@ class ThreadedAbsenceDetector(SingleFamilyRestatedFactDetector):
         PatternId.THREADED_ABSENCE,
         "Absence is threaded through a parameter and asked again",
         "a held/absent family passed instead of `X | None`, with the callee's branches as its methods",
-        "a parameter annotated `X | None` or `Optional[X]` without a default, compared with None in the function's own body",
+        "a parameter annotated `X | None` or `Optional[X]` without a default, compared with None in the function's own body other than to choose between itself and a replacement",
         (),
         (ObservationTag.ATTRIBUTE_PROBE,),
     )
@@ -481,7 +412,6 @@ class ThreadedAbsenceDetector(SingleFamilyRestatedFactDetector):
 
 __all__ = (
     "ConstantSubtypeAnswerDetector",
-    "ExceptionAsAbsenceDetector",
     "LambdaFoldDetector",
     "OwnStateBranchAnswerDetector",
     "ThreadedAbsenceDetector",
