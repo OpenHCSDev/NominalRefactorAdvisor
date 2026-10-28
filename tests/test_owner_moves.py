@@ -393,3 +393,20 @@ def test_a_reordered_composer_that_orders_by_field_position_is_not_composed(
 
     assert report.stage_count == 0
     assert (tmp_path / "pkg/records.py").read_text() == ordered
+
+
+def test_a_reordered_composer_whose_field_order_reaches_a_digest_is_not_composed(
+    tmp_path: Path,
+) -> None:
+    digested = "import hashlib\n" + REORDERED.replace(
+        "    own_second: int = 0\n",
+        "    own_second: int = 0\n\n"
+        "    def identity(self) -> str:\n"
+        "        return hashlib.blake2b(repr(self).encode()).hexdigest()\n",
+    )
+    _write(tmp_path, {"pkg/__init__.py": "", "pkg/records.py": digested})
+
+    report = _goal_with_pick(tmp_path, "Lettered")
+
+    assert report.stage_count == 0
+    assert (tmp_path / "pkg/records.py").read_text() == digested

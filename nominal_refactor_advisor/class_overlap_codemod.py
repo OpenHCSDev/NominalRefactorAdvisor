@@ -1183,8 +1183,13 @@ class KeywordOnlyComposition:
     binds by keyword binds the same values in either order. That holds when no
     read of the composer or a descendant binds a field by position or hands
     the class on as a value, no `cls(...)` in their bodies passes positions,
-    none declares `order=True` (which compares field tuples in order), and none
-    declares its own `__init__` or `__match_args__`. The repr text and the order
+    none declares `order=True` (which compares field tuples in order), none
+    declares its own `__init__` or `__match_args__`, and no method of theirs or
+    of an indexed ancestor digests a whole-instance serialization (`repr`,
+    `str`, `astuple`, `asdict`, `fields` or `pickle.dumps` of `self`, in a method
+    that calls `hashlib` or `json.dumps` without `sort_keys=True`): that digest
+    would change with the field order. Cache identities are refused too until
+    they are told apart from persisted ones. The repr text and the order
     `fields()` and `astuple()` report still change.
     """
 
@@ -1213,6 +1218,29 @@ class KeywordOnlyComposition:
             self.snapshot, frozenset(self.family)
         ).require_keyword_construction()
         require_no_positional_self_construction(self.snapshot, self.family)
+        self.require_no_field_order_digest()
+
+    def require_no_field_order_digest(self) -> None:
+        class_index = self.snapshot.class_overlap_verdicts.class_index
+        symbols = dict.fromkeys(
+            symbol
+            for member in self.family
+            for symbol in (member, *class_index.ancestor_symbols(member))
+            if class_index.class_for(symbol) is not None
+        )
+        for symbol in symbols:
+            owner = OverlapClass.for_symbol(self.snapshot, symbol)
+            module = self.snapshot.parsed_module_for_source_path(owner.file_path)
+            for method in owner.node.body:
+                if not isinstance(method, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    continue
+                digest = FieldOrderDigest.in_method(self.snapshot, module, method)
+                if digest is not None:
+                    raise ValueError(
+                        f"{owner.file_path}:{digest} digests `{owner.qualname}."
+                        f"{method.name}`'s serialization of the instance, whose "
+                        "field order the composition changes"
+                    )
 
     def decorator_edits(self, rationale: str) -> tuple[NominalSourceEdit, ...]:
         """`kw_only=True` on the composer's dataclass decorator."""
@@ -1234,6 +1262,68 @@ class KeywordOnlyComposition:
             ),
             rationale=rationale,
         )
+
+
+class FieldOrderDigest:
+    """A method that hashes or dumps a serialization of its whole instance."""
+
+    SERIALIZERS = frozenset(
+        (
+            "builtins.repr",
+            "builtins.str",
+            "dataclasses.astuple",
+            "dataclasses.asdict",
+            "dataclasses.fields",
+            "pickle.dumps",
+        )
+    )
+
+    @classmethod
+    def in_method(
+        cls,
+        snapshot: CodemodSourceSnapshot,
+        module: ParsedModule,
+        method: ast.FunctionDef | ast.AsyncFunctionDef,
+    ) -> int | None:
+        """The line of the method's digest of `self`'s serialization, if any."""
+
+        receiver = (
+            method.args.args[0].arg
+            if method.args.args
+            else None
+        )
+        if receiver is None:
+            return None
+        proof = snapshot.module_binding_proof
+        serializes = False
+        sink: int | None = None
+        for node in ast.walk(method):
+            if not isinstance(node, ast.Call):
+                continue
+            witness = proof.reference_or_builtin_witness_at(
+                module, node.func, line=node.lineno
+            )
+            if witness is None:
+                continue
+            name = witness.qualified_name
+            if (
+                name in cls.SERIALIZERS
+                and node.args
+                and isinstance(node.args[0], ast.Name)
+                and node.args[0].id == receiver
+            ):
+                serializes = True
+            if name.startswith("hashlib.") or (
+                name == "json.dumps"
+                and not any(
+                    keyword.arg == "sort_keys"
+                    and isinstance(keyword.value, ast.Constant)
+                    and keyword.value.value is True
+                    for keyword in node.keywords
+                )
+            ):
+                sink = node.lineno if sink is None else sink
+        return sink if serializes else None
 
 
 def keyword_only_decorator_source(decorator_source: str, decorator: ast.expr) -> str:
