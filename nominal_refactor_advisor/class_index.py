@@ -4314,17 +4314,21 @@ class StarDeferredName(NamedTuple):
 
 
 class ClassBodyDeclarationDigest(NamedTuple):
-    """One class-body declaration as the index compares it: no AST, one digest.
+    """One class-body declaration as the index compares it: no AST.
 
-    `digest` covers everything resolved inside the module; `deferred` lists the
-    free names only the repository's star-import exposure can resolve, and
-    `unbound` the free names nothing binds, which make it equal to nothing.
+    `digest` covers the declaration's kind, name, syntax and class-scope
+    names; `bindings` what each free name the module binds resolves to, as
+    `(name, qualified name)`. `deferred` lists the free names only the
+    repository's star-import exposure can resolve, which the index settles
+    into the same bindings, and `unbound` the free names nothing binds, which
+    make it equal to nothing.
     """
 
     kind: ClassBodyDeclarationKind
     name: str
     line: int
     digest: str
+    bindings: tuple[tuple[str, str], ...]
     deferred: tuple[StarDeferredName, ...]
     unbound: tuple[str, ...]
 
@@ -4449,12 +4453,27 @@ class ClassBodyNormalForm:
             digest_size=16,
         ).hexdigest()
 
+    @cached_property
+    def syntax_digest(self) -> str:
+        """The digest of everything but the free names' bindings."""
+
+        return hashlib.blake2s(
+            repr((self.kind.value, self.name, self.syntax, self.class_scope_names)).encode(
+                "utf-8"
+            ),
+            digest_size=16,
+        ).hexdigest()
+
     def compact(self) -> ClassBodyDeclarationDigest:
         return ClassBodyDeclarationDigest(
             self.kind,
             self.name,
             self.line,
-            self.digest,
+            self.syntax_digest,
+            tuple(
+                (binding.root_name, binding.qualified_name)
+                for binding in self.global_bindings
+            ),
             self.deferred_names,
             self.unresolved_names,
         )
