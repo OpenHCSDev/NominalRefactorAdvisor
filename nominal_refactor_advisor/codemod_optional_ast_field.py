@@ -23,6 +23,8 @@ from functools import cached_property
 from pathlib import Path
 from typing import ClassVar, Generic, Self, TypeGuard, TypeVar
 
+from metaclass_registry import AutoRegisterMeta, extract_key_from_class_name
+
 from . import ast_field_decoders, ast_projection
 from .ast_tools import ParsedModule
 from .cases_family import handback
@@ -53,6 +55,7 @@ from .codemod_target_selectors import SourceIndexTargetSelector
 from .declared_root import DeclaredRoot
 from .models import RefactorFinding
 from .refactor_concepts import OptionalAstFieldDecoderConcept
+from .registry_identity import DEFAULT_REGISTRY_KEY_ATTRIBUTE
 
 FunctionNode = ast.FunctionDef | ast.AsyncFunctionDef
 FUNCTION_CLASSES = frozenset(("FunctionDef", "AsyncFunctionDef", "Lambda"))
@@ -916,29 +919,27 @@ class PairedProbeSite(SingleNodeProbeSite):
 # --- decoders ---------------------------------------------------------------
 
 
-class OptionalAstFieldDecoder(ABC):
+class OptionalAstFieldDecoder(ABC, metaclass=AutoRegisterMeta):
     """One registered decoder: the ast fields it owns and the shapes sites take.
 
     ``fields`` maps each ast class to its optional field. ``owners`` are the
     objects this package declares as the decoder; a project without them gets
-    their source generated.
+    their source generated. Every concrete decoder registers under its class
+    name, the name a recipe payload carries.
     """
 
-    registry: ClassVar[dict[str, type[OptionalAstFieldDecoder]]] = {}
+    __registry_key__ = DEFAULT_REGISTRY_KEY_ATTRIBUTE
+    __key_extractor__ = extract_key_from_class_name
+    __registry__: ClassVar[dict[str, type[OptionalAstFieldDecoder]]]
     fields: ClassVar[Mapping[type[ast.AST], str]]
     owners: ClassVar[tuple[type | object, ...]]
     shapes: ClassVar[tuple[type[ProbeSite], ...]]
-
-    def __init_subclass__(cls, **kwargs: object) -> None:
-        super().__init_subclass__(**kwargs)
-        if "fields" in cls.__dict__:
-            OptionalAstFieldDecoder.registry[cls.__name__] = cls
 
     @classmethod
     def for_field(cls, field: str) -> tuple[type[OptionalAstFieldDecoder], ...]:
         return tuple(
             decoder
-            for decoder in cls.registry.values()
+            for decoder in cls.__registry__.values()
             if field in decoder.field_names()
         )
 
@@ -1157,7 +1158,7 @@ class ProjectDecoderOwners:
 
         names = {
             name
-            for decoder in OptionalAstFieldDecoder.registry.values()
+            for decoder in OptionalAstFieldDecoder.__registry__.values()
             for name in decoder.owner_names()
         }
         return {
@@ -1198,7 +1199,7 @@ class ProjectDecoderOwners:
         }
         return tuple(
             decoder
-            for decoder in OptionalAstFieldDecoder.registry.values()
+            for decoder in OptionalAstFieldDecoder.__registry__.values()
             if not all(name in self.declared for name in decoder.owner_names())
             and probed & decoder.field_names()
         )
@@ -1703,7 +1704,7 @@ class RouteOptionalAstFieldProbesOperation(SourceReprovedOperation):
 
     @property
     def decoder_type(self) -> type[OptionalAstFieldDecoder]:
-        decoder = OptionalAstFieldDecoder.registry.get(self.decoder)
+        decoder = OptionalAstFieldDecoder.__registry__.get(self.decoder)
         if decoder is None:
             raise ValueError(f"Unknown optional ast field decoder {self.decoder!r}")
         return decoder
@@ -2058,7 +2059,7 @@ class OptionalAstFieldDecoderFindingRecipeSynthesizer(
             registered = sorted(
                 {
                     name
-                    for decoder in OptionalAstFieldDecoder.registry.values()
+                    for decoder in OptionalAstFieldDecoder.__registry__.values()
                     for name in decoder.field_names()
                 }
             )

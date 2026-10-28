@@ -5,17 +5,20 @@ from pathlib import Path
 
 import pytest
 
-from nominal_refactor_advisor.ast_tools import SourceModule
+from nominal_refactor_advisor import detectors
+from nominal_refactor_advisor.ast_tools import SourceModule, parse_python_modules
 from nominal_refactor_advisor.codemod_optional_ast_field import (
     KeywordNameDecoder,
     CaptureNameDecoder,
     DeclaredAnnotationDecoder,
     OptionalAstFieldAuthority,
     OptionalAstFieldDecoder,
+    ProjectDecoderOwners,
     VariadicParameterDecoder,
 )
 from nominal_refactor_advisor.codemod_runtime import CodemodSourceSnapshot
 from nominal_refactor_advisor.codemod_source_edits import SourceTextGeometry
+from nominal_refactor_advisor.detectors import DetectorConfig
 
 
 def _rewritten(
@@ -340,3 +343,40 @@ def test_filter_after_a_parenthesized_iterable_keeps_the_parenthesis() -> None:
     assert "if p.annotation" not in rewritten
     assert "ParameterAnnotations.of(" in rewritten and ".annotated" in rewritten
     assert max(len(line) for line in rewritten.splitlines()) <= 88
+
+
+def test_generated_owners_register_nothing_by_hand(tmp_path: Path) -> None:
+    """The module the recipe generates passes NRA's own registration detectors,
+    in a project that declares an installed registry owner it should use."""
+
+    package = tmp_path / "pkg"
+    (tmp_path / "pyproject.toml").write_text(
+        '[tool.nominal-refactor-advisor]\nowner-packages = ["metaclass-registry"]\n'
+    )
+    sources = {
+        str(package / "__init__.py"): "",
+        str(package / "mod.py"): (
+            "def f(k, h, a, p, fn):\n"
+            "    return (k.arg is None, h.name is None, a.vararg is None,"
+            " a.kwarg is None, p.annotation is None, fn.returns is None)\n"
+        ),
+    }
+    for path, source in sources.items():
+        Path(path).parent.mkdir(parents=True, exist_ok=True)
+        Path(path).write_text(source)
+    snapshot = CodemodSourceSnapshot.from_source_mapping(
+        sources, analysis_roots=(package,)
+    )
+    owners = ProjectDecoderOwners.of(snapshot, "pkg")
+    assert set(owners.pending) == set(OptionalAstFieldDecoder.__registry__.values())
+    Path(owners.generated_path()).write_text(owners.generated_source())
+
+    modules = parse_python_modules(tmp_path)
+    assert [
+        finding.summary
+        for detector in (
+            detectors.HandRolledRegistrationDetector,
+            detectors.ManualClassRegistrationDetector,
+        )
+        for finding in detector().detect(modules, DetectorConfig())
+    ] == []
