@@ -633,6 +633,8 @@ class CompactDefinitionBindingOperation(CompactBindingOperationABC):
 class CompactMutationKind(StrEnum):
     """Source operations with one declaration-owned binding interpretation."""
 
+    binding_operation: CompactBindingOperationABC
+
     ASSIGNMENT = "assignment", CompactAssignmentBindingOperation()
     AUGMENTED_ASSIGNMENT = "augmented_assignment"
     DELETION = "deletion", CompactDeletionBindingOperation()

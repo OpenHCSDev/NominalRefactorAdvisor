@@ -760,8 +760,7 @@ class ModuleImportMutation(KeyedSourceEditCoalescence):
         replacements.extend(
             SourceSpanDeletion(
                 file_path=self.file_path,
-                start_line=guard.lineno,
-                end_line=guard.end_lineno or guard.lineno,
+                span=SourceLineSpan(guard.lineno, guard.end_lineno or guard.lineno),
                 rationale=self.rationale
                 or f"Remove empty type-checking import guard in {self.file_path!r}.",
                 contributors=self.contributors,
@@ -790,8 +789,7 @@ class ModuleImportMutation(KeyedSourceEditCoalescence):
                 replacements.append(
                     SourceSpanDeletion(
                         file_path=self.file_path,
-                        start_line=statement.lineno,
-                        end_line=statement.end_lineno or statement.lineno,
+                        span=SourceLineSpan(statement.lineno, statement.end_lineno or statement.lineno),
                         rationale=self.rationale
                         or f"Remove import bindings in {self.file_path!r}.",
                         contributors=self.contributors,
@@ -815,8 +813,7 @@ class ModuleImportMutation(KeyedSourceEditCoalescence):
             replacements.append(
                 SourceSpanReplacement(
                     file_path=self.file_path,
-                    start_line=statement.lineno,
-                    end_line=statement.end_lineno or statement.lineno,
+                    span=SourceLineSpan(statement.lineno, statement.end_lineno or statement.lineno),
                     replacement_lines=SourceTextGeometry(source).generated_lines(
                         replacement_source
                     ),

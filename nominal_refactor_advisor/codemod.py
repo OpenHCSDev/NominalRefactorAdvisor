@@ -537,6 +537,7 @@ from .codemod_source_edits import (
     SimulatedSourceRewrite as SimulatedSourceRewrite,
     SourceEditWindowABC as SourceEditWindowABC,
     SourceIntervalProjectionABC as SourceIntervalProjectionABC,
+    SourceLineSpan,
     SourceOffsetSpan as SourceOffsetSpan,
     SourceRetainedSpanIndex as SourceRetainedSpanIndex,
     SourceRewriteDelta as SourceRewriteDelta,
@@ -892,8 +893,7 @@ class ReplaceTargetOperation(SourceReprovedOperation):
         return (
             SourceSpanReplacement(
                 file_path=target.file_path,
-                start_line=span.start_line,
-                end_line=span.end_line,
+                span=SourceLineSpan(span.start_line, span.end_line),
                 replacement_lines=SourceTargetEditor.source_lines(
                     self.replacement_block.indented_source(
                         declaration.declaration_indentation,
@@ -3480,8 +3480,7 @@ class DeriveAutoregisterInstanceViewOperation(
             assignment_source = f"{component.assignment_name} = {value_source}"
         return SourceSpanReplacement(
             file_path=source_path,
-            start_line=statement.lineno,
-            end_line=statement.end_lineno or statement.lineno,
+            span=SourceLineSpan(statement.lineno, statement.end_lineno or statement.lineno),
             replacement_lines=SourceTargetEditor.source_lines(assignment_source),
             rationale=self.rationale_text(
                 f"Derive {component.assignment_name!r} from "
@@ -3833,8 +3832,7 @@ class ConvertManualRegistryToAutoregisterOperation(
             replacements.append(
                 SourceSpanReplacement(
                     file_path=source_path,
-                    start_line=statement.lineno,
-                    end_line=statement.end_lineno or statement.lineno,
+                    span=SourceLineSpan(statement.lineno, statement.end_lineno or statement.lineno),
                     replacement_lines=SourceTargetEditor.source_lines(
                         self.derived_registry_assignment_source(statement, component)
                     ),
@@ -3848,8 +3846,7 @@ class ConvertManualRegistryToAutoregisterOperation(
             *(
                 SourceSpanDeletion(
                     file_path=source_path,
-                    start_line=statement.lineno,
-                    end_line=statement.end_lineno or statement.lineno,
+                    span=SourceLineSpan(statement.lineno, statement.end_lineno or statement.lineno),
                     rationale=self.rationale_text("Delete manual registry write."),
                 )
                 for statement in component.registration_statements
@@ -4488,8 +4485,7 @@ class DispatchToPolymorphismOperation(SourceReprovedOperation):
         ).indentation_for_line(body_start)
         return SourceSpanReplacement(
             file_path=target_digest.file_path,
-            start_line=body_start,
-            end_line=body_end,
+            span=SourceLineSpan(body_start, body_end),
             replacement_lines=tuple(
                 f"{body_indent}{line}\n" for line in source.dispatch_call_lines()
             ),
@@ -5889,8 +5885,7 @@ class RepeatedBuilderSourceDerivation(ABC):
             edits.append(
                 SourceSpanReplacement(
                     file_path=participant.source_path,
-                    start_line=participant.target.line,
-                    end_line=participant.target.end_line,
+                    span=SourceLineSpan(participant.target.line, participant.target.end_line),
                     replacement_lines=SourceTargetEditor.source_lines(
                         geometry.target_source_with_replacements(
                             participant.target,
@@ -7067,8 +7062,7 @@ class RepeatedBuilderAuthorityDerivation(
         return (
             SourceSpanReplacement(
                 file_path=self.authority.file_path,
-                start_line=self.authority.target.line,
-                end_line=self.authority.target.end_line,
+                span=SourceLineSpan(self.authority.target.line, self.authority.target.end_line),
                 replacement_lines=SourceTargetEditor.source_lines(constructor_source),
                 rationale=(
                     "Insert the source-derived builder on its constructor authority."
@@ -8633,8 +8627,7 @@ class DeriveEnumSubsetOperation(SourceDerivedAuthorityProjectionOperation):
         edits.append(
             SourceSpanReplacement(
                 file_path=derivation.projection_path,
-                start_line=statement.lineno,
-                end_line=statement.end_lineno or statement.lineno,
+                span=SourceLineSpan(statement.lineno, statement.end_lineno or statement.lineno),
                 replacement_lines=SourceTargetEditor.source_lines(
                     derivation.assignment_source()
                 ),
@@ -11984,8 +11977,7 @@ class DeriveClassFamilyCollectionOperation(SourceDerivedAuthorityProjectionOpera
         edits.append(
             SourceSpanReplacement(
                 file_path=derivation.projection_path,
-                start_line=statement.lineno,
-                end_line=statement.end_lineno or statement.lineno,
+                span=SourceLineSpan(statement.lineno, statement.end_lineno or statement.lineno),
                 replacement_lines=SourceTargetEditor.source_lines(
                     derivation.replacement_source()
                 ),

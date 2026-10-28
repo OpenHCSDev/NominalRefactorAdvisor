@@ -11,6 +11,7 @@ from nominal_refactor_advisor.codemod_runtime import (
 )
 from nominal_refactor_advisor.codemod_source_edits import (
     SourceInsertion,
+    SourceLineSpan,
     SourceSpanDeletion,
     SourceSpanReplacement,
     SourceTextGeometry,
@@ -46,12 +47,11 @@ def test_editing_original_line_does_not_consume_a_separate_append(
         CodemodSourceSnapshot.from_source_mapping({path: source})
     )
     first = (
-        SourceSpanDeletion(file_path=path, start_line=1, end_line=1)
+        SourceSpanDeletion(file_path=path, span=SourceLineSpan(1, 1), )
         if delete
         else SourceSpanReplacement(
             file_path=path,
-            start_line=1,
-            end_line=1,
+            span=SourceLineSpan(1, 1),
             replacement_lines=("first = object\n",),
         )
     )

@@ -440,6 +440,16 @@ class PhysicalSourceEdit(SourceEditWindowABC, NominalSourceEdit, ABC):
 
     file_path: str
 
+    @property
+    @abstractmethod
+    def start_line(self) -> int:
+        """First original line the edit owns."""
+
+    @property
+    @abstractmethod
+    def end_line(self) -> int:
+        """Last original line the edit owns; an insertion owns none (start - 1)."""
+
     def resolved_peer_windows(
         self, peers: tuple[NominalSourceEdit, ...], context: CodemodSelectorContext
     ) -> tuple[SourceEditWindowABC, ...]:
@@ -554,8 +564,15 @@ class CoalescedSourceWindow(SourceEditWindowABC):
 class SourceSpanEdit(PhysicalSourceEdit, ABC):
     """Physical edit over one non-empty absolute line span."""
 
-    start_line: int
-    end_line: int
+    span: SourceLineSpan
+
+    @property
+    def start_line(self) -> int:
+        return self.span.start_line
+
+    @property
+    def end_line(self) -> int:
+        return self.span.end_line
 
     def original_span(self, geometry: SourceTextGeometry) -> SourceTextSpan:
         return SourceTextSpan(
@@ -583,16 +600,14 @@ class SourceSpanEdit(PhysicalSourceEdit, ABC):
         if not replacement_lines:
             return SourceSpanDeletion(
                 file_path=file_path,
-                start_line=start_line,
-                end_line=end_line,
+                span=SourceLineSpan(start_line, end_line),
                 rationale=rationale,
                 contributors=contributors,
                 origins=origins,
             )
         return SourceSpanReplacement(
             file_path=file_path,
-            start_line=start_line,
-            end_line=end_line,
+            span=SourceLineSpan(start_line, end_line),
             replacement_lines=replacement_lines,
             rationale=rationale,
             contributors=contributors,
@@ -712,7 +727,10 @@ class SourceSpanDeletion(SourceSpanEdit):
         merged = groups[0][0]
         for peer in groups[0][1:]:
             merged = replace(
-                merged, end_line=max(merged.end_line, peer.end_line)
+                merged,
+                span=SourceLineSpan(
+                    merged.start_line, max(merged.end_line, peer.end_line)
+                ),
             ).with_evidence_from((merged, peer))
         return merged
 
@@ -781,8 +799,7 @@ class SourceSpanDeletion(SourceSpanEdit):
         target_span = cls.target_span(context, target_digest)
         return cls(
             file_path=target_digest.file_path,
-            start_line=target_span.start_line,
-            end_line=target_span.end_line,
+            span=target_span,
             rationale=rationale or f"Delete target {target_digest.qualname!r}.",
         )
 
@@ -842,8 +859,7 @@ class SourceSpanDeletion(SourceSpanEdit):
         )
         return cls(
             file_path=file_path,
-            start_line=deletion_span.start_line,
-            end_line=deletion_span.end_line,
+            span=deletion_span,
             rationale=rationale,
         )
 
@@ -2220,8 +2236,7 @@ class SourceLineSpan:
     ) -> SourceSpanDeletion:
         return SourceSpanDeletion(
             file_path=file_path,
-            start_line=self.start_line,
-            end_line=self.end_line,
+            span=self,
             rationale=rationale,
         )
 

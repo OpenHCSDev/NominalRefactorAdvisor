@@ -13,6 +13,7 @@ from nominal_refactor_advisor.codemod_runtime import (
 from nominal_refactor_advisor.codemod_source_edits import (
     CoalescedSourceWindow,
     SourceInsertion,
+    SourceLineSpan,
     SourceSpanReplacement,
     SourceTargetEditor,
     SourceTextGeometry,
@@ -42,8 +43,7 @@ def test_actual_windows_keep_logical_anchor_order_and_renderer_output(source, re
     )
     middle = SourceSpanReplacement(
         file_path=PATH,
-        start_line=1,
-        end_line=1,
+        span=SourceLineSpan(1, 1),
         replacement_lines=("middle = object\n",),
     )
     after = SourceInsertion(
@@ -102,14 +102,14 @@ def test_equal_distinct_input_windows_are_not_recovered_by_equality():
     "changes, message",
     (
         ({"file_path": "foreign.py"}, "does not match"),
-        ({"start_line": 0}, "outside target"),
-        ({"end_line": 3}, "outside target"),
+        ({"span": SourceLineSpan(0, 1)}, "outside target"),
+        ({"span": SourceLineSpan(1, 3)}, "outside target"),
     ),
 )
 def test_actual_window_boundary_reuses_physical_target_admission(changes, message):
     _, editor = context("value = object\n")
     physical = SourceSpanReplacement(
-        file_path=PATH, start_line=1, end_line=1, replacement_lines=("value = type\n",)
+        file_path=PATH, span=SourceLineSpan(1, 1), replacement_lines=("value = type\n",)
     )
     window = CoalescedSourceWindow((replace(physical, **changes),))
     for consume in (editor.ordered_windows, editor.replacement_source):
@@ -120,7 +120,7 @@ def test_actual_window_boundary_reuses_physical_target_admission(changes, messag
 def test_overlapping_windows_are_rejected_before_rendering():
     _, editor = context("value = object\n")
     physical = SourceSpanReplacement(
-        file_path=PATH, start_line=1, end_line=1, replacement_lines=("value = type\n",)
+        file_path=PATH, span=SourceLineSpan(1, 1), replacement_lines=("value = type\n",)
     )
     windows = (CoalescedSourceWindow((physical,)), CoalescedSourceWindow((physical,)))
     for consume in (editor.ordered_windows, editor.replacement_source):
