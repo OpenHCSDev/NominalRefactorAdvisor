@@ -474,7 +474,7 @@ unresolved instead of producing an invented module name.
 ``ImportDeclarationABC`` in ``lexical_bindings`` owns an AST-free import request.
 ``ModuleImportDeclaration`` and ``FromImportDeclaration`` derive binding names,
 requested module names and canonical source from their aliases. The existing
-``ImportAliasRequirement`` and ``ImportFromModuleName`` declarations live at this
+``ImportAlias`` and ``ImportFromModuleName`` declarations live at this
 lower boundary; codemod exports retain the same objects. Higher-level import
 editing retains its formatting and insertion policies.
 
@@ -1205,7 +1205,7 @@ them, and are not published as compatibility aliases.
    :members: ModuleImportBinding, ModuleImportBindingIdentity, DirectModuleImportBindingIdentity, FromModuleImportBindingIdentity
 
 .. automodule:: nominal_refactor_advisor.codemod_imports
-   :members: ImportSourceGroup, TypeCheckingGuardImportInsertionPoint, ImportAliasRequirement, RequestedImportStatement, RequestedImportBlock, ImportFromModuleName, ImportFromSource, ModuleImportInsertionPoint, ImportNameRemoval, ImportBoundNameRemoval, ModuleImportMutation
+   :members: ImportSourceGroup, TypeCheckingGuardImportInsertionPoint, ImportAlias, RequestedImportStatement, RequestedImportBlock, ImportFromModuleName, ImportFromSource, ModuleImportInsertionPoint, ImportNameRemoval, ImportBoundNameRemoval, ModuleImportMutation
 
 .. automodule:: nominal_refactor_advisor.codemod_import_graph
    :members: SourceModuleImportGraph

@@ -63,7 +63,7 @@ from .declaration_dependencies import (
     MovableDeclaration,
 )
 from .lexical_bindings import (
-    ImportAliasRequirement as ImportAliasRequirement,
+    ImportAlias as ImportAlias,
     ImportBoundNameProjection,
     LEXICAL_SCOPE_BINDING_AUTHORITY,
 )
@@ -388,7 +388,7 @@ class ModuleSymbolTable:
                 request=RequestedImportStatement(
                     statement,
                     scope=scope,
-                ).with_aliases((ImportAliasRequirement.from_alias(alias),)),
+                ).with_aliases((ImportAlias.from_alias(alias),)),
             )
             for scope in ModuleImportScope
             for statement in scope.import_statements(self.module)

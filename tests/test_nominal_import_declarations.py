@@ -13,12 +13,12 @@ import sys
 import pytest
 
 from nominal_refactor_advisor.codemod_imports import (
-    ImportAliasRequirement as CodemodImportAliasRequirement,
+    ImportAlias as CodemodImportAlias,
     ImportFromModuleName as CodemodImportFromModuleName,
 )
 from nominal_refactor_advisor.lexical_bindings import (
     FromImportDeclaration,
-    ImportAliasRequirement,
+    ImportAlias,
     ImportBoundNameProjection,
     ImportDeclarationABC,
     ImportFromModuleName,
@@ -279,7 +279,7 @@ def test_compact_import_pickle_retains_shared_evidence_and_no_ast() -> None:
 
 
 def test_codemod_import_syntax_reexports_the_same_lower_declarations() -> None:
-    assert CodemodImportAliasRequirement is ImportAliasRequirement
+    assert CodemodImportAlias is ImportAlias
     assert CodemodImportFromModuleName is ImportFromModuleName
 
 

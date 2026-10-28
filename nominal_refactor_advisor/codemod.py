@@ -637,7 +637,7 @@ from .json_reports import (
     json_report_property,
 )
 from .lexical_bindings import (
-    ImportAliasRequirement as ImportAliasRequirement,
+    ImportAlias as ImportAlias,
     ImportBoundNameProjection,
     ImportFromModuleName as ImportFromModuleName,
     LEXICAL_SCOPE_BINDING_AUTHORITY,
