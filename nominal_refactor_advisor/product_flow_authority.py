@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import (
     ClassVar,
     Self,
+    TypeVar,
     cast,
 )
 
@@ -323,10 +324,50 @@ class AlternativeCompactFunctionTargets(CompactCallTargetResolution):
         )
 
 
+_MemberFoldT = TypeVar("_MemberFoldT")
+
+
+class _CompactClassMemberResolution(ABC):
+    """A member name looked up through a class's MRO: one declaration, or why not."""
+
+    @abstractmethod
+    def fold(
+        self,
+        member: Callable[
+            [CompactIndexedClass, CompactClassMemberDeclaration], _MemberFoldT
+        ],
+        violation: Callable[[CompactFunctionTargetResolutionViolation], _MemberFoldT],
+    ) -> _MemberFoldT:
+        raise NotImplementedError
+
+
 @dataclass(frozen=True)
-class _CompactClassMemberResolution:
-    candidates: tuple[tuple[CompactIndexedClass, CompactClassMemberDeclaration], ...]
-    violation: CompactFunctionTargetResolutionViolation | None
+class _ResolvedClassMember(_CompactClassMemberResolution):
+    declaring_class: CompactIndexedClass
+    declaration: CompactClassMemberDeclaration
+
+    def fold(
+        self,
+        member: Callable[
+            [CompactIndexedClass, CompactClassMemberDeclaration], _MemberFoldT
+        ],
+        violation: Callable[[CompactFunctionTargetResolutionViolation], _MemberFoldT],
+    ) -> _MemberFoldT:
+        return member(self.declaring_class, self.declaration)
+
+
+@dataclass(frozen=True)
+class _ClassMemberViolation(_CompactClassMemberResolution):
+    violation: CompactFunctionTargetResolutionViolation
+
+    def fold(
+        self,
+        member: Callable[
+            [CompactIndexedClass, CompactClassMemberDeclaration], _MemberFoldT
+        ],
+        violation: Callable[[CompactFunctionTargetResolutionViolation], _MemberFoldT],
+    ) -> _MemberFoldT:
+        return violation(self.violation)
 
 
 class CompactFunctionCallResolution(ABC):
@@ -1522,10 +1563,15 @@ class ProductFlowRepository(
         )
         if owner is None:
             return None
-        resolution = self._member_declarations_in_mro(owner, receiver.attribute_path[0])
-        if resolution.violation is not None or not resolution.candidates:
-            return None
-        declaring_class, member = resolution.candidates[0]
+        return self._member_declarations_in_mro(
+            owner, receiver.attribute_path[0]
+        ).fold(self._member_annotation_classes, lambda _violation: None)
+
+    def _member_annotation_classes(
+        self,
+        declaring_class: CompactIndexedClass,
+        member: CompactClassMemberDeclaration,
+    ) -> frozenset[str] | None:
         parts = member.annotation_reference_parts
         if parts is None:
             return None
@@ -1770,17 +1816,25 @@ class ProductFlowRepository(
                 candidate_symbols,
                 CompactFunctionTargetResolutionViolation.UNSUPPORTED_RECEIVER,
             )
-        member_resolution = self._member_declarations_in_mro(
+        return self._member_declarations_in_mro(
             owner_symbol,
             target.member_name,
+        ).fold(
+            lambda declaring_class, member_declaration: self._member_method_target(
+                target, candidate_symbols, declaring_class, member_declaration
+            ),
+            lambda violation: self.attribute_target(
+                target.method_name, candidate_symbols, violation
+            ),
         )
-        if member_resolution.violation is not None:
-            return self.attribute_target(
-                target.method_name,
-                candidate_symbols,
-                member_resolution.violation,
-            )
-        declaring_class, member_declaration = member_resolution.candidates[0]
+
+    def _member_method_target(
+        self,
+        target: CurrentClassMemberMethodReference,
+        candidate_symbols: tuple[str, ...],
+        declaring_class: CompactIndexedClass,
+        member_declaration: CompactClassMemberDeclaration,
+    ) -> CompactCallTargetResolution:
         reference_parts = member_declaration.annotation_reference_parts
         if reference_parts is None:
             return self.attribute_target(
@@ -1810,8 +1864,8 @@ class ProductFlowRepository(
     ) -> _CompactClassMemberResolution:
         owner = self.class_index.class_for(owner_symbol)
         if owner is None:
-            return _CompactClassMemberResolution(
-                (), CompactFunctionTargetResolutionViolation.MISSING_DECLARATION
+            return _ClassMemberViolation(
+                CompactFunctionTargetResolutionViolation.MISSING_DECLARATION
             )
         # A direct declaration already owns the member, independent of inherited order.
         owners = (owner,)
@@ -1820,8 +1874,7 @@ class ProductFlowRepository(
         ):
             mro = self.class_index.mro_authority.resolve(owner_symbol).mro_type
             if mro is None:
-                return _CompactClassMemberResolution(
-                    (),
+                return _ClassMemberViolation(
                     CompactFunctionTargetResolutionViolation.INCOMPLETE_RECEIVER_FAMILY,
                 )
             owners = mro.declarations
@@ -1831,21 +1884,14 @@ class ProductFlowRepository(
                 for declaration in current.direct_member_declarations
                 if declaration.name == member_name
             )
+            if len(declarations) == 1:
+                return _ResolvedClassMember(current, declarations[0])
             if declarations:
-                candidates = tuple(
-                    (current, declaration) for declaration in declarations
+                return _ClassMemberViolation(
+                    CompactFunctionTargetResolutionViolation.AMBIGUOUS_DECLARATION
                 )
-                return _CompactClassMemberResolution(
-                    candidates,
-                    (
-                        None
-                        if len(candidates) == 1
-                        else CompactFunctionTargetResolutionViolation.AMBIGUOUS_DECLARATION
-                    ),
-                )
-        return _CompactClassMemberResolution(
-            (),
-            CompactFunctionTargetResolutionViolation.MISSING_DECLARATION,
+        return _ClassMemberViolation(
+            CompactFunctionTargetResolutionViolation.MISSING_DECLARATION
         )
 
     def _lexical_binding_exists(
