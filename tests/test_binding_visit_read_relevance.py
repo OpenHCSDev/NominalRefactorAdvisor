@@ -31,7 +31,6 @@ def execution(source):
         ParsedModule(
             Path("relevance.py"),
             "relevance",
-            False,
             ast.parse(source),
             source,
         )

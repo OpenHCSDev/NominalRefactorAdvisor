@@ -725,14 +725,12 @@ def test_semantic_module_signature_projects_its_content_independent_family() -> 
     signature = SemanticDescentModuleSignature(
         path="package/module.py",
         parsed_import_name="package.module",
-        is_package_init=False,
         source_hash="content-hash",
     )
 
     assert signature.family_signature == SemanticDescentModuleFamilySignature(
         path="package/module.py",
         parsed_import_name="package.module",
-        is_package_init=False,
     )
 
 

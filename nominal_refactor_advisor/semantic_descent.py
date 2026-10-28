@@ -534,7 +534,6 @@ class SemanticDescentModuleFamilySignature:
 
     path: str
     parsed_import_name: str
-    is_package_init: bool
 
 
 @dataclass(frozen=True)
@@ -550,7 +549,6 @@ class SemanticDescentModuleSignature(SemanticDescentModuleFamilySignature):
         return SemanticDescentModuleFamilySignature(
             path=self.path,
             parsed_import_name=self.parsed_import_name,
-            is_package_init=self.is_package_init,
         )
 
     @classmethod
@@ -562,7 +560,6 @@ class SemanticDescentModuleSignature(SemanticDescentModuleFamilySignature):
         return cls(
             path=checkout_relative_path(module.path, roots),
             parsed_import_name=module.module_name,
-            is_package_init=module.is_package_init,
             source_hash=_text_hash(module.source),
         )
 
@@ -575,7 +572,6 @@ class SemanticDescentModuleSignature(SemanticDescentModuleFamilySignature):
         return cls(
             path=checkout_relative_path(identity.path, roots),
             parsed_import_name=identity.import_name,
-            is_package_init=identity.is_package_init,
             source_hash=_source_file_hash(identity.path),
         )
 

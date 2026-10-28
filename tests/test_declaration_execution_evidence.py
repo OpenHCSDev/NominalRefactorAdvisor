@@ -28,7 +28,6 @@ def _module(source: str) -> ParsedModule:
     return ParsedModule(
         path=Path("execution_declaration.py"),
         module_name="execution_declaration",
-        is_package_init=False,
         module=ast.parse(source),
         source=source,
     )

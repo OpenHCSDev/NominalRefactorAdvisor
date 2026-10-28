@@ -23,7 +23,7 @@ from nominal_refactor_advisor.product_flow import (
 
 def _module(source: str) -> ParsedModule:
     return ParsedModule(
-        Path("pkg/dict_order.py"), "pkg.dict_order", False, ast.parse(source), source
+        Path("pkg/dict_order.py"), "pkg.dict_order", ast.parse(source), source
     )
 
 

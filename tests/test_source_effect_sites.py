@@ -37,7 +37,7 @@ def fixture(body):
         "class Owner:\n" + "\n".join("    " + line for line in body.splitlines()) + "\n"
     )
     module = ParsedModule(
-        Path("effect_sites.py"), "effect_sites", False, ast.parse(text), text
+        Path("effect_sites.py"), "effect_sites", ast.parse(text), text
     )
     owner = module.module.body[0]
     return module, owner, ClassNamespaceExecutionEvidence.from_class(owner)
@@ -75,7 +75,7 @@ def test_definition_projection_reuses_original_sites_and_annotation_policy(futur
     source = (
         "from __future__ import annotations\n" if future else ""
     ) + "def chosen(value: annotation() = default()): pass\n"
-    module = ParsedModule(Path("phase.py"), "phase", False, ast.parse(source), source)
+    module = ParsedModule(Path("phase.py"), "phase", ast.parse(source), source)
     evidence = SourceExecutionEffectEvidence.from_source(module.module)
     definition = module.module.body[-1]
     annotation = definition.args.args[0].annotation

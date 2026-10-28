@@ -24,7 +24,6 @@ def module(name, source, path=None):
     return ParsedModule(
         Path(path or name.replace(".", "/") + ".py"),
         name,
-        False,
         ast.parse(source),
         source,
     )

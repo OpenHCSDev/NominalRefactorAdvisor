@@ -39,7 +39,6 @@ def _module(header, call, *, parameters="", local_prefix="", local_suffix=""):
     return ParsedModule(
         path=Path("regex_sample.py"),
         module_name="regex_sample",
-        is_package_init=False,
         module=ast.parse(source),
         source=source,
     )

@@ -123,7 +123,6 @@ class SourceModuleMappingKeyAuthority(MappingKeyResolverABC[ast.Module]):
         return ParsedModule(
             Path("__nra_registry_key__.py"),
             "__nra_registry_key__",
-            False,
             self.module,
             ast.unparse(self.module),
         )

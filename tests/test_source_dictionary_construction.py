@@ -28,7 +28,6 @@ def _execution(expression, *, prefix=""):
     module = ParsedModule(
         Path("/repo/dictionary_construction.py"),
         "dictionary_construction",
-        False,
         ast.parse(source),
         source,
     )

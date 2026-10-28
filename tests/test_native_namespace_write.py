@@ -68,7 +68,7 @@ def fixture(entries, source="target.member = replacement\n"):
         globals_namespace,
         initial.namespace_for_storage(vars(builtins)),
     )
-    parsed = ParsedModule(Path("write.py"), "write", False, ast.parse(source), source)
+    parsed = ParsedModule(Path("write.py"), "write", ast.parse(source), source)
     projected = source_product_flow_projection(parsed)
     context = projected.compact.flow_contexts[0]
     kernel = CapturedReferenceKernel(

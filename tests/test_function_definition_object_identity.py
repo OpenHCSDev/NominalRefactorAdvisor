@@ -24,7 +24,6 @@ def _repository(source: str) -> SourceProductFlowRepository:
     module = ParsedModule(
         path=Path("function_object_identity.py"),
         module_name="function_object_identity",
-        is_package_init=False,
         module=ast.parse(source),
         source=source,
     )

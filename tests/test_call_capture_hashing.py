@@ -25,7 +25,6 @@ def _flow(depth: int, argument: str = "first"):
     module = ParsedModule(
         path=Path("call_graph.py"),
         module_name="call_graph",
-        is_package_init=False,
         module=ast.parse(source),
         source=source,
     )

@@ -24,7 +24,6 @@ def _repository(source: str) -> CompactProductFlowRepository:
     module = ParsedModule(
         path=path,
         module_name="pkg.calls",
-        is_package_init=False,
         module=ast.parse(source, filename=str(path)),
         source=source,
     )
@@ -143,7 +142,6 @@ def test_a_closed_world_project_closes_public_functions_and_records_its_premise(
     module = ParsedModule(
         path=package / "calls.py",
         module_name="pkg.calls",
-        is_package_init=False,
         module=ast.parse(source),
         source=source,
     )

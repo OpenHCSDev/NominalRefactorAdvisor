@@ -21,7 +21,6 @@ def _module(source: str) -> ParsedModule:
     return ParsedModule(
         path=Path("mutation_probe.py"),
         module_name="mutation_probe",
-        is_package_init=False,
         module=ast.parse(source),
         source=source,
     )

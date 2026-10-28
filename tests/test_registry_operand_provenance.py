@@ -17,7 +17,7 @@ from nominal_refactor_advisor.registry_identity import AutoRegisterClassAuthorit
 
 def parsed(source):
     return ParsedModule(
-        Path("/repo/operands.py"), "operands", False, ast.parse(source), source
+        Path("/repo/operands.py"), "operands", ast.parse(source), source
     )
 
 

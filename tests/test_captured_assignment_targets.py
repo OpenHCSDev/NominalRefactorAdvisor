@@ -37,7 +37,6 @@ def test_item_receiver_is_captured_before_index_rebinds_its_name(
     module = ParsedModule(
         path=Path("captured_targets.py"),
         module_name="captured_targets",
-        is_package_init=False,
         module=ast.parse(source),
         source=source,
     )
@@ -84,7 +83,6 @@ def test_receiver_writes_cannot_prove_an_attribute_result_unchanged(write: str) 
     module = ParsedModule(
         path=Path("captured_targets.py"),
         module_name="captured_targets",
-        is_package_init=False,
         module=ast.parse(source),
         source=source,
     )
@@ -107,7 +105,6 @@ def test_receiver_write_does_not_rebind_a_local_result() -> None:
     module = ParsedModule(
         path=Path("captured_targets.py"),
         module_name="captured_targets",
-        is_package_init=False,
         module=ast.parse(source),
         source=source,
     )

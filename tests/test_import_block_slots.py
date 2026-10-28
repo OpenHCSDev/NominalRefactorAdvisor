@@ -19,7 +19,6 @@ def ensured(initial: str, requested: str) -> str:
     module = ParsedModule(
         path=Path("package/slots.py"),
         module_name="package.slots",
-        is_package_init=False,
         module=ast.parse(initial),
         source=initial,
     )

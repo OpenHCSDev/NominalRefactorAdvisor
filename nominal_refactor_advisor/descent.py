@@ -20,7 +20,6 @@ from collections import defaultdict
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass, field
 from functools import cached_property
-from pathlib import Path
 
 from .ast_field_decoders import declared_annotations
 from .ast_projection import StatementValue
@@ -587,9 +586,7 @@ class Rewrite:
             for statement in module.module.body
         ):
             return ImportFromModuleName(source)
-        package = module.module_name.split(".")
-        if Path(module.file_path).name != "__init__.py":
-            package = package[:-1]
+        package = module.module_path_identity.package_parts
         target = source.split(".")
         if not package or package[0] != target[0]:
             return ImportFromModuleName(source)

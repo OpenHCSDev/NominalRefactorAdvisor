@@ -35,7 +35,7 @@ RATIONALE = "The selected native identity and behavior hold in supported executi
 
 def _module(source, *, path="/repo/native_invariant_probe.py"):
     return ParsedModule(
-        Path(path), "native_invariant_probe", False, ast.parse(source), source
+        Path(path), "native_invariant_probe", ast.parse(source), source
     )
 
 

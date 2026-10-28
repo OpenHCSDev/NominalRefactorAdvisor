@@ -28,7 +28,6 @@ def execution(source: str) -> SourceModuleExecution:
         ParsedModule(
             Path("assigned_values.py"),
             "assigned_values",
-            False,
             ast.parse(source),
             source,
         )

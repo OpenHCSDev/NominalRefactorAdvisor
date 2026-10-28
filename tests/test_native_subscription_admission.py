@@ -107,7 +107,7 @@ class ReferenceFixtureEnvironment(NativeReferenceEnvironment):
 def _reference(value=list, expression="chosen"):
     source = f"result = {expression}\n"
     tree = ast.parse(source)
-    module = ParsedModule(Path("subscription.py"), "subscription", False, tree, source)
+    module = ParsedModule(Path("subscription.py"), "subscription", tree, source)
     observed = source_product_flow_projection(module)
     globals_storage = {"chosen": value}
     initial = InitialNativeIsland((builtins,), (globals_storage,))
@@ -128,7 +128,7 @@ def _subscription(
     """A real source invocation under explicit complete initial binding evidence."""
     text = "result = chosen[argument]\n"
     module = ParsedModule(
-        Path("subscription.py"), "subscription", False, ast.parse(text), text
+        Path("subscription.py"), "subscription", ast.parse(text), text
     )
     source = source_product_flow_projection(module)
     initial = InitialNativeIsland((builtins,))

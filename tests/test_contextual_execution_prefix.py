@@ -115,7 +115,6 @@ def fixture(source, globals_storage=None):
     module = ParsedModule(
         Path("contextual_fixture.py"),
         "contextual_fixture",
-        False,
         ast.parse(source),
         source,
     )

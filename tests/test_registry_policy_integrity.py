@@ -98,7 +98,6 @@ def _simulate(
     parsed = ParsedModule(
         Path("/repo/registry_policy_fixture.py"),
         "registry_policy_fixture",
-        False,
         ast.parse(source),
         source,
     )

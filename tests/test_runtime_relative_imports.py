@@ -23,7 +23,6 @@ def environment(source):
         ParsedModule(
             Path("relative_probe.py"),
             "typing.synthetic",
-            False,
             ast.parse(source),
             source,
         )

@@ -54,7 +54,6 @@ def _module(source):
     return ParsedModule(
         path=Path("dispatch.py"),
         module_name="dispatch",
-        is_package_init=False,
         module=ast.parse(source),
         source=source,
     )

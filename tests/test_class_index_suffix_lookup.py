@@ -27,7 +27,6 @@ def _resolution(
         parsed_module=ParsedModule(
             path=Path("pkg/consumer.py"),
             module_name="consumer",
-            is_package_init=False,
             module=ast.parse(""),
             source="",
         ),
@@ -66,7 +65,6 @@ def test_method_promotion_decorator_safety_uses_declaration_time_bindings(
     module = ParsedModule(
         path=Path("pkg/decorators.py"),
         module_name="pkg.decorators",
-        is_package_init=False,
         module=ast.parse(source),
         source=source,
     )

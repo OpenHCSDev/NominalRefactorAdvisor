@@ -25,7 +25,6 @@ def _environment(name: str, source: str) -> DeclarationModuleBindingEnvironment:
         ParsedModule(
             path=Path(f"pkg/{name}.py"),
             module_name=f"pkg.{name}",
-            is_package_init=False,
             module=module,
             source=source,
         ),

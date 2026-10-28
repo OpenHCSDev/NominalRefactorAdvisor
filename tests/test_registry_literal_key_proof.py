@@ -38,7 +38,6 @@ def parsed(source):
     return ParsedModule(
         Path("/repo/literal_registry.py"),
         "literal_registry",
-        False,
         ast.parse(source),
         source,
     )

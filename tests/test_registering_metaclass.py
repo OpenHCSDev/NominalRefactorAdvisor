@@ -62,7 +62,6 @@ def _module() -> ParsedModule:
     return ParsedModule(
         path=path,
         module_name="pkg.registry_family",
-        is_package_init=False,
         module=ast.parse(SOURCE, filename=str(path)),
         source=SOURCE,
     )
@@ -97,7 +96,6 @@ def test_a_star_import_that_does_not_export_the_name_keeps_its_binding() -> None
         return ParsedModule(
             path=path,
             module_name=name,
-            is_package_init=False,
             module=ast.parse(source, filename=str(path)),
             source=source,
         )

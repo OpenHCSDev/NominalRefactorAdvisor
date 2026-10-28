@@ -5689,7 +5689,6 @@ def test_codemod_snapshot_reparsing_preserves_indexed_module_identity() -> None:
     module = ParsedModule(
         path=Path("/workspace/source.py"),
         module_name="declared.package.module",
-        is_package_init=False,
         module=ast.parse(source),
         source=source,
     )
@@ -5708,7 +5707,6 @@ def test_codemod_snapshot_reparsing_preserves_indexed_module_identity() -> None:
             ParsedModule(
                 path=module.path,
                 module_name="other.package.module",
-                is_package_init=False,
                 module=ast.parse(source),
                 source=source,
             ),

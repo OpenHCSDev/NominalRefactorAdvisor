@@ -112,7 +112,6 @@ def _fixture(source, globals_storage=None, builtin_storage=None, locals_storage=
     module = ParsedModule(
         path=Path("native_frames.py"),
         module_name="native_frames",
-        is_package_init=False,
         module=ast.parse(source),
         source=source,
     )
@@ -399,7 +398,6 @@ def test_nonlocal_destinations_remain_open_and_other_contexts_are_not_admitted()
     module = ParsedModule(
         path=Path("closure.py"),
         module_name="closure",
-        is_package_init=False,
         module=ast.parse(source),
         source=source,
     )
@@ -468,7 +466,6 @@ def test_slot_interval_preserves_loop_ambiguity_and_dominating_refresh(repeat):
     module = ParsedModule(
         path=Path("slot_interval.py"),
         module_name="slot_interval",
-        is_package_init=False,
         module=ast.parse(source),
         source=source,
     )

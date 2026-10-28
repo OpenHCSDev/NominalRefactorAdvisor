@@ -19,7 +19,6 @@ def execution(source):
         ParsedModule(
             Path("storage_dispatch.py"),
             "storage_dispatch",
-            False,
             ast.parse(source),
             source,
         )

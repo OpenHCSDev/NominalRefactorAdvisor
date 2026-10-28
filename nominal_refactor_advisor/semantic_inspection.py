@@ -37,6 +37,7 @@ from .source_index import (
     StableIdPart,
     build_source_index,
 )
+from .source_identity import source_path_is_package_init
 from .json_reports import (
     DataclassJsonReport,
     json_report_property,
@@ -206,11 +207,14 @@ class DataclassSummary(SemanticInspectionRecord, ClassTargetSummaryReference):
 @dataclass(frozen=True, kw_only=True)
 class ModuleSummary(InspectedScopeReferences, SemanticInspectionRecord):
     file_id: str
-    is_package_init: bool
     ast_target_ids: tuple[str, ...]
     class_ids: tuple[str, ...]
     function_ids: tuple[str, ...]
     import_ids: tuple[str, ...]
+
+    @json_report_property()
+    def is_package_init(self) -> bool:
+        return source_path_is_package_init(self.file_path)
 
 
 @dataclass(frozen=True)
@@ -413,7 +417,6 @@ class _SemanticInspectionProjection:
             file_id=file_digest.file_id,
             file_path=file_path,
             module_name=module.module_name,
-            is_package_init=module.is_package_init,
             ast_target_ids=tuple(target.target_id for target in targets),
             class_ids=class_ids,
             function_ids=function_ids,

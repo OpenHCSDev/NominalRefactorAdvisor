@@ -1409,9 +1409,7 @@ class IdentityPositions:
 
     @staticmethod
     def package_of(parsed_module: ParsedModule) -> str:
-        if parsed_module.is_package_init:
-            return parsed_module.module_name
-        return parsed_module.module_name.rpartition(".")[0]
+        return parsed_module.module_path_identity.package_name
 
     @staticmethod
     def site(

@@ -154,7 +154,7 @@ def test_existing_structured_preflight_is_not_rewrapped():
 def test_actual_unadmitted_import_survives_source_reproof_boundary(capsys):
     source = "import deliberately_unadmitted_dependency\nselected = property\n"
     module = ParsedModule(
-        Path("subject.py"), "subject", False, ast.parse(source), source
+        Path("subject.py"), "subject", ast.parse(source), source
     )
     execution = SourceModuleExecution.from_module(module)
     read = module.module.body[-1].value

@@ -25,7 +25,6 @@ def _projections(source):
     module = ParsedModule(
         Path("/repo/member_provenance.py"),
         "member_provenance",
-        False,
         ast.parse(source),
         source,
     )

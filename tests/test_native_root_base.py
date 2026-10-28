@@ -13,7 +13,7 @@ pytestmark = pytest.mark.native_proof
 
 def _require_last_class(source):
     module = ParsedModule(
-        Path("native_root.py"), "native_root", False, ast.parse(source), source
+        Path("native_root.py"), "native_root", ast.parse(source), source
     )
     execution = SourceModuleExecution.from_module(module)
     node = module.module.body[-1]

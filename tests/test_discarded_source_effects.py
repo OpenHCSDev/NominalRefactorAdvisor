@@ -21,7 +21,6 @@ def _execution(source):
         ParsedModule(
             Path("discard_effects.py"),
             "discard_effects",
-            False,
             ast.parse(source),
             source,
         )

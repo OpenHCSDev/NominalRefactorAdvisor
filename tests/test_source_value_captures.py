@@ -17,7 +17,7 @@ from nominal_refactor_advisor.value_graph import DataclassGraphNode, DataclassGr
 
 def projection(source):
     return source_product_flow_projection(
-        ParsedModule(Path("values.py"), "values", False, ast.parse(source), source)
+        ParsedModule(Path("values.py"), "values", ast.parse(source), source)
     )
 
 

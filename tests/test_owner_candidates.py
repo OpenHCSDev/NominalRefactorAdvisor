@@ -28,7 +28,6 @@ def _module(module_name: str, source: str) -> ParsedModule:
     return ParsedModule(
         path=path,
         module_name=module_name,
-        is_package_init=False,
         module=ast.parse(source, filename=str(path)),
         source=source,
     )

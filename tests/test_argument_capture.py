@@ -20,7 +20,6 @@ def repository_for(source: str) -> SourceProductFlowRepository:
             ParsedModule(
                 path=Path("arguments.py"),
                 module_name="arguments",
-                is_package_init=False,
                 module=ast.parse(source),
                 source=source,
             ),

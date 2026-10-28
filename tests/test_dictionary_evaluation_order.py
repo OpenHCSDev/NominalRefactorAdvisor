@@ -27,7 +27,7 @@ from nominal_refactor_advisor.source_execution import SourceModuleExecution
 
 def module(source):
     return ParsedModule(
-        Path("/repo/dict_order.py"), "dict_order", False, ast.parse(source), source
+        Path("/repo/dict_order.py"), "dict_order", ast.parse(source), source
     )
 
 

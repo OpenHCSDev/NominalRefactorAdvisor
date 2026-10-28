@@ -36,7 +36,7 @@ def test_invalid_native_docstring_encoding_cannot_be_admitted(source):
     with pytest.raises(ValueError):
         environment = SourceModuleExecution.from_module(
             ParsedModule(
-                Path("metadata.py"), "metadata", False, ast.parse(source), source
+                Path("metadata.py"), "metadata", ast.parse(source), source
             )
         )
         environment.require_class_creation(environment.module.module.body[-1])
@@ -63,7 +63,7 @@ def test_valid_class_metadata_and_unrelated_strings_stay_supported(member):
     )
     assert native.returncode == 0, native.stderr
     environment = SourceModuleExecution.from_module(
-        ParsedModule(Path("metadata.py"), "metadata", False, ast.parse(source), source)
+        ParsedModule(Path("metadata.py"), "metadata", ast.parse(source), source)
     )
     environment.require_class_creation(environment.module.module.body[0])
 

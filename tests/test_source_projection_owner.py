@@ -12,7 +12,7 @@ from nominal_refactor_advisor.product_flow import source_product_flow_projection
 
 def module(source="chosen = property\n"):
     return ParsedModule(
-        Path("source_owner.py"), "source_owner", False, ast.parse(source), source
+        Path("source_owner.py"), "source_owner", ast.parse(source), source
     )
 
 

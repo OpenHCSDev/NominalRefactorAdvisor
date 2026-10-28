@@ -26,7 +26,7 @@ def test_class_dictionary_cell_follows_actual_runtime_construction(value):
         [sys.executable, "-c", source], capture_output=True, text=True, check=False
     )
     environment = SourceModuleExecution.from_module(
-        ParsedModule(Path("cell.py"), "cell", False, ast.parse(source), source)
+        ParsedModule(Path("cell.py"), "cell", ast.parse(source), source)
     )
     owner = environment.module.module.body[0]
     if native.returncode:
@@ -45,7 +45,7 @@ def test_global_storage_does_not_acquire_a_class_dictionary_cell_role():
     )
     assert native.returncode == 0, native.stderr
     environment = SourceModuleExecution.from_module(
-        ParsedModule(Path("cell.py"), "cell", False, ast.parse(source), source)
+        ParsedModule(Path("cell.py"), "cell", ast.parse(source), source)
     )
     environment.require_class_creation(environment.module.module.body[0])
 
@@ -59,7 +59,7 @@ def test_original_compiler_cell_does_not_block_class_creation(annotation):
     )
     assert native.returncode == 0, native.stderr
     environment = SourceModuleExecution.from_module(
-        ParsedModule(Path("cell.py"), "cell", False, ast.parse(source), source)
+        ParsedModule(Path("cell.py"), "cell", ast.parse(source), source)
     )
     environment.require_class_creation(environment.module.module.body[0])
 
@@ -70,7 +70,7 @@ def test_original_compiler_cell_does_not_block_class_creation(annotation):
 def test_class_cell_requires_original_production_and_destination():
     source = "class Owner:\n    field: int\nclass Other: pass\n"
     environment = SourceModuleExecution.from_module(
-        ParsedModule(Path("cell.py"), "cell", False, ast.parse(source), source)
+        ParsedModule(Path("cell.py"), "cell", ast.parse(source), source)
     )
     owner, other = map(environment.class_entry, environment.module.module.body)
     field = CPythonClassConstructionField.CLASS_DICTIONARY_CELL

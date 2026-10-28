@@ -273,7 +273,6 @@ def test_dsl_dependency_edit_invalidates_reused_local_native_execution(
     provider = ParsedModule(
         Path(provider_path),
         registry_identity.__name__,
-        False,
         ast.parse(provider_source),
         provider_source,
     )

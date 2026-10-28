@@ -109,7 +109,6 @@ def _parsed(source: str) -> ParsedModule:
     return ParsedModule(
         Path("/repo/registry_key_equivalence.py"),
         "registry_key_equivalence",
-        False,
         ast.parse(source),
         source,
     )

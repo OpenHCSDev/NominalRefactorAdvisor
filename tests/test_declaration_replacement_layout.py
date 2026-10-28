@@ -19,7 +19,6 @@ def replace_method(source: str, payload: str, qualname: str = "Owner.run") -> st
     module = ParsedModule(
         path=Path("layout.py"),
         module_name="layout",
-        is_package_init=False,
         module=ast.parse(source),
         source=source,
     )

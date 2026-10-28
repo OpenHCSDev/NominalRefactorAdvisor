@@ -19,7 +19,6 @@ def _execution(count: int = 6) -> SourceModuleExecution:
         ParsedModule(
             Path("/repo/interval_reuse.py"),
             "interval_reuse",
-            False,
             ast.parse(source),
             source,
         )
@@ -58,7 +57,6 @@ def test_failed_interval_is_not_recorded_as_closed():
         ParsedModule(
             Path("/repo/open_interval.py"),
             "open_interval",
-            False,
             ast.parse(source),
             source,
         )
@@ -146,7 +144,6 @@ def test_forward_prerequisites_never_admit_a_future_class():
         ParsedModule(
             Path("/repo/future_class.py"),
             "future_class",
-            False,
             ast.parse(source),
             source,
         )
@@ -165,7 +162,6 @@ def test_forward_prerequisites_keep_prior_unknown_effects_open():
         ParsedModule(
             Path("/repo/prior_class.py"),
             "prior_class",
-            False,
             ast.parse(source),
             source,
         )

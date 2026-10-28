@@ -50,7 +50,7 @@ class InitialReadEffects(CapturedReferenceEffectsABC):
 def fixture(expression="property", *, bindings=None, modules=()):
     text = f"result = {expression}\n"
     module = ParsedModule(
-        Path("reference.py"), "reference", False, ast.parse(text), text
+        Path("reference.py"), "reference", ast.parse(text), text
     )
     projection = source_product_flow_projection(module)
     island = InitialNativeIsland((builtins, *modules))

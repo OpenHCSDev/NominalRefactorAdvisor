@@ -23,7 +23,6 @@ def execution(source):
         ParsedModule(
             Path("function_result.py"),
             "function_result",
-            False,
             ast.parse(source),
             source,
         )

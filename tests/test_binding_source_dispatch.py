@@ -67,7 +67,6 @@ def test_selected_source_projects_actual_evidence(name: str) -> None:
     module = ParsedModule(
         path=Path("binding_dispatch.py"),
         module_name="binding_dispatch",
-        is_package_init=False,
         module=ast.parse(source),
         source=source,
     )

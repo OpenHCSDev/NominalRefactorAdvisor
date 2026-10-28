@@ -25,7 +25,7 @@ def test_changed_hook_before_entry_is_not_its_own_protocol_authority(hook):
             return original(*args, **kwargs)
         replacement.__name__ = original.__name__
         source = "import builtins\\n" if hook == "__import__" else "class Owner: pass\\n"
-        module = ParsedModule(Path("hook.py"), "hook", False, ast.parse(source), source)
+        module = ParsedModule(Path("hook.py"), "hook", ast.parse(source), source)
         def require_protocol():
             execution = SourceModuleExecution.from_module(module)
             if hook == "__import__":

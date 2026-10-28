@@ -23,7 +23,6 @@ def test_source_identity_joins_native_windows_paths_to_source_evidence() -> None
     module = ParsedModule(
         path=Path(native_path),
         module_name="pkg.mod",
-        is_package_init=False,
         module=ast.parse(source, filename=native_path),
         source=source,
     )
@@ -119,13 +118,11 @@ def test_projected_module_identity_uses_closest_declared_import_root(
     outer_module = PythonModulePathIdentity(
         path=tmp_path / "outer.py",
         import_name="outer",
-        is_package_init=False,
     )
     nested_root = tmp_path / "nested"
     nested_module = PythonModulePathIdentity(
         path=nested_root / "existing.py",
         import_name="existing",
-        is_package_init=False,
     )
     identities = PythonModulePathAuthority((outer_module, nested_module))
 
@@ -162,7 +159,6 @@ def test_module_identity_resolves_from_imports(
     identity = PythonModulePathIdentity(
         path=tmp_path / ("__init__.py" if is_package_init else "consumer.py"),
         import_name=import_name,
-        is_package_init=is_package_init,
     )
 
     assert (
@@ -188,7 +184,7 @@ def test_unresolved_relative_boundary_matches_native_execution(
     with pytest.raises(ImportError):
         exec(statement, {"__name__": module_name, "__package__": package})
     identity = PythonModulePathIdentity(
-        path=tmp_path / "consumer.py", import_name=module_name, is_package_init=False
+        path=tmp_path / "consumer.py", import_name=module_name
     )
     assert (
         identity.resolve_import_from_module(imported_module=None, level=level) is None
@@ -199,7 +195,6 @@ def test_module_identity_rejects_path_name_mismatch(tmp_path: Path) -> None:
     identity = PythonModulePathIdentity(
         path=tmp_path / "actual.py",
         import_name="different",
-        is_package_init=False,
     )
 
     with pytest.raises(ValueError, match="does not describe"):
@@ -213,7 +208,6 @@ def test_parsed_module_source_projection_preserves_declared_identity(
     identity = PythonModulePathIdentity(
         path=path,
         import_name="pkg.projected",
-        is_package_init=False,
     )
     family_cache_dir = tmp_path / "family-cache"
     module = SourceModule.from_path_identity(

@@ -18,7 +18,7 @@ from nominal_refactor_advisor.value_graph import DataclassGraphValue
 
 def context():
     source = "value = object\n"
-    parsed = ParsedModule(Path("visit.py"), "visit", False, ast.parse(source), source)
+    parsed = ParsedModule(Path("visit.py"), "visit", ast.parse(source), source)
     return compact_product_flow_projection(parsed).flow_contexts[0]
 
 
@@ -52,7 +52,7 @@ def test_visit_hash_and_equality_do_not_traverse_the_source_graph(monkeypatch):
 
 def test_value_origin_cycle_checks_do_not_hash_source_graphs(monkeypatch):
     source = "def run(value):\n    alias = value\n    consume(alias)\n"
-    parsed = ParsedModule(Path("alias.py"), "alias", False, ast.parse(source), source)
+    parsed = ParsedModule(Path("alias.py"), "alias", ast.parse(source), source)
     flow = next(
         flow for flow in compact_product_flow_projection(parsed).flows
         if flow.owner.qualname == "run"
@@ -68,7 +68,7 @@ def test_value_origin_cycle_checks_do_not_hash_source_graphs(monkeypatch):
 
 def test_value_origin_cycle_requires_the_original_flow_and_binding():
     source = "def run(value):\n    alias = value\n    consume(alias)\n"
-    parsed = ParsedModule(Path("alias.py"), "alias", False, ast.parse(source), source)
+    parsed = ParsedModule(Path("alias.py"), "alias", ast.parse(source), source)
     flow = next(
         flow for flow in compact_product_flow_projection(parsed).flows
         if flow.owner.qualname == "run"

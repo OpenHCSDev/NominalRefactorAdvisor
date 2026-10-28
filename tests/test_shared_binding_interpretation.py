@@ -112,7 +112,6 @@ def _context() -> CompactFlowContext:
     module = ParsedModule(
         path=Path("binding_probe.py"),
         module_name="binding_probe",
-        is_package_init=False,
         module=ast.parse(source),
         source=source,
     )

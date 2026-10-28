@@ -9,6 +9,7 @@ from pathlib import Path
 
 from .ast_tools import ParsedModule, SourceModule
 from .python_module_identity import PythonModulePathIdentity
+from .source_identity import PACKAGE_INIT_FILE_NAME, source_path_is_package_init
 
 
 class InstalledModule:
@@ -36,7 +37,7 @@ class InstalledModule:
                     candidate
                     for location in locations
                     for candidate in (
-                        location / part / "__init__.py",
+                        location / part / PACKAGE_INIT_FILE_NAME,
                         location / f"{part}.py",
                     )
                     if candidate.is_file()
@@ -45,7 +46,7 @@ class InstalledModule:
             )
             if found is None:
                 return None
-            locations = [found.parent] if found.name == "__init__.py" else []
+            locations = [found.parent] if source_path_is_package_init(found) else []
         if found is None or found.suffix != ".py":
             return None
         return found
@@ -64,10 +65,6 @@ class InstalledModule:
         except SyntaxError:
             return None
         return SourceModule.from_path_identity(
-            PythonModulePathIdentity(
-                path=path,
-                import_name=module_name,
-                is_package_init=path.name == "__init__.py",
-            ),
+            PythonModulePathIdentity(path=path, import_name=module_name),
             source,
         ).parsed_module(module)

@@ -30,7 +30,6 @@ def _projection(source):
         ParsedModule(
             path=Path("definition_flow_ownership.py"),
             module_name="definition_flow_ownership",
-            is_package_init=False,
             module=ast.parse(source),
             source=source,
         )

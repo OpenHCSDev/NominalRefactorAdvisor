@@ -31,7 +31,6 @@ def _module(source: str) -> ParsedModule:
     return ParsedModule(
         path=Path("native_fixture.py"),
         module_name="native_fixture",
-        is_package_init=False,
         module=ast.parse(source),
         source=source,
     )

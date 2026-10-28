@@ -62,7 +62,7 @@ def test_heap_type_hook_lookup_is_not_executed():
     ),
 )
 def test_class_members_use_captured_value_protocols(source):
-    module = ParsedModule(Path("member.py"), "member", False, ast.parse(source), source)
+    module = ParsedModule(Path("member.py"), "member", ast.parse(source), source)
     execution = SourceModuleExecution.from_module(module)
     execution.require_class_creation(module.module.body[-1])
     native = subprocess.run(
@@ -105,7 +105,7 @@ def test_member_hook_absence_does_not_prove_truth_evaluation():
     CapturedNativeObject(proxy).require_class_installation()
     source = "class Owner:\n    if flag:\n        pass\n"
     module = ParsedModule(
-        Path("condition.py"), "condition", False, ast.parse(source), source
+        Path("condition.py"), "condition", ast.parse(source), source
     )
     seed = SourceModuleExecution.from_module(module)
     entry = SourceModuleEntryPremise(

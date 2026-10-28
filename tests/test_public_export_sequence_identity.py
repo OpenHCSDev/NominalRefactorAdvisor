@@ -18,7 +18,7 @@ from nominal_refactor_advisor.class_index import (
 
 def _module(expression):
     source = f"Known = 1\n__all__ = {expression}\n"
-    return ParsedModule(Path("exports.py"), "exports", False, ast.parse(source), source)
+    return ParsedModule(Path("exports.py"), "exports", ast.parse(source), source)
 
 
 @pytest.mark.parametrize(

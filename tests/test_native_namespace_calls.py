@@ -26,7 +26,7 @@ from nominal_refactor_advisor.source_execution import SourceModuleExecution
 def execution(source):
     return SourceModuleExecution.from_module(
         ParsedModule(
-            Path("native_copy.py"), "native_copy", False, ast.parse(source), source
+            Path("native_copy.py"), "native_copy", ast.parse(source), source
         )
     )
 
@@ -213,7 +213,7 @@ from nominal_refactor_advisor.source_execution import SourceModuleExecution
         + definitions[shape]
         + """
 source = "import builtins\\nresult = vars(builtins)\\n"
-environment = SourceModuleExecution.from_module(ParsedModule(Path("mro.py"), "mro", False, ast.parse(source), source))
+environment = SourceModuleExecution.from_module(ParsedModule(Path("mro.py"), "mro", ast.parse(source), source))
 context, call = environment.source_call(environment.module.module.body[-1].value)
 """
     )

@@ -82,10 +82,10 @@ def join(
     path=PATH,
     mutation_source=None,
 ):
-    before_module = ParsedModule(Path(PATH), "probe", False, ast.parse(source), source)
+    before_module = ParsedModule(Path(PATH), "probe", ast.parse(source), source)
     after_source = prefix + source if rewritten is None else rewritten
     after_module = ParsedModule(
-        Path(path), "probe", False, ast.parse(after_source), after_source
+        Path(path), "probe", ast.parse(after_source), after_source
     )
     before = SourceModuleExecution.from_module(before_module)
     after = SourceModuleExecution.from_module(after_module)
@@ -186,7 +186,7 @@ def test_source_authority_is_not_a_coordinate_match(kwargs, message):
 
 
 @pytest.mark.parametrize(
-    "field, value", (("module_name", "foreign"), ("is_package_init", True))
+    "field, value", (("module_name", "foreign"), ("path", Path("pkg/__init__.py")))
 )
 def test_import_identity_is_part_of_the_two_source_join(field, value):
     _, _, relation = join()
@@ -305,7 +305,7 @@ REGISTRY['beta'] = Beta
 
 def source_environment(source, path=PATH):
     return SourceModuleExecution.from_module(
-        ParsedModule(Path(path), "probe", False, ast.parse(source), source)
+        ParsedModule(Path(path), "probe", ast.parse(source), source)
     )
 
 

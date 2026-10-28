@@ -18,7 +18,7 @@ from nominal_refactor_advisor.source_execution import SourceModuleExecution
 
 def execution(source):
     return SourceModuleExecution.from_module(
-        ParsedModule(Path("types.py"), "types", False, ast.parse(source), source)
+        ParsedModule(Path("types.py"), "types", ast.parse(source), source)
     )
 
 

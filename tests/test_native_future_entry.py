@@ -28,7 +28,6 @@ def _execution(source: str, module_name: str = "future_entry") -> SourceModuleEx
         ParsedModule(
             path=Path("future_entry.py"),
             module_name=module_name,
-            is_package_init=False,
             module=ast.parse(source),
             source=source,
         )

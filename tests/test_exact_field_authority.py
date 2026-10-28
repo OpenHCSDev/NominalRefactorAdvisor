@@ -19,7 +19,6 @@ def _module(source: str) -> ParsedModule:
     return ParsedModule(
         path=path,
         module_name="pkg.models",
-        is_package_init=False,
         module=ast.parse(source, filename=str(path)),
         source=source,
     )

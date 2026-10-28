@@ -42,9 +42,7 @@ def _identity(
         if is_package_init
         else Path(*parts[:-1], f"{parts[-1]}.py")
     )
-    return PythonModulePathIdentity(
-        path=path, import_name=name, is_package_init=is_package_init
-    )
+    return PythonModulePathIdentity(path=path, import_name=name)
 
 
 def _assert_ast_free(value: object) -> None:

@@ -27,7 +27,6 @@ def execution(source):
         ParsedModule(
             Path("definition_result.py"),
             "definition_result",
-            False,
             ast.parse(source),
             source,
         )
