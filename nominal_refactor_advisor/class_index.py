@@ -6624,7 +6624,7 @@ def _dataclass_field_role(
     )
     if not annotation_is_resolved_plain_field:
         return CompactDataclassFieldRole.UNRESOLVED
-    if statement.value is None or isinstance(statement.value, ast.Constant):
+    if statement.value is None or _is_literal_default(statement.value):
         return CompactDataclassFieldRole.STORED_INIT
     if not isinstance(statement.value, ast.Call):
         return CompactDataclassFieldRole.UNRESOLVED
@@ -6677,6 +6677,27 @@ def _dataclass_role_reference(annotation: ast.expr) -> ast.expr | None:
     if isinstance(annotation, ast.Subscript):
         return annotation.value
     return annotation if isinstance(annotation, ast.Name | ast.Attribute) else None
+
+
+_LITERAL_DEFAULT_NODES = (
+    ast.Constant,
+    ast.Tuple,
+    ast.List,
+    ast.Set,
+    ast.Dict,
+    ast.UnaryOp,
+    ast.BinOp,
+    ast.unaryop,
+    ast.operator,
+    ast.expr_context,
+)
+
+
+def _is_literal_default(value: ast.expr) -> bool:
+    """A default built only from literals: it names nothing, so it cannot be a
+    `dataclasses.Field` and the member is a plain stored field."""
+
+    return all(isinstance(node, _LITERAL_DEFAULT_NODES) for node in ast.walk(value))
 
 
 def _dataclass_plain_annotation_is_resolved(

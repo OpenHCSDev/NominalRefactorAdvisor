@@ -1756,3 +1756,35 @@ def test_repository_keeps_partial_product_construction_visible_for_proof_rejecti
     construction = repository.resolved_product_constructions[0]
     assert construction.authority.field_names == ("left", "right")
     assert construction.construction.field_names == ("left",)
+
+
+def test_a_literal_default_is_a_stored_field_and_a_named_default_stays_open() -> None:
+    """A default built only from literals cannot be a `dataclasses.Field`; one that
+    names something might be."""
+
+    repository = _source_repository(
+        _module(
+            "pkg.literal_defaults",
+            "from dataclasses import dataclass\n"
+            "@dataclass\n"
+            "class Product:\n"
+            "    left: tuple[int, ...] = ()\n"
+            "    right: tuple[int, ...] = (1, -2)\n",
+        )
+    )
+    assert repository.product_authorities_by_symbol[
+        "pkg.literal_defaults.Product"
+    ].field_names == ("left", "right")
+    named = _repository(
+        _module(
+            "pkg.named_default",
+            "from dataclasses import dataclass\n"
+            "DEFAULT = object()\n"
+            "@dataclass\n"
+            "class Product:\n"
+            "    left: object = DEFAULT\n",
+        )
+    )
+    assert CompactProductAuthorityViolation.UNRESOLVED_FIELD_ROLE in (
+        _open_product_violations(named, "pkg.named_default.Product")
+    )
