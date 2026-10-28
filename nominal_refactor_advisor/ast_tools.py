@@ -151,14 +151,20 @@ class AstCachePayloadUnavailable:
     """Sentinel for unreadable or incompatible persisted AST cache payloads."""
 
 
-@dataclass(frozen=True)
-class AstParseCachePayload:
-    """Persisted AST parse-cache entry for one source file signature."""
+@dataclass(frozen=True, kw_only=True)
+class FileStat:
+    """A source file's path, modification time and size: one stat identity."""
 
-    version: int
     path: str
     mtime_ns: int
     size: int
+
+
+@dataclass(frozen=True, kw_only=True)
+class AstParseCachePayload(FileStat):
+    """Persisted AST parse-cache entry for one source file signature."""
+
+    version: int
     source_signature: str
     python_version: PythonVersion
     module: ast.Module
