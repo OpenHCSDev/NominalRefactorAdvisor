@@ -70,6 +70,7 @@ class OwnerReceiptKind(ReceiptKind):
     SERVES_CALL_SITES = "serves_call_sites", 0.5, False
     NO_EXACT_SUBSTITUTION = "no_exact_substitution", 0.0, True
     OWNED_BY_EXISTING_CLASSES = "owned_by_existing_classes", 0.0, True
+    PLAYS_SAME_ROLE = "plays_same_role", 1.0, False
 
 
 SERVED_CONSUMER_CAP = 4

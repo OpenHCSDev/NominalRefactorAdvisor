@@ -12,6 +12,7 @@ from nominal_refactor_advisor.manual_registry import (
     DirectModuleClassGraph,
 )
 from nominal_refactor_advisor.source_execution import SourceModuleExecution
+from nominal_refactor_advisor.registry_identity import AutoRegisterClassAuthority
 
 
 def parsed(source):
@@ -75,11 +76,15 @@ def test_lexical_class_name_does_not_prove_a_later_registration_value():
 
 def test_instance_entry_retains_whole_original_call_and_callee():
     module = parsed(
-        "class Root: pass\nclass Alpha(Root): pass\nclass Beta(Root): pass\nREGISTRY = {'alpha': Alpha(), 'beta': Beta()}\n"
+        "class Root(metaclass=Meta):\n    __registry_key__ = 'key'\n"
+        "class Alpha(Root): pass\nclass Beta(Root): pass\nREGISTRY = {'alpha': Alpha(), 'beta': Beta()}\n"
     )
     tree = module.module
     component = AutoRegisterInstanceViewComponent.from_assignment(
-        tree, tree.body[0], tree.body[-1], DirectModuleClassGraph(tree)
+        tree,
+        AutoRegisterClassAuthority.decoded(tree.body[0]).keyed_family(),
+        tree.body[-1],
+        DirectModuleClassGraph(tree),
     )
     assert component is not None
     for entry, call in zip(component.entries, tree.body[-1].value.values, strict=True):

@@ -2241,6 +2241,60 @@ def test_semantic_mirror_autoregister_instance_view_retains_unproved_proposal(
     assert simulation.simulation.applied_rewrite_count == 0
 
 
+def test_an_aliased_registering_metaclass_still_owns_the_instance_view(
+    tmp_path: Path,
+) -> None:
+    """The family's metaclass is judged by what it resolves to, not its name:
+    `AutoRegisterMeta` imported as `FamilyMeta` is the same owner."""
+
+    _write_module(
+        tmp_path,
+        "from abc import ABC, abstractmethod\n"
+        "from enum import StrEnum\n"
+        "from metaclass_registry import AutoRegisterMeta as FamilyMeta\n"
+        "\n"
+        "class StepId(StrEnum):\n"
+        "    LOAD = 'load'\n"
+        "    SAVE = 'save'\n"
+        "\n"
+        "class Step(ABC, metaclass=FamilyMeta):\n"
+        "    __registry_key__ = 'registry_key'\n"
+        "    __skip_if_no_key__ = True\n"
+        "\n"
+        "    @abstractmethod\n"
+        "    def build(self):\n"
+        "        raise NotImplementedError\n"
+        "\n"
+        "class LoadStep(Step):\n"
+        "    def build(self):\n"
+        "        return 'load'\n"
+        "\n"
+        "class SaveStep(Step):\n"
+        "    def build(self):\n"
+        "        return 'save'\n"
+        "\n"
+        "STEP_TABLE = {StepId.LOAD: LoadStep(), StepId.SAVE: SaveStep()}\n",
+    )
+    modules = parse_python_modules(tmp_path)
+    finding = next(
+        item
+        for item in SemanticMirrorWithoutDescentDetector().detect(
+            modules, DetectorConfig()
+        )
+        if item.metrics.plan_registry_name == "STEP_TABLE"
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(modules, (finding,))
+    recipe = codemod_plan_from_findings(
+        (finding,), selector_context=snapshot
+    ).records[0].proposal
+
+    assert recipe is not None
+    assert [
+        (claim.claimed_symbol, claim.authority_kind)
+        for claim in recipe.authority_claims
+    ] == [("Step", SemanticAuthorityKind.AUTOREGISTER_FAMILY)]
+
+
 def test_semantic_descent_resolves_bound_constructor_values_to_class_family(
     tmp_path: Path,
 ) -> None:

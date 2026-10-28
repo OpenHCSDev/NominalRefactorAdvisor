@@ -19,10 +19,7 @@ from typing import (
 from metaclass_registry import AutoRegisterMeta, DuplicateRegistryKeyError
 
 from .assignment_projection import SingleAssignmentAndValueNameProjection
-from .ast_projection import (
-    AstClassProjection,
-    ExpressionReference,
-)
+from .ast_projection import AstClassProjection
 from .native_declarations import NativeDeclaration
 from .value_expression import LiteralExpressionEffects
 
@@ -201,23 +198,24 @@ class AutoRegisterClassAuthority:
             REGISTRY_KEY_ATTRIBUTE_NAME,
         } <= assignment_names
 
-    @property
-    def uses_autoregister_metaclass(self) -> bool:
-        return any(
-            keyword.arg == "metaclass"
-            and ExpressionReference.decoded(keyword.value).terminal_name
-            == AUTOREGISTER_META_NAME
-            for keyword in self.node.keywords
-        )
+    @staticmethod
+    def decoded(node: ast.ClassDef) -> AutoRegisterClassAuthority:
+        """The class's authority, decoded once: a keyed metaclass family when it
+        names a metaclass and a registry key, else only its declared shape."""
 
-    @property
-    def semantic_authority_shape(self) -> bool:
-        return self.declared_registry_shape or self.uses_autoregister_metaclass
+        declared = AutoRegisterClassAuthority(node)
+        key_attribute = declared.registry_key_attribute
+        if key_attribute is None or not any(
+            keyword.arg == "metaclass" for keyword in node.keywords
+        ):
+            return declared
+        return KeyedMetaclassFamily(node, key_attribute)
 
-    @property
-    def runtime_autoregister_family(self) -> bool:
-        return (
-            self.registry_key_attribute is not None and self.uses_autoregister_metaclass
+    def keyed_family(self) -> KeyedMetaclassFamily:
+        """This class as a keyed metaclass family, which a declared shape is not."""
+
+        raise ValueError(
+            f"{self.node.name!r} declares no metaclass and registry key"
         )
 
     @property
@@ -261,3 +259,14 @@ class AutoRegisterClassAuthority:
         if isinstance(value, ast.Name) and value.id == "DEFAULT_REGISTRY_KEY_ATTRIBUTE":
             return DEFAULT_REGISTRY_KEY_ATTRIBUTE
         return None
+
+
+@dataclass(frozen=True)
+class KeyedMetaclassFamily(AutoRegisterClassAuthority):
+    """A class that names a metaclass and a registry key. Which metaclass is
+    not read from its name: `require_native_metaclass` proves the operand."""
+
+    key_attribute: str
+
+    def keyed_family(self) -> KeyedMetaclassFamily:
+        return self

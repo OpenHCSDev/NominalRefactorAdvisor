@@ -9,6 +9,7 @@ from . import (  # noqa: F401 - importing a detector module registers it
     _heuristic_leads,
     _semantic_descent,
     _record_checks,
+    _registration_owners,
     _restated_facts,
     _restated_identity,
     _systemic,

@@ -9,12 +9,12 @@ from pathlib import Path
 import pytest
 
 from nominal_refactor_advisor import cli as cli_module
-from nominal_refactor_advisor.ast_tools import parse_python_modules
+from nominal_refactor_advisor.ast_tools import ParsedModuleSet, parse_python_modules
 from nominal_refactor_advisor.analysis_cache import GlobalModuleContextSignature
-from nominal_refactor_advisor.detectors import _runtime as runtime_detectors
 from nominal_refactor_advisor.detectors._base import (
     CrossModuleCollectorCandidateDetector,
     DetectorConfig,
+    GroupedShapeIssueDetector,
 )
 from nominal_refactor_advisor.deadline import (
     ScanDeadline,
@@ -66,40 +66,33 @@ def test_cross_module_preparation_reuses_exact_candidate_snapshot(
     assert finding_calls == 1
 
 
-def test_grouped_shape_preparation_reuses_exact_shape_snapshot(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    collection_calls = 0
-    finding_calls = 0
+def test_grouped_shape_preparation_reuses_exact_shape_snapshot() -> None:
     shapes = ("alpha", "beta")
 
-    def counted_shapes(self, modules, config):
-        nonlocal collection_calls
-        del self, modules, config
-        collection_calls += 1
-        return list(shapes)
+    class GroupedShapeSnapshotProbe(GroupedShapeIssueDetector[str, str]):
+        collection_calls = 0
+        grouped: list[tuple[str, ...]] = []
 
-    def group_key(self, shape):
-        del self
-        return shape
+        def _collect_shapes(self, modules, config):
+            del modules, config
+            type(self).collection_calls += 1
+            return list(shapes)
 
-    def counted_findings(self, prepared_shapes, config):
-        nonlocal finding_calls
-        del self, config
-        finding_calls += 1
-        assert tuple(prepared_shapes) == shapes
-        return []
+        def _group_key(self, shape):
+            return shape
 
-    detector_type = runtime_detectors.ManualClassRegistrationDetector
-    monkeypatch.setattr(detector_type, "_collect_shapes", counted_shapes)
-    monkeypatch.setattr(detector_type, "_group_key", group_key)
-    monkeypatch.setattr(detector_type, "_findings_for_shapes", counted_findings)
+        def _finding_from_group(self, grouped_shapes, config):
+            del config
+            type(self).grouped.append(grouped_shapes)
+            return None
 
-    prepared = detector_type().prepare_analysis((), DetectorConfig())
-    assert collection_calls == 1
+    prepared = GroupedShapeSnapshotProbe().prepare_analysis(
+        ParsedModuleSet.of(()), DetectorConfig()
+    )
+    assert GroupedShapeSnapshotProbe.collection_calls == 1
     assert prepared.findings() == []
-    assert collection_calls == 1
-    assert finding_calls == 1
+    assert GroupedShapeSnapshotProbe.collection_calls == 1
+    assert GroupedShapeSnapshotProbe.grouped == [("alpha",), ("beta",)]
 
 
 def test_process_cli_hard_exits_after_publishing_deadline_payload(

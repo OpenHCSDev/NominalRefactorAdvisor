@@ -39,6 +39,9 @@ from ._environment import (
 from ._record_checks import (
     RedundantTypeCheckDetector,
 )
+from ._registration_owners import (
+    HandRolledRegistrationDetector,
+)
 from ._restated_facts import (
     DeadModuleDetector,
     ExactKeySetDetector,
@@ -97,6 +100,7 @@ __all__ = (
     "DuplicateClassDetector",
     "EnvironmentBooleanAuthorityDriftDetector",
     "ExactKeySetDetector",
+    "HandRolledRegistrationDetector",
     "ExactLeafMethodAncestorPromotionDetector",
     "ExternalEnumCaseRecoveryDetector",
     "ForeignAbsenceProbeDetector",
