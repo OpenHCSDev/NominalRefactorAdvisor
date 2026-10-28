@@ -332,3 +332,26 @@ def test_classes_inheriting_one_declaration_from_one_ancestor_restate_nothing():
         == {"pkg.summaries.ModuleSummary", "pkg.summaries.FunctionSummary"}
         for candidate in verdicts
     )
+
+
+def test_a_star_settled_builtin_and_a_direct_builtin_are_one_declaration():
+    """`file_path: str` under a star import the repository settles to
+    `builtins.str` is the same declaration as `file_path: str` beside no star
+    import: one resolved binding, two routes to it."""
+
+    verdicts = _verdicts(
+        ("pkg.helpers", "__all__ = ['helper']\n\n\ndef helper():\n    return 1\n"),
+        (
+            "pkg.starred",
+            "from pkg.helpers import *\n\n\n"
+            "class Starred:\n    file_path: str\n    line: int\n    symbol: str\n    kind: str\n",
+        ),
+        (
+            "pkg.direct",
+            "class Direct:\n    file_path: str\n    line: int\n    symbol: str\n    target: int\n",
+        ),
+    )
+
+    (verdict,) = verdicts
+    assert {verdict.owner.qualname, verdict.restating.qualname} == {"Starred", "Direct"}
+    assert set(verdict.shared_names) == {"file_path", "line", "symbol"}
