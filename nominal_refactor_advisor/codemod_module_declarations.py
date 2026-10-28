@@ -177,7 +177,6 @@ class _ModuleExportBindingAuthority:
         return ParsedModule(
             path=self.source_file.module_path_identity.path,
             module_name=self.source_file.module_name,
-            is_package_init=self.source_file.is_package_init,
             module=self.module,
             source="",
         )

@@ -31,7 +31,6 @@ def _run_call(source: str, scope: str = "Owner.run"):
     module = ParsedModule(
         path=Path("probe.py"),
         module_name="probe",
-        is_package_init=False,
         module=ast.parse(source),
         source=source,
     )

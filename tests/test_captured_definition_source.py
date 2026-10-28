@@ -22,7 +22,6 @@ def execution(source="class Original: pass\n"):
         ParsedModule(
             Path("definition_source.py"),
             "definition_source",
-            False,
             ast.parse(source),
             source,
         )

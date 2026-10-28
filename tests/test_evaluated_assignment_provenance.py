@@ -27,7 +27,6 @@ def execution(source):
         ParsedModule(
             Path("assignment_provenance.py"),
             "assignment_provenance",
-            False,
             ast.parse(source),
             source,
         )

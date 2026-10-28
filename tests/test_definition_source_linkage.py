@@ -21,7 +21,6 @@ def _module(source):
     return ParsedModule(
         path=Path("source_linkage.py"),
         module_name="source_linkage",
-        is_package_init=False,
         module=ast.parse(source),
         source=source,
     )

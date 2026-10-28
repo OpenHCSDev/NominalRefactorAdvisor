@@ -28,7 +28,6 @@ def _flow(source: str, owner: str = "sample") -> CompactFunctionFlow:
     module = ParsedModule(
         path=Path("evaluated_results.py"),
         module_name="evaluated_results",
-        is_package_init=False,
         module=ast.parse(source),
         source=source,
     )

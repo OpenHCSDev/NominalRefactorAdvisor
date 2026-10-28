@@ -67,7 +67,7 @@ class FlowResolver(ExpressionResolver, product_flow.CompactValueResolverABC):
 
 def _actual_call_use():
     source = "value = selected()\n"
-    module = ParsedModule(Path("call.py"), "call", False, ast.parse(source), source)
+    module = ParsedModule(Path("call.py"), "call", ast.parse(source), source)
     flow = product_flow.source_product_flow_projection(module).compact.flows[0]
     return flow.evaluated_results[0].value_use
 

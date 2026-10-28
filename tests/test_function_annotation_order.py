@@ -31,7 +31,7 @@ from nominal_refactor_advisor.product_flow import (
 
 def projection(source):
     module = ParsedModule(
-        Path("annotations.py"), "annotations", False, ast.parse(source), source
+        Path("annotations.py"), "annotations", ast.parse(source), source
     )
     return compact_product_flow_projection(module)
 

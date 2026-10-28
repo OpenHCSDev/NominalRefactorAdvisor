@@ -97,6 +97,7 @@ from .registry_identity import DEFAULT_REGISTRY_KEY_ATTRIBUTE, class_name_regist
 from .scan_cache import ScanCache
 from .source_geometry import SourceLineSegmentAuthority, read_source_text
 from .source_identity import (
+    PACKAGE_INIT_FILE_NAME,
     SourceFileIdentity,
     python_source_cache_signature as python_source_cache_signature,
     resolved_source_path_text,
@@ -738,7 +739,6 @@ def _parse_source_module(
     return ParsedModule(
         path=path,
         module_name=module_identity.import_name,
-        is_package_init=module_identity.is_package_init,
         module=module,
         source=source,
         semantic_hash=semantic_hash,
@@ -818,7 +818,6 @@ class ParsedModule(SourceFileIdentity):
 
     path: Path
     module_name: str
-    is_package_init: bool
     module: ast.Module
     source: str
     semantic_hash: str | None = None
@@ -935,11 +934,7 @@ class ParsedModule(SourceFileIdentity):
     def module_path_identity(self) -> PythonModulePathIdentity:
         """Return the source-independent identity retained by source projections."""
 
-        return PythonModulePathIdentity(
-            path=self.path,
-            import_name=self.module_name,
-            is_package_init=self.is_package_init,
-        )
+        return PythonModulePathIdentity(path=self.path, import_name=self.module_name)
 
     def with_source(self, source: str) -> ParsedModule:
         """Parse replacement source while preserving this module's identity."""
@@ -1095,7 +1090,6 @@ class SourceModule(SourceFileIdentity):
         return ParsedModule(
             path=self.path,
             module_name=self.module_name,
-            is_package_init=self.path.name == "__init__.py",
             module=module,
             source=self.source,
             family_cache_dir=self.family_cache_dir,
@@ -1156,7 +1150,7 @@ class PythonModulePathAuthority:
         if not path.anchor:
             return PythonModulePathIdentity.from_source_path(path)
         package = self.identities_by_resolved_path.get(
-            (path.parent / "__init__.py").resolve()
+            (path.parent / PACKAGE_INIT_FILE_NAME).resolve()
         )
         if package is not None:
             # A new file belongs to the package it is created in, even when a

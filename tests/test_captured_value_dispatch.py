@@ -33,7 +33,7 @@ class ValueRecorder(CompactValueResolverABC):
 
 def test_actual_retained_call_result_dispatches_without_lexical_reconstruction():
     source = "copied = dict(vars(builtins), property=Replacement)\n"
-    module = ParsedModule(Path("copy.py"), "copy", False, ast.parse(source), source)
+    module = ParsedModule(Path("copy.py"), "copy", ast.parse(source), source)
     flow = source_product_flow_projection(module).compact.flows[0]
     (result,) = flow.evaluated_results
     use = result.value_use
@@ -47,7 +47,7 @@ def test_actual_retained_call_result_dispatches_without_lexical_reconstruction()
 
 def test_lexical_callee_and_opaque_capture_keep_distinct_owner_decisions():
     source = "value = selected()\n"
-    module = ParsedModule(Path("call.py"), "call", False, ast.parse(source), source)
+    module = ParsedModule(Path("call.py"), "call", ast.parse(source), source)
     flow = source_product_flow_projection(module).compact.flows[0]
     call = flow.calls[0]
     target = call.target_use
@@ -64,7 +64,7 @@ def test_lexical_callee_and_opaque_capture_keep_distinct_owner_decisions():
 def test_forwarding_dispatch_keeps_the_actual_producer_result():
     source = "value = (stored := selected())\n"
     module = ParsedModule(
-        Path("forward.py"), "forward", False, ast.parse(source), source
+        Path("forward.py"), "forward", ast.parse(source), source
     )
     flow = source_product_flow_projection(module).compact.flows[0]
     assigned, outer = flow.evaluated_results
@@ -77,7 +77,7 @@ def test_forwarding_dispatch_keeps_the_actual_producer_result():
 
 def test_compiler_value_dispatch_preserves_original_marker_not_literal_fallback():
     source = '"""Summary.\n        Details.\n    """\n'
-    module = ParsedModule(Path("doc.py"), "doc", False, ast.parse(source), source)
+    module = ParsedModule(Path("doc.py"), "doc", ast.parse(source), source)
     flow = source_product_flow_projection(module).compact.flows[0]
     use = flow.evaluated_results[0].value_use
     assert isinstance(use.value, CompilerStoredValue)

@@ -43,7 +43,6 @@ def _parsed_module(source: str) -> ParsedModule:
     return ParsedModule(
         path=Path("pkg/sample.py"),
         module_name="pkg.sample",
-        is_package_init=False,
         module=ast.parse(source, filename="pkg/sample.py"),
         source=source,
     )

@@ -27,7 +27,6 @@ def _projection(source: str):
     module = ParsedModule(
         path=Path("definition_capture.py"),
         module_name="definition_capture",
-        is_package_init=False,
         module=ast.parse(source),
         source=source,
     )

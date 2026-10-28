@@ -82,7 +82,6 @@ def native_collector_module() -> ParsedModule:
     return ParsedModule(
         path=path,
         module_name=collector_runtime.__name__,
-        is_package_init=False,
         module=ast.parse(source),
         source=source,
     )

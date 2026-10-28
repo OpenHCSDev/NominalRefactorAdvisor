@@ -40,7 +40,7 @@ from nominal_refactor_advisor.source_native_mro import (
 
 
 def module_at(path: Path, source: str) -> ParsedModule:
-    return ParsedModule(path, path.stem, False, ast.parse(source), source)
+    return ParsedModule(path, path.stem, ast.parse(source), source)
 
 
 def collector_entry(source):

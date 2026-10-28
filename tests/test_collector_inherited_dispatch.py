@@ -211,7 +211,7 @@ def test_collector_dispatch_follows_native_mro(
     path.write_text(source, encoding="utf-8", newline="")
     before = subprocess.check_output([sys.executable, str(path)], text=True)
     assert before.strip() == "('collected',)"
-    module = ParsedModule(path, "probe", False, ast.parse(source), source)
+    module = ParsedModule(path, "probe", ast.parse(source), source)
     snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of((module, native_collector_module)))
     plan = CodemodPlanSequence.from_operations(
         (

@@ -20,7 +20,7 @@ from nominal_refactor_advisor.source_index import build_source_index
 
 def _parsed(source):
     return ParsedModule(
-        Path("/repo/exact_source.py"), "exact_source", False, ast.parse(source), source
+        Path("/repo/exact_source.py"), "exact_source", ast.parse(source), source
     )
 
 

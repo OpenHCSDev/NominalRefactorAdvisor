@@ -38,7 +38,6 @@ def _module(
     return ParsedModule(
         path=Path("descriptor_probe.py"),
         module_name="descriptor_probe",
-        is_package_init=False,
         module=ast.parse(source),
         source=source,
     )

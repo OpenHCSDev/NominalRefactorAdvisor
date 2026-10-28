@@ -34,7 +34,6 @@ def _project(source):
     module = ParsedModule(
         Path("source_class_captures.py"),
         "source_class_captures",
-        False,
         ast.parse(source),
         source,
     )

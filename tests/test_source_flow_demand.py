@@ -16,7 +16,7 @@ from nominal_refactor_advisor.product_flow_authority import SourceProductFlowRep
 
 def module(name, source):
     return ParsedModule(
-        path=Path(name + ".py"), module_name=name, is_package_init=False,
+        path=Path(name + ".py"), module_name=name,
         module=ast.parse(source), source=source,
     )
 

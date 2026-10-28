@@ -109,7 +109,6 @@ def test_ensure_import_preserves_native_future_placement(
     module = ParsedModule(
         path=Path("future_placement.py"),
         module_name="future_placement",
-        is_package_init=False,
         module=ast.parse(source),
         source=source,
     )
@@ -164,7 +163,6 @@ def test_synthesized_imports_use_destination_line_endings(
     module = ParsedModule(
         path=Path("line_endings.py"),
         module_name="line_endings",
-        is_package_init=False,
         module=ast.parse(source),
         source=source,
     )

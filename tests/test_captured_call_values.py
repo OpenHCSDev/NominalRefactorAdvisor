@@ -25,7 +25,6 @@ def _projection(source):
         ParsedModule(
             path=Path("captured_calls.py"),
             module_name="captured_calls",
-            is_package_init=False,
             module=ast.parse(source),
             source=source,
         )

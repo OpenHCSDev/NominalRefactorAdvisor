@@ -19,7 +19,7 @@ from nominal_refactor_advisor.source_execution import SourceModuleExecution
 def source_execution(source):
     return SourceModuleExecution.from_module(
         ParsedModule(
-            Path("native_identity.py"), "native_identity", False, ast.parse(source), source
+            Path("native_identity.py"), "native_identity", ast.parse(source), source
         )
     )
 

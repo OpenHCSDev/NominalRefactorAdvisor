@@ -21,7 +21,6 @@ def repository_for(source: str) -> CompactProductFlowRepository:
     module = ParsedModule(
         path=Path("capture.py"),
         module_name="capture",
-        is_package_init=False,
         module=ast.parse(source),
         source=source,
     )

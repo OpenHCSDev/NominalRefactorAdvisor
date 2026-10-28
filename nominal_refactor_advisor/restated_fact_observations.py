@@ -960,7 +960,6 @@ class ModuleReferenceFacts:
 
     module_name: str
     file_path: str
-    is_package_init: bool
     runs_as_script: bool
     enumerates_modules: bool
     imported: tuple[str, ...]
@@ -968,20 +967,25 @@ class ModuleReferenceFacts:
     referenced: tuple[tuple[str, int], ...]
 
     @property
+    def module_identity(self) -> PythonModulePathIdentity:
+        return PythonModulePathIdentity(
+            path=Path(self.file_path), import_name=self.module_name
+        )
+
+    @property
     def package_name(self) -> str:
         """The package this module sits in (itself, if it is a package's `__init__`)."""
 
-        return (
-            self.module_name
-            if self.is_package_init
-            else self.module_name.rpartition(".")[0]
-        )
+        return self.module_identity.package_name
 
     @property
     def is_package_entry_file(self) -> bool:
         """`__init__.py` and `__main__.py` are reached by their package, not by import."""
 
-        return self.is_package_init or Path(self.file_path).name == "__main__.py"
+        return (
+            self.module_identity.is_package_init
+            or Path(self.file_path).name == "__main__.py"
+        )
 
 
 class ModuleReferenceFamily(ShapeFamily[ModuleReferenceFacts]):
@@ -992,11 +996,7 @@ class ModuleReferenceFamily(ShapeFamily[ModuleReferenceFacts]):
     @classmethod
     def collect(cls, parsed_module: ParsedModule) -> list[ModuleReferenceFacts]:
         index = parsed_module.syntax_index
-        identity = PythonModulePathIdentity(
-            path=parsed_module.path,
-            import_name=parsed_module.module_name,
-            is_package_init=parsed_module.is_package_init,
-        )
+        identity = parsed_module.module_path_identity
         imported: set[str] = set()
         for _node_index, node in index.indexed_nodes_of_type(ast.Import):
             for alias in node.names:
@@ -1042,7 +1042,6 @@ class ModuleReferenceFamily(ShapeFamily[ModuleReferenceFacts]):
             ModuleReferenceFacts(
                 module_name=parsed_module.module_name,
                 file_path=parsed_module.file_path,
-                is_package_init=parsed_module.is_package_init,
                 runs_as_script=any(
                     cls.is_main_guard(node)
                     for node in parsed_module.module.body

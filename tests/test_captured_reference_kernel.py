@@ -125,7 +125,6 @@ def _fixture(source):
     module = ParsedModule(
         path=Path("capture.py"),
         module_name="capture",
-        is_package_init=False,
         module=ast.parse(source),
         source=source,
     )
@@ -411,7 +410,6 @@ def _plain_module_fixture(source, modules, builtin_storage=None, registry_entrie
     module = ParsedModule(
         path=Path("native_module_fixture.py"),
         module_name="native_module_fixture",
-        is_package_init=False,
         module=ast.parse(source),
         source=source,
     )

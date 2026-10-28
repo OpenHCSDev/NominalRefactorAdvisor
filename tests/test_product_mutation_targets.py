@@ -27,7 +27,6 @@ def _module(tail: str) -> ParsedModule:
     return ParsedModule(
         path=Path("product_mutation.py"),
         module_name="product_mutation",
-        is_package_init=False,
         module=ast.parse(source),
         source=source,
     )
@@ -105,7 +104,6 @@ def test_augmented_receiver_resolution_uses_the_actual_captured_class_object() -
     module = ParsedModule(
         path=Path("product_mutation.py"),
         module_name="product_mutation",
-        is_package_init=False,
         module=ast.parse(source),
         source=source,
     )

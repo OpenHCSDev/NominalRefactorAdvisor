@@ -57,7 +57,6 @@ def test_target_calls_match_execution_order(statement: str, scope: str) -> None:
     module = ParsedModule(
         path=Path("targets.py"),
         module_name="targets",
-        is_package_init=False,
         module=ast.parse(source),
         source=source,
     )
@@ -78,7 +77,6 @@ def test_augmented_target_read_precedes_rhs_and_write_follows_it() -> None:
     module = ParsedModule(
         path=Path("targets.py"),
         module_name="targets",
-        is_package_init=False,
         module=ast.parse(source),
         source=source,
     )
@@ -107,7 +105,6 @@ def test_declared_call_edit_reaches_assignment_target_calls() -> None:
     module = ParsedModule(
         path=Path("targets.py"),
         module_name="targets",
-        is_package_init=False,
         module=ast.parse(source),
         source=source,
     )

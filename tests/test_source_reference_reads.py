@@ -14,7 +14,7 @@ from nominal_refactor_advisor.source_geometry import SourceByteSpan
 
 
 def _projection(source, name="reads"):
-    module = ParsedModule(Path(name + ".py"), name, False, ast.parse(source), source)
+    module = ParsedModule(Path(name + ".py"), name, ast.parse(source), source)
     return module, compact_product_flow_projection(module)
 
 

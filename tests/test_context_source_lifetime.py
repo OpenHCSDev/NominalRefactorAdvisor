@@ -21,7 +21,7 @@ def test_original_source_facts_reach_late_consumer_and_release_after_result(
     modules = [
         ParsedModule(
             path=tmp_path / f"module{index}.py", module_name=f"module{index}",
-            is_package_init=False, source="def plain(): pass\n",
+            source="def plain(): pass\n",
             module=ast.parse("def plain(): pass\n"),
         )
         for index in range(2)

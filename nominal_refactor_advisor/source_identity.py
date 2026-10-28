@@ -8,7 +8,10 @@ from abc import ABC
 from collections.abc import Mapping
 from functools import cached_property
 from os import PathLike, fspath
-from pathlib import Path
+from pathlib import Path, PurePath
+
+PACKAGE_INIT_FILE_NAME = "__init__.py"
+"""The file a package directory's own module is read from."""
 
 
 def python_source_cache_signature(source: str) -> str:
@@ -21,6 +24,12 @@ class SourceFileIdentity(ABC):
 
     path: Path
 
+    @property
+    def is_package_init(self) -> bool:
+        """Whether this file is a package's own module, its `__init__.py`."""
+
+        return source_path_is_package_init(self.path)
+
     @cached_property
     def file_path(self) -> str:
         """Canonical slash-normalized source identity for cross-platform joins."""
@@ -32,6 +41,13 @@ class SourceFileIdentity(ABC):
         """Canonical absolute source identity for filesystem comparisons."""
 
         return resolved_source_path_text(self.path)
+
+
+def source_path_is_package_init(path: str | PathLike[str]) -> bool:
+    """Whether the source at ``path`` is a package's own module: the one place
+    a path's file name decides it."""
+
+    return PurePath(source_path_text(path)).name == PACKAGE_INIT_FILE_NAME
 
 
 def source_path_text(path: str | PathLike[str]) -> str:

@@ -16,7 +16,7 @@ pytestmark = pytest.mark.native_proof
 def execution(source):
     return SourceModuleExecution.from_module(
         ParsedModule(
-            Path("construction.py"), "construction", False, ast.parse(source), source
+            Path("construction.py"), "construction", ast.parse(source), source
         )
     )
 

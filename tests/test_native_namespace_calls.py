@@ -26,7 +26,7 @@ from nominal_refactor_advisor.source_execution import SourceModuleExecution
 def execution(source):
     return SourceModuleExecution.from_module(
         ParsedModule(
-            Path("native_copy.py"), "native_copy", False, ast.parse(source), source
+            Path("native_copy.py"), "native_copy", ast.parse(source), source
         )
     )
 

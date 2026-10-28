@@ -33,7 +33,6 @@ def execution(source):
         ParsedModule(
             Path("empty_creation.py"),
             "empty_creation",
-            False,
             ast.parse(source),
             source,
         )

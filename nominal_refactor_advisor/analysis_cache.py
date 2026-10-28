@@ -653,7 +653,6 @@ class ModuleSourceSignature(SemanticDescentModuleFamilySignature):
         return cls(
             checkout_relative_path(module.path, effective_roots),
             module.module_name,
-            module.is_package_init,
             semantic_module_hash(module),
         )
 
@@ -1019,7 +1018,6 @@ class PerModuleAnalysisCacheFamilyIdentity(ReprCacheTokenMixin):
         *,
         path: Path,
         module_name: str,
-        is_package_init: bool,
         semantic_hash: str,
         config: DetectorConfig,
         presentation_roots: tuple[Path | str, ...] = (),
@@ -1035,7 +1033,6 @@ class PerModuleAnalysisCacheFamilyIdentity(ReprCacheTokenMixin):
             source_file=ModuleSourceSignature(
                 path=checkout_relative_path(path, effective_roots),
                 parsed_import_name=module_name,
-                is_package_init=is_package_init,
                 source_hash=semantic_hash,
             ),
             presentation_roots=presentation_root_texts(effective_roots),

@@ -95,8 +95,7 @@ def named_bindings(parsed_module: ParsedModule) -> dict[str, CompactNominalBindi
 def star_imported_modules(parsed_module: ParsedModule) -> tuple[str, ...]:
     """Absolute names of the modules `parsed_module` star-imports."""
 
-    parts = parsed_module.module_name.split(".")
-    package = parts if parsed_module.file_path.endswith("__init__.py") else parts[:-1]
+    package = parsed_module.module_path_identity.package_parts
     return tuple(
         ".".join(
             (

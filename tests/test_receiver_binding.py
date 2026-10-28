@@ -23,7 +23,6 @@ def module_for(source: str) -> ParsedModule:
     return ParsedModule(
         path=Path("receiver.py"),
         module_name="receiver",
-        is_package_init=False,
         module=ast.parse(source),
         source=source,
     )

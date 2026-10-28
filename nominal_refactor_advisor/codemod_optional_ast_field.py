@@ -1314,7 +1314,7 @@ class ProjectDecoderOwners:
         package = self.snapshot.module_import_graph.unique_source_file_for_module_name(
             self.root
         )
-        if package is None or Path(package.file_path).name != "__init__.py":
+        if package is None or not package.is_package_init:
             raise ValueError(
                 f"`{self.root}` is not a package to generate {GENERATED_MODULE} in"
             )

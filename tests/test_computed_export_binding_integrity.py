@@ -40,7 +40,6 @@ def test_computed_exports_do_not_prove_absence_from_lexical_bindings(installatio
     module = ParsedModule(
         Path("computed_exports.py"),
         "computed_exports",
-        False,
         ast.parse(source),
         source,
     )

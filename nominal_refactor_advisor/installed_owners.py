@@ -45,6 +45,8 @@ from .class_index import CompactModuleClassHeader
 from .declared_root import DeclaredRoot
 from .models import SourceLocation
 from .owner_candidates import OwnerCandidate, OwnerCost, OwnerReceiptKind
+from .python_module_identity import PythonModulePathIdentity
+from .source_identity import PACKAGE_INIT_FILE_NAME
 from .receipts import Receipt
 
 
@@ -266,11 +268,12 @@ class InstalledDistributionOwners:
                 or not all(part.isidentifier() for part in (*parts[:-1], file.stem))
             ):
                 continue
-            names = [*parts[:-1], file.stem]
-            if names[-1] == "__init__":
-                names.pop()
-            if names:
-                yield ".".join(names), Path(str(distribution.locate_file(file)))
+            if parts == (PACKAGE_INIT_FILE_NAME,):
+                continue
+            yield (
+                PythonModulePathIdentity.import_name_of(file),
+                Path(str(distribution.locate_file(file))),
+            )
 
     @classmethod
     def _owners(

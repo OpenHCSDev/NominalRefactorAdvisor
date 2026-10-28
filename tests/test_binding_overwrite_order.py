@@ -21,7 +21,6 @@ def _flow(source: str, owner: str = ""):
     parsed = ParsedModule(
         path=Path("overwrite.py"),
         module_name="overwrite",
-        is_package_init=False,
         module=ast.parse(source),
         source=source,
     )

@@ -32,7 +32,7 @@ def test_registry_consumer_spelling_does_not_create_maturity_obligations(
     if use_alias:
         assert runtime.family is runtime.ModeRunner
     parsed = ParsedModule(
-        Path("/repo/family.py"), "family", False, ast.parse(source), source
+        Path("/repo/family.py"), "family", ast.parse(source), source
     )
     findings = analyze_modules(ParsedModuleSet.of([parsed]), DetectorConfig())
     assert all(f.detector_id != "premature_registry_infrastructure" for f in findings)

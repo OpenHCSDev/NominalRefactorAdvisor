@@ -285,18 +285,8 @@ class SourceModuleImportGraph:
         importing_file: SourceFileDigest,
         imported_file: SourceFileDigest,
     ) -> str | None:
-        importing_parts = importing_file.module_name.split(".")
-        imported_parts = imported_file.module_name.split(".")
-        importing_package = (
-            tuple(importing_parts)
-            if importing_file.is_package_init
-            else tuple(importing_parts[:-1])
-        )
-        imported_package = (
-            tuple(imported_parts)
-            if imported_file.is_package_init
-            else tuple(imported_parts[:-1])
-        )
+        importing_package = importing_file.module_path_identity.package_parts
+        imported_package = imported_file.module_path_identity.package_parts
         if not importing_package:
             return None
         common_length = 0

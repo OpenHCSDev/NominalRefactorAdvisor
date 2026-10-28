@@ -67,7 +67,6 @@ def test_inherited_registry_configuration_remains_neutral_source_evidence() -> N
         ParsedModule(
             path=package / f"{name}.py",
             module_name=f"nominal_refactor_advisor.{name}",
-            is_package_init=False,
             module=ast.parse(source),
             source=source,
         )
@@ -101,7 +100,6 @@ def test_registry_receiver_collection_does_not_rewalk_factory_functions(
     parsed = ParsedModule(
         path=Path("/repo/registry.py"),
         module_name="registry",
-        is_package_init=False,
         module=ast.parse(source),
         source=source,
     )

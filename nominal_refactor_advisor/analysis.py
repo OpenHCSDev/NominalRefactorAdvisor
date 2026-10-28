@@ -117,6 +117,7 @@ from .semantic_descent import (
     build_semantic_descent_graph,
 )
 from .source_identity import (
+    PACKAGE_INIT_FILE_NAME,
     python_source_cache_signature,
     resolved_source_path_text,
     source_path_text,
@@ -252,7 +253,7 @@ class AnalysisContextRootResolver:
         parent = lexical_absolute_path(file_path).parent
         context_root = parent
         cursor = parent
-        while (cursor / "__init__.py").is_file():
+        while (cursor / PACKAGE_INIT_FILE_NAME).is_file():
             context_root = cursor
             cursor = cursor.parent
         return context_root
@@ -2288,7 +2289,6 @@ def analyze_compact_roots_with_cache(
                 local_identity = PerModuleAnalysisCacheFamilyIdentity.from_source(
                     path=path,
                     module_name=module_identity.import_name,
-                    is_package_init=module_identity.is_package_init,
                     semantic_hash=local_semantic_hash,
                     config=config,
                     presentation_roots=roots,

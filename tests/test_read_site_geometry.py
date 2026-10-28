@@ -26,7 +26,6 @@ def test_each_attribute_read_retains_its_exact_utf8_source_site(source: str) -> 
     module = ParsedModule(
         path=Path("read_geometry.py"),
         module_name="read_geometry",
-        is_package_init=False,
         module=tree,
         source=source,
     )
@@ -60,7 +59,6 @@ def test_call_target_and_argument_on_one_line_retain_distinct_sites() -> None:
     module = ParsedModule(
         path=Path("read_geometry.py"),
         module_name="read_geometry",
-        is_package_init=False,
         module=ast.parse(source),
         source=source,
     )

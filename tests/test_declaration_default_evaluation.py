@@ -20,7 +20,6 @@ def _flow(source: str, owner: str = ""):
     module = ParsedModule(
         path=Path("declaration_defaults.py"),
         module_name="declaration_defaults",
-        is_package_init=False,
         module=ast.parse(source),
         source=source,
     )
