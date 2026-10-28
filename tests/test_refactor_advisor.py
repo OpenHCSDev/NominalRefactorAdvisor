@@ -6,6 +6,7 @@ import gc
 import inspect
 import json
 import os
+import re
 import subprocess
 import sys
 from abc import ABC
@@ -11837,26 +11838,72 @@ def _generated_repeated_builder_source() -> str:
     )
 
 
+PROJECT_SPECIFIC_TERMS = (
+    "dqdock",
+    "dq_dock",
+    "pdb",
+    "rmsd",
+    "1ajp",
+    "1xd1",
+    "docking",
+    "ligand",
+    "receptor",
+    "zero_residual",
+)
+
+
+def _source_words(text: str) -> tuple[str, ...]:
+    """Lower-cased words of source text: identifiers split on `_`, camelCase and
+    every non-alphanumeric, so `IdenticalArmsDetector` is identical/arms/detector."""
+
+    return tuple(
+        word.lower()
+        for chunk in re.findall(r"[A-Za-z0-9]+", text)
+        for word in re.sub(
+            r"(?<=[a-z0-9])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])", " ", chunk
+        ).split()
+    )
+
+
+def _project_specific_terms(text: str) -> tuple[str, ...]:
+    """The forbidden terms `text` spells as whole words or whole word sequences."""
+
+    words = _source_words(text)
+    return tuple(
+        term
+        for term in PROJECT_SPECIFIC_TERMS
+        for sequence in [tuple(term.split("_"))]
+        if any(
+            words[start : start + len(sequence)] == sequence
+            for start in range(len(words) - len(sequence) + 1)
+        )
+    )
+
+
+@pytest.mark.parametrize(
+    ("source", "terms"),
+    (
+        ("class IdenticalArmsDetector:\n    pass\n", ()),
+        ("rmsd = 1\n", ("rmsd",)),
+        ("best_rmsd = score\n", ("rmsd",)),
+        ("class DQDockRunner: ...\n", ("dq_dock",)),
+        ("def zero_residual(): ...\n", ("zero_residual",)),
+        ("PDBCache = {}\n", ("pdb",)),
+    ),
+)
+def test_project_vocabulary_matches_whole_words(source: str, terms: tuple[str, ...]):
+    assert _project_specific_terms(source) == terms
+
+
 def test_detector_sources_do_not_embed_project_specific_vocabulary() -> None:
     detector_root = (
         Path(__file__).resolve().parents[1] / "nominal_refactor_advisor" / "detectors"
     )
-    forbidden_terms = (
-        "dqdock",
-        "dq_dock",
-        "pdb",
-        "rmsd",
-        "1ajp",
-        "1xd1",
-        "docking",
-        "ligand",
-        "receptor",
-        "zero_residual",
-    )
-    violations = []
-    for path in sorted(detector_root.glob("*.py")):
-        text = path.read_text(encoding="utf-8").lower()
-        violations.extend((path.name, term) for term in forbidden_terms if term in text)
+    violations = [
+        (path.name, term)
+        for path in sorted(detector_root.glob("*.py"))
+        for term in _project_specific_terms(path.read_text(encoding="utf-8"))
+    ]
     assert violations == []
 
 

@@ -29,6 +29,7 @@ PayloadOwnerT = TypeVar("PayloadOwnerT")
 PayloadValueT = TypeVar("PayloadValueT")
 StrEnumT = TypeVar("StrEnumT", bound=StrEnum)
 StringPayloadValueT = TypeVar("StringPayloadValueT", bound=str | None)
+IntegerPayloadValueT = TypeVar("IntegerPayloadValueT", bound=int | None)
 
 
 class DataclassPayloadProjection(DataclassJsonReport, ABC):
@@ -519,42 +520,60 @@ class BooleanPayloadValueCodec(PayloadValueCodec[bool]):
 
 
 @dataclass(frozen=True)
-class IntegerPayloadValueCodec(PayloadValueCodec[int | None]):
-    """Optional non-negative integer payload semantics."""
+class NonNegativeIntegerPayloadValueCodec(
+    PayloadValueCodec[IntegerPayloadValueT],
+    Generic[IntegerPayloadValueT],
+    ABC,
+):
+    """Shared wire mechanics for non-negative integer payload values."""
+
+    @abstractmethod
+    def value_when_missing(self, field_name: str) -> IntegerPayloadValueT:
+        """Return the declared missing-field value or reject its absence."""
+        raise NotImplementedError
+
+    def serialize_missing(self) -> JsonValue:
+        """Reject a missing value unless a leaf declares it valid."""
+        raise TypeError("integer payload codec requires a non-negative integer")
 
     def read(
         self,
         payload: Mapping[str, JsonValue],
         field_name: str,
-    ) -> int | None:
+    ) -> IntegerPayloadValueT:
         value = payload.get(field_name)
         if value is None:
-            return None
+            return self.value_when_missing(field_name)
         if isinstance(value, bool) or not isinstance(value, int) or value < 0:
             raise ValueError(f"Expected non-negative integer field {field_name!r}")
-        return value
+        return cast(IntegerPayloadValueT, value)
 
     def serialize(self, value: object) -> JsonValue:
         if value is None:
-            return None
+            return self.serialize_missing()
         if isinstance(value, bool) or not isinstance(value, int) or value < 0:
             raise TypeError("integer payload codec requires a non-negative integer")
         return value
 
 
 @dataclass(frozen=True)
-class RequiredIntegerPayloadValueCodec(IntegerPayloadValueCodec):
+class IntegerPayloadValueCodec(NonNegativeIntegerPayloadValueCodec[int | None]):
+    """Optional non-negative integer payload semantics."""
+
+    def value_when_missing(self, field_name: str) -> int | None:
+        del field_name
+        return None
+
+    def serialize_missing(self) -> JsonValue:
+        return None
+
+
+@dataclass(frozen=True)
+class RequiredIntegerPayloadValueCodec(NonNegativeIntegerPayloadValueCodec[int]):
     """Require a present non-negative integer payload value."""
 
-    def read(
-        self,
-        payload: Mapping[str, JsonValue],
-        field_name: str,
-    ) -> int:
-        value = super().read(payload, field_name)
-        if value is None:
-            raise ValueError(f"Expected non-negative integer field {field_name!r}")
-        return value
+    def value_when_missing(self, field_name: str) -> int:
+        raise ValueError(f"Expected non-negative integer field {field_name!r}")
 
 
 @dataclass(frozen=True)

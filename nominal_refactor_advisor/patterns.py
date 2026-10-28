@@ -558,6 +558,43 @@ class PatternId(IntEnum):
         ),
         witness_capabilities=(CapabilityTag.PROVENANCE,),
     )
+    IDENTICAL_ARMS = _pattern(
+        stable_id=45,
+        display_name="Identical Arms",
+        required_relation=(
+            "Every arm of one branch runs the same code, so its tests "
+            "distinguish cases that the code then treats identically."
+        ),
+        witness_capabilities=(CapabilityTag.PROVENANCE,),
+    )
+    UNDISTINGUISHED_TYPE_TEST = _pattern(
+        stable_id=46,
+        display_name="Undistinguished Type Test",
+        required_relation=(
+            "Rungs of one isinstance ladder run the same code, adjacent to each "
+            "other or as the else does, so those classes are told apart only "
+            "to be treated identically."
+        ),
+        witness_capabilities=(CapabilityTag.PROVENANCE,),
+    )
+    NAME_ONLY_SUBCLASS = _pattern(
+        stable_id=47,
+        display_name="Name-Only Subclass",
+        required_relation=(
+            "A subclass declares nothing and every spelling of it constructs or "
+            "raises it, so it differs from its base only by name."
+        ),
+        witness_capabilities=(CapabilityTag.NOMINAL_IDENTITY,),
+    )
+    UNDISTINGUISHED_ENUM_MEMBERS = _pattern(
+        stable_id=48,
+        display_name="Undistinguished Enum Members",
+        required_relation=(
+            "Members of one plain Enum are only ever named together, so no code "
+            "treats one differently from the other."
+        ),
+        witness_capabilities=(CapabilityTag.ENUMERATION,),
+    )
 
     def __new__(
         cls,
