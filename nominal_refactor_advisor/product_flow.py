@@ -28,6 +28,7 @@ from typing import (
     cast,
 )
 
+from .ast_projection import AbsentStatementValue, StatementValue
 from .annotation_semantics import NOMINAL_ANNOTATION_SOURCE_AUTHORITY
 from .ast_tools import (
     CollectedFamily,
@@ -4431,7 +4432,9 @@ class _CompactFlowCollector(
 
     def _visit_annotated_assignment(self, node: ast.AnnAssign) -> None:
         result = None
-        if node.value is None:
+        try:
+            value = StatementValue.of(node).require_value("a bare annotation")
+        except AbsentStatementValue:
             self.mutation_targets.visit(node.target)
             if not (
                 isinstance(node.target, ast.Name) and self.owner.kind.is_function_scope
@@ -4439,7 +4442,7 @@ class _CompactFlowCollector(
                 return
         else:
             result = self._capture_result(
-                node.value, CompactValueDestination.for_assignment((node.target,)), node
+                value, CompactValueDestination.for_assignment((node.target,)), node
             )
         mutations = self._visit_assignment_targets((node.target,), result)
         self._record_exact_value_aliases(

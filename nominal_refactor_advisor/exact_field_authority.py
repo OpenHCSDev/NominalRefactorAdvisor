@@ -8,7 +8,7 @@ from functools import cached_property
 from itertools import combinations
 
 from .ast_projection import ExpressionReference
-from .ast_projection import CallKeywords
+from .ast_projection import CallKeywords, StatementValue
 from .ast_tools import (
     ModuleAnnotationEvaluationMode,
     ParsedModule,
@@ -120,7 +120,10 @@ class ExactDataclassFieldSemantics:
         comment_lines: SourceCommentLineIndex,
         annotation_mode: type[ModuleAnnotationEvaluationMode],
     ) -> ExactDataclassFieldSemantics:
-        if not isinstance(statement.target, ast.Name) or statement.value is not None:
+        if (
+            not isinstance(statement.target, ast.Name)
+            or StatementValue.of(statement).supplies_value
+        ):
             raise ValueError("Promoted dataclass fields must be default-free names")
         if comment_lines.intersects(statement) or (
             statement.lineno > 1 and statement.lineno - 1 in comment_lines.comment_lines

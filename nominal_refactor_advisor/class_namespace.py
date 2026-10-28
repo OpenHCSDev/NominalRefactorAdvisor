@@ -14,6 +14,7 @@ from typing import (
     cast,
 )
 
+from .ast_projection import StatementValue
 from .ast_tools import ModuleAnnotationEvaluationMode
 from .captured_reference import SingleFlowPrefix
 from .declaration_dependencies import (
@@ -712,7 +713,7 @@ class _ClassNamespaceEffectProjection(ast.NodeVisitor):
         self._record_effect(AugmentedAssignmentSourceEffect, node)
 
     def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
-        if node.value is not None:
+        if StatementValue.of(node).supplies_value:
             self.visit_Assign(node)
         if node.simple and self.scope.scopes[-1].records_variable_annotations:
             self._record_effect(AnnotationStorageEffect, node)

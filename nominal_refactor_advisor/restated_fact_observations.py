@@ -18,7 +18,7 @@ from enum import StrEnum
 from pathlib import Path
 
 from .lexical_bindings import ImportAlias, ImportBoundNameProjection
-from .ast_projection import CallKeywords
+from .ast_projection import CallKeywords, StatementValue
 from .ast_tools import BuiltinCallName, ParsedModule, module_syntax_index
 from .declared_root import DeclaredRoot
 from .models import SourceLocation
@@ -760,8 +760,10 @@ class LegacyMarkerSiteFamily(RestatingSiteFamily):
             *index.indexed_nodes_of_type(ast.AnnAssign),
         ):
             owner = index.parent_node(node_index)
-            if node.value is not None and isinstance(owner, (ast.Module, ast.ClassDef)):
-                replacement = cls.aliased(node.value)
+            if isinstance(owner, (ast.Module, ast.ClassDef)) and (
+                pair := StatementValue.of(node).paired_with(node)
+            ):
+                replacement = cls.aliased(pair[1])
                 for target in cls.assigned_names(node):
                     if replacement is not None and LegacyWord.in_identifier(target):
                         yield cls.site(

@@ -10,6 +10,7 @@ from enum import Enum, Flag, IntEnum, IntFlag, StrEnum
 from functools import cached_property
 from typing import Callable, Self
 
+from .ast_projection import StatementValue
 from .value_expression import LiteralExpressionEffects
 
 QualifiedReferenceResolver = Callable[[ast.expr, frozenset[str]], str | None]
@@ -263,7 +264,10 @@ class PythonEnumBaseAuthority:
                 and type(statement.value.value) is str
             ):
                 continue
-            if isinstance(statement, ast.AnnAssign) and statement.value is None:
+            if (
+                isinstance(statement, ast.AnnAssign)
+                and not StatementValue.of(statement).supplies_value
+            ):
                 continue
             targets: tuple[ast.expr, ...]
             value: ast.expr | None

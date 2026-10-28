@@ -6,9 +6,11 @@ import ast
 from abc import ABC, abstractmethod
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
-from typing import Self, cast
+from typing import Self, TypeVar, cast
 
 from .declared_family import ForeignAdapter
+
+TargetT = TypeVar("TargetT")
 
 
 class ExpressionReference(ForeignAdapter):
@@ -284,3 +286,119 @@ class CallKeywords:
     @property
     def by_name(self) -> Mapping[str, ast.expr]:
         return {keyword.name: keyword.value for keyword in self.named}
+
+
+class AbsentStatementValue(ValueError):
+    """A bare annotation or bare `return` supplies no value."""
+
+
+ValuedStatement = ast.Assign | ast.AnnAssign | ast.Return
+
+
+class StatementValue(ABC):
+    """The value an assignment, annotation or `return` supplies, or its absence."""
+
+    statement: ValuedStatement
+
+    @staticmethod
+    def of(statement: ValuedStatement) -> StatementValue:
+        """The ast boundary: a bare annotation or bare `return` has no value."""
+
+        if statement.value is None:
+            return NoStatementValue(statement)
+        return SuppliedValue(statement, statement.value)
+
+    @property
+    @abstractmethod
+    def supplies_value(self) -> bool:
+        """Whether executing the statement evaluates a value (Python semantics:
+        `x: T` declares without binding; bare `return` returns None implicitly)."""
+        raise NotImplementedError
+
+    @abstractmethod
+    def require_value(self, reason: str) -> ast.expr:
+        raise NotImplementedError
+
+    @abstractmethod
+    def visit_with(self, visitor: ast.NodeVisitor) -> None:
+        raise NotImplementedError
+
+    @abstractmethod
+    def walk(self) -> Iterable[ast.AST]:
+        """Every node inside the supplied value; nothing without one."""
+        raise NotImplementedError
+
+    @abstractmethod
+    def paired_with(self, target: TargetT) -> tuple[TargetT, ast.expr] | None:
+        """The (target, value) pair of a projection whose contract is optional."""
+        raise NotImplementedError
+
+    @property
+    @abstractmethod
+    def value_kind_name(self) -> str:
+        raise NotImplementedError
+
+    @property
+    @abstractmethod
+    def value_source(self) -> str | None:
+        """Unparsed value for record keys, where an absent value is spelled None."""
+        raise NotImplementedError
+
+
+@dataclass(frozen=True)
+class SuppliedValue(StatementValue):
+    statement: ValuedStatement
+    value: ast.expr
+
+    @property
+    def supplies_value(self) -> bool:
+        return True
+
+    def require_value(self, reason: str) -> ast.expr:
+        return self.value
+
+    def visit_with(self, visitor: ast.NodeVisitor) -> None:
+        visitor.visit(self.value)
+
+    def walk(self) -> Iterable[ast.AST]:
+        return ast.walk(self.value)
+
+    def paired_with(self, target: TargetT) -> tuple[TargetT, ast.expr] | None:
+        return target, self.value
+
+    @property
+    def value_kind_name(self) -> str:
+        return type(self.value).__name__
+
+    @property
+    def value_source(self) -> str | None:
+        return ast.unparse(self.value)
+
+
+@dataclass(frozen=True)
+class NoStatementValue(StatementValue):
+    statement: ValuedStatement
+
+    @property
+    def supplies_value(self) -> bool:
+        return False
+
+    def require_value(self, reason: str) -> ast.expr:
+        raise AbsentStatementValue(reason)
+
+    def visit_with(self, visitor: ast.NodeVisitor) -> None:
+        return None
+
+    def walk(self) -> Iterable[ast.AST]:
+        return ()
+
+    def paired_with(self, target: TargetT) -> tuple[TargetT, ast.expr] | None:
+        return None
+
+    @property
+    def value_kind_name(self) -> str:
+        return "None"
+
+    @property
+    def value_source(self) -> str | None:
+        return None

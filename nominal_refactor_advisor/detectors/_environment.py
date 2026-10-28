@@ -14,7 +14,7 @@ from metaclass_registry import AutoRegisterMeta
 
 from ..lexical_bindings import ImportBoundNameProjection
 from ..ast_projection import ExpressionReference
-from ..ast_projection import CallKeywords
+from ..ast_projection import CallKeywords, StatementValue
 from ..ast_tools import (
     BuiltinCallName,
     CollectedFamily,
@@ -256,7 +256,8 @@ class _FunctionScope:
         return tuple(
             node
             for node in nodes
-            if isinstance(node, (ast.Assign, ast.AnnAssign)) and node.value is not None
+            if isinstance(node, (ast.Assign, ast.AnnAssign))
+            and StatementValue.of(node).supplies_value
         )
 
 

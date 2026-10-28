@@ -35,7 +35,7 @@ from metaclass_registry import AutoRegisterMeta
 
 from .foreign_family import FunctionDefinition
 from .interpreter import PythonVersion
-from .ast_projection import CallKeywords
+from .ast_projection import CallKeywords, StatementValue
 from .ast_projection import (
     AstNameFamily,
     ExpressionReference,
@@ -1519,8 +1519,7 @@ class EagerNameLoadCollector(EagerFunctionAnnotationVisitor):
         self.visit(node.target)
         if self.annotation_mode.annotations_execute_at_declaration:
             self.visit(node.annotation)
-        if node.value is not None:
-            self.visit(node.value)
+        StatementValue.of(node).visit_with(self)
 
 
 @dataclass(frozen=True)

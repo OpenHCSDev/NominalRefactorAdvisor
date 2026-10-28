@@ -24,7 +24,7 @@ from typing import (
 
 from ..annotation_semantics import CLASSVAR_ANNOTATION_AUTHORITY
 from ..ast_projection import ExpressionReference
-from ..ast_projection import CallKeywords
+from ..ast_projection import AbsentStatementValue, CallKeywords, StatementValue
 from ..ast_tools import (
     BuiltinCallName,
     SourceModule,
@@ -194,7 +194,7 @@ class HelperSupportProjectionAuthority:
         if (
             len(body) != 1
             or not isinstance(body[0], ast.Return)
-            or body[0].value is None
+            or not StatementValue.of(body[0]).supplies_value
         ):
             return None
         returned = body[0].value
@@ -696,9 +696,13 @@ def _guarded_delegator_candidates_for_class(
             guard, ast.If
         ) or not HELPER_SUPPORT_PROJECTION_AUTHORITY.if_returns_none_only(guard):
             continue
-        if not isinstance(return_stmt, ast.Return) or return_stmt.value is None:
+        if not isinstance(return_stmt, ast.Return):
             continue
-        delegate_name = _delegate_name_from_return(return_stmt.value)
+        try:
+            returned = StatementValue.of(return_stmt).require_value("a bare return")
+        except AbsentStatementValue:
+            continue
+        delegate_name = _delegate_name_from_return(returned)
         if delegate_name is None:
             continue
         yield GuardedDelegatorCandidate(
@@ -808,9 +812,10 @@ def _linear_query_loop(body: list[ast.stmt]) -> ast.For | None:
 
 def _linear_query_return_expr(loop: ast.For, result_name: str) -> ast.AST | None:
     return_exprs = [
-        current.value
+        pair[1]
         for current in _walk_nodes(loop)
-        if isinstance(current, ast.Return) and current.value is not None
+        if isinstance(current, ast.Return)
+        and (pair := StatementValue.of(current).paired_with(current)) is not None
     ]
     if len(return_exprs) != 1 or not _name_mentions(return_exprs[0], result_name):
         return None
@@ -1187,7 +1192,9 @@ def _guarded_wrapper_function_candidates(
             guard, ast.If
         ) or not HELPER_SUPPORT_PROJECTION_AUTHORITY.if_returns_none_only(guard):
             continue
-        if not isinstance(return_stmt, ast.Return) or return_stmt.value is None:
+        if not isinstance(return_stmt, ast.Return) or not StatementValue.of(
+            return_stmt
+        ).supplies_value:
             continue
         node_types = _guarded_wrapper_node_types(guard)
         if not node_types:
@@ -3680,9 +3687,11 @@ class HelperSyntaxProjectionAuthority:
             target = single_assign_target(assignment)
             return None if target is None else (target, assignment.value)
         annotated_assignment = as_ast(statement, ast.AnnAssign)
-        if annotated_assignment is None or annotated_assignment.value is None:
+        if annotated_assignment is None:
             return None
-        return annotated_assignment.target, annotated_assignment.value
+        return StatementValue.of(annotated_assignment).paired_with(
+            annotated_assignment.target
+        )
 
     def abstract_method_names(self, node: ast.ClassDef) -> tuple[str, ...]:
         return sorted_tuple(
@@ -4376,10 +4385,12 @@ def _schema_accessor_fetch_assignment(
     elif isinstance(statement, ast.AnnAssign) and isinstance(
         statement.target, ast.Name
     ):
-        if statement.value is None:
+        try:
+            value = StatementValue.of(statement).require_value("a bare annotation")
+        except AbsentStatementValue:
             return None
         target_name = statement.target.id
-        fetch = _schema_accessor_fetch_call(statement.value)
+        fetch = _schema_accessor_fetch_call(value)
     else:
         return None
     if fetch is None:
@@ -4437,8 +4448,8 @@ def _schema_accessor_returns_local(
 ) -> bool:
     return any(
         isinstance(node, ast.Return)
-        and node.value is not None
-        and _node_mentions_name(node.value, local_name)
+        and (pair := StatementValue.of(node).paired_with(node)) is not None
+        and _node_mentions_name(pair[1], local_name)
         for node in _walk_nodes(function)
     )
 

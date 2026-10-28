@@ -16,6 +16,7 @@ from enum import StrEnum
 from functools import cached_property
 from typing import Callable, TypeAlias
 
+from .ast_projection import StatementValue
 from .annotation_semantics import (
     ModuleNameReferenceScope,
     StringizedAnnotationSurface,
@@ -525,8 +526,8 @@ class _DeclarationDependencyCollector(
         self._visit_class(node)
 
     def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
-        if node.value is not None:
-            self.visit(node.value)
+        if StatementValue.of(node).supplies_value:
+            StatementValue.of(node).visit_with(self)
             self.visit(node.target)
         self._visit_annotation(
             node.annotation,

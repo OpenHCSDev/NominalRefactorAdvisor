@@ -36,7 +36,7 @@ from .ast_projection import ExpressionReference
 from .foreign_family import FunctionDefinition
 from .interpreter import PythonVersion
 from .assignment_projection import SingleAssignmentAndValueNameProjection
-from .ast_projection import CallKeywords
+from .ast_projection import CallKeywords, StatementValue
 from .ast_tools import (
     ClassFunctionStackNodeVisitor,
     CollectedFamily,
@@ -5042,9 +5042,11 @@ class _ProjectionVisitor(ClassFunctionStackNodeVisitor):
         if not self.include_presentations:
             self.generic_visit(node)
             return
-        if node.value is not None and self._collect_assignment_projection(
+        if (
+            pair := StatementValue.of(node).paired_with(node)
+        ) and self._collect_assignment_projection(
             node,
-            node.value,
+            pair[1],
             axis_type_names=ProjectionTypeScope.annotation_type_names(node.annotation),
         ):
             return
@@ -5054,7 +5056,9 @@ class _ProjectionVisitor(ClassFunctionStackNodeVisitor):
         if not self.include_presentations:
             self.generic_visit(node)
             return
-        if node.value is not None and self._collect_return_projection(node, node.value):
+        if (
+            pair := StatementValue.of(node).paired_with(node)
+        ) and self._collect_return_projection(node, pair[1]):
             return
         self.generic_visit(node)
 

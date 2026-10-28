@@ -63,7 +63,7 @@ from .assignment_projection import (
     AssignmentStatementNameProjection,
     SingleAssignmentAndValueNameProjection,
 )
-from .ast_projection import CallKeywords
+from .ast_projection import CallKeywords, StatementValue
 from .ast_tools import (
     ROOT_NAME_PROJECTION,
     AstParentIndex,
@@ -11119,8 +11119,8 @@ class DataclassConstructorProjectionDerivation(
         candidates = tuple(
             candidate
             for node in walk_function_body_nodes(boundary.function.node)
-            if isinstance(node, ast.Return) and node.value is not None
-            for call_node in ast.walk(node.value)
+            if isinstance(node, ast.Return)
+            for call_node in StatementValue.of(node).walk()
             if isinstance(call_node, ast.Call)
             if (
                 candidate := cls.candidate_from_call(

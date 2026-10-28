@@ -6,6 +6,8 @@ import ast
 from dataclasses import dataclass
 from collections.abc import Iterable
 
+from .ast_projection import StatementValue
+
 
 @dataclass(frozen=True)
 class AssignmentTargetNameProjection:
@@ -128,10 +130,9 @@ class SingleAssignmentAndValueNameProjection(AssignmentStatementNameProjection):
     def pair(self) -> tuple[str, ast.expr] | None:
         if (
             isinstance(self.statement, ast.Assign | ast.AnnAssign)
-            and self.statement.value is not None
             and (name := self.direct_name) is not None
         ):
-            return name, self.statement.value
+            return StatementValue.of(self.statement).paired_with(name)
         return None
 
     @property

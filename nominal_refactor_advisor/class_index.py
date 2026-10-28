@@ -44,7 +44,7 @@ from .annotation_semantics import (
     NOMINAL_ANNOTATION_SOURCE_AUTHORITY,
 )
 from .ast_projection import ExpressionReference
-from .ast_projection import CallKeywords
+from .ast_projection import AbsentStatementValue, CallKeywords, StatementValue
 from .ast_tools import (
     CompactModuleIdentity,
     CollectedFamily,
@@ -2065,23 +2065,23 @@ class LatentRosterObservation:
     ) -> tuple[LatentRosterObservation, ...]:
         if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef)):
             body = _trim_leading_docstring(list(statement.body))
-            if (
-                len(body) == 1
-                and isinstance(body[0], ast.Return)
-                and body[0].value is not None
-            ):
-                return cls.from_value(
-                    parsed_module,
-                    statement,
-                    roster_name=statement.name,
-                    value=body[0].value,
-                )
-            return ()
+            if len(body) != 1 or not isinstance(body[0], ast.Return):
+                return ()
+            try:
+                value = StatementValue.of(body[0]).require_value("a bare return")
+            except AbsentStatementValue:
+                return ()
+            return cls.from_value(
+                parsed_module,
+                statement,
+                roster_name=statement.name,
+                value=value,
+            )
         target_value: tuple[ast.AST, ast.AST] | None = None
         if isinstance(statement, ast.Assign) and len(statement.targets) == 1:
             target_value = statement.targets[0], statement.value
-        elif isinstance(statement, ast.AnnAssign) and statement.value is not None:
-            target_value = statement.target, statement.value
+        elif isinstance(statement, ast.AnnAssign):
+            target_value = StatementValue.of(statement).paired_with(statement.target)
         if target_value is None or not isinstance(target_value[0], ast.Name):
             return ()
         target, value = target_value
@@ -3339,9 +3339,9 @@ class ModulePublicExportSourceAuthority:
             isinstance(statement, ast.AnnAssign)
             and isinstance(statement.target, ast.Name)
             and statement.target.id == PYTHON_PUBLIC_EXPORT_ASSIGNMENT
-            and statement.value is not None
+            and (pair := StatementValue.of(statement).paired_with(statement.target))
         ):
-            return cls(statement, statement.target, statement.value)
+            return cls(statement, *pair)
         return None
 
     @classmethod
@@ -4283,7 +4283,7 @@ class ClassBodyNormalForm:
             line=statement.lineno,
             assigns_value=(
                 isinstance(statement, (ast.Assign, ast.AnnAssign))
-                and statement.value is not None
+                and StatementValue.of(statement).supplies_value
             ),
             syntax=ast.dump(normalized, include_attributes=False),
             global_bindings=tuple(global_bindings),
@@ -5027,8 +5027,7 @@ def _class_nominal_reference_root_names(
         for statement in class_node.body:
             if isinstance(statement, ast.AnnAssign):
                 reference_nodes.append(statement.annotation)
-                if statement.value is not None:
-                    reference_nodes.append(statement.value)
+                reference_nodes.extend(StatementValue.of(statement).walk())
             elif isinstance(statement, ast.Assign):
                 reference_nodes.append(statement.value)
     return frozenset(
@@ -5634,8 +5633,8 @@ def _compact_assignment_target_value(
 ) -> tuple[ast.AST, ast.AST] | None:
     if isinstance(statement, ast.Assign) and len(statement.targets) == 1:
         return statement.targets[0], statement.value
-    if isinstance(statement, ast.AnnAssign) and statement.value is not None:
-        return statement.target, statement.value
+    if isinstance(statement, ast.AnnAssign):
+        return StatementValue.of(statement).paired_with(statement.target)
     return None
 
 
@@ -6977,7 +6976,11 @@ def _dataclass_field_role(
     )
     if not annotation_is_resolved_plain_field:
         return CompactDataclassFieldRole.UNRESOLVED
-    if statement.value is None or isinstance(statement.value, ast.Constant):
+    try:
+        value = StatementValue.of(statement).require_value("a bare field annotation")
+    except AbsentStatementValue:
+        return CompactDataclassFieldRole.STORED_INIT
+    if isinstance(value, ast.Constant):
         return CompactDataclassFieldRole.STORED_INIT
     if not isinstance(statement.value, ast.Call):
         return CompactDataclassFieldRole.UNRESOLVED
@@ -7086,7 +7089,7 @@ def _dataclass_fields(
         direct_aliases: dict[str, str] = {}
         if isinstance(statement, ast.Assign | ast.AnnAssign):
             alias_name = _single_assignment_target_name(statement)
-            if alias_name is not None and statement.value is not None:
+            if alias_name is not None and StatementValue.of(statement).supplies_value:
                 qualified_value = _class_scope_qualified_import_name(
                     module_binding_snapshot,
                     class_aliases,

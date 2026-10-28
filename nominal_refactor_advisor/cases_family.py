@@ -31,6 +31,7 @@ from typing import ClassVar
 
 from metaclass_registry import AutoRegisterMeta
 
+from .ast_projection import StatementValue
 from .lexical_bindings import ImportBoundNameProjection
 from .ast_tools import (
     AstParentIndex,
@@ -964,7 +965,10 @@ class CasesFamily(Cases, Descent):
                 )
             if not isinstance(
                 statement, ast.Assign | ast.AnnAssign | ast.FunctionDef
-            ) or (isinstance(statement, ast.AnnAssign) and statement.value is not None):
+            ) or (
+                isinstance(statement, ast.AnnAssign)
+                and StatementValue.of(statement).supplies_value
+            ):
                 raise handback(
                     module,
                     statement,
@@ -1221,7 +1225,7 @@ class CasesFamily(Cases, Descent):
                 if (
                     len(body) != 1
                     or not isinstance(body[0], ast.Return)
-                    or body[0].value is None
+                    or not StatementValue.of(body[0]).supplies_value
                 ):
                     pending.remove(function)
                     continue
