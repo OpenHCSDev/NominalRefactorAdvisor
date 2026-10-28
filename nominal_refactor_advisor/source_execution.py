@@ -184,7 +184,6 @@ from .source_entry import (
 )
 from .source_geometry import SourceByteSpan
 from .value_expression import (
-    EmptyDictionaryExpression,
     FunctionExpression,
     LexicalValueReference,
     LiteralExpressionEffects,
@@ -3852,13 +3851,12 @@ class SourceExecutionABC(
         self,
         read: CompactFlowValue,
     ) -> SourceEmptyDictionaryCapture:
+        """The one creation owner of this read's dictionary production.
+
+        Whether the syntax is an empty dictionary is the compiler law's question,
+        asked when the owner is admitted (``creation_admission``); this lookup
+        does not answer it a second time from the read's projection."""
         operation = self.source.value_operation(read)
-        if not isinstance(
-            cast(CompactValueUse, read.use).value, EmptyDictionaryExpression
-        ):
-            raise ValueError(
-                "Empty dictionary requires its unique original source value"
-            )
         if operation not in self._empty_dictionary_creations:
             self._empty_dictionary_creations[operation] = SourceEmptyDictionaryCapture(
                 self, operation

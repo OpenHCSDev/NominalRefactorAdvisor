@@ -71,7 +71,7 @@ def test_nonempty_transfer_does_not_gain_empty_creation_or_source_installation(s
     env = execution(source)
     store = SourceAssignmentStore(env, env.entry.context.flow.mutations[-1])
     with pytest.raises(ValueError):
-        env.empty_dictionary_creation(store.source_read)
+        env.empty_dictionary_creation(store.source_read).require_closed()
     with pytest.raises(ValueError):
         store.require_installation(env.required_prefix(env.entry.context, None))
 
