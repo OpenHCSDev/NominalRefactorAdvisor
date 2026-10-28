@@ -51,7 +51,7 @@ from .class_overlap import (
 )
 from .codemod import (
     FindingEvidenceActionKeysMixin,
-    FindingRecipeSynthesizer,
+    SelfDeclaredRecipeSynthesizer,
     RefactorRecipe,
 )
 from .codemod_authority_claims import AstTargetAuthorityClaim
@@ -1607,7 +1607,7 @@ class ExtendOwnerOperation(RepositorySourceReprovedOperation):
 
 class ClassOverlapFindingRecipeSynthesizer(
     FindingEvidenceActionKeysMixin,
-    FindingRecipeSynthesizer,
+    SelfDeclaredRecipeSynthesizer,
     ClassBodyCompositionConcept,
 ):
     """The verdict's move as a recipe, when the move keeps every class identity.

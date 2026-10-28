@@ -4736,12 +4736,8 @@ class FindingRecipeSynthesizer(FindingRecipeEvaluator, ABC):
         evaluator = FindingRecipeEvaluator.for_finding(finding)
         if evaluator is None:
             return False
-        evaluation = evaluator.evaluate_recipe_for_finding(
-            finding,
-            selector_context,
-        )
         return issubclass(
-            evaluation.required_evaluation_declaration_type,
+            evaluator.evaluation_declaration_for_finding(finding, selector_context),
             concept_type,
         )
 
@@ -4788,6 +4784,23 @@ class FindingRecipeSynthesizer(FindingRecipeEvaluator, ABC):
             executable_recipe=recipe,
             evaluation_declaration_type=type(self),
         )
+
+
+class SelfDeclaredRecipeSynthesizer(FindingRecipeSynthesizer, ABC):
+    """A synthesizer whose every evaluation names its own declaration.
+
+    It returns only `rejected_evaluation` and `executable_evaluation`, both of
+    which name `type(self)`, so a finding's concept is read off the type with
+    no evaluation.
+    """
+
+    def evaluation_declaration_for_finding(
+        self,
+        finding: RefactorFinding,
+        context: CodemodSelectorContext,
+    ) -> type[object]:
+        del finding, context
+        return type(self)
 
 
 class PrimaryEvidenceActionKeysMixin:
