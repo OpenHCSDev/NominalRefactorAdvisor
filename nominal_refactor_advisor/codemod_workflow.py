@@ -4,12 +4,15 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from collections import Counter, deque
-from collections.abc import Callable, Hashable, Iterable
+from collections.abc import Callable, Hashable, Iterable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from functools import cached_property
 from pathlib import Path
-from typing import ClassVar, Generic, Self, TypeVar
+import sys
+import time
+from typing import ClassVar, Generic, Self, TextIO, TypeVar
 
 from .analysis import (
     AnalysisPathScope,
@@ -48,6 +51,7 @@ from .codemod_runtime import (
     FindingRecipeTrajectoryObstacle,
 )
 from .detectors import DetectorConfig, IssueDetector, SemanticDescentGraphIssueDetector
+from .owner_picks import OwnerPickReport, OwnerPicks
 from .json_reports import (
     DataclassJsonReport,
     JsonReportAliasProperty,
@@ -1122,6 +1126,8 @@ class CodemodRefactorGoalReport(DataclassJsonReport):
     migration_type: type[RefactorConcept] = json_report_field(included=False)
     stages: tuple[CodemodRefactorGoalStage, ...]
     trajectory_proof: CodemodRefactorTrajectoryProof
+    owner_picks: OwnerPickReport | None = None
+    """What became of each extract-mixin finding under the owner picks (#67)."""
 
     @json_report_property()
     def stage_count(self) -> int:
@@ -1559,6 +1565,29 @@ class CodemodSimulationFindingProjection:
         )
 
 
+@dataclass
+class CodemodGoalProgress:
+    """One line per goal phase on a stream, so a long run says where it is."""
+
+    stream: TextIO = field(default_factory=lambda: sys.stderr)
+    started: float = field(default_factory=time.perf_counter)
+
+    @contextmanager
+    def phase(self, label: str) -> Iterator[list[str]]:
+        """Time one phase; the caller may append details to the yielded list."""
+
+        start = time.perf_counter()
+        details: list[str] = []
+        yield details
+        print(
+            f"nra goal: {label} {time.perf_counter() - start:.1f}s"
+            + "".join(f" {detail}" for detail in details)
+            + f" (total {time.perf_counter() - self.started:.1f}s)",
+            file=self.stream,
+            flush=True,
+        )
+
+
 @dataclass(frozen=True, kw_only=True)
 class CodemodRefactorGoalRunner:
     """Prove virtual stages, then commit one revision-checked migration batch."""
@@ -1576,6 +1605,9 @@ class CodemodRefactorGoalRunner:
     trajectory_budget: CodemodRefactorTrajectoryBudget = field(
         default_factory=CodemodRefactorTrajectoryBudget
     )
+    owner_picks: OwnerPicks | None = None
+    progress: CodemodGoalProgress = field(default_factory=CodemodGoalProgress)
+    """A picker's owner choices, applied to every scan's extract-mixin findings."""
 
     def starting_scan(self) -> CodemodWorkflowScan:
         if self.initial_scan is None:
@@ -1671,13 +1703,31 @@ class CodemodRefactorGoalRunner:
         self,
         findings: Iterable[RefactorFinding],
     ) -> list[RefactorFinding]:
-        return AnalysisPathScope(
+        scoped = AnalysisPathScope(
             analysis_roots=self.roots,
             report_roots=self.report_roots,
         ).filter_findings(list(findings))
+        if self.owner_picks is None:
+            return scoped
+        return self.owner_picks.applied(scoped)[0]
 
     def run(self) -> CodemodRefactorGoalReport:
-        starting_scan = self.starting_scan()
+        with self.progress.phase("starting scan") as details:
+            starting_scan = self.starting_scan()
+            details.append(f"{len(starting_scan.findings)} findings")
+        if self.owner_picks is not None:
+            starting_scan = replace(
+                starting_scan,
+                findings=self.owner_picks.applied(starting_scan.findings)[0],
+            )
+        report = self.proved_run(starting_scan)
+        if self.owner_picks is None:
+            return report
+        return replace(
+            report, owner_picks=self.owner_picks.applied(starting_scan.findings)[1]
+        )
+
+    def proved_run(self, starting_scan: CodemodWorkflowScan) -> CodemodRefactorGoalReport:
         trajectory_proof = self.prove_trajectory(starting_scan)
         if not trajectory_proof.status.proved:
             return self.report(
@@ -1724,9 +1774,11 @@ class CodemodRefactorGoalRunner:
             state: CodemodRefactorTrajectoryState,
             class_plan_report: FindingRecipeClassPlanReport,
         ) -> None:
-            settled = self.partial_terminal_or_dead_end(
-                starting_scan, state, class_plan_report
-            )
+            with self.progress.phase(f"depth {state.depth} settle") as details:
+                settled = self.partial_terminal_or_dead_end(
+                    starting_scan, state, class_plan_report
+                )
+                details.append(type(settled).__name__)
             if isinstance(settled, CodemodRefactorPartialTerminal):
                 partial_terminals.append(settled)
             else:
@@ -1735,7 +1787,9 @@ class CodemodRefactorGoalRunner:
         while pending:
             state = pending.popleft()
             active_scan = state.scan
-            target_findings = self.target_findings(active_scan)
+            with self.progress.phase(f"depth {state.depth} targets") as details:
+                target_findings = self.target_findings(active_scan)
+                details.append(f"{len(target_findings)} targets")
             if not target_findings:
                 active_scan = self.exact_scan(active_scan)
                 target_findings = self.target_findings(active_scan)
@@ -1775,10 +1829,12 @@ class CodemodRefactorGoalRunner:
                     continue
 
             snapshot = active_scan.source_snapshot
-            plan = snapshot.plan_from_findings(
-                target_findings,
-                frontier_budget=self.trajectory_budget.recipe_frontier,
-            )
+            with self.progress.phase(f"depth {state.depth} plan") as details:
+                plan = snapshot.plan_from_findings(
+                    target_findings,
+                    frontier_budget=self.trajectory_budget.recipe_frontier,
+                )
+                details.append(f"{len(plan.trajectory_frontier.branches)} branches")
             class_plan_report = FindingRecipeClassPlanReport.from_finding_plan(
                 target_findings,
                 root=self.class_plan_root(),
@@ -1809,7 +1865,7 @@ class CodemodRefactorGoalRunner:
 
             valid_transition_count = 0
             analyzed_rewritten_source_digests: set[str] = set()
-            for branch in frontier.branches:
+            for branch_number, branch in enumerate(frontier.branches, start=1):
                 simulation = branch.document_simulation
                 if simulation.simulation.applied_rewrite_count == 0:
                     continue
@@ -1819,13 +1875,17 @@ class CodemodRefactorGoalRunner:
                 if rewritten_source_digest in analyzed_rewritten_source_digests:
                     continue
                 analyzed_rewritten_source_digests.add(rewritten_source_digest)
-                projected_scan = self.projected_target_scan(
-                    active_scan,
-                    simulation.simulation,
-                    target_findings,
-                )
-                if not self.target_findings(projected_scan):
-                    projected_scan = self.exact_scan(projected_scan)
+                with self.progress.phase(
+                    f"depth {state.depth} reproof {branch_number}/{len(frontier.branches)}"
+                ) as details:
+                    projected_scan = self.projected_target_scan(
+                        active_scan,
+                        simulation.simulation,
+                        target_findings,
+                    )
+                    if not self.target_findings(projected_scan):
+                        projected_scan = self.exact_scan(projected_scan)
+                    details.append(f"{len(projected_scan.findings)} findings")
                 stage = self.stage(
                     active_scan,
                     projected_scan,
@@ -1917,7 +1977,15 @@ class CodemodRefactorGoalRunner:
             tuple(starting_scan.findings), tuple(exact_scan.findings)
         ).increased_changes
         if increased:
-            return dead_end(f"it grows {len(increased)} finding class(es)")
+            return dead_end(
+                f"it grows {len(increased)} finding class(es): "
+                + "; ".join(
+                    f"{change.obligation_class.declaration.qualname} "
+                    f"{change.before_count}->{change.after_count} "
+                    f"(added {', '.join(change.added_ids)})"
+                    for change in increased
+                )
+            )
         guard_report = self.terminal_guard_report(exact_scan)
         if not guard_report.is_clean:
             return dead_end("its architecture guards fail")
@@ -1995,11 +2063,18 @@ class CodemodRefactorGoalRunner:
         self,
         scan: CodemodWorkflowScan,
     ) -> tuple[RefactorFinding, ...]:
-        return FindingRecipeSynthesizer.findings_for_concept(
+        """The concept's findings; with a picks file, only the picked ones, so
+        no stage serves a finding nobody reviewed."""
+
+        findings = FindingRecipeSynthesizer.findings_for_concept(
             scan.findings,
             self.migration_type,
             scan.source_snapshot,
         )
+        if self.owner_picks is None:
+            return findings
+        picked = self.owner_picks.picked_finding_ids
+        return tuple(finding for finding in findings if finding.stable_id in picked)
 
     def class_plan_root(self) -> Path:
         if self.roots:

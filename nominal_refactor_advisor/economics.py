@@ -219,15 +219,21 @@ class RefactorEvidenceEconomics(DataclassJsonReport):
         )
 
 
-@dataclass(frozen=True)
-class ScanEconomicsProof(DataclassJsonReport):
-    """One timed scan summarized as an economics gate."""
+@dataclass(frozen=True, kw_only=True)
+class TimedScan:
+    """One labeled scan's elapsed time and finding count."""
 
     label: str
-    path: str
     elapsed_seconds: float
-    scan_budget_seconds: float
     finding_count: int
+
+
+@dataclass(frozen=True, kw_only=True)
+class ScanEconomicsProof(TimedScan, DataclassJsonReport):
+    """One timed scan summarized as an economics gate."""
+
+    path: str
+    scan_budget_seconds: float
     production_finding_count: int
     test_only_finding_count: int
     plan_count: int

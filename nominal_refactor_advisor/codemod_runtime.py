@@ -2727,6 +2727,21 @@ class FindingRecipeEvaluator(ABC):
     ) -> FindingRecipeEvaluation:
         raise NotImplementedError
 
+    def evaluation_declaration_for_finding(
+        self,
+        finding: RefactorFinding,
+        context: CodemodSelectorContext,
+    ) -> type[object]:
+        """The declaration that owns this finding's evaluation.
+
+        An evaluator that hands a finding to one of several derivations only
+        knows which by evaluating it.
+        """
+
+        return self.evaluate_recipe_for_finding(
+            finding, context
+        ).required_evaluation_declaration_type
+
     def rejected_evaluation(self, reason: str) -> RejectedRecipeEvaluation:
         return RejectedRecipeEvaluation(
             reason=reason,
