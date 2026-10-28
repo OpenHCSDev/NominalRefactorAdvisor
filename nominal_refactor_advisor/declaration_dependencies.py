@@ -16,7 +16,12 @@ from enum import StrEnum
 from functools import cached_property
 from typing import Callable, TypeAlias
 
-from .ast_projection import StatementValue
+from .ast_projection import (
+    NoStatementValue,
+    StatementValue,
+    StatementValueQuestion,
+    SuppliedValue,
+)
 from .annotation_semantics import (
     ModuleNameReferenceScope,
     StringizedAnnotationSurface,
@@ -453,6 +458,21 @@ class FunctionLocalBinding(FunctionBindingABC):
         return references
 
 
+@dataclass(frozen=True)
+class _AnnotatedAssignmentReads(StatementValueQuestion[None]):
+    """A valued annotation reads its value, then its target; a bare one reads neither."""
+
+    collector: ast.NodeVisitor
+    target: ast.expr
+
+    def supplied(self, value: SuppliedValue) -> None:
+        self.collector.visit(value.value)
+        self.collector.visit(self.target)
+
+    def bare(self, value: NoStatementValue) -> None:
+        """A bare annotation reads no value and binds no target."""
+
+
 class _DeclarationDependencyCollector(
     FunctionAnnotationVisitor,
     LexicalScopeContext,
@@ -526,9 +546,7 @@ class _DeclarationDependencyCollector(
         self._visit_class(node)
 
     def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
-        if StatementValue.of(node).supplies_value:
-            StatementValue.of(node).visit_with(self)
-            self.visit(node.target)
+        StatementValue.of(node).answer(_AnnotatedAssignmentReads(self, node.target))
         self._visit_annotation(
             node.annotation,
             evaluation_sensitive=(self.scopes[-1].records_variable_annotations),

@@ -207,12 +207,21 @@ class OverlapReceiptKind(ReceiptKind):
     POSITIONAL_CONSTRUCTION = "positional_construction", 0.0, True
 
 
+_SHARED_RECEIPT_KINDS: Mapping[ClassBodyDeclarationKind, OverlapReceiptKind] = {
+    ClassBodyDeclarationKind.METHOD: OverlapReceiptKind.SHARED_METHOD,
+    ClassBodyDeclarationKind.VALUE: OverlapReceiptKind.SHARED_VALUE,
+    ClassBodyDeclarationKind.DEFAULTED_FIELD: OverlapReceiptKind.SHARED_VALUE,
+    ClassBodyDeclarationKind.FIELD: OverlapReceiptKind.SHARED_FIELD,
+}
+"""A shared declaration's receipt: a supplied value, default or not, weighs as a value."""
+
+_FIELD_KINDS = frozenset(
+    (ClassBodyDeclarationKind.FIELD, ClassBodyDeclarationKind.DEFAULTED_FIELD)
+)
+
+
 def _shared_receipt_kind(declaration: ClassBodyDeclaration) -> OverlapReceiptKind:
-    if declaration.kind is ClassBodyDeclarationKind.METHOD:
-        return OverlapReceiptKind.SHARED_METHOD
-    if declaration.declaration.assigns_value:
-        return OverlapReceiptKind.SHARED_VALUE
-    return OverlapReceiptKind.SHARED_FIELD
+    return _SHARED_RECEIPT_KINDS[declaration.kind]
 
 FEW_SHARED_DECLARATIONS = 3
 """Below this many shared declarations the overlap is weak evidence of one concept."""
@@ -350,24 +359,21 @@ def _literal_tags(
     return tuple(tags)
 
 
-def _declared_identity(indexed_class: CompactIndexedClass) -> str | None:
-    """Why class creation itself makes this class an identity, if it does."""
+def _declared_identity_reasons(indexed_class: CompactIndexedClass) -> tuple[str, ...]:
+    """Every way class creation itself makes this class an identity."""
 
-    return indexed_class.enum_declaration.identity_reason_or(
-        _creation_identity(indexed_class)
-    )
-
-
-def _creation_identity(indexed_class: CompactIndexedClass) -> str | None:
-    """Why the class statement's own machinery makes this class an identity."""
-
+    reasons = list(indexed_class.enum_declaration.identity_reasons)
     if indexed_class.class_keyword_names:
-        return f"class keywords {', '.join(indexed_class.class_keyword_names)} run at creation"
+        reasons.append(
+            f"class keywords {', '.join(indexed_class.class_keyword_names)} run at creation"
+        )
     if indexed_class.metaclass_names:
-        return f"metaclass {', '.join(indexed_class.metaclass_names)} runs at creation"
+        reasons.append(
+            f"metaclass {', '.join(indexed_class.metaclass_names)} runs at creation"
+        )
     if indexed_class.declares_autoregister_meta or indexed_class.is_registration_authority:
-        return "it registers its subclasses"
-    return None
+        reasons.append("it registers its subclasses")
+    return tuple(reasons)
 
 
 @dataclass(frozen=True)
@@ -737,12 +743,11 @@ class ClassOverlapVerdicts:
                 name
                 for name in block
                 if first_declarations[name].kind is ClassBodyDeclarationKind.FIELD
-                and not first_declarations[name].declaration.assigns_value
             ),
             block_fields=frozenset(
                 name
                 for name in block
-                if first_declarations[name].kind is ClassBodyDeclarationKind.FIELD
+                if first_declarations[name].kind in _FIELD_KINDS
             ),
             constructions_of=constructions_of,
             positional_constructions_of=lambda symbol: constructions_of(
@@ -1060,11 +1065,11 @@ class ClassOverlapVerdicts:
                         tuple(use.location for use in identity_uses[:4]),
                     )
                 )
-            if (reason := _declared_identity(indexed_class)) is not None:
+            if reasons := _declared_identity_reasons(indexed_class):
                 receipts.append(
                     Receipt(
                         OverlapReceiptKind.IDENTITY_DECLARED,
-                        f"`{indexed_class.qualname}`: {reason}",
+                        f"`{indexed_class.qualname}`: {'; '.join(reasons)}",
                         (_location(indexed_class),),
                     )
                 )

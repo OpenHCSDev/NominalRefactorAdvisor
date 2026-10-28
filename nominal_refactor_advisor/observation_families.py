@@ -11,9 +11,9 @@ from functools import cached_property
 from typing import Callable, ClassVar, Generic, TypeVar
 
 from .ast_projection import ExpressionReference
-from .class_mro import UnboundReference
 from .class_index import (
     ModuleNominalBindingAuthority,
+    NominalReferences,
     ModuleNominalBindingSnapshot,
     module_import_names,
 )
@@ -1105,11 +1105,11 @@ class TypeArgumentResolver:
         parts = ExpressionReference.decoded(member).attribute_chain
         if parts is None or parts[0] in shadowed:
             return None
-        try:
-            return self.snapshot.reference_for(parts).require_bound_name()
-        except UnboundReference:
-            # The str | None resolver protocol: unbound joins its ast-shaped absences.
-            return None
+        # The str | None resolver protocol: unbound joins its ast-shaped absences.
+        return next(
+            iter(NominalReferences.of((self.snapshot.reference_for(parts),)).bound_names),
+            None,
+        )
 
     def qualified_class_at(
         self, member: ast.expr, ancestors: Sequence[ast.AST]

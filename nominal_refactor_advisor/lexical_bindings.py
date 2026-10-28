@@ -190,6 +190,8 @@ class ImportAlias:
     def from_alias(cls, alias: ast.alias) -> ImportAlias:
         """The ast boundary: the authored `as` clause picks the alias type."""
 
+        if alias.name == "*":
+            return StarImportAlias(alias.name)
         if alias.asname is None:
             return ImportAlias(alias.name)
         return RenamedImportAlias(alias.name, alias.asname)
@@ -226,6 +228,11 @@ class ImportAlias:
 
     def bound_name_in(self, declaration: ImportDeclarationABC) -> str:
         return declaration._unaliased_bound_name(self)
+
+    def bound_names_in(self, declaration: ImportDeclarationABC) -> tuple[str, ...]:
+        """The names this alias binds individually: its one name, none for a star."""
+
+        return (self.bound_name_in(declaration),)
 
     def module_reference_in(self, declaration: ModuleImportDeclaration) -> str:
         """The dotted module path a module import of this alias reaches by its binding."""
@@ -284,6 +291,17 @@ class RenamedImportAlias(ImportAlias):
     @property
     def module_spellings(self) -> tuple[tuple[str, str], ...]:
         return ((self.name, self.asname),)
+
+
+@dataclass(frozen=True)
+class StarImportAlias(ImportAlias):
+    """`from m import *`: it binds whatever `m` exports, no one name of its own."""
+
+    def bound_name_in(self, declaration: ImportDeclarationABC) -> str:
+        raise ValueError("A star request has no explicit individual binding")
+
+    def bound_names_in(self, declaration: ImportDeclarationABC) -> tuple[str, ...]:
+        return ()
 
 
 @dataclass(frozen=True)
@@ -384,11 +402,6 @@ class ImportDeclarationABC(ABC):
     def source(self) -> str:
         return self.source_for(self.aliases)
 
-    def bound_name(self, alias: ImportAlias) -> str | None:
-        if alias.name == "*":
-            return None
-        return alias.bound_name_in(self)
-
     @abstractmethod
     def _unaliased_bound_name(self, alias: ImportAlias) -> str:
         raise NotImplementedError
@@ -421,9 +434,7 @@ class ImportDeclarationABC(ABC):
 
     def names(self) -> tuple[str, ...]:
         return tuple(
-            name
-            for alias in self.aliases
-            if (name := self.bound_name(alias)) is not None
+            name for alias in self.aliases for name in alias.bound_names_in(self)
         )
 
     def origins(
@@ -432,14 +443,14 @@ class ImportDeclarationABC(ABC):
         return tuple(
             ImportedNameOrigin(self, index, module_identity)
             for index, alias in enumerate(self.aliases)
-            if self.bound_name(alias) is not None
+            for _name in alias.bound_names_in(self)
         )
 
     def name_sources(self) -> tuple[tuple[str, str], ...]:
         return tuple(
             (name, self.source_for((alias,)))
             for alias in self.aliases
-            if (name := self.bound_name(alias)) is not None
+            for name in alias.bound_names_in(self)
         )
 
 
@@ -540,8 +551,7 @@ class ImportedNameOrigin:
             raise ValueError(
                 "Import origin requires an alias position within its declaration"
             )
-        if self.declaration.bound_name(self.alias) is None:
-            raise ValueError("A star request has no explicit individual binding")
+        self.alias.bound_name_in(self.declaration)
 
     @property
     def alias(self) -> ImportAlias:
@@ -549,9 +559,7 @@ class ImportedNameOrigin:
 
     @property
     def bound_name(self) -> str:
-        name = self.declaration.bound_name(self.alias)
-        assert name is not None
-        return name
+        return self.alias.bound_name_in(self.declaration)
 
     @property
     def qualified_name(self) -> str | None:
@@ -595,9 +603,8 @@ class ImportBoundNameProjection:
         return self.declaration.name_sources()
 
     def alias_bound_name(self, alias: ast.alias) -> str:
-        return (
-            self.declaration.bound_name(ImportAlias.from_alias(alias)) or ""
-        )
+        # A star binds no one name; its spelling here stays the empty name.
+        return "".join(ImportAlias.from_alias(alias).bound_names_in(self.declaration))
 
 
 @dataclass

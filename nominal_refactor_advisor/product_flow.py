@@ -28,7 +28,12 @@ from typing import (
     cast,
 )
 
-from .ast_projection import AbsentStatementValue, StatementValue
+from .ast_projection import (
+    NoStatementValue,
+    StatementValue,
+    StatementValueQuestion,
+    SuppliedValue,
+)
 from .annotation_semantics import NOMINAL_ANNOTATION_SOURCE_AUTHORITY
 from .ast_tools import (
     CollectedFamily,
@@ -4076,6 +4081,37 @@ class _ClassHeaderCaptureProjection(NativeClassCaptureResolverABC[None]):
         pass
 
 
+@dataclass(frozen=True)
+class _AnnotatedAssignmentFlow(StatementValueQuestion[None]):
+    """A valued annotation assigns its result; a bare one only declares the target.
+
+    A bare annotation of a function-local name still makes it local, so its
+    target is recorded as assigned with no result.
+    """
+
+    collector: _CompactFlowCollector
+    statement: ast.AnnAssign
+
+    def supplied(self, value: SuppliedValue) -> None:
+        target = self.statement.target
+        result = self.collector._capture_result(
+            value.value,
+            CompactValueDestination.for_assignment((target,)),
+            self.statement,
+        )
+        mutations = self.collector._visit_assignment_targets((target,), result)
+        self.collector._record_exact_value_aliases(
+            (target,), result.lexical_reference, mutations
+        )
+
+    def bare(self, value: NoStatementValue) -> None:
+        target = self.statement.target
+        self.collector.mutation_targets.visit(target)
+        if isinstance(target, ast.Name) and self.collector.owner.kind.is_function_scope:
+            mutations = self.collector._visit_assignment_targets((target,), None)
+            self.collector._record_exact_value_aliases((target,), None, mutations)
+
+
 class _CompactFlowCollector(
     EagerFunctionAnnotationVisitor,
     DictionaryEvaluationVisitor,
@@ -4430,29 +4466,8 @@ class _CompactFlowCollector(
             node.targets, result.lexical_reference, mutations
         )
 
-    def _visit_annotated_assignment(self, node: ast.AnnAssign) -> None:
-        result = None
-        try:
-            value = StatementValue.of(node).require_value("a bare annotation")
-        except AbsentStatementValue:
-            self.mutation_targets.visit(node.target)
-            if not (
-                isinstance(node.target, ast.Name) and self.owner.kind.is_function_scope
-            ):
-                return
-        else:
-            result = self._capture_result(
-                value, CompactValueDestination.for_assignment((node.target,)), node
-            )
-        mutations = self._visit_assignment_targets((node.target,), result)
-        self._record_exact_value_aliases(
-            (node.target,),
-            None if result is None else result.lexical_reference,
-            mutations,
-        )
-
     def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
-        self._visit_annotated_assignment(node)
+        StatementValue.of(node).answer(_AnnotatedAssignmentFlow(self, node))
         self.owner.kind.visit_assignment_annotation(self, node, self.annotation_mode)
 
     def _capture_compiler_operand(
