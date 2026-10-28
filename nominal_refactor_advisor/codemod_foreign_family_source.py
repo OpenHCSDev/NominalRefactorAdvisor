@@ -28,8 +28,8 @@ FunctionNode = ast.FunctionDef | ast.AsyncFunctionDef
 
 
 @dataclass(frozen=True)
-class ForeignFamilyReference:
-    """A declared family named by its qualified import path."""
+class ImportedClassReference:
+    """A class named by its qualified import path, imported where a rewrite names it."""
 
     import_path: str
 
@@ -40,14 +40,6 @@ class ForeignFamilyReference:
     @cached_property
     def class_name(self) -> str:
         return self.import_path.rpartition(".")[2]
-
-    @cached_property
-    def family(self) -> type[ForeignFamily]:
-        return getattr(import_module(self.module_name), self.class_name)
-
-    @property
-    def member_names(self) -> frozenset[str]:
-        return self.family.member_names()
 
     def import_source_for(
         self, snapshot: CodemodSourceSnapshot, parsed_module: ParsedModule
@@ -73,6 +65,19 @@ class ForeignFamilyReference:
             else None
         )
         return f"from {reference or self.module_name} import {self.class_name}"
+
+
+@dataclass(frozen=True)
+class ForeignFamilyReference(ImportedClassReference):
+    """A declared family named by its qualified import path."""
+
+    @cached_property
+    def family(self) -> type[ForeignFamily]:
+        return getattr(import_module(self.module_name), self.class_name)
+
+    @property
+    def member_names(self) -> frozenset[str]:
+        return self.family.member_names()
 
 
 @dataclass(frozen=True)

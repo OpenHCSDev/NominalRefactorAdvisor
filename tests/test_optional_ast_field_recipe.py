@@ -46,6 +46,14 @@ def _rewritten(source: str) -> str:
             "a = bool(CallKeywords.of(call.keywords).splats)",
         ),
         (
+            "if x or any(keyword.arg is None for keyword in call.keywords): pass",
+            "if x or CallKeywords.of(call.keywords).splats: pass",
+        ),
+        (
+            "a = (x, x or any(keyword.arg is None for keyword in call.keywords))",
+            "a = (x, x or bool(CallKeywords.of(call.keywords).splats))",
+        ),
+        (
             "b = all(keyword.arg is not None for keyword in call.keywords)",
             "b = not CallKeywords.of(call.keywords).splats",
         ),
@@ -103,4 +111,19 @@ def test_element_used_as_an_ast_node_is_handed_back() -> None:
 
 def test_unknown_collection_is_not_a_site() -> None:
     with pytest.raises(ValueError, match="no shape"):
-        _rewritten("def f(items):\n    return [k for k in items if k.arg is not None]\n")
+        _rewritten(
+            "def f(items):\n    return [k for k in items if k.arg is not None]\n"
+        )
+
+
+def test_filtered_comprehension_is_fit_to_the_line() -> None:
+    source = (
+        "def f(call_node):\n"
+        "    return tuple(\n"
+        "        (keyword.arg, keyword.value) for keyword in call_node.keywords"
+        " if keyword.arg is not None\n"
+        "    )\n"
+    )
+    rewritten = _rewritten(source)
+    assert "CallKeywords.of(call_node.keywords).named" in rewritten
+    assert max(len(line) for line in rewritten.splitlines()) <= 88

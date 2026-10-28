@@ -12,16 +12,19 @@ from __future__ import annotations
 import ast
 import re
 from abc import ABC, abstractmethod
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
 from functools import cached_property
 from pathlib import Path
 from typing import ClassVar, Self, TypeGuard
 
-from .ast_tools import ParsedModule, module_syntax_index
+from .ast_tools import ParsedModule
 from .cases_family import handback
 from .codemod import FindingEvidenceActionKeysMixin, FindingRecipeSynthesizer
-from .codemod_foreign_family_source import FunctionRewriteAuthority
+from .codemod_foreign_family_source import (
+    FunctionRewriteAuthority,
+    ImportedClassReference,
+)
 from .codemod_payload import RequiredStringPayloadValueCodec, codemod_payload_field
 from .codemod_reproof import SourceReprovedOperation
 from .codemod_runtime import (
@@ -58,7 +61,7 @@ class OptionalAstFieldDecoder(ABC):
     element_type: ClassVar[type[ast.AST]]
     field: ClassVar[str]
     collection_attributes: ClassVar[frozenset[str]]
-    import_path: ClassVar[str]
+    owner: ClassVar[ImportedClassReference]
     present: ClassVar[str]
     absent: ClassVar[str]
     present_field: ClassVar[str]
@@ -76,16 +79,8 @@ class OptionalAstFieldDecoder(ABC):
         )
 
     @classmethod
-    def class_name(cls) -> str:
-        return cls.import_path.rpartition(".")[2]
-
-    @classmethod
-    def module_name(cls) -> str:
-        return cls.import_path.rpartition(".")[0]
-
-    @classmethod
     def collected(cls, iterable_source: str) -> str:
-        return f"{cls.class_name()}.of({iterable_source})"
+        return f"{cls.owner.class_name}.of({iterable_source})"
 
     @classmethod
     def element_type_name(cls) -> str:
@@ -116,30 +111,28 @@ class OptionalAstFieldDecoder(ABC):
         return False
 
     @classmethod
-    def import_source_for(
+    def import_sources_for(
         cls, snapshot: CodemodSourceSnapshot, parsed_module: ParsedModule
-    ) -> str:
-        """Import in the importing module's own style: relative when it is."""
+    ) -> tuple[str, ...]:
+        """The import naming the decoder: none inside its own module.
 
-        decoder_file = snapshot.module_import_graph.unique_source_file_for_module_name(
-            cls.module_name()
-        )
-        uses_relative_imports = any(
-            statement.level
-            for _, statement in module_syntax_index(
-                parsed_module.module
-            ).indexed_nodes_of_type(ast.ImportFrom)
-        )
-        reference = (
-            snapshot.module_import_graph.import_module_reference(
-                importing_file_path=parsed_module.file_path,
-                imported_file_path=decoder_file.file_path,
-                imported_name=cls.class_name(),
+        A project that does not declare the decoder is handed back: routing
+        its probes would import another project's class.
+        """
+
+        if parsed_module.module_name == cls.owner.module_name:
+            return ()
+        if (
+            snapshot.module_import_graph.unique_source_file_for_module_name(
+                cls.owner.module_name
             )
-            if decoder_file is not None and uses_relative_imports
-            else None
-        )
-        return f"from {reference or cls.module_name()} import {cls.class_name()}"
+            is None
+        ):
+            raise ValueError(
+                f"{cls.owner.import_path} is not declared in the scanned project; "
+                "declare the decoder before routing probes to it"
+            )
+        return (cls.owner.import_source_for(snapshot, parsed_module),)
 
 
 class CallKeywordArgDecoder(OptionalAstFieldDecoder):
@@ -148,7 +141,9 @@ class CallKeywordArgDecoder(OptionalAstFieldDecoder):
     element_type = ast.keyword
     field = "arg"
     collection_attributes = frozenset(("keywords",))
-    import_path = "nominal_refactor_advisor.ast_projection.CallKeywords"
+    owner = ImportedClassReference(
+        "nominal_refactor_advisor.ast_projection.CallKeywords"
+    )
     present = "named"
     absent = "splats"
     present_field = "name"
@@ -239,7 +234,7 @@ class ProbeSite(ABC):
                 raise authority.refusal(
                     node,
                     f"`{self.variable}.{node.attr}` has no answer on the present "
-                    f"element of {self.decoder.class_name()}",
+                    f"element of {self.decoder.owner.class_name}",
                 )
             if node.attr == self.decoder.field:
                 _, end = authority.geometry.required_node_offsets(node)
@@ -274,8 +269,13 @@ class QuantifiedProbeSite(ProbeSite):
             generator = parents.get(generator)
         match generator:
             case ast.GeneratorExp(
-                elt=elt, generators=[ast.comprehension(target=ast.Name(id=name), iter=iterable, ifs=[])]
-            ) if elt is elt_probe:
+                elt=elt,
+                generators=[
+                    ast.comprehension(target=ast.Name(id=name), iter=iterable, ifs=[])
+                ],
+            ) if (
+                elt is elt_probe
+            ):
                 pass
             case _:
                 return None
@@ -301,7 +301,9 @@ class QuantifiedProbeSite(ProbeSite):
         iterable_source = authority.source_of(self.iterable)
         absent = f"{self.decoder.collected(iterable_source)}.{self.decoder.absent}"
         if isinstance(self.call.func, ast.Name) and self.call.func.id == "any":
-            candidate = f"bool({absent})"
+            candidate = (
+                absent if authority.only_truth_tested(self.call) else f"bool({absent})"
+            )
         elif not self.remainder:
             candidate = f"not {absent}"
         else:
@@ -313,8 +315,8 @@ class QuantifiedProbeSite(ProbeSite):
         if geometry.span_contains_comment(SourceTextSpan(start, end)):
             raise authority.refusal(self.call, "the quantifier holds a comment")
         replacement = authority.fit.fitted(candidate, start, end)
-        if not authority.holds_boolean_operand(self.call) and not candidate.startswith(
-            "bool("
+        if candidate.startswith("not ") and not authority.holds_boolean_operand(
+            self.call
         ):
             replacement = f"({replacement})"
         return (
@@ -357,7 +359,9 @@ class ComprehensionFilterProbeSite(ProbeSite):
         geometry = authority.geometry
         iterable_start, iterable_end = geometry.required_node_offsets(self.clause.iter)
         condition_start, condition_end = geometry.required_node_offsets(self.condition)
-        if geometry.span_contains_comment(SourceTextSpan(iterable_start, condition_end)):
+        if geometry.span_contains_comment(
+            SourceTextSpan(iterable_start, condition_end)
+        ):
             raise authority.refusal(self.probe, "the filter holds a comment")
         edits = [
             SourceTextSpanReplacement.from_offsets(
@@ -371,7 +375,9 @@ class ComprehensionFilterProbeSite(ProbeSite):
         ]
         if self.condition is self.probe:
             separator = geometry.source[
-                geometry.required_node_offsets(self.previous_part())[1] : condition_start
+                geometry.required_node_offsets(self.previous_part())[
+                    1
+                ] : condition_start
             ]
             if re.fullmatch(r"\s+if\s+", separator) is None:
                 raise authority.refusal(self.probe, "the filter is not a bare `if`")
@@ -396,7 +402,7 @@ class ComprehensionFilterProbeSite(ProbeSite):
         edits.extend(
             self.renamed_field_reads(authority, self.comprehension_node, self.probe)
         )
-        return tuple(edits)
+        return (authority.fitted_rewrite(self.comprehension_node, edits),)
 
     def previous_part(self) -> ast.AST:
         """The node just before the probe's `if`: the iterable or an earlier filter."""
@@ -424,7 +430,9 @@ class LoopGuardProbeSite(ProbeSite):
             case (
                 ast.If(test=test, body=[ast.Continue() | ast.Return()], orelse=[]),
                 ast.For(target=ast.Name(id=name), iter=iterable, body=[first, _, *_]),
-            ) if test is probe and first is guard:
+            ) if (
+                test is probe and first is guard
+            ):
                 pass
             case _:
                 return None
@@ -443,7 +451,9 @@ class LoopGuardProbeSite(ProbeSite):
         if geometry.span_contains_comment(guard_span):
             raise authority.refusal(self.guard, "the guard holds a comment")
         deleted = geometry.statement_deletion_span(
-            SourceLineSpan(self.guard.lineno, self.guard.end_lineno or self.guard.lineno)
+            SourceLineSpan(
+                self.guard.lineno, self.guard.end_lineno or self.guard.lineno
+            )
         )
         deletion_start, deletion_end = geometry.line_span_offsets(
             deleted.start_line, deleted.end_line
@@ -452,7 +462,9 @@ class LoopGuardProbeSite(ProbeSite):
         iterable_source = authority.source_of(self.loop.iter)
         edits = [
             SourceTextSpanReplacement.from_offsets(
-                start_offset=deletion_start, end_offset=deletion_end, replacement_source=""
+                start_offset=deletion_start,
+                end_offset=deletion_end,
+                replacement_source="",
             )
         ]
         (exit_statement,) = self.guard.body
@@ -473,7 +485,9 @@ class LoopGuardProbeSite(ProbeSite):
                     self.loop, f"`{collection}` is already bound in the function"
                 )
             loop_line_start = geometry.line_offsets[self.loop.lineno - 1]
-            indentation = geometry.source[loop_line_start : loop_line_start + self.loop.col_offset]
+            indentation = geometry.source[
+                loop_line_start : loop_line_start + self.loop.col_offset
+            ]
             exit_source = authority.source_of(exit_statement)
             edits.append(
                 SourceTextSpanReplacement.from_offsets(
@@ -521,7 +535,9 @@ class OptionalAstFieldAuthority(FunctionRewriteAuthority):
             for node in ast.walk(self.function)
             if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store)
         ) | frozenset(
-            argument.arg for argument in ast.walk(self.function.args) if isinstance(argument, ast.arg)
+            argument.arg
+            for argument in ast.walk(self.function.args)
+            if isinstance(argument, ast.arg)
         )
 
     def holds_boolean_operand(self, node: ast.AST) -> bool:
@@ -547,6 +563,48 @@ class OptionalAstFieldAuthority(FunctionRewriteAuthority):
             | ast.Expr,
         ) or (isinstance(parent, ast.UnaryOp) and isinstance(parent.op, ast.Not))
 
+    def only_truth_tested(self, node: ast.AST) -> bool:
+        """Whether the node's value is only tested for truth, never kept.
+
+        There a collection answers for its own truth and needs no `bool()`.
+        """
+
+        parent = self.parents.get(node)
+        match parent:
+            case (
+                ast.If(test=test)
+                | ast.While(test=test)
+                | ast.Assert(test=test)
+                | ast.IfExp(test=test)
+            ):
+                return test is node
+            case ast.comprehension(ifs=ifs):
+                return any(clause is node for clause in ifs)
+            case ast.UnaryOp(op=ast.Not()):
+                return True
+            case ast.BoolOp():
+                return self.only_truth_tested(parent)
+        return False
+
+    def fitted_rewrite(
+        self, node: ast.AST, edits: Iterable[SourceTextSpanReplacement]
+    ) -> SourceTextSpanReplacement:
+        """One replacement of the node with its inner edits applied, fit to the line."""
+
+        start, end = self.geometry.required_node_offsets(node)
+        rewritten = self.geometry.source[start:end]
+        for edit in sorted(edits, key=lambda item: item.start_offset, reverse=True):
+            rewritten = (
+                rewritten[: edit.start_offset - start]
+                + edit.replacement_source
+                + rewritten[edit.end_offset - start :]
+            )
+        return SourceTextSpanReplacement.from_offsets(
+            start_offset=start,
+            end_offset=end,
+            replacement_source=self.fit.fitted(rewritten, start, end),
+        )
+
     def source_of(self, node: ast.AST) -> str:
         start, end = self.geometry.required_node_offsets(node)
         return self.geometry.source[start:end]
@@ -561,7 +619,9 @@ class OptionalAstFieldAuthority(FunctionRewriteAuthority):
                     left=ast.Attribute(attr=attribute),
                     ops=[ast.Is() | ast.IsNot()],
                     comparators=[ast.Constant(value=None)],
-                ) if attribute == self.decoder.field:
+                ) if (
+                    attribute == self.decoder.field
+                ):
                     yield node
 
     def sites(self) -> tuple[tuple[ast.Compare, ProbeSite | None], ...]:
@@ -572,7 +632,11 @@ class OptionalAstFieldAuthority(FunctionRewriteAuthority):
                     (
                         site
                         for shape in ProbeSite.__subclasses__()
-                        if (site := shape.at(probe, self.parents, self.function, self.decoder))
+                        if (
+                            site := shape.at(
+                                probe, self.parents, self.function, self.decoder
+                            )
+                        )
                         is not None
                     ),
                     None,
@@ -592,7 +656,7 @@ class OptionalAstFieldAuthority(FunctionRewriteAuthority):
                     self.refusal(
                         probe,
                         f"`{ast.unparse(probe)}` is in no shape the "
-                        f"{self.decoder.class_name()} decoder can carry",
+                        f"{self.decoder.owner.class_name} decoder can carry",
                     )
                 )
                 continue
@@ -632,7 +696,9 @@ class RouteOptionalAstFieldProbesOperation(SourceReprovedOperation):
         decoder = self.decoder_type
         authority = OptionalAstFieldAuthority(
             parsed_module=parsed_module,
-            geometry=SourceTextGeometry(snapshot.sources_by_file_path[target.file_path]),
+            geometry=SourceTextGeometry(
+                snapshot.sources_by_file_path[target.file_path]
+            ),
             line_length=DeclaredRoot.line_length_for(Path(target.file_path)),
             declaration=node,
             decoder=decoder,
@@ -643,12 +709,16 @@ class RouteOptionalAstFieldProbesOperation(SourceReprovedOperation):
                 replacements=authority.replacements(),
                 rationale=self.rationale
                 or f"Route `{decoder.field}` probes in {target.qualname!r} through "
-                f"{decoder.class_name()}.",
+                f"{decoder.owner.class_name}.",
             ),
-            *self.required_import_mutations(
-                target.file_path,
-                import_source=decoder.import_source_for(snapshot, parsed_module),
-                default_rationale=f"Import {decoder.class_name()}.",
+            *(
+                mutation
+                for import_source in decoder.import_sources_for(snapshot, parsed_module)
+                for mutation in self.required_import_mutations(
+                    target.file_path,
+                    import_source=import_source,
+                    default_rationale=f"Import {decoder.owner.class_name}.",
+                )
             ),
         )
 
@@ -671,7 +741,9 @@ class OptionalAstFieldDecoderFindingRecipeSynthesizer(
                 "optional ast field routing requires source context"
             )
         snapshot = context.execution_snapshot()
-        operations: dict[tuple[str, str, str], RouteOptionalAstFieldProbesOperation] = {}
+        operations: dict[tuple[str, str, str], RouteOptionalAstFieldProbesOperation] = (
+            {}
+        )
         refusals: list[str] = []
         for evidence in finding.evidence:
             parsed_module = snapshot.parsed_module_for_source_path(evidence.file_path)
