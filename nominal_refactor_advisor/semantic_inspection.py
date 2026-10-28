@@ -155,11 +155,20 @@ class FunctionSummaryKind(StrEnum):
         return matching_members[0]
 
 
-@dataclass(frozen=True)
-class FunctionSummary(SemanticInspectionRecord):
-    target_id: str
+@dataclass(frozen=True, kw_only=True)
+class InspectedScopeReferences:
+    """Function and module summaries both index the calls, assignments and findings inside one located scope."""
+
     file_path: str
     module_name: str
+    call_ids: tuple[str, ...]
+    assignment_ids: tuple[str, ...]
+    finding_ids: tuple[str, ...]
+
+
+@dataclass(frozen=True, kw_only=True)
+class FunctionSummary(InspectedScopeReferences, SemanticInspectionRecord):
+    target_id: str
     name: str
     qualname: str
     kind: FunctionSummaryKind
@@ -167,9 +176,6 @@ class FunctionSummary(SemanticInspectionRecord):
     end_line: int
     parameters: tuple[str, ...]
     decorators: tuple[str, ...]
-    call_ids: tuple[str, ...]
-    assignment_ids: tuple[str, ...]
-    finding_ids: tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -196,19 +202,14 @@ class DataclassSummary(SemanticInspectionRecord, ClassTargetSummaryReference):
     field_names: tuple[str, ...]
 
 
-@dataclass(frozen=True)
-class ModuleSummary(SemanticInspectionRecord):
+@dataclass(frozen=True, kw_only=True)
+class ModuleSummary(InspectedScopeReferences, SemanticInspectionRecord):
     file_id: str
-    file_path: str
-    module_name: str
     is_package_init: bool
     ast_target_ids: tuple[str, ...]
     class_ids: tuple[str, ...]
     function_ids: tuple[str, ...]
     import_ids: tuple[str, ...]
-    assignment_ids: tuple[str, ...]
-    call_ids: tuple[str, ...]
-    finding_ids: tuple[str, ...]
 
 
 @dataclass(frozen=True)
