@@ -636,7 +636,6 @@ def _finding_assembly_pipeline_candidates(
 ) -> tuple[FindingAssemblyPipelineCandidate, ...]:
     return CANDIDATE_COLLECTION_AUTHORITY.ast_node_candidates(
         module,
-        module.module,
         ast.ClassDef,
         _finding_assembly_pipeline_candidates_for_class,
     )
@@ -730,7 +729,6 @@ def _guarded_delegator_candidates(
 ) -> tuple[GuardedDelegatorCandidate, ...]:
     return CANDIDATE_COLLECTION_AUTHORITY.ast_node_candidates(
         module,
-        module.module,
         ast.ClassDef,
         _guarded_delegator_candidates_for_class,
     )
@@ -986,7 +984,6 @@ def _structural_observation_property_candidates(
 ) -> tuple[StructuralObservationPropertyCandidate, ...]:
     return CANDIDATE_COLLECTION_AUTHORITY.ast_node_candidates(
         module,
-        module.module,
         ast.ClassDef,
         _structural_observation_property_candidates_for_class,
     )
@@ -1157,7 +1154,6 @@ def _reflective_self_attribute_candidates(
 ) -> tuple[ReflectiveSelfAttributeCandidate, ...]:
     return CANDIDATE_COLLECTION_AUTHORITY.ast_node_candidates(
         module,
-        module.module,
         ast.ClassDef,
         _reflective_self_attribute_candidates_for_class,
     )
@@ -1283,7 +1279,7 @@ def _dynamic_self_field_selection_candidates_for_class(
     for statement in node.body:
         if not isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef)):
             continue
-        for subnode in _walk_nodes(statement):
+        for subnode in module.syntax_index.function_walks[statement]:
             if not isinstance(subnode, ast.Call):
                 continue
             builtin_name = ExpressionReference.decoded(subnode.func).terminal_name
@@ -1318,7 +1314,6 @@ def _dynamic_self_field_selection_candidates(
 ) -> tuple[DynamicSelfFieldSelectionCandidate, ...]:
     return CANDIDATE_COLLECTION_AUTHORITY.ast_node_candidates(
         module,
-        module.module,
         ast.ClassDef,
         _dynamic_self_field_selection_candidates_for_class,
     )
@@ -1858,7 +1853,7 @@ def _registered_union_surface_candidates(
     }
     source_nodes: tuple[ast.AST, ...] = (
         *(function for _, function in module.syntax_index.named_functions),
-        *_typed_ast_nodes(module.module, ast.Assign),
+        *module.syntax_index.instances_of(ast.Assign),
     )
     return tuple(
         candidate
@@ -3663,7 +3658,6 @@ def _finding_spec_build_boilerplate_candidates(
 ) -> tuple[ClassMethodLineWitnessCandidate, ...]:
     return CANDIDATE_COLLECTION_AUTHORITY.ast_node_candidates(
         module,
-        module.module,
         ast.ClassDef,
         _finding_spec_build_boilerplate_class_candidates,
     )
@@ -4542,7 +4536,7 @@ def _schema_accessor_family_candidates(
     module: ParsedModule,
 ) -> tuple[SchemaAccessorFamilyCandidate, ...]:
     candidates: list[SchemaAccessorFamilyCandidate] = []
-    for class_node in _typed_ast_nodes(module.module, ast.ClassDef):
+    for class_node in module.syntax_index.instances_of(ast.ClassDef):
         grouped_rows: dict[str, list[tuple[str, str, str, str, str, int, int]]] = (
             defaultdict(list)
         )

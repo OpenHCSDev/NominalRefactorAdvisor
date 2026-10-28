@@ -3092,6 +3092,26 @@ class ModuleSyntaxIndex:
         """Actual nodes of this tree, shared by source-ownership checks."""
         return frozenset(self.depth_first_nodes)
 
+    def instances_of(self, node_type: type[SyntaxNodeT]) -> tuple[SyntaxNodeT, ...]:
+        """Nodes that are instances of ``node_type``, in ``ast.walk`` order."""
+
+        return tuple(
+            cast(SyntaxNodeT, node)
+            for node in self.breadth_first_nodes
+            if isinstance(node, node_type)
+        )
+
+    @cached_property
+    def function_walks(
+        self,
+    ) -> dict[ast.FunctionDef | ast.AsyncFunctionDef, tuple[ast.AST, ...]]:
+        """Each named function's ``ast.walk``, held for the module's lifetime."""
+
+        return {
+            function: tuple(ast.walk(function))
+            for _, function in self.named_functions
+        }
+
     def indexed_nodes_of_type(
         self,
         node_type: type[SyntaxNodeT],

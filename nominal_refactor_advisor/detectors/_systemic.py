@@ -85,7 +85,7 @@ def _compact_concrete_type_case_function_facts(
     for qualname, function in module.syntax_index.named_functions:
         alias_sources = _top_level_attribute_aliases(function)
         grouped_checks: dict[str, list[tuple[str, ...]]] = defaultdict(list)
-        for subnode in _walk_nodes(function):
+        for subnode in module.syntax_index.function_walks[function]:
             isinstance_arguments = BuiltinCallName.isinstance_arguments(subnode)
             if isinstance_arguments is None:
                 continue

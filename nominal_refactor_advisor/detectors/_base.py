@@ -3090,18 +3090,7 @@ def _derive_builder_call_shapes(module: ParsedModule) -> tuple[BuilderCallShape,
 AstNodeCandidateT = TypeVar("AstNodeCandidateT")
 AstNodeProjectorP = ParamSpec("AstNodeProjectorP")
 AstNodeT = TypeVar("AstNodeT", bound=ast.AST)
-AstTraversal = Callable[[ast.AST], Iterable[ast.AST]]
 CandidateStreamItemT = TypeVar("CandidateStreamItemT")
-
-
-def _typed_ast_nodes(root: ast.AST, node_type: type[AstNodeT]) -> tuple[AstNodeT, ...]:
-    return tuple(
-        (
-            cast(AstNodeT, node)
-            for node in _walk_nodes(root)
-            if isinstance(node, node_type)
-        )
-    )
 
 
 @dataclass(frozen=True)
@@ -3151,28 +3140,15 @@ class CandidateCollectionAuthority:
     def ast_node_candidates(
         self,
         module: ParsedModule,
-        root: ast.AST,
         node_type: type[AstNodeT],
         projector: Callable[
             Concatenate[ParsedModule, AstNodeT, AstNodeProjectorP],
             Iterable[AstNodeCandidateT],
         ],
         *projector_args: AstNodeProjectorP.args,
-        traversal: AstTraversal = _walk_nodes,
-        sort_key: Callable[[AstNodeCandidateT], CandidateSortKey] | None = None,
         **projector_kwargs: AstNodeProjectorP.kwargs,
     ) -> tuple[AstNodeCandidateT, ...]:
-        nodes = (
-            _typed_ast_nodes(root, node_type)
-            if traversal is _walk_nodes
-            else tuple(
-                (
-                    cast(AstNodeT, node)
-                    for node in traversal(root)
-                    if isinstance(node, node_type)
-                )
-            )
-        )
+        nodes = module.syntax_index.instances_of(node_type)
         projected = (
             candidate
             for node in nodes
@@ -3180,7 +3156,7 @@ class CandidateCollectionAuthority:
                 module, node, *projector_args, **projector_kwargs
             )
         )
-        return CandidateStream(projected, sort_key).materialized()
+        return tuple(projected)
 
     def witness_carrier_class_candidates(
         self, module: ParsedModule
@@ -5205,7 +5181,7 @@ def _concrete_type_case_function_candidates_for_function(
 ) -> Iterable[ConcreteTypeCaseFunctionCandidate]:
     alias_sources = _top_level_attribute_aliases(function)
     grouped_checks: dict[str, list[ResolvedTypeNamePartition]] = defaultdict(list)
-    for subnode in _walk_nodes(function):
+    for subnode in module.syntax_index.function_walks[function]:
         isinstance_arguments = BuiltinCallName.isinstance_arguments(subnode)
         if isinstance_arguments is None:
             continue
