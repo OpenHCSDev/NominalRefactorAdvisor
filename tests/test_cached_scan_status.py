@@ -1,6 +1,7 @@
 """Warm scan coverage derives from validated cache identity, not cache timing."""
 
 from dataclasses import replace
+from functools import partial
 import json
 from pathlib import Path
 import subprocess
@@ -26,6 +27,7 @@ from nominal_refactor_advisor.analysis_cache import (
     Miss,
     Partial,
 )
+from nominal_refactor_advisor.ast_tools import PythonSourcePathPolicy
 from nominal_refactor_advisor.detectors import DetectorConfig
 from nominal_refactor_advisor.finding_counts import FindingSummary
 from nominal_refactor_advisor.models import FindingSpec, SourceLocation
@@ -139,11 +141,12 @@ def test_exact_status_and_summary_derive_the_validated_roster(tmp_path, monkeypa
 
     monkeypatch.setattr(cli, "default_detector_types_for_analysis", forbidden)
     result = ExactCacheHit([], identity)
-    status = cli.JsonScanStatus.exact_cache(result.cache_identity)
+    target = cli.ScanTarget((package,), PythonSourcePathPolicy())
+    status = cli.JsonScanStatus.exact_cache(result.cache_identity, target)
     assert status.analyzed_detector_count == 2
     assert status.mode is cli.JsonScanMode.exact_cache
     assert status.complete and status.omitted_detector_count == 0
-    report = cli.JsonLoopCachePayloadBuilder(payload, ScanTiming()).build()
+    report = cli.JsonLoopCachePayloadBuilder(payload, ScanTiming(), target).build()
     assert report["scan_status"]["analyzed_detector_count"] == 2
     assert report["scan_status"]["mode"] == "exact_cache"
 
@@ -240,3 +243,94 @@ def test_exact_findings_and_summary_share_identity_invalidation(tmp_path, change
     assert cache.load_summary(original).payload is not None
     assert cache.load(changed).status is Miss
     assert cache.load_summary(changed).payload is None
+
+
+def scan(tmp_path: Path, entrypoint: list[str], *roots: Path) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [
+            sys.executable,
+            *entrypoint,
+            *map(str, roots),
+            "--cache-dir",
+            str(tmp_path / "cache" / "ast"),
+            "--parse-workers",
+            "1",
+            "--analysis-workers",
+            "1",
+            "--json",
+            "--json-payload",
+            "loop",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        cwd=Path(__file__).resolve().parents[1],
+    )
+
+
+def test_an_empty_target_is_complete_cold_and_cache_served(tmp_path):
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    payloads = []
+    for entrypoint in (["-m", "nominal_refactor_advisor"], ["-c", WARM_CLI]):
+        result = scan(tmp_path, entrypoint, empty)
+        assert result.returncode == 0, result.stdout + result.stderr
+        payloads.append(json.loads(result.stdout))
+    cold, warm = payloads
+    assert warm["timing"]["analysis_cache_status"] == "hit"
+    for payload in payloads:
+        assert payload["finding_count"] == 0
+        assert payload["scan_status"]["mode"] == "empty_target"
+        assert payload["scan_status"]["complete"] is True
+        assert payload["scan_status"]["source_file_count"] == 0
+
+
+def test_a_missing_scan_root_fails_the_request(tmp_path):
+    package, _source = source_tree(tmp_path)
+    missing = tmp_path / "missing" / "src" / "missing"
+    result = scan(tmp_path, ["-m", "nominal_refactor_advisor"], package, missing)
+    assert result.returncode == 2
+    assert result.stdout == ""
+    assert f"scan paths do not exist: {missing}" in result.stderr
+
+
+@pytest.mark.parametrize(
+    "status",
+    (
+        cli.JsonScanStatus.exact_cache,
+        partial(cli.JsonScanStatus.exact_compact_global, 3),
+    ),
+    ids=("cache_served", "compact"),
+)
+def test_a_result_covering_no_source_never_certifies_a_target_holding_source(tmp_path, status):
+    package, _source = source_tree(tmp_path)
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    covered_nothing = replace(
+        AnalysisCacheIdentity.from_roots((package,), DetectorConfig()), source_files=()
+    )
+    policy = PythonSourcePathPolicy()
+
+    unparsed = status(covered_nothing, cli.ScanTarget((package,), policy))
+    assert unparsed.mode is cli.JsonScanMode.unparsed_target
+    assert unparsed.complete is False
+    assert unparsed.source_file_count == 0
+
+    assert status(covered_nothing, cli.ScanTarget((empty,), policy)).mode is (
+        cli.JsonScanMode.empty_target
+    )
+
+
+def test_a_cache_served_summary_over_no_source_is_incomplete(tmp_path):
+    package, _source = source_tree(tmp_path)
+    covered_nothing = replace(
+        AnalysisCacheIdentity.from_roots((package,), DetectorConfig()), source_files=()
+    )
+    payload = AnalysisFindingSummaryCachePayload(
+        covered_nothing, FindingSummary.from_findings(())
+    )
+    report = cli.JsonLoopCachePayloadBuilder(
+        payload, ScanTiming(), cli.ScanTarget((package,), PythonSourcePathPolicy())
+    ).build()
+    assert report["scan_status"]["complete"] is False
+    assert report["scan_status"]["mode"] == "unparsed_target"
