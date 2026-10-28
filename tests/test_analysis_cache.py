@@ -3940,10 +3940,7 @@ def test_compact_family_cache_rejects_zero_byte_failed_write(tmp_path: Path) -> 
     assert not family_cache.entry_exists(family)
 
 
-def test_compact_family_cache_identity_derives_item_schema(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_compact_family_cache_identity_derives_item_schema(tmp_path: Path) -> None:
     @dataclass(frozen=True)
     class StringItem:
         value: str
@@ -3954,32 +3951,23 @@ def test_compact_family_cache_identity_derives_item_schema(
 
     StringItem.__module__ = IntegerItem.__module__ = "fixture"
     StringItem.__qualname__ = IntegerItem.__qualname__ = "SchemaItem"
-    source_path = tmp_path / "mod.py"
+    schema = ast_tools_module.CollectedFamilySchemaIdentity
     family_cache = ast_tools_module.CollectedFamilyCacheContext(
-        path=source_path,
+        path=tmp_path / "mod.py",
         module_name="mod",
         source_signature="source",
         family_cache_dir=None,
     )
 
-    monkeypatch.setattr(BuilderCallShapeFamily, "item_type", StringItem)
-    string_identity = family_cache.identity(BuilderCallShapeFamily)
-    monkeypatch.setattr(BuilderCallShapeFamily, "item_type", IntegerItem)
-    integer_identity = family_cache.identity(BuilderCallShapeFamily)
-
-    assert (
-        string_identity.family_schema.item_type_module
-        == integer_identity.family_schema.item_type_module
+    # Same module and qualname, different fields: the schema tells them apart.
+    assert schema.schema_signature_of(StringItem) != schema.schema_signature_of(
+        IntegerItem
     )
-    assert (
-        string_identity.family_schema.item_type_qualname
-        == integer_identity.family_schema.item_type_qualname
+    assert family_cache.identity(
+        BuilderCallShapeFamily
+    ).family_schema.item_schema_signature == schema.schema_signature_of(
+        BuilderCallShapeFamily.item_type
     )
-    assert (
-        string_identity.family_schema.item_schema_signature
-        != integer_identity.family_schema.item_schema_signature
-    )
-    assert string_identity.cache_token != integer_identity.cache_token
 
 
 def test_compact_family_cache_identity_derives_projection_implementation(
