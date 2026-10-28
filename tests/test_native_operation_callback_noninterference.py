@@ -57,7 +57,7 @@ statement = (f'held: ClassVar[{number}] = None' if annotation
              else f'held = ClassVar[{number}]')
 text = f'from typing import ClassVar\nselected = object\n{statement}\nobserved = selected\n'
 module = ParsedModule(Path('native_cache_control.py'), 'native_cache_control',
-                      False, ast.parse(text), text)
+                      ast.parse(text), text)
 original = SourceModuleExecution.from_module(module)
 operations = tuple(operation for operation in original.source.operations
                    if isinstance(operation.event, CompactSubscription))

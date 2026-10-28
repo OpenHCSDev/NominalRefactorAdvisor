@@ -287,6 +287,7 @@ class SourceModuleImportGraph:
     ) -> str | None:
         importing_package = importing_file.module_path_identity.package_parts
         imported_package = imported_file.module_path_identity.package_parts
+        imported_parts = imported_file.module_name.split(".")
         if not importing_package:
             return None
         common_length = 0
