@@ -1549,25 +1549,17 @@ def test_executable_recipe_evaluation_owns_action_key_gating() -> None:
     assert "semantic_identity" not in FindingRecipeActionKey.__dict__
 
 
-def test_executable_recipe_evaluation_does_not_hide_programming_errors(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_executable_recipe_evaluation_does_not_hide_programming_errors() -> None:
+    class DefectiveRecipe(RefactorRecipe):
+        def has_effective_rewrites(
+            self, context: CodemodSelectorContext | None
+        ) -> bool:
+            del context
+            raise ValueError("unexpected implementation defect")
+
     evaluation = ExecutableRecipeEvaluation(
-        executable_recipe=RefactorRecipe("programming-error-fixture"),
+        executable_recipe=DefectiveRecipe("programming-error-fixture"),
         evaluation_declaration_type=ExecutableRecipeEvaluation,
-    )
-
-    def raise_programming_error(
-        recipe: RefactorRecipe,
-        context: CodemodSelectorContext | None,
-    ) -> bool:
-        del recipe, context
-        raise ValueError("unexpected implementation defect")
-
-    monkeypatch.setattr(
-        RefactorRecipe,
-        "has_effective_rewrites",
-        raise_programming_error,
     )
 
     with pytest.raises(ValueError, match="unexpected implementation defect"):
@@ -19733,7 +19725,6 @@ def test_codemod_refactor_goal_runner_builds_staged_replay_plan(
 
 def test_proved_migration_reports_divergent_post_apply_rescan(
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from nominal_refactor_advisor.codemod import FindingRecipeActionKey
     from nominal_refactor_advisor.codemod import FindingRecipeSynthesizer
@@ -19797,22 +19788,19 @@ def test_proved_migration_reports_divergent_post_apply_rescan(
                 )
             )
 
-    def divergent_fresh_scan(self: object) -> CodemodWorkflowScan:
-        del self
-        return CodemodWorkflowScan(
-            modules=parse_python_modules(tmp_path),
-            findings=[finding],
-        )
+    class DivergentRescanRunner(CodemodRefactorGoalRunner):
+        """A runner whose post-apply rescan still reports the applied finding."""
+
+        def fresh_scan(self) -> CodemodWorkflowScan:
+            return CodemodWorkflowScan(
+                modules=parse_python_modules(tmp_path),
+                findings=[finding],
+            )
 
     previous_synthesizer = _FINDING_RECIPE_TEST_REGISTRY.get(detector_id)
     _FINDING_RECIPE_TEST_REGISTRY[detector_id] = AppliedMigrationSynthesizer
-    monkeypatch.setattr(
-        CodemodRefactorGoalRunner,
-        "fresh_scan",
-        divergent_fresh_scan,
-    )
     try:
-        report = CodemodRefactorGoalRunner(
+        report = DivergentRescanRunner(
             roots=(tmp_path,),
             config=DetectorConfig(),
             parse_workers=1,
