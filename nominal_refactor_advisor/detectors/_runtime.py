@@ -1694,7 +1694,8 @@ class ManualClassRegistrationDetector(
         owner_text = (
             "Installed owners (confidence uncalibrated): "
             + OwnerCandidate.ranked_text(owners)
-            + f". Move: register through `{owners[0].candidate_id}` at class creation."
+            + f". Move: register through `{owners[0].installed.symbol}` "
+            + "at class creation."
             if owners
             else "No installed dependency declares a class-creation registration "
             "owner (gap); declare one in owner-packages, or own registration in one "

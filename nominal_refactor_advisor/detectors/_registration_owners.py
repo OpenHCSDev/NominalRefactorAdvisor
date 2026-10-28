@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from ..class_index import CompactIndexedClass
-from ..installed_owners import RegistrationOwners, RegistrationRole
+from ..installed_owners import InstalledOwner, RegistrationOwners, RegistrationRole
 from ..owner_candidates import OwnerCandidate, ranked
 from ..models import RefactorFinding, SourceLocation
 from ..patterns import PatternId
@@ -26,7 +26,7 @@ class HandRolledRegistration:
 
     indexed_class: CompactIndexedClass
     role: RegistrationRole
-    owners: tuple[OwnerCandidate, ...]
+    owners: tuple[InstalledOwner, ...]
     """The installed owners, ranked."""
     scope: RegistrationOwners
 
@@ -95,7 +95,8 @@ class HandRolledRegistrationDetector(
                 f"`{candidate.indexed_class.qualname}` {how}. Installed owners "
                 "(confidence uncalibrated): "
                 + OwnerCandidate.ranked_text(candidate.owners)
-                + f". Move: make the family inherit or compose `{owner.candidate_id}` and "
+                + ". Move: make the family inherit or compose "
+                + f"`{owner.installed.symbol}` and "
                 "delete this class's own registration. Considered: "
                 + (", ".join(candidate.scope.distributions) or "no distributions")
                 + f"; {candidate.scope.premise}"

@@ -36,7 +36,6 @@ from collections.abc import Iterable, Iterator
 from dataclasses import asdict, dataclass
 from enum import StrEnum
 from functools import cache
-from typing import ClassVar
 from importlib import metadata
 from pathlib import Path
 
@@ -181,7 +180,9 @@ class InstalledOwner(OwnerCandidate):
 
     installed: InstalledRegistrationOwner
 
-    KIND: ClassVar[str] = "installed_owner"
+    @property
+    def subject(self) -> tuple[str, ...]:
+        return (self.installed.symbol,)
 
     def describe(self) -> str:
         return f"inherit or compose installed {self.installed.receipt}"
@@ -388,7 +389,6 @@ class RegistrationOwners:
 
         return tuple(
             InstalledOwner(
-                candidate_id=owner.symbol,
                 module_name=owner.symbol.rpartition(".")[0],
                 receipts=self._receipts(owner, roles),
                 cost=OwnerCost(

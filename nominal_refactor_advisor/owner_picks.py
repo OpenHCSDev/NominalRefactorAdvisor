@@ -25,23 +25,14 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable
 from dataclasses import dataclass, replace
 from pathlib import Path
 
 from .class_overlap import ClassOverlapMetrics, ExtractMixin
 from .json_reports import SemanticRecord
 from .models import RefactorFinding
-from .owner_candidates import NewMixinOwner, OwnerCandidate, OwnerPick
-
-
-@dataclass(frozen=True)
-class OwnerPickOutcome(SemanticRecord):
-    """What became of one extract-mixin finding under the picks."""
-
-    finding: str
-    outcome: str
-    detail: str
+from .owner_candidates import OwnerPick, OwnerPickOutcome, PickedOwner
 
 
 @dataclass(frozen=True)
@@ -97,34 +88,16 @@ class OwnerPicks:
             and finding.metrics.move is ExtractMixin
         ]
         outcomes: dict[str, OwnerPickOutcome] = {}
-        chosen: dict[str, tuple[OwnerPick, OwnerCandidate]] = {}
+        chosen: dict[str, PickedOwner] = {}
         for finding in mixins:
             pick = by_finding.get(finding.stable_id)
             if pick is None:
                 continue
-            if pick.owner is None:
-                outcomes[finding.stable_id] = OwnerPickOutcome(
-                    finding.stable_id, "declined", pick.because
-                )
-                continue
-            reason = self._invalid(pick, finding.metrics.owner_candidates)
-            if reason is not None:
-                outcomes[finding.stable_id] = OwnerPickOutcome(
-                    finding.stable_id, "rejected", reason
-                )
-                continue
-            candidate = next(
-                owner
-                for owner in finding.metrics.owner_candidates
-                if owner.candidate_id == pick.owner
-            )
-            chosen[finding.stable_id] = (pick, candidate)
-            outcomes[finding.stable_id] = OwnerPickOutcome(
-                finding.stable_id, "picked", f"{pick.owner} because {pick.because}"
-            )
-        picks_by_finding: dict[str, OwnerPick] = {
-            finding_id: pick for finding_id, (pick, _candidate) in chosen.items()
-        }
+            resolution = pick.resolved(finding.metrics.owner_candidates)
+            outcomes[finding.stable_id] = resolution.outcome(finding.stable_id)
+            for picked in resolution.picked():
+                chosen[finding.stable_id] = picked
+        picks_by_finding: dict[str, PickedOwner] = dict(chosen)
         for finding in mixins:
             if finding.stable_id in outcomes:
                 continue
@@ -133,11 +106,11 @@ class OwnerPicks:
             )
             covering = next(
                 (
-                    (finding_id, pick)
-                    for finding_id, (pick, candidate) in chosen.items()
-                    if classes <= frozenset(candidate.composers)
+                    (finding_id, picked)
+                    for finding_id, picked in chosen.items()
+                    if classes <= frozenset(picked.candidate.composers)
                     and any(
-                        owner.candidate_id == pick.owner
+                        owner.candidate_id == picked.candidate.candidate_id
                         for owner in finding.metrics.owner_candidates
                     )
                 ),
@@ -181,28 +154,6 @@ class OwnerPicks:
                 ),
             ),
         )
-
-    @staticmethod
-    def _invalid(pick: OwnerPick, candidates: Sequence[OwnerCandidate]) -> str | None:
-        candidate = next(
-            (owner for owner in candidates if owner.candidate_id == pick.owner), None
-        )
-        if candidate is None:
-            return f"`{pick.owner}` is not a candidate of this finding"
-        if not candidate.permitted:
-            return f"`{pick.owner}` is refused: " + "; ".join(
-                receipt.detail for receipt in candidate.refusals
-            )
-        if pick.because not in {receipt.kind.value for receipt in candidate.receipts}:
-            return (
-                f"the pick cites `{pick.because or '(nothing)'}`, which `{pick.owner}` "
-                "carries no receipt of"
-            )
-        if isinstance(candidate, NewMixinOwner) and not (pick.name or "").isidentifier():
-            return "a new mixin needs a class `name`"
-        if isinstance(candidate, NewMixinOwner) and not (pick.judgement or "").strip():
-            return "a new mixin needs a `judgement`: what the class is, for its docstring"
-        return None
 
     @property
     def picked_finding_ids(self) -> frozenset[str]:
