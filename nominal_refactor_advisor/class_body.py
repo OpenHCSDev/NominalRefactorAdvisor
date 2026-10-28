@@ -30,11 +30,16 @@ from .class_index import (
 
 
 class ClassBodyDeclarationIdentity(NamedTuple):
-    """What makes two class-body declarations the same declaration: the module-local
-    digest (which covers kind and name) and how the repository bound its star-hidden names."""
+    """What makes two class-body declarations the same declaration: the digest of
+    its kind, name and syntax, and what each free name resolves to.
+
+    A name resolves to one binding whether the module binds it directly or a
+    star import the repository settles does, so the two spellings of
+    `file_path: str` are one declaration.
+    """
 
     digest: str
-    star_bindings: tuple[tuple[str, str], ...]
+    bindings: tuple[tuple[str, str], ...]
 
 
 @dataclass(frozen=True)
@@ -404,7 +409,10 @@ class ClassBodyIndex:
             return UnprovedClassBodyDeclaration(declaration)
         return ProvedClassBodyDeclaration(
             declaration,
-            ClassBodyDeclarationIdentity(declaration.digest, settlements.settled),
+            ClassBodyDeclarationIdentity(
+                declaration.digest,
+                tuple(sorted((*declaration.bindings, *settlements.settled))),
+            ),
         )
 
 
