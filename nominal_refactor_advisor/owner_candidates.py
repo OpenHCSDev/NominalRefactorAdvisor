@@ -164,30 +164,30 @@ class BlockOwnerCandidate(OwnerCandidate, ABC):
 
 
 @dataclass(frozen=True, kw_only=True)
-class SharedBaseOwner(BlockOwnerCandidate):
-    """A scanned base both classes already descend from."""
+class ScannedClassOwner(BlockOwnerCandidate, ABC):
+    """An owner that is one scanned class, named by its symbol."""
 
     symbol: str = ""
 
     @property
     def subject(self) -> tuple[str, ...]:
         return (self.symbol,)
+
+
+@dataclass(frozen=True, kw_only=True)
+class SharedBaseOwner(ScannedClassOwner):
+    """A scanned base both classes already descend from."""
 
     def describe(self) -> str:
         return f"shared base `{self.symbol}`"
 
 
 @dataclass(frozen=True, kw_only=True)
-class ExistingClassOwner(BlockOwnerCandidate):
+class ExistingClassOwner(ScannedClassOwner):
     """A scanned class outside both families that already declares part of the block."""
 
-    symbol: str = ""
     held: tuple[str, ...] = ()
     """The block names it already declares identically."""
-
-    @property
-    def subject(self) -> tuple[str, ...]:
-        return (self.symbol,)
 
     def describe(self) -> str:
         return f"existing class `{self.symbol}`"
@@ -213,36 +213,33 @@ class ComposeExistingOwner(BlockOwnerCandidate):
 
 
 @dataclass(frozen=True, kw_only=True)
-class DeleteAndRedirectOwner(BlockOwnerCandidate):
-    """The copying class is deleted and its uses read the class it copies from:
-    its declarations are a subset of the source's, so every read finds a field."""
+class CopySourceOwner(BlockOwnerCandidate, ABC):
+    """An owner for a class that copies the block off one value of another: the
+    copy goes, so only the source keeps the block."""
 
     symbol: str = ""
-    """The class whose values the deleted class copied."""
+    """The class whose values the copying class copied."""
     keeps_both_copies: ClassVar[bool] = False
 
     @property
     def subject(self) -> tuple[str, ...]:
         """The copying class."""
         return self.composers
+
+
+@dataclass(frozen=True, kw_only=True)
+class DeleteAndRedirectOwner(CopySourceOwner):
+    """The copying class is deleted and its uses read the class it copies from:
+    its declarations are a subset of the source's, so every read finds a field."""
 
     def describe(self) -> str:
         return f"delete the copy and use `{self.symbol}`"
 
 
 @dataclass(frozen=True, kw_only=True)
-class HoldSourceOwner(BlockOwnerCandidate):
+class HoldSourceOwner(CopySourceOwner):
     """The copying class holds the instance it copied from instead of the copied
     block; its readers reach the block through it."""
-
-    symbol: str = ""
-    """The class whose instance the copying class would hold."""
-    keeps_both_copies: ClassVar[bool] = False
-
-    @property
-    def subject(self) -> tuple[str, ...]:
-        """The copying class."""
-        return self.composers
 
     def describe(self) -> str:
         return f"hold a `{self.symbol}` instead of the copy"
