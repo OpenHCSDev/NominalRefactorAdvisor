@@ -15,19 +15,24 @@ import re
 import tokenize
 from abc import ABC, abstractmethod
 from collections import defaultdict
-from collections.abc import Callable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, replace
 from enum import StrEnum
 from functools import cached_property
 from itertools import groupby
 from operator import attrgetter
+from pathlib import Path
 from types import EllipsisType
 from typing import Any, cast
 
+from .ast_projection import ExpressionReference
 from .ast_tools import (
     BuiltinCallName,
     CollectedFamily,
     ParsedModule,
+    PythonModuleRootParser,
+    PythonSourcePathDiscovery,
+    PythonSourcePathPolicy,
     walk_function_body_nodes,
 )
 from .codemod_source_edits import (
@@ -648,21 +653,56 @@ class UndistinguishedTypeArmsSiteFamily(RestatingSiteFamily[RestatingSiteModule]
             )
 
 
+class ExceptionMatcherCall(StrEnum):
+    """Test calls that pass when their block raises the class they are given:
+    an `except` clause spelled as a call."""
+
+    RAISES = "raises"
+    ASSERT_RAISES = "assertRaises"
+    ASSERT_RAISES_REGEX = "assertRaisesRegex"
+
+    @classmethod
+    def catches_with(cls, call: ast.AST, argument: ast.AST) -> bool:
+        """Whether `call` matches exceptions against `argument`, its first argument."""
+
+        match call:
+            case ast.Call(func=callee, args=[first, *_]) if first is argument:
+                return ExpressionReference.decoded(callee).terminal_name in set(cls)
+        return False
+
+
 class NameUseKind(StrEnum):
     """What one spelling of a name does with the object it names."""
 
     CONSTRUCT = "construct"
     RAISE = "raise"
+    CATCH = "catch"
     OTHER = "other"
 
     @classmethod
-    def of(cls, node: ast.AST, parent: ast.AST | None) -> NameUseKind:
+    def of(cls, node: ast.AST, parents: Mapping[int, ast.AST]) -> NameUseKind:
+        parent = parents.get(id(node))
         match parent:
             case ast.Call(func=callee) if callee is node:
                 return cls.CONSTRUCT
             case ast.Raise(exc=raised) if raised is node:
                 return cls.RAISE
+            case ast.Tuple() if cls.caught(parent, parents):
+                return cls.CATCH
+            case _ if cls.caught(node, parents):
+                return cls.CATCH
         return cls.OTHER
+
+    @staticmethod
+    def caught(node: ast.AST, parents: Mapping[int, ast.AST]) -> bool:
+        """Whether `node` is what an `except` clause or a raises-matcher catches."""
+
+        match parents.get(id(node)):
+            case ast.ExceptHandler(type=classes) if classes is node:
+                return True
+            case ast.Call() as call:
+                return ExceptionMatcherCall.catches_with(call, node)
+        return False
 
     @classmethod
     def only_builds(cls) -> frozenset[NameUseKind]:
@@ -680,29 +720,86 @@ class NameUse:
 
     @classmethod
     def in_module(cls, parsed_module: ParsedModule) -> frozenset[NameUse]:
-        """Every name the module spells: references by what they do; the
-        capitalised words of strings and comments, and explicit re-exports
-        (`from m import X as X`), as other uses."""
+        """Every name the module spells, by what the spelling does."""
+
+        return frozenset(
+            cls(name, kind) for name, kind, _line in cls.spellings(parsed_module)
+        )
+
+    @staticmethod
+    def spellings(parsed_module: ParsedModule) -> Iterator[tuple[str, NameUseKind, int]]:
+        """Every name the module spells, with what it does and where: references
+        by what they do; the capitalised words of strings and comments, and
+        explicit re-exports (`from m import X as X`), as other uses."""
 
         module = parsed_module.module
         parents = {
             id(child): node for node in ast.walk(module) for child in ast.iter_child_nodes(node)
         }
-        uses: set[NameUse] = set()
         for node in ast.walk(module):
             match node:
                 case ast.Name(id=name) | ast.Attribute(attr=name):
-                    uses.add(cls(name, NameUseKind.of(node, parents.get(id(node)))))
+                    yield name, NameUseKind.of(node, parents), node.lineno
                 case ast.Constant(value=str() as text):
-                    uses.update(cls(word, NameUseKind.OTHER) for word in SPELLED_WORD.findall(text))
+                    for word in SPELLED_WORD.findall(text):
+                        yield word, NameUseKind.OTHER, node.lineno
                 case ast.alias(name=name, asname=exported) if exported == name:
-                    uses.add(cls(name, NameUseKind.OTHER))
+                    yield name, NameUseKind.OTHER, node.lineno
         for token in tokenize.generate_tokens(io.StringIO(parsed_module.source).readline):
             if token.type == tokenize.COMMENT:
-                uses.update(
-                    cls(word, NameUseKind.OTHER) for word in SPELLED_WORD.findall(token.string)
+                for word in SPELLED_WORD.findall(token.string):
+                    yield word, NameUseKind.OTHER, token.start[0]
+
+
+@dataclass(frozen=True)
+class SiblingTestModules:
+    """The test modules of the repositories that scanned modules import from.
+
+    They are consumer evidence: a test that catches a class or names a member
+    tells it apart as surely as library code does. They are never where a
+    finding is reported, and the scan itself still excludes them. They are
+    found by the scan's own discovery (`PythonSourcePathDiscovery`, with
+    tests included, kept when `PythonSourcePathPolicy.is_test_path` says so)
+    under each scanned module's import root, and parsed by the scan's parser.
+    """
+
+    modules: tuple[ParsedModule, ...]
+
+    @classmethod
+    def under(cls, import_roots: Iterable[str]) -> SiblingTestModules:
+        policy = PythonSourcePathPolicy(include_tests=True)
+        modules: list[ParsedModule] = []
+        for root in map(Path, sorted(set(import_roots))):
+            paths = tuple(
+                path
+                for path in PythonSourcePathDiscovery(root, policy).paths()
+                if PythonSourcePathPolicy.is_test_path(path.relative_to(root))
+            )
+            modules.extend(
+                PythonModuleRootParser.for_root(root, source_policy=policy).parsed_source_paths(
+                    paths
                 )
-        return frozenset(uses)
+            )
+        return cls(tuple(modules))
+
+    @staticmethod
+    def holds(parsed_module: ParsedModule) -> bool:
+        """Whether a module is itself a test: evidence only, never a finding's site."""
+
+        identity = parsed_module.module_path_identity
+        return PythonSourcePathPolicy.is_test_path(
+            Path(parsed_module.file_path).resolve().relative_to(
+                identity.declared_import_root.resolve()
+            )
+        )
+
+    @classmethod
+    def beside(cls, parsed_modules: Iterable[ParsedModule]) -> SiblingTestModules:
+        """The test modules beside a set of parsed (scanned) modules."""
+
+        return cls.under(
+            str(module.module_path_identity.declared_import_root) for module in parsed_modules
+        )
 
 
 SPELLED_WORD = re.compile(r"(?<![\w])[A-Z]\w*")
@@ -743,6 +840,7 @@ class EmptySubclass:
 class EmptySubclassSiteModule(RestatingSiteModule):
     """One module's empty subclasses as sites, and every name it spells."""
 
+    import_root: str
     uses: tuple[NameUse, ...] = ()
 
 
@@ -765,11 +863,13 @@ class EmptySubclassSiteFamily(ShapeFamily[EmptySubclassSiteModule]):
                         (f"{parsed_module.module_name}.{subclass.name}", subclass.base.id),
                     )
                     for statement in parsed_module.module.body
+                    if not SiblingTestModules.holds(parsed_module)
                     for subclass in EmptySubclass.decoded(statement)
                 ),
                 uses=tuple(
                     sorted(NameUse.in_module(parsed_module), key=attrgetter("name", "kind"))
                 ),
+                import_root=str(parsed_module.module_path_identity.declared_import_root),
             )
         ]
 
@@ -799,6 +899,9 @@ class EmptySubclassIndex:
         kinds: dict[str, set[NameUseKind]] = defaultdict(set)
         for module in modules:
             for use in module.uses:
+                kinds[use.name].add(use.kind)
+        for test_module in SiblingTestModules.under(module.import_root for module in modules).modules:
+            for use in NameUse.in_module(test_module):
                 kinds[use.name].add(use.kind)
         index = cls(class_index, {name: frozenset(found) for name, found in kinds.items()}, {})
         return replace(
@@ -1191,6 +1294,7 @@ class EnumMembers:
 class EnumUseModule(RestatingSiteModule):
     """One module's literal-valued classes as sites, and every enum-shaped spelling."""
 
+    import_root: str
     member_uses: tuple[EnumMemberUse, ...] = ()
     class_uses: tuple[EnumClassUse, ...] = ()
 
@@ -1246,10 +1350,12 @@ class EnumUseSiteFamily(ShapeFamily[EnumUseModule]):
                         (f"{parsed_module.module_name}.{members.node.name}",),
                     )
                     for statement in parsed_module.module.body
+                    if not SiblingTestModules.holds(parsed_module)
                     for members in EnumMembers.decoded(statement)
                 ),
                 member_uses=tuple(dict.fromkeys(member_uses)),
                 class_uses=tuple(dict.fromkeys(class_uses)),
+                import_root=str(parsed_module.module_path_identity.declared_import_root),
             )
         ]
 
@@ -1279,10 +1385,18 @@ class EnumMemberIndex:
         modules = EnumUseSiteFamily.modules_in(projections_by_family)
         member_uses: dict[str, list[EnumMemberUse]] = defaultdict(list)
         class_kinds: dict[str, set[EnumUseKind]] = defaultdict(set)
-        for module in modules:
-            for use in module.member_uses:
+        tests = SiblingTestModules.under(module.import_root for module in modules)
+        evidence = (
+            *((module.member_uses, module.class_uses) for module in modules),
+            *(
+                enum_uses(test.module, EnumUseSiteFamily.spelled_like_a_class)[:2]
+                for test in tests.modules
+            ),
+        )
+        for module_member_uses, module_class_uses in evidence:
+            for use in module_member_uses:
                 member_uses[use.owner].append(use)
-            for class_use in module.class_uses:
+            for class_use in module_class_uses:
                 class_kinds[class_use.owner].add(class_use.kind)
         folds = {
             site.detail[0]: found
