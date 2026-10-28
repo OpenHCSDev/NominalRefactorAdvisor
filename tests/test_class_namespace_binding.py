@@ -92,6 +92,41 @@ def test_conditional_class_binding_remains_unproved(body: str) -> None:
         projection.external_references_named("hidden")
 
 
+def test_global_augmented_assignment_in_a_method_reads_and_writes_the_module() -> None:
+    projection = ModuleLexicalDependencyProjection.from_module(
+        ast.parse(
+            "class Owner:\n"
+            "    def bump(self):\n"
+            "        global hidden\n"
+            "        hidden += 1\n"
+            "        return hidden\n"
+        )
+    )
+    assert len(projection.external_references_named("hidden")) == 2
+
+
+def test_rename_refuses_a_binding_a_method_declares_global(tmp_path: Path) -> None:
+    path = tmp_path / "probe.py"
+    path.write_text(
+        "hidden = 99\n"
+        "class Owner:\n"
+        "    def bump(self):\n"
+        "        global hidden\n"
+        "        hidden += 1\n"
+        "        return hidden\n",
+        encoding="utf-8",
+    )
+    operation = RenameTopLevelBindingAuthorityOperation(
+        target=SourceRewriteTarget(file_path=path.as_posix()),
+        binding_name="hidden",
+        new_name="renamed",
+    )
+    with pytest.raises(Exception, match="explicit lexical scope declaration"):
+        CodemodPlanSequence.from_operations((operation,)).simulate(
+            CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+        )
+
+
 def test_unrelated_uncertainty_does_not_block_exact_reference() -> None:
     projection = ModuleLexicalDependencyProjection.from_module(
         ast.parse(
