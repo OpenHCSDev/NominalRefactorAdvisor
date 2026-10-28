@@ -3,24 +3,25 @@
 A class that inherits a method instead of defining it gets that implementation
 from its parent's one declaration. Remove the parent's method and each such
 pair has to be written by hand: the ablation counts them. A pair counts only
-when a call whose receiver type is known reaches it (``self``/``cls`` inside a
-class, or a parameter annotated with a scanned class), so a fat root nobody
-calls through earns nothing. Untyped receivers are not resolved here; the
-report names how many calls that leaves out.
+when a call whose receiver the type checker resolves to a scanned class reaches
+it, so a fat root nobody calls through earns nothing. The report names how
+many calls have no such receiver, the coverage this leaves out.
 """
 
 from __future__ import annotations
 
 import ast
 from collections import defaultdict
-from collections.abc import Iterable
-from dataclasses import dataclass, field
+from collections.abc import Iterable, Iterator
+from dataclasses import dataclass
 from functools import cached_property
+from itertools import chain
 
 from .ast_tools import ParsedModule
 from .class_index import CompactClassFamilyIndex
 from .json_reports import SemanticRecord, json_report_property
-from .observation_families import TypeArgumentResolver
+from .probe_owner import ReceiverSpan, ScannedClasses
+from .type_checker_session import TypeCheckerSession
 
 
 @dataclass(frozen=True)
@@ -38,6 +39,7 @@ class InheritanceAmortization(SemanticRecord):
     """Pairs inheritance derives that typed calls reach, by the class that declares them."""
 
     scanned_line_count: int
+    type_checker: str
     attribute_calls: int
     receiver_typed_calls: int
     calls_reaching_inherited: int
@@ -90,111 +92,59 @@ class InheritedMethods:
         return (symbol, *self.index.descendant_symbols(symbol))
 
 
-@dataclass
-class TypedReceiverWalk(ast.NodeVisitor):
-    """One module's method calls on receivers whose class is declared in scope."""
+@dataclass(frozen=True)
+class MethodCall:
+    """One ``receiver.method(...)`` call: where its receiver is, and which function makes it."""
 
-    module: ParsedModule
-    resolver: TypeArgumentResolver
-    methods: InheritedMethods
-    pairs: defaultdict[str, set[tuple[str, str]]]
-    consumers: defaultdict[str, set[str]]
-    attribute_calls: int = 0
-    receiver_typed_calls: int = 0
-    calls_reaching_inherited: int = 0
-    qualname: tuple[str, ...] = ()
-    class_symbol: str | None = None
-    receivers: dict[str, str] = field(default_factory=dict)
+    span: ReceiverSpan
+    method: str
+    consumer: str
 
-    def scoped(self, node: ast.AST, **scope: object) -> None:
-        saved = {name: getattr(self, name) for name in scope}
-        for name, value in scope.items():
-            setattr(self, name, value)
-        self.generic_visit(node)
-        for name, value in saved.items():
-            setattr(self, name, value)
-
-    def visit_ClassDef(self, node: ast.ClassDef) -> None:
-        qualname = (*self.qualname, node.name)
-        self.scoped(
-            node,
-            qualname=qualname,
-            class_symbol=self.methods.index.symbol_for(
-                file_path=self.module.file_path, qualname=".".join(qualname)
-            ),
-            receivers={},
-        )
-
-    def visit_FunctionDef(self, node: ast.FunctionDef | ast.AsyncFunctionDef) -> None:
-        receivers = dict(self.receivers)
-        arguments = (*node.args.posonlyargs, *node.args.args, *node.args.kwonlyargs)
-        for position, argument in enumerate(arguments):
-            if argument.annotation is not None:
-                name = self.resolver.qualified_name(argument.annotation, frozenset())
-                if self.methods.index.class_for(name or "") is not None:
-                    receivers[argument.arg] = name
-            elif position == 0 and self.binds_instance(node):
-                receivers[argument.arg] = self.class_symbol
-        self.scoped(
-            node,
-            qualname=(*self.qualname, node.name),
-            class_symbol=None,
-            receivers=receivers,
-        )
-
-    visit_AsyncFunctionDef = visit_FunctionDef
-
-    def binds_instance(self, node: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
-        """Whether the first parameter is the class or its instance."""
-        return self.class_symbol is not None and not any(
-            isinstance(decorator, ast.Name) and decorator.id == "staticmethod"
-            for decorator in node.decorator_list
-        )
-
-    def visit_Call(self, node: ast.Call) -> None:
-        match node.func:
-            case ast.Attribute(value=receiver, attr=method):
-                self.attribute_calls += 1
-                match receiver:
-                    case ast.Name(id=name) if name in self.receivers:
-                        self.receiver_typed_calls += 1
-                        self.reach(self.receivers[name], method)
-        self.generic_visit(node)
-
-    def reach(self, symbol: str, method: str) -> None:
-        consumer = ".".join((self.module.module_name, *self.qualname))
-        reached = False
-        for member in self.methods.reached(symbol):
-            owner = self.methods.owner_of(member, method)
-            if owner is not None:
-                self.pairs[owner].add((member, method))
-                self.consumers[owner].add(consumer)
-                reached = True
-        self.calls_reaching_inherited += reached
+    @classmethod
+    def in_module(cls, module: ParsedModule) -> Iterator[MethodCall]:
+        index = module.syntax_index
+        for node_index, call in index.indexed_nodes_of_type(ast.Call):
+            match call.func:
+                case ast.Attribute(value=receiver, attr=method):
+                    yield cls(
+                        ReceiverSpan.of(module.file_path, receiver),
+                        method,
+                        f"{module.module_name}.{index.lexical_symbol(node_index)}",
+                    )
 
 
 def inheritance_amortization(
     modules: Iterable[ParsedModule],
     index: CompactClassFamilyIndex,
-    resolvers: dict[str, TypeArgumentResolver],
+    session: TypeCheckerSession,
 ) -> InheritanceAmortization:
-    """Count the inherited pairs typed calls reach across ``modules``."""
+    """Count the inherited pairs that calls with resolved receivers reach across ``modules``."""
 
+    modules = tuple(modules)
+    calls = tuple(chain.from_iterable(MethodCall.in_module(module) for module in modules))
+    answers = session.receiver_types(call.span for call in calls)
+    classes = ScannedClasses(index.classes_by_symbol)
     methods = InheritedMethods(index)
     pairs: defaultdict[str, set[tuple[str, str]]] = defaultdict(set)
     consumers: defaultdict[str, set[str]] = defaultdict(set)
-    walks = []
-    for module in modules:
-        walk = TypedReceiverWalk(
-            module, resolvers[module.file_path], methods, pairs, consumers
-        )
-        walk.visit(module.module)
-        walks.append(walk)
+    typed = reaching = 0
+    for call in calls:
+        symbols = answers[call.span].owner(classes).class_symbols()
+        typed += bool(symbols)
+        reached = False
+        for member in chain.from_iterable(methods.reached(symbol) for symbol in symbols):
+            owner = methods.owner_of(member, call.method)
+            if owner is not None:
+                pairs[owner].add((member, call.method))
+                consumers[owner].add(call.consumer)
+                reached = True
+        reaching += reached
     return InheritanceAmortization(
-        scanned_line_count=sum(len(walk.module.source.splitlines()) for walk in walks),
-        attribute_calls=sum(walk.attribute_calls for walk in walks),
-        receiver_typed_calls=sum(walk.receiver_typed_calls for walk in walks),
-        calls_reaching_inherited=sum(walk.calls_reaching_inherited for walk in walks),
+        scanned_line_count=sum(len(module.source.splitlines()) for module in modules),
+        type_checker=session.status,
+        attribute_calls=len(calls),
+        receiver_typed_calls=typed,
+        calls_reaching_inherited=reaching,
         owners=tuple(
             sorted(
                 (

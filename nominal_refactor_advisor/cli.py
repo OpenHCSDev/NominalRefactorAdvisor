@@ -2061,12 +2061,13 @@ class MarkdownReportRenderer(ABC):
             )
         inherited = report.inherited
         lines.append(
-            f"   - Inherited pairs reached by typed calls: {inherited.derived_pairs} "
+            f"   - Inherited pairs reached by resolved calls: {inherited.derived_pairs} "
             f"({inherited.derived_pairs_per_kloc:.1f}/KLOC over "
             f"{inherited.scanned_line_count} lines); {inherited.receiver_typed_calls} of "
-            f"{inherited.attribute_calls} method calls have a typed receiver, "
+            f"{inherited.attribute_calls} method calls have a receiver resolved to a scanned class, "
             f"{inherited.calls_reaching_inherited} reach an inherited method"
         )
+        lines.append(f"   - Receiver types: {inherited.type_checker}")
         lines.extend(
             f"   - inherited from {owner.owner}: {owner.derived_pairs} pair(s) across "
             f"{owner.members} class(es), called from {owner.consumers} function(s)"

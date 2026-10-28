@@ -293,7 +293,7 @@ def test_each_probe_names_its_line_and_the_declared_owner_or_why_not(tmp_path: P
     )
     assert (
         f"owner `owner.Goal` ({tmp_path / 'owner.py'}:5) declares "
-        "`paused_at: int | None` (the type checker infers `Goal`)"
+        "`paused_at: int | None` (the type checker infers `owner.Goal`)"
     ) in by_receiver["made"]
 
 
@@ -305,15 +305,13 @@ _INFERRED_PROBE = (
 _GOAL = "class Goal:\n    paused_at: int | None = None\n"
 
 
-def test_a_type_name_two_scanned_classes_share_is_refused(tmp_path: Path):
+def test_the_inferred_class_is_the_exact_one_when_two_share_a_name(tmp_path: Path):
     (finding,) = _findings(
         tmp_path,
         ForeignAbsenceProbeDetector,
         {"owner": _GOAL, "other_owner": _GOAL, "m": _INFERRED_PROBE},
     )
-    assert "owner unresolved: type name `Goal` binds to 2 scanned classes" in (
-        finding.summary
-    )
+    assert "(the type checker infers `owner.Goal`)" in finding.summary
 
 
 def test_without_mypy_the_owner_says_so(tmp_path: Path, monkeypatch):
@@ -328,7 +326,7 @@ def test_without_mypy_the_owner_says_so(tmp_path: Path, monkeypatch):
     assert "owner unresolved: type checker: mypy is not installed" in finding.summary
 
 
-def test_the_scan_ledger_records_the_daemon_start_and_each_inspect(tmp_path: Path):
+def test_the_scan_ledger_records_the_build_and_each_lookup(tmp_path: Path):
     from nominal_refactor_advisor.type_checker_session import TypeCheckerTimingLedger
 
     with TypeCheckerTimingLedger.scope() as ledger:
@@ -337,8 +335,8 @@ def test_the_scan_ledger_records_the_daemon_start_and_each_inspect(tmp_path: Pat
             ForeignAbsenceProbeDetector,
             {"owner": _GOAL, "m": _INFERRED_PROBE},
         )
-    assert ledger.timing.inspect_calls == 1
-    assert ledger.timing.daemon_start_seconds > 0
+    assert ledger.timing.lookups == 1
+    assert ledger.timing.build_seconds > 0
 
 
 def test_own_state_modules_and_truth_tests_are_not_foreign_probes(tmp_path: Path):

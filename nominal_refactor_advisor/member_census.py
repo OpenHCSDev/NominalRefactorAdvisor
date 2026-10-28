@@ -41,6 +41,7 @@ from .foreign_family import ForeignFamily
 from .json_reports import SemanticRecord, json_report_property
 from .observation_families import TypeArgumentResolver, type_test_shapes
 from .observation_shapes import TypeTestShape
+from .type_checker_session import TypeCheckerSession
 
 
 class CensusFamilyKind(StrEnum):
@@ -709,12 +710,16 @@ class MemberAwarenessCensusBuilder:
             groups=groups,
             owners=self.owner_census(),
             add_member_costs=self.add_member_costs(groups),
-            inherited=inheritance_amortization(
-                self.corpus.modules,
-                self.corpus.class_index,
-                self.corpus.resolvers,
-            ),
+            inherited=self.inherited(),
         )
+
+    def inherited(self) -> InheritanceAmortization:
+        with TypeCheckerSession.session(
+            module.file_path for module in self.corpus.modules
+        ) as session:
+            return inheritance_amortization(
+                self.corpus.modules, self.corpus.class_index, session
+            )
 
 
 def build_member_awareness_census(

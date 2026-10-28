@@ -23,7 +23,6 @@ from ..codemod import (
     RefactorRecipeOperation,
 )
 from ..class_index import (
-    CompactModuleClassProjection,
     CompactModuleClassProjectionFamily,
 )
 from ..probe_owner import ProbeOwnerContext, ScannedClasses
@@ -48,7 +47,6 @@ from ..restated_fact_observations import (
     ForwardingFacadeSiteFamily,
     ForeignAbsenceSite,
     ForeignAbsenceSiteFamily,
-    ForeignAbsenceSiteModule,
     LegacyMarkerSiteFamily,
     ModuleReferenceFacts,
     ModuleReferenceFamily,
@@ -416,7 +414,7 @@ def _probe_owner_context(
     The type checker runs only when some receiver declares no annotation.
     """
 
-    classes = ScannedClasses.of(
+    classes = ScannedClasses(
         {
             indexed_class.symbol: indexed_class
             for projection in CompactModuleClassProjectionFamily.modules_in(projections_by_family)
@@ -431,7 +429,11 @@ def _probe_owner_context(
     )
     if not spans:
         return ProbeOwnerContext(classes, {})
-    with TypeCheckerSession.session(span.file_path for span in spans) as session:
+    # An owner resolves only to a scanned class, so its declaring file is a source too.
+    with TypeCheckerSession.session(
+        {span.file_path for span in spans}
+        | {indexed_class.file_path for indexed_class in classes.by_symbol.values()}
+    ) as session:
         answers = session.receiver_types(spans)
     return ProbeOwnerContext(
         classes, {span: answer.owner(classes) for span, answer in answers.items()}

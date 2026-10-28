@@ -291,3 +291,61 @@ def test_inherited_pairs_count_only_where_a_typed_call_reaches_them(tmp_path: Pa
     assert owner.consumers == 1
     assert (inherited.attribute_calls, inherited.receiver_typed_calls) == (3, 2)
     assert inherited.calls_reaching_inherited == 1
+
+
+def test_receivers_the_type_checker_infers_reach_inherited_pairs(tmp_path: Path):
+    """A local built from a constructor and an attribute chain carry no
+    annotation; the type checker resolves both, and each reaches only the
+    class it is."""
+    _write(
+        tmp_path,
+        {
+            "family": (
+                "class Base:\n"
+                "    def describe(self):\n"
+                "        return 0\n"
+                "class Left(Base):\n"
+                "    pass\n"
+                "class Right(Base):\n"
+                "    pass\n"
+                "class Holder:\n"
+                "    def __init__(self) -> None:\n"
+                "        self.right = Right()\n"
+            ),
+            "consumers": (
+                "from family import Holder, Left\n"
+                "def local():\n"
+                "    made = Left()\n"
+                "    return made.describe()\n"
+                "def chained(holder: Holder):\n"
+                "    return holder.right.describe()\n"
+            ),
+        },
+    )
+    inherited = build_member_awareness_census(tmp_path).inherited
+    [owner] = inherited.owners
+    assert (owner.owner, owner.derived_pairs, owner.consumers) == ("family.Base", 2, 2)
+    assert inherited.calls_reaching_inherited == 2
+
+
+def test_a_classmethod_call_through_cls_reaches_the_inherited_classmethod(tmp_path: Path):
+    """``cls`` is ``type[Self]`` to the type checker: the class it names, not a
+    class called ``type``."""
+    _write(
+        tmp_path,
+        {
+            "family": (
+                "from typing import Self\n"
+                "class Base:\n"
+                "    @classmethod\n"
+                "    def build(cls) -> Self:\n"
+                "        return cls()\n"
+                "class Leaf(Base):\n"
+                "    @classmethod\n"
+                "    def make(cls) -> Self:\n"
+                "        return cls.build()\n"
+            ),
+        },
+    )
+    [owner] = build_member_awareness_census(tmp_path).inherited.owners
+    assert (owner.owner, owner.derived_pairs, owner.members) == ("family.Base", 1, 1)
