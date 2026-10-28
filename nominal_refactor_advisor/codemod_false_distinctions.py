@@ -55,6 +55,8 @@ from .declaration_authority_rename import (
 from .declared_root import DeclaredRoot
 from .false_distinction_observations import (
     EmptySubclass,
+    NameUse,
+    SiblingTestModules,
     EnumClassUse,
     EnumMemberIndex,
     EnumMemberUse,
@@ -234,9 +236,10 @@ class RedirectEmptySubclassOperation(RepositorySourceReprovedOperation):
         proof = DeclarationRedirectProof.require_redirect(
             snapshot.parsed_modules, target, node, bound_name=subclass.base.id
         )
-        refusals = tuple(self.refusals(proof, subclass))
+        tests = SiblingTestModules.beside(snapshot.parsed_modules)
+        refusals = (*self.refusals(proof, subclass), *self.test_refusals(tests, subclass))
         if refusals:
-            raise ValueError("; ".join(refusals))
+            raise ValueError("; ".join(dict.fromkeys(refusals)))
         rationale = self.rationale or (
             f"Delete `{subclass.name}`: it differs from `{subclass.base.id}` only by name."
         )
@@ -260,7 +263,7 @@ class RedirectEmptySubclassOperation(RepositorySourceReprovedOperation):
                 for child in ast.iter_child_nodes(parent)
             }
             for reference in (*module.direct_references, *module.qualified_references):
-                kind = NameUseKind.of(reference, parents.get(id(reference)))
+                kind = NameUseKind.of(reference, parents)
                 if kind not in NameUseKind.only_builds():
                     yield (
                         f"{module.module.file_path}:{reference.lineno} uses "
@@ -276,6 +279,18 @@ class RedirectEmptySubclassOperation(RepositorySourceReprovedOperation):
                     f"{module.module.file_path}:{export.literal.lineno} spells "
                     f"`{subclass.name}` in a public export string"
                 )
+
+    @staticmethod
+    def test_refusals(tests: SiblingTestModules, subclass: EmptySubclass) -> Iterator[str]:
+        """A test spelling the class: the redirect rewrites scanned modules only."""
+
+        for test in tests.modules:
+            for name, kind, line in NameUse.spellings(test):
+                if name == subclass.name:
+                    yield (
+                        f"{test.file_path}:{line} spells `{name}` in a test ({kind}); "
+                        "the redirect rewrites scanned modules only"
+                    )
 
     @staticmethod
     def module_edits(
@@ -384,6 +399,7 @@ class EnumFoldProof:
     name: str
     members: EnumMembers
     uses: tuple[tuple[ParsedModule, list[EnumMemberUse], list[EnumClassUse], list[MemberGroup]], ...]
+    tests: tuple[tuple[ParsedModule, list[EnumMemberUse], list[EnumClassUse], list[MemberGroup]], ...]
 
     @classmethod
     def of(cls, snapshot: CodemodSourceSnapshot, node: ast.AST, file_path: str) -> EnumFoldProof:
@@ -404,6 +420,10 @@ class EnumFoldProof:
             tuple(
                 (parsed, *enum_uses(parsed.module, name.__eq__))
                 for parsed in snapshot.parsed_modules
+            ),
+            tuple(
+                (test, *enum_uses(test.module, name.__eq__))
+                for test in SiblingTestModules.beside(snapshot.parsed_modules).modules
             ),
         )
 
@@ -428,7 +448,11 @@ class EnumFoldProof:
 
     def folds(self) -> tuple[tuple[str, ...], ...]:
         return EnumMemberIndex.undistinguished(
-            [use for _parsed, member_uses, _classes, _groups in self.uses for use in member_uses]
+            [
+                use
+                for _parsed, member_uses, _classes, _groups in (*self.uses, *self.tests)
+                for use in member_uses
+            ]
         )
 
     def refusals(self, folded: tuple[str, ...]) -> Iterator[str]:
@@ -441,6 +465,19 @@ class EnumFoldProof:
                     )
             for use in member_uses:
                 yield from use.refusals(parsed.file_path, folded)
+        for test, member_uses, class_uses, _groups in self.tests:
+            for class_use in class_uses:
+                if class_use.kind is EnumUseKind.OTHER:
+                    yield (
+                        f"{test.file_path}:{class_use.line} uses `{self.name}` other than "
+                        "by a member or as a type in a test"
+                    )
+            for use in member_uses:
+                if use.member in folded:
+                    yield (
+                        f"{test.file_path}:{use.line} spells `{self.name}.{use.member}` in a "
+                        "test; the fold rewrites scanned modules only"
+                    )
 
 
 @dataclass(frozen=True, kw_only=True)
