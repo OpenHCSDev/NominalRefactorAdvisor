@@ -546,7 +546,7 @@ def test_current_source_signature_ignores_wrapper_and_annotation_hooks(
         mutation.setattr(function, "__annotations__", {"value": object()})
         source = NativePythonFunctionSource.from_function(function)
         assert source.signature.bind((), ()).is_exact
-        assert source.signature.parameters[0].annotation_expression == "int"
+        assert source.signature.annotations_by_name == {"value": "int"}
 
 
 def test_native_call_projects_metadata_from_current_source_owner():

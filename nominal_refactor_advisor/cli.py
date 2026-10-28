@@ -30,13 +30,25 @@ from .scan_cache import ScanCache
 from .source_geometry import read_source_text
 from .analysis import (
     AnalysisPathScope,
+    CachedGraphDemand,
     CachedPathAnalysisRequest,
+    CompactPathAnalysisResult,
     DetectorTypePartition,
     EvidenceLocalPartialDetectorSelection,
+    ExactCacheHit,
+    FastCacheQuestion,
     FastCachedPathAnalysisAuthority,
     FastCacheReusePolicy,
+    HeldSemanticDescentGraph,
+    NO_GRAPH_DEMAND,
+    NO_HELD_GRAPH,
+    PartialCacheReuse,
+    ReusedCacheResult,
     SemanticDescentGraphAnalysisSource,
     SemanticDescentGraphCacheContext,
+    SemanticDescentGraphDemand,
+    SemanticDescentGraphHolding,
+    SemanticDescentGraphQuestion,
     SortedFindingsAuthority,
     analysis_cache_dir_for_root,
     analyze_compact_roots_with_cache,
@@ -53,6 +65,7 @@ from .analysis_cache import (
     AnalysisCacheIdentity,
     AnalysisCacheStatus,
     AnalysisExecutionPlanCacheIdentity,
+    AnalysisExecutionPlanLookup,
     AnalysisFindingCache,
     AnalysisFindingSummaryCachePayload,
     Hit,
@@ -106,6 +119,7 @@ from .codemod_runtime import (
 from .codemod_source_cache import (
     CodemodSourceContext,
     CodemodSourceContextCache,
+    CodemodSourceContextCacheLookup,
 )
 from .codemod_target_selectors import CodemodTargetSelector
 from .owner_picks import OwnerPicks
@@ -971,6 +985,16 @@ class JsonSummaryPreparseCachePolicy:
             return JsonPreparseCachePayloadMode.SEMANTIC_GRAPH_PAYLOAD
         return JsonPreparseCachePayloadMode.DISABLED
 
+    def graph_demand(
+        self,
+        cache_context: SemanticDescentGraphCacheContext,
+        latest: SemanticDescentGraphHolding,
+    ) -> SemanticDescentGraphDemand:
+        """What a served result needs first: the cached graph, or nothing."""
+        if not self.mode.requires_semantic_descent_cache:
+            return NO_GRAPH_DEMAND
+        return CachedGraphDemand(cache_context, latest)
+
     @property
     def uses_evidence_local_partial_reuse(self) -> bool:
         return (
@@ -984,7 +1008,7 @@ class FastPreparseSemanticDescentContext:
     """Semantic-descent graph context available to a pre-parse cache lookup."""
 
     analysis_source: SemanticDescentGraphAnalysisSource
-    latest_graph: SemanticDescentGraph | None = None
+    latest_graph: SemanticDescentGraphHolding
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -997,17 +1021,12 @@ class FastPreparseSemanticDescentSourceAuthority:
 
     def context(self) -> FastPreparseSemanticDescentContext:
         latest_graph = self.latest_graph()
-        if latest_graph is None:
-            return FastPreparseSemanticDescentContext(self.base_source)
         return FastPreparseSemanticDescentContext(
-            SemanticDescentGraphAnalysisSource(
-                cached_graph=latest_graph,
-                cache_context=self.cache_context,
-            ),
+            latest_graph.analysis_source(self.base_source, self.cache_context),
             latest_graph=latest_graph,
         )
 
-    def latest_graph(self) -> SemanticDescentGraph | None:
+    def latest_graph(self) -> SemanticDescentGraphHolding:
         # Loop-summary lookup needs the graph only when an actual evidence-local
         # partial result is computed; ``FastCachedPathAnalysisAuthority`` loads
         # it lazily in that branch.  Eagerly unpickling the repository graph here
@@ -1017,8 +1036,8 @@ class FastPreparseSemanticDescentSourceAuthority:
             not self.preparse_cache_policy.uses_evidence_local_partial_reuse
             or not self.preparse_cache_policy.mode.requires_semantic_descent_cache
         ):
-            return None
-        return self.cache_context.latest_graph()
+            return NO_HELD_GRAPH
+        return self.cache_context.latest_held_graph()
 
 
 @dataclass(frozen=True)
@@ -1204,16 +1223,31 @@ class JsonSemanticDescentPayloadSource:
     graph_source: SemanticDescentGraphAnalysisSource = field(
         default_factory=SemanticDescentGraphAnalysisSource
     )
-    cached_repository_graph: SemanticDescentGraph | None = None
+    held_graph: SemanticDescentGraphHolding = NO_HELD_GRAPH
 
-    @property
-    def available(self) -> bool:
-        return bool(self.modules) or self.cached_repository_graph is not None
 
-    def repository_graph(self) -> SemanticDescentGraph:
-        if self.cached_repository_graph is not None:
-            return self.cached_repository_graph
-        return self.graph_source.graph_for_modules(self.modules)
+@dataclass(frozen=True)
+class RepositoryGraphPayload(SemanticDescentGraphQuestion[None]):
+    """Write the repository graph section: from the held graph, else from the
+    parsed modules when there are any."""
+
+    source: JsonSemanticDescentPayloadSource
+    finding_tuple: tuple[RefactorFinding, ...]
+    payload: JsonObject
+
+    def held(self, graph: SemanticDescentGraph) -> None:
+        self.payload["semantic_descent_graph"] = json_report_object(
+            SemanticDescentGraphPayloadReport.from_graphs(
+                graph,
+                finding_backed_graph=build_finding_backed_semantic_descent_graph(
+                    ssot_authority_findings(self.finding_tuple),
+                ),
+            )
+        )
+
+    def absent(self) -> None:
+        if self.source.modules:
+            self.held(self.source.graph_source.graph_for_modules(self.source.modules))
 
 
 @dataclass(frozen=True)
@@ -1270,19 +1304,10 @@ class JsonPayloadBuilder:
             if self.semantic_descent_source is not None
             else JsonSemanticDescentPayloadSource(modules=self.modules)
         )
-        if (
-            sections.semantic_descent_graph
-            and finding_tuple
-            and semantic_descent_source.available
-        ):
+        if sections.semantic_descent_graph and finding_tuple:
             started = perf_counter()
-            payload["semantic_descent_graph"] = json_report_object(
-                SemanticDescentGraphPayloadReport.from_graphs(
-                    semantic_descent_source.repository_graph(),
-                    finding_backed_graph=build_finding_backed_semantic_descent_graph(
-                        ssot_authority_findings(finding_tuple),
-                    ),
-                )
+            semantic_descent_source.held_graph.answer(
+                RepositoryGraphPayload(semantic_descent_source, finding_tuple, payload)
             )
             semantic_descent_graph_seconds = round(perf_counter() - started, 3)
         source_snapshot = self.source_snapshot
@@ -3646,6 +3671,426 @@ class CodemodRefactorGoalCliCommand(
         return 0 if report.stop_reason.completed else 1
 
 
+@dataclass(frozen=True)
+class ScanAnalysisOutcome(ABC):
+    """What one scan's analysis produced, however the cache served it.
+
+    Mixins add what an outcome kind has: a cache status, a validated cache
+    identity, a scan-completeness status. Each downstream step asks the outcome.
+    """
+
+    modules: ParsedModuleSet
+    findings: list[RefactorFinding]
+    parse_seconds: float
+    analysis_seconds: float
+    semantic_descent_graph: SemanticDescentGraphHolding
+
+    def timing(self, timing: ScanTiming) -> ScanTiming:
+        """The scan timing, with this outcome's cache status once it has one."""
+        return timing
+
+    def reporting(self, builder: JsonPayloadBuilder) -> JsonPayloadBuilder:
+        """The payload builder, with this outcome's scan status once it has one."""
+        return builder
+
+    def execution_plan(
+        self,
+        root: Path,
+        report_roots: tuple[Path, ...],
+        cache: AnalysisFindingCache,
+    ) -> RefactorExecutionPlanReport:
+        """Build the execution plan; an identified outcome reuses its cached one."""
+        return build_refactor_execution_plan(self.findings, root)
+
+    def source_snapshot(
+        self,
+        eligibility: SourceSnapshotCacheEligibility,
+        analysis_cache_dir: Path | None,
+        parse_workers: int,
+    ) -> CodemodSourceSnapshot:
+        """The source snapshot for these findings."""
+        return CodemodSourceSnapshot.from_modules(self.modules, self.findings)
+
+
+@dataclass(frozen=True)
+class CacheStatusOutcome(ScanAnalysisOutcome):
+    """An outcome whose analysis consulted the persistent finding cache."""
+
+    analysis_cache_status: type[AnalysisCacheStatus]
+
+    def timing(self, timing: ScanTiming) -> ScanTiming:
+        return replace(timing, analysis_cache_status=self.analysis_cache_status)
+
+
+@dataclass(frozen=True)
+class IdentifiedOutcome(ScanAnalysisOutcome):
+    """An outcome stored under a validated request identity."""
+
+    cache_identity: AnalysisCacheIdentity
+
+    def execution_plan(
+        self,
+        root: Path,
+        report_roots: tuple[Path, ...],
+        cache: AnalysisFindingCache,
+    ) -> RefactorExecutionPlanReport:
+        identity = AnalysisExecutionPlanCacheIdentity.from_analysis_identity(
+            self.cache_identity, root, report_roots
+        )
+        match cache.load_execution_plan(identity):
+            case AnalysisExecutionPlanLookup(
+                status=status, plan=RefactorExecutionPlanReport() as plan
+            ) if status.is_hit:
+                return plan
+        execution_plan = build_refactor_execution_plan(self.findings, root)
+        cache.store_execution_plan(identity, execution_plan)
+        return execution_plan
+
+    def source_snapshot(
+        self,
+        eligibility: SourceSnapshotCacheEligibility,
+        analysis_cache_dir: Path | None,
+        parse_workers: int,
+    ) -> CodemodSourceSnapshot:
+        if eligibility.can_use_cached_source_context:
+            CodemodSourceContextCache(analysis_cache_dir).store(
+                self.cache_identity,
+                CodemodSourceContext.from_modules(self.modules, self.findings),
+            )
+        return CodemodSourceSnapshot.from_modules(self.modules, self.findings)
+
+
+@dataclass(frozen=True)
+class ReportedScanStatusOutcome(ScanAnalysisOutcome):
+    """An outcome that states its detector coverage in the payload."""
+
+    scan_status: JsonScanStatus
+
+    def reporting(self, builder: JsonPayloadBuilder) -> JsonPayloadBuilder:
+        return replace(builder, scan_status=self.scan_status)
+
+
+@dataclass(frozen=True)
+class ServedScan(CacheStatusOutcome, IdentifiedOutcome, ReportedScanStatusOutcome):
+    """Findings the fast cache path served without parsing."""
+
+
+@dataclass(frozen=True)
+class ServedScanWithSourceContext(ServedScan):
+    """Served findings plus the cached codemod source context they index."""
+
+    source_context: CodemodSourceContext
+
+    def source_snapshot(
+        self,
+        eligibility: SourceSnapshotCacheEligibility,
+        analysis_cache_dir: Path | None,
+        parse_workers: int,
+    ) -> CodemodSourceSnapshot:
+        if eligibility.can_use_cached_source_context:
+            return self.source_context.snapshot_for_findings(
+                self.findings, parse_workers=parse_workers
+            )
+        return super().source_snapshot(eligibility, analysis_cache_dir, parse_workers)
+
+
+@dataclass(frozen=True)
+class FocusedLocalScan(CacheStatusOutcome, ReportedScanStatusOutcome):
+    """Per-module detectors over the report roots only: explicitly partial."""
+
+
+@dataclass(frozen=True)
+class CompactGlobalScan(
+    CacheStatusOutcome, IdentifiedOutcome, ReportedScanStatusOutcome
+):
+    """Every detector over compact projections, without retained ASTs."""
+
+
+@dataclass(frozen=True)
+class FullScan(CacheStatusOutcome, IdentifiedOutcome):
+    """Every detector over parsed modules, stored under the request identity."""
+
+
+@dataclass(frozen=True)
+class UnpersistedFullScan(CacheStatusOutcome):
+    """Every detector over parsed modules with persistence disabled."""
+
+
+@dataclass(frozen=True)
+class UnanalysedScan(ScanAnalysisOutcome):
+    """Findings no detector produced in this run: parse-only or a Lean import."""
+
+
+@dataclass(frozen=True)
+class ColdScanAnalysis:
+    """The scan's analysis when the cache serves nothing: focused, compact or full."""
+
+    args: argparse.Namespace
+    roots: tuple[Path, ...]
+    config: DetectorConfig
+    path_scope: AnalysisPathScope
+    parse_cache_dir: Path | None
+    source_policy: PythonSourcePathPolicy
+    analysis_cache_dir: Path | None
+    json_sections: JsonPayloadSections
+    preparse_cache_policy: JsonSummaryPreparseCachePolicy
+    scan_analysis_required: bool
+    codemod_requested: bool
+    focused_loop_cold_policy: FocusedLoopColdAnalysisPolicy
+    semantic_descent_cache_context: SemanticDescentGraphCacheContext
+    semantic_descent_analysis_source: SemanticDescentGraphAnalysisSource
+
+    def outcome(self) -> ScanAnalysisOutcome:
+        if self.focused_loop_cold_policy.enabled:
+            return self._focused_local()
+        if (
+            self.args.json
+            and self.json_sections.compact_analysis_compatible
+            and not self.preparse_cache_policy.parsed_modules_required
+            and self.scan_analysis_required
+            and not self.codemod_requested
+            and not DetectorTypePartition(
+                default_detector_types_for_analysis()
+            ).ast_retaining_context_detector_types
+        ):
+            held: SemanticDescentGraphHolding = NO_HELD_GRAPH
+            if self.json_sections.semantic_descent_graph:
+                held = self.semantic_descent_cache_context.held_graph()
+            return held.answer(CompactGlobalAnalysis(self))
+        return self._full()
+
+    def _focused_local(self) -> ScanAnalysisOutcome:
+        detector_types = default_detector_types_for_analysis()
+        detector_partition = DetectorTypePartition(detector_types)
+        local_detector_types = detector_partition.detector_types_for(
+            DetectorCacheGranularity.PER_MODULE
+        )
+        parse_elapsed = 0.0
+        analysis_elapsed = 0.0
+        findings = []
+        module_cache_statuses: list[type[AnalysisCacheStatus]] = []
+        seen_report_paths: set[Path] = set()
+        for report_root in self.path_scope.report_roots:
+            normalized_report_path = report_root.resolve()
+            if normalized_report_path in seen_report_paths:
+                continue
+            seen_report_paths.add(normalized_report_path)
+            started = perf_counter()
+            local_modules = parse_python_module_roots(
+                (report_root,),
+                cache_dir=self.parse_cache_dir,
+                use_parse_cache=self.args.use_parse_cache,
+                parse_workers=self.args.parse_workers,
+                source_policy=self.source_policy,
+            )
+            parse_elapsed += perf_counter() - started
+            started = perf_counter()
+            for local_module in local_modules:
+                module_result = analyze_module_detector_types_with_cache(
+                    local_module,
+                    self.config,
+                    detector_types=local_detector_types,
+                    presentation_roots=self.roots,
+                    analysis_cache_dir=self.analysis_cache_dir,
+                )
+                findings.extend(module_result.findings)
+                module_cache_statuses.append(module_result.cache_status)
+            analysis_elapsed += perf_counter() - started
+            del local_modules
+        return FocusedLocalScan(
+            modules=ParsedModuleSet(()),
+            findings=SortedFindingsAuthority.sort(findings),
+            parse_seconds=round(parse_elapsed, 3),
+            analysis_seconds=round(analysis_elapsed, 3),
+            semantic_descent_graph=NO_HELD_GRAPH,
+            analysis_cache_status=AnalysisCacheStatus.combine(module_cache_statuses),
+            scan_status=JsonScanStatus(
+                mode=JsonScanMode.focused_local_partial,
+                analyzed_detector_count=len(local_detector_types),
+                omitted_detector_count=(
+                    len(detector_types) - len(local_detector_types)
+                ),
+            ),
+        )
+
+    def compact_global(
+        self, include_semantic_descent_graph: bool
+    ) -> CompactPathAnalysisResult:
+        return analyze_compact_roots_with_cache(
+            self.roots,
+            self.config,
+            cache_dir=self.parse_cache_dir,
+            analysis_cache_dir=self.analysis_cache_dir,
+            use_parse_cache=self.args.use_parse_cache,
+            parse_workers=self.args.parse_workers,
+            source_policy=self.source_policy,
+            report_scope=self.path_scope,
+            include_semantic_descent_graph=include_semantic_descent_graph,
+        )
+
+    def _full(self) -> ScanAnalysisOutcome:
+        started = perf_counter()
+        modules = parse_python_module_roots(
+            self.roots,
+            cache_dir=self.parse_cache_dir,
+            use_parse_cache=self.args.use_parse_cache,
+            parse_workers=self.args.parse_workers,
+            source_policy=self.source_policy,
+        )
+        parse_seconds = round(perf_counter() - started, 3)
+        if not self.scan_analysis_required:
+            return UnanalysedScan(
+                modules=modules,
+                findings=[],
+                parse_seconds=parse_seconds,
+                analysis_seconds=0.0,
+                semantic_descent_graph=NO_HELD_GRAPH,
+            )
+        started = perf_counter()
+        analysis_result = analyze_modules_with_cache(
+            self.roots,
+            modules,
+            self.config,
+            analysis_cache_dir=self.analysis_cache_dir,
+            analysis_workers=self.args.analysis_workers,
+            source_policy=self.source_policy,
+            semantic_descent_source=self.semantic_descent_analysis_source,
+            report_scope=self.path_scope,
+        )
+        findings = self.path_scope.filter_findings(analysis_result.findings)
+        analysis_seconds = round(perf_counter() - started, 3)
+        # CachedAnalysisResult carries no identity when persistence is disabled;
+        # that absence is decided here, once, instead of at each identity read.
+        if analysis_result.cache_identity is None:
+            return UnpersistedFullScan(
+                modules=modules,
+                findings=findings,
+                parse_seconds=parse_seconds,
+                analysis_seconds=analysis_seconds,
+                semantic_descent_graph=NO_HELD_GRAPH,
+                analysis_cache_status=analysis_result.cache_status,
+            )
+        return FullScan(
+            modules=modules,
+            findings=findings,
+            parse_seconds=parse_seconds,
+            analysis_seconds=analysis_seconds,
+            semantic_descent_graph=NO_HELD_GRAPH,
+            analysis_cache_status=analysis_result.cache_status,
+            cache_identity=analysis_result.cache_identity,
+        )
+
+
+@dataclass(frozen=True)
+class CompactGlobalAnalysis(SemanticDescentGraphQuestion[ScanAnalysisOutcome]):
+    """Compact analysis around the graph the cache already holds, if any."""
+
+    cold: ColdScanAnalysis
+
+    def held(self, graph: SemanticDescentGraph) -> ScanAnalysisOutcome:
+        return self._outcome(
+            self.cold.compact_global(False), HeldSemanticDescentGraph(graph)
+        )
+
+    def absent(self) -> ScanAnalysisOutcome:
+        compact_result = self.cold.compact_global(
+            self.cold.json_sections.semantic_descent_graph
+        )
+        compact_result.semantic_descent_graph.store_into(
+            self.cold.semantic_descent_cache_context
+        )
+        return self._outcome(compact_result, compact_result.semantic_descent_graph)
+
+    @staticmethod
+    def _outcome(
+        compact_result: CompactPathAnalysisResult,
+        graph: SemanticDescentGraphHolding,
+    ) -> ScanAnalysisOutcome:
+        return CompactGlobalScan(
+            modules=ParsedModuleSet(()),
+            findings=compact_result.findings,
+            parse_seconds=round(compact_result.preparation_seconds, 3),
+            analysis_seconds=round(compact_result.analysis_seconds, 3),
+            semantic_descent_graph=graph,
+            analysis_cache_status=compact_result.cache_status,
+            cache_identity=compact_result.cache_identity,
+            scan_status=JsonScanStatus.exact_compact_global(
+                len(default_detector_types_for_analysis()),
+            ),
+        )
+
+
+@dataclass(frozen=True)
+class FastCacheScan(FastCacheQuestion[ScanAnalysisOutcome]):
+    """The scan's analysis from what the fast cache path served.
+
+    When snapshots come from cache, a served result also needs its codemod
+    source context; without it the scan analyses cold.
+    """
+
+    cold: ColdScanAnalysis
+    started: float
+    source_context_cache_lookup_enabled: bool
+
+    def exact(self, result: ExactCacheHit) -> ScanAnalysisOutcome:
+        return self._served(result, JsonScanStatus.exact_cache(result.cache_identity))
+
+    def partial(self, result: PartialCacheReuse) -> ScanAnalysisOutcome:
+        detector_types = default_detector_types_for_analysis()
+        analyzed_detector_count = len(
+            EvidenceLocalPartialDetectorSelection.from_detector_types(
+                detector_types
+            ).rerun_detector_family
+        )
+        return self._served(
+            result,
+            JsonScanStatus(
+                mode=JsonScanMode.focused_cache_partial,
+                analyzed_detector_count=analyzed_detector_count,
+                omitted_detector_count=len(detector_types) - analyzed_detector_count,
+            ),
+        )
+
+    def miss(self) -> ScanAnalysisOutcome:
+        return self.cold.outcome()
+
+    def _served(
+        self, result: ReusedCacheResult, scan_status: JsonScanStatus
+    ) -> ScanAnalysisOutcome:
+        served = ServedScan(
+            modules=ParsedModuleSet(()),
+            findings=self.cold.path_scope.filter_findings(result.findings),
+            parse_seconds=0.0,
+            analysis_seconds=0.0,
+            semantic_descent_graph=result.semantic_descent_graph,
+            analysis_cache_status=result.cache_status,
+            cache_identity=result.cache_identity,
+            scan_status=scan_status,
+        )
+        if not self.source_context_cache_lookup_enabled:
+            return replace(
+                served, analysis_seconds=round(perf_counter() - self.started, 3)
+            )
+        match CodemodSourceContextCache(self.cold.analysis_cache_dir).load(
+            result.cache_identity
+        ):
+            case CodemodSourceContextCacheLookup(
+                status=status, context=CodemodSourceContext() as source_context
+            ) if status.is_hit:
+                return ServedScanWithSourceContext(
+                    modules=served.modules,
+                    findings=served.findings,
+                    parse_seconds=0.0,
+                    analysis_seconds=round(perf_counter() - self.started, 3),
+                    semantic_descent_graph=served.semantic_descent_graph,
+                    analysis_cache_status=served.analysis_cache_status,
+                    cache_identity=served.cache_identity,
+                    scan_status=scan_status,
+                    source_context=source_context,
+                )
+        return self.cold.outcome()
+
+
 @TypeCheckerTimingLedger.scope()
 def _main_without_deadline(invocation: CliArguments) -> int:
     """Run the command-line interface and return a process status code."""
@@ -3791,7 +4236,6 @@ def _main_without_deadline(invocation: CliArguments) -> int:
         codemod_plan_sequence=codemod_plan_sequence,
         codemod_command_type=selected_command_type,
     )
-    cached_source_context = None
     if args.import_lean_export is None:
         preparse_cache_policy = JsonSummaryPreparseCachePolicy(
             json_enabled=args.json,
@@ -3803,10 +4247,6 @@ def _main_without_deadline(invocation: CliArguments) -> int:
             analysis_cache_dir=analysis_cache_dir,
             focused_report_filter=path_scope.has_report_filter,
         )
-        fast_cache_result = None
-        cached_semantic_descent_graph = None
-        analysis_cache_identity = None
-        scan_status = None
         preparse_cache_mode = preparse_cache_policy.mode
         focused_loop_cold_policy = FocusedLoopColdAnalysisPolicy(
             json_enabled=args.json,
@@ -3828,6 +4268,22 @@ def _main_without_deadline(invocation: CliArguments) -> int:
             and analysis_cache_dir is not None
             and args.use_parse_cache
             and not args.include_structural_overlap
+        )
+        cold_scan_analysis = ColdScanAnalysis(
+            args=args,
+            roots=roots,
+            config=config,
+            path_scope=path_scope,
+            parse_cache_dir=parse_cache_dir,
+            source_policy=source_policy,
+            analysis_cache_dir=analysis_cache_dir,
+            json_sections=json_payload_profile.sections,
+            preparse_cache_policy=preparse_cache_policy,
+            scan_analysis_required=scan_analysis_required,
+            codemod_requested=codemod_requested,
+            focused_loop_cold_policy=focused_loop_cold_policy,
+            semantic_descent_cache_context=semantic_descent_cache_context,
+            semantic_descent_analysis_source=semantic_descent_analysis_source,
         )
         cache_lookup_enabled = (
             preparse_cache_policy.cache_lookup_enabled and preparse_cache_mode.enabled
@@ -3860,6 +4316,9 @@ def _main_without_deadline(invocation: CliArguments) -> int:
                     else FastCacheReusePolicy.EXACT_ONLY
                 ),
                 semantic_descent_source=fast_semantic_descent_analysis_source,
+                graph_demand=preparse_cache_policy.graph_demand(
+                    semantic_descent_cache_context, latest_semantic_descent_graph
+                ),
             )
             fast_cache_authority = FastCachedPathAnalysisAuthority(fast_cache_request)
             if (
@@ -3887,195 +4346,31 @@ def _main_without_deadline(invocation: CliArguments) -> int:
                         )
                     )
                     return 0
-            fast_cache_result = fast_cache_authority.result()
-            if (
-                fast_cache_result is not None
-                and preparse_cache_mode.requires_semantic_descent_cache
-            ):
-                cached_semantic_descent_graph = (
-                    semantic_descent_cache_context.cached_graph()
-                )
-                if (
-                    cached_semantic_descent_graph is None
-                    and preparse_cache_policy.uses_evidence_local_partial_reuse
-                ):
-                    cached_semantic_descent_graph = latest_semantic_descent_graph
-                if cached_semantic_descent_graph is None:
-                    fast_cache_result = None
-            if fast_cache_result is not None and source_context_cache_lookup_enabled:
-                source_context_lookup = CodemodSourceContextCache(
-                    analysis_cache_dir
-                ).load(fast_cache_result.cache_identity)
-                if source_context_lookup.status.is_hit:
-                    cached_source_context = source_context_lookup.context
-                else:
-                    fast_cache_result = None
-            fast_cache_seconds = round(perf_counter() - started, 3)
-        if fast_cache_result is not None:
-            modules = ParsedModuleSet(())
-            parse_seconds = 0.0
-            analysis_cache_status = fast_cache_result.cache_status
-            analysis_cache_identity = fast_cache_result.cache_identity
-            findings = path_scope.filter_findings(fast_cache_result.findings)
-            analysis_seconds = fast_cache_seconds
-            if analysis_cache_status.is_partial:
-                detector_types = default_detector_types_for_analysis()
-                analyzed_detector_count = len(
-                    EvidenceLocalPartialDetectorSelection.from_detector_types(
-                        detector_types
-                    ).rerun_detector_family
-                )
-                scan_status = JsonScanStatus(
-                    mode=JsonScanMode.focused_cache_partial,
-                    analyzed_detector_count=analyzed_detector_count,
-                    omitted_detector_count=(
-                        len(detector_types) - analyzed_detector_count
+            scan_outcome = fast_cache_authority.result().answer(
+                FastCacheScan(
+                    cold=cold_scan_analysis,
+                    started=started,
+                    source_context_cache_lookup_enabled=(
+                        source_context_cache_lookup_enabled
                     ),
                 )
-            else:
-                scan_status = JsonScanStatus.exact_cache(
-                    fast_cache_result.exact_cache_identity
-                )
-        elif focused_loop_cold_policy.enabled:
-            detector_types = default_detector_types_for_analysis()
-            detector_partition = DetectorTypePartition(detector_types)
-            local_detector_types = detector_partition.detector_types_for(
-                DetectorCacheGranularity.PER_MODULE
-            )
-            parse_elapsed = 0.0
-            analysis_elapsed = 0.0
-            findings = []
-            module_cache_statuses: list[type[AnalysisCacheStatus]] = []
-            seen_report_paths: set[Path] = set()
-            for report_root in path_scope.report_roots:
-                normalized_report_path = report_root.resolve()
-                if normalized_report_path in seen_report_paths:
-                    continue
-                seen_report_paths.add(normalized_report_path)
-                started = perf_counter()
-                local_modules = parse_python_module_roots(
-                    (report_root,),
-                    cache_dir=parse_cache_dir,
-                    use_parse_cache=args.use_parse_cache,
-                    parse_workers=args.parse_workers,
-                    source_policy=source_policy,
-                )
-                parse_elapsed += perf_counter() - started
-                started = perf_counter()
-                for local_module in local_modules:
-                    module_result = analyze_module_detector_types_with_cache(
-                        local_module,
-                        config,
-                        detector_types=local_detector_types,
-                        presentation_roots=roots,
-                        analysis_cache_dir=analysis_cache_dir,
-                    )
-                    findings.extend(module_result.findings)
-                    module_cache_statuses.append(module_result.cache_status)
-                analysis_elapsed += perf_counter() - started
-                del local_modules
-            modules = ParsedModuleSet(())
-            findings = SortedFindingsAuthority.sort(findings)
-            parse_seconds = round(parse_elapsed, 3)
-            analysis_seconds = round(analysis_elapsed, 3)
-            analysis_cache_status = AnalysisCacheStatus.combine(module_cache_statuses)
-            scan_status = JsonScanStatus(
-                mode=JsonScanMode.focused_local_partial,
-                analyzed_detector_count=len(local_detector_types),
-                omitted_detector_count=(
-                    len(detector_types) - len(local_detector_types)
-                ),
-            )
-        elif (
-            args.json
-            and json_payload_profile.sections.compact_analysis_compatible
-            and not preparse_cache_policy.parsed_modules_required
-            and scan_analysis_required
-            and not codemod_requested
-            and not DetectorTypePartition(
-                default_detector_types_for_analysis()
-            ).ast_retaining_context_detector_types
-        ):
-            requested_compact_semantic_graph = (
-                json_payload_profile.sections.semantic_descent_graph
-            )
-            if requested_compact_semantic_graph:
-                cached_semantic_descent_graph = (
-                    semantic_descent_cache_context.cached_graph()
-                )
-            compact_result = analyze_compact_roots_with_cache(
-                roots,
-                config,
-                cache_dir=parse_cache_dir,
-                analysis_cache_dir=analysis_cache_dir,
-                use_parse_cache=args.use_parse_cache,
-                parse_workers=args.parse_workers,
-                source_policy=source_policy,
-                report_scope=path_scope,
-                include_semantic_descent_graph=(
-                    requested_compact_semantic_graph
-                    and cached_semantic_descent_graph is None
-                ),
-            )
-            modules = ParsedModuleSet(())
-            findings = compact_result.findings
-            built_semantic_descent_graph = compact_result.semantic_descent_graph
-            if built_semantic_descent_graph is not None:
-                cached_semantic_descent_graph = built_semantic_descent_graph
-                semantic_descent_cache_context.store_exact_graph(
-                    built_semantic_descent_graph
-                )
-            parse_seconds = round(compact_result.preparation_seconds, 3)
-            analysis_seconds = round(compact_result.analysis_seconds, 3)
-            analysis_cache_status = compact_result.cache_status
-            analysis_cache_identity = compact_result.cache_identity
-            detector_types = default_detector_types_for_analysis()
-            scan_status = JsonScanStatus.exact_compact_global(
-                len(detector_types),
             )
         else:
-            started = perf_counter()
-            modules = parse_python_module_roots(
-                roots,
-                cache_dir=parse_cache_dir,
-                use_parse_cache=args.use_parse_cache,
-                parse_workers=args.parse_workers,
-                source_policy=source_policy,
-            )
-            parse_seconds = round(perf_counter() - started, 3)
-            if not scan_analysis_required:
-                findings = []
-                analysis_seconds = 0.0
-                analysis_cache_status = None
-            else:
-                started = perf_counter()
-                analysis_result = analyze_modules_with_cache(
-                    roots,
-                    modules,
-                    config,
-                    analysis_cache_dir=analysis_cache_dir,
-                    analysis_workers=args.analysis_workers,
-                    source_policy=source_policy,
-                    semantic_descent_source=semantic_descent_analysis_source,
-                    report_scope=path_scope,
-                )
-                unfiltered_findings = analysis_result.findings
-                analysis_cache_status = analysis_result.cache_status
-                analysis_cache_identity = analysis_result.cache_identity
-                findings = path_scope.filter_findings(unfiltered_findings)
-                analysis_seconds = round(perf_counter() - started, 3)
+            scan_outcome = cold_scan_analysis.outcome()
     else:
-        modules = ParsedModuleSet(())
         try:
-            findings = analyze_lean_export(args.import_lean_export)
+            lean_findings = analyze_lean_export(args.import_lean_export)
         except (OSError, json.JSONDecodeError, LeanExportError) as error:
             parser.error(str(error))
-        parse_seconds = 0.0
-        analysis_seconds = 0.0
-        analysis_cache_status = None
-        cached_semantic_descent_graph = None
-        analysis_cache_identity = None
-        scan_status = None
+        scan_outcome = UnanalysedScan(
+            modules=ParsedModuleSet(()),
+            findings=lean_findings,
+            parse_seconds=0.0,
+            analysis_seconds=0.0,
+            semantic_descent_graph=NO_HELD_GRAPH,
+        )
+    modules = scan_outcome.modules
+    findings = scan_outcome.findings
     plans = None
     execution_plan = None
     planning_seconds = 0.0
@@ -4085,33 +4380,9 @@ def _main_without_deadline(invocation: CliArguments) -> int:
         if args.include_plans or args.plans_only:
             plans = build_refactor_plans(findings, root)
         if args.include_execution_plan or args.plans_only:
-            execution_plan_cache = AnalysisFindingCache(analysis_cache_dir)
-            execution_plan_cache_identity = (
-                AnalysisExecutionPlanCacheIdentity.from_analysis_identity(
-                    analysis_cache_identity,
-                    root,
-                    path_scope.report_roots,
-                )
-                if analysis_cache_identity is not None
-                else None
+            execution_plan = scan_outcome.execution_plan(
+                root, path_scope.report_roots, AnalysisFindingCache(analysis_cache_dir)
             )
-            execution_plan_lookup = (
-                execution_plan_cache.load_execution_plan(execution_plan_cache_identity)
-                if execution_plan_cache_identity is not None
-                else None
-            )
-            if (
-                execution_plan_lookup is not None
-                and execution_plan_lookup.status.is_hit
-            ):
-                execution_plan = execution_plan_lookup.plan
-            else:
-                execution_plan = build_refactor_execution_plan(findings, root)
-                if execution_plan_cache_identity is not None:
-                    execution_plan_cache.store_execution_plan(
-                        execution_plan_cache_identity,
-                        execution_plan,
-                    )
         planning_seconds = round(perf_counter() - started, 3)
     include_economics = args.include_economics or args.include_change_budget
     economics = (
@@ -4134,23 +4405,9 @@ def _main_without_deadline(invocation: CliArguments) -> int:
     source_snapshot = None
     if source_snapshot_cache_eligibility.needs_source_snapshot:
         started = perf_counter()
-        if (
-            cached_source_context is not None
-            and source_snapshot_cache_eligibility.can_use_cached_source_context
-        ):
-            source_snapshot = cached_source_context.snapshot_for_findings(
-                findings,
-                parse_workers=args.parse_workers,
-            )
-        elif source_snapshot_cache_eligibility.can_use_cached_source_context:
-            source_context = CodemodSourceContext.from_modules(modules, findings)
-            CodemodSourceContextCache(analysis_cache_dir).store(
-                analysis_cache_identity,
-                source_context,
-            )
-            source_snapshot = CodemodSourceSnapshot.from_modules(modules, findings)
-        else:
-            source_snapshot = CodemodSourceSnapshot.from_modules(modules, findings)
+        source_snapshot = scan_outcome.source_snapshot(
+            source_snapshot_cache_eligibility, analysis_cache_dir, args.parse_workers
+        )
         source_index_seconds = round(perf_counter() - started, 3)
 
     if selected_command_type is not None:
@@ -4187,13 +4444,14 @@ def _main_without_deadline(invocation: CliArguments) -> int:
         and not codemod_plan_sequence.requires_source_snapshot
     ):
         source_snapshot = None
-    timing = ScanTiming(
-        parse_seconds=parse_seconds,
-        analysis_seconds=analysis_seconds,
-        planning_seconds=planning_seconds,
-        source_index_seconds=source_index_seconds,
-        analysis_cache_status=analysis_cache_status,
-        type_checker=TypeCheckerTimingLedger.active().timing,
+    timing = scan_outcome.timing(
+        ScanTiming(
+            parse_seconds=scan_outcome.parse_seconds,
+            analysis_seconds=scan_outcome.analysis_seconds,
+            planning_seconds=planning_seconds,
+            source_index_seconds=source_index_seconds,
+            type_checker=TypeCheckerTimingLedger.active().timing,
+        )
     )
 
     codemod_execution_result = CodemodCliExecution(
@@ -4210,25 +4468,26 @@ def _main_without_deadline(invocation: CliArguments) -> int:
         json_findings = [] if args.plans_only else findings
         print(
             json.dumps(
-                JsonPayloadBuilder(
-                    findings=json_findings,
-                    plans=plans or [],
-                    modules=modules,
-                    economics=economics,
-                    change_budget=change_budget,
-                    timing=timing,
-                    structural_overlap=structural_overlap,
-                    execution_plan=execution_plan,
-                    scan_guard_report=architecture_guard_report,
-                    source_snapshot=source_snapshot,
-                    semantic_descent_source=JsonSemanticDescentPayloadSource(
+                scan_outcome.reporting(
+                    JsonPayloadBuilder(
+                        findings=json_findings,
+                        plans=plans or [],
                         modules=modules,
-                        graph_source=semantic_descent_analysis_source,
-                        cached_repository_graph=cached_semantic_descent_graph,
-                    ),
-                    payload_sections=json_payload_profile.sections,
-                    raw_findings=args.raw_findings,
-                    scan_status=scan_status,
+                        economics=economics,
+                        change_budget=change_budget,
+                        timing=timing,
+                        structural_overlap=structural_overlap,
+                        execution_plan=execution_plan,
+                        scan_guard_report=architecture_guard_report,
+                        source_snapshot=source_snapshot,
+                        semantic_descent_source=JsonSemanticDescentPayloadSource(
+                            modules=modules,
+                            graph_source=semantic_descent_analysis_source,
+                            held_graph=scan_outcome.semantic_descent_graph,
+                        ),
+                        payload_sections=json_payload_profile.sections,
+                        raw_findings=args.raw_findings,
+                    )
                 ).build(),
                 indent=2,
             )

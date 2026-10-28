@@ -104,28 +104,72 @@ class FunctionArgumentSource:
         ) + (() if returns is None else (returns,))
 
 
+DefaultAnswerT = TypeVar("DefaultAnswerT")
+
+
+class ParameterDefaultQuestion(ABC, Generic[DefaultAnswerT]):
+    """A consumer's question about one parameter, answered once per default state."""
+
+    @abstractmethod
+    def defaulted(self, source: DefaultedParameterSource) -> DefaultAnswerT:
+        raise NotImplementedError
+
+    @abstractmethod
+    def undefaulted(self, source: UndefaultedParameterSource) -> DefaultAnswerT:
+        raise NotImplementedError
+
+
 @dataclass(frozen=True)
-class FunctionParameterSource(FunctionArgumentSource):
+class FunctionParameterSource(FunctionArgumentSource, ABC):
     """Actual argument/default nodes in signature order, not execution evidence."""
 
-    default: ast.expr | None = None
-
     @classmethod
-    def from_arguments(cls, arguments: ast.arguments) -> tuple[Self, ...]:
+    def from_arguments(
+        cls, arguments: ast.arguments
+    ) -> tuple[FunctionParameterSource, ...]:
         positional = (*arguments.posonlyargs, *arguments.args)
-        defaults = dict(
-            zip(
-                positional,
-                (None,) * (len(positional) - len(arguments.defaults))
-                + tuple(arguments.defaults),
-                strict=True,
-            )
+        undefaulted = len(positional) - len(arguments.defaults)
+        defaults: dict[ast.arg, ast.expr] = dict(
+            zip(positional[undefaulted:], arguments.defaults, strict=True)
         )
-        defaults.update(zip(arguments.kwonlyargs, arguments.kw_defaults, strict=True))
+        defaults.update(
+            (argument, default)
+            for argument, default in zip(
+                arguments.kwonlyargs, arguments.kw_defaults, strict=True
+            )
+            # The ast boundary: a keyword-only parameter without a default holds None.
+            if default is not None
+        )
         return tuple(
-            cls(parameter.argument, parameter.kind, defaults.get(parameter.argument))
+            DefaultedParameterSource(
+                parameter.argument, parameter.kind, defaults[parameter.argument]
+            )
+            if parameter.argument in defaults
+            else UndefaultedParameterSource(parameter.argument, parameter.kind)
             for parameter in FunctionArgumentSource.from_arguments(arguments)
         )
+
+    @abstractmethod
+    def answer(self, question: ParameterDefaultQuestion[DefaultAnswerT]) -> DefaultAnswerT:
+        raise NotImplementedError
+
+
+@dataclass(frozen=True)
+class DefaultedParameterSource(FunctionParameterSource):
+    """A parameter declared with a default expression."""
+
+    default: ast.expr
+
+    def answer(self, question: ParameterDefaultQuestion[DefaultAnswerT]) -> DefaultAnswerT:
+        return question.defaulted(self)
+
+
+@dataclass(frozen=True)
+class UndefaultedParameterSource(FunctionParameterSource):
+    """A parameter declared without a default."""
+
+    def answer(self, question: ParameterDefaultQuestion[DefaultAnswerT]) -> DefaultAnswerT:
+        return question.undefaulted(self)
 
 
 class DictionaryEvaluationVisitor(ast.NodeVisitor):
