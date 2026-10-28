@@ -13771,7 +13771,11 @@ def test_preserves_runtime_materialization_boundary(tmp_path: Path) -> None:
     )
     findings = analyze_path(tmp_path)
     # No mapping mirror here, but `spec.strategy_id is not None` and `spec.action_id is not None` probe BaseSpec's optional state from outside BaseSpec: a restated fact, which is not what this fixture preserves.
-    assert [finding.detector_id for finding in findings] == ["foreign_absence_probe"]
+    # `if spec is None:` is a second, distinct fact: runtime_spec_for takes the whole spec as an undefaulted `BaseSpec | None`, so its caller decided absence and the callee asks again (threaded_absence; owner: a held/absent family the caller passes, not BaseSpec's fields).
+    assert sorted(finding.detector_id for finding in findings) == [
+        "foreign_absence_probe",
+        "threaded_absence",
+    ]
 
 
 def test_preserves_external_kwargs_projection_boundary(tmp_path: Path) -> None:

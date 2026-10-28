@@ -29,6 +29,9 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          # tests/relocation_excerpts.py reads the historical relocations with git show.
+          fetch-depth: 0
 
       - name: Setup Python ${{ matrix.python-version }}
         uses: actions/setup-python@v5
