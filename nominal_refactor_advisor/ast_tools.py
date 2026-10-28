@@ -118,8 +118,6 @@ from .value_graph import CachedDataclassRepresentation, StoredDataclassState
 FunctionDefinitionNode: TypeAlias = ast.FunctionDef | ast.AsyncFunctionDef
 
 
-_TYPE_BUILTIN = "type"
-_SETATTR_BUILTIN = "setattr"
 _IGNORED_PYTHON_TREE_DIRS = frozenset(
     {
         ".eggs",
@@ -1336,12 +1334,14 @@ class BuiltinCallName(StrEnum):
     BOOL = "bool"
     BYTEARRAY = "bytearray"
     BYTES = "bytes"
+    CALLABLE = "callable"
     DICT = "dict"
     ENUMERATE = "enumerate"
     FLOAT = "float"
     DELATTR = "delattr"
     FROZENSET = "frozenset"
     GETATTR = "getattr"
+    GLOBALS = "globals"
     HASATTR = "hasattr"
     INT = "int"
     ISINSTANCE = "isinstance"
@@ -1349,6 +1349,7 @@ class BuiltinCallName(StrEnum):
     ITER = "iter"
     LEN = "len"
     LIST = "list"
+    LOCALS = "locals"
     MAP = "map"
     MAX = "max"
     MEMORYVIEW = "memoryview"
@@ -1365,6 +1366,7 @@ class BuiltinCallName(StrEnum):
     SUM = "sum"
     TUPLE = "tuple"
     TYPE = "type"
+    VARS = "vars"
     ZIP = "zip"
 
     @classmethod
@@ -3900,7 +3902,7 @@ def _is_type_call_constructor(node: ast.AST) -> bool:
     return bool(
         isinstance(node, ast.Call)
         and isinstance(node.func, ast.Call)
-        and (ExpressionReference.decoded(node.func.func).terminal_name == _TYPE_BUILTIN)
+        and (ExpressionReference.decoded(node.func.func).terminal_name == BuiltinCallName.TYPE)
     )
 
 
@@ -3948,7 +3950,7 @@ def _dynamic_method_injection_observations(
     for node in walk_function_body_nodes(function.body):
         if not isinstance(node, ast.Call):
             continue
-        if ExpressionReference.decoded(node.func).terminal_name != _SETATTR_BUILTIN:
+        if ExpressionReference.decoded(node.func).terminal_name != BuiltinCallName.SETATTR:
             continue
         if len(node.args) < 3:
             continue
@@ -3959,7 +3961,7 @@ def _dynamic_method_injection_observations(
                     file_path=parsed_module.file_path,
                     line=node.lineno,
                     symbol=function.name,
-                    mutator_name=_SETATTR_BUILTIN,
+                    mutator_name=BuiltinCallName.SETATTR,
                 )
             )
     return sorted_tuple(observations, key=lambda item: item.line)

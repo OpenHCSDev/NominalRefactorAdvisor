@@ -211,13 +211,6 @@ from ._substrate_support import (
     CLASS_NODE_AUTHORITY,
 )
 
-_GETATTR_BUILTIN = "getattr"
-_HASATTR_BUILTIN = "hasattr"
-_SETATTR_BUILTIN = "setattr"
-_DELATTR_BUILTIN = "delattr"
-_REFLECTIVE_SELF_BUILTINS = frozenset(
-    {_GETATTR_BUILTIN, _HASATTR_BUILTIN, _SETATTR_BUILTIN, _DELATTR_BUILTIN}
-)
 _PIPELINE_ASSIGN_STAGE = "assign"
 _PIPELINE_RETURN_STAGE = "return"
 

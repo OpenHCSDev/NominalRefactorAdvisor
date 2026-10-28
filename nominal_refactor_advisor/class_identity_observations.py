@@ -30,6 +30,7 @@ from .lexical_bindings import ImportBoundNameProjection
 from .ast_projection import StatementValues
 from .ast_projection import CallKeywords
 from .ast_tools import (
+    BuiltinCallName,
     ModuleSyntaxIndex,
     ParsedModule,
 )
@@ -273,7 +274,7 @@ class DeclaredIdentityFamily(ShapeFamily[ModuleDeclarations]):
             ):
                 yield receiver
             case ast.Call(
-                func=ast.Name(id="setattr"),
+                func=ast.Name(id=BuiltinCallName.SETATTR),
                 args=[receiver, ast.Constant(value=attribute), *_],
             ) if (
                 attribute == cls.NAME

@@ -16,6 +16,7 @@ from typing import Generic, TypeVar
 from ..value_expression import CompactValueExpression
 from ..ast_projection import ExpressionReference
 from ..ast_tools import (
+    BuiltinCallName,
     ParsedModule,
     is_docstring_statement,
     statements_without_docstring,
@@ -26,7 +27,6 @@ from ..collection_algebra import sorted_tuple
 from ..foreign_family import FunctionDefinition
 from ..name_algebra import CLASS_NAME_ALGEBRA, ClassNameAlgebra
 
-_TYPE_NAME_LITERAL = "type"
 ProjectionT = TypeVar("ProjectionT")
 
 
@@ -44,7 +44,7 @@ class _SelectorAttributeProjection(_AstNodeProjection[str | None]):
             if (
                 isinstance(node.value, ast.Call)
                 and isinstance(node.value.func, ast.Name)
-                and (node.value.func.id == _TYPE_NAME_LITERAL)
+                and (node.value.func.id == BuiltinCallName.TYPE)
                 and (len(node.value.args) == 1)
                 and isinstance(node.value.args[0], ast.Name)
                 and (node.value.args[0].id == "self")
@@ -86,7 +86,7 @@ class _AnnotationTypeNamesProjection(_AstNodeProjection[tuple[str, ...]]):
                 "Required",
                 "NotRequired",
                 "Type",
-                _TYPE_NAME_LITERAL,
+                BuiltinCallName.TYPE,
             }:
                 return self(node.slice)
             if base_name == "Annotated":

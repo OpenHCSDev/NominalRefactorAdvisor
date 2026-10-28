@@ -102,13 +102,10 @@ from ..semantic_match import (
     single_return_value,
 )
 from ._base import (
-    _GETATTR_BUILTIN,
-    _HASATTR_BUILTIN,
     _is_classmethod,
     _module_builder_call_shapes,
     _PIPELINE_ASSIGN_STAGE,
     _PIPELINE_RETURN_STAGE,
-    _REFLECTIVE_SELF_BUILTINS,
     _self_attr_name,
     _string_constant_expression,
     CANDIDATE_COLLECTION_AUTHORITY,
@@ -1202,7 +1199,7 @@ def _reflective_self_attribute_candidates_for_class(
             if not isinstance(subnode, ast.Call):
                 continue
             builtin_name = ExpressionReference.decoded(subnode.func).terminal_name
-            if builtin_name != _GETATTR_BUILTIN or len(subnode.args) != 2:
+            if builtin_name != BuiltinCallName.GETATTR or len(subnode.args) != 2:
                 continue
             receiver, attribute_name_node = subnode.args[0], subnode.args[1]
             attribute_name = _constant_string(attribute_name_node)
@@ -1359,7 +1356,7 @@ def _dynamic_self_field_selection_candidates_for_class(
             if not isinstance(subnode, ast.Call):
                 continue
             builtin_name = ExpressionReference.decoded(subnode.func).terminal_name
-            if builtin_name not in _REFLECTIVE_SELF_BUILTINS:
+            if builtin_name not in BuiltinCallName.attribute_access_names():
                 continue
             if len(subnode.args) < 2:
                 continue
@@ -1410,10 +1407,10 @@ def _reflective_lookup_shape(
 ) -> tuple[str, str, ast.AST] | None:
     if isinstance(node, ast.Call):
         builtin_name = ExpressionReference.decoded(node.func).terminal_name
-        if builtin_name == _GETATTR_BUILTIN and len(node.args) >= 2:
+        if builtin_name == BuiltinCallName.GETATTR and len(node.args) >= 2:
             selector_node = node.args[1]
             if _constant_string(selector_node) is None:
-                return (_GETATTR_BUILTIN, ast.unparse(node.args[0]), selector_node)
+                return (BuiltinCallName.GETATTR, ast.unparse(node.args[0]), selector_node)
         if (
             isinstance(node.func, ast.Attribute)
             and node.func.attr == "get"
@@ -1428,7 +1425,7 @@ def _reflective_lookup_shape(
         isinstance(node, ast.Subscript)
         and isinstance(node.value, ast.Call)
         and isinstance(node.value.func, ast.Name)
-        and (node.value.func.id in {"globals", "locals"})
+        and (node.value.func.id in {BuiltinCallName.GLOBALS, BuiltinCallName.LOCALS})
         and (not node.value.args)
         and (not node.value.keywords)
         and (_constant_string(node.slice) is None)
@@ -1604,7 +1601,7 @@ def _concrete_config_field_probe_candidates(
                     continue
                 builtin_name = ExpressionReference.decoded(subnode.func).terminal_name
                 if (
-                    builtin_name not in {_GETATTR_BUILTIN, _HASATTR_BUILTIN}
+                    builtin_name not in {BuiltinCallName.GETATTR, BuiltinCallName.HASATTR}
                     or len(subnode.args) < 2
                 ):
                     continue

@@ -24,6 +24,7 @@ from typing import (
 from .value_expression import CompactValueExpression
 from .annotation_semantics import NOMINAL_ANNOTATION_SOURCE_AUTHORITY
 from .ast_tools import (
+    BuiltinCallName,
     CollectedFamily,
     ParsedModule,
     ParsedModuleSourceProjection,
@@ -1466,7 +1467,9 @@ class ProductFlowRepository(
         )
 
     # Builtins and standard calls that return attributes chosen by a value.
-    COMPUTED_FETCH_BUILTINS: ClassVar[frozenset[str]] = frozenset(("getattr", "vars"))
+    COMPUTED_FETCH_BUILTINS: ClassVar[frozenset[str]] = frozenset(
+        (BuiltinCallName.GETATTR, BuiltinCallName.VARS)
+    )
     COMPUTED_FETCH_CALLS: ClassVar[frozenset[str]] = frozenset(
         ("getmembers", "getmembers_static", "attrgetter", "methodcaller")
     )
