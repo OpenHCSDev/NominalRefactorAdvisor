@@ -37,7 +37,8 @@ from ._environment import (
     EnvironmentBooleanAuthorityDriftDetector,
 )
 from ._false_distinctions import (
-    IdenticalArmsBranchDetector,
+    IdenticalArmsDetector,
+    UndistinguishedTypeTestDetector,
 )
 from ._record_checks import (
     RedundantTypeCheckDetector,
@@ -111,7 +112,8 @@ __all__ = (
     "EnvironmentBooleanAuthorityDriftDetector",
     "ExactKeySetDetector",
     "HandRolledRegistrationDetector",
-    "IdenticalArmsBranchDetector",
+    "IdenticalArmsDetector",
+    "UndistinguishedTypeTestDetector",
     "ExactLeafMethodAncestorPromotionDetector",
     "ExternalEnumCaseRecoveryDetector",
     "ForeignAbsenceProbeDetector",

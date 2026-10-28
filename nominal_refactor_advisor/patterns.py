@@ -567,6 +567,16 @@ class PatternId(IntEnum):
         ),
         witness_capabilities=(CapabilityTag.PROVENANCE,),
     )
+    UNDISTINGUISHED_TYPE_TEST = _pattern(
+        stable_id=46,
+        display_name="Undistinguished Type Test",
+        required_relation=(
+            "Rungs of one isinstance ladder run the same code, adjacent to each "
+            "other or as the else does, so those classes are told apart only "
+            "to be treated identically."
+        ),
+        witness_capabilities=(CapabilityTag.PROVENANCE,),
+    )
 
     def __new__(
         cls,
