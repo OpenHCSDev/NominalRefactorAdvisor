@@ -99,6 +99,7 @@ def test_exact_type_or_opaque_evidence_does_not_supply_native_identity(unknown):
     assert not unknown.proves_same_object(actual)
 
 
+@pytest.mark.native_proof
 def test_independent_source_created_classes_remain_unknown_despite_same_source():
     first_owner = source_execution("class Item: pass\nvalue=Item\n")
     second_owner = SourceModuleExecution.from_source(first_owner.source)

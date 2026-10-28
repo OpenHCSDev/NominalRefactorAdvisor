@@ -153,6 +153,7 @@ def test_standard_factory_does_not_admit_additional_modules():
         execution.require_import(execution.module.module.body[0])
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize("loaded_module", (ast, dataclasses))
 def test_explicit_cached_module_association_closes_import_not_arbitrary_execution(
     loaded_module,
@@ -172,6 +173,7 @@ def test_explicit_cached_module_association_closes_import_not_arbitrary_executio
     assert execution.initial is initial
 
 
+@pytest.mark.native_proof
 def test_explicit_dataclasses_import_admits_the_proved_decorator_invocation():
     parsed = module(
         "from dataclasses import dataclass\n@dataclass\n"

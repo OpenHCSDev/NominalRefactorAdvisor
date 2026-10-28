@@ -40,6 +40,7 @@ def test_forwarding_does_not_bypass_an_unproved_prior_value_release():
         ).require_closed()
 
 
+@pytest.mark.native_proof
 def test_forwarding_with_a_retained_previous_value_closes():
     source = "class alias: pass\nsaved = alias\nresult = (alias := object)\n"
     native(source + "assert result is object\nassert saved is not alias\n")

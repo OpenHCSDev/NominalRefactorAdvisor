@@ -41,6 +41,7 @@ def test_scalar_and_definition_installation_share_original_event_availability():
     )
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize("literal", ("None", "True", "7", "'label'"))
 @pytest.mark.parametrize("in_class", (False, True))
 def test_original_scalar_store_joins_original_completed_activation(literal, in_class):
@@ -54,6 +55,7 @@ def test_original_scalar_store_joins_original_completed_activation(literal, in_c
     assert not env._pending
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize("in_class", (False, True))
 def test_uncompleted_store_cannot_borrow_native_transfer(in_class):
     env, store = scalar_store(
@@ -84,6 +86,7 @@ def test_equal_binding_snapshot_is_not_an_original_source_event():
         copied.require_installation(prefix)
 
 
+@pytest.mark.native_proof
 def test_historical_store_does_not_claim_final_value():
     env, store = scalar_store("key = None\nkey = 7\n")
     prefix = env.required_prefix(store.native_frame_context, None)
@@ -92,6 +95,7 @@ def test_historical_store_does_not_claim_final_value():
     assert final.require_native_scalar() == 7
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize("in_class", (False, True))
 def test_completed_source_joins_conditional_native_return(in_class):
     env, store = scalar_store(
@@ -112,6 +116,7 @@ def test_native_return_does_not_admit_unproved_source_execution():
         store.return_continuation(env.required_prefix(store.native_frame_context, None))
 
 
+@pytest.mark.native_proof
 def test_continuation_keeps_later_source_overwrite_separate_from_store_value():
     env, store = scalar_store("key = None\nkey = 7\n")
     prefix = env.required_prefix(store.native_frame_context, None)
@@ -141,6 +146,7 @@ def test_chained_assignment_has_no_plain_scalar_assignment_event():
     )
 
 
+@pytest.mark.native_proof
 def test_prepared_registration_root_joins_final_policy_store_without_claiming_result():
     source = (
         "class Family(metaclass=Creator):\n"

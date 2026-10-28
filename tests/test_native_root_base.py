@@ -8,6 +8,8 @@ import pytest
 from nominal_refactor_advisor.ast_tools import ParsedModule
 from nominal_refactor_advisor.source_execution import SourceModuleExecution
 
+pytestmark = pytest.mark.native_proof
+
 
 def _require_last_class(source):
     module = ParsedModule(

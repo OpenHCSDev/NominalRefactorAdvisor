@@ -9,6 +9,8 @@ from nominal_refactor_advisor.source_execution import SourceCreatedFunctionCaptu
 from nominal_refactor_advisor.source_geometry import SourceByteSpan
 from test_source_function_result import execution
 
+pytestmark = pytest.mark.native_proof
+
 
 def definition(source):
     environment = execution(source)

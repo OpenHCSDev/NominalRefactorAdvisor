@@ -43,6 +43,7 @@ def occurrences_at(environment, node):
     return tuple(environment.effects.occurrences(environment.source, prefix))
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize(
     "left,right", (("'same'", "'same'"), ("(1,(2,))", "(True,(2.0,))"))
 )
@@ -74,6 +75,7 @@ def test_duplicate_key_effect_starts_after_first_original_value_capture(left, ri
         _require_dictionary_effects(environment, dictionary)
 
 
+@pytest.mark.native_proof
 def test_nested_key_event_count_does_not_shift_the_native_effect_before_first_value():
     environment, dictionary = _execution("{(1,(2,)):Alpha,(True,(2.0,)):Beta}")
     whole = evaluation(environment, dictionary)
@@ -115,6 +117,7 @@ def test_unknown_or_unpacked_first_key_has_no_stronger_bound(expression, prefix)
         _require_dictionary_effects(environment, dictionary)
 
 
+@pytest.mark.native_proof
 def test_later_unpack_still_interferes_after_first_ordinary_pair():
     environment, dictionary = _execution(
         "{'alpha': Alpha, **other}", prefix="other={}\n"

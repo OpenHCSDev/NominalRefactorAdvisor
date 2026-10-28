@@ -19,6 +19,8 @@ from nominal_refactor_advisor.source_native_mro import (
     SourceNativeClassMro,
 )
 
+pytestmark = pytest.mark.native_proof
+
 
 def _snapshot(path: Path, source: str) -> CodemodSourceSnapshot:
     path.write_text(source, encoding="utf-8", newline="")

@@ -65,6 +65,7 @@ def test_copy_is_one_symbolic_creation_not_an_analyzer_dictionary():
     )
 
 
+@pytest.mark.native_proof
 def test_keyword_value_keeps_earlier_capture_after_its_name_changes():
     _, result = captured_final(
         "import builtins\nselected = builtins.property\n"
@@ -80,6 +81,7 @@ def test_keyword_value_keeps_earlier_capture_after_its_name_changes():
     )
 
 
+@pytest.mark.native_proof
 def test_copy_reads_parent_at_outer_call_and_ignores_later_parent_writes():
     _, result = captured_final(
         "import builtins\ncopied = dict(vars(builtins))\n"
@@ -94,6 +96,7 @@ def test_copy_reads_parent_at_outer_call_and_ignores_later_parent_writes():
     )
 
 
+@pytest.mark.native_proof
 def test_callee_alias_keeps_native_identity_after_its_module_slot_changes():
     _, result = captured_final(
         "import builtins\nconstructor = builtins.dict\n"
@@ -108,6 +111,7 @@ def test_callee_alias_keeps_native_identity_after_its_module_slot_changes():
     )
 
 
+@pytest.mark.native_proof
 def test_explicit_keyword_overrides_parent_write_with_earlier_value():
     _, result = captured_final(
         "import builtins\nselected = builtins.property\n"
@@ -263,6 +267,7 @@ def test_chained_assignment_result_remains_explicitly_unsupported():
     assert isinstance(result, OpenCapturedReference)
 
 
+@pytest.mark.native_proof
 def test_descriptor_execution_does_not_fabricate_an_actual_descriptor():
     environment = execution("result = property()\n")
     node = environment.module.module.body[0].value
@@ -296,6 +301,7 @@ assert copied["selected"] is retained
     assert completed.returncode == 0, completed.stderr
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize("qualified", (False, True))
 def test_copied_builtin_frame_preserves_qualified_native_decorator_only(qualified):
     decorator = "builtins.property" if qualified else "property"
@@ -334,6 +340,7 @@ class Authority:
     assert native.returncode == 0, native.stderr
 
 
+@pytest.mark.native_proof
 def test_plain_class_keeps_module_builder_when_copied_builtins_override_it():
     source = """import builtins
 class Replacement: pass

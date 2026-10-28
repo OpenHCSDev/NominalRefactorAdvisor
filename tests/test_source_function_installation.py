@@ -31,6 +31,7 @@ def module_function(source="def chosen():\n    pass\n"):
     return environment, function
 
 
+@pytest.mark.native_proof
 def test_prepared_root_final_method_joins_canonical_native_installation():
     environment, entry, function = prepared_function(explicit_scope=False)
     prefix = entry.completion_prefix
@@ -55,6 +56,7 @@ def test_prepared_root_final_method_joins_canonical_native_installation():
         entry.result()
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize(
     "header", ("def chosen():", "async def chosen():", "def __chosen():")
 )
@@ -71,6 +73,7 @@ def test_module_installation_uses_original_source_binding_without_name_conventio
     assert function.require_native_installation(prefix) is installation
 
 
+@pytest.mark.native_proof
 def test_preinstallation_cut_does_not_contain_the_original_definition_store():
     _, function = module_function()
     function.require_closed()
@@ -78,6 +81,7 @@ def test_preinstallation_cut_does_not_contain_the_original_definition_store():
         function.require_native_installation(function.parent_prefix)
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize(
     "rebuild",
     (
@@ -97,6 +101,7 @@ def test_copied_or_truncated_cut_cannot_borrow_canonical_installation(rebuild):
         function.require_native_installation(copied)
 
 
+@pytest.mark.native_proof
 def test_same_source_and_native_island_do_not_join_foreign_activation():
     environment, function = module_function()
     foreign = SourceModuleExecution(
@@ -110,6 +115,7 @@ def test_same_source_and_native_island_do_not_join_foreign_activation():
     assert not environment._pending and not foreign._pending
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize("query", ("installation", "descriptor", "native_execution"))
 def test_warmed_receipt_cannot_switch_to_another_original_function_node(query):
     environment, function = module_function("def first(): pass\ndef second(): pass\n")
@@ -131,6 +137,7 @@ def test_warmed_receipt_cannot_switch_to_another_original_function_node(query):
     )
 
 
+@pytest.mark.native_proof
 def test_decorated_result_cannot_use_raw_function_installation():
     environment = execution("class Owner:\n    @staticmethod\n    def chosen(): pass\n")
     owner = environment.class_entry(environment.module.module.body[0])
@@ -139,6 +146,7 @@ def test_decorated_result_cannot_use_raw_function_installation():
         function.require_native_installation(owner.completion_prefix)
 
 
+@pytest.mark.native_proof
 def test_conditional_native_installation_does_not_supply_source_execution():
     environment = execution("if True:\n    def chosen(): pass\n")
     node = environment.module.module.body[0].body[0]
@@ -155,6 +163,7 @@ def test_conditional_native_installation_does_not_supply_source_execution():
         function.require_native_installation(prefix)
 
 
+@pytest.mark.native_proof
 def test_mangled_native_key_requires_actual_source_binding_correspondence():
     environment = execution("class Owner:\n    def __chosen(self): pass\n")
     owner = environment.class_entry(environment.module.module.body[0])
@@ -165,6 +174,7 @@ def test_mangled_native_key_requires_actual_source_binding_correspondence():
         function.require_native_installation(owner.completion_prefix)
 
 
+@pytest.mark.native_proof
 def test_later_reassignment_keeps_historical_installation_not_current_value():
     environment, function = module_function(
         "def chosen(): pass\nsaved = chosen\nchosen = 17\n"

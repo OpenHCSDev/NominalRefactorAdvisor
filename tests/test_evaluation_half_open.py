@@ -61,6 +61,7 @@ def test_earlier_import_failure_cannot_be_skipped_at_subscription_entry():
         capture.require_closed()
 
 
+@pytest.mark.native_proof
 def test_subscription_result_identity_is_not_inferred_from_original_operand():
     env = execution("value = tuple[int]\n")
     subscription = env.module.module.body[0].value

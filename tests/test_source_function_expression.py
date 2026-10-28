@@ -29,6 +29,7 @@ def expression(environment):
     )
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize(
     "source",
     (
@@ -72,6 +73,7 @@ def test_equal_but_nonoriginal_source_read_context_cannot_acquire_creation():
         environment.kernel._read_use(read.use, replace(read.context), frozenset())
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize("warm", (False, True))
 def test_equal_compiler_receipt_is_not_the_original_creation(monkeypatch, warm):
     environment = execution("value = lambda: None\n")
@@ -87,6 +89,7 @@ def test_equal_compiler_receipt_is_not_the_original_creation(monkeypatch, warm):
         environment.capture_value(node).require_closed()
 
 
+@pytest.mark.native_proof
 def test_native_operand_join_requires_original_inventory_and_creation():
     environment = execution("first = lambda: 1\nsecond = lambda: 2\n")
     nodes = [
@@ -136,6 +139,7 @@ def test_syntax_projection_uses_nominal_inheritance_and_mro():
         assert isinstance(CompactValueExpression.project(node), FunctionExpression)
 
 
+@pytest.mark.native_proof
 def test_module_builder_spelling_does_not_replace_the_actual_builtin():
     source = (
         "__build_class__ = lambda *args, **kwargs: None\n"

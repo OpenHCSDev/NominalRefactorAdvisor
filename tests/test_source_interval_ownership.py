@@ -73,6 +73,7 @@ def test_an_unowned_interval_cannot_borrow_a_different_activation_kernel():
         supplied.capture_kernel(second.kernel)
 
 
+@pytest.mark.native_proof
 def test_entry_work_is_projected_by_original_namespace_owner():
     first, second, left, right, _ = activations("result: int = seed\n")
     for owner in (first, second):

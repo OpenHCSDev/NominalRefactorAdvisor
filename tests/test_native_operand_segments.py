@@ -15,6 +15,7 @@ from nominal_refactor_advisor.native_compilation import (
 from test_native_value_store import value_store
 
 
+@pytest.mark.native_proof
 def test_stores_and_return_share_every_original_operand():
     source = "first = object\nsecond = (first, None)\nthird = (second, 7)\n"
     compilation = NativePythonCompilation(source, "segments.py")
@@ -36,6 +37,7 @@ def test_stores_and_return_share_every_original_operand():
         )
 
 
+@pytest.mark.native_proof
 def test_each_ordinary_native_production_is_emitted_once(monkeypatch):
     source = "".join(f"field_{index} = (object, {index})\n" for index in range(200))
     code = compile(source, "one-walk.py", "exec")
@@ -56,6 +58,7 @@ def test_each_ordinary_native_production_is_emitted_once(monkeypatch):
     assert len(stream.continuation.stores) == 200
 
 
+@pytest.mark.native_proof
 def test_unknown_suffix_keeps_stored_operands_but_not_a_return():
     source = "before = (object, None)\nunknown + 1\nafter = True\n"
     compilation = NativePythonCompilation(source, "interrupted.py")
@@ -68,6 +71,7 @@ def test_unknown_suffix_keeps_stored_operands_but_not_a_return():
     assert not after.require_return().continues(before.binding)
 
 
+@pytest.mark.native_proof
 def test_pickled_segment_does_not_duplicate_store_operand_authority():
     source = "before = (object, None)\nafter = True\n"
     compilation = NativePythonCompilation(source, "snapshot-segment.py")

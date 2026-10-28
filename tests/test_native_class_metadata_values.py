@@ -42,6 +42,7 @@ def test_invalid_native_docstring_encoding_cannot_be_admitted(source):
         environment.require_class_creation(environment.module.module.body[-1])
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize(
     "member",
     (
@@ -67,6 +68,7 @@ def test_valid_class_metadata_and_unrelated_strings_stay_supported(member):
     environment.require_class_creation(environment.module.module.body[0])
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize("text", ("valid", "\ud800"))
 def test_admitted_initial_value_uses_its_actual_text(text):
     source = "class Owner:\n    __doc__ = provided\n"

@@ -13,6 +13,7 @@ def rebuild(entry):
     return type(entry)(entry.execution, entry.node)
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize("duplicate", (copy, rebuild), ids=("copy", "rebuild"))
 @pytest.mark.parametrize("warm", (False, True))
 @pytest.mark.parametrize(

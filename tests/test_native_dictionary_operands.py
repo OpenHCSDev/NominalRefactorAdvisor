@@ -16,6 +16,7 @@ from test_native_value_store import value_store
 from test_source_function_result import execution, function
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize(
     "expression", ("{key: value}", "{'left': first, 'right': second}")
 )

@@ -64,6 +64,7 @@ def test_multiple_inheritance_selects_scope_behavior_through_mro():
     )
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize("warm", (False, True))
 def test_class_frame_rejects_another_original_definitions_cached_association(warm):
     environment = execution("class First: pass\nclass Second: pass\n")
@@ -78,6 +79,7 @@ def test_class_frame_rejects_another_original_definitions_cached_association(war
         environment._class_flow_frame(first.context, None)
 
 
+@pytest.mark.native_proof
 def test_class_frame_rejects_equal_context_copy():
     environment = execution("class Owner: pass\n")
     entry = environment.class_entry(environment.module.module.body[0])
@@ -86,6 +88,7 @@ def test_class_frame_rejects_equal_context_copy():
         environment._class_flow_frame(replace(entry.context), None)
 
 
+@pytest.mark.native_proof
 def test_class_frame_uses_existing_definition_index_not_a_full_operation_scan():
     environment = execution("class Owner: pass\n")
     entry = environment.class_entry(environment.module.module.body[0])

@@ -42,6 +42,7 @@ def item_completion(body, in_class=True):
     return SourceCompletionResolver(env).completed_body(context)
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize("in_class", (False, True))
 @pytest.mark.parametrize(
     "body,expected",
@@ -88,6 +89,7 @@ def test_item_store_completes_the_actual_body_without_a_fictional_binding(
     assert actual["payload"] == expected
 
 
+@pytest.mark.native_proof
 def test_later_lexical_store_wins_over_an_earlier_item_store():
     completion = item_completion("payload = {}\npayload['x'] = 1\nlast = None")
     assert isinstance(completion, SourceAssignmentStore)
@@ -101,6 +103,7 @@ def test_stack_effect_contract_requires_a_concrete_operand_declaration():
         NativeStackEffectABC(0, ())
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize("count", (0, 1, 2))
 def test_item_transfer_rejects_underflow_without_a_partial_receipt(count):
     instruction = next(
@@ -123,6 +126,7 @@ def test_item_transfer_rejects_underflow_without_a_partial_receipt(count):
     assert not stack.values and not stack.bindings
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize(
     "damage", ("copy", "missing", "duplicate", "offset", "arity", "swap")
 )
@@ -154,6 +158,7 @@ def test_warm_item_completion_rechecks_original_effect_and_operand_roles(damage)
         completion.return_continuation(prefix)
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize("index", (0, 1, 2))
 def test_item_completion_rejects_equal_copies_of_each_operand(index):
     completion = item_completion("payload = {}\npayload['x'] = None")
@@ -172,6 +177,7 @@ def test_item_completion_rejects_equal_copies_of_each_operand(index):
         )
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize("kind", ("before", "copy", "foreign"))
 def test_item_completion_cannot_borrow_a_wrong_prefix(kind):
     completion = item_completion("payload = {}\npayload['x'] = None")
@@ -186,6 +192,7 @@ def test_item_completion_cannot_borrow_a_wrong_prefix(kind):
         completion.return_continuation(wrong)
 
 
+@pytest.mark.native_proof
 def test_equal_copied_item_mutation_is_not_an_original_completion():
     completion = item_completion("payload = {}\npayload['x'] = None")
     copied = replace(completion, binding=copy(completion.binding))
@@ -203,6 +210,7 @@ def test_item_completion_cannot_supply_another_class_body_tail():
         _ = PreparedNamespaceTail(entry, first).receipt
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize(
     "body",
     (
@@ -235,6 +243,7 @@ def test_unsupported_mutations_are_not_ignored_when_selecting_completion(tail):
         item_completion("payload = {}\npayload['x'] = 1\n" + tail)
 
 
+@pytest.mark.native_proof
 def test_native_snapshot_preserves_item_operands_without_analyser_mapping_state():
     completion = item_completion("payload = {}\npayload['x'] = None")
     compilation = completion.execution.module.native_compilation
@@ -251,6 +260,7 @@ def test_native_snapshot_preserves_item_operands_without_analyser_mapping_state(
         restored.require_value(original.effect_for(span, NativeItemStoreValue))
 
 
+@pytest.mark.native_proof
 def test_overwrite_does_not_admit_an_actual_destructor_callback():
     source = """events = []
 class Payload:

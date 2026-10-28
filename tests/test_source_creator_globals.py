@@ -21,6 +21,8 @@ from nominal_refactor_advisor.source_entry import SourceExecutionEntryABC
 from nominal_refactor_advisor.source_execution import SourceExecutionABC
 from test_source_function_result import execution
 
+pytestmark = pytest.mark.native_proof
+
 
 @dataclass(eq=False)
 class SplitNamespaceEntry(

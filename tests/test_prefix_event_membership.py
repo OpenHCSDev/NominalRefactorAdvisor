@@ -22,6 +22,7 @@ def execution(source="first = {}\nsecond = {}\n"):
     )
 
 
+@pytest.mark.native_proof
 def test_original_occurrence_is_the_existing_interval_not_a_new_receipt():
     environment = execution()
     context = environment.entry.context
@@ -35,6 +36,7 @@ def test_original_occurrence_is_the_existing_interval_not_a_new_receipt():
     assert found.contains(event)
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize("defect", ("event", "context", "cut", "duplicate"))
 def test_equal_shape_and_ambiguous_occurrence_cannot_prove_execution(defect):
     environment = execution()
@@ -66,6 +68,7 @@ def test_branch_membership_is_not_definite_execution():
         prefix.require_event(context, event, environment.entry.frame)
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize(
     "source",
     ("created = {}\n", "import builtins\ncreated = dict(vars(builtins))\n"),

@@ -19,6 +19,7 @@ from test_registry_original_values import authored_runtime, final_entry
 from test_source_definition_result import execution
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize(
     "declaration", ("class Original: pass", "def Original(): pass")
 )
@@ -70,6 +71,7 @@ def test_generic_kernel_keeps_typed_open_instead_of_gaining_definition_proof(
     assert generic.definition_operation(node) is operation
 
 
+@pytest.mark.native_proof
 def test_environment_methods_share_one_owner_and_dispatch_through_the_actual_kernel():
     environment = execution("class Original: pass\n")
     node = environment.module.module.body[0]
@@ -131,6 +133,7 @@ def test_environment_cannot_pair_a_source_with_another_executions_kernel():
         mixed.capture_definition(foreign.module.module.body[0])
 
 
+@pytest.mark.native_proof
 def test_same_canonical_source_in_two_executions_does_not_merge_created_objects():
     first = execution("class Original: pass\n")
     second = SourceModuleExecution.from_source(first.source)
@@ -155,6 +158,7 @@ def test_nondefinition_mutation_is_not_a_creation_result():
         environment.capture_definition(node)
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize(
     "source,definition_index,reason",
     (
@@ -190,6 +194,7 @@ def test_capture_definition_preserves_unproved_creation_and_header_operands(
         assert isinstance(authored_runtime(source)["Original"], type)
 
 
+@pytest.mark.native_proof
 def test_function_capture_does_not_execute_or_admit_its_deferred_body():
     source = "def Original(): missing()\n"
     environment = execution(source)
@@ -204,6 +209,7 @@ def test_function_capture_does_not_execute_or_admit_its_deferred_body():
         environment.required_prefix(value.context, value.context.flow.calls[0].position)
 
 
+@pytest.mark.native_proof
 def test_registry_expected_creation_is_independent_of_a_wrong_original_operand():
     source = "class Alpha: pass\nclass Beta: pass\nsaved = Alpha\nAlpha = Beta\ntail = Alpha\n"
     environment = execution(source)

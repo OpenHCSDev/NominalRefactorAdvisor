@@ -18,6 +18,7 @@ from nominal_refactor_advisor.source_execution import (
 from test_native_member_value_origins import execution as bound_execution
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize("value", ("1", "None", "object", "'ordinary text'"))
 def test_class_dictionary_cell_follows_actual_runtime_construction(value):
     source = f"class Owner:\n    __classdictcell__ = {value}\n"
@@ -36,6 +37,7 @@ def test_class_dictionary_cell_follows_actual_runtime_construction(value):
         environment.require_class_creation(owner)
 
 
+@pytest.mark.native_proof
 def test_global_storage_does_not_acquire_a_class_dictionary_cell_role():
     source = "class Owner:\n    global __classdictcell__\n    __classdictcell__ = 1\n"
     native = subprocess.run(
@@ -48,6 +50,7 @@ def test_global_storage_does_not_acquire_a_class_dictionary_cell_role():
     environment.require_class_creation(environment.module.module.body[0])
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize("annotation", ("int", "list"))
 def test_original_compiler_cell_does_not_block_class_creation(annotation):
     source = f"class Owner:\n    field: {annotation}\n"

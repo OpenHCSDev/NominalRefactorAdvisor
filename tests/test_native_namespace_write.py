@@ -93,6 +93,7 @@ def require_write(kernel, context, write):
     )
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize("entries", ({}, {"member": property}, {"member": type}))
 def test_missing_or_static_type_slot_has_closed_release(entries):
     module, kernel, context, (write,) = fixture(entries)
@@ -101,6 +102,7 @@ def test_missing_or_static_type_slot_has_closed_release(entries):
     assert vars(module) == before  # Analysis did not perform the requested write.
 
 
+@pytest.mark.native_proof
 def test_heap_immutable_type_is_not_static_lifetime():
     flags = type.__getattribute__(re.Pattern, "__flags__")
     assert flags & CPythonStaticTypeRequirement.IMMUTABLETYPE
@@ -110,6 +112,7 @@ def test_heap_immutable_type_is_not_static_lifetime():
         require_write(kernel, context, write)
 
 
+@pytest.mark.native_proof
 def test_mutable_heap_class_is_not_a_static_type():
     class Payload:
         pass
@@ -118,6 +121,7 @@ def test_mutable_heap_class_is_not_a_static_type():
         CapturedNativeObject(Payload).require_release()
 
 
+@pytest.mark.native_proof
 def test_custom_metaclass_metadata_is_not_queried():
     events = []
 
@@ -134,6 +138,7 @@ def test_custom_metaclass_metadata_is_not_queried():
     assert events == []
 
 
+@pytest.mark.native_proof
 def test_arbitrary_initial_instance_stays_open_despite_analyzer_reference():
     class Payload:
         pass
@@ -144,6 +149,7 @@ def test_arbitrary_initial_instance_stays_open_despite_analyzer_reference():
         require_write(kernel, context, write)
 
 
+@pytest.mark.native_proof
 def test_actual_active_frame_retains_its_native_builtin_dictionary():
     _, kernel, context, (write,) = fixture({"member": vars(builtins)})
     with pytest.raises(ValueError, match="instance lifetime"):
@@ -151,6 +157,7 @@ def test_actual_active_frame_retains_its_native_builtin_dictionary():
     require_write(kernel, context, write)
 
 
+@pytest.mark.native_proof
 def test_arbitrary_dictionary_is_not_retained_by_unrelated_frame_storage():
     arbitrary = {}
     _, kernel, context, (write,) = fixture({"member": arbitrary})
@@ -166,6 +173,7 @@ def test_foreign_namespace_wrapper_cannot_manufacture_active_frame_retention():
         require_write(forged, context, write)
 
 
+@pytest.mark.native_proof
 def test_storage_release_never_falls_back_to_same_named_builtin():
     class Payload:
         pass
@@ -208,6 +216,7 @@ def test_native_module_data_descriptor_write_is_not_dictionary_storage(attribute
         require_write(kernel, context, write)
 
 
+@pytest.mark.native_proof
 def test_prior_write_does_not_reuse_initial_slot_release_proof():
     _, kernel, context, writes = fixture(
         {"member": property},
@@ -275,6 +284,7 @@ def test_unsupported_native_backend_does_not_admit_static_type():
         SpanOnlyCreationBackend().require_static_type_release(property)
 
 
+@pytest.mark.native_proof
 def test_supported_backend_reuses_static_type_lifetime_owner():
     NativeCreationBackend.current().require_static_type_release(property)
 

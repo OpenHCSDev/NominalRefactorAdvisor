@@ -24,6 +24,8 @@ from nominal_refactor_advisor.source_execution import SourceAssignmentStore
 from test_documentation_store import execution
 from test_native_value_store import value_store
 
+pytestmark = pytest.mark.native_proof
+
 
 @pytest.mark.parametrize(
     "expression", ("globals()", "staticmethod(print)", "Payload()")

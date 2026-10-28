@@ -92,6 +92,7 @@ def test_foreign_event_registration_cannot_hit_original_success():
         environment.kernel.read(read)
 
 
+@pytest.mark.native_proof
 def test_separate_source_activation_does_not_share_value_or_storage_cache():
     source = "registry={}\nregistry['key']='value'\ntail=property\n"
     first = execution(source)
@@ -105,6 +106,7 @@ def test_separate_source_activation_does_not_share_value_or_storage_cache():
         second.kernel.read(next(iter(first.source.value_reads_by_node.values())))
 
 
+@pytest.mark.native_proof
 def test_successful_storage_operation_reuses_existing_proof_owner(monkeypatch):
     environment = execution("registry={}\nregistry['key']='value'\n")
     target = environment.module.module.body[1].targets[0]
@@ -121,6 +123,7 @@ def test_successful_storage_operation_reuses_existing_proof_owner(monkeypatch):
     assert len(calls) == 1
 
 
+@pytest.mark.native_proof
 def test_tampered_storage_association_is_authenticated_before_cached_success():
     environment = execution("registry={}\nregistry['key']='value'\n")
     target = environment.module.module.body[1].targets[0]
@@ -133,6 +136,7 @@ def test_tampered_storage_association_is_authenticated_before_cached_success():
         environment.require_item_write(target)
 
 
+@pytest.mark.native_proof
 def test_rejected_item_proof_is_never_recorded_as_completed_storage():
     environment = execution(
         "registry={}\nregistry['key']=[]\nregistry['key']='again'\n"
@@ -164,6 +168,7 @@ def test_open_value_request_does_not_poison_later_complete_query(monkeypatch):
     environment.kernel.read(read).require_native_identity(NativeDeclaration(property))
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize("warm", (False, True))
 def test_forged_context_owner_index_cannot_authenticate_read_or_storage(warm):
     environment = execution("registry={}\nregistry['key']='value'\nanswer=property\n")

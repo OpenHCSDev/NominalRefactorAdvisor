@@ -79,6 +79,7 @@ def invocation_requirement(snapshot, path, declaration):
     )
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize(
     "expression,expected",
     (
@@ -122,6 +123,7 @@ def test_unsupported_type_binding_or_operand_stays_unresolved(tmp_path, expressi
     assert not inspected.provenance.is_admitted
 
 
+@pytest.mark.native_proof
 def test_standalone_classmethod_definition_uses_actual_application_and_descriptor_contract(
     tmp_path,
 ):
@@ -170,6 +172,7 @@ def test_other_applications_and_rebound_descriptor_operands_do_not_gain_proof(
     assert not resolution.provenance.is_admitted
 
 
+@pytest.mark.native_proof
 def test_mro_lookup_derives_current_source_and_original_empty_mapping_result(tmp_path):
     source = "from nominal_refactor_advisor.registry_identity import mro_registry_value\nregistry={}\nresult=mro_registry_value(registry, type(None))\n"
     path, snapshot = snapshot_with_environment(tmp_path, source)
@@ -183,6 +186,7 @@ def test_mro_lookup_derives_current_source_and_original_empty_mapping_result(tmp
     assert not requirement.environment.entry.operation_conditions
 
 
+@pytest.mark.native_proof
 def test_current_source_proof_is_not_a_function_identity_whitelist(
     tmp_path, monkeypatch
 ):
@@ -203,6 +207,7 @@ def test_current_source_proof_is_not_a_function_identity_whitelist(
     assert not requirement.inspect().provenance.is_admitted
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize("before_entry", (False, True))
 def test_rebound_helper_next_global_is_rejected_at_the_original_cut(
     tmp_path, monkeypatch, before_entry
@@ -224,6 +229,7 @@ def test_rebound_helper_next_global_is_rejected_at_the_original_cut(
     assert not requirement.inspect().provenance.is_admitted
 
 
+@pytest.mark.native_proof
 def test_dsl_projected_source_admits_real_type_operation_without_transporting_acceptance(
     tmp_path,
 ):
@@ -245,6 +251,7 @@ def test_dsl_projected_source_admits_real_type_operation_without_transporting_ac
     assert snapshot.sources_by_file_path[path] == "padding=0\nresult=type(None)\n"
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize("spoof_qualification", (False, True))
 @pytest.mark.parametrize(
     "registry_source,registry_operand",
@@ -346,6 +353,7 @@ def test_native_qualification_does_not_run_mutated_metadata_hooks(monkeypatch):
     assert calls == []
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize("mutation", ("new-scalar", "class-key", "replaced-value"))
 def test_native_mapping_mutation_cannot_hide_behind_a_retained_namespace(
     tmp_path, monkeypatch, mutation
@@ -406,6 +414,7 @@ def test_mapping_hooks_are_not_run_by_analysis_or_assigned_native_behavior(tmp_p
         exec(compile(source, "<trusted-mapping-control>", "exec"), {})
 
 
+@pytest.mark.native_proof
 def test_omitting_global_source_authority_does_not_turn_an_operation_into_local_proof(
     tmp_path,
 ):
@@ -417,6 +426,7 @@ def test_omitting_global_source_authority_does_not_turn_an_operation_into_local_
     assert "complete source-state authority" in omitted.rationale
 
 
+@pytest.mark.native_proof
 def test_changed_metaclass_prepare_is_rejected_without_running_the_hook(monkeypatch):
     from test_native_source_class_preparation import prepared_execution
 
@@ -438,6 +448,7 @@ def test_changed_metaclass_prepare_is_rejected_without_running_the_hook(monkeypa
     assert not environment.entry.operation_conditions
 
 
+@pytest.mark.native_proof
 def test_original_constructor_query_revalidates_implicit_class_binding(monkeypatch):
     from test_native_source_class_preparation import prepared_execution
 
@@ -460,6 +471,7 @@ def test_original_constructor_query_revalidates_implicit_class_binding(monkeypat
     assert "construction_admission" not in vars(entry)
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize(
     "expression",
     (
@@ -504,6 +516,7 @@ def test_type_query_does_not_hide_temporary_destructor_effects(tmp_path, express
     assert not requirement.environment.entry.operation_conditions
 
 
+@pytest.mark.native_proof
 def test_original_constructor_metadata_uses_current_default_owner(monkeypatch):
     from test_native_source_class_preparation import prepared_execution
 

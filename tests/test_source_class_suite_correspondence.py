@@ -93,6 +93,7 @@ def conversion(tmp_path, source=SOURCE, *, edits=()):
     return relation, tuple(target.node for target in originals), candidates
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize("newline", ("\n", "\r\n"))
 @pytest.mark.parametrize("unicode", (False, True))
 def test_actual_conversion_pairs_complete_block_suites(tmp_path, newline, unicode):
@@ -116,6 +117,7 @@ def test_actual_conversion_pairs_complete_block_suites(tmp_path, newline, unicod
     assert reader.retained_span_index.project(()) == ()
 
 
+@pytest.mark.native_proof
 def test_identical_class_bodies_pair_by_original_sites_not_text(tmp_path):
     source = SOURCE.replace(
         "    def kind(self, value=1):\n        return value", "    pass"
@@ -132,6 +134,7 @@ def test_identical_class_bodies_pair_by_original_sites_not_text(tmp_path):
     assert actual[0].body[0] is not actual[1].body[0]
 
 
+@pytest.mark.native_proof
 def test_suite_origins_do_not_claim_cross_execution_class_identity(tmp_path):
     relation, originals, candidates = conversion(tmp_path)
     original_runtime = _execute(SOURCE)
@@ -147,6 +150,7 @@ def test_suite_origins_do_not_claim_cross_execution_class_identity(tmp_path):
     assert not relation.document_simulation.is_clean
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize("foreign", ("copy", "other-projection"))
 def test_original_definition_requires_canonical_identity(tmp_path, foreign):
     relation, originals, candidates = conversion(tmp_path)
@@ -161,6 +165,7 @@ def test_original_definition_requires_canonical_identity(tmp_path, foreign):
         )
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize(
     "foreign", ("copy", "original", "other-class", "other-projection", "duplicate")
 )
@@ -183,12 +188,14 @@ def test_added_statements_require_actual_selected_candidate_owners(tmp_path, for
         relation.corresponding_class(originals[0], added_statements=additions)
 
 
+@pytest.mark.native_proof
 def test_generated_key_is_an_explicit_delta_not_implicitly_accepted(tmp_path):
     relation, originals, _ = conversion(tmp_path)
     with pytest.raises(ValueError, match="unaccounted"):
         relation.corresponding_class(originals[0])
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize("side", ("original", "candidate"))
 def test_canonical_class_cannot_launder_copied_members(tmp_path, side):
     relation, originals, candidates = conversion(tmp_path)
@@ -200,6 +207,7 @@ def test_canonical_class_cannot_launder_copied_members(tmp_path, side):
         )
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize("side", ("original", "candidate"))
 @pytest.mark.parametrize("placement", ("body", "decorator"))
 def test_same_tree_reparenting_cannot_redefine_class_suite_ownership(
@@ -226,6 +234,7 @@ def test_same_tree_reparenting_cannot_redefine_class_suite_ownership(
         )
 
 
+@pytest.mark.native_proof
 def test_class_suite_queries_reuse_syntax_index_without_tree_walks(
     tmp_path, monkeypatch
 ):
@@ -273,6 +282,7 @@ def test_syntax_parent_projection_is_derived_and_refuses_ambiguous_nodes(monkeyp
     assert syntax.parent_by_node is syntax.parent_by_node
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize(
     "part", ("default", "body", "method-decorator", "class-decorator")
 )
@@ -300,6 +310,7 @@ def test_complete_document_edits_cannot_hide_changed_original_parts(tmp_path, pa
         assert _execute(SOURCE).Alpha().kind() == 1
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize("addition", ("__registry__ = {}", "registry_key = 'wrong'"))
 def test_retained_methods_do_not_conceal_extra_candidate_statements(tmp_path, addition):
     start = SOURCE.index("    def kind")
@@ -322,6 +333,7 @@ def test_retained_methods_do_not_conceal_extra_candidate_statements(tmp_path, ad
     assert not relation.document_simulation.is_clean
 
 
+@pytest.mark.native_proof
 def test_inline_suite_expansion_has_no_invented_retained_origin(tmp_path):
     source = SOURCE.replace("class Beta:\n    pass", "class Beta: pass")
     relation, originals, candidates = conversion(tmp_path, source)
@@ -331,6 +343,7 @@ def test_inline_suite_expansion_has_no_invented_retained_origin(tmp_path):
         )
 
 
+@pytest.mark.native_proof
 def test_stale_document_after_revision_is_not_a_correspondence(tmp_path):
     relation, _, _ = conversion(tmp_path)
     changed = CodemodSourceSnapshot.from_source_mapping(

@@ -127,6 +127,7 @@ def _assert_direct_registry(module: ModuleType) -> None:
     assert module.REGISTRY["beta"] is module.Beta
 
 
+@pytest.mark.native_proof
 def test_plain_native_registration_still_converts():
     before = _execute(_PLAIN)
     _assert_direct_registry(before)
@@ -246,6 +247,7 @@ def test_registration_motion_preserves_intermediate_storage_observations(
     assert observe(after) == observe(before)
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize(
     "prefix",
     (

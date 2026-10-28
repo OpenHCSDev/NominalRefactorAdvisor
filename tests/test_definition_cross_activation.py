@@ -12,6 +12,8 @@ from nominal_refactor_advisor.source_entry import SourceModuleEntryPremise
 from nominal_refactor_advisor.source_execution import SourceModuleExecution
 from test_source_function_result import execution
 
+pytestmark = pytest.mark.native_proof
+
 
 @dataclass(frozen=True, eq=False)
 class FollowingModuleEntry(SourceModuleEntryPremise):

@@ -14,6 +14,8 @@ from nominal_refactor_advisor.native_compilation import (
     NativeValueStoreStream,
 )
 
+pytestmark = pytest.mark.native_proof
+
 
 def observed_store():
     compilation = NativePythonCompilation("chosen = object\n", "convergence.py")

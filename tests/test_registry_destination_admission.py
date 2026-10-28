@@ -44,6 +44,7 @@ def _instance_source(key, *, compact):
     )
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize(
     "key,direct_item_store_proved",
     (

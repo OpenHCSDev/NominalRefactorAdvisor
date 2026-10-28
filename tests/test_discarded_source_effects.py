@@ -28,6 +28,7 @@ def _execution(source):
     )
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize("scope", ("module", "class"))
 @pytest.mark.parametrize(
     "expression", ("builtins.property", '"documentation"', "(1, [2, 3])")
@@ -59,6 +60,7 @@ def test_unproved_result_release_remains_open(expression):
         environment.require_class_creation(environment.module.module.body[-1])
 
 
+@pytest.mark.native_proof
 def test_discard_uses_actual_completion_event_and_rejects_equal_foreign_ast():
     source = "import builtins\nbuiltins.property\n"
     environment = _execution(source)

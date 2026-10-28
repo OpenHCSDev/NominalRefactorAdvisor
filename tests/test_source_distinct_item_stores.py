@@ -40,6 +40,7 @@ def assert_closed_stores(environment):
         environment.require_item_write(statement.targets[0])
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize("count", (1, 2))
 @pytest.mark.parametrize("aliased", (False, True))
 def test_first_and_distinct_key_stores_close_actual_original_class_captures(
@@ -76,6 +77,7 @@ def test_first_and_distinct_key_stores_close_actual_original_class_captures(
     assert native.returncode == 0, native.stderr
 
 
+@pytest.mark.native_proof
 def test_registry_component_can_demand_each_retained_original_value_operand():
     environment = execution(
         BASE + "REGISTRY['alpha'] = Alpha\nREGISTRY['beta'] = Beta\n"
@@ -88,6 +90,7 @@ def test_registry_component_can_demand_each_retained_original_value_operand():
         environment.capture_value(entry.value_node).require_definition_identity(owner)
 
 
+@pytest.mark.native_proof
 def test_same_key_overwrite_keeps_the_original_receiver_and_latest_class():
     environment = execution(
         BASE + "REGISTRY['alpha'] = Alpha\nREGISTRY['alpha'] = Beta\n"
@@ -108,6 +111,7 @@ def test_same_key_overwrite_keeps_the_original_receiver_and_latest_class():
     assert value.source_definition()[1] is beta
 
 
+@pytest.mark.native_proof
 def test_existing_query_proves_unused_key_absent_and_original_installed_value():
     environment = execution(
         BASE + "REGISTRY['alpha'] = Alpha\nREGISTRY['beta'] = Beta\ntail = REGISTRY\n"
@@ -130,6 +134,7 @@ def test_existing_query_proves_unused_key_absent_and_original_installed_value():
     assert matching.source_definition()[1] is original
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize("key", ("1.0", "...", "('alpha',)", "unknown()", "missing"))
 def test_unknown_or_nonscalar_keys_do_not_gain_setter_admission(key):
     environment = execution(BASE + f"REGISTRY[{key}] = Alpha\n")
@@ -143,6 +148,7 @@ def test_unknown_or_nonscalar_keys_do_not_gain_setter_admission(key):
         environment.require_item_write(statement.targets[0])
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize("value", ("'value'", "Alpha"))
 def test_temporary_receiver_disposal_is_not_proved_by_installed_rhs(value):
     environment = execution(BASE + f"{{}}['key'] = {value}\n")
@@ -167,6 +173,7 @@ def test_key_side_rebinding_does_not_supply_receiver_liveness():
     assert native.returncode == 0, native.stderr
 
 
+@pytest.mark.native_proof
 def test_rhs_capture_precedes_receiver_and_key_even_if_target_is_unsupported():
     environment = execution(BASE + "REGISTRY[(key := 'alpha')] = Alpha\n")
     (statement,) = item_statements(environment)
@@ -190,6 +197,7 @@ def test_rhs_capture_precedes_receiver_and_key_even_if_target_is_unsupported():
     ).require_definition_identity(owner)
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize(
     "access, expected", (("property", object), ("builtins.property", property))
 )
@@ -207,6 +215,7 @@ def test_raw_globals_write_affects_global_lookup_but_not_distinct_builtin_storag
     result.require_native_identity(NativeDeclaration(expected))
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize(
     "access, expected",
     (("saved", property), ("property", object), ("staticmethod", staticmethod)),
@@ -239,6 +248,7 @@ def test_native_raw_storage_control_is_isolated_from_analyser_builtins():
     assert property.__name__ == "property"
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize(
     "access, expected", (("saved", object), ("builtins.property", property))
 )

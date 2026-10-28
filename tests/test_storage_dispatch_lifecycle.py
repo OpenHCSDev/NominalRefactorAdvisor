@@ -26,6 +26,7 @@ def execution(source):
     )
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize(
     "source, hook",
     (

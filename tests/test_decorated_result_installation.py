@@ -16,6 +16,8 @@ from nominal_refactor_advisor.source_execution import (
 )
 from test_source_function_result import execution, function, native
 
+pytestmark = pytest.mark.native_proof
+
 
 def wrapped(decorators=("staticmethod",), in_class=False, parameters=""):
     definition = "".join(f"@{name}\n" for name in decorators)

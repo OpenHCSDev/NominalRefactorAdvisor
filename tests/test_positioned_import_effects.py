@@ -30,6 +30,7 @@ def imports(environment):
     )
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize(
     "statement,expression,expected",
     (

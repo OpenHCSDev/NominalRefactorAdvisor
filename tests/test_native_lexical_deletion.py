@@ -22,6 +22,7 @@ def native(source, check=""):
     subprocess.run([sys.executable, "-c", source + check], check=True)
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize("definition", ("class Original: pass", "def Original(): pass"))
 def test_surviving_alias_permits_deletion_and_inventory_removes_the_key(definition):
     source = f"{definition}\nsaved = Original\ndel Original\nresult = saved\n"
@@ -43,6 +44,7 @@ def test_surviving_alias_permits_deletion_and_inventory_removes_the_key(definiti
     assert "saved" in names and "Original" not in names
 
 
+@pytest.mark.native_proof
 def test_deleted_global_name_can_fall_through_to_its_actual_builtin():
     source = "class object: pass\nsaved = object\ndel object\nobject\n"
     native(
@@ -67,6 +69,7 @@ def test_delete_requires_destination_presence_not_outer_lookup(name):
         owner.required_prefix(owner.entry.context, None)
 
 
+@pytest.mark.native_proof
 def test_class_local_delete_does_not_delete_its_global_binding():
     source = (
         "class Original: pass\nclass Container:\n"
@@ -87,6 +90,7 @@ def test_class_local_delete_does_not_delete_its_global_binding():
     )
 
 
+@pytest.mark.native_proof
 def test_class_global_delete_uses_global_storage_but_local_alias_retains_value():
     source = (
         "class Original: pass\nclass Container:\n    global Original\n"
@@ -128,6 +132,7 @@ def test_multi_delete_does_not_reuse_a_previously_deleted_alias(bindings):
         owner.required_prefix(owner.entry.context, None)
 
 
+@pytest.mark.native_proof
 def test_multi_delete_with_a_surviving_third_reference_closes():
     source = (
         "class Original: pass\nfirst = Original\nsaved = Original\n"
@@ -138,6 +143,7 @@ def test_multi_delete_with_a_surviving_third_reference_closes():
     owner.capture(owner.module.module.body[-1].value).require_closed()
 
 
+@pytest.mark.native_proof
 def test_reinstall_after_delete_proves_the_new_binding_without_old_value_release():
     source = (
         "class Original: pass\nsaved = Original\ndel Original\n"
@@ -152,6 +158,7 @@ def test_reinstall_after_delete_proves_the_new_binding_without_old_value_release
     )
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize(
     "hook,completion",
     (

@@ -106,6 +106,7 @@ def test_common_authority_has_no_parallel_operation_or_activation_storage():
         assert "activation_prefix" in vars(owner)
 
 
+@pytest.mark.native_proof
 def test_root_and_implicit_leaf_reuse_one_condition_at_their_actual_definition():
     environment, entries = conditioned_execution()
     assert len(environment.entry.operation_conditions) == len(entries) == 2
@@ -128,6 +129,7 @@ def test_root_and_implicit_leaf_reuse_one_condition_at_their_actual_definition()
     assert not environment._pending
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize("missing", ("Root", "Leaf"))
 def test_each_definition_requires_its_own_condition(missing):
     environment, entries = conditioned_execution(omitted=(missing,))
@@ -164,6 +166,7 @@ def test_wrong_native_protocol_cannot_authorize_test_class_family():
         wrong.require_native_behavior(actual)
 
 
+@pytest.mark.native_proof
 def test_condition_does_not_admit_actual_wrong_constructor_inputs():
     environment, (entry,) = conditioned_execution("class Root(metaclass=int): pass\n")
     # This authenticates the supplied claim's activation only. Actual native
@@ -319,6 +322,7 @@ def test_condition_requires_original_declared_cut_and_frame(corruption):
         environment.require_native_behavior(entry)
 
 
+@pytest.mark.native_proof
 def test_preparation_condition_does_not_close_unknown_body_or_cache_failure():
     environment, (entry,) = conditioned_execution(
         "class Root:\n    member = unknown()\n"
@@ -333,6 +337,7 @@ def test_preparation_condition_does_not_close_unknown_body_or_cache_failure():
     assert not environment._pending
 
 
+@pytest.mark.native_proof
 def test_native_body_and_installed_result_remain_separate_with_class_decorator():
     environment, (entry,) = conditioned_execution("@object\nclass Root: pass\n")
     environment.require_native_behavior(entry)
@@ -341,6 +346,7 @@ def test_native_body_and_installed_result_remain_separate_with_class_decorator()
         entry.result()
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize(
     "text",
     (

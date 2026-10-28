@@ -55,6 +55,7 @@ def test_implicit_reads_share_one_statement_but_not_the_expression_index():
             env.source.value_operation(CompactFlowValue(entry.context, copy(use)))
 
 
+@pytest.mark.native_proof
 def test_roles_select_actual_native_operands_and_survive_transport():
     env, entry, write = fixture()
     span = SourceByteSpan.require_node(entry.node.body[0])
@@ -70,6 +71,7 @@ def test_roles_select_actual_native_operands_and_survive_transport():
     env.require_class_creation(entry.node)
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize("role", tuple(NativeItemStoreOperand))
 def test_implicit_origin_requires_the_selected_original_operand_not_just_a_span(role):
     env, entry, write = fixture()
@@ -106,6 +108,7 @@ def test_compiler_origin_cannot_be_relabelled_as_an_arbitrary_source_expression(
         env.source.value_operation(CompactFlowValue(entry.context, use))
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize("damage", ("namespace", "producer", "prior_binding"))
 def test_annotation_birth_proof_rechecks_canonical_storage_and_original_absence(damage):
     env, entry, write = fixture()
@@ -123,6 +126,7 @@ def test_annotation_birth_proof_rechecks_canonical_storage_and_original_absence(
         namespace.require_admitted(env.initial)
 
 
+@pytest.mark.native_proof
 def test_annotation_dictionary_contents_come_from_the_shared_mutation_kernel():
     source = "class Owner:\n    item: 'first' = None\n    item: 'second' = None\n"
     env = execution(source)

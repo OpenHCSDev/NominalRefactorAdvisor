@@ -22,6 +22,7 @@ def calls(profile, function):
     )
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize(
     "text",
     (
@@ -50,6 +51,7 @@ def test_each_fresh_prefix_derives_preceding_classes_once(text):
     assert calls(cached_profile, SourceModuleExecution._preceding_class_entries) == 0
 
 
+@pytest.mark.native_proof
 def test_nested_predecessors_complete_before_the_original_class_prefix_constructs():
     text = "class Outer:\n    class First: pass\n    class Second: pass\n"
     environment = execution(text)
@@ -131,6 +133,7 @@ def test_refused_prefix_preserves_pending_cleanup_and_cached_failure(
     assert not environment._pending
 
 
+@pytest.mark.native_proof
 def test_deferred_body_does_not_become_a_construction_requirement():
     text = "class First: pass\nclass Last:\n    def later(self): return absent\n"
     environment = execution(text)

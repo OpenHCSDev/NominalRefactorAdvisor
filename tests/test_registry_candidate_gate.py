@@ -47,6 +47,8 @@ from nominal_refactor_advisor.models import FindingSpec, PatternId, SourceLocati
 from nominal_refactor_advisor.source_identity import source_path_text
 from native_use_test_support import with_rendered_registry_creator_support
 
+pytestmark = pytest.mark.native_proof
+
 SOURCE = """padding = None
 REGISTRY = {}
 class Alpha:

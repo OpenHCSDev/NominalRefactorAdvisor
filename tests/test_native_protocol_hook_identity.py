@@ -6,6 +6,8 @@ from textwrap import dedent
 
 import pytest
 
+pytestmark = pytest.mark.native_proof
+
 
 @pytest.mark.parametrize("hook", ("__import__", "__build_class__"))
 def test_changed_hook_before_entry_is_not_its_own_protocol_authority(hook):

@@ -24,6 +24,7 @@ from test_source_assignment_join import (
 )
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize("in_class", (False, True))
 def test_actual_empty_dictionary_producer_and_store_join_original_creation(in_class):
     source = ("class Family:\n    " if in_class else "") + "payload = {}\n"
@@ -48,11 +49,13 @@ def test_actual_empty_dictionary_producer_and_store_join_original_creation(in_cl
         store_for(env.module.native_compilation, assignment(source))
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize("body", ("payload = {}", "first = None\npayload = {}"))
 def test_final_dictionary_namespace_matches_real_subprocess_frame_return(body):
     compare_native_namespace(body)
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize(
     "source",
     (
@@ -104,6 +107,7 @@ def test_map_primitive_refuses_underflow_or_invalid_operand_count(count, error):
     assert stack.stack == stack.values == stack.bindings == []
 
 
+@pytest.mark.native_proof
 def test_source_creation_cannot_use_a_copied_native_value():
     tail = body_entry("payload = {}").native_tail
     with pytest.raises(ValueError, match="original production"):
@@ -114,6 +118,7 @@ def test_source_creation_cannot_use_a_copied_native_value():
         )
 
 
+@pytest.mark.native_proof
 def test_equal_empty_dictionaries_retain_distinct_source_creation_identities():
     env = execution("first = {}\nsecond = {}\n")
     stores = tuple(
@@ -136,6 +141,7 @@ def test_prior_unknown_source_work_is_not_admitted_by_fresh_map_opcode():
         _ = body_entry("unknown()\npayload = {}").native_tail
 
 
+@pytest.mark.native_proof
 def test_construction_does_not_claim_absence_after_later_item_mutation():
     env = execution("payload = {}\npayload['item'] = None\n")
     binding = env.entry.context.flow.mutations[0]

@@ -19,6 +19,7 @@ def execution(source):
     )
 
 
+@pytest.mark.native_proof
 def test_prologue_text_requires_its_original_producer():
     environment = execution("class Owner:\n    'original docstring'\n")
     entry = environment.class_entry(environment.module.module.body[0])
@@ -31,6 +32,7 @@ def test_prologue_text_requires_its_original_producer():
         ).require_native_text()
 
 
+@pytest.mark.native_proof
 def test_text_content_survives_compact_serialization_with_original_links():
     environment = execution("class Owner:\n    'original docstring'\n")
     entry = environment.class_entry(environment.module.module.body[0])

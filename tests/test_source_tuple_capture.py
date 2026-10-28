@@ -75,6 +75,7 @@ def test_compact_tuple_retains_actual_ordered_element_productions():
     assert production.resolve_value(ConservativeResolver(), unknown) is unknown
 
 
+@pytest.mark.native_proof
 def test_source_tuple_elements_keep_actual_original_class_creation_owners():
     source = BASE + "held = (Alpha, Beta)\nalias = held\n"
     environment = execution(source)
@@ -92,6 +93,7 @@ def test_source_tuple_elements_keep_actual_original_class_creation_owners():
     assert runtime["held"] == (runtime["Alpha"], runtime["Beta"])
 
 
+@pytest.mark.native_proof
 def test_nested_tuple_members_derive_from_their_own_original_productions():
     source = BASE + "held = (Alpha, (Beta, Alpha))\n"
     environment = execution(source)
@@ -110,6 +112,7 @@ def test_nested_tuple_members_derive_from_their_own_original_productions():
     assert runtime["held"][1] == (runtime["Beta"], runtime["Alpha"])
 
 
+@pytest.mark.native_proof
 def test_duplicate_values_are_distinct_input_events_not_duplicate_metadata():
     environment = execution(BASE + "held = (Alpha, Alpha)\n")
     captured = tuple_capture(environment)
@@ -120,6 +123,7 @@ def test_duplicate_values_are_distinct_input_events_not_duplicate_metadata():
     )
 
 
+@pytest.mark.native_proof
 def test_alias_after_rebind_retains_historical_tuple_members():
     source = BASE + "saved = Alpha\nheld = (Alpha,)\nAlpha = Beta\ntail = held\n"
     environment = execution(source)
@@ -136,6 +140,7 @@ def test_alias_after_rebind_retains_historical_tuple_members():
     assert runtime["tail"][0] is not runtime["Alpha"]
 
 
+@pytest.mark.native_proof
 def test_ordered_walrus_uses_each_original_capture_cut():
     source = BASE + "saved = Alpha\nheld = (Alpha, (Alpha := Beta), Alpha)\n"
     environment = execution(source)
@@ -150,6 +155,7 @@ def test_ordered_walrus_uses_each_original_capture_cut():
     assert runtime["held"] == (runtime["saved"], runtime["Beta"], runtime["Beta"])
 
 
+@pytest.mark.native_proof
 def test_retained_class_tuple_does_not_block_original_registry_entry_proof():
     source = (
         BASE
@@ -239,6 +245,7 @@ def test_conditional_repeated_or_unproved_activation_remains_open(source):
         captured.require_closed()
 
 
+@pytest.mark.native_proof
 def test_tuple_construction_does_not_grant_inert_release():
     environment = execution(BASE + "held=(Alpha,)\nheld=None\ntail=Alpha\n")
     captured = tuple_capture(environment)
@@ -250,6 +257,7 @@ def test_tuple_construction_does_not_grant_inert_release():
         ).require_closed()
 
 
+@pytest.mark.native_proof
 def test_tuple_construction_does_not_require_or_invoke_element_hashing():
     source = (
         "class Item:\n"
@@ -283,6 +291,7 @@ def test_starred_source_iterator_is_not_ordinary_element_retention():
         authored_runtime(source)
 
 
+@pytest.mark.native_proof
 def test_tuple_element_capture_preserves_the_pending_alias_cycle_guard():
     environment = execution("class Alpha:pass\nalias=Alpha\nheld=(alias,)\n")
     tuple_capture(environment)

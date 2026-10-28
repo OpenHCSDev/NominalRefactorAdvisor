@@ -74,6 +74,7 @@ def test_only_original_namespace_documentation_has_a_store(source, stored):
         assert result.event.destination.use is CompactValueDestinationKind.DISCARDED
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize(
     "body",
     (
@@ -92,11 +93,13 @@ def test_documentation_uses_normal_replacement_deletion_and_global_routing(body)
     env.require_class_creation(env.module.module.body[0])
 
 
+@pytest.mark.native_proof
 def test_module_documentation_can_precede_a_class():
     env = execution('"module documentation"\nclass Owner: pass\n')
     env.require_class_creation(env.module.module.body[-1])
 
 
+@pytest.mark.native_proof
 def test_class_documentation_is_visible_to_later_body_reads():
     env = execution('class Owner:\n    "original documentation"\n    saved = __doc__\n')
     owner = env.module.module.body[0]
@@ -107,6 +110,7 @@ def test_class_documentation_is_visible_to_later_body_reads():
     )
 
 
+@pytest.mark.native_proof
 def test_invalid_initial_documentation_overwritten_before_construction():
     source = "class Owner:\n    '\\ud800'\n    __doc__ = 'valid'\n"
     native = subprocess.run(

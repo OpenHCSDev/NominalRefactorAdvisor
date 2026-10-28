@@ -31,6 +31,7 @@ def compiled_stores(source):
     return compilation, tuple(store_for(compilation, node) for node in nodes)
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize("in_class", (False, True))
 def test_return_is_actual_native_none_and_shared_by_original_stores(in_class):
     body = "one = 1\ntwo = None\nthree = True\n"
@@ -60,6 +61,7 @@ def test_return_is_actual_native_none_and_shared_by_original_stores(in_class):
     )
 
 
+@pytest.mark.native_proof
 def test_compiler_overwrite_is_not_lost_after_final_source_store():
     compilation, (store,) = compiled_stores(
         "class Family:\n    __static_attributes__ = None\n"
@@ -86,6 +88,7 @@ def test_compiler_overwrite_is_not_lost_after_final_source_store():
     assert store.value.require_native_scalar() is None
 
 
+@pytest.mark.native_proof
 def test_return_and_compiler_transfer_match_an_authored_native_execution():
     source = "class Family:\n    __static_attributes__ = None\n"
     _, (store,) = compiled_stores(source)
@@ -110,6 +113,7 @@ def test_return_and_compiler_transfer_match_an_authored_native_execution():
         assert outcome["types"][binding.name] == binding.value.native_type.__name__
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize(
     "middle", ("unknown + 1", "if condition:\n    unknown()", "raise RuntimeError()")
 )
@@ -120,6 +124,7 @@ def test_unknown_or_branching_suffix_cannot_borrow_return(middle):
         before.require_return()
 
 
+@pytest.mark.native_proof
 def test_new_straight_line_store_after_unsupported_transfer_has_its_own_continuation():
     _, (before, after) = compiled_stores("before = None\nunknown + 1\nafter = True\n")
     with pytest.raises(ValueError):
@@ -127,6 +132,7 @@ def test_new_straight_line_store_after_unsupported_transfer_has_its_own_continua
     assert after.require_return().value.require_native_scalar() is None
 
 
+@pytest.mark.native_proof
 def test_foreign_frame_or_replaced_binding_cannot_borrow_continuation():
     _, (store,) = compiled_stores("key = None\n")
     _, (foreign,) = compiled_stores("key = None\n")
@@ -139,6 +145,7 @@ def test_foreign_frame_or_replaced_binding_cannot_borrow_continuation():
             forged.require_return()
 
 
+@pytest.mark.native_proof
 def test_native_return_without_result_is_not_accepted():
     instructions = tuple(
         dis.get_instructions(compile("key = None\n", "return.py", "exec"))
@@ -170,6 +177,7 @@ def test_jump_entry_after_store_invalidates_whole_continuation():
     assert stream.continuation is None
 
 
+@pytest.mark.native_proof
 def test_pickling_keeps_one_return_and_original_store_membership(monkeypatch):
     source = "one = None\ntwo = True\n"
     compilation, _ = compiled_stores(source)
@@ -186,6 +194,7 @@ def test_pickling_keeps_one_return_and_original_store_membership(monkeypatch):
     assert two.require_return().continues(two.binding)
 
 
+@pytest.mark.native_proof
 def test_many_stores_share_one_linear_continuation_walk(monkeypatch):
     calls = 0
     original = NativeContinuationWindow.observe
@@ -214,6 +223,7 @@ def test_many_stores_share_one_linear_continuation_walk(monkeypatch):
     assert all(store.require_return() is continuation for store in stores)
 
 
+@pytest.mark.native_proof
 def test_ambiguous_native_store_membership_is_not_admitted():
     _, (store,) = compiled_stores("key = None\n")
     continuation = store.require_return()

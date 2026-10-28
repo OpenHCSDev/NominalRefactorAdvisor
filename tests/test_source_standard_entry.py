@@ -17,6 +17,7 @@ from nominal_refactor_advisor.product_flow import source_product_flow_projection
 from nominal_refactor_advisor.source_entry import ImportedSourceModuleEntryPremise
 
 
+@pytest.mark.native_proof
 def test_standard_source_entry_retains_types_without_metadata_object_identity():
     text = "raise AssertionError('analyzed code must never execute')\n"
     module = ParsedModule(Path("example.py"), "example", False, ast.parse(text), text)

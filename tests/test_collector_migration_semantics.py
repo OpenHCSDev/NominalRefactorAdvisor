@@ -176,6 +176,7 @@ def test_migration_preserves_native_outcome_or_refuses_without_writing(
     assert result.stdout == before.stdout
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize("configured", (False, True))
 @pytest.mark.parametrize(
     "descriptor_import",

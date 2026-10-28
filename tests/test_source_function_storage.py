@@ -46,6 +46,7 @@ def prepared_function(*, explicit_scope=True, source=SOURCE, conditions=True):
     return environment, entry, SourceCreatedFunctionCapture(environment, node)
 
 
+@pytest.mark.native_proof
 def test_actual_prepared_root_function_has_empty_custom_storage_at_completed_cut():
     environment, entry, function = prepared_function()
     prefix = entry.completion_prefix
@@ -63,6 +64,7 @@ def test_actual_prepared_root_function_has_empty_custom_storage_at_completed_cut
         entry.result()
 
 
+@pytest.mark.native_proof
 def test_default_entry_does_not_infer_external_noninterference():
     _, entry, function = prepared_function(explicit_scope=False)
     with pytest.raises(
@@ -71,6 +73,7 @@ def test_default_entry_does_not_infer_external_noninterference():
         function.require_fresh_function_namespace(entry.completion_prefix)
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize(
     "capture",
     (
@@ -89,6 +92,7 @@ def test_other_capture_kinds_do_not_infer_fresh_function_storage(capture):
         capture.require_fresh_function_namespace(entry.completion_prefix)
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize("cause", (None, ValueError("original source obligation")))
 def test_open_capture_keeps_original_rejection_before_capability_query(cause):
     _, entry, _ = prepared_function()
@@ -106,6 +110,7 @@ def test_open_capture_keeps_original_rejection_before_capability_query(cause):
     assert capture.cause is cause
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize("member", ("registry_key", "__registry__", "__qualname__"))
 def test_actual_non_function_root_members_keep_capability_closed(member):
     _, entry, _ = prepared_function()
@@ -117,12 +122,14 @@ def test_actual_non_function_root_members_keep_capability_closed(member):
         )
 
 
+@pytest.mark.native_proof
 def test_function_storage_rejects_its_preinstallation_header_cut():
     _, _, function = prepared_function()
     with pytest.raises(ValueError, match="no unique occurrence"):
         function.require_fresh_function_namespace(function.parent_prefix)
 
 
+@pytest.mark.native_proof
 def test_function_storage_rejects_another_activation_prefix():
     environment, _, function = prepared_function()
     _, alien_entry, _ = prepared_function()
@@ -131,6 +138,7 @@ def test_function_storage_rejects_another_activation_prefix():
     assert not environment._pending
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize(
     "rebuild",
     (
@@ -151,6 +159,7 @@ def test_matching_endpoint_does_not_authenticate_a_rebuilt_or_truncated_prefix(r
         function.require_fresh_function_namespace(supplied)
 
 
+@pytest.mark.native_proof
 def test_explicit_scope_cannot_be_consumed_for_another_activation():
     environment, _, _ = prepared_function()
     # Same parsed source, island, bindings and conditions, different entry/frame.
@@ -170,6 +179,7 @@ def test_explicit_scope_cannot_be_consumed_for_another_activation():
         )
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize(
     "statement",
     (
@@ -186,6 +196,7 @@ def test_explicit_external_scope_does_not_exempt_source_function_writes(statemen
     assert not environment._pending
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize("decorator", ("staticmethod", "classmethod"))
 def test_raw_function_birth_does_not_admit_a_decorated_installed_result(decorator):
     source = SOURCE.replace("    def example", f"    @{decorator}\n    def example")
@@ -194,6 +205,7 @@ def test_raw_function_birth_does_not_admit_a_decorated_installed_result(decorato
         function.require_fresh_function_namespace(entry.completion_prefix)
 
 
+@pytest.mark.native_proof
 def test_external_noninterference_does_not_supply_native_callback_behavior():
     environment, entry, function = prepared_function(conditions=False)
     with pytest.raises(ValueError, match="explicit entry condition"):

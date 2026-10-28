@@ -24,6 +24,7 @@ def module(source):
     )
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize(
     "source, name",
     (
@@ -115,6 +116,7 @@ def test_repository_payloads_have_no_independently_supplied_source_projections()
     assert state.module_binding_proof is state.product_flow_repository
 
 
+@pytest.mark.native_proof
 def test_source_capture_requires_actual_context_and_original_use():
     parsed = module("class Owner: pass\nOwner.changed = 1\n")
     repository = SourceProductFlowRepository.from_modules((parsed,))
@@ -138,6 +140,7 @@ def test_duplicate_module_names_do_not_select_a_runtime_activation():
         repository.captured_value(value)
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize(
     "source,compact_excludes_receiver",
     (

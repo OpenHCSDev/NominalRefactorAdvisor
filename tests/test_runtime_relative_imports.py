@@ -46,6 +46,7 @@ def test_package_change_cannot_borrow_the_source_catalogue_import_target():
     assert "ImportError" in actual.stderr
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize(
     "package,relative,member,expected",
     (
@@ -74,6 +75,7 @@ def test_proved_global_package_controls_the_import_and_cleanup(
     assert actual.returncode == 0, actual.stderr
 
 
+@pytest.mark.native_proof
 def test_class_local_package_shadow_does_not_change_global_import_package():
     source = '__package__ = "builtins"\nclass Target:\n    __package__ = "typing"\n    from . import object as chosen\n'
     env = environment(source)
@@ -92,6 +94,7 @@ def test_class_local_package_shadow_does_not_change_global_import_package():
     assert actual.returncode == 0, actual.stderr
 
 
+@pytest.mark.native_proof
 def test_later_package_rebinding_does_not_retarget_an_earlier_import():
     source = (
         '__package__ = "builtins"\nfrom . import object as chosen\n'

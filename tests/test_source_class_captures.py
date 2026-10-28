@@ -27,6 +27,8 @@ from nominal_refactor_advisor.product_flow import (
 )
 from nominal_refactor_advisor.source_geometry import SourceByteSpan
 
+pytestmark = pytest.mark.native_proof
+
 
 def _project(source):
     module = ParsedModule(

@@ -32,6 +32,7 @@ def source_call(parameters, invocation, *, explicit_scope=True, before_call=""):
     return source, environment, environment.call_authority(context, call)
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize(
     "parameters,invocation",
     (
@@ -91,6 +92,7 @@ def test_source_signature_binding_matches_native_python(parameters, invocation):
         assert authority.result().require_native_scalar() is None
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize(
     "parameters,invocation,reason",
     (
@@ -112,6 +114,7 @@ def test_source_binding_rejects_the_same_malformed_calls_as_python(
         _ = authority.bound_arguments
 
 
+@pytest.mark.native_proof
 def test_source_signature_does_not_assume_external_function_state_stability():
     _, _, authority = source_call("value", "chosen(1)", explicit_scope=False)
     with pytest.raises(ValueError, match="External source interference"):
@@ -133,6 +136,7 @@ def test_argument_evaluation_must_be_proved_independently_of_signature_shape():
         _ = authority.bound_arguments
 
 
+@pytest.mark.native_proof
 def test_signature_binding_rejects_a_copied_invocation():
     _, environment, authority = source_call("value", "chosen(1)")
     _ = authority.bound_arguments

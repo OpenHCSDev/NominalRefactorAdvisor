@@ -56,6 +56,7 @@ def returned_closure_proof(source):
     )
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize(
     "arguments", ("", "frozen=True", "None", "repr=False, eq=False", "frozen=int")
 )
@@ -103,6 +104,7 @@ def test_factory_uses_original_call_and_declared_signature_without_invoking_pyth
     assert not environment._pending
 
 
+@pytest.mark.native_proof
 def test_current_native_source_proves_factory_behavior_without_a_runtime_condition():
     environment, operation = factory_environment("frozen=True")
     environment.call_authority(
@@ -133,6 +135,7 @@ def test_factory_does_not_admit_class_application_or_invalid_binding(arguments):
     assert not environment._pending
 
 
+@pytest.mark.native_proof
 def test_factory_creation_does_not_prove_returned_decorator_application():
     environment, operation = factory_environment("frozen=True")
     factory = environment.capture_value(operation.node)
@@ -157,6 +160,7 @@ def test_unknown_or_failing_argument_evaluation_is_not_hidden_by_factory_behavio
     assert not environment._pending
 
 
+@pytest.mark.native_proof
 def test_every_runtime_keyword_is_derived_from_the_native_declaration():
     declaration = DataclassRuntimeDeclaration.DATACLASS.native_declaration.node
     keywords = tuple(
@@ -190,6 +194,7 @@ def test_every_runtime_keyword_is_derived_from_the_native_declaration():
     )
 
 
+@pytest.mark.native_proof
 def test_native_source_proof_applies_to_a_fresh_original_activation():
     environment, operation = factory_environment("frozen=True")
     fresh_entry = ImportedSourceModuleEntryPremise.from_standard_source_loader(

@@ -18,6 +18,7 @@ from nominal_refactor_advisor.source_execution import SourceObjectConstruction
 from test_source_function_result import execution
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize(
     "prefix,expression",
     (
@@ -113,6 +114,7 @@ def test_builtin_spelling_does_not_admit_a_rebound_constructor(replacement):
     assert not environment._pending
 
 
+@pytest.mark.native_proof
 def test_distinct_allocations_do_not_gain_shared_runtime_identity():
     environment = execution("first=object()\nsecond=object()\nalias=first\n")
     first, second, alias = (
@@ -130,6 +132,7 @@ def test_distinct_allocations_do_not_gain_shared_runtime_identity():
         NativeObjectConstruction(environment, replace(first.operation))
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize(
     "tail",
     (
@@ -146,6 +149,7 @@ def test_exact_object_lifetime_allows_reassignment_and_dictionary_release(tail):
     subprocess.run([sys.executable, "-I", "-S", "-c", source], check=True, timeout=10)
 
 
+@pytest.mark.native_proof
 def test_native_lifetime_law_excludes_heap_subclasses_with_owned_state_or_finalizers():
     events = []
 

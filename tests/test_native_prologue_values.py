@@ -15,6 +15,8 @@ from nominal_refactor_advisor.native_compilation import (
 from nominal_refactor_advisor.source_geometry import SourceByteSpan
 from test_native_class_prologue import _case
 
+pytestmark = pytest.mark.native_proof
+
 
 def capture(source):
     compilation = NativePythonCompilation(source, "prologue_values.py")

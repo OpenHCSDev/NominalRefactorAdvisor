@@ -13,6 +13,8 @@ from nominal_refactor_advisor.native_compilation import (
 from nominal_refactor_advisor.source_geometry import SourceByteSpan
 from test_source_function_result import execution
 
+pytestmark = pytest.mark.native_proof
+
 
 def observed(source, name="Target"):
     compilation = NativePythonCompilation(source, "/repo/definition_chain.py")

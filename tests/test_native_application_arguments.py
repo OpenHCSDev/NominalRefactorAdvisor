@@ -11,6 +11,8 @@ from nominal_refactor_advisor.source_execution import SourceCreatedFunctionCaptu
 from test_native_function_creation import _case
 from test_source_function_result import execution, function
 
+pytestmark = pytest.mark.native_proof
+
 
 @pytest.mark.parametrize("count", (1, 2, 4))
 @pytest.mark.parametrize("in_class", (False, True))

@@ -73,6 +73,7 @@ def implicit_fixture(implicit, expression="accept(7)"):
     return code.replace(co_code=bytes(bytecode), co_consts=constants)
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize("implicit", (None, False, 0, "object argument"))
 def test_real_vm_implicit_call_matches_shared_native_operand_graph(implicit):
     code = implicit_fixture(implicit)

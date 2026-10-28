@@ -94,6 +94,7 @@ def test_copy_membership_uses_its_creation_cut_and_keyword_keys():
     }
 
 
+@pytest.mark.native_proof
 def test_class_body_and_completed_child_globals_use_their_original_frames():
     environment = execution(
         "before = property\nclass Body:\n    global exported\n"
@@ -117,6 +118,7 @@ def test_initial_key_projection_is_cached_on_its_original_owner():
     assert environment.entry.initial_names is environment.entry.initial_names
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize("depth", (2, 3))
 def test_nested_class_global_writes_survive_completed_outer_activation(depth):
     lines = []
@@ -150,6 +152,7 @@ def test_nested_class_global_writes_survive_completed_outer_activation(depth):
     }
 
 
+@pytest.mark.native_proof
 def test_completed_class_prefix_is_the_canonical_admission_receipt():
     environment = execution("class Owner:\n    member = 1\n")
     owner = environment.class_entry(environment.module.module.body[0])
@@ -226,6 +229,7 @@ def test_unproved_membership_never_becomes_a_partial_key_set(prefix):
         )
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize(
     "prefix",
     (

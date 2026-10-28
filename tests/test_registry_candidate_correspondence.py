@@ -19,6 +19,8 @@ from nominal_refactor_advisor.codemod_source_correspondence import (
 from nominal_refactor_advisor.codemod_source_edits import SourceTextReplacement
 from test_registry_policy_integrity import _execute
 
+pytestmark = pytest.mark.native_proof
+
 SOURCE = """REGISTRY = {}
 class Alpha:
     def kind(self):

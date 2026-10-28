@@ -49,6 +49,7 @@ def evaluated_copies(source, count=12):
     return tuple(namespace[f"observed_{index}"] for index in range(count))
 
 
+@pytest.mark.native_proof
 def test_twelve_observations_form_one_checked_mapping_operation(tmp_path):
     path = tmp_path / "batch.py"
     source = batch_source()
@@ -109,6 +110,7 @@ def test_empty_mapping_selection_cannot_vacuously_pass(tmp_path):
     assert path.read_text() == batch_source(1)
 
 
+@pytest.mark.native_proof
 def test_duplicate_requests_keep_authored_order_and_require_actual_proofs(tmp_path):
     path = tmp_path / "duplicates.py"
     snapshot = snapshot_for(path, batch_source(3))
@@ -157,6 +159,7 @@ def test_one_out_of_target_call_rejects_otherwise_valid_selection(tmp_path):
     assert path.read_text() == source
 
 
+@pytest.mark.native_proof
 def test_multispan_public_payload_roundtrips_order_duplicates_and_execution(tmp_path):
     path = tmp_path / "public_batch.py"
     snapshot = snapshot_for(path, batch_source(3))

@@ -39,6 +39,7 @@ def test_body_contract_requires_capture_and_preparation_before_instantiation():
         SourceClassBodyEntryABC(env, env.module.module.body[0])
 
 
+@pytest.mark.native_proof
 def test_canonical_class_entry_inherits_body_without_a_second_namespace_owner():
     source = "class Sample:\n    selected = object\ntail = Sample\n"
     env = execution(source)
@@ -102,6 +103,7 @@ def test_generic_class_lookup_uses_the_canonical_entry_result_contract():
     )
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize(
     "source",
     (
@@ -147,6 +149,7 @@ def test_result_factory_cannot_bypass_unproved_creation_or_installation(source):
         entry.result()
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize("header", ("metaclass=type", "unknown(), metaclass=type"))
 def test_body_factoring_does_not_bypass_explicit_constructor_keyword_rejection(header):
     env = execution(f"class Sample({header}): pass\n")

@@ -26,6 +26,7 @@ from nominal_refactor_advisor.source_geometry import SourceByteSpan
 from test_documentation_store import execution
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize(
     "source",
     (
@@ -73,6 +74,7 @@ def test_receipt_retains_original_native_constant_store_and_frame(source):
     assert load.positions == store.positions
 
 
+@pytest.mark.native_proof
 def test_constant_receipt_cache_pickles_without_executable_code(monkeypatch):
     source = 'class Owner:\n    """Summary.\n        Details.\n    """\n'
     node = ast.parse(source).body[0]
@@ -100,6 +102,7 @@ def test_constant_receipt_cache_pickles_without_executable_code(monkeypatch):
     assert len(calls) == 1
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize("duplicate", ("same_receipt", "distinct_receipt"))
 def test_lookup_index_rejects_duplicate_rows_without_reusing_old_projection(duplicate):
     compilation = NativePythonCompilation('"documentation"\n', "duplicate.py")
@@ -116,6 +119,7 @@ def test_lookup_index_rejects_duplicate_rows_without_reusing_old_projection(dupl
     assert index.constant_store_for(span, name) is original
 
 
+@pytest.mark.native_proof
 def test_lookup_index_keeps_binding_name_and_range_validity_in_the_join():
     compilation = NativePythonCompilation('"documentation"\n', "lookup.py")
     index = compilation._execution_outcome
@@ -137,6 +141,7 @@ def test_lookup_index_keeps_binding_name_and_range_validity_in_the_join():
         )
 
 
+@pytest.mark.native_proof
 def test_copied_read_marker_context_and_foreign_execution_cannot_borrow_receipt():
     env = execution('"documentation"\n')
     node = env.module.module.body[0].value
@@ -159,6 +164,7 @@ def test_copied_read_marker_context_and_foreign_execution_cannot_borrow_receipt(
         )
 
 
+@pytest.mark.native_proof
 def test_plain_literal_leaf_cannot_reinterpret_compiler_marked_value():
     env = execution('"""Summary.\n        Details.\n    """\n')
     captured = env.capture_value(env.module.module.body[0].value)
@@ -214,6 +220,7 @@ def test_entry_window_does_not_skip_an_intervening_operation(disturbance):
     assert window.receipt(ModuleNativeFrameOrigin(compilation.identity)) is None
 
 
+@pytest.mark.native_proof
 def test_entry_stores_and_function_returns_share_one_walk_per_emitted_scope(
     monkeypatch,
 ):

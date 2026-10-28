@@ -11,6 +11,8 @@ from nominal_refactor_advisor.captured_reference import (
 from nominal_refactor_advisor.native_compilation import NativeCreationBackend
 from test_source_function_storage import prepared_function
 
+pytestmark = pytest.mark.native_proof
+
 
 @pytest.mark.parametrize("value", (None, False, 3, "key", (), [], {}))
 def test_exact_native_values_have_no_abstract_marker(value):

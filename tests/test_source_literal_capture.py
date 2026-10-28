@@ -22,6 +22,7 @@ def execution(source):
     )
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize(
     "source,release_safe",
     (
@@ -52,6 +53,7 @@ def test_literal_capture_proves_member_behavior_without_native_identity(
             result.require_release()
 
 
+@pytest.mark.native_proof
 def test_literal_alias_retains_the_original_evaluated_source_read():
     environment = execution("item = 1\nalias = item\n")
     first, second = environment.module.module.body

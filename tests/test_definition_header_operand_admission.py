@@ -53,6 +53,7 @@ def test_undefined_default_operand_cannot_produce_a_definition(scope, keyword_on
         _definition(environment).require_closed()
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize("scope", ("module", "class"))
 @pytest.mark.parametrize("keyword_only", (False, True))
 def test_bound_native_default_operand_is_captured_before_creation(scope, keyword_only):
@@ -71,6 +72,7 @@ def test_bound_native_default_operand_is_captured_before_creation(scope, keyword
     assert default is object
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize("prior_binding", (False, True))
 def test_same_function_name_default_reads_the_prior_binding_only(prior_binding):
     source = "chosen = object\n" if prior_binding else ""
@@ -92,6 +94,7 @@ def test_same_function_name_default_reads_the_prior_binding_only(prior_binding):
     assert namespace["chosen"] is not object
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize("scope", ("module", "class"))
 @pytest.mark.parametrize("future", (False, True))
 def test_annotation_operand_follows_actual_eager_future_or_lazy_phase(scope, future):
@@ -131,6 +134,7 @@ def test_unknown_default_call_still_requires_its_original_execution(scope):
         _definition(environment).require_closed()
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize("scope", ("module", "class"))
 def test_deferred_function_body_is_not_executed_as_a_header_operand(scope):
     source = _source(scope, "def chosen():", body="return missing()")
@@ -236,6 +240,7 @@ def test_nested_lambda_default_receipts_follow_evaluation_without_entering_body(
         callback()
 
 
+@pytest.mark.native_proof
 def test_class_bases_and_keywords_retain_actual_receipts_without_admitting_hooks():
     source = "class Base: pass\nclass Child(Base, metaclass=type): pass\n"
     environment = execution(source)

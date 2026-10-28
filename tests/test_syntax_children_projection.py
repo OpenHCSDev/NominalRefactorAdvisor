@@ -49,6 +49,7 @@ def test_lazily_derived_children_still_refer_to_original_tree():
     assert syntax.children_by_node[owner] == originals
 
 
+@pytest.mark.native_proof
 def test_completion_does_not_repeat_whole_module_syntax_walk():
     entry = entry_for("key = None\npass")
     syntax = entry.execution.module.syntax_index

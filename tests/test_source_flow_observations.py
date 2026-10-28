@@ -307,6 +307,7 @@ def test_task_owns_ast_but_cached_compact_payload_does_not():
             pending.extend(item)
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize(
     "event_type",
     (

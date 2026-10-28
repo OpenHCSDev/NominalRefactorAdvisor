@@ -18,6 +18,7 @@ from test_registry_native_registration_controls import native_control
 from test_selected_store_continuation import body_entry
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize(
     "body",
     (
@@ -72,6 +73,7 @@ def test_source_effects_and_final_cut_cannot_be_skipped(body):
         _ = body_entry(body).native_tail
 
 
+@pytest.mark.native_proof
 def test_deleted_source_event_and_prefix_must_be_original():
     entry = body_entry("value = None\ndel value")
     tail = entry.native_tail
@@ -86,6 +88,7 @@ def test_deleted_source_event_and_prefix_must_be_original():
         _ = entry.native_tail
 
 
+@pytest.mark.native_proof
 def test_continuation_requires_original_binding_at_unique_native_address():
     entry = body_entry("value = None\ndel value")
     tail = entry.native_tail
@@ -103,6 +106,7 @@ def test_continuation_requires_original_binding_at_unique_native_address():
         ambiguous_address.binding_for(span, binding.name)
 
 
+@pytest.mark.native_proof
 def test_value_store_cannot_be_presented_as_a_deletion():
     entry = body_entry("value = None")
     store = entry.native_tail.completion.production
@@ -113,6 +117,7 @@ def test_value_store_cannot_be_presented_as_a_deletion():
         binding.operation.require_deletion()
 
 
+@pytest.mark.native_proof
 def test_ambiguous_or_incomplete_compilation_cannot_select_a_deletion_return():
     entry = body_entry("value = None\ndel value")
     tail = entry.native_tail
@@ -130,6 +135,7 @@ def test_ambiguous_or_incomplete_compilation_cannot_select_a_deletion_return():
             invalid.return_after_binding(binding.source_span, binding.name)
 
 
+@pytest.mark.native_proof
 def test_ambiguous_binding_in_another_return_is_not_silently_discarded():
     entry = body_entry("value = None\ndel value")
     tail = entry.native_tail
@@ -144,6 +150,7 @@ def test_ambiguous_binding_in_another_return_is_not_silently_discarded():
         invalid.return_after_binding(binding.source_span, binding.name)
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize("value", (True, False))
 def test_boolean_release_uses_the_exact_native_singleton_contract(value):
     NativeCreationBackend.current().require_object_release(value)
@@ -165,6 +172,7 @@ def test_jump_target_deletion_cannot_start_a_straight_line_continuation():
     assert stream.continuation is None
 
 
+@pytest.mark.native_proof
 def test_deletion_receipt_is_not_an_admission_to_replay_deletion_effects():
     entry = body_entry("value = None\ndel value")
     tail = entry.native_tail
@@ -173,6 +181,7 @@ def test_deletion_receipt_is_not_an_admission_to_replay_deletion_effects():
         binding.resolve(tail)
 
 
+@pytest.mark.native_proof
 def test_return_from_different_frame_cannot_be_joined_by_source_spelling():
     env = execution("class Family:\n    value = None\n    del value\n")
     entry = env.class_entry(env.module.module.body[0])

@@ -55,6 +55,7 @@ def test_actual_open_callee_keeps_original_capture_evidence(source, violation):
     assert invocation.value.violation is violation
 
 
+@pytest.mark.native_proof
 def test_closed_source_function_invocation_still_requires_a_proved_return():
     _, environment = environment_for("def factory():\n    pass\nresult=factory()\n")
     (operation,) = tuple(environment.source.call_operations_by_span.values())
@@ -70,6 +71,7 @@ def test_closed_source_function_invocation_still_requires_a_proved_return():
     assert rejected.value.__cause__ is None
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize("observe_before_classes", (True, False))
 def test_generated_registry_mapping_report_preserves_native_entry_cause(
     observe_before_classes,

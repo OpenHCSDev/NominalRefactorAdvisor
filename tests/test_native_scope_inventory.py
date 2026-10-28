@@ -26,6 +26,7 @@ def observed_inventory():
     return compilation, inventory
 
 
+@pytest.mark.native_proof
 def test_repeated_inventory_views_keep_original_receipts():
     _, inventory = observed_inventory()
     for name in ("constant_stores", "value_stores", "returns"):
@@ -35,6 +36,7 @@ def test_repeated_inventory_views_keep_original_receipts():
         assert all(left is right for left, right in zip(first, second, strict=True))
 
 
+@pytest.mark.native_proof
 def test_repeated_code_sites_keep_distinct_observers_and_ambiguous_origins():
     source = (
         "def create(flag):\n    try:\n        if flag: return 1\n"
@@ -66,6 +68,7 @@ def test_repeated_code_sites_keep_distinct_observers_and_ambiguous_origins():
     assert len({id(scope) for scope in inventory.scopes}) == len(inventory.scopes)
 
 
+@pytest.mark.native_proof
 def test_scope_publication_keeps_stores_and_return_in_the_original_frame():
     _, inventory = observed_inventory()
     assert len(inventory.scopes) == 2
@@ -95,6 +98,7 @@ def test_rebinding_transient_inventory_does_not_rewrite_published_scopes():
     )
 
 
+@pytest.mark.native_proof
 def test_snapshot_keeps_scope_views_without_recompiling(monkeypatch):
     source = "class Holder:\n    value = None\n"
     compilation = NativePythonCompilation(source, "scope_snapshot.py")

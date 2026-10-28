@@ -53,6 +53,7 @@ def test_compiler_supplied_module_value_hook_is_not_ignored(source):
     assert calls == ["__module__"]
 
 
+@pytest.mark.native_proof
 def test_global_assignment_is_not_a_class_member_installation():
     calls = []
 
@@ -72,6 +73,7 @@ def test_global_assignment_is_not_a_class_member_installation():
     assert not calls
 
 
+@pytest.mark.native_proof
 def test_nested_class_module_lookup_uses_globals_not_outer_locals():
     source = "class Outer:\n    __name__ = 42\n    class Inner: pass\n"
     environment = execution(source)
@@ -84,6 +86,7 @@ def test_nested_class_module_lookup_uses_globals_not_outer_locals():
     assert value.native_type is str
 
 
+@pytest.mark.native_proof
 def test_original_native_read_is_required_by_source_admission():
     environment = execution("class Owner: pass\n")
     entry = environment.class_entry(environment.module.module.body[0])
@@ -97,6 +100,7 @@ def test_original_native_read_is_required_by_source_admission():
         entry.native_value(replace(value))
 
 
+@pytest.mark.native_proof
 def test_imported_builtin_class_is_not_a_descriptor_instance():
     source = "class Owner:\n    from builtins import property as descriptor\n"
     environment = execution(source)

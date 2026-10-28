@@ -27,6 +27,7 @@ def compilation(source="def chosen():\n    raise AssertionError('deferred body')
     return owner, owner.execution_for(SourceByteSpan.require_node(node))
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize(
     "declaration",
     (
@@ -55,6 +56,7 @@ def test_actual_fresh_functions_have_empty_custom_storage_without_body_execution
     )
 
 
+@pytest.mark.native_proof
 def test_canonical_birth_law_reuses_the_compilation_without_rerunning_native_work(
     monkeypatch,
 ):
@@ -68,6 +70,7 @@ def test_canonical_birth_law_reuses_the_compilation_without_rerunning_native_wor
         owner.require_fresh_function_namespace(receipt)
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize(
     "damage", ("copy", "offset", "flags", "source_identity", "span")
 )
@@ -91,6 +94,7 @@ def test_copied_or_forged_receipts_do_not_authenticate(damage):
         owner.require_fresh_function_namespace(variants[damage])
 
 
+@pytest.mark.native_proof
 def test_equal_source_compilations_are_distinct_receipt_owners():
     owner, receipt = compilation()
     other, other_receipt = compilation(owner.source)
@@ -100,6 +104,7 @@ def test_equal_source_compilations_are_distinct_receipt_owners():
         other.require_fresh_function_namespace(receipt)
 
 
+@pytest.mark.native_proof
 def test_canonical_receipt_with_foreign_interpreter_identity_is_rejected():
     owner = NativePythonCompilation("def chosen(): pass\n", "<foreign-interpreter>")
     owner.__dict__["identity"] = replace(owner.identity, interpreter=("foreign", "0.0"))
@@ -118,6 +123,7 @@ def test_supported_backends_share_the_nominal_birth_law():
         )
 
 
+@pytest.mark.native_proof
 def test_birth_storage_does_not_claim_later_abstractness_or_instance_identity():
     owner, receipt = compilation()
     namespace = {}
@@ -132,6 +138,7 @@ def test_birth_storage_does_not_claim_later_abstractness_or_instance_identity():
     assert owner.require_fresh_function_namespace(receipt) is None
 
 
+@pytest.mark.native_proof
 def test_canonical_nested_creation_does_not_assert_its_enclosing_body_ran():
     owner, receipt = compilation(
         "def outer():\n    def chosen():\n        raise AssertionError('deferred')\n    return chosen\n"

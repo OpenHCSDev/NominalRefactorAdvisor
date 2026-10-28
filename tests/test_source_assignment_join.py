@@ -24,6 +24,7 @@ def last_store(env, context):
     return SourceAssignmentStore(env, context.flow.mutations[-1])
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize(
     "body",
     (
@@ -57,6 +58,7 @@ def test_automatic_tail_joins_non_scalar_reads_without_a_second_interpreter(body
         assert name not in vars(SourceNativeNamespaceABC)
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize(
     "source",
     (
@@ -79,6 +81,7 @@ def test_module_assignment_has_the_actual_frame_namespaces(source):
     assert store.return_continuation(prefix) is receipt.require_return()
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize("global_read", (False, True))
 def test_local_and_declared_global_loads_follow_native_lookup_at_the_read(global_read):
     body = ("global selected\n" if global_read else "") + "payload = selected"
@@ -91,6 +94,7 @@ def test_local_and_declared_global_loads_follow_native_lookup_at_the_read(global
     assert tail.completed is None
 
 
+@pytest.mark.native_proof
 def test_historical_assignment_reads_preceding_storage_not_completed_namespace():
     entry = body_entry("selected = object\npayload = selected\nselected = int")
     store = SourceAssignmentStore(entry.execution, entry.context.flow.mutations[1])
@@ -101,6 +105,7 @@ def test_historical_assignment_reads_preceding_storage_not_completed_namespace()
     assert entry.native_tail.member("payload").value is object
 
 
+@pytest.mark.native_proof
 def test_prepared_registry_mapping_can_be_the_final_alias_without_admitting_result():
     env, (node,) = prepared_execution(
         "REGISTRY = {}\n"
@@ -126,6 +131,7 @@ def test_unproved_source_execution_cannot_borrow_a_conditional_native_pair(body)
         _ = body_entry(body).native_tail
 
 
+@pytest.mark.native_proof
 def test_equal_types_are_not_enough_to_join_different_native_objects(monkeypatch):
     entry = body_entry("payload = object")
     store = last_store(entry.execution, entry.context)
@@ -139,6 +145,7 @@ def test_equal_types_are_not_enough_to_join_different_native_objects(monkeypatch
         store.require_installation(entry.completion_prefix)
 
 
+@pytest.mark.native_proof
 def test_copied_value_copied_binding_and_foreign_prefix_are_not_original_evidence():
     entry = body_entry("payload = object")
     store = last_store(entry.execution, entry.context)
@@ -155,6 +162,7 @@ def test_copied_value_copied_binding_and_foreign_prefix_are_not_original_evidenc
         store.require_installation(store.native_frame_prefix)
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize("warm", (False, True))
 def test_final_alias_does_not_hide_mutated_original_suite(warm):
     entry = body_entry("payload = object\npass")
@@ -166,6 +174,7 @@ def test_final_alias_does_not_hide_mutated_original_suite(warm):
         tail.member("payload")
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize(
     "body",
     (

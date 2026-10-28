@@ -28,6 +28,7 @@ def value_store(compilation, node):
     )
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize("in_class", (False, True))
 @pytest.mark.parametrize("value", ("object", "unknown", "3.25", "b'bytes'", "()"))
 def test_non_scalar_store_records_actual_pair_without_claiming_source_execution(
@@ -57,6 +58,7 @@ def test_non_scalar_store_records_actual_pair_without_claiming_source_execution(
         store_for(compilation, assignment(source))
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize("value", ("None", "True", "17", "'label'"))
 def test_scalar_query_selects_the_same_original_receipt_not_a_second_observation(value):
     source = f"payload = {value}\n"
@@ -68,6 +70,7 @@ def test_scalar_query_selects_the_same_original_receipt_not_a_second_observation
     assert scalar.value.require_scalar_store_value() is general.value
 
 
+@pytest.mark.native_proof
 def test_mixed_stores_have_one_return_and_one_pair_inventory():
     source = "first = None\nsecond = object\nthird = True\nlast = unknown\n"
     compilation = NativePythonCompilation(source, "mixed.py")
@@ -97,6 +100,7 @@ def test_query_does_not_infer_unknown_productions_or_duplicate_storage(source):
         value_store(compilation, assignment(source))
 
 
+@pytest.mark.native_proof
 def test_same_spans_in_another_compilation_do_not_supply_store_membership():
     source = "payload = object\n"
     first = value_store(NativePythonCompilation(source, "same.py"), assignment(source))
@@ -105,6 +109,7 @@ def test_same_spans_in_another_compilation_do_not_supply_store_membership():
         first.require_return().require_store(second)
 
 
+@pytest.mark.native_proof
 def test_snapshot_preserves_original_pair_and_shared_return_identity():
     source = "first = None\nsecond = object\n"
     original = NativePythonCompilation(source, "warm.py")
@@ -118,6 +123,7 @@ def test_snapshot_preserves_original_pair_and_shared_return_identity():
         first.require_return().require_store(old)
 
 
+@pytest.mark.native_proof
 def test_ambiguous_production_target_pair_is_rejected_by_both_query_contracts():
     source = "payload = None\n"
     compilation = NativePythonCompilation(source, "ambiguous.py")
@@ -133,6 +139,7 @@ def test_ambiguous_production_target_pair_is_rejected_by_both_query_contracts():
             query(compilation, node)
 
 
+@pytest.mark.native_proof
 def test_unknown_suffix_does_not_keep_earlier_store_continuation():
     source = "payload = object\nunknown + 1\n"
     compilation = NativePythonCompilation(source, "suffix.py")
@@ -141,6 +148,7 @@ def test_unknown_suffix_does_not_keep_earlier_store_continuation():
         receipt.require_return()
 
 
+@pytest.mark.native_proof
 def test_pair_stream_records_one_pair_inventory():
     code = compile(
         "".join(f"value_{i} = object\n" for i in range(200)), "linear.py", "exec"

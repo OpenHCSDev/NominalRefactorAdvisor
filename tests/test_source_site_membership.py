@@ -46,6 +46,7 @@ def test_reparsed_module_does_not_reown_previous_flow_sites():
         replace(original, module=reparsed)
 
 
+@pytest.mark.native_proof
 def test_syntax_owner_shares_membership_across_projections_and_activations():
     original = projection(
         "class First:\n    value = property\nclass Second:\n    value = staticmethod\n"

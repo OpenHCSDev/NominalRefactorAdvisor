@@ -105,6 +105,7 @@ def test_annotation_continuation_requires_binding_only_when_it_actually_executes
     assert not environment._pending
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize("argument", ("int", "None", '"not_yet_declared"', "list[int]"))
 def test_supported_classvar_binding_needs_explicit_completion_for_prefix_admission(
     argument,
@@ -134,6 +135,7 @@ def test_supported_classvar_binding_needs_explicit_completion_for_prefix_admissi
     require_endpoint(environment, node, "post_invocation")
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize("native_receiver", (list, ClassVar))
 def test_hostile_argument_hooks_are_not_run_to_manufacture_binding_evidence(
     native_receiver,
@@ -197,6 +199,7 @@ def test_binding_cannot_use_foreign_or_copied_original_inputs(foreign):
     assert not environment._pending
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize("descriptor", (property, classmethod, staticmethod))
 def test_native_descriptor_lambda_inspection_does_not_execute_source_body(descriptor):
     text = f"held = {descriptor.__name__}(lambda: body_must_remain_deferred)\n"

@@ -33,6 +33,7 @@ def stores(owner, node):
     )
 
 
+@pytest.mark.native_proof
 def test_successful_store_release_is_proved_once_per_original_cut(monkeypatch):
     owner = execution(
         "class Original: pass\n"
@@ -85,6 +86,7 @@ def test_store_receipts_are_scoped_to_the_actual_execution(monkeypatch):
     assert calls == [second.entry]
 
 
+@pytest.mark.native_proof
 def test_partial_multi_target_success_does_not_admit_the_failed_store():
     owner = execution(
         "class Original: pass\nsaved = Original\nOriginal = saved = object\n"

@@ -55,6 +55,7 @@ def _case(monkeypatch, source, *, damage=None):
     return compilation, receipt, compiled[0], inventories[0]
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize(
     "header,body",
     (
@@ -86,6 +87,7 @@ def test_creation_uses_same_actual_code_and_original_instruction(
     assert compilation.execution_for(receipt.source_span) is receipt
 
 
+@pytest.mark.native_proof
 def test_nested_creation_keeps_exact_parent_receipt_without_claiming_activation(
     monkeypatch,
 ):
@@ -104,6 +106,7 @@ def test_nested_creation_keeps_exact_parent_receipt_without_claiming_activation(
     assert namespace["outer"]().__code__ is child.code
 
 
+@pytest.mark.native_proof
 def test_decorated_result_can_replace_original_created_function(monkeypatch):
     source = "@replace\ndef chosen(): pass\n"
     _, receipt, code, inventory = _case(monkeypatch, source)
@@ -123,6 +126,7 @@ def test_decorated_result_can_replace_original_created_function(monkeypatch):
     assert emission.code is raw[0].__code__
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize("damage", ("missing", "range"))
 def test_exact_flags_do_not_fill_missing_creation_evidence(monkeypatch, damage):
     def remove_evidence(inventory):
@@ -166,6 +170,7 @@ def test_eliminated_or_duplicated_creation_remains_open(monkeypatch, source, rea
         receipt.require_creation()
 
 
+@pytest.mark.native_proof
 @pytest.mark.skipif(
     sys.version_info < (3, 12), reason="Native generic functions require Python 3.12+"
 )

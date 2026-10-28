@@ -29,6 +29,7 @@ def native_function(source):
     return compilation, compilation.execution_for(SourceByteSpan.require_node(node))
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize(
     "header",
     (
@@ -53,6 +54,7 @@ def test_native_function_store_uses_its_original_enclosing_frame(header, in_clas
     assert compilation.return_after(function) is result
 
 
+@pytest.mark.native_proof
 def test_scalar_and_function_bindings_share_the_declaration_owned_observer():
     assert NativeValueStoreStream.record_store is NativeStoreStream.record_store
     assert NativeValueStoreStream.return_receipt is NativeStoreStream.return_receipt
@@ -72,6 +74,7 @@ def test_unknown_suffix_does_not_gain_function_return_evidence(tail):
         compilation.return_after(function)
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize("decorator", ("", "@staticmethod\n"))
 def test_observed_call_and_discard_do_not_admit_unknown_source_effects(decorator):
     env = execution(decorator + "def chosen(): pass\nunknown()\n")
@@ -98,6 +101,7 @@ def test_foreign_and_copied_function_receipts_are_not_original_installations():
             compilation.return_after(wrong)
 
 
+@pytest.mark.native_proof
 def test_copied_compilation_identity_and_ambiguous_returns_remain_open():
     compilation, function = native_function("def chosen():\n    pass\n")
     outcome = compilation._execution_outcome
@@ -134,6 +138,7 @@ def test_foreign_cached_outcome_cannot_replace_the_source_compilation_owner():
             operation()
 
 
+@pytest.mark.native_proof
 def test_warmed_serialisation_preserves_shared_scalar_and_function_receipt(monkeypatch):
     source = "def chosen():\n    pass\nlater = None\n"
     compilation, function = native_function(source)
@@ -156,6 +161,7 @@ def test_warmed_serialisation_preserves_shared_scalar_and_function_receipt(monke
     assert not result.continues(function.require_installation())
 
 
+@pytest.mark.native_proof
 def test_prepared_native_class_final_method_joins_complete_source_cut():
     env, entry, function = prepared_function(explicit_scope=False)
     result = function.return_continuation(entry.completion_prefix)

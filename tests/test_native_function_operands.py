@@ -20,6 +20,7 @@ from nominal_refactor_advisor.native_compilation import (
 from nominal_refactor_advisor.source_geometry import SourceByteSpan
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize("in_class", (False, True))
 @pytest.mark.parametrize("parameters", ("", "value=1"))
 @pytest.mark.parametrize(
@@ -122,6 +123,7 @@ def original_creation():
     return backend, context, emission
 
 
+@pytest.mark.native_proof
 def test_body_creation_does_not_weaken_the_initial_helper_boundary():
     _, context, emission = original_creation()
     assert context.require_current_creation(emission.creation) is emission
@@ -129,6 +131,7 @@ def test_body_creation_does_not_weaken_the_initial_helper_boundary():
         context.require_creation(emission.creation)
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize(
     "damage", ("copied_instruction", "foreign_frame", "copied_load", "missing_current")
 )

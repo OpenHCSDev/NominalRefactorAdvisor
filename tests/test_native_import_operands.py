@@ -13,6 +13,8 @@ from nominal_refactor_advisor.native_compilation import (
 )
 from test_source_function_result import native
 
+pytestmark = pytest.mark.native_proof
+
 
 def imports(statement, in_class):
     source = "class Target:\n    " + statement if in_class else statement

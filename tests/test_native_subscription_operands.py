@@ -15,6 +15,7 @@ from nominal_refactor_advisor.source_geometry import SourceByteSpan
 from test_source_function_result import execution
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize("expression", ("container[key]", "container[first][second]"))
 def test_subscription_retains_original_inputs_in_its_native_return(expression):
     compilation = NativePythonCompilation(f"result = {expression}\n", "subscription.py")
@@ -32,6 +33,7 @@ def test_subscription_retains_original_inputs_in_its_native_return(expression):
         store.require_return().require_value(replace(store.value))
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize("expression", ("list[str]", "dict[str, tuple[int, ...]]"))
 @pytest.mark.parametrize("annotation", (False, True))
 def test_native_generic_alias_has_a_complete_original_class_storage_path(

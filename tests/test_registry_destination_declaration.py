@@ -19,6 +19,8 @@ from native_use_test_support import (
 from test_registry_destination_admission import _manual_source
 from test_registry_key_equivalence import _parsed
 
+pytestmark = pytest.mark.native_proof
+
 
 @pytest.mark.parametrize("existing_base", (False, True))
 @pytest.mark.parametrize("dictionary", (False, True))

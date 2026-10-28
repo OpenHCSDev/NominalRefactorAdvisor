@@ -23,6 +23,7 @@ SHAPES = (
 )
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize(
     "constructor,arguments",
     tuple(product(("property", "classmethod", "staticmethod"), SHAPES)),
@@ -57,6 +58,7 @@ def test_expansion_does_not_turn_into_a_guessed_argument_count(arguments):
         ).require_closed()
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize("arguments,valid", (("", False), ("None", True)))
 def test_qualified_import_alias_retains_actual_constructor_binding(arguments, valid):
     environment = execution(

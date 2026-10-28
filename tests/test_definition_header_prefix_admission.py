@@ -163,6 +163,7 @@ def test_missing_first_class_base_prevents_later_base_read():
     assert not environment._pending
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize(
     "definition",
     (

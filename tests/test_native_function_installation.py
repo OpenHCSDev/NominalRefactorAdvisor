@@ -24,6 +24,7 @@ from nominal_refactor_advisor.source_geometry import SourceByteSpan
 from test_native_function_creation import _case
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize(
     "header,body",
     (
@@ -66,6 +67,7 @@ def test_installation_joins_actual_raw_body_and_immediate_original_name_store(
     assert receipt.source_span == SourceByteSpan.require_node(ast.parse(source).body[0])
 
 
+@pytest.mark.native_proof
 def test_method_installation_retains_original_class_body_frame(monkeypatch):
     source = "class Owner:\n    def chosen(self):\n        return 3\n"
     _, receipt, code, inventory = _case(monkeypatch, source)
@@ -83,6 +85,7 @@ def test_method_installation_retains_original_class_body_frame(monkeypatch):
     assert vars(namespace["Owner"])["chosen"].__code__ is method.code
 
 
+@pytest.mark.native_proof
 def test_decorator_result_store_does_not_install_original_raw_function(monkeypatch):
     source = "@replace\ndef chosen():\n    pass\n"
     _, receipt, code, inventory = _case(monkeypatch, source)
@@ -105,6 +108,7 @@ def test_decorator_result_store_does_not_install_original_raw_function(monkeypat
     assert observed[0].__code__ is emission.code
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize("take_branch", (False, True))
 def test_conditional_native_store_does_not_assert_it_executed(monkeypatch, take_branch):
     source = "if condition:\n    def chosen():\n        pass\n"
@@ -121,6 +125,7 @@ def test_conditional_native_store_does_not_assert_it_executed(monkeypatch, take_
         assert namespace["chosen"].__code__ is emission.code
 
 
+@pytest.mark.native_proof
 def test_later_reassignment_does_not_change_original_installation_receipt(monkeypatch):
     source = "def chosen():\n    pass\nchosen = 17\n"
     _, receipt, code, inventory = _case(monkeypatch, source)
@@ -137,6 +142,7 @@ def test_later_reassignment_does_not_change_original_installation_receipt(monkey
     assert namespace["chosen"] == 17
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize(
     "source,operation",
     (
@@ -168,6 +174,7 @@ def test_function_local_installation_uses_its_original_native_storage(
     )
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize("in_class", (False, True))
 @pytest.mark.parametrize("header", ("def chosen():", "async def chosen():"))
 def test_global_installation_reuses_the_declared_store_and_original_creation(
@@ -216,6 +223,7 @@ def test_global_installation_derives_registry_key_and_shares_execution_logic():
     assert NativeCreationOperation.__registry__["STORE_NAME"] is InstallNativeFunction
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize("disturbance", ("intervening", "jump"))
 def test_installation_chain_does_not_skip_intervening_or_alternate_entry(
     monkeypatch, disturbance
@@ -246,6 +254,7 @@ def test_installation_chain_does_not_skip_intervening_or_alternate_entry(
         receipt.require_installation()
 
 
+@pytest.mark.native_proof
 def test_cached_compact_installation_roundtrip_retains_sharing_without_native_code(
     monkeypatch,
 ):

@@ -36,6 +36,7 @@ def projection(source):
     return compact_product_flow_projection(module)
 
 
+@pytest.mark.native_proof
 @pytest.mark.skipif(
     sys.version_info >= (3, 14), reason="Native annotations are deferred"
 )

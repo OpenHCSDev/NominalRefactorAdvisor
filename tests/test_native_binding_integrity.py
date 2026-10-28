@@ -110,6 +110,7 @@ def test_changed_native_lookup_does_not_authorize_promotion(
         _promotion(module).simulate(CodemodSourceSnapshot.from_modules(ParsedModuleSet.of((module,))))
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize(
     "header, decorator",
     (
@@ -170,6 +171,7 @@ def test_rebound_builtin_dictionary_does_not_authenticate_class_body_property(
         _promotion(module).simulate(CodemodSourceSnapshot.from_modules(ParsedModuleSet.of((module,))))
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize(
     "authority_header",
     (

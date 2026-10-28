@@ -15,6 +15,8 @@ from nominal_refactor_advisor.native_compilation import (
 )
 from nominal_refactor_advisor.source_geometry import SourceByteSpan
 
+pytestmark = pytest.mark.native_proof
+
 
 def function(compilation, name):
     node = next(

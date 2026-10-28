@@ -22,6 +22,7 @@ def execution(source):
     )
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize(
     "definition,native_type",
     (
@@ -46,6 +47,7 @@ def test_source_values_share_exact_type_installation_proof(definition, native_ty
     assert not isinstance(value, CapturedNativeObject)
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize(
     "source",
     (

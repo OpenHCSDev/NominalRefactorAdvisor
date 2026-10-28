@@ -21,6 +21,7 @@ from test_registry_copied_class_mapping import _component, _copy
 from test_namespace_contents import positioned_contents
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize("key", (None, False, True, 0, 1, 7, 2**80, "", "alpha"))
 def test_scalar_item_installation_preserves_original_value_and_inventory(key):
     environment = execution(BASE + f"REGISTRY[{key!r}] = Alpha\ntail = REGISTRY\n")
@@ -35,6 +36,7 @@ def test_scalar_item_installation_preserves_original_value_and_inventory(key):
     assert contents.require_member(key).source_definition()[1] is original
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize(
     "stored, queried", ((False, 0), (0, False), (True, 1), (1, True))
 )
@@ -47,6 +49,7 @@ def test_boolean_integer_aliases_select_the_same_slot(stored, queried):
     ).require_native_identity(NativeDeclaration(property))
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize(
     "stored, replacement", ((False, 0), (0, False), (True, 1), (1, True))
 )
@@ -71,6 +74,7 @@ def test_equal_scalar_keys_release_the_actual_previous_class(stored, replacement
         environment.capture_value(first.value).require_release()
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize("key", (None, False, True, 7))
 def test_native_copy_keeps_scalar_keys_at_original_copy_cut(key):
     environment = execution(
@@ -91,6 +95,7 @@ def test_initial_scalar_keys_use_dictionary_equality_without_lexical_coercion():
     namespace.member("False").require_native_identity(NativeDeclaration(object))
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize("key", (None, False, 0, True, 1, 7))
 def test_registry_mapping_derives_key_support_from_complete_content_owner(key):
     environment = execution(
@@ -104,6 +109,7 @@ def test_registry_mapping_derives_key_support_from_complete_content_owner(key):
         component.require_class_mapping(contents, environment)
 
 
+@pytest.mark.native_proof
 def test_integer_subclasses_never_run_key_or_release_protocols():
     events = []
 
@@ -127,6 +133,7 @@ def test_integer_subclasses_never_run_key_or_release_protocols():
     assert events == []
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize("key", ((), (False,), 0.0, b"alpha", Ellipsis))
 def test_unproved_key_families_remain_outside_scalar_storage(key):
     with pytest.raises(TypeError, match="exact scalar key"):

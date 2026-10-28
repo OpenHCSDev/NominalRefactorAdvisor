@@ -117,6 +117,7 @@ def test_signature_default_projection_replaces_source_defaults_without_mutation(
     ]
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize("warm", (False, True))
 @pytest.mark.parametrize("slot", ("__defaults__", "__kwdefaults__"))
 def test_factory_cannot_omit_a_now_required_parameter(monkeypatch, warm, slot):
@@ -134,6 +135,7 @@ def test_factory_cannot_omit_a_now_required_parameter(monkeypatch, warm, slot):
             dataclasses.dataclass()
 
 
+@pytest.mark.native_proof
 def test_factory_uses_actual_default_contents_even_when_signature_is_unchanged(
     monkeypatch,
 ):
@@ -148,6 +150,7 @@ def test_factory_uses_actual_default_contents_even_when_signature_is_unchanged(
             authority.require_closed()
 
 
+@pytest.mark.native_proof
 def test_explicit_argument_does_not_consume_replaced_default(monkeypatch):
     environment, operation = factory_environment("None")
     authority = environment.call_authority(
@@ -162,6 +165,7 @@ def test_native_default_inspection_requires_exact_function():
         NativeParameterDefault.from_function(len)
 
 
+@pytest.mark.native_proof
 def test_binding_joins_current_factory_source_without_a_supplied_behavior_premise():
     environment, operation = factory_environment("frozen=True")
     authority = environment.call_authority(
@@ -180,6 +184,7 @@ def test_default_projection_cannot_add_unknown_or_variadic_parameters(names):
         signature.with_default_names(frozenset(names))
 
 
+@pytest.mark.native_proof
 def test_binding_ignores_signature_and_wrapper_metadata(monkeypatch):
     environment, operation = factory_environment("")
     authority = environment.call_authority(

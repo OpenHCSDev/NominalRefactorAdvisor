@@ -1,9 +1,12 @@
 """Native binding probes must not execute unrelated analyzer cache entries."""
 
+import pytest
 from pathlib import Path
 import subprocess
 import sys
 from textwrap import dedent
+
+pytestmark = pytest.mark.native_proof
 
 CLASSVAR_COLLISION_SETUP = dedent("""
     import ast

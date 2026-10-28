@@ -21,6 +21,8 @@ from test_documentation_store import execution
 from test_native_value_store import value_store
 from test_native_implicit_call_slots import implicit_fixture
 
+pytestmark = pytest.mark.native_proof
+
 
 @pytest.mark.parametrize("in_class", (False, True))
 @pytest.mark.parametrize(

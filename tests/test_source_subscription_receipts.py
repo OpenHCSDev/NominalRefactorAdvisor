@@ -266,6 +266,7 @@ def test_source_roundtrip_joins_the_restored_ast_and_original_restored_graph():
     require_original_receipts(source, node)
 
 
+@pytest.mark.native_proof
 def test_subscription_effect_uses_its_application_cut_not_its_receiver_or_argument():
     source = project("held = tuple[int]\n")
     environment = SourceModuleExecution.from_source(source)

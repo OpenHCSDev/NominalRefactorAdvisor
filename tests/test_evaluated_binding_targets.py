@@ -35,6 +35,7 @@ def execution(source: str) -> SourceModuleExecution:
     )
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize(
     "assignment, complete_expression",
     (

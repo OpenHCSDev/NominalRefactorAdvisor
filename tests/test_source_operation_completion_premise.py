@@ -87,6 +87,7 @@ def controlled_native_execution(source):
     assert result.returncode == 0, result.stderr
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize("argument", ("int", "None", '"not_yet_declared"', "list[int]"))
 def test_explicit_original_behavior_condition_supports_controlled_native_invocation(
     argument,
@@ -109,6 +110,7 @@ def test_explicit_original_behavior_condition_supports_controlled_native_invocat
     assert not environment._pending
 
 
+@pytest.mark.native_proof
 def test_default_entry_does_not_infer_cached_completion_from_successful_binding():
     environment = execution(SOURCE)
     operation = subscriptions(environment)[0]
@@ -143,6 +145,7 @@ def test_fresh_standard_loader_does_not_copy_supplied_conditions_from_source():
         authority_for(SourceModuleExecution(fresh), operation).require_closed()
 
 
+@pytest.mark.native_proof
 def test_class_body_completion_belongs_to_original_module_entry_and_actual_local_frame():
     text = "from typing import ClassVar\nclass Holder:\n    held = ClassVar[int]\n"
     controlled_native_execution(text + "assert Holder.held.__origin__ is ClassVar\n")
@@ -157,6 +160,7 @@ def test_class_body_completion_belongs_to_original_module_entry_and_actual_local
     authority.require_closed()
 
 
+@pytest.mark.native_proof
 def test_supplied_conditions_are_frozen_input_facts_not_a_live_mutable_set():
     original = execution(SOURCE)
     operation = subscriptions(original)[0]
@@ -200,6 +204,7 @@ def test_entry_rejects_copied_foreign_and_stale_operation_facts(corruption):
         supplied_entry(environment, frozenset((selected,)))
 
 
+@pytest.mark.native_proof
 def test_two_execution_views_of_same_actual_entry_can_use_its_condition():
     original = execution(SOURCE)
     operation = subscriptions(original)[0]
@@ -291,6 +296,7 @@ def test_unproved_prior_prefix_cannot_be_overridden_by_a_later_behavior_conditio
     assert not environment._pending
 
 
+@pytest.mark.native_proof
 def test_native_behavior_is_not_returned_identity_or_automatic_codemod_acceptance():
     original = execution(SOURCE)
     operation = subscriptions(original)[0]
@@ -315,6 +321,7 @@ def test_native_behavior_is_not_returned_identity_or_automatic_codemod_acceptanc
     assert not resolution.provenance.is_admitted
 
 
+@pytest.mark.native_proof
 def test_completed_result_does_not_acquire_unknown_object_protocols():
     original = execution(SOURCE)
     operation = subscriptions(original)[0]
@@ -346,6 +353,7 @@ def test_invocation_families_inherit_one_opaque_result_owner():
         assert declaration.violation is CompletedSourceOperation.violation
 
 
+@pytest.mark.native_proof
 def test_completed_invocations_do_not_claim_the_same_cached_native_result():
     original = execution(
         "from typing import ClassVar\nfirst = ClassVar[int]\nsecond = ClassVar[int]\n"
@@ -360,6 +368,7 @@ def test_completed_invocations_do_not_claim_the_same_cached_native_result():
     assert not second.proves_same_object(first)
 
 
+@pytest.mark.native_proof
 def test_each_distinct_canonical_invocation_needs_its_own_behavior_fact():
     text = "from typing import ClassVar\nheld = (ClassVar[int], ClassVar[str])\n"
     controlled_native_execution(text + "assert len(held) == 2\n")
@@ -376,6 +385,7 @@ def test_each_distinct_canonical_invocation_needs_its_own_behavior_fact():
     authority_for(complete, second).require_closed()
 
 
+@pytest.mark.native_proof
 def test_completion_only_does_not_close_cached_native_behavior_or_its_result_cut():
     original = execution(SOURCE)
     operation = subscriptions(original)[0]

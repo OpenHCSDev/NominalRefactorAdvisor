@@ -39,6 +39,7 @@ def result(environment):
     )
 
 
+@pytest.mark.native_proof
 def test_source_projection_retains_original_context_and_event():
     captured, context, binding = result(execution())
     actual_context, actual_binding = captured.source_definition()
@@ -51,6 +52,7 @@ def test_source_projection_retains_original_context_and_event():
     captured.require_definition_identity(binding.target.owner)
 
 
+@pytest.mark.native_proof
 def test_equal_owner_cannot_replace_actual_producer():
     captured, _, binding = result(execution())
     foreign = replace(binding.target.owner)
@@ -77,6 +79,7 @@ def test_open_capture_preserves_its_original_refusal_in_source_projection():
     assert caught.value.__cause__ is cause
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize(
     "source",
     (
@@ -94,6 +97,7 @@ def test_unproved_class_creation_yields_no_source_definition(source):
         result(execution(source))
 
 
+@pytest.mark.native_proof
 def test_retained_alias_producer_is_not_current_name_binding():
     environment = execution("class Original: pass\nsaved = Original\nOriginal = None\n")
     _, context, binding = result(environment)
@@ -105,6 +109,7 @@ def test_retained_alias_producer_is_not_current_name_binding():
     assert actual_binding is not context.flow.mutations[-1]
 
 
+@pytest.mark.native_proof
 def test_source_producer_does_not_prove_member_access():
     environment = execution("class Original: pass\nOriginal.member\n")
     captured, _, _ = result(environment)

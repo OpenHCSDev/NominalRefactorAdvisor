@@ -17,6 +17,8 @@ from nominal_refactor_advisor.codemod import (
     SourceRewriteTarget,
 )
 
+pytestmark = pytest.mark.native_proof
+
 
 @pytest.mark.parametrize(
     ("other_source", "bases", "_expected_after_generic_activation"),

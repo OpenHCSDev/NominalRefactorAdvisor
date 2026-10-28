@@ -44,6 +44,7 @@ def authored_runtime(source):
     return namespace
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize(
     "suffix",
     (
@@ -67,6 +68,7 @@ def test_original_direct_and_alias_values_retain_the_actual_creation(suffix):
     assert runtime["tail"].__name__ == "Alpha"
 
 
+@pytest.mark.native_proof
 def test_rebound_class_name_resolves_beta_but_cannot_claim_alpha_provenance():
     source = BASE + "saved = Alpha\nAlpha = Beta\ntail = Alpha\n"
     environment = execution(source)
@@ -83,6 +85,7 @@ def test_rebound_class_name_resolves_beta_but_cannot_claim_alpha_provenance():
     assert runtime["tail"] is not runtime["saved"]
 
 
+@pytest.mark.native_proof
 def test_same_geometry_foreign_class_cannot_claim_original_value():
     environment = execution(BASE + "tail = Alpha\n")
     entry = final_entry(environment)
@@ -104,6 +107,7 @@ def test_copied_operand_ast_is_not_a_canonical_read():
         )
 
 
+@pytest.mark.native_proof
 def test_registry_component_requires_its_actual_original_module():
     source = BASE + "REGISTRY['alpha'] = Alpha\nREGISTRY['beta'] = Beta\n"
     environment = execution(source)
@@ -116,6 +120,7 @@ def test_registry_component_requires_its_actual_original_module():
         component.require_original_entry_values(foreign_environment)
 
 
+@pytest.mark.native_proof
 def test_dictionary_literal_entries_use_the_original_reference_read_authority():
     source = "class Alpha: pass\nclass Beta: pass\nREGISTRY = {'alpha': Alpha, 'beta': Beta}\n"
     environment = execution(source)
@@ -132,6 +137,7 @@ def test_dictionary_literal_entries_use_the_original_reference_read_authority():
     assert runtime["REGISTRY"]["beta"] is runtime["Beta"]
 
 
+@pytest.mark.native_proof
 def test_original_value_refusal_preserves_the_existing_execution_cause():
     environment = execution(BASE + "unknown()\ntail = Alpha\n")
     entry = final_entry(environment)
@@ -145,6 +151,7 @@ def test_original_value_refusal_preserves_the_existing_execution_cause():
     assert original.value.__cause__ is direct.value.__cause__
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize("aliased", (False, True))
 def test_original_plain_constructor_is_executed_after_class_identity(aliased):
     source = "class Alpha: pass\n"
@@ -160,6 +167,7 @@ def test_original_plain_constructor_is_executed_after_class_identity(aliased):
     assert type(runtime["tail"]) is runtime["Alpha"]
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize(
     "body",
     (
@@ -182,6 +190,7 @@ def test_known_constructor_class_does_not_authorize_unproved_call(body):
     assert runtime["tail"] is not None
 
 
+@pytest.mark.native_proof
 def test_constructor_alias_rebound_to_another_class_does_not_claim_alpha():
     source = "class Alpha: pass\nclass Beta: pass\nsaved = Alpha\nAlpha = Beta\ntail = Alpha()\n"
     environment = execution(source)
@@ -230,6 +239,7 @@ def test_genuine_metaclass_import_remains_an_explicit_entry_obligation():
     assert type(runtime["Handler"]) is runtime["AutoRegisterMeta"]
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize(
     "binding, imported",
     (("AutoRegisterMeta", "AutoRegisterMeta"), ("Meta", "AutoRegisterMeta as Meta")),
@@ -266,6 +276,7 @@ def test_original_metaclass_identity_with_an_explicit_native_module_association(
     assert type(runtime["Handler"]) is metaclass_registry.AutoRegisterMeta
 
 
+@pytest.mark.native_proof
 def test_missing_metaclass_operand_cannot_invent_a_registration_authority():
     environment = execution("class Handler: pass\n")
     original_class = environment.module.module.body[0]

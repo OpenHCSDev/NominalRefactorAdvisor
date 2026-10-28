@@ -100,6 +100,7 @@ def test_nested_alias_with_unproved_list_argument_does_not_invent_a_capture():
         environment.require_subscription(node)
 
 
+@pytest.mark.native_proof
 def test_nested_alias_representatives_are_rederived_not_reused_as_target_captures():
     environment = execution("held = list[tuple[int]]\n")
     witness = witness_for(environment)
@@ -130,6 +131,7 @@ def test_default_backend_refuses_classvar_binding_even_for_inert_native_input():
         SpanOnlyCreationBackend().require_classvar_binding(witness)
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize(
     ("expression", "cause"),
     (
@@ -148,6 +150,7 @@ def test_native_classvar_binding_preserves_exact_native_rejection_causes(
     assert isinstance(caught.value.__cause__, cause)
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize(
     "expression", ("int", "None", '"UnresolvedType"', '"1 / 0"', "list[int]")
 )
@@ -158,6 +161,7 @@ def test_native_classvar_binding_preserves_supported_values_without_evaluating_s
     NativeCreationBackend.current().require_classvar_binding(witness)
 
 
+@pytest.mark.native_proof
 def test_lambda_representative_executes_neither_original_body_nor_metadata_values():
     environment = execution("held = lambda value=42: 1 / 0\n")
     witness = witness_for(environment)

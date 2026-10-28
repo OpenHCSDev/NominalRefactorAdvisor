@@ -5486,6 +5486,7 @@ def test_refactor_recipe_ensure_import_treats_star_import_as_satisfied(
     assert simulation.simulation.applied_rewrite_count == 0
 
 
+@pytest.mark.native_proof
 def test_derive_candidate_collector_operation(
     tmp_path: Path,
     native_collector_module: ParsedModule,
@@ -6048,6 +6049,7 @@ def test_plan_document_compiles_recipe_operations_as_one_edit_batch(
     }
 
 
+@pytest.mark.native_proof
 def test_derive_candidate_collector_collapses_existing_candidate_method(
     tmp_path: Path,
     native_collector_module: ParsedModule,
@@ -6232,6 +6234,7 @@ def test_refactor_recipe_removes_import_names(
     build_source_index(parse_python_modules(tmp_path), ())
 
 
+@pytest.mark.native_proof
 def test_refactor_recipe_converts_manual_registry_to_autoregister(
     tmp_path: Path,
 ) -> None:
@@ -6283,6 +6286,7 @@ def test_refactor_recipe_converts_manual_registry_to_autoregister(
     }
 
 
+@pytest.mark.native_proof
 def test_manual_registry_operation_target_selects_one_source_component(
     tmp_path: Path,
 ) -> None:
@@ -17531,6 +17535,7 @@ def test_finding_recipe_physical_edit_cache_owns_recipe_declarations(
     assert tuple(builder.physical_edit_cache) == (alpha_recipe, beta_recipe)
 
 
+@pytest.mark.native_proof
 def test_codemod_plan_sequence_synthesizes_continuation_from_final_snapshot(
     tmp_path: Path,
 ) -> None:
@@ -18149,6 +18154,7 @@ def test_module_cli_resolves_selector_stdin_relative_file_paths(
     assert payload["selected_targets"][0]["qualname"] == "Alpha.run"
 
 
+@pytest.mark.native_proof
 def test_module_cli_synthesizes_finding_backed_codemod_plan_document(
     tmp_path: Path,
 ) -> None:
@@ -18183,6 +18189,7 @@ def test_module_cli_synthesizes_finding_backed_codemod_plan_document(
     assert not plan_path.exists()
 
 
+@pytest.mark.native_proof
 def test_module_cli_synthesizes_and_simulates_finding_backed_plan(
     tmp_path: Path,
 ) -> None:
@@ -18229,6 +18236,7 @@ def test_module_cli_synthesizes_and_simulates_finding_backed_plan(
     assert module_path.read_text() == original_source
 
 
+@pytest.mark.native_proof
 def test_module_cli_synthesizes_and_preflights_finding_backed_plan(
     tmp_path: Path,
 ) -> None:
@@ -18274,6 +18282,7 @@ def test_module_cli_synthesizes_and_preflights_finding_backed_plan(
     assert module_path.read_text() == original_source
 
 
+@pytest.mark.native_proof
 def test_module_cli_blocks_unproved_finding_backed_plan_application(
     tmp_path: Path,
 ) -> None:
@@ -20393,6 +20402,7 @@ def test_goal_runner_crosses_local_worsening_move_to_unique_terminal(
     assert module_path.read_text(encoding="utf-8") == original_source
 
 
+@pytest.mark.native_proof
 def test_class_family_migration_rejects_unproved_external_class_creation(
     tmp_path: Path,
 ) -> None:
@@ -20429,6 +20439,7 @@ def test_class_family_migration_rejects_unproved_external_class_creation(
     assert module_path.read_text(encoding="utf-8") == _staged_class_family_source()
 
 
+@pytest.mark.native_proof
 def test_class_family_migration_never_commits_an_unproved_first_stage(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -20482,6 +20493,7 @@ def test_class_family_migration_never_commits_an_unproved_first_stage(
     assert report.trajectory_proof.status is CodemodRefactorTrajectoryStatus.INCOMPLETE
 
 
+@pytest.mark.native_proof
 def test_class_family_migration_reports_native_proof_before_depth_budget(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -20557,6 +20569,7 @@ def test_class_family_name_projection_reads_registered_family_authority() -> Non
     )
 
 
+@pytest.mark.native_proof
 def test_class_family_goal_does_not_project_an_unproved_transition(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -20901,6 +20914,7 @@ def test_module_cli_rejects_refactor_goal_plan_recipes(tmp_path: Path) -> None:
     assert "accepts guard-only --codemod-plan input" in result.stderr
 
 
+@pytest.mark.native_proof
 def test_module_cli_does_not_export_unproved_goal_replay_plan(
     tmp_path: Path,
 ) -> None:
@@ -21340,6 +21354,7 @@ def test_finding_class_status_members_own_transition_classification(
     )
 
 
+@pytest.mark.native_proof
 def test_codemod_class_plan_groups_typed_synthesis_records(
     tmp_path: Path,
 ) -> None:
@@ -21442,6 +21457,7 @@ def test_codemod_class_plan_preserves_recipe_authority_claims() -> None:
     assert document.recipes[0].authority_claims == (claim,)
 
 
+@pytest.mark.native_proof
 def test_module_cli_synthesizes_class_plan_with_typed_recipes(
     tmp_path: Path,
 ) -> None:
@@ -21496,6 +21512,7 @@ def test_module_cli_synthesizes_class_plan_with_typed_recipes(
     assert class_payload["document"]["recipes"] == []
 
 
+@pytest.mark.native_proof
 def test_module_cli_class_plan_simulates_projected_finding_class_delta(
     tmp_path: Path,
 ) -> None:
@@ -21565,6 +21582,7 @@ def test_module_cli_class_plan_simulates_projected_finding_class_delta(
     )
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize(
     ("execution_flag", "result_field", "expected_returncode"),
     (
@@ -21613,6 +21631,7 @@ def test_module_cli_class_plan_uses_shared_typed_execution_lifecycle(
         assert module_path.read_text() == original_source
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize("include_source_index", (False, True))
 def test_module_cli_retains_unproved_projected_continuation_recipe(
     tmp_path: Path,
@@ -22086,6 +22105,7 @@ def test_detects_manual_class_registration(tmp_path: Path) -> None:
     assert any((finding.pattern_id == 6 for finding in findings))
 
 
+@pytest.mark.native_proof
 def test_manual_class_registration_findings_synthesize_recipe_plan(
     tmp_path: Path,
 ) -> None:
@@ -22190,6 +22210,7 @@ def test_manual_class_registration_findings_synthesize_recipe_plan(
     assert len(remaining) == 1
 
 
+@pytest.mark.native_proof
 def test_semantic_mirror_registration_findings_synthesize_recipe_plan(
     tmp_path: Path,
 ) -> None:

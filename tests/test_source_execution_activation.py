@@ -114,6 +114,7 @@ def test_module_annotation_work_is_still_projected_without_rewriting_entry_facts
         assert contents.member(name) is contents.annotation_namespace
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize("shadow", ("123", "None", "{}"))
 def test_nested_class_captures_global_builtins_not_parent_class_spelling(shadow):
     source = (
