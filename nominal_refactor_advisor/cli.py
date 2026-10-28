@@ -78,6 +78,7 @@ from .ast_tools import (
     PythonModulePathAuthority,
     PythonSourcePathPolicy,
     parse_python_module_roots,
+    python_source_paths_for_roots,
 )
 from .cache_paths import (
     ParseCachePolicy,
@@ -1152,6 +1153,16 @@ class JsonScanMode(StrEnum):
         False,
         "cold_auto_context_omits_context_dependent_detectors",
     )
+    empty_target = (
+        "empty_target",
+        True,
+        "the_scan_roots_hold_no_python_source",
+    )
+    unparsed_target = (
+        "unparsed_target",
+        False,
+        "the_scan_roots_hold_python_source_the_result_does_not_cover",
+    )
 
     @property
     def complete(self) -> bool:
@@ -1163,20 +1174,44 @@ class JsonScanMode(StrEnum):
 
 
 @dataclass(frozen=True)
+class ScanTarget:
+    """The roots a scan was asked to cover, under its source policy.
+
+    A result that covers no source file is complete only when the target
+    holds none: an exact mode over zero files is otherwise a scan of
+    nothing certified as a scan of everything.
+    """
+
+    roots: tuple[Path, ...]
+    source_policy: PythonSourcePathPolicy
+
+    def covering(self, mode: JsonScanMode, identity: AnalysisCacheIdentity) -> JsonScanMode:
+        """`mode` for a result that covered source; else what the target holds."""
+
+        if identity.source_files:
+            return mode
+        if python_source_paths_for_roots(self.roots, source_policy=self.source_policy):
+            return JsonScanMode.unparsed_target
+        return JsonScanMode.empty_target
+
+
+@dataclass(frozen=True)
 class JsonScanStatus(DataclassJsonReport):
     """Machine-readable completeness contract for a scan result."""
 
     mode: JsonScanMode
     analyzed_detector_count: int
     omitted_detector_count: int
+    source_file_count: int
 
     @classmethod
-    def exact_cache(cls, identity: AnalysisCacheIdentity) -> JsonScanStatus:
-        """Derive coverage from the roster authenticated by the cache lookup."""
+    def exact_cache(cls, identity: AnalysisCacheIdentity, target: ScanTarget) -> JsonScanStatus:
+        """Derive coverage from the roster and sources the cache lookup authenticated."""
         return cls(
-            mode=JsonScanMode.exact_cache,
+            mode=target.covering(JsonScanMode.exact_cache, identity),
             analyzed_detector_count=len(identity.detector_registry.detector_types),
             omitted_detector_count=0,
+            source_file_count=len(identity.source_files),
         )
 
     @json_report_property()
@@ -1188,13 +1223,16 @@ class JsonScanStatus(DataclassJsonReport):
         return self.mode.reason
 
     @classmethod
-    def exact_compact_global(cls, detector_count: int) -> JsonScanStatus:
-        """Build the complete compact-scan contract for one detector roster."""
+    def exact_compact_global(
+        cls, detector_count: int, identity: AnalysisCacheIdentity, target: ScanTarget
+    ) -> JsonScanStatus:
+        """Build the compact-scan contract for one detector roster and its sources."""
 
         return cls(
-            mode=JsonScanMode.exact_compact_global,
+            mode=target.covering(JsonScanMode.exact_compact_global, identity),
             analyzed_detector_count=detector_count,
             omitted_detector_count=0,
+            source_file_count=len(identity.source_files),
         )
 
 
@@ -1204,6 +1242,7 @@ class JsonLoopCachePayloadBuilder:
 
     cached: AnalysisFindingSummaryCachePayload
     timing: ScanTiming
+    target: ScanTarget
 
     def build(self) -> JsonObject:
         payload_started = perf_counter()
@@ -1215,7 +1254,7 @@ class JsonLoopCachePayloadBuilder:
             )
         )
         payload["scan_status"] = json_report_object(
-            JsonScanStatus.exact_cache(self.cached.identity)
+            JsonScanStatus.exact_cache(self.cached.identity, self.target)
         )
         payload["active_finding_surface"] = "raw_findings"
         payload["timing"] = json_report_object(self.timing)
@@ -2154,6 +2193,9 @@ class CliArguments:
 
     @cached_property
     def path_scope(self) -> AnalysisPathScope:
+        missing = [path for path in self.args.paths if not Path(path).exists()]
+        if missing:
+            self.parser.error(f"scan paths do not exist: {', '.join(missing)}")
         return AnalysisPathScope.from_requested_roots(
             tuple(Path(path) for path in self.args.paths),
             tuple(self.args.context_roots),
@@ -3885,6 +3927,10 @@ class ColdScanAnalysis:
     semantic_descent_cache_context: SemanticDescentGraphCacheContext
     semantic_descent_analysis_source: SemanticDescentGraphAnalysisSource
 
+    @property
+    def target(self) -> ScanTarget:
+        return ScanTarget(self.roots, self.source_policy)
+
     def outcome(self) -> ScanAnalysisOutcome:
         if self.focused_loop_cold_policy.enabled:
             return self._focused_local()
@@ -3914,6 +3960,7 @@ class ColdScanAnalysis:
         analysis_elapsed = 0.0
         findings = []
         module_cache_statuses: list[type[AnalysisCacheStatus]] = []
+        source_file_count = 0
         seen_report_paths: set[Path] = set()
         for report_root in self.path_scope.report_roots:
             normalized_report_path = report_root.resolve()
@@ -3929,6 +3976,7 @@ class ColdScanAnalysis:
                 source_policy=self.source_policy,
             )
             parse_elapsed += perf_counter() - started
+            source_file_count += len(local_modules)
             started = perf_counter()
             for local_module in local_modules:
                 module_result = analyze_module_detector_types_with_cache(
@@ -3955,6 +4003,7 @@ class ColdScanAnalysis:
                 omitted_detector_count=(
                     len(detector_types) - len(local_detector_types)
                 ),
+                source_file_count=source_file_count,
             ),
         )
 
@@ -4065,8 +4114,8 @@ class CompactGlobalAnalysis(SemanticDescentGraphQuestion[ScanAnalysisOutcome]):
         )
         return self._outcome(compact_result, compact_result.semantic_descent_graph)
 
-    @staticmethod
     def _outcome(
+        self,
         compact_result: CompactPathAnalysisResult,
         graph: SemanticDescentGraphHolding,
     ) -> ScanAnalysisOutcome:
@@ -4080,6 +4129,8 @@ class CompactGlobalAnalysis(SemanticDescentGraphQuestion[ScanAnalysisOutcome]):
             cache_identity=compact_result.cache_identity,
             scan_status=JsonScanStatus.exact_compact_global(
                 len(default_detector_types_for_analysis()),
+                compact_result.cache_identity,
+                self.cold.target,
             ),
         )
 
@@ -4097,7 +4148,9 @@ class FastCacheScan(FastCacheQuestion[ScanAnalysisOutcome]):
     source_context_cache_lookup_enabled: bool
 
     def exact(self, result: ExactCacheHit) -> ScanAnalysisOutcome:
-        return self._served(result, JsonScanStatus.exact_cache(result.cache_identity))
+        return self._served(
+            result, JsonScanStatus.exact_cache(result.cache_identity, self.cold.target)
+        )
 
     def partial(self, result: PartialCacheReuse) -> ScanAnalysisOutcome:
         detector_types = default_detector_types_for_analysis()
@@ -4112,6 +4165,7 @@ class FastCacheScan(FastCacheQuestion[ScanAnalysisOutcome]):
                 mode=JsonScanMode.focused_cache_partial,
                 analyzed_detector_count=analyzed_detector_count,
                 omitted_detector_count=len(detector_types) - analyzed_detector_count,
+                source_file_count=len(result.cache_identity.source_files),
             ),
         )
 
@@ -4409,6 +4463,7 @@ def _main_without_deadline(invocation: CliArguments) -> int:
                             JsonLoopCachePayloadBuilder(
                                 summary_cache_result,
                                 timing,
+                                cold_scan_analysis.target,
                             ).build(),
                             indent=2,
                         )
