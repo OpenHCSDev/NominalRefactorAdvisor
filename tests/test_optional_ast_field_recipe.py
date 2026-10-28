@@ -7,13 +7,20 @@ import pytest
 
 from nominal_refactor_advisor.ast_tools import SourceModule
 from nominal_refactor_advisor.codemod_optional_ast_field import (
-    CallKeywordArgDecoder,
+    KeywordNameDecoder,
+    CaptureNameDecoder,
+    DeclaredAnnotationDecoder,
     OptionalAstFieldAuthority,
+    OptionalAstFieldDecoder,
+    VariadicParameterDecoder,
 )
+from nominal_refactor_advisor.codemod_runtime import CodemodSourceSnapshot
 from nominal_refactor_advisor.codemod_source_edits import SourceTextGeometry
 
 
-def _rewritten(source: str) -> str:
+def _rewritten(
+    source: str, decoder: type[OptionalAstFieldDecoder] = KeywordNameDecoder
+) -> str:
     parsed = SourceModule.from_source_path(Path("m.py"), source).parse()
     function = next(
         node for node in parsed.module.body if isinstance(node, ast.FunctionDef)
@@ -23,7 +30,7 @@ def _rewritten(source: str) -> str:
         geometry=SourceTextGeometry(source),
         line_length=88,
         declaration=function,
-        decoder=CallKeywordArgDecoder,
+        decoder=decoder,
     )
     rewritten = source
     for replacement in sorted(
@@ -97,7 +104,7 @@ def test_loop_guards_read_the_decoder() -> None:
 
 
 def test_probe_outside_a_decoded_collection_is_handed_back() -> None:
-    with pytest.raises(ValueError, match="no shape the CallKeywords decoder"):
+    with pytest.raises(ValueError, match="no shape the KeywordNameDecoder"):
         _rewritten("def f(keyword):\n    if keyword.arg is None:\n        return 1\n")
 
 
@@ -127,3 +134,137 @@ def test_filtered_comprehension_is_fit_to_the_line() -> None:
     rewritten = _rewritten(source)
     assert "CallKeywords.of(call_node.keywords).named" in rewritten
     assert max(len(line) for line in rewritten.splitlines()) <= 88
+
+
+def test_present_guard_on_a_proved_node_loops_over_its_decoded_names() -> None:
+    source = (
+        "def visit_MatchAs(self, node: ast.MatchAs):\n"
+        "    if node.name is not None:\n"
+        "        self.names.add(node.name)\n"
+        "    self.generic_visit(node)\n"
+    )
+    assert _rewritten(source, CaptureNameDecoder) == (
+        "def visit_MatchAs(self, node: ast.MatchAs):\n"
+        "    for capture_name in capture_names(node):\n"
+        "        self.names.add(capture_name)\n"
+        "    self.generic_visit(node)\n"
+    )
+
+
+def test_guarded_present_probe_nests_the_loop_under_the_guard() -> None:
+    source = (
+        "def f(child, parts):\n"
+        "    if isinstance(child, ast.keyword) and child.arg is not None:\n"
+        "        parts.add(child.arg)\n"
+    )
+    assert _rewritten(source) == (
+        "def f(child, parts):\n"
+        "    if isinstance(child, ast.keyword):\n"
+        "        for keyword_name in CallKeyword.decoded(child).names:\n"
+        "            parts.add(keyword_name)\n"
+    )
+
+
+def test_unproved_node_is_not_a_site() -> None:
+    with pytest.raises(ValueError, match="no shape"):
+        _rewritten(
+            "def f(self, node):\n"
+            "    if node.name is not None:\n"
+            "        self.names.add(node.name)\n",
+            CaptureNameDecoder,
+        )
+
+
+def test_loop_jump_inside_the_guard_is_handed_back() -> None:
+    with pytest.raises(ValueError, match="jumps an enclosing loop"):
+        _rewritten(
+            "def h(node: ast.arg):\n"
+            "    while True:\n"
+            "        if node.annotation is not None:\n"
+            "            break\n",
+            DeclaredAnnotationDecoder,
+        )
+
+
+@pytest.mark.parametrize(
+    ("statement", "expected"),
+    (
+        (
+            "a = (*((node.returns,) if node.returns is not None else ()), x)",
+            "a = (*declared_annotations(node), x)",
+        ),
+        (
+            "a = () if node.returns is None else (node.returns,)",
+            "a = declared_annotations(node)",
+        ),
+    ),
+)
+def test_splices_read_the_decoded_values(statement: str, expected: str) -> None:
+    source = f"def f(node: ast.FunctionDef, x):\n    {statement}\n"
+    assert _rewritten(source, DeclaredAnnotationDecoder) == (
+        f"def f(node: ast.FunctionDef, x):\n    {expected}\n"
+    )
+
+
+@pytest.mark.parametrize(
+    ("statement", "expected"),
+    (
+        (
+            "if x and node.args.vararg is None and node.args.kwarg is None: pass",
+            "if x and not variadic_parameters(node.args): pass",
+        ),
+        (
+            "if node.args.vararg is not None or node.args.kwarg is not None: pass",
+            "if variadic_parameters(node.args): pass",
+        ),
+        (
+            "a = x or node.args.vararg is not None or node.args.kwarg is not None",
+            "a = x or bool(variadic_parameters(node.args))",
+        ),
+        (
+            "a = (*((node.args.vararg,) if node.args.vararg is not None else ()),"
+            " *((node.args.kwarg,) if node.args.kwarg is not None else ()))",
+            "a = (*variadic_parameters(node.args),)",
+        ),
+    ),
+)
+def test_variadic_pairs_read_the_decoded_parameters(
+    statement: str, expected: str
+) -> None:
+    source = f"def f(node: ast.FunctionDef, x):\n    {statement}\n"
+    assert _rewritten(source, VariadicParameterDecoder) == (
+        f"def f(node: ast.FunctionDef, x):\n    {expected}\n"
+    )
+
+
+def test_lone_variadic_probe_is_handed_back() -> None:
+    with pytest.raises(ValueError, match="no shape"):
+        _rewritten(
+            "def f(node: ast.FunctionDef):\n"
+            "    if node.args.vararg is not None:\n"
+            "        return 1\n",
+            VariadicParameterDecoder,
+        )
+
+
+def test_new_file_takes_the_import_root_of_its_package(tmp_path: Path) -> None:
+    package = tmp_path / "pkg"
+    script = package / "tools" / "loose.py"
+    sources = {
+        str(package / "__init__.py"): "",
+        str(package / "mod.py"): "X = 1\n",
+        str(script): "Y = 2\n",
+    }
+    for path, source in sources.items():
+        Path(path).parent.mkdir(parents=True, exist_ok=True)
+        Path(path).write_text(source)
+    snapshot = CodemodSourceSnapshot.from_source_mapping(
+        sources, analysis_roots=(package,)
+    )
+    created = str(package / "ast_field_decoders.py")
+    projected = snapshot.with_virtual_sources({created: "Z = 3\n"})
+    assert {
+        module.module_name
+        for module in projected.parsed_modules
+        if str(module.path) == created
+    } == {"pkg.ast_field_decoders"}
