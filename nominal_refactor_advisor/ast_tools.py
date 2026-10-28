@@ -814,12 +814,15 @@ ParsedModuleFactT = TypeVar("ParsedModuleFactT", bound=ParsedModuleFact)
 
 @dataclass(frozen=True)
 class ParsedModule(SourceFileIdentity):
-    """Parsed Python module together with its source text and path."""
+    """Parsed Python module together with its source text and path.
+
+    Its path and module name identify it; the repr leaves out the syntax tree
+    and source text, whose size grows with the module."""
 
     path: Path
     module_name: str
-    module: ast.Module
-    source: str
+    module: ast.Module = field(repr=False)
+    source: str = field(repr=False)
     semantic_hash: str | None = None
     family_cache_dir: Path | None = None
 

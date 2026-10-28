@@ -10,7 +10,7 @@ from __future__ import annotations
 import ast
 from abc import ABC, abstractmethod
 from collections.abc import Iterator, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import StrEnum
 from functools import (
     cached_property,
@@ -3487,11 +3487,14 @@ class CompactFunctionFlow(StoredDataclassState, DataclassGraphValue):
 
 @dataclass(frozen=True)
 class CompactFlowContext:
-    """One execution flow joined to its module and optional declaration."""
+    """One execution flow joined to its module and optional declaration.
+
+    The repr names the module, not the flow: the flow is the function's whole
+    product-flow graph, and every prefix in a chain holds a context."""
 
     module_name: str
     file_path: str
-    flow: CompactFunctionFlow
+    flow: CompactFunctionFlow = field(repr=False)
 
     declaration = AliasProperty[CompactFunctionDeclaration | None](
         "flow.owner.declaration"
@@ -3823,12 +3826,16 @@ class SourceFlowOperation:
 
 @dataclass(frozen=True)
 class SourceProductFlowProjection:
-    """One task's ordered source observations and the exact flows they created."""
+    """One task's ordered source observations and the exact flows they created.
+
+    The flows, evaluations and operations are derived from ``module``, which
+    identifies the projection; its repr names the module only and does not
+    walk the derived graph, whose size grows with the source."""
 
     module: ParsedModule
-    compact: CompactProductFlowModuleProjection
-    evaluations: tuple[SourceFlowEvaluation, ...]
-    operations: tuple[SourceFlowOperation, ...]
+    compact: CompactProductFlowModuleProjection = field(repr=False)
+    evaluations: tuple[SourceFlowEvaluation, ...] = field(repr=False)
+    operations: tuple[SourceFlowOperation, ...] = field(repr=False)
 
     def node_operation(
         self, node: ast.AST, event_type: type[SourceFlowEvent]
