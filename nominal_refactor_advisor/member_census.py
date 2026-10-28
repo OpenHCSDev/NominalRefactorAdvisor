@@ -21,7 +21,13 @@ from itertools import chain
 from pathlib import Path
 from typing import Self
 
-from .amortization import InheritanceAmortization, inheritance_amortization
+from .amortization import (
+    InheritanceAmortization,
+    IntrospectionAmortization,
+    IntrospectionSource,
+    NoTrace,
+    inheritance_amortization,
+)
 from .ast_projection import ExpressionReference
 from .ast_tools import ParsedModule, parse_python_modules
 from .class_index import (
@@ -125,6 +131,12 @@ class MemberAwarenessCensus(SemanticRecord):
     owners: tuple[OwnerCensus, ...]
     add_member_costs: tuple[FamilyAddCost, ...]
     inherited: InheritanceAmortization
+    introspected: IntrospectionAmortization
+
+    @json_report_property()
+    def derived_total(self) -> int:
+        """What the declarations derive: inherited pairs plus generic field uses."""
+        return self.inherited.derived_pairs + self.introspected.derived_field_uses
 
     @json_report_property()
     def add_member_edits(self) -> int:
@@ -695,7 +707,7 @@ class MemberAwarenessCensusBuilder:
             key=lambda cost: (-cost.edits, cost.kind.value, cost.family),
         ))
 
-    def report(self) -> MemberAwarenessCensus:
+    def report(self, introspection: IntrospectionSource) -> MemberAwarenessCensus:
         groups = self.groups()
         return MemberAwarenessCensus(
             scanned_module_count=len(self.corpus.modules),
@@ -711,6 +723,7 @@ class MemberAwarenessCensusBuilder:
             owners=self.owner_census(),
             add_member_costs=self.add_member_costs(groups),
             inherited=self.inherited(),
+            introspected=introspection.amortization(),
         )
 
     def inherited(self) -> InheritanceAmortization:
@@ -729,6 +742,7 @@ def build_member_awareness_census(
     cache_dir: Path | None = None,
     use_parse_cache: bool = True,
     parse_workers: int = 1,
+    introspection: IntrospectionSource = NoTrace(),
 ) -> MemberAwarenessCensus:
     """Count the consumers that name each family's members under ``root``."""
 
@@ -743,4 +757,4 @@ def build_member_awareness_census(
         ),
         config or DetectorConfig(),
     )
-    return MemberAwarenessCensusBuilder.from_sources(corpus).report()
+    return MemberAwarenessCensusBuilder.from_sources(corpus).report(introspection)

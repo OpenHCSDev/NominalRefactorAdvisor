@@ -11,11 +11,15 @@ many calls have no such receiver, the coverage this leaves out.
 from __future__ import annotations
 
 import ast
+from abc import ABC, abstractmethod
 from collections import defaultdict
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
 from functools import cached_property
 from itertools import chain
+from pathlib import Path
+
+from nra_introspection_trace import IntrospectionTrace
 
 from .ast_tools import ParsedModule
 from .class_index import CompactClassFamilyIndex
@@ -160,3 +164,90 @@ def inheritance_amortization(
             )
         ),
     )
+
+
+@dataclass(frozen=True)
+class GenericIntrospector(SemanticRecord):
+    """A function a recorded run saw introspecting two or more classes."""
+
+    consumer: str
+    classes: int
+    fields: int
+
+
+@dataclass(frozen=True)
+class IntrospectionAmortization(SemanticRecord):
+    """Field uses generic introspection derives: without the declaration-driven
+    consumer, each (field, consumer) pair is a hand-written statement."""
+
+    trace: str
+    consumers: int
+    classes: int
+    generic: tuple[GenericIntrospector, ...]
+
+    @json_report_property()
+    def derived_field_uses(self) -> int:
+        return sum(item.fields for item in self.generic)
+
+
+class IntrospectionSource(ABC):
+    """Where the run-time introspection term comes from."""
+
+    @abstractmethod
+    def amortization(self) -> IntrospectionAmortization:
+        raise NotImplementedError
+
+    @staticmethod
+    def from_argument(path: Path | None) -> IntrospectionSource:
+        """The CLI option decoded once: a recorded trace, or none given."""
+        match path:
+            case Path():
+                return RecordedTrace(path)
+        return NoTrace()
+
+
+@dataclass(frozen=True)
+class NoTrace(IntrospectionSource):
+    """No run was recorded, so the term is unmeasured, not zero."""
+
+    def amortization(self) -> IntrospectionAmortization:
+        return IntrospectionAmortization(
+            trace="not measured: record a run with `pytest -p nra_introspection_trace` "
+            "and pass --introspection-trace",
+            consumers=0,
+            classes=0,
+            generic=(),
+        )
+
+
+@dataclass(frozen=True)
+class RecordedTrace(IntrospectionSource):
+    """A trace file written by the nra_introspection_trace pytest plugin."""
+
+    path: Path
+
+    def amortization(self) -> IntrospectionAmortization:
+        trace = IntrospectionTrace.read(self.path)
+        fields = {count.introspected: count.fields for count in trace.field_counts}
+        by_consumer: defaultdict[str, set[str]] = defaultdict(set)
+        for use in trace.uses:
+            by_consumer[use.consumer].add(use.introspected)
+        return IntrospectionAmortization(
+            trace=f"recorded in {self.path} for {', '.join(trace.prefixes)}",
+            consumers=len(by_consumer),
+            classes=len({use.introspected for use in trace.uses}),
+            generic=tuple(
+                sorted(
+                    (
+                        GenericIntrospector(
+                            consumer,
+                            len(introspected),
+                            sum(fields.get(name, 0) for name in introspected),
+                        )
+                        for consumer, introspected in by_consumer.items()
+                        if len(introspected) >= 2
+                    ),
+                    key=lambda item: (-item.fields, item.consumer),
+                )
+            ),
+        )

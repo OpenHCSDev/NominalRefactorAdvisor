@@ -37,6 +37,10 @@ types = [
     "mypy>=1.10",
 ]
 
+[tool.setuptools]
+# The trace plugin runs in the traced project's environment: stdlib and pytest only.
+py-modules = ["nra_introspection_trace"]
+
 [tool.setuptools.packages.find]
 include = ["nominal_refactor_advisor*"]
 

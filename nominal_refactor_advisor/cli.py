@@ -184,6 +184,7 @@ from .structural_overlap import (
     StructuralOverlapReportLimits,
     build_structural_overlap_report,
 )
+from .amortization import IntrospectionSource
 from .member_census import MemberAwarenessCensus, build_member_awareness_census
 from .refactor_concepts import RefactorConcept
 
@@ -409,6 +410,15 @@ _CLI_ARGUMENT_SPECS = (
                 "Count which consumer functions name the members of a foreign "
                 "module, declared family or enum, grouped by exact member set, "
                 "and which of them also call an owner of that set."
+            ),
+        ),
+        CliArgumentSpec(
+            flags=("--introspection-trace",),
+            value_type=Path,
+            help=(
+                "With --count-member-awareness: a trace written by "
+                "`pytest -p nra_introspection_trace`, "
+                "for the field uses generic introspection derives."
             ),
         ),
         CliArgumentSpec(
@@ -2068,6 +2078,21 @@ class MarkdownReportRenderer(ABC):
             f"{inherited.calls_reaching_inherited} reach an inherited method"
         )
         lines.append(f"   - Receiver types: {inherited.type_checker}")
+        introspected = report.introspected
+        lines.append(
+            f"   - Generic introspection: {introspected.derived_field_uses} derived "
+            f"field use(s) by {len(introspected.generic)} function(s) reading two or more "
+            f"of {introspected.classes} class(es); {introspected.trace}"
+        )
+        lines.extend(
+            f"   - introspects {item.classes} class(es), {item.fields} field(s): {item.consumer}"
+            for item in introspected.generic[:MEMBER_AWARENESS_LISTING_LIMIT]
+        )
+        lines.append(
+            f"   - Derived by declarations: {report.derived_total} "
+            f"(inherited pairs {inherited.derived_pairs} + generic field uses "
+            f"{introspected.derived_field_uses}); add-member cost {report.add_member_edits}"
+        )
         lines.extend(
             f"   - inherited from {owner.owner}: {owner.derived_pairs} pair(s) across "
             f"{owner.members} class(es), called from {owner.consumers} function(s)"
@@ -2454,6 +2479,7 @@ class MemberAwarenessCliCommand(SingleRootReportCliCommand):
             cache_dir=self.configured_parse_cache_dir,
             use_parse_cache=self.args.use_parse_cache,
             parse_workers=self.args.parse_workers,
+            introspection=IntrospectionSource.from_argument(self.args.introspection_trace),
         )
 
     @property
