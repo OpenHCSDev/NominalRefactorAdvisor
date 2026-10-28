@@ -22,6 +22,7 @@ from dataclasses import dataclass, field
 from functools import cached_property
 from pathlib import Path
 
+from .ast_field_decoders import declared_annotations
 from .ast_projection import StatementValue
 from .value_expression import CompactValueExpression
 from .ast_tools import (
@@ -1939,11 +1940,11 @@ def _is_any_name(node: ast.AST, names: Iterable[str]) -> bool:
 
 def _annotations(node: ast.AST) -> tuple[ast.expr, ...]:
     if isinstance(node, ast.arg):
-        return () if node.annotation is None else (node.annotation,)
+        return declared_annotations(node)
     if isinstance(node, ast.AnnAssign):
         return (node.annotation,)
     if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
-        return () if node.returns is None else (node.returns,)
+        return declared_annotations(node)
     return ()
 
 

@@ -827,6 +827,17 @@ class RefactorRecipe(SourceRewriteReferences):
             for creation in operation.source_file_creations(context)
         )
 
+    def rewrite_context(
+        self,
+        context: CodemodSelectorContext,
+    ) -> CodemodSelectorContext:
+        """Current source plus the files this recipe creates, as its edits see it."""
+
+        creations = self.source_file_creations(context)
+        if not creations:
+            return context
+        return context.execution_snapshot().with_source_file_creations(creations)
+
     def preflight_reports(
         self,
         context: CodemodSelectorContext,
@@ -2827,7 +2838,7 @@ class FindingRecipePlanBuilder:
         if cached_edits is not None:
             return cached_edits
         physical_edits = RefactorRecipeOperationCompiler.from_context(
-            selector_context
+            recipe.rewrite_context(selector_context)
         ).physical_edits_for_recipes((recipe,))
         self.physical_edit_cache[recipe] = physical_edits
         return physical_edits

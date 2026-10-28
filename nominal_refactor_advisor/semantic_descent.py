@@ -32,6 +32,7 @@ from typing import ClassVar, Generic, TypeAlias, TypeVar, cast
 
 from metaclass_registry import AutoRegisterMeta
 
+from .ast_field_decoders import variadic_parameters
 from .ast_projection import ExpressionReference
 from .foreign_family import FunctionDefinition
 from .interpreter import PythonVersion
@@ -4723,8 +4724,7 @@ class ProjectionTypeScope:
             *node.args.posonlyargs,
             *node.args.args,
             *node.args.kwonlyargs,
-            *((node.args.vararg,) if node.args.vararg is not None else ()),
-            *((node.args.kwarg,) if node.args.kwarg is not None else ()),
+            *variadic_parameters(node.args),
         )
         for argument in arguments:
             if argument.annotation is None:

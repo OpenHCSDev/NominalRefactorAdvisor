@@ -33,6 +33,10 @@ from typing import Callable, ClassVar, Generic, TypeAlias, TypeVar, cast
 
 from metaclass_registry import AutoRegisterMeta
 
+from .ast_field_decoders import (
+    ParameterAnnotations,
+    declared_annotations,
+)
 from .foreign_family import FunctionDefinition
 from .interpreter import PythonVersion
 from .ast_projection import CallKeywords, StatementValue
@@ -963,6 +967,15 @@ class PythonModulePathAuthority:
             return known_identity
         if not path.anchor:
             return PythonModulePathIdentity.from_source_path(path)
+        package = self.identities_by_resolved_path.get(
+            (path.parent / "__init__.py").resolve()
+        )
+        if package is not None:
+            # A new file belongs to the package it is created in, even when a
+            # loose script elsewhere declares a deeper import root above it.
+            return PythonModulePathIdentity.from_import_root(
+                path, package.declared_import_root
+            )
         import_root = self.closest_containing_root(self.import_roots, path)
         if import_root is not None:
             return PythonModulePathIdentity.from_import_root(path, import_root)
@@ -1515,7 +1528,7 @@ class EagerNameLoadCollector(EagerFunctionAnnotationVisitor):
             node.args,
             *node.decorator_list,
             *node.body,
-            *((node.returns,) if node.returns is not None else ()),
+            *declared_annotations(node),
         )
         for child in ast.iter_child_nodes(node):
             if not any(child is handled for handled in handled_children):
@@ -3412,9 +3425,7 @@ def _parameter_annotation_map(
     function: ast.FunctionDef,
 ) -> dict[str, tuple[str, str]]:
     annotations: dict[str, tuple[str, str]] = {}
-    for arg in function.args.args:
-        if arg.annotation is None:
-            continue
+    for arg in ParameterAnnotations.of(function.args.args).annotated:
         annotations[arg.arg] = (
             ast.unparse(arg.annotation),
             _annotation_fingerprint(arg.annotation),

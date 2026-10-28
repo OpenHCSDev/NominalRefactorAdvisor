@@ -22,6 +22,10 @@ from typing import (
     cast,
 )
 
+from ..ast_field_decoders import (
+    ParameterAnnotations,
+    variadic_parameters,
+)
 from ..value_expression import CompactValueExpression
 from ..annotation_semantics import CLASSVAR_ANNOTATION_AUTHORITY
 from ..ast_projection import ExpressionReference
@@ -344,12 +348,12 @@ def _function_parameter_annotation_map(
 ) -> dict[str, str]:
     annotations: dict[str, str] = {}
     for arg in (
-        tuple(node.args.posonlyargs)
-        + tuple(node.args.args)
-        + tuple(node.args.kwonlyargs)
+        ParameterAnnotations.of(
+            tuple(node.args.posonlyargs)
+            + tuple(node.args.args)
+            + tuple(node.args.kwonlyargs)
+        ).annotated
     ):
-        if arg.annotation is None:
-            continue
         annotations[arg.arg] = ast.unparse(arg.annotation)
     return annotations
 
@@ -1460,13 +1464,14 @@ def _class_init_concrete_param_backed_attrs(node: ast.ClassDef) -> dict[str, str
     if init_method is None:
         return {}
     parameter_type_names = {
-        argument.arg: _annotation_type_names(argument.annotation)
-        for argument in (
+        argument.arg: _annotation_type_names(
+            argument.annotation
+        )
+        for argument in ParameterAnnotations.of(
             tuple(init_method.args.posonlyargs)
             + tuple(init_method.args.args)
             + tuple(init_method.args.kwonlyargs)
-        )
-        if argument.annotation is not None
+        ).annotated
     }
     parameter_names = set(parameter_type_names)
     attr_type_names: dict[str, str] = {}
@@ -3512,7 +3517,7 @@ def _single_payload_parameter_name(method: ast.FunctionDef) -> str | None:
     payload_names = tuple(
         (argument.arg for argument in positional if argument.arg not in {"self", "cls"})
     )
-    if method.args.vararg is not None or method.args.kwarg is not None:
+    if variadic_parameters(method.args):
         return None
     return single_item(payload_names) if len(payload_names) == 1 else None
 

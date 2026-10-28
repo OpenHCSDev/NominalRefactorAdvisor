@@ -29,6 +29,7 @@ from functools import cached_property
 from importlib import import_module
 from typing import Self
 
+from .ast_projection import CallKeywords
 from .ast_tools import ParsedModule, is_docstring_statement, module_syntax_index
 from .class_index import (
     CLASS_METHOD_OWNERSHIP_HOOK_NAMES,
@@ -1554,7 +1555,7 @@ class PositionalConstruction:
         call = self.call
         if any(isinstance(argument, ast.Starred) for argument in call.args):
             raise ValueError(f"{self.location} unpacks `*` arguments")
-        if any(keyword.arg is None for keyword in call.keywords):
+        if CallKeywords.of(call.keywords).splats:
             raise ValueError(f"{self.location} unpacks `**` arguments")
         if len(call.args) > len(self.parameter_names):
             raise ValueError(
