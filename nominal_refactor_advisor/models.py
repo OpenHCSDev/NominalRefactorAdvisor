@@ -985,6 +985,10 @@ class RefactorFinding(FindingSemantics):
     authority_evidence: SourceLocation | None = None
     compression_certificate: CompressionCertificate | None = None
     metrics: FindingMetrics = field(default_factory=EmptyFindingMetrics)
+    occurrence: int = 0
+    """Source-order position among distinct findings sharing one identity: two
+    identical decisions in one function are two obligations, not one. Numbered
+    once, by ``SortedFindingsAuthority``; 0 for every finding with no twin."""
 
     def __post_init__(self) -> None:
         if not isinstance(self.evidence, tuple):
@@ -1093,13 +1097,18 @@ class RefactorFinding(FindingSemantics):
 
     @json_report_cached_property()
     def stable_id(self) -> str:
-        """The finding's subject as a compact id; line moves keep it."""
+        """The finding's subject as a compact id; line moves keep it.
+
+        A twin (``occurrence`` above 0) adds its position, so a finding with no
+        twin keeps the id it always had.
+        """
 
         payload = "|".join(
             (
                 self.detector_id,
                 str(self.pattern_id.value),
                 *self.metrics.finding_identity(self.summary, self.evidence),
+                *((f"occurrence={self.occurrence}",) if self.occurrence else ()),
             )
         )
         return hashlib.blake2s(payload.encode("utf-8"), digest_size=5).hexdigest()

@@ -77,3 +77,43 @@ def test_a_subject_change_changes_the_id() -> None:
         StringLiteralDispatchOwnershipLeadDetector(),
         STRING_LADDER.replace("'clear_goal'", "'reset_goal'"),
     ) != _ids(StringLiteralDispatchOwnershipLeadDetector(), STRING_LADDER)
+
+
+TWIN_CONDITIONS = (
+    "def admit(request):\n"
+    "    if request.a and request.b and request.c and request.d:\n"
+    "        return True\n"
+    "    if request.a and request.b and request.c and request.d:\n"
+    "        return False\n"
+    "    return None\n"
+)
+
+
+def _sorted_ids(source: str) -> list[str]:
+    from nominal_refactor_advisor.analysis import SortedFindingsAuthority
+
+    module = SourceModule(Path("pkg/mod.py"), "pkg.mod", source).parse()
+    findings = LongConditionFactoringLeadDetector().detect(
+        ParsedModuleSet.of([module]), DetectorConfig()
+    )
+    return [finding.stable_id for finding in SortedFindingsAuthority.sort(findings)]
+
+
+def test_two_identical_decisions_in_one_function_are_two_findings() -> None:
+    """Their summary and symbol match, so only source order tells them apart;
+    one id for both made the finding index refuse the whole scan."""
+    from nominal_refactor_advisor.analysis import SortedFindingsAuthority
+    from nominal_refactor_advisor.collection_algebra import UniqueIdentityIndexAuthority
+
+    first, second = _sorted_ids(TWIN_CONDITIONS)
+    assert first != second
+    assert first == _ids(LongConditionFactoringLeadDetector(), LONG_CONDITION)[0]
+    assert _sorted_ids(MOVED_DOWN + TWIN_CONDITIONS) == [first, second]
+    module = SourceModule(Path("pkg/mod.py"), "pkg.mod", TWIN_CONDITIONS).parse()
+    findings = SortedFindingsAuthority.sort(
+        LongConditionFactoringLeadDetector().detect(
+            ParsedModuleSet.of([module]), DetectorConfig()
+        )
+    )
+    assert SortedFindingsAuthority.sort(findings) == findings
+    UniqueIdentityIndexAuthority.declarations_by_handle(findings, lambda item: item.stable_id)

@@ -56,7 +56,7 @@ from .source_identity import python_source_cache_signature
 class AnalysisCacheSchema:
     """Nominal schema identity for persisted detector-output cache entries."""
 
-    version: int = 17
+    version: int = 18
 
 
 analysis_cache_schema = AnalysisCacheSchema()
