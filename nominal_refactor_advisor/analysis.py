@@ -19,7 +19,8 @@ import os
 from pathlib import Path
 import sys
 from time import perf_counter
-from typing import TypeVar, cast
+from abc import ABC, abstractmethod
+from typing import Generic, TypeVar, cast
 
 from .analysis_cache import (
     CachedSourceFileSignature,
@@ -2830,14 +2831,162 @@ class CachedAnalysisResult:
     findings: list[RefactorFinding]
     cache_status: type[AnalysisCacheStatus]
     cache_identity: AnalysisCacheIdentity | None = None
-    previous_cache_identity: AnalysisCacheIdentity | None = None
-    previous_findings: tuple[RefactorFinding, ...] = ()
+
+
+FastCacheAnswerT = TypeVar("FastCacheAnswerT")
+
+
+class FastCacheQuestion(ABC, Generic[FastCacheAnswerT]):
+    """A consumer's work on what the fast cache path served, one arm per answer."""
+
+    @abstractmethod
+    def exact(self, result: ExactCacheHit) -> FastCacheAnswerT:
+        raise NotImplementedError
+
+    @abstractmethod
+    def partial(self, result: PartialCacheReuse) -> FastCacheAnswerT:
+        raise NotImplementedError
+
+    @abstractmethod
+    def miss(self) -> FastCacheAnswerT:
+        raise NotImplementedError
+
+
+class FastCacheAnswer(ABC):
+    """What the persistent cache serves for a path request before any parsing."""
+
+    @abstractmethod
+    def answer(
+        self, question: FastCacheQuestion[FastCacheAnswerT]
+    ) -> FastCacheAnswerT:
+        raise NotImplementedError
+
+
+@dataclass(frozen=True)
+class ReusedCacheResult(FastCacheAnswer, ABC):
+    """Findings the cache serves for the request whose identity it validated."""
+
+    findings: list[RefactorFinding]
+    cache_identity: AnalysisCacheIdentity
 
     @property
-    def exact_cache_identity(self) -> AnalysisCacheIdentity:
-        """Require exact request reuse, separately from partial shard reuse."""
-        self.cache_status.require_exact_identity(self.cache_identity)
-        return self.cache_identity
+    @abstractmethod
+    def cache_status(self) -> type[AnalysisCacheStatus]:
+        raise NotImplementedError
+
+
+@dataclass(frozen=True)
+class ExactCacheHit(ReusedCacheResult):
+    """The cache holds this exact request's findings."""
+
+    @property
+    def cache_status(self) -> type[AnalysisCacheStatus]:
+        return Hit
+
+    def answer(
+        self, question: FastCacheQuestion[FastCacheAnswerT]
+    ) -> FastCacheAnswerT:
+        return question.exact(self)
+
+
+@dataclass(frozen=True)
+class PartialCacheReuse(ReusedCacheResult):
+    """Previous findings reused where no changed path touched their evidence."""
+
+    @property
+    def cache_status(self) -> type[AnalysisCacheStatus]:
+        return Partial
+
+    def answer(
+        self, question: FastCacheQuestion[FastCacheAnswerT]
+    ) -> FastCacheAnswerT:
+        return question.partial(self)
+
+
+class FastCacheMiss(FastCacheAnswer):
+    """The cache serves nothing for this request: its consumer analyses it."""
+
+    def answer(
+        self, question: FastCacheQuestion[FastCacheAnswerT]
+    ) -> FastCacheAnswerT:
+        return question.miss()
+
+
+FAST_CACHE_MISS = FastCacheMiss()
+
+
+class LoadedAnalysisCache(ABC):
+    """What the persistent cache holds for a request, before any reuse policy."""
+
+    @property
+    @abstractmethod
+    def cached_result(self) -> CachedAnalysisResult:
+        """The holding as the cache-resolution authority consumes it."""
+        raise NotImplementedError
+
+    @abstractmethod
+    def fast_answer(self, authority: FastCachedPathAnalysisAuthority) -> FastCacheAnswer:
+        """What the fast path serves from this holding under `authority`'s policy."""
+        raise NotImplementedError
+
+
+class DisabledAnalysisCache(LoadedAnalysisCache):
+    """No cache directory: nothing is held and no identity is computed."""
+
+    @property
+    def cached_result(self) -> CachedAnalysisResult:
+        return CachedAnalysisResult([], Disabled)
+
+    def fast_answer(self, authority: FastCachedPathAnalysisAuthority) -> FastCacheAnswer:
+        return FAST_CACHE_MISS
+
+
+DISABLED_ANALYSIS_CACHE = DisabledAnalysisCache()
+
+
+@dataclass(frozen=True)
+class HeldExactFindings(LoadedAnalysisCache):
+    """The cache holds findings stored under this exact request identity."""
+
+    findings: tuple[RefactorFinding, ...]
+    cache_identity: AnalysisCacheIdentity
+
+    @property
+    def cached_result(self) -> CachedAnalysisResult:
+        return CachedAnalysisResult(
+            list(self.findings), Hit, cache_identity=self.cache_identity
+        )
+
+    def fast_answer(self, authority: FastCachedPathAnalysisAuthority) -> FastCacheAnswer:
+        return ExactCacheHit(list(self.findings), self.cache_identity)
+
+
+@dataclass(frozen=True)
+class HeldNothingForRequest(LoadedAnalysisCache):
+    """The cache holds nothing for this request or for any earlier one of its family."""
+
+    cache_status: type[AnalysisCacheStatus]
+    cache_identity: AnalysisCacheIdentity
+
+    @property
+    def cached_result(self) -> CachedAnalysisResult:
+        return CachedAnalysisResult(
+            [], self.cache_status, cache_identity=self.cache_identity
+        )
+
+    def fast_answer(self, authority: FastCachedPathAnalysisAuthority) -> FastCacheAnswer:
+        return FAST_CACHE_MISS
+
+
+@dataclass(frozen=True)
+class HeldPreviousFindings(HeldNothingForRequest):
+    """The cache misses this request but holds its family's latest findings."""
+
+    previous_cache_identity: AnalysisCacheIdentity
+    previous_findings: tuple[RefactorFinding, ...]
+
+    def fast_answer(self, authority: FastCachedPathAnalysisAuthority) -> FastCacheAnswer:
+        return authority.previous_answer(self)
 
 
 @dataclass(frozen=True)
@@ -3595,7 +3744,7 @@ def analyze_modules_with_cache(
             analysis_cache_dir=analysis_cache_dir,
             source_policy=source_policy,
             source_paths=source_paths,
-        )
+        ).cached_result
     authority = AnalysisCacheResolutionAuthority(
         roots=roots,
         modules=modules,
@@ -3622,12 +3771,12 @@ def load_analysis_cache_for_roots(
     source_policy: PythonSourcePathPolicy | None = None,
     source_paths: tuple[Path, ...] | None = None,
     report_roots: tuple[Path, ...] = (),
-) -> CachedAnalysisResult:
+) -> LoadedAnalysisCache:
     """Load detector findings from persistent cache without parsed modules."""
 
     config = config or DetectorConfig()
     if analysis_cache_dir is None:
-        return CachedAnalysisResult([], Disabled)
+        return DISABLED_ANALYSIS_CACHE
     identity_authority = AnalysisCacheIdentityAuthority(
         roots,
         config,
@@ -3640,26 +3789,17 @@ def load_analysis_cache_for_roots(
     analysis_cache = AnalysisFindingCache(analysis_cache_dir)
     cache_lookup = analysis_cache.load(cache_identity)
     if cache_lookup.status.is_hit:
-        return CachedAnalysisResult(
-            list(cache_lookup.findings),
-            cache_lookup.status,
-            cache_identity=cache_identity,
-        )
+        return HeldExactFindings(tuple(cache_lookup.findings), cache_identity)
     family_identity = identity_authority.family_identity(cache_identity)
     latest_cache_entry = analysis_cache.load_latest(family_identity)
     if latest_cache_entry is None:
-        return CachedAnalysisResult(
-            [],
-            cache_lookup.status,
-            cache_identity=cache_identity,
-        )
+        return HeldNothingForRequest(cache_lookup.status, cache_identity)
     previous_cache_identity, previous_findings = latest_cache_entry
-    return CachedAnalysisResult(
-        [],
+    return HeldPreviousFindings(
         cache_lookup.status,
-        cache_identity=cache_identity,
-        previous_cache_identity=previous_cache_identity,
-        previous_findings=previous_findings,
+        cache_identity,
+        previous_cache_identity,
+        tuple(previous_findings),
     )
 
 
@@ -3756,15 +3896,16 @@ class FastCachedPathAnalysisAuthority:
     def __init__(self, request: CachedPathAnalysisRequest) -> None:
         self._request = request
 
-    def result(self) -> CachedAnalysisResult | None:
+    def result(self) -> FastCacheAnswer:
         if not self._request.use_parse_cache:
-            return None
-        cache_result = self._load_cache_result()
-        if cache_result.cache_status.is_hit:
-            return cache_result
-        if not self._can_reuse_previous(cache_result):
-            return None
-        return self._partial_result(cache_result)
+            return FAST_CACHE_MISS
+        return self._load_cache_result().fast_answer(self)
+
+    def previous_answer(self, held: HeldPreviousFindings) -> FastCacheAnswer:
+        """Reuse the family's latest findings only when the request's policy allows it."""
+        if self._request.reuse_policy is not FastCacheReusePolicy.EVIDENCE_LOCAL_PARTIAL:
+            return FAST_CACHE_MISS
+        return self._partial_result(held)
 
     def summary_result(self) -> AnalysisFindingSummaryCachePayload | None:
         if not self._request.use_parse_cache:
@@ -3777,7 +3918,7 @@ class FastCachedPathAnalysisAuthority:
             report_roots=self._request.report_roots,
         )
 
-    def _load_cache_result(self) -> CachedAnalysisResult:
+    def _load_cache_result(self) -> LoadedAnalysisCache:
         return load_analysis_cache_for_roots(
             self._request.roots,
             self._request.config,
@@ -3786,33 +3927,15 @@ class FastCachedPathAnalysisAuthority:
             report_roots=self._request.report_roots,
         )
 
-    def _can_reuse_previous(self, cache_result: CachedAnalysisResult) -> bool:
-        return bool(
-            self._request.reuse_policy is FastCacheReusePolicy.EVIDENCE_LOCAL_PARTIAL
-            and cache_result.cache_identity is not None
-            and cache_result.previous_cache_identity is not None
-        )
-
-    def _partial_result(
-        self,
-        cache_result: CachedAnalysisResult,
-    ) -> CachedAnalysisResult:
-        if cache_result.cache_identity is None:
-            raise ValueError("partial cache reuse requires cache identity")
-        if cache_result.previous_cache_identity is None:
-            raise ValueError("partial cache reuse requires previous cache identity")
+    def _partial_result(self, cache_result: HeldPreviousFindings) -> PartialCacheReuse:
         analysis_cache = AnalysisFindingCache(self._request.analysis_cache_dir)
         partial_cache_lookup = analysis_cache.load_partial(
             cache_result.cache_identity,
             cache_result.previous_cache_identity,
         )
         if partial_cache_lookup.status.is_partial:
-            return CachedAnalysisResult(
-                list(partial_cache_lookup.findings),
-                Partial,
-                cache_identity=cache_result.cache_identity,
-                previous_cache_identity=cache_result.previous_cache_identity,
-                previous_findings=cache_result.previous_findings,
+            return PartialCacheReuse(
+                list(partial_cache_lookup.findings), cache_result.cache_identity
             )
         changed_paths = ChangedSourcePathAuthority.paths(
             cache_result.cache_identity,
@@ -3855,13 +3978,7 @@ class FastCachedPathAnalysisAuthority:
             cache_result.previous_cache_identity,
             findings,
         )
-        return CachedAnalysisResult(
-            findings,
-            Partial,
-            cache_identity=cache_result.cache_identity,
-            previous_cache_identity=cache_result.previous_cache_identity,
-            previous_findings=cache_result.previous_findings,
-        )
+        return PartialCacheReuse(findings, cache_result.cache_identity)
 
     def _changed_findings(
         self,
@@ -3943,6 +4060,64 @@ class ChangedPathRootAssignment:
         raise ValueError(f"changed source path is outside analysis roots: {path}")
 
 
+@dataclass(frozen=True)
+class PathRequestFindings(FastCacheQuestion[list[RefactorFinding]], ABC):
+    """A path request's findings: the cache's when it serves them, else analysed."""
+
+    request: CachedPathAnalysisRequest
+
+    def exact(self, result: ExactCacheHit) -> list[RefactorFinding]:
+        return result.findings
+
+    def partial(self, result: PartialCacheReuse) -> list[RefactorFinding]:
+        return result.findings
+
+    def miss(self) -> list[RefactorFinding]:
+        request = self.request
+        return analyze_modules_with_cache(
+            request.roots,
+            self.modules(),
+            request.config,
+            analysis_cache_dir=request.analysis_cache_dir,
+            analysis_workers=request.analysis_workers,
+            source_policy=request.source_policy,
+            semantic_descent_source=request.semantic_descent_source,
+        ).findings
+
+    @abstractmethod
+    def modules(self) -> ParsedModuleSet:
+        """The request's parsed modules, parsed when the cache serves nothing."""
+        raise NotImplementedError
+
+
+class SingleRootFindings(PathRequestFindings):
+    """Findings for one file or directory root."""
+
+    def modules(self) -> ParsedModuleSet:
+        request = self.request
+        return parse_python_modules(
+            request.roots[0],
+            cache_dir=request.parse_cache_dir,
+            use_parse_cache=request.use_parse_cache,
+            parse_workers=request.parse_workers,
+            source_policy=request.source_policy,
+        )
+
+
+class MultiRootFindings(PathRequestFindings):
+    """Findings for several roots, their modules de-duplicated by path."""
+
+    def modules(self) -> ParsedModuleSet:
+        request = self.request
+        return parse_python_module_roots(
+            request.roots,
+            cache_dir=request.parse_cache_dir,
+            use_parse_cache=request.use_parse_cache,
+            parse_workers=request.parse_workers,
+            source_policy=request.source_policy,
+        )
+
+
 @ScanCache.scope()
 def analyze_path(
     root: Path,
@@ -3962,40 +4137,21 @@ def analyze_path(
         use_parse_cache,
         source_policy,
     )
-    fast_result = FastCachedPathAnalysisAuthority(
-        CachedPathAnalysisRequest(
-            roots=(root,),
-            config=config,
-            parse_cache_dir=cache_dir,
-            use_parse_cache=use_parse_cache,
-            parse_workers=parse_workers,
-            analysis_workers=analysis_workers,
-            source_policy=source_policy,
-            semantic_descent_source=semantic_descent_source,
-        )
-    ).result()
-    if fast_result is not None:
-        return fast_result.findings
-    modules = parse_python_modules(
-        root,
-        cache_dir=cache_dir,
+    request = CachedPathAnalysisRequest(
+        roots=(root,),
+        config=config,
+        parse_cache_dir=cache_dir,
         use_parse_cache=use_parse_cache,
         parse_workers=parse_workers,
-        source_policy=source_policy,
-    )
-    return analyze_modules_with_cache(
-        (root,),
-        modules,
-        config,
-        analysis_cache_dir=analysis_cache_dir_for_root(
-            root,
-            cache_dir,
-            use_parse_cache,
-        ),
         analysis_workers=analysis_workers,
         source_policy=source_policy,
         semantic_descent_source=semantic_descent_source,
-    ).findings
+    )
+    return (
+        FastCachedPathAnalysisAuthority(request)
+        .result()
+        .answer(SingleRootFindings(request))
+    )
 
 
 @ScanCache.scope()
@@ -4017,41 +4173,21 @@ def analyze_paths(
         use_parse_cache,
         source_policy,
     )
-    fast_result = FastCachedPathAnalysisAuthority(
-        CachedPathAnalysisRequest(
-            roots=roots,
-            config=config,
-            parse_cache_dir=cache_dir,
-            use_parse_cache=use_parse_cache,
-            parse_workers=parse_workers,
-            analysis_workers=analysis_workers,
-            source_policy=source_policy,
-            semantic_descent_source=semantic_descent_source,
-        )
-    ).result()
-    if fast_result is not None:
-        return fast_result.findings
-    modules = parse_python_module_roots(
-        roots,
-        cache_dir=cache_dir,
+    request = CachedPathAnalysisRequest(
+        roots=roots,
+        config=config,
+        parse_cache_dir=cache_dir,
         use_parse_cache=use_parse_cache,
         parse_workers=parse_workers,
-        source_policy=source_policy,
-    )
-    root = roots[0]
-    return analyze_modules_with_cache(
-        roots,
-        modules,
-        config,
-        analysis_cache_dir=analysis_cache_dir_for_root(
-            root,
-            cache_dir,
-            use_parse_cache,
-        ),
         analysis_workers=analysis_workers,
         source_policy=source_policy,
         semantic_descent_source=semantic_descent_source,
-    ).findings
+    )
+    return (
+        FastCachedPathAnalysisAuthority(request)
+        .result()
+        .answer(MultiRootFindings(request))
+    )
 
 
 def analyze_lean_export(path: Path) -> list[RefactorFinding]:

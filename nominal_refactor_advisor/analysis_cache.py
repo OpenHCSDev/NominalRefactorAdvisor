@@ -185,15 +185,6 @@ class AnalysisCacheStatus(Case):
         return cls._resolution_policy.resolve(authority)
 
     @classmethod
-    def require_exact_identity(
-        cls,
-        cache_identity: AnalysisCacheIdentity | None,
-    ) -> None:
-        raise ValueError(
-            "An exact cache result requires its validated request identity"
-        )
-
-    @classmethod
     def require_summary_payload(
         cls,
         payload: AnalysisFindingSummaryCachePayload | None,
@@ -220,16 +211,6 @@ class Hit(AnalysisCacheStatus):
     _resolution_policy = ReuseCompleteCacheResult()
     has_reused_findings = True
     can_reuse_findings = True
-
-    @classmethod
-    def require_exact_identity(
-        cls,
-        cache_identity: AnalysisCacheIdentity | None,
-    ) -> None:
-        if cache_identity is None:
-            raise ValueError(
-                "An exact cache result requires its validated request identity"
-            )
 
     @classmethod
     def require_summary_payload(

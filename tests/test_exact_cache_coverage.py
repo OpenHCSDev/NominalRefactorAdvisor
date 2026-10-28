@@ -10,6 +10,7 @@ import pytest
 
 from nominal_refactor_advisor.analysis import (
     AnalysisCacheIdentityAuthority,
+    HeldNothingForRequest,
     SortedFindingsAuthority,
     analysis_cache_dir_for_root,
     analyze_compact_roots_with_cache,
@@ -54,8 +55,8 @@ def test_subset_aggregate_cannot_satisfy_full_request(
     )
     assert warm.cache_status.is_hit
     full_lookup = load_analysis_cache_for_roots(roots, analysis_cache_dir=cache_dir)
-    assert not full_lookup.cache_status.is_hit
-    assert full_lookup.previous_cache_identity is None
+    assert type(full_lookup) is HeldNothingForRequest
+    assert not full_lookup.cached_result.cache_status.is_hit
     assert load_analysis_summary_for_roots(roots, analysis_cache_dir=cache_dir) is None
     full = analyze_compact_roots_with_cache(roots, **options)
     assert not full.cache_status.is_hit
@@ -178,7 +179,7 @@ def test_interrupted_compact_scan_does_not_publish_aggregate(
         )
     assert not load_analysis_cache_for_roots(
         (source_root,), analysis_cache_dir=cache_dir
-    ).cache_status.is_hit
+    ).cached_result.cache_status.is_hit
     assert (
         load_analysis_summary_for_roots((source_root,), analysis_cache_dir=cache_dir)
         is None

@@ -59,6 +59,7 @@ from nominal_refactor_advisor.analysis import (
     DetectorAnalysisWorkerPlan,
     FastCacheReusePolicy,
     FastCachedPathAnalysisAuthority,
+    PartialCacheReuse,
     SemanticDescentGraphCacheContext,
     SemanticDescentGraphAnalysisSource,
     SortedFindingsAuthority,
@@ -12836,8 +12837,8 @@ def test_fast_cache_evidence_local_partial_reuses_unchanged_findings_when_reques
         )
     ).result()
 
-    assert fast_result is not None
-    assert second_fast_result is not None
+    assert isinstance(fast_result, PartialCacheReuse)
+    assert isinstance(second_fast_result, PartialCacheReuse)
     assert fast_result.cache_status is Partial
     assert second_fast_result.cache_status is Partial
     assert {finding.summary for finding in first_findings} == {
@@ -12930,7 +12931,7 @@ def test_fast_partial_cache_does_not_poison_exact_cache(
     ).result()
     exact_findings = analyze_paths((root,), DetectorConfig(), cache_dir=cache_dir)
 
-    assert fast_result is not None
+    assert isinstance(fast_result, PartialCacheReuse)
     assert fast_result.cache_status is Partial
     assert {finding.summary for finding in first_findings} == {"a.py:1", "b.py:1"}
     assert {finding.summary for finding in fast_result.findings} == {"a.py:1"}

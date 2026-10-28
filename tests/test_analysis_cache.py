@@ -28,6 +28,7 @@ from nominal_refactor_advisor.analysis import (
     DetectorTypePartition,
     FastCacheReusePolicy,
     FastCachedPathAnalysisAuthority,
+    PartialCacheReuse,
     SemanticDescentGraphCacheContext,
     SemanticDescentGraphAnalysisSource,
     analyze_compact_roots_with_cache,
@@ -6581,7 +6582,7 @@ def test_partial_cache_omits_changed_compact_global_semantic_findings(
         )
     ).result()
 
-    assert partial_result is not None
+    assert isinstance(partial_result, PartialCacheReuse)
     assert partial_result.cache_status is Partial
     mirror_findings = tuple(
         finding
@@ -6676,7 +6677,7 @@ def test_compact_semantic_detector_does_not_materialize_legacy_graph_cache(
         )
     ).result()
 
-    assert partial_result is not None
+    assert isinstance(partial_result, PartialCacheReuse)
     assert partial_result.cache_status is Partial
     assert not any(
         finding.detector_id == "semantic_mirror_without_descent"
@@ -6741,7 +6742,7 @@ def test_partial_cache_omits_changed_compact_semantic_projection(
         )
     ).result()
 
-    assert partial_result is not None
+    assert isinstance(partial_result, PartialCacheReuse)
     assert partial_result.cache_status is Partial
     mirror_findings = tuple(
         finding
