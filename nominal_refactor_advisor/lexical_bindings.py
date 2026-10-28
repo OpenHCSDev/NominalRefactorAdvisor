@@ -177,25 +177,101 @@ class FunctionAnnotationVisitor(FunctionDefaultVisitor):
 
 
 @dataclass(frozen=True)
-class ImportAliasRequirement:
-    """One requested import alias, including alias spelling when present."""
+class ImportAlias:
+    """One import alias spelled without an `as` clause."""
 
     name: str
-    asname: str | None
+
+    @classmethod
+    def from_alias(cls, alias: ast.alias) -> ImportAlias:
+        """The ast boundary: the authored `as` clause picks the alias type."""
+
+        if alias.asname is None:
+            return ImportAlias(alias.name)
+        return RenamedImportAlias(alias.name, alias.asname)
 
     @property
     def source(self) -> str:
-        return self.name if self.asname is None else f"{self.name} as {self.asname}"
+        return self.name
 
-    @classmethod
-    def from_alias(cls, alias: ast.alias) -> ImportAliasRequirement:
-        return cls(name=alias.name, asname=alias.asname)
+    @property
+    def ast_alias(self) -> ast.alias:
+        return ast.alias(name=self.name)
 
     @property
     def canonical_key(self) -> tuple[str, str]:
         """Return the source-spelling key for commutative import merging."""
 
-        return self.name, self.asname or ""
+        return self.name, ""
+
+    @property
+    def declares_reexport(self) -> bool:
+        """`X as X` is the explicit public re-export spelling."""
+
+        return False
+
+    def renamed(self, new_name: str) -> ImportAlias:
+        """The alias importing a renamed declaration under the binding it implies."""
+
+        return ImportAlias(new_name)
+
+    def bound_name_in(self, declaration: ImportDeclarationABC) -> str:
+        return declaration._unaliased_bound_name(self)
+
+    def module_reference_in(self, declaration: ModuleImportDeclaration) -> str:
+        """The dotted module path a module import of this alias reaches by its binding."""
+
+        return declaration._unaliased_bound_name(self)
+
+    @property
+    def module_spellings(self) -> tuple[tuple[str, str], ...]:
+        """Dotted module paths this module-import alias makes reachable, with their spelling."""
+
+        parts = self.name.split(".")
+        return tuple(
+            (dotted, dotted)
+            for dotted in (".".join(parts[:stop]) for stop in range(1, len(parts) + 1))
+        )
+
+
+@dataclass(frozen=True)
+class RenamedImportAlias(ImportAlias):
+    """One import alias spelled with an `as` clause."""
+
+    asname: str
+
+    @property
+    def source(self) -> str:
+        return f"{self.name} as {self.asname}"
+
+    @property
+    def ast_alias(self) -> ast.alias:
+        return ast.alias(name=self.name, asname=self.asname)
+
+    @property
+    def canonical_key(self) -> tuple[str, str]:
+        return self.name, self.asname
+
+    @property
+    def declares_reexport(self) -> bool:
+        return self.asname == self.name
+
+    def renamed(self, new_name: str) -> ImportAlias:
+        """A foreign `as` binding survives; a re-export follows the new name."""
+
+        return RenamedImportAlias(
+            new_name, new_name if self.declares_reexport else self.asname
+        )
+
+    def bound_name_in(self, declaration: ImportDeclarationABC) -> str:
+        return self.asname
+
+    def module_reference_in(self, declaration: ModuleImportDeclaration) -> str:
+        return self.name
+
+    @property
+    def module_spellings(self) -> tuple[tuple[str, str], ...]:
+        return ((self.name, self.asname),)
 
 
 @dataclass(frozen=True)
@@ -270,7 +346,7 @@ class ImportOriginResolverABC(ABC, Generic[ImportContextT, ImportResolutionT]):
 class ImportDeclarationABC(ABC):
     """One AST-free import request; binding views derive from its aliases."""
 
-    aliases: tuple[ImportAliasRequirement, ...]
+    aliases: tuple[ImportAlias, ...]
 
     @property
     @abstractmethod
@@ -289,26 +365,26 @@ class ImportDeclarationABC(ABC):
     def source_prefix(self) -> str:
         raise NotImplementedError
 
-    def source_for(self, aliases: tuple[ImportAliasRequirement, ...]) -> str:
+    def source_for(self, aliases: tuple[ImportAlias, ...]) -> str:
         return f"{self.source_prefix} {', '.join(alias.source for alias in aliases)}\n"
 
     @property
     def source(self) -> str:
         return self.source_for(self.aliases)
 
-    def bound_name(self, alias: ImportAliasRequirement) -> str | None:
+    def bound_name(self, alias: ImportAlias) -> str | None:
         if alias.name == "*":
             return None
-        return alias.asname or self._unaliased_bound_name(alias)
+        return alias.bound_name_in(self)
 
     @abstractmethod
-    def _unaliased_bound_name(self, alias: ImportAliasRequirement) -> str:
+    def _unaliased_bound_name(self, alias: ImportAlias) -> str:
         raise NotImplementedError
 
     @abstractmethod
     def requested_module_name(
         self,
-        alias: ImportAliasRequirement,
+        alias: ImportAlias,
         module_identity: PythonModulePathIdentity,
     ) -> str | None:
         raise NotImplementedError
@@ -316,7 +392,7 @@ class ImportDeclarationABC(ABC):
     @abstractmethod
     def qualified_name(
         self,
-        alias: ImportAliasRequirement,
+        alias: ImportAlias,
         module_identity: PythonModulePathIdentity,
     ) -> str | None:
         """A source catalogue path, not a claim about the imported runtime object."""
@@ -371,26 +447,22 @@ class ModuleImportDeclaration(ImportDeclarationABC):
     ) -> ImportResolutionT:
         return resolver._module_import_resolution(origin, context)
 
-    def _unaliased_bound_name(self, alias: ImportAliasRequirement) -> str:
+    def _unaliased_bound_name(self, alias: ImportAlias) -> str:
         return alias.name.partition(".")[0]
 
     def requested_module_name(
         self,
-        alias: ImportAliasRequirement,
+        alias: ImportAlias,
         module_identity: PythonModulePathIdentity,
     ) -> str:
         return alias.name
 
     def qualified_name(
         self,
-        alias: ImportAliasRequirement,
+        alias: ImportAlias,
         module_identity: PythonModulePathIdentity,
     ) -> str:
-        return (
-            alias.name
-            if alias.asname is not None
-            else self._unaliased_bound_name(alias)
-        )
+        return alias.module_reference_in(self)
 
 
 @dataclass(frozen=True)
@@ -417,19 +489,19 @@ class FromImportDeclaration(ImportDeclarationABC):
     ) -> ImportResolutionT:
         return resolver._member_import_resolution(origin, context)
 
-    def _unaliased_bound_name(self, alias: ImportAliasRequirement) -> str:
+    def _unaliased_bound_name(self, alias: ImportAlias) -> str:
         return alias.name
 
     def requested_module_name(
         self,
-        alias: ImportAliasRequirement,
+        alias: ImportAlias,
         module_identity: PythonModulePathIdentity,
     ) -> str | None:
         return self.module_name.resolve(module_identity)
 
     def qualified_name(
         self,
-        alias: ImportAliasRequirement,
+        alias: ImportAlias,
         module_identity: PythonModulePathIdentity,
     ) -> str | None:
         module_name = self.requested_module_name(alias, module_identity)
@@ -460,7 +532,7 @@ class ImportedNameOrigin:
             raise ValueError("A star request has no explicit individual binding")
 
     @property
-    def alias(self) -> ImportAliasRequirement:
+    def alias(self) -> ImportAlias:
         return self.declaration.aliases[self.alias_index]
 
     @property
@@ -491,7 +563,7 @@ class ImportBoundNameProjection:
     @cached_property
     def declaration(self) -> ImportDeclarationABC:
         aliases = tuple(
-            ImportAliasRequirement.from_alias(alias) for alias in self.statement.names
+            ImportAlias.from_alias(alias) for alias in self.statement.names
         )
         if isinstance(self.statement, ast.Import):
             return ModuleImportDeclaration(aliases)
@@ -512,7 +584,7 @@ class ImportBoundNameProjection:
 
     def alias_bound_name(self, alias: ast.alias) -> str:
         return (
-            self.declaration.bound_name(ImportAliasRequirement.from_alias(alias)) or ""
+            self.declaration.bound_name(ImportAlias.from_alias(alias)) or ""
         )
 
 

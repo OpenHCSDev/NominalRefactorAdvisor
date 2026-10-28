@@ -33,7 +33,7 @@ from .codemod_source_edits import (
 from .codemod_spacing import DestinationInsertionSpacing
 from .collection_algebra import sorted_tuple
 from .lexical_bindings import (
-    ImportAliasRequirement as ImportAliasRequirement,
+    ImportAlias as ImportAlias,
     ImportBoundNameProjection,
     ImportDeclarationABC,
     ImportFromModuleName as ImportFromModuleName,
@@ -512,7 +512,7 @@ class ModuleImportMutation(KeyedSourceEditCoalescence):
                 int,
                 str | None,
             ],
-            list[ImportAliasRequirement],
+            list[ImportAlias],
         ] = {}
         statement_by_family: dict[
             tuple[
@@ -621,7 +621,7 @@ class ModuleImportMutation(KeyedSourceEditCoalescence):
         )
         aliases_by_statement = {
             id(statement): [
-                ImportAliasRequirement.from_alias(alias) for alias in statement.names
+                ImportAlias.from_alias(alias) for alias in statement.names
             ]
             for statement in import_statements
         }
@@ -647,7 +647,7 @@ class ModuleImportMutation(KeyedSourceEditCoalescence):
         for statement in import_statements:
             scope = scope_by_statement_id[id(statement)]
             requested_statement = RequestedImportStatement(statement, scope=scope)
-            retained_aliases: list[ImportAliasRequirement] = []
+            retained_aliases: list[ImportAlias] = []
             for alias in aliases_by_statement[id(statement)]:
                 bound_name = requested_statement.bound_name(alias)
                 removal = (
@@ -775,7 +775,7 @@ class ModuleImportMutation(KeyedSourceEditCoalescence):
             if guard is not None and id(guard) in deletable_guards:
                 continue
             original_aliases = tuple(
-                ImportAliasRequirement.from_alias(alias) for alias in statement.names
+                ImportAlias.from_alias(alias) for alias in statement.names
             )
             aliases = tuple(aliases_by_statement[id(statement)])
             if aliases == original_aliases:
@@ -1152,7 +1152,7 @@ class RequestedImportStatement:
         )
 
     @property
-    def aliases(self) -> tuple[ImportAliasRequirement, ...]:
+    def aliases(self) -> tuple[ImportAlias, ...]:
         return self.declaration.aliases
 
     @property
@@ -1233,7 +1233,7 @@ class RequestedImportStatement:
     def bound_names(self) -> tuple[str, ...]:
         return self.declaration.names()
 
-    def bound_name(self, alias: ImportAliasRequirement) -> str | None:
+    def bound_name(self, alias: ImportAlias) -> str | None:
         return self.declaration.bound_name(alias)
 
     @property
@@ -1250,10 +1250,10 @@ class RequestedImportStatement:
 
     def with_aliases(
         self,
-        aliases: Iterable[ImportAliasRequirement],
+        aliases: Iterable[ImportAlias],
     ) -> RequestedImportStatement:
         alias_nodes = [
-            ast.alias(name=alias.name, asname=alias.asname) for alias in aliases
+            alias.ast_alias for alias in aliases
         ]
         if isinstance(self.statement, ast.Import):
             return RequestedImportStatement(
@@ -1321,4 +1321,4 @@ class ImportFromSource:
 
     @staticmethod
     def alias_source(alias: ast.alias) -> str:
-        return ImportAliasRequirement.from_alias(alias).source
+        return ImportAlias.from_alias(alias).source

@@ -66,7 +66,7 @@ from .codemod_selection_context import CodemodSelectorContext, ResolvedClassTarg
 from .codemod_selector_models import SourceRewriteTarget
 from .codemod_source_edits import NominalSourceEdit, SourceInsertion
 from .codemod_statement_source import StatementDeletionSource, StatementSource
-from .lexical_bindings import LEXICAL_SCOPE_BINDING_AUTHORITY
+from .lexical_bindings import LEXICAL_SCOPE_BINDING_AUTHORITY, ImportBoundNameProjection
 from .native_class_mro import NativeClassMroDeclaration
 from .models import RefactorFinding
 from .refactor_concepts import ClassBodyCompositionConcept
@@ -622,7 +622,7 @@ def obsolete_import_edits(
         for statement in parsed_module.module.body
         if isinstance(statement, ast.ImportFrom)
         for alias in statement.names
-        if alias.asname is None
+        if ImportBoundNameProjection(statement).alias_bound_name(alias) == alias.name
     )
     obsolete = sorted(
         (read_by_deleted & imported) - still_read - exported - reexported

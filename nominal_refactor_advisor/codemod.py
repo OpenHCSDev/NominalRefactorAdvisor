@@ -637,7 +637,7 @@ from .json_reports import (
     json_report_property,
 )
 from .lexical_bindings import (
-    ImportAliasRequirement as ImportAliasRequirement,
+    ImportAlias as ImportAlias,
     ImportBoundNameProjection,
     ImportFromModuleName as ImportFromModuleName,
     LEXICAL_SCOPE_BINDING_AUTHORITY,
@@ -9864,7 +9864,7 @@ class DataclassesModuleReference:
         if module is None or source is None:
             return None
         imported_aliases = tuple(
-            alias.asname or alias.name
+            ImportBoundNameProjection(statement).alias_bound_name(alias)
             for statement in module.body
             if isinstance(statement, ast.Import)
             for alias in statement.names

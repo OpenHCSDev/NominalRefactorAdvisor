@@ -22,6 +22,7 @@ from tree_sitter import Node
 
 from ._regex_bundle import RepeatedLocalRegexBundleDetector
 
+from ..lexical_bindings import ImportBoundNameProjection
 from ..ast_tools import (
     CollectedFamily,
     LITERAL_DISPATCH_CASE_MATCHER,
@@ -1148,7 +1149,7 @@ class RuntimeNamespaceBridgeDetector(PerModuleIssueDetector):
                         sites.append(
                             RuntimeNamespaceBridgeSite(
                                 line=int(node.lineno),
-                                symbol=alias.asname or alias.name,
+                                symbol=ImportBoundNameProjection(node).alias_bound_name(alias),
                                 bridge_kind=(
                                     RuntimeNamespaceBridgeKind.RUNTIME_BRIDGE_IMPORT
                                 ),

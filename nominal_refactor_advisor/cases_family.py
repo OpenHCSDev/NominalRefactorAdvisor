@@ -31,6 +31,7 @@ from typing import ClassVar
 
 from metaclass_registry import AutoRegisterMeta
 
+from .lexical_bindings import ImportBoundNameProjection
 from .ast_tools import (
     AstParentIndex,
     BuiltinCallName,
@@ -238,9 +239,7 @@ def module_bound_names(module: ast.Module) -> frozenset[str]:
         if isinstance(statement, ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef):
             names.add(statement.name)
         elif isinstance(statement, ast.Import | ast.ImportFrom):
-            names.update(
-                (alias.asname or alias.name).split(".")[0] for alias in statement.names
-            )
+            names.update(ImportBoundNameProjection(statement).names())
         elif isinstance(statement, ast.If):
             names.update(module_bound_names(ast.Module(statement.body, [])))
         else:
@@ -927,7 +926,7 @@ class CasesFamily(Cases, Descent):
             )
             for alias in statement.names:
                 if source == declared.module and alias.name == declared.name:
-                    return alias.asname or alias.name
+                    return ImportBoundNameProjection(statement).alias_bound_name(alias)
         return None
 
     def root_base(self, model: CaseModel) -> str:
@@ -2840,7 +2839,7 @@ class Guard(Site):
         ]
         callable_name = next(
             (
-                alias.asname or alias.name
+                ImportBoundNameProjection(statement).alias_bound_name(alias)
                 for statement in model.enum.module.module.body
                 if isinstance(statement, ast.ImportFrom)
                 and statement.module in {"typing", "collections.abc"}

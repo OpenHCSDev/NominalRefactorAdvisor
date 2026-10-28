@@ -63,7 +63,7 @@ from .declaration_dependencies import (
     MovableDeclaration,
 )
 from .lexical_bindings import (
-    ImportAliasRequirement as ImportAliasRequirement,
+    ImportAlias as ImportAlias,
     ImportBoundNameProjection,
     LEXICAL_SCOPE_BINDING_AUTHORITY,
 )
@@ -388,7 +388,7 @@ class ModuleSymbolTable:
                 request=RequestedImportStatement(
                     statement,
                     scope=scope,
-                ).with_aliases((ImportAliasRequirement.from_alias(alias),)),
+                ).with_aliases((ImportAlias.from_alias(alias),)),
             )
             for scope in ModuleImportScope
             for statement in scope.import_statements(self.module)
@@ -575,11 +575,11 @@ class ModuleSymbolTable:
         """Return bindings whose same-name alias declares a public re-export."""
 
         return frozenset(
-            alias.asname
+            alias.name
             for statement in self.module.body
             if isinstance(statement, (ast.Import, ast.ImportFrom))
             for alias in statement.names
-            if alias.asname is not None and alias.asname == alias.name
+            if ImportAlias.from_alias(alias).declares_reexport
         )
 
     def referenced_names_excluding(

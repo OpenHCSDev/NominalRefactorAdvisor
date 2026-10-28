@@ -20,7 +20,7 @@ from .class_index import (
     module_star_import_origins,
 )
 from .foreign_family import FunctionDefinition
-from .lexical_bindings import LEXICAL_SCOPE_BINDING_AUTHORITY
+from .lexical_bindings import LEXICAL_SCOPE_BINDING_AUTHORITY, ImportBoundNameProjection
 
 _NESTED_METHOD_SCOPES = (
     ast.AsyncFunctionDef,
@@ -337,10 +337,7 @@ class ClassAuthorityCollapseProofContext:
         local_names_by_import: dict[tuple[str, str], list[str]] = {}
         for statement in parsed_module.module.body:
             if isinstance(statement, ast.Import):
-                bound_names = {
-                    alias.asname or alias.name.split(".", 1)[0]
-                    for alias in statement.names
-                }
+                bound_names = set(ImportBoundNameProjection(statement).names())
                 if bound_names & deleted_only_names:
                     raise ValueError(
                         "Class-authority collapse cannot clean an obsolete module "
@@ -354,7 +351,7 @@ class ClassAuthorityCollapseProofContext:
                 if alias.name == "*":
                     continue
                 local_names_by_import.setdefault((module_name, alias.name), []).append(
-                    alias.asname or alias.name
+                    ImportBoundNameProjection(statement).alias_bound_name(alias)
                 )
         obsolete: list[ObsoleteClassAuthorityImport] = []
         for (module_name, imported_name), local_names in local_names_by_import.items():

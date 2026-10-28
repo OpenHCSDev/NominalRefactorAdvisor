@@ -4157,14 +4157,8 @@ def _direct_statement_bound_names(statement: ast.stmt) -> frozenset[str]:
 
     if isinstance(statement, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef):
         return frozenset((statement.name,))
-    if isinstance(statement, ast.Import):
-        return frozenset(
-            alias.asname or alias.name.split(".", 1)[0] for alias in statement.names
-        )
-    if isinstance(statement, ast.ImportFrom):
-        return frozenset(
-            alias.asname or alias.name for alias in statement.names if alias.name != "*"
-        )
+    if isinstance(statement, ast.Import | ast.ImportFrom):
+        return frozenset(ImportBoundNameProjection(statement).names())
     if isinstance(statement, ast.Assign):
         return frozenset(
             name

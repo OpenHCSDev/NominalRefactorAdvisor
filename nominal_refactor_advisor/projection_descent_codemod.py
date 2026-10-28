@@ -67,6 +67,7 @@ from .codemod_source_edits import (
 from .collection_algebra import sorted_tuple
 from .foreign_family import FunctionDefinition
 from .lexical_bindings import (
+    ImportBoundNameProjection,
     ImportFromModuleName,
     LEXICAL_SCOPE_BINDING_AUTHORITY,
 )
@@ -1142,7 +1143,7 @@ class _TypeKeyedBehaviorSourceDerivation:
                 remaining_aliases = tuple(
                     alias
                     for alias in statement.names
-                    if (alias.asname or alias.name) not in removable_names
+                    if ImportBoundNameProjection(statement).alias_bound_name(alias) not in removable_names
                 )
                 if len(remaining_aliases) == len(statement.names):
                     continue

@@ -26,6 +26,7 @@ from functools import cache, cached_property
 from pathlib import Path
 from typing import ClassVar
 
+from .lexical_bindings import ImportBoundNameProjection
 from .ast_tools import (
     ModuleSyntaxIndex,
     ParsedModule,
@@ -230,7 +231,7 @@ class DeclaredIdentityFamily(ShapeFamily[ModuleDeclarations]):
                         yield FromImport(
                             index,
                             module,
-                            tuple(alias.asname or alias.name for alias in aliases),
+                            ImportBoundNameProjection(statement).names(),
                         )
 
     SCOPES = (
@@ -1444,7 +1445,7 @@ class IdentityPositions:
                     found[name] = (index, f"{self.parsed_module.module_name}.{name}")
                 case ast.ImportFrom(names=aliases):
                     for alias in aliases:
-                        bound = alias.asname or alias.name
+                        bound = ImportBoundNameProjection(statement).alias_bound_name(alias)
                         if bound in imports:
                             found[bound] = (index, imports[bound])
         return {name: bound for name, bound in found.items() if counts[name] == 1}
