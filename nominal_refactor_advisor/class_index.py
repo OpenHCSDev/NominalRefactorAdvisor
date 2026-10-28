@@ -23,7 +23,7 @@ from collections.abc import (
 )
 from dataclasses import MISSING, dataclass, field, fields, replace
 from enum import StrEnum
-from functools import cached_property, lru_cache
+from functools import cache, cached_property, lru_cache
 from heapq import merge
 from typing import (
     Callable,
@@ -98,10 +98,55 @@ from .product_flow import (
     SourceProductFlowProjection,
     source_product_flow_projection,
 )
+from .class_creation_store import CreatedClassStore
+from .installed_source import InstalledModule
 from .source_execution import SourceModuleExecution
 from .semantic_algebra import DirectedGraph
 from .source_geometry import ClassHeaderSourceSpan as ClassHeaderSourceSpan
 from .source_identity import resolved_source_path_text
+
+
+class ClassRegistryFacts(NamedTuple):
+    """What one class statement says about registration, read from it and its module.
+
+    `metaclass_references` and `base_references` are the `metaclass=` keyword
+    and the bases, each with the binding its root name has where the class
+    is declared. `stores_created_class` is whether, used as a metaclass, its
+    creation path stores the class it creates into a mapping;
+    `stores_subclass` is whether its `__init_subclass__` stores the subclass
+    (`CreatedClassStore`). No class is recognized by its name, and no
+    library's attribute names are consulted.
+    """
+
+    metaclass_references: tuple[CompactNominalReference, ...] = ()
+    base_references: tuple[CompactNominalReference, ...] = ()
+    stores_created_class: bool = False
+    stores_subclass: bool = False
+
+    @classmethod
+    def of_class(
+        cls,
+        node: ast.ClassDef,
+        module_binding_snapshot: ModuleNominalBindingSnapshot,
+        module: ast.Module,
+    ) -> ClassRegistryFacts:
+        creation = CreatedClassStore.of(node, module)
+        return cls(
+            metaclass_references=tuple(
+                module_binding_snapshot.reference_for(parts)
+                for keyword in node.keywords
+                if keyword.arg == "metaclass"
+                if (
+                    parts := ExpressionReference.decoded(
+                        ClassSymbolResolutionAuthority.reference_node(keyword.value)
+                    ).attribute_chain
+                )
+                is not None
+            ),
+            base_references=_compact_base_references(node, module_binding_snapshot),
+            stores_created_class=creation.stores_created_class(),
+            stores_subclass=creation.stores_subclass(),
+        )
 
 
 @dataclass(frozen=True)
@@ -121,6 +166,11 @@ class ClassDeclaration(QualifiedDeclaration):
         kw_only=True,
     )
     class_decorators_are_promotion_safe: bool = field(default=True, kw_only=True)
+    registry_facts: ClassRegistryFacts = field(
+        default=ClassRegistryFacts(), kw_only=True
+    )
+    declares_autoregister_meta: bool = field(default=False, kw_only=True)
+    """Whether its metaclass registers the classes it creates; set by the index."""
 
     qualified_name = AliasProperty[str]("symbol")
 
@@ -129,6 +179,9 @@ class ClassDeclaration(QualifiedDeclaration):
         resolved_base_symbols: tuple[str, ...],
     ) -> Self:
         return replace(self, resolved_base_symbols=resolved_base_symbols)
+
+    def with_registering_metaclass(self, registers: bool) -> Self:
+        return replace(self, declares_autoregister_meta=registers)
 
 
 @dataclass(frozen=True)
@@ -150,12 +203,6 @@ class IndexedClass(ClassDeclaration, ClassNamespaceDeclaration):
             or (isinstance(decorator, ast.Attribute) and decorator.attr == "final")
             for decorator in self.node.decorator_list
         )
-
-    @property
-    def declares_autoregister_meta(self) -> bool:
-        """Whether this declaration owns an AutoRegister-backed family."""
-
-        return _declares_autoregister_meta(self.node)
 
     @classmethod
     def from_parsed_class(
@@ -184,6 +231,9 @@ class IndexedClass(ClassDeclaration, ClassNamespaceDeclaration):
                 is not None
             ),
             resolved_base_symbols=(),
+            registry_facts=ClassRegistryFacts.of_class(
+                node, module_binding_snapshot, parsed_module.module
+            ),
             dataclass_declaration=_dataclass_declaration(
                 module_binding_snapshot,
                 qualname,
@@ -652,6 +702,13 @@ class CompactClassHeader(ClassDeclaration):
 class CompactIndexedClass(CompactClassHeader):
     """AST-free class declaration used to reconstruct inheritance globally."""
 
+    def with_registering_metaclass(self, registers: bool) -> Self:
+        return replace(
+            self,
+            declares_autoregister_meta=registers,
+            is_registration_authority=self.is_registration_authority or registers,
+        )
+
     direct_member_declarations: tuple[CompactClassMemberDeclaration, ...] = ()
     metaclass_names: tuple[str, ...] = ()
     class_keyword_names: tuple[str, ...] = ()
@@ -661,8 +718,8 @@ class CompactIndexedClass(CompactClassHeader):
     method_names: tuple[str, ...] = ()
     abstract_method_names: tuple[str, ...] = ()
     is_abstract: bool = False
-    declares_autoregister_meta: bool = False
     is_registration_authority: bool = False
+    """Named or configured as a registration authority; the index adds a registering metaclass."""
     autoregister_registry_key_attr_name: str | None = None
     autoregister_registry_projection_names: tuple[str, ...] = ()
     keyed_registry_lookup_method_names: tuple[str, ...] = ()
@@ -982,6 +1039,34 @@ class CompactRepositoryPublicExposureIndex(RepositoryPublicExposureAuthority):
     """Derive transitive public exposure from module-owned namespace contracts."""
 
     module_projections: tuple[CompactModuleClassHeader, ...]
+
+    def star_settled_binding(
+        self, module_name: str, name: str, unshadowed: str | None
+    ) -> str | None:
+        """What a name a star import may rebind is bound to, when the repository's exports decide it.
+
+        `unshadowed` is the module's own binding, star imports aside. No star
+        import exposing the name leaves that binding; the last star import
+        that exposes it rebinds it to that module's binding; an origin whose
+        exports are unknown decides nothing.
+        """
+
+        if self.star_imports_exclude(module_name, name):
+            return unshadowed
+        if not self.contains_module(module_name):
+            return None
+        for origin in reversed(self.star_import_origins_for(module_name)):
+            if origin.module_name is None:
+                return None
+            exposure = self.exposure_for(origin.module_name, name)
+            if exposure.proves_public_exposure:
+                origin_projection = self.projections_by_module_name[origin.module_name]
+                return dict(origin_projection.import_aliases).get(
+                    name, f"{origin.module_name}.{name}"
+                )
+            if exposure.introduces_uncertainty:
+                return None
+        return unshadowed
 
     @cached_property
     def module_projection_multiplicity(
@@ -4509,7 +4594,9 @@ def _compact_indexed_classes(
             is_abstract=_is_abstract_class(node),
             dataclass_declaration=binding_facets.dataclass_declaration,
             enum_declaration=binding_facets.enum_declaration,
-            declares_autoregister_meta=_declares_autoregister_meta(node),
+            registry_facts=ClassRegistryFacts.of_class(
+                node, module_binding_snapshot, parsed_module.module
+            ),
             is_registration_authority=_is_registration_authority(node),
             autoregister_registry_key_attr_name=_autoregister_registry_key_attr_name(
                 parsed_module,
@@ -4666,7 +4753,7 @@ class CompactModuleClassProjectionFamily(CollectedFamily[CompactModuleClassProje
             include_autoregister_references=any(
                 projection.named_projection_surfaces
                 or any(
-                    indexed_class.declares_autoregister_meta
+                    bool(indexed_class.registry_facts.metaclass_references)
                     or (
                         indexed_class.keyed_family_key_type_name is not None
                         and "registry_key_attr"
@@ -4738,6 +4825,18 @@ class CompactModuleClassProjectionFamily(CollectedFamily[CompactModuleClassProje
         if demand.header_core_only:
             return cls._collect_header_core(parsed_module)
         return cls._collect(parsed_module, demand)
+
+    @classmethod
+    def header_core_projections(
+        cls, parsed_modules: Iterable[ParsedModule]
+    ) -> tuple[CompactModuleClassProjection, ...]:
+        """Namespace and class headers only: enough to settle imports and exports."""
+
+        return tuple(
+            projection
+            for parsed_module in parsed_modules
+            for projection in cls._collect_header_core(parsed_module)
+        )
 
     @classmethod
     def _collect_header_core(
@@ -6409,16 +6508,6 @@ def _registration_authority_base_name(base_name: str) -> bool:
     )
 
 
-def _declares_autoregister_meta(node: ast.ClassDef) -> bool:
-    return any(
-        terminal_name == "AutoRegisterMeta"
-        or terminal_name.endswith("AutoRegisterMeta")
-        for keyword in node.keywords
-        if keyword.arg == "metaclass"
-        if (terminal_name := _terminal_reference_name(keyword.value)) is not None
-    )
-
-
 def _is_registration_authority(node: ast.ClassDef) -> bool:
     assignments = _direct_class_assignments(node)
     inherits_named_authority = any(
@@ -6433,8 +6522,7 @@ def _is_registration_authority(node: ast.ClassDef) -> bool:
         or _registration_authority_base_name(node.name)
     )
     return bool(
-        _declares_autoregister_meta(node)
-        or inherits_named_authority
+        inherits_named_authority
         or declares_named_authority
         or ("__registry__" in assignments and "__registry_key__" in assignments)
         or "stable_key_axis" in assignments
@@ -6984,6 +7072,121 @@ def _terminal_reference_name(node: ast.AST) -> str | None:
     return None if parts is None else parts[-1]
 
 
+class InstalledClassDeclarations:
+    """Classes of modules outside the scan, projected from installed source and never run."""
+
+    MAX_REEXPORTS: ClassVar[int] = 8
+
+    @staticmethod
+    @cache
+    def module(module_name: str) -> CompactModuleClassProjection | None:
+        parsed = InstalledModule.parsed(module_name)
+        if parsed is None:
+            return None
+        (projection,) = CompactModuleClassProjectionFamily.collect(parsed)
+        return projection
+
+    @classmethod
+    def declaration(cls, qualified_name: str) -> CompactIndexedClass | None:
+        """The installed class a qualified name reaches, following re-exports."""
+
+        for _hop in range(cls.MAX_REEXPORTS):
+            module_name, _dot, name = qualified_name.rpartition(".")
+            projection = cls.module(module_name) if module_name else None
+            if projection is None:
+                return None
+            for declared in projection.classes:
+                if declared.symbol == qualified_name:
+                    return declared
+            target = dict(projection.import_aliases).get(name)
+            if target is None or target == qualified_name:
+                return None
+            qualified_name = target
+        return None
+
+
+@dataclass(frozen=True)
+class RegisteringMetaclassAuthority(Generic[ClassDeclarationT]):
+    """Whether a class's metaclass registers the classes it creates, from what it does.
+
+    The `metaclass=` binding is resolved like a base: to a scanned class, or
+    else to an installed module's class read from source, following
+    re-exports. The metaclass registers when it, or an ancestor reached the
+    same way, stores the class it creates into a mapping
+    (`ClassRegistryFacts.stores_created_class`). A native root stores none,
+    and an ancestor that cannot be read is not known to register.
+    """
+
+    scanned: Mapping[str, ClassDeclarationT]
+    exposure: CompactRepositoryPublicExposureIndex
+    MAX_ANCESTORS: ClassVar[int] = 64
+
+    @cached_property
+    def suffix_index(self) -> _UniqueKnownSymbolSuffixIndex:
+        return _unique_known_symbol_by_suffix(frozenset(self.scanned))
+
+    def registers(self, declaration: ClassDeclaration) -> bool:
+        pending = [
+            (reference, declaration.module_name)
+            for reference in declaration.registry_facts.metaclass_references
+        ]
+        seen: set[str] = set()
+        for _step in range(self.MAX_ANCESTORS):
+            if not pending:
+                break
+            reference, module_name = pending.pop()
+            found = self.declaration_for(reference, module_name)
+            if found is None or found.symbol in seen:
+                continue
+            seen.add(found.symbol)
+            if found.registry_facts.stores_created_class:
+                return True
+            pending.extend(
+                (base, found.module_name)
+                for base in found.registry_facts.base_references
+            )
+        return False
+
+    def declaration_for(
+        self, reference: CompactNominalReference, module_name: str
+    ) -> ClassDeclaration | None:
+        symbol = CompactClassFamilyIndexBuilder._resolved_bound_symbol(
+            reference, module_name, self.scanned, self.suffix_index
+        )
+        if symbol is not None:
+            return self.scanned[symbol]
+        qualified_name = (
+            ".".join(reference.resolved_parts)
+            if reference.root_binding is not None
+            else self.star_settled_name(reference, module_name)
+        )
+        if qualified_name is None:
+            return None
+        return self.scanned.get(
+            qualified_name
+        ) or InstalledClassDeclarations.declaration(qualified_name)
+
+    def star_settled_name(
+        self, reference: CompactNominalReference, module_name: str
+    ) -> str | None:
+        """A reference whose root a star import may rebind, settled by the repository's exports."""
+
+        root, *rest = reference.source_parts
+        projection = self.exposure.projections_by_module_name.get(module_name)
+        root_binding = self.exposure.star_settled_binding(
+            module_name,
+            root,
+            None if projection is None else dict(projection.import_aliases).get(root),
+        )
+        return None if root_binding is None else ".".join((root_binding, *rest))
+
+    def resolved(self) -> dict[str, ClassDeclarationT]:
+        return {
+            symbol: declaration.with_registering_metaclass(self.registers(declaration))
+            for symbol, declaration in self.scanned.items()
+        }
+
+
 @dataclass(frozen=True)
 class CompactClassFamilyIndexBuilder:
     projections: Sequence[CompactModuleClassHeader]
@@ -7019,7 +7222,12 @@ class CompactClassFamilyIndexBuilder:
             )
             for record in records
         }
-        return CompactClassFamilyIndex(classes_by_symbol=classes_by_symbol)
+        return CompactClassFamilyIndex(
+            classes_by_symbol=RegisteringMetaclassAuthority(
+                classes_by_symbol,
+                CompactRepositoryPublicExposureIndex(tuple(self.projections)),
+            ).resolved()
+        )
 
     @staticmethod
     def _resolved_bound_symbol(
@@ -7382,7 +7590,23 @@ class ClassFamilyIndexBuilder:
             record.symbol: self.resolved_record(record, known_symbols)
             for record in class_records
         }
-        return ClassFamilyIndex(classes_by_symbol=classes_by_symbol)
+        authority = RegisteringMetaclassAuthority(
+            classes_by_symbol,
+            CompactRepositoryPublicExposureIndex(
+                CompactModuleClassProjectionFamily.header_core_projections(self.modules)
+            ),
+        )
+        rebuilt = frozenset(module.module_name for module in self.modules)
+        return ClassFamilyIndex(
+            classes_by_symbol={
+                symbol: (
+                    record.with_registering_metaclass(authority.registers(record))
+                    if record.module_name in rebuilt
+                    else record
+                )
+                for symbol, record in classes_by_symbol.items()
+            }
+        )
 
     def module_class_records(self) -> tuple[IndexedClass, ...]:
         records: list[IndexedClass] = []

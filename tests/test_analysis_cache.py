@@ -3190,7 +3190,11 @@ def test_class_demand_omits_unreportable_autoregister_reference_graph(
         line=1,
         declared_base_names=(),
         base_references=(),
-        declares_autoregister_meta=True,
+        registry_facts=class_index_module.ClassRegistryFacts(
+            metaclass_references=(
+                class_index_module.CompactNominalReference(("AutoRegisterMeta",), None),
+            ),
+        ),
     )
     positive_demand = family.report_demand(
         (replace(empty_target, classes=(target_root,)),),
@@ -4610,7 +4614,9 @@ def test_compact_autoregister_projection_retains_neutral_registry_evidence(
     assert len(projections) == 1
     projection = projections[0]
     root = next(cls for cls in projection.classes if cls.simple_name == "Exporter")
-    assert root.declares_autoregister_meta
+    assert class_index_module.build_compact_class_family_index(projections).class_for(
+        root.symbol
+    ).declares_autoregister_meta
     assert root.abstract_method_names == ("emit",)
     assert root.autoregister_registry_projection_names == ("for_format",)
     assert root.autoregister_registry_key_attr_name is None

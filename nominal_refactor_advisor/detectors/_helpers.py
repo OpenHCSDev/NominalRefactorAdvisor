@@ -84,28 +84,6 @@ _SEQUENCE_WRAPPER_CALL_NAMES = BuiltinCallName.sequence_wrapper_names()
 
 
 class HelperSupportProjectionAuthority:
-    def declares_autoregister_meta(self, node: ast.ClassDef) -> bool:
-        return any(
-            (
-                (
-                    metaclass_name
-                    := ExpressionReference.decoded(keyword.value).terminal_name
-                )
-                is not None
-                and (
-                    metaclass_name == "AutoRegisterMeta"
-                    or metaclass_name.endswith("AutoRegisterMeta")
-                    or self.registration_authority_base_name(metaclass_name)
-                    or (
-                        "Registered" in metaclass_name
-                        and metaclass_name.endswith("Meta")
-                    )
-                )
-                for keyword in node.keywords
-                if keyword.arg == "metaclass"
-            )
-        )
-
     @staticmethod
     def registration_authority_base_name(base_name: str) -> bool:
         tokens = frozenset(
@@ -162,7 +140,7 @@ class HelperSupportProjectionAuthority:
             (
                 ancestor is not None
                 and (
-                    self.declares_autoregister_meta(ancestor.node)
+                    ancestor.declares_autoregister_meta
                     or self.declares_named_registration_authority(ancestor.node)
                     or self.inherits_named_registration_authority(ancestor.node)
                     or self.declares_registry_protocol_authority(ancestor.node)
