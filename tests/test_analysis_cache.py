@@ -621,97 +621,39 @@ def test_module_detector_cache_reuses_unchanged_implementation_bundle(
 
 def test_detector_shard_cache_identity_ignores_orchestration_implementation(
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """Detector-shard identities hash only the modules that decide findings;
+    the aggregate entry also hashes orchestration and persistence."""
+
     module_path = tmp_path / "module.py"
     module_path.write_text("VALUE = 1\n", encoding="utf-8", newline="")
     module = parse_python_modules(tmp_path, use_parse_cache=False)[0]
-    identity_type = analysis_cache_module.PerModuleAnalysisCacheFamilyIdentity
-    baseline = identity_type.from_module(module, DetectorConfig(), (tmp_path,))
-    aggregate_baseline = AnalysisCacheIdentity.from_modules(
-        (tmp_path,),
-        (module,),
-        DetectorConfig(),
-    )
-    detector_type = default_detector_types_for_analysis()[0]
-    global_baseline = GlobalDetectorAnalysisCacheIdentity.from_global_context(
-        DetectorConfig(),
-        detector_type,
-        aggregate_baseline.source_context_token,
-        (tmp_path,),
-    )
-    original_signature = analysis_cache_module._module_source_signature
+    semantic = analysis_cache_module.DetectorSemanticEngineSignature
+    orchestration = {
+        "nominal_refactor_advisor.analysis",
+        "nominal_refactor_advisor.analysis_cache",
+    }
 
-    def changed_signature(module_name: str):
-        signature = original_signature(module_name)
-        if module_name == "nominal_refactor_advisor.analysis":
-            return analysis_cache_module.SourceFileSignature(
-                signature.path,
-                "changed-orchestration",
-            )
-        return signature
-
-    monkeypatch.setattr(
-        analysis_cache_module,
-        "_module_source_signature",
-        changed_signature,
+    assert not orchestration & set(semantic.module_names())
+    assert "nominal_refactor_advisor.detectors._base" in semantic.module_names()
+    assert orchestration <= set(
+        analysis_cache_module.AnalysisEngineSignature.module_names()
     )
-    after_orchestration_change = identity_type.from_module(
-        module,
+    per_module = analysis_cache_module.PerModuleAnalysisCacheFamilyIdentity.from_module(
+        module, DetectorConfig(), (tmp_path,)
+    )
+    aggregate = AnalysisCacheIdentity.from_modules(
+        (tmp_path,), (module,), DetectorConfig()
+    )
+    global_identity = GlobalDetectorAnalysisCacheIdentity.from_global_context(
         DetectorConfig(),
+        default_detector_types_for_analysis()[0],
+        aggregate.source_context_token,
         (tmp_path,),
     )
-    aggregate_after_orchestration_change = AnalysisCacheIdentity.from_modules(
-        (tmp_path,),
-        (module,),
-        DetectorConfig(),
-    )
-    global_after_orchestration_change = (
-        GlobalDetectorAnalysisCacheIdentity.from_global_context(
-            DetectorConfig(),
-            detector_type,
-            aggregate_after_orchestration_change.source_context_token,
-            (tmp_path,),
-        )
-    )
-
-    def changed_semantic_signature(module_name: str):
-        signature = changed_signature(module_name)
-        if module_name == "nominal_refactor_advisor.detectors._base":
-            return analysis_cache_module.SourceFileSignature(
-                signature.path,
-                "changed-detector-semantics",
-            )
-        return signature
-
-    monkeypatch.setattr(
-        analysis_cache_module,
-        "_module_source_signature",
-        changed_semantic_signature,
-    )
-    after_semantic_change = identity_type.from_module(
-        module,
-        DetectorConfig(),
-        (tmp_path,),
-    )
-    global_after_semantic_change = (
-        GlobalDetectorAnalysisCacheIdentity.from_global_context(
-            DetectorConfig(),
-            detector_type,
-            aggregate_after_orchestration_change.source_context_token,
-            (tmp_path,),
-        )
-    )
-
-    assert after_orchestration_change == baseline
-    assert after_semantic_change != baseline
-    assert aggregate_after_orchestration_change != aggregate_baseline
-    assert (
-        aggregate_after_orchestration_change.source_context_token
-        == aggregate_baseline.source_context_token
-    )
-    assert global_after_orchestration_change == global_baseline
-    assert global_after_semantic_change != global_baseline
+    assert type(per_module.engine) is semantic
+    assert type(global_identity.engine) is semantic
+    assert type(aggregate.engine) is analysis_cache_module.AnalysisEngineSignature
 
 
 def test_detector_semantic_engine_derives_registered_declaration_dependencies() -> None:
