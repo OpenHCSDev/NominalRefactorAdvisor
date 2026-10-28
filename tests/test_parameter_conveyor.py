@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from nominal_refactor_advisor.ast_tools import ParsedModuleSet
+from nominal_refactor_advisor.product_flow_authority import ResolvedCompactFunctionTarget
 import ast
 from dataclasses import replace
 import json
@@ -231,7 +233,7 @@ def test_detector_emits_one_authority_anchored_certified_finding() -> None:
     module = _module("pkg.complete", _base_source())
 
     findings = ClosedParameterConveyorDetector().detect(
-        [module],
+        ParsedModuleSet.of([module]),
         DetectorConfig(),
     )
 
@@ -262,7 +264,7 @@ def test_detector_does_not_emit_an_open_parameter_conveyor() -> None:
     )
 
     findings = ClosedParameterConveyorDetector().detect(
-        [module],
+        ParsedModuleSet.of([module]),
         DetectorConfig(),
     )
 
@@ -272,10 +274,10 @@ def test_detector_does_not_emit_an_open_parameter_conveyor() -> None:
 def test_proven_finding_compiles_to_an_authority_keyed_atomic_rewrite() -> None:
     module = _module("pkg.complete", _base_source())
     findings = ClosedParameterConveyorDetector().detect(
-        [module],
+        ParsedModuleSet.of([module]),
         DetectorConfig(),
     )
-    snapshot = CodemodSourceSnapshot.from_modules((module,), findings)
+    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of((module,)), findings)
 
     plan = codemod_plan_from_findings(findings, selector_context=snapshot)
 
@@ -323,7 +325,7 @@ def test_proven_finding_compiles_to_an_authority_keyed_atomic_rewrite() -> None:
     rewritten_snapshot = snapshot.with_virtual_sources(simulation.rewritten_sources)
     assert (
         ClosedParameterConveyorDetector().detect(
-            rewritten_snapshot.parsed_modules,
+            ParsedModuleSet.of(rewritten_snapshot.parsed_modules),
             DetectorConfig(),
         )
         == []
@@ -335,10 +337,10 @@ def test_document_simulation_reuses_one_current_source_reproof(
 ) -> None:
     module = _module("pkg.complete", _base_source())
     findings = ClosedParameterConveyorDetector().detect(
-        [module],
+        ParsedModuleSet.of([module]),
         DetectorConfig(),
     )
-    snapshot = CodemodSourceSnapshot.from_modules((module,), findings)
+    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of((module,)), findings)
     plan = codemod_plan_from_findings(findings, selector_context=snapshot)
     original_reproof = CollapseClosedParameterConveyorOperation.source_edits_from_snapshot
     reproof_count = 0
@@ -412,7 +414,7 @@ def test_parameter_conveyor_goal_runner_proves_one_terminal_replay(
     )
     assert (
         ClosedParameterConveyorDetector().detect(
-            replay.final_snapshot.parsed_modules,
+            ParsedModuleSet.of(replay.final_snapshot.parsed_modules),
             DetectorConfig(),
         )
         == []
@@ -497,10 +499,10 @@ def test_parameter_conveyor_cli_proves_exports_and_applies_the_goal(
 def test_parameter_conveyor_recipe_reproves_current_source_before_rewriting() -> None:
     module = _module("pkg.stale", _base_source())
     findings = ClosedParameterConveyorDetector().detect(
-        [module],
+        ParsedModuleSet.of([module]),
         DetectorConfig(),
     )
-    original_snapshot = CodemodSourceSnapshot.from_modules((module,), findings)
+    original_snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of((module,)), findings)
     current_snapshot = original_snapshot.with_virtual_sources(
         {
             module.file_path: _base_source()
@@ -546,10 +548,10 @@ def test_parameter_conveyor_rewrite_collapses_a_multistep_chain() -> None:
     )
     module = _module("pkg.chain_rewrite", source)
     findings = ClosedParameterConveyorDetector().detect(
-        [module],
+        ParsedModuleSet.of([module]),
         DetectorConfig(),
     )
-    snapshot = CodemodSourceSnapshot.from_modules((module,), findings)
+    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of((module,)), findings)
 
     plan = codemod_plan_from_findings(findings, selector_context=snapshot)
     simulation = snapshot.simulate_rewrites(
@@ -567,7 +569,7 @@ def test_parameter_conveyor_rewrite_collapses_a_multistep_chain() -> None:
     rewritten_snapshot = snapshot.with_virtual_sources(simulation.rewritten_sources)
     assert (
         ClosedParameterConveyorDetector().detect(
-            rewritten_snapshot.parsed_modules,
+            ParsedModuleSet.of(rewritten_snapshot.parsed_modules),
             DetectorConfig(),
         )
         == []
@@ -583,10 +585,10 @@ def test_parameter_conveyor_rewrite_targets_multiple_calls_on_one_line_exactly()
     )
     module = _module("pkg.same_line", source)
     findings = ClosedParameterConveyorDetector().detect(
-        [module],
+        ParsedModuleSet.of([module]),
         DetectorConfig(),
     )
-    snapshot = CodemodSourceSnapshot.from_modules((module,), findings)
+    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of((module,)), findings)
 
     plan = codemod_plan_from_findings(findings, selector_context=snapshot)
     simulation = snapshot.simulate_rewrites(
@@ -618,10 +620,10 @@ def test_parameter_conveyor_rewrite_preserves_a_private_method_receiver() -> Non
     )
     module = _module("pkg.method", source)
     findings = ClosedParameterConveyorDetector().detect(
-        [module],
+        ParsedModuleSet.of([module]),
         DetectorConfig(),
     )
-    snapshot = CodemodSourceSnapshot.from_modules((module,), findings)
+    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of((module,)), findings)
 
     plan = codemod_plan_from_findings(findings, selector_context=snapshot)
     simulation = snapshot.simulate_rewrites(
@@ -656,10 +658,10 @@ def test_parameter_conveyor_rewrite_preserves_cross_module_identity() -> None:
     )
     modules = (authority_module, worker_module)
     findings = ClosedParameterConveyorDetector().detect(
-        modules,
+        ParsedModuleSet.of(modules),
         DetectorConfig(),
     )
-    snapshot = CodemodSourceSnapshot.from_modules(modules, findings)
+    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(modules), findings)
 
     plan = codemod_plan_from_findings(findings, selector_context=snapshot)
     simulation = snapshot.simulate_rewrites(
@@ -694,10 +696,10 @@ def test_parameter_conveyor_rewrite_avoids_existing_carrier_name_bindings() -> N
         ),
     )
     findings = ClosedParameterConveyorDetector().detect(
-        [module],
+        ParsedModuleSet.of([module]),
         DetectorConfig(),
     )
-    snapshot = CodemodSourceSnapshot.from_modules((module,), findings)
+    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of((module,)), findings)
 
     plan = codemod_plan_from_findings(findings, selector_context=snapshot)
     simulation = snapshot.simulate_rewrites(
@@ -741,11 +743,11 @@ def test_parameter_conveyor_recipe_rejects_lossy_source_reconstruction(
         ),
     )
     findings = ClosedParameterConveyorDetector().detect(
-        [module],
+        ParsedModuleSet.of([module]),
         DetectorConfig(),
     )
     assert len(findings) == 1
-    snapshot = CodemodSourceSnapshot.from_modules((module,), findings)
+    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of((module,)), findings)
 
     plan = codemod_plan_from_findings(findings, selector_context=snapshot)
 
@@ -987,7 +989,7 @@ def test_callable_used_as_attribute_receiver_blocks_signature_collapse(
         builder.assessed_components()[0].proof.violations
     )
     assert builder.proven_components() == ()
-    assert ClosedParameterConveyorDetector().detect([module], DetectorConfig()) == []
+    assert ClosedParameterConveyorDetector().detect(ParsedModuleSet.of([module]), DetectorConfig()) == []
 
 
 def test_possible_callable_escape_blocks_signature_collapse(
@@ -1012,13 +1014,13 @@ def test_possible_callable_escape_blocks_signature_collapse(
     builder = _builder(module)
     escapes = builder.repository.callable_escapes_for("escape._build")
     assert len(escapes) == 1
-    assert escapes[0].target_resolution.declaration is None
+    assert not isinstance(escapes[0].target_resolution, ResolvedCompactFunctionTarget)
     assert "escape._build" in escapes[0].target_resolution.possible_symbols
     assert ClosedParameterConveyorAuthorityViolation.ESCAPING_CALLABLE_REFERENCE in (
         builder.assessed_components()[0].proof.violations
     )
     assert builder.proven_components() == ()
-    assert ClosedParameterConveyorDetector().detect([module], DetectorConfig()) == []
+    assert ClosedParameterConveyorDetector().detect(ParsedModuleSet.of([module]), DetectorConfig()) == []
 
 
 def test_public_participant_is_not_treated_as_a_closed_repository_boundary() -> None:

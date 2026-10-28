@@ -85,7 +85,7 @@ def test_two_protocol_records_with_the_same_fields_are_a_coincidence():
         OverlapReceiptKind.SEPARATE_FAMILIES,
     } <= _kinds(candidate)
     assert candidate.confidence <= 0.5
-    assert not candidate.move_permitted
+    assert not candidate.permitted
     assert {receipt.kind for receipt in candidate.refusals} == {
         OverlapReceiptKind.DIFFERENT_CONSTRUCTION,
         OverlapReceiptKind.IDENTITY_DECLARED,
@@ -115,7 +115,7 @@ def test_a_class_restating_another_with_an_extra_base_composes_it():
     assert candidate.confidence > 0.5
 
 
-def test_a_type_test_on_either_class_refuses_the_move_and_says_where():
+def test_a_type_test_on_the_owner_refuses_the_move_and_says_where():
     (plain,) = _verdicts(("pkg.surface", SURFACE))
     (tested,) = _verdicts(
         (
@@ -125,11 +125,24 @@ def test_a_type_test_on_either_class_refuses_the_move_and_says_where():
             + "    return isinstance(value, FunctionFamilyEvidenceSurface)\n",
         )
     )
-    assert plain.move_permitted
+    assert plain.permitted
     (refusal,) = tested.refusals
     assert refusal.kind is OverlapReceiptKind.IDENTITY_USED
     assert refusal.evidence[0].symbol == "is_family"
     assert tested.confidence == plain.confidence
+
+
+def test_a_type_test_on_the_composing_class_leaves_the_composition_permitted():
+    (tested,) = _verdicts(
+        (
+            "pkg.surface",
+            SURFACE
+            + "\n\ndef is_candidate(value):\n"
+            + "    return isinstance(value, FunctionEvidenceLocationsCandidate)\n",
+        )
+    )
+    assert tested.move is ComposeExisting
+    assert tested.permitted
 
 
 def test_identical_bodies_bases_and_construction_delete_the_restating_class():
@@ -264,3 +277,58 @@ def test_a_block_an_existing_owner_declares_is_composed_from_that_owner():
         "ProofEdge",
     }
     assert OverlapReceiptKind.EXISTING_OWNER in _kinds(candidate)
+
+
+SPREAD = (
+    "pkg.summaries",
+    "class Scope:\n    file_path: str\n    finding_ids: tuple[str, ...]\n\n\n"
+    "class ModuleSummary(Scope):\n    module_name: str\n\n\n"
+    "class EvidenceSummary:\n"
+    "    file_path: str\n    line: int\n    finding_ids: tuple[str, ...]\n    message: str\n\n\n"
+    "class FunctionSummary(Scope):\n    line: int\n    name: str\n",
+)
+
+
+def test_a_block_restated_through_an_inherited_mixin_is_still_a_verdict():
+    """#96: FunctionSummary inherits file_path and finding_ids from Scope and
+    declares line itself; EvidenceSummary declares all three. Own bodies share
+    one declaration, so only the MRO shows the restatement."""
+
+    verdicts = {
+        frozenset((candidate.owner.symbol, *candidate.restating_symbols)): candidate
+        for candidate in _verdicts(SPREAD)
+    }
+    verdict = verdicts[
+        frozenset(("pkg.summaries.EvidenceSummary", "pkg.summaries.FunctionSummary"))
+    ]
+
+    assert verdict.shape is ClassOverlapShape.MISSING_MIXIN
+    assert set(verdict.shared_names) == {"file_path", "line", "finding_ids"}
+    assert not verdict.permitted
+    assert {
+        receipt.detail
+        for receipt in verdict.refusals
+        if receipt.kind is OverlapReceiptKind.INHERITED_DECLARATION
+    } == {
+        "`FunctionSummary` inherits `file_path` from `Scope`: the move deletes only "
+        "declarations a class makes itself",
+        "`FunctionSummary` inherits `finding_ids` from `Scope`: the move deletes only "
+        "declarations a class makes itself",
+    }
+    inherited_sites = {
+        (location.file_path, location.symbol)
+        for receipt in verdict.receipts
+        if receipt.kind is OverlapReceiptKind.INHERITED_DECLARATION
+        for location in receipt.evidence
+    }
+    assert ("pkg/summaries.py", "Scope.file_path") in inherited_sites
+
+
+def test_classes_inheriting_one_declaration_from_one_ancestor_restate_nothing():
+    verdicts = _verdicts(SPREAD)
+
+    assert not any(
+        {candidate.owner.symbol, *candidate.restating_symbols}
+        == {"pkg.summaries.ModuleSummary", "pkg.summaries.FunctionSummary"}
+        for candidate in verdicts
+    )

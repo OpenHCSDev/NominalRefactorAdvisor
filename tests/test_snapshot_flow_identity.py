@@ -6,6 +6,7 @@ import pickle
 
 import pytest
 
+from nominal_refactor_advisor.ast_tools import ParsedModuleSet
 from nominal_refactor_advisor import class_index, product_flow
 from nominal_refactor_advisor.class_index import RepositoryModuleBindingProof
 from nominal_refactor_advisor.codemod_runtime import CodemodSourceSnapshot
@@ -51,7 +52,7 @@ def test_structurally_equal_parsed_owners_do_not_share_execution_or_observations
 
 def test_snapshot_retains_supplied_parsed_owner_across_all_lookups():
     module = snapshot().parsed_modules[0]
-    state = CodemodSourceSnapshot.from_modules((module,))
+    state = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of((module,)))
     assert state.parsed_modules[0] is module
     assert state.parsed_module_for_source_path(module.file_path) is module
     assert state.module_binding_proof.modules[0] is module

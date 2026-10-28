@@ -86,7 +86,7 @@ def test_later_non_string_value_never_revives_old_literal(replacement):
     assert subject.direct_constant_string_assignments == ()
     if replacement == "None":
         assert row.value.require_mapping_key() is None
-        assert row.value_is_none_literal
+        assert row.value.value_is_none_literal
         assert "x" not in subject.direct_non_none_assignment_names
     else:
         with pytest.raises(ValueError, match="unproved"):

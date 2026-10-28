@@ -11,9 +11,10 @@ declare with different answers, and what each keeps alone.
 
 from __future__ import annotations
 
+from abc import ABC, abstractmethod
 from collections import defaultdict
 from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from functools import cached_property
 from itertools import combinations
 from typing import NamedTuple
@@ -24,6 +25,7 @@ from .class_index import (
     CompactIndexedClass,
     CompactModuleClassHeader,
     CompactRepositoryPublicExposureIndex,
+    StarSettlements,
 )
 
 
@@ -35,11 +37,29 @@ class ClassBodyDeclarationIdentity(NamedTuple):
     star_bindings: tuple[tuple[str, str], ...]
 
 
-class ClassBodyDeclaration(NamedTuple):
-    """One declaration of one class, with its identity when every name is bound."""
+@dataclass(frozen=True)
+class ClassBodyDeclaration(ABC):
+    """One declaration of one class; its subtype says whether its identity is proved."""
 
     declaration: ClassBodyDeclarationDigest
-    identity: ClassBodyDeclarationIdentity | None
+
+    @property
+    @abstractmethod
+    def identities(self) -> tuple[ClassBodyDeclarationIdentity, ...]:
+        """The proved identity, if any, as the declarations that can share it."""
+        raise NotImplementedError
+
+    @abstractmethod
+    def has_identity(self, identity: ClassBodyDeclarationIdentity) -> bool:
+        raise NotImplementedError
+
+    @abstractmethod
+    def same_declaration_as(self, other: ClassBodyDeclaration) -> bool:
+        raise NotImplementedError
+
+    @abstractmethod
+    def require_proved(self, spelling: str) -> ProvedClassBodyDeclaration:
+        raise NotImplementedError
 
     @property
     def name(self) -> str:
@@ -54,13 +74,61 @@ class ClassBodyDeclaration(NamedTuple):
         return self.declaration.line
 
 
+@dataclass(frozen=True)
+class ProvedClassBodyDeclaration(ClassBodyDeclaration):
+    """A declaration every name of which the repository binds."""
+
+    identity: ClassBodyDeclarationIdentity
+
+    @property
+    def identities(self) -> tuple[ClassBodyDeclarationIdentity, ...]:
+        return (self.identity,)
+
+    def has_identity(self, identity: ClassBodyDeclarationIdentity) -> bool:
+        return self.identity == identity
+
+    def same_declaration_as(self, other: ClassBodyDeclaration) -> bool:
+        return other.has_identity(self.identity)
+
+    def require_proved(self, spelling: str) -> ProvedClassBodyDeclaration:
+        return self
+
+
+@dataclass(frozen=True)
+class UnprovedClassBodyDeclaration(ClassBodyDeclaration):
+    """A declaration reading a name nothing provably binds: never the same as another."""
+
+    @property
+    def identities(self) -> tuple[ClassBodyDeclarationIdentity, ...]:
+        return ()
+
+    def has_identity(self, identity: ClassBodyDeclarationIdentity) -> bool:
+        return False
+
+    def same_declaration_as(self, other: ClassBodyDeclaration) -> bool:
+        return False
+
+    def require_proved(self, spelling: str) -> ProvedClassBodyDeclaration:
+        raise ValueError(f"{spelling} reads names nothing binds")
+
+
 class SharedClassBodyDeclaration(NamedTuple):
-    """One declaration two classes both make, with each one's line."""
+    """One declaration two classes both make, with the class that makes each
+    copy and its line: the class itself, or an ancestor it inherits it from."""
 
     kind: ClassBodyDeclarationKind
     name: str
     first_line: int
     second_line: int
+    first_owner: CompactIndexedClass
+    second_owner: CompactIndexedClass
+
+
+class ResolvedClassBodyDeclaration(NamedTuple):
+    """A declaration a class has through its MRO, and the class that makes it."""
+
+    declaration: ClassBodyDeclaration
+    owner: CompactIndexedClass
 
 
 class DivergentClassBodyDeclaration(NamedTuple):
@@ -96,16 +164,15 @@ class ClassBodyOverlap:
             second_declaration = second_declarations.get(name)
             if second_declaration is None:
                 continue
-            if (
-                first_declaration.identity is not None
-                and first_declaration.identity == second_declaration.identity
-            ):
+            if first_declaration.same_declaration_as(second_declaration):
                 shared.append(
                     SharedClassBodyDeclaration(
                         first_declaration.kind,
                         name,
                         first_declaration.line,
                         second_declaration.line,
+                        first,
+                        second,
                     )
                 )
             else:
@@ -129,6 +196,66 @@ class ClassBodyOverlap:
                 for name, declaration in second_declarations.items()
                 if name not in first_declarations
             ),
+        )
+
+    def with_inherited(
+        self,
+        first_resolved: Mapping[str, ResolvedClassBodyDeclaration],
+        second_resolved: Mapping[str, ResolvedClassBodyDeclaration],
+    ) -> ClassBodyOverlap:
+        """This overlap with the declarations one class makes and the other
+        inherits identically from an ancestor that is not the first's owner.
+
+        Two classes inheriting one declaration from one ancestor share it
+        through that ancestor, which restates nothing; two ancestors making it
+        are their own overlap. So a declaration counts only when one of the
+        two classes makes it itself and the other's copy has another owner.
+        """
+
+        own = {shared.name for shared in self.shared}
+        inherited: list[SharedClassBodyDeclaration] = []
+        for name in sorted(set(first_resolved) & set(second_resolved) - own):
+            first, second = first_resolved[name], second_resolved[name]
+            if first.owner.symbol == second.owner.symbol:
+                continue
+            if (
+                first.owner.symbol != self.first.symbol
+                and second.owner.symbol != self.second.symbol
+            ):
+                continue
+            if not first.declaration.same_declaration_as(second.declaration):
+                continue
+            inherited.append(
+                SharedClassBodyDeclaration(
+                    first.declaration.kind,
+                    name,
+                    first.declaration.line,
+                    second.declaration.line,
+                    first.owner,
+                    second.owner,
+                )
+            )
+        names = frozenset(shared.name for shared in inherited)
+        return replace(
+            self,
+            shared=(*self.shared, *inherited),
+            first_only=tuple(
+                declaration for declaration in self.first_only if declaration.name not in names
+            ),
+            second_only=tuple(
+                declaration for declaration in self.second_only if declaration.name not in names
+            ),
+        )
+
+    @property
+    def inherited(self) -> tuple[SharedClassBodyDeclaration, ...]:
+        """Shared declarations one of the two classes inherits instead of making."""
+
+        return tuple(
+            shared
+            for shared in self.shared
+            if shared.first_owner.symbol != self.first.symbol
+            or shared.second_owner.symbol != self.second.symbol
         )
 
     @property
@@ -186,9 +313,8 @@ class ClassBodyIndex:
 
         return {
             symbol: {
-                declaration.name: ClassBodyDeclaration(
-                    declaration,
-                    self._identity(indexed_class.module_name, declaration),
+                declaration.name: self._declaration(
+                    indexed_class.module_name, declaration
                 )
                 for declaration in indexed_class.body_declarations
             }
@@ -198,13 +324,27 @@ class ClassBodyIndex:
     def declarations_of(self, symbol: str) -> Mapping[str, ClassBodyDeclaration]:
         return self.declarations_by_symbol[symbol]
 
+    def resolved_declarations_of(
+        self, mro_prefix: Sequence[CompactIndexedClass]
+    ) -> Mapping[str, ResolvedClassBodyDeclaration]:
+        """A class's declarations through the known prefix of its MRO: the
+        first class there that makes a name answers it."""
+
+        resolved: dict[str, ResolvedClassBodyDeclaration] = {}
+        for owner in mro_prefix:
+            if owner.symbol not in self.declarations_by_symbol:
+                continue
+            for name, declaration in self.declarations_by_symbol[owner.symbol].items():
+                resolved.setdefault(name, ResolvedClassBodyDeclaration(declaration, owner))
+        return resolved
+
     @cached_property
     def holders(self) -> Mapping[ClassBodyDeclarationIdentity, tuple[str, ...]]:
         holders: dict[ClassBodyDeclarationIdentity, list[str]] = defaultdict(list)
         for symbol, declarations in self.declarations_by_symbol.items():
             for declaration in declarations.values():
-                if declaration.identity is not None:
-                    holders[declaration.identity].append(symbol)
+                for identity in declaration.identities:
+                    holders[identity].append(symbol)
         return {identity: tuple(symbols) for identity, symbols in holders.items()}
 
     @cached_property
@@ -244,20 +384,28 @@ class ClassBodyIndex:
             if overlap.first.symbol in wanted and overlap.second.symbol in wanted
         )
 
-    def _identity(
+    def _declaration(
         self, module_name: str, declaration: ClassBodyDeclarationDigest
-    ) -> ClassBodyDeclarationIdentity | None:
+    ) -> ClassBodyDeclaration:
+        """Pick the proved or unproved declaration once, where the evidence is."""
+
         if declaration.unbound:
-            return None
-        star_bindings: list[tuple[str, str]] = []
-        for deferred in declaration.deferred:
-            qualified_name = self.exposure.star_settled_binding(
-                module_name, deferred.name, deferred.unshadowed
+            return UnprovedClassBodyDeclaration(declaration)
+        settlements = StarSettlements.keyed(
+            (
+                deferred.name,
+                self.exposure.star_settlement(
+                    module_name, deferred.name, deferred.unshadowed
+                ),
             )
-            if qualified_name is None:
-                return None
-            star_bindings.append((deferred.name, qualified_name))
-        return ClassBodyDeclarationIdentity(declaration.digest, tuple(star_bindings))
+            for deferred in declaration.deferred
+        )
+        if settlements.unsettled:
+            return UnprovedClassBodyDeclaration(declaration)
+        return ProvedClassBodyDeclaration(
+            declaration,
+            ClassBodyDeclarationIdentity(declaration.digest, settlements.settled),
+        )
 
 
 __all__ = (
@@ -265,6 +413,9 @@ __all__ = (
     "ClassBodyDeclarationIdentity",
     "ClassBodyIndex",
     "ClassBodyOverlap",
+    "ProvedClassBodyDeclaration",
+    "ResolvedClassBodyDeclaration",
+    "UnprovedClassBodyDeclaration",
     "DivergentClassBodyDeclaration",
     "SharedClassBodyDeclaration",
 )

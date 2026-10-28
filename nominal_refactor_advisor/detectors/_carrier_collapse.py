@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 
-from ..ast_tools import ParsedModule
+from ..ast_tools import ParsedModule, ParsedModuleSet
 from ..carrier_collapse import ClosedCarrierCollapseComponent
 from ..carrier_expansion import DeclaredCarrierExpansionBuilder
 from ..class_index import CompactModuleClassProjectionFamily
@@ -50,7 +50,7 @@ class CarrierCollapseCandidateDetector(
 
     def _candidate_items(
         self,
-        modules: list[ParsedModule],
+        modules: ParsedModuleSet,
         config: DetectorConfig,
     ) -> tuple[ClosedCarrierCollapseComponent, ...]:
         del config

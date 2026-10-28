@@ -1,0 +1,62 @@
+{
+ "tree": "feat/92 c2c3c04 merged with ci/84-type-checker 4dd2ecc",
+ "dmypy_warmup_seconds": 8.5,
+ "static_pairs": {
+  "probe_sites": 266,
+  "owner_resolved_own_class": 38,
+  "owner_resolved_foreign_class": 21,
+  "owner_unresolved": 207,
+  "unresolved_reasons": {
+   "`\u2026": 164,
+   "`\u2026 is reached through an attribute; its holder's field type is not followed": 19,
+   "annotation `\u2026 is not one class": 9,
+   "`\u2026 is a Call expression, not a declared name": 8,
+   "`\u2026 is probed outside a function": 3,
+   "`\u2026 is a NamedExpr expression, not a declared name": 2,
+   "annotation `\u2026 binds to nothing in its module": 2
+  },
+  "foreign_owners": {
+   "argparse.Namespace": 7,
+   "ast.arguments": 4,
+   "tree_sitter.Node": 3,
+   "ast.stmt": 2,
+   "ast.FunctionDef": 1,
+   "ast.alias": 1,
+   "ast.ImportFrom": 1,
+   "ast.ClassDef": 1,
+   "ast.ExceptHandler": 1
+  },
+  "pairs": 27,
+  "pairs_declared_optional_on_frozen_dataclass": 17,
+  "pairs_decidable": 0
+ },
+ "dmypy_types": {
+  "unannotated_receivers": 164,
+  "receiver_kinds": {
+   "own class": 119,
+   "foreign class": 40,
+   "any": 2,
+   "union": 2,
+   "type object": 1
+  },
+  "frozen_optional_pairs": 17,
+  "undecided_arguments_inspected": 36,
+  "arguments_present_by_type": 25,
+  "pairs_decidable_with_types": 4,
+  "pairs_decidable": [
+   "nominal_refactor_advisor.analysis.CachedAnalysisResult.cache_identity",
+   "nominal_refactor_advisor.analysis.CachedAnalysisResult.previous_cache_identity",
+   "nominal_refactor_advisor.cases_family.Scope.function",
+   "nominal_refactor_advisor.lexical_bindings.FunctionParameterSource.default"
+  ],
+  "inspect_calls": 200,
+  "inspect_seconds_mean": 0.0805,
+  "inspect_seconds_max": 0.5506
+ },
+ "typed_receivers_by_field": {
+  "distinct_pairs": 72,
+  "optional_frozen": 70,
+  "optional_not_frozen": 15,
+  "not_declared_directly": 34
+ }
+}

@@ -22,6 +22,9 @@ from dataclasses import dataclass, field
 from functools import cached_property
 from pathlib import Path
 
+from .ast_field_decoders import declared_annotations
+from .ast_projection import StatementValue
+from .value_expression import CompactValueExpression
 from .ast_tools import (
     AstParentIndex,
     BuiltinCallName,
@@ -51,7 +54,11 @@ from .enum_keyed_query import (
     EnumKeyedDerivedMapFacadeComponentBuilder,
 )
 from .foreign_family import FunctionDefinition
-from .lexical_bindings import LEXICAL_SCOPE_BINDING_AUTHORITY, ImportFromModuleName
+from .lexical_bindings import (
+    LEXICAL_SCOPE_BINDING_AUTHORITY,
+    ImportBoundNameProjection,
+    ImportFromModuleName,
+)
 from .semantic_descent import AuthorityClaim, SemanticAuthorityKind
 
 
@@ -442,8 +449,7 @@ class Guard(ABC):
             if (
                 isinstance(left, ast.Attribute)
                 and _is_name(left.value, subject)
-                and isinstance(right, ast.Constant)
-                and right.value is None
+                and CompactValueExpression.project(right).value_is_none_literal
                 and isinstance(operator, ast.Is | ast.IsNot)
             ):
                 return PropertyIsNone(left.attr, negated)
@@ -516,8 +522,7 @@ class PropertyIsNone(Guard):
         if (
             len(body) == 1
             and isinstance(body[0], ast.Return)
-            and isinstance(body[0].value, ast.Constant)
-            and body[0].value.value is None
+            and StatementValue.of(body[0]).compact_value().value_is_none_literal
         ):
             return not self.negated
         if found.returns is not None and "None" not in ast.unparse(found.returns):
@@ -615,7 +620,7 @@ class Rewrite:
             alias.name
             for statement in statements
             for alias in statement.names
-            if alias.asname is None
+            if ImportBoundNameProjection(statement).alias_bound_name(alias) == alias.name
         }
         missing = sorted(set(names) - bound, key=alias_order)
         if not missing:
@@ -763,10 +768,10 @@ class Rewrite:
                 for source, name in self.imports.get(module.file_path, ())
                 if source == ImportFromModuleName.from_node(statement).source
                 and name
-                not in {alias.asname or alias.name for alias in statement.names}
+                not in ImportBoundNameProjection(statement).names()
             )
             for alias in statement.names:
-                local = alias.asname or alias.name
+                local = ImportBoundNameProjection(statement).alias_bound_name(alias)
                 if local in replaced:
                     # The local itself keeps its authored alias (``X as X`` re-exports).
                     aliases.extend(
@@ -798,7 +803,7 @@ class Rewrite:
             present = {
                 (
                     ImportFromModuleName.from_node(statement).source,
-                    alias.asname or alias.name,
+                    ImportBoundNameProjection(statement).alias_bound_name(alias),
                 )
                 for statement in module.module.body
                 if isinstance(statement, ast.ImportFrom)
@@ -1935,11 +1940,11 @@ def _is_any_name(node: ast.AST, names: Iterable[str]) -> bool:
 
 def _annotations(node: ast.AST) -> tuple[ast.expr, ...]:
     if isinstance(node, ast.arg):
-        return () if node.annotation is None else (node.annotation,)
+        return declared_annotations(node)
     if isinstance(node, ast.AnnAssign):
         return (node.annotation,)
     if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
-        return () if node.returns is None else (node.returns,)
+        return declared_annotations(node)
     return ()
 
 

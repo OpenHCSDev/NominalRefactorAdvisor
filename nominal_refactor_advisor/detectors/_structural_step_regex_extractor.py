@@ -8,6 +8,7 @@ from collections.abc import Callable, Hashable
 from dataclasses import dataclass
 from typing import ClassVar, Generic, TypeVar
 
+from ..value_expression import CompactValueExpression
 from ..ast_tools import ParsedModule, _walk_nodes
 from ..collection_algebra import sorted_tuple
 from ..semantic_match import (
@@ -84,7 +85,7 @@ class ClassMethodGroupsShapeProjector(Generic[_ParsedFamilyMethod, _ShapeKey]):
         groups: list[tuple[ast.ClassDef, tuple[_ParsedFamilyMethod, ...]]] = []
         for class_node in (
             node
-            for node in _walk_nodes(module.module)
+            for node in module.syntax_index.breadth_first_nodes
             if isinstance(node, ast.ClassDef)
         ):
             grouped: dict[_ShapeKey, list[_ParsedFamilyMethod]] = defaultdict(list)
@@ -294,9 +295,8 @@ class _RegexGroupExtractorMethod:
         conditional = as_ast(returned.value, ast.IfExp)
         if conditional is None or name_id(conditional.test) != assignment.target_name:
             return None
-        none_orelse = as_ast(conditional.orelse, ast.Constant)
         group_call = as_ast(conditional.body, ast.Call)
-        if none_orelse is None or none_orelse.value is not None or group_call is None:
+        if not CompactValueExpression.project(conditional.orelse).value_is_none_literal or group_call is None:
             return None
         group = attribute_call_match(
             group_call,
@@ -322,7 +322,7 @@ def _regex_group_extractor_family_candidates(
 ) -> tuple[RegexGroupExtractorFamilyCandidate, ...]:
     candidates: list[RegexGroupExtractorFamilyCandidate] = []
     for class_node in (
-        node for node in _walk_nodes(module.module) if isinstance(node, ast.ClassDef)
+        node for node in module.syntax_index.breadth_first_nodes if isinstance(node, ast.ClassDef)
     ):
         methods = tuple(
             (

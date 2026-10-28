@@ -16,11 +16,17 @@ from collections.abc import Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
+from typing import TypeVar
 
-from .ast_tools import BuiltinCallName, ParsedModule, module_syntax_index
+from .ast_field_decoders import ParameterAnnotations
+from .lexical_bindings import ImportAlias, ImportBoundNameProjection
+from .ast_projection import CallKeywords, StatementValues
+from .ast_tools import BuiltinCallName, ParsedModule
 from .declared_root import DeclaredRoot
 from .models import SourceLocation
+from .class_index import ModuleNominalBindingAuthority
 from .observation_families import ShapeFamily
+from .probe_owner import ProbeOwner, ProbeOwnerResolver
 from .python_module_identity import PythonModulePathIdentity
 
 # A subject needs this many distinct string arms before it is a family spelled out.
@@ -56,16 +62,18 @@ class RestatingSiteModule:
     sites: tuple[RestatingSite, ...]
 
 
-class RestatingSiteFamily(ShapeFamily[RestatingSiteModule], ABC):
+RestatingSiteModuleT = TypeVar("RestatingSiteModuleT", bound=RestatingSiteModule)
+
+
+class RestatingSiteFamily(ShapeFamily[RestatingSiteModuleT], ABC):
     """A family of restating sites; subclasses declare only what they match."""
 
     _registry_skip = True
-    item_type = RestatingSiteModule
 
     @classmethod
-    def collect(cls, parsed_module: ParsedModule) -> list[RestatingSiteModule]:
+    def collect(cls, parsed_module: ParsedModule) -> list[RestatingSiteModuleT]:
         return [
-            RestatingSiteModule(
+            cls.item_type(
                 module_name=parsed_module.module_name,
                 sites=tuple(cls.sites(parsed_module)),
             )
@@ -126,12 +134,14 @@ def _literal_strings(node: ast.expr) -> tuple[str, ...] | None:
     return None
 
 
-class StringDispatchSiteFamily(RestatingSiteFamily):
+class StringDispatchSiteFamily(RestatingSiteFamily[RestatingSiteModule]):
     """One subject compared against several string literals inside one function."""
+
+    item_type = RestatingSiteModule
 
     @classmethod
     def sites(cls, parsed_module: ParsedModule) -> Iterator[RestatingSite]:
-        index = module_syntax_index(parsed_module.module)
+        index = parsed_module.syntax_index
         # (function, subject) -> node -> (symbol, literals compared at that node)
         arms: dict[tuple[int, str], dict[ast.AST, tuple[str, set[str]]]] = defaultdict(
             dict
@@ -207,15 +217,13 @@ def imported_module_names(parsed_module: ParsedModule) -> frozenset[str]:
     """Names this module binds with `import x` / `import x as y`: modules, not instances."""
 
     return frozenset(
-        alias.asname or alias.name.partition(".")[0]
-        for _node_index, node in module_syntax_index(
-            parsed_module.module
-        ).indexed_nodes_of_type(ast.Import)
-        for alias in node.names
+        name
+        for _node_index, node in parsed_module.syntax_index.indexed_nodes_of_type(ast.Import)
+        for name in ImportBoundNameProjection(node).names()
     )
 
 
-class NamedAttributeSiteFamily(RestatingSiteFamily):
+class NamedAttributeSiteFamily(RestatingSiteFamily[RestatingSiteModule]):
     """getattr/hasattr/setattr/delattr by a literal name, or by a module constant holding one.
 
     A name computed at run time (read from `_fields`, a loop variable) restates
@@ -225,9 +233,11 @@ class NamedAttributeSiteFamily(RestatingSiteFamily):
     what this platform build provides, which no declaration of ours can hold.
     """
 
+    item_type = RestatingSiteModule
+
     @classmethod
     def sites(cls, parsed_module: ParsedModule) -> Iterator[RestatingSite]:
-        index = module_syntax_index(parsed_module.module)
+        index = parsed_module.syntax_index
         constants = cls.string_constants(parsed_module)
         modules = imported_module_names(parsed_module)
         names = BuiltinCallName.attribute_access_names()
@@ -314,12 +324,14 @@ class _KeyViewSyntax:
         return tuple(sorted(set(keys)))
 
 
-class ExactKeySetSiteFamily(RestatingSiteFamily):
+class ExactKeySetSiteFamily(RestatingSiteFamily[RestatingSiteModule]):
     """A literal key collection compared with, or subtracted from, a mapping's keys."""
+
+    item_type = RestatingSiteModule
 
     @classmethod
     def sites(cls, parsed_module: ParsedModule) -> Iterator[RestatingSite]:
-        index = module_syntax_index(parsed_module.module)
+        index = parsed_module.syntax_index
         keyed = cls.string_keyed_receivers(index)
         for node_index, node in (
             *index.indexed_nodes_of_type(ast.Compare),
@@ -420,13 +432,32 @@ class ExactKeySetSiteFamily(RestatingSiteFamily):
                 return
 
 
-class ForeignAbsenceSiteFamily(RestatingSiteFamily):
+@dataclass(frozen=True)
+class ForeignAbsenceSite(RestatingSite):
+    """A foreign absence probe with the class its receiver is declared as."""
+
+    owner: ProbeOwner
+
+
+@dataclass(frozen=True)
+class ForeignAbsenceSiteModule(RestatingSiteModule):
+    """One module's foreign absence probes, each with its owner."""
+
+    sites: tuple[ForeignAbsenceSite, ...]
+
+
+class ForeignAbsenceSiteFamily(RestatingSiteFamily[ForeignAbsenceSiteModule]):
     """`other.attr is None` and `is not None` on an object that is not the method's own."""
 
+    item_type = ForeignAbsenceSiteModule
+
     @classmethod
-    def sites(cls, parsed_module: ParsedModule) -> Iterator[RestatingSite]:
-        index = module_syntax_index(parsed_module.module)
+    def sites(cls, parsed_module: ParsedModule) -> Iterator[ForeignAbsenceSite]:
+        index = parsed_module.syntax_index
         modules = imported_module_names(parsed_module)
+        resolver = ProbeOwnerResolver(
+            parsed_module.file_path, ModuleNominalBindingAuthority(parsed_module)
+        )
         for node_index, node in index.indexed_nodes_of_type(ast.Compare):
             match node:
                 case ast.Compare(
@@ -439,14 +470,19 @@ class ForeignAbsenceSiteFamily(RestatingSiteFamily):
                     continue
             if cls.is_own_or_module(receiver, node_index, index, modules):
                 continue
-            yield cls.site(
-                parsed_module,
-                node,
-                index.lexical_symbol(node_index),
-                ast.unparse(receiver),
-                (
+            function = index.scopes[index.scope_ids[node_index]].executable_function_index
+            yield ForeignAbsenceSite(
+                file_path=parsed_module.file_path,
+                lineno=node.lineno,
+                symbol=index.lexical_symbol(node_index),
+                group=ast.unparse(receiver),
+                detail=(
                     attribute,
                     "is None" if isinstance(operator, ast.Is) else "is not None",
+                ),
+                owner=resolver.owner(
+                    receiver,
+                    index.depth_first_nodes[function] if function >= 0 else node,
                 ),
             )
 
@@ -474,7 +510,7 @@ class ForeignAbsenceSiteFamily(RestatingSiteFamily):
         )
 
 
-class ForwardingFacadeSiteFamily(RestatingSiteFamily):
+class ForwardingFacadeSiteFamily(RestatingSiteFamily[RestatingSiteModule]):
     """A class whose members only forward to an object it holds in an attribute.
 
     The first site of a facade is the class itself (detail: held class, or "" when
@@ -482,12 +518,14 @@ class ForwardingFacadeSiteFamily(RestatingSiteFamily):
     kind, target). A facade needs two forwards to one held attribute.
     """
 
+    item_type = RestatingSiteModule
+
     MIN_FORWARDS = 2
     CLASS_SITE = "class"
 
     @classmethod
     def sites(cls, parsed_module: ParsedModule) -> Iterator[RestatingSite]:
-        index = module_syntax_index(parsed_module.module)
+        index = parsed_module.syntax_index
         for node_index, node in index.indexed_nodes_of_type(ast.ClassDef):
             held = cls.held_attributes(node)
             forwards: dict[str, list[tuple[ast.FunctionDef, str, str]]] = defaultdict(
@@ -533,13 +571,16 @@ class ForwardingFacadeSiteFamily(RestatingSiteFamily):
                 held[statement.target.id] = cls.annotated_class(statement.annotation)
             if isinstance(statement, ast.FunctionDef) and statement.name == "__init__":
                 annotations = {
-                    argument.arg: cls.annotated_class(argument.annotation)
-                    for argument in (
-                        *statement.args.posonlyargs,
-                        *statement.args.args,
-                        *statement.args.kwonlyargs,
+                    argument.arg: cls.annotated_class(
+                        argument.annotation
                     )
-                    if argument.annotation is not None
+                    for argument in ParameterAnnotations.of(
+                        (
+                            *statement.args.posonlyargs,
+                            *statement.args.args,
+                            *statement.args.kwonlyargs,
+                        )
+                    ).annotated
                 }
                 for assigned in statement.body:
                     match assigned:
@@ -708,7 +749,7 @@ class LegacyWord(StrEnum):
         ) or bool(re.search(r"backwards?[ -]compatib", lowered))
 
 
-class LegacyMarkerSiteFamily(RestatingSiteFamily):
+class LegacyMarkerSiteFamily(RestatingSiteFamily[RestatingSiteModule]):
     """A path that says it is the old one, beside what replaces it.
 
     Three self-declarations count: a deprecation mechanism (a `warn` of a
@@ -718,9 +759,11 @@ class LegacyMarkerSiteFamily(RestatingSiteFamily):
     A name that merely contains a marker word, with no sibling, is not one.
     """
 
+    item_type = RestatingSiteModule
+
     @classmethod
     def sites(cls, parsed_module: ParsedModule) -> Iterator[RestatingSite]:
-        index = module_syntax_index(parsed_module.module)
+        index = parsed_module.syntax_index
         for node_type in (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef):
             for node_index, node in index.indexed_nodes_of_type(node_type):
                 yield from cls.declaration(parsed_module, index, node_index, node)
@@ -753,39 +796,39 @@ class LegacyMarkerSiteFamily(RestatingSiteFamily):
                         argument,
                         ("parameter", "beside its replacement"),
                     )
-        for node_index, node in (
-            *index.indexed_nodes_of_type(ast.Assign),
-            *index.indexed_nodes_of_type(ast.AnnAssign),
-        ):
+        for node_index, assigned in StatementValues.keyed(
+            (*index.indexed_nodes_of_type(ast.Assign),
+             *index.indexed_nodes_of_type(ast.AnnAssign))
+        ).supplied:
+            node = assigned.statement
             owner = index.parent_node(node_index)
-            if node.value is not None and isinstance(owner, (ast.Module, ast.ClassDef)):
-                replacement = cls.aliased(node.value)
-                for target in cls.assigned_names(node):
-                    if replacement is not None and LegacyWord.in_identifier(target):
-                        yield cls.site(
-                            parsed_module,
-                            node,
-                            cls.declared_symbol(
-                                index.lexical_symbol(node_index), target
-                            ),
-                            target,
-                            ("alias", f"of {replacement}"),
-                        )
+            if not isinstance(owner, (ast.Module, ast.ClassDef)):
+                continue
+            replacement = cls.aliased(assigned.value)
+            for target in cls.assigned_names(node):
+                if replacement is not None and LegacyWord.in_identifier(target):
+                    yield cls.site(
+                        parsed_module,
+                        node,
+                        cls.declared_symbol(
+                            index.lexical_symbol(node_index), target
+                        ),
+                        target,
+                        ("alias", f"of {replacement}"),
+                    )
         for node_index, node in index.indexed_nodes_of_type(ast.alias):
             # An alias renames the old path; a plain import of a marked name is its consumer.
-            bound = node.asname or ""
-            if (
-                bound
-                and LegacyWord.in_identifier(bound)
-                and not LegacyWord.in_identifier(node.name)
-            ):
-                yield cls.site(
-                    parsed_module,
-                    node,
-                    cls.declared_symbol(index.lexical_symbol(node_index), bound),
-                    bound,
-                    ("import alias", f"of {node.name}"),
-                )
+            if LegacyWord.in_identifier(node.name):
+                continue
+            for bound in ImportAlias.from_alias(node).legacy_marker_spellings():
+                if LegacyWord.in_identifier(bound):
+                    yield cls.site(
+                        parsed_module,
+                        node,
+                        cls.declared_symbol(index.lexical_symbol(node_index), bound),
+                        bound,
+                        ("import alias", f"of {node.name}"),
+                    )
         for node_index, call in index.indexed_nodes_of_type(ast.Call):
             warned = cls.warned_legacy_class(call)
             if warned is not None:
@@ -948,7 +991,7 @@ class ModuleReferenceFamily(ShapeFamily[ModuleReferenceFacts]):
 
     @classmethod
     def collect(cls, parsed_module: ParsedModule) -> list[ModuleReferenceFacts]:
-        index = module_syntax_index(parsed_module.module)
+        index = parsed_module.syntax_index
         identity = PythonModulePathIdentity(
             path=parsed_module.path,
             import_name=parsed_module.module_name,
@@ -981,9 +1024,10 @@ class ModuleReferenceFamily(ShapeFamily[ModuleReferenceFacts]):
                 for _i, node in index.indexed_nodes_of_type(ast.Attribute)
             ),
             *(
-                (node.arg, node.value.lineno)
-                for _i, node in index.indexed_nodes_of_type(ast.keyword)
-                if node.arg is not None
+                (keyword.name, keyword.value.lineno)
+                for keyword in CallKeywords.of(
+                    node for _i, node in index.indexed_nodes_of_type(ast.keyword)
+                ).named
             ),
         ]
         referenced: dict[str, int] = {}
@@ -1136,8 +1180,10 @@ class ReferenceIndex:
         )
 
 
-class DeadModuleSiteFamily(RestatingSiteFamily):
+class DeadModuleSiteFamily(RestatingSiteFamily[RestatingSiteModule]):
     """A module's own site, so that a finding can point at the module file."""
+
+    item_type = RestatingSiteModule
 
     @classmethod
     def sites(cls, parsed_module: ParsedModule) -> Iterator[RestatingSite]:

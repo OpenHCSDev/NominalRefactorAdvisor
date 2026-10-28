@@ -67,14 +67,10 @@ class HandRolledRegistrationDetector(
             key=lambda item: item.symbol,
         ):
             facts = indexed_class.registry_facts
-            role = (
-                RegistrationRole.METACLASS
-                if facts.stores_created_class
-                else RegistrationRole.SUBCLASS_HOOK
-                if facts.stores_subclass
-                else None
+            roles = RegistrationRole.played(
+                facts.stores_created_class, facts.stores_subclass
             )
-            if role is None:
+            if not roles:
                 continue
             scope = context.cached(
                 (RegistrationOwners, indexed_class.module_name, indexed_class.file_path),
@@ -87,17 +83,13 @@ class HandRolledRegistrationDetector(
             owners = scope.owners_besides(indexed_class.symbol)
             if owners:
                 candidates.append(
-                    HandRolledRegistration(indexed_class, role, owners, scope)
+                    HandRolledRegistration(indexed_class, roles[0], owners, scope)
                 )
         return tuple(candidates)
 
     def _finding_for_candidate(self, candidate: HandRolledRegistration) -> RefactorFinding:
         owner = candidate.owners[0]
-        how = (
-            "stores each class it creates in a mapping"
-            if candidate.role is RegistrationRole.METACLASS
-            else "stores each subclass in a mapping from `__init_subclass__`"
-        )
+        how = candidate.role.finding_text
         return self.build_finding(
             (
                 f"`{candidate.indexed_class.qualname}` {how}. Installed "

@@ -19,8 +19,8 @@ from functools import cached_property
 from typing import TYPE_CHECKING, Self
 
 from .assignment_projection import AssignmentStatementNameProjection
+from .ast_projection import CallKeyword
 from .ast_tools import (
-    AstKeywordSourceProjection,
     ParsedModule,
     SourceModule,
 )
@@ -378,7 +378,7 @@ class ResolvedClassTarget:
             return (
                 *(ast.unparse(argument) for argument in decorator.args),
                 *(
-                    AstKeywordSourceProjection(keyword).source()
+                    CallKeyword.decoded(keyword).source()
                     for keyword in decorator.keywords
                 ),
             )

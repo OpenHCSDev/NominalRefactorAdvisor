@@ -17,6 +17,7 @@ from nominal_refactor_advisor.codemod_source_edits import (
     SourceEditWindowABC,
     SourceInsertion,
     SourceIntervalProjectionABC,
+    SourceLineSpan,
     SourceRetainedSpanIndex,
     SourceSpanReplacement,
     SourceTargetEditor,
@@ -181,7 +182,7 @@ def test_equal_empty_character_anchors_keep_physical_order_and_identity():
         file_path=PATH, insertion_line=1, inserted_lines=("first = object\n",)
     )
     middle = SourceSpanReplacement(
-        file_path=PATH, start_line=1, end_line=1, replacement_lines=("middle = type\n",)
+        file_path=PATH, span=SourceLineSpan(1, 1), replacement_lines=("middle = type\n",)
     )
     last = SourceInsertion(
         file_path=PATH, insertion_line=2, inserted_lines=("last = sorted\n",)

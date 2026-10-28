@@ -33,7 +33,7 @@ from .codemod_source_edits import (
 from .codemod_spacing import DestinationInsertionSpacing
 from .collection_algebra import sorted_tuple
 from .lexical_bindings import (
-    ImportAliasRequirement as ImportAliasRequirement,
+    ImportAlias as ImportAlias,
     ImportBoundNameProjection,
     ImportDeclarationABC,
     ImportFromModuleName as ImportFromModuleName,
@@ -512,7 +512,7 @@ class ModuleImportMutation(KeyedSourceEditCoalescence):
                 int,
                 str | None,
             ],
-            list[ImportAliasRequirement],
+            list[ImportAlias],
         ] = {}
         statement_by_family: dict[
             tuple[
@@ -621,7 +621,7 @@ class ModuleImportMutation(KeyedSourceEditCoalescence):
         )
         aliases_by_statement = {
             id(statement): [
-                ImportAliasRequirement.from_alias(alias) for alias in statement.names
+                ImportAlias.from_alias(alias) for alias in statement.names
             ]
             for statement in import_statements
         }
@@ -647,16 +647,16 @@ class ModuleImportMutation(KeyedSourceEditCoalescence):
         for statement in import_statements:
             scope = scope_by_statement_id[id(statement)]
             requested_statement = RequestedImportStatement(statement, scope=scope)
-            retained_aliases: list[ImportAliasRequirement] = []
+            retained_aliases: list[ImportAlias] = []
             for alias in aliases_by_statement[id(statement)]:
-                bound_name = requested_statement.bound_name(alias)
-                removal = (
+                removals = requested_bound_name_removals.intersection(
                     ImportBoundNameRemoval(name=bound_name, scope=scope)
-                    if bound_name is not None
-                    else None
+                    for bound_name in alias.bound_names_in(
+                        requested_statement.declaration
+                    )
                 )
-                if removal is not None and removal in requested_bound_name_removals:
-                    matched_bound_name_removals.add(removal)
+                if removals:
+                    matched_bound_name_removals |= removals
                 else:
                     retained_aliases.append(alias)
             aliases_by_statement[id(statement)] = retained_aliases
@@ -760,8 +760,7 @@ class ModuleImportMutation(KeyedSourceEditCoalescence):
         replacements.extend(
             SourceSpanDeletion(
                 file_path=self.file_path,
-                start_line=guard.lineno,
-                end_line=guard.end_lineno or guard.lineno,
+                span=SourceLineSpan(guard.lineno, guard.end_lineno or guard.lineno),
                 rationale=self.rationale
                 or f"Remove empty type-checking import guard in {self.file_path!r}.",
                 contributors=self.contributors,
@@ -775,7 +774,7 @@ class ModuleImportMutation(KeyedSourceEditCoalescence):
             if guard is not None and id(guard) in deletable_guards:
                 continue
             original_aliases = tuple(
-                ImportAliasRequirement.from_alias(alias) for alias in statement.names
+                ImportAlias.from_alias(alias) for alias in statement.names
             )
             aliases = tuple(aliases_by_statement[id(statement)])
             if aliases == original_aliases:
@@ -790,8 +789,7 @@ class ModuleImportMutation(KeyedSourceEditCoalescence):
                 replacements.append(
                     SourceSpanDeletion(
                         file_path=self.file_path,
-                        start_line=statement.lineno,
-                        end_line=statement.end_lineno or statement.lineno,
+                        span=SourceLineSpan(statement.lineno, statement.end_lineno or statement.lineno),
                         rationale=self.rationale
                         or f"Remove import bindings in {self.file_path!r}.",
                         contributors=self.contributors,
@@ -815,8 +813,7 @@ class ModuleImportMutation(KeyedSourceEditCoalescence):
             replacements.append(
                 SourceSpanReplacement(
                     file_path=self.file_path,
-                    start_line=statement.lineno,
-                    end_line=statement.end_lineno or statement.lineno,
+                    span=SourceLineSpan(statement.lineno, statement.end_lineno or statement.lineno),
                     replacement_lines=SourceTextGeometry(source).generated_lines(
                         replacement_source
                     ),
@@ -1152,7 +1149,7 @@ class RequestedImportStatement:
         )
 
     @property
-    def aliases(self) -> tuple[ImportAliasRequirement, ...]:
+    def aliases(self) -> tuple[ImportAlias, ...]:
         return self.declaration.aliases
 
     @property
@@ -1233,9 +1230,6 @@ class RequestedImportStatement:
     def bound_names(self) -> tuple[str, ...]:
         return self.declaration.names()
 
-    def bound_name(self, alias: ImportAliasRequirement) -> str | None:
-        return self.declaration.bound_name(alias)
-
     @property
     def source(self) -> str:
         if isinstance(self.statement, ast.Import):
@@ -1250,10 +1244,10 @@ class RequestedImportStatement:
 
     def with_aliases(
         self,
-        aliases: Iterable[ImportAliasRequirement],
+        aliases: Iterable[ImportAlias],
     ) -> RequestedImportStatement:
         alias_nodes = [
-            ast.alias(name=alias.name, asname=alias.asname) for alias in aliases
+            alias.ast_alias for alias in aliases
         ]
         if isinstance(self.statement, ast.Import):
             return RequestedImportStatement(
@@ -1321,4 +1315,4 @@ class ImportFromSource:
 
     @staticmethod
     def alias_source(alias: ast.alias) -> str:
-        return ImportAliasRequirement.from_alias(alias).source
+        return ImportAlias.from_alias(alias).source

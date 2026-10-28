@@ -17,6 +17,7 @@ from typing import BinaryIO, Generic, TypeAlias, TypeVar
 from .interpreter import PythonVersion
 from .ast_tools import (
     CollectedFamily,
+    FileStat,
     ParsedModule,
     PythonSourcePathPolicy,
     python_source_paths_for_roots,
@@ -558,13 +559,10 @@ class DetectorSemanticEngineSignature(AnalysisEngineSignature):
         )
 
 
-@dataclass(frozen=True)
-class CachedSourceFileSignature:
+@dataclass(frozen=True, kw_only=True)
+class CachedSourceFileSignature(FileStat):
     """Content hash cached under a stable filesystem stat identity."""
 
-    path: str
-    mtime_ns: int
-    size: int
     source_hash: str
     semantic_hash: str | None = None
 

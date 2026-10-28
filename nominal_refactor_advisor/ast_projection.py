@@ -3,10 +3,14 @@
 from __future__ import annotations
 
 import ast
-from dataclasses import dataclass
-from typing import Self, cast
+from abc import ABC, abstractmethod
+from collections.abc import Iterable, Mapping
+from dataclasses import dataclass, field
+from typing import Generic, Self, TypeVar, cast
 
 from .declared_family import ForeignAdapter
+from .value_expression import CompactValueExpression, UnassignedValueExpression
+
 
 
 class ExpressionReference(ForeignAdapter):
@@ -134,7 +138,7 @@ class AstClassProjection:
         alongside a direct keyword. Other direct keywords remain separate
         construction obligations; this projection does not prove full binding.
         """
-        if any(keyword.arg is None for keyword in node.keywords):
+        if CallKeywords.of(node.keywords).splats:
             raise ValueError(
                 "Expanded class keywords leave metaclass selection unproved"
             )
@@ -174,3 +178,275 @@ class AstNameFamily:
 
     def matches(self, node: ast.AST) -> bool:
         return self.matching_name(node) is not None
+
+
+class CallKeyword(ABC):
+    """One keyword of a call or class header: `name=value` or a `**mapping` splat."""
+
+    node: ast.keyword
+
+    @staticmethod
+    def decoded(keyword: ast.keyword) -> CallKeyword:
+        """The ast boundary: `arg` absent means a `**` mapping splat."""
+
+        if keyword.arg is None:
+            return KeywordSplat(keyword)
+        return NamedKeyword(keyword, keyword.arg)
+
+    @property
+    def value(self) -> ast.expr:
+        return self.node.value
+
+    @property
+    @abstractmethod
+    def spelled_name(self) -> str:
+        raise NotImplementedError
+
+    @property
+    @abstractmethod
+    def names(self) -> tuple[str, ...]:
+        """The keyword names this entry spells: one for `name=value`, none for `**`."""
+        raise NotImplementedError
+
+    @abstractmethod
+    def source(self) -> str:
+        raise NotImplementedError
+
+    @abstractmethod
+    def sort_into(
+        self, named: list[NamedKeyword], splats: list[KeywordSplat]
+    ) -> None:
+        raise NotImplementedError
+
+
+@dataclass(frozen=True)
+class NamedKeyword(CallKeyword):
+    node: ast.keyword
+    name: str
+
+    @property
+    def spelled_name(self) -> str:
+        return self.name
+
+    @property
+    def names(self) -> tuple[str, ...]:
+        return (self.name,)
+
+    def source(self) -> str:
+        return f"{self.name}={ast.unparse(self.value)}"
+
+    def sort_into(
+        self, named: list[NamedKeyword], splats: list[KeywordSplat]
+    ) -> None:
+        named.append(self)
+
+
+@dataclass(frozen=True)
+class KeywordSplat(CallKeyword):
+    node: ast.keyword
+
+    @property
+    def spelled_name(self) -> str:
+        return "**"
+
+    @property
+    def names(self) -> tuple[str, ...]:
+        return ()
+
+    def source(self) -> str:
+        return f"**{ast.unparse(self.value)}"
+
+    def sort_into(
+        self, named: list[NamedKeyword], splats: list[KeywordSplat]
+    ) -> None:
+        splats.append(self)
+
+
+@dataclass(frozen=True)
+class CallKeywords:
+    """A keyword list split into explicit `name=value` keywords and `**` splats."""
+
+    entries: tuple[CallKeyword, ...]
+    named: tuple[NamedKeyword, ...]
+    splats: tuple[KeywordSplat, ...]
+
+    @classmethod
+    def of(cls, keywords: Iterable[ast.keyword]) -> CallKeywords:
+        entries = tuple(CallKeyword.decoded(keyword) for keyword in keywords)
+        named: list[NamedKeyword] = []
+        splats: list[KeywordSplat] = []
+        for entry in entries:
+            entry.sort_into(named, splats)
+        return cls(entries, tuple(named), tuple(splats))
+
+    @property
+    def names(self) -> tuple[str, ...]:
+        return tuple(keyword.name for keyword in self.named)
+
+    @property
+    def by_name(self) -> Mapping[str, ast.expr]:
+        return {keyword.name: keyword.value for keyword in self.named}
+
+
+ValuedStatement = ast.Assign | ast.AnnAssign | ast.Return
+
+
+def single_name_targets(statement: ast.Assign | ast.AnnAssign) -> tuple[ast.Name, ...]:
+    """The name a single-target assignment binds: none for tuples, attributes or chains."""
+
+    match statement:
+        case ast.Assign(targets=[ast.Name() as target]) | ast.AnnAssign(
+            target=ast.Name() as target
+        ):
+            return (target,)
+    return ()
+KeyT = TypeVar("KeyT")
+AnswerT = TypeVar("AnswerT")
+
+
+class StatementValueQuestion(ABC, Generic[AnswerT]):
+    """A consumer's question about one statement's value, answered once per state.
+
+    The consumer declares both arms as overrides; the value's own subtype picks
+    the arm, so no caller tests for a missing value.
+    """
+
+    @abstractmethod
+    def supplied(self, value: SuppliedValue) -> AnswerT:
+        raise NotImplementedError
+
+    @abstractmethod
+    def bare(self, value: NoStatementValue) -> AnswerT:
+        raise NotImplementedError
+
+
+class StatementValue(ABC):
+    """The value an assignment, annotation or `return` supplies, or its absence."""
+
+    statement: ValuedStatement
+
+    @staticmethod
+    def of(statement: ValuedStatement) -> StatementValue:
+        """The ast boundary: a bare annotation or bare `return` has no value."""
+
+        if statement.value is None:
+            return NoStatementValue(statement)
+        return SuppliedValue(statement, statement.value)
+
+    @abstractmethod
+    def answer(self, question: StatementValueQuestion[AnswerT]) -> AnswerT:
+        raise NotImplementedError
+
+    @abstractmethod
+    def sort_into(
+        self,
+        key: KeyT,
+        supplied: list[tuple[KeyT, SuppliedValue]],
+        bare: list[tuple[KeyT, NoStatementValue]],
+    ) -> None:
+        raise NotImplementedError
+
+    @abstractmethod
+    def visit_with(self, visitor: ast.NodeVisitor) -> None:
+        raise NotImplementedError
+
+    @abstractmethod
+    def walk(self) -> Iterable[ast.AST]:
+        """Every node inside the supplied value; nothing without one."""
+        raise NotImplementedError
+
+    @property
+    @abstractmethod
+    def value_kind_name(self) -> str:
+        raise NotImplementedError
+
+    @abstractmethod
+    def compact_value(self) -> CompactValueExpression:
+        raise NotImplementedError
+
+
+@dataclass(frozen=True)
+class SuppliedValue(StatementValue):
+    statement: ValuedStatement
+    value: ast.expr
+
+    def sort_into(
+        self,
+        key: KeyT,
+        supplied: list[tuple[KeyT, SuppliedValue]],
+        bare: list[tuple[KeyT, NoStatementValue]],
+    ) -> None:
+        supplied.append((key, self))
+
+    def answer(self, question: StatementValueQuestion[AnswerT]) -> AnswerT:
+        return question.supplied(self)
+
+    def visit_with(self, visitor: ast.NodeVisitor) -> None:
+        visitor.visit(self.value)
+
+    def walk(self) -> Iterable[ast.AST]:
+        return ast.walk(self.value)
+
+    @property
+    def value_kind_name(self) -> str:
+        return type(self.value).__name__
+
+    def compact_value(self) -> CompactValueExpression:
+        return CompactValueExpression.project(self.value)
+
+
+@dataclass(frozen=True)
+class NoStatementValue(StatementValue):
+    statement: ValuedStatement
+
+    def sort_into(
+        self,
+        key: KeyT,
+        supplied: list[tuple[KeyT, SuppliedValue]],
+        bare: list[tuple[KeyT, NoStatementValue]],
+    ) -> None:
+        bare.append((key, self))
+
+    def answer(self, question: StatementValueQuestion[AnswerT]) -> AnswerT:
+        return question.bare(self)
+
+    def visit_with(self, visitor: ast.NodeVisitor) -> None:
+        return None
+
+    def walk(self) -> Iterable[ast.AST]:
+        return ()
+
+    @property
+    def value_kind_name(self) -> str:
+        return "None"
+
+    def compact_value(self) -> CompactValueExpression:
+        return UnassignedValueExpression()
+
+
+@dataclass(frozen=True)
+class StatementValues(Generic[KeyT]):
+    """Keyed statements split into those that supply a value and the bare ones."""
+
+    supplied: tuple[tuple[KeyT, SuppliedValue], ...]
+    bare: tuple[tuple[KeyT, NoStatementValue], ...]
+
+    @classmethod
+    def keyed(
+        cls, pairs: Iterable[tuple[KeyT, ValuedStatement]]
+    ) -> StatementValues[KeyT]:
+        supplied: list[tuple[KeyT, SuppliedValue]] = []
+        bare: list[tuple[KeyT, NoStatementValue]] = []
+        for key, statement in pairs:
+            StatementValue.of(statement).sort_into(key, supplied, bare)
+        return cls(tuple(supplied), tuple(bare))
+
+    @staticmethod
+    def of(
+        statements: Iterable[ValuedStatement],
+    ) -> StatementValues[ValuedStatement]:
+        return StatementValues.keyed((statement, statement) for statement in statements)
+
+    @property
+    def values(self) -> tuple[ast.expr, ...]:
+        return tuple(supplied.value for _, supplied in self.supplied)

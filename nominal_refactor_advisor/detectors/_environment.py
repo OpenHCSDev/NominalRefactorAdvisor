@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+from functools import cached_property
 from abc import ABC, abstractmethod
 from collections import defaultdict
 from collections.abc import Callable, Iterable, Sequence
@@ -12,7 +13,10 @@ from typing import ClassVar
 
 from metaclass_registry import AutoRegisterMeta
 
+from ..value_expression import CompactValueExpression
+from ..lexical_bindings import ImportBoundNameProjection
 from ..ast_projection import ExpressionReference
+from ..ast_projection import CallKeywords, StatementValues
 from ..ast_tools import (
     BuiltinCallName,
     CollectedFamily,
@@ -195,11 +199,11 @@ class _EnvironmentImportAliases:
             if isinstance(statement, ast.Import):
                 for alias in statement.names:
                     if alias.name == "os":
-                        os_modules.add(alias.asname or alias.name)
+                        os_modules.add(ImportBoundNameProjection(statement).alias_bound_name(alias))
             elif isinstance(statement, ast.ImportFrom) and statement.module == "os":
                 for alias in statement.names:
                     imported_members.setdefault(alias.name, set()).add(
-                        alias.asname or alias.name
+                        ImportBoundNameProjection(statement).alias_bound_name(alias)
                     )
         return cls(
             os_modules=frozenset(os_modules),
@@ -239,12 +243,15 @@ class _FunctionScope:
             )
         )
 
+    @cached_property
     def nodes(self) -> tuple[ast.AST, ...]:
-        return walk_function_body_nodes(self.node)
+        """This function's body, walked once and held by the scope."""
+
+        return walk_function_body_nodes(self.node.body)
 
     def references_any_name(self, names: frozenset[str]) -> bool:
         return any(
-            isinstance(node, ast.Name) and node.id in names for node in self.nodes()
+            isinstance(node, ast.Name) and node.id in names for node in self.nodes
         )
 
     @staticmethod
@@ -253,8 +260,11 @@ class _FunctionScope:
     ) -> tuple[ast.Assign | ast.AnnAssign, ...]:
         return tuple(
             node
-            for node in nodes
-            if isinstance(node, (ast.Assign, ast.AnnAssign)) and node.value is not None
+            for node, _supplied in StatementValues.keyed(
+                (node, node)
+                for node in nodes
+                if isinstance(node, ast.Assign | ast.AnnAssign)
+            ).supplied
         )
 
 
@@ -315,7 +325,7 @@ class _LiteralResolver:
         )
         if scope.class_node is not None:
             assignments.extend(scope.assignment_nodes(scope.class_node.body))
-        assignments.extend(scope.assignment_nodes(scope.nodes()))
+        assignments.extend(scope.assignment_nodes(scope.nodes))
         values_by_name: dict[str, ast.AST] = {}
         for assignment in assignments:
             value = assignment.value
@@ -407,11 +417,7 @@ class _EnvironmentReadSyntax(_MissingValueSemantics):
         kind: EnvironmentReadKind,
         node: ast.Call,
     ) -> _EnvironmentReadSyntax | None:
-        keyword_values = {
-            keyword.arg: keyword.value
-            for keyword in node.keywords
-            if keyword.arg is not None
-        }
+        keyword_values = dict(CallKeywords.of(node.keywords).by_name)
         key_node = (
             node.args[0]
             if node.args
@@ -593,7 +599,7 @@ def _none_checked_names(node: ast.AST) -> tuple[str, ...]:
         return ()
     operands = (node.left, node.comparators[0])
     if not any(
-        isinstance(operand, ast.Constant) and operand.value is None
+        CompactValueExpression.project(operand).value_is_none_literal
         for operand in operands
     ):
         return ()
@@ -611,7 +617,7 @@ def _missing_overrides(
     resolver: _LiteralResolver,
 ) -> dict[str, _MissingOverride]:
     overrides: dict[str, _MissingOverride] = {}
-    for node in scope.nodes():
+    for node in scope.nodes:
         if not isinstance(node, ast.If):
             continue
         checked_names = _none_checked_names(node.test)
@@ -701,7 +707,7 @@ class _EnvironmentReadAuthority:
     def lineage(self, scope: _FunctionScope) -> dict[str, _EnvironmentRead]:
         lineage: dict[str, _EnvironmentRead] = {}
         assignments = sorted(
-            scope.assignment_nodes(scope.nodes()),
+            scope.assignment_nodes(scope.nodes),
             key=lambda node: (node.lineno, node.col_offset),
         )
         for assignment in assignments:
@@ -951,7 +957,7 @@ def _environment_boolean_parser_sites(
     overrides = _missing_overrides(scope, resolver)
     sites: list[_EnvironmentBooleanParserSite] = []
     seen: set[tuple[int, int]] = set()
-    for node in scope.nodes():
+    for node in scope.nodes:
         if not isinstance(node, ast.Compare) or len(node.ops) != 1:
             continue
         operator = node.ops[0]
@@ -1032,7 +1038,7 @@ def _scope_has_declared_authority_shape(scope: _FunctionScope) -> bool:
         semantic_tokens & frozenset(("decision", "enabled"))
     ):
         return False
-    nodes = scope.nodes()
+    nodes = scope.nodes
     return any(isinstance(node, ast.Raise) for node in nodes) or any(
         not EnvironmentSemanticNameAuthority.tokens(ast.unparse(call.func)).isdisjoint(
             _DECLARED_AUTHORITY_CALL_TOKENS
@@ -1164,9 +1170,8 @@ def _fixed_key_authority_wrapper_facts(
         key_expression = next(
             (
                 keyword.value
-                for keyword in call.keywords
-                if keyword.arg is not None
-                and EnvironmentSemanticNameAuthority.tokens(keyword.arg)
+                for keyword in CallKeywords.of(call.keywords).named
+                if EnvironmentSemanticNameAuthority.tokens(keyword.name)
                 & _ENVIRONMENT_KEY_PARAMETER_TOKENS
             ),
             None,

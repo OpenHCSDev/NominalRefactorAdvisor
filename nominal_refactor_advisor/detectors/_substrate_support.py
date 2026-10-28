@@ -13,6 +13,7 @@ from collections import defaultdict
 from dataclasses import dataclass
 from typing import Generic, TypeVar
 
+from ..value_expression import CompactValueExpression
 from ..ast_projection import ExpressionReference
 from ..ast_tools import (
     ParsedModule,
@@ -67,7 +68,7 @@ class _AnnotationTypeNamesProjection(_AstNodeProjection[tuple[str, ...]]):
     def __call__(self, node: ast.AST | None) -> tuple[str, ...]:
         if node is None:
             return ()
-        if isinstance(node, ast.Constant) and node.value is None:
+        if CompactValueExpression.project(node).value_is_none_literal:
             return ()
         if isinstance(node, ast.Name):
             return () if node.id == "None" else (node.id,)
@@ -231,7 +232,7 @@ def _class_ancestor_name_map(
 def _module_class_defs_by_name(module: ParsedModule) -> dict[str, ast.ClassDef]:
     return {
         node.name: node
-        for node in _walk_nodes(module.module)
+        for node in module.syntax_index.breadth_first_nodes
         if isinstance(node, ast.ClassDef)
     }
 

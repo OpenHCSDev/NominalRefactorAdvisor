@@ -28,21 +28,29 @@ from enum import Flag, StrEnum, auto
 from functools import cached_property, lru_cache
 from itertools import groupby
 from pathlib import Path
-from typing import ClassVar, Generic, TypeAlias, TypeVar, cast
+from typing import ClassVar, Generic, TypeAlias, TypeVar
 
 from metaclass_registry import AutoRegisterMeta
 
+from .ast_field_decoders import variadic_parameters
 from .ast_projection import ExpressionReference
 from .foreign_family import FunctionDefinition
 from .interpreter import PythonVersion
 from .assignment_projection import SingleAssignmentAndValueNameProjection
+from .ast_projection import (
+    CallKeywords,
+    NoStatementValue,
+    StatementValue,
+    StatementValueQuestion,
+    SuppliedValue,
+)
 from .ast_tools import (
     ClassFunctionStackNodeVisitor,
     CollectedFamily,
     CompactModuleIdentity,
     ParsedModule,
+    ParsedModuleSet,
     PythonSourcePathPolicy,
-    module_syntax_index,
     python_module_path_identities_for_roots,
 )
 from .cache_checkout import (
@@ -55,6 +63,7 @@ from .cache_checkout import (
 from .cache_paths import default_semantic_descent_cache_dir
 from .case_root import Case
 from .class_index import (
+    NotStandardDataclass,
     ClassDeclaration,
     ClassFamilyIndex,
     CompactClassFamilyIndex,
@@ -64,7 +73,6 @@ from .class_index import (
     CompactModuleClassProjectionFamily,
     IndexedClass,
     ModuleClassReferenceResolver,
-    build_class_family_index,
     build_compact_class_family_index,
     iter_class_definitions,
     overlay_class_family_index,
@@ -589,7 +597,7 @@ class SemanticDescentGraphCacheIdentity:
     @classmethod
     def from_modules(
         cls,
-        modules: tuple[ParsedModule, ...],
+        modules: ParsedModuleSet,
         *,
         roots: tuple[Path | str, ...] | None = None,
     ) -> SemanticDescentGraphCacheIdentity:
@@ -1336,8 +1344,13 @@ class MappingReadConstructor:
     ) -> str | None:
         symbol = resolve_class(self.reference_parts)
         owner = None if symbol is None else class_index.class_for(symbol)
-        declaration = None if owner is None else owner.dataclass_declaration
-        if declaration is None or not declaration.is_standard_dataclass:
+        if owner is None:
+            return None
+        try:
+            declaration = owner.dataclass_declaration.require_standard(
+                "a mapping schema is a standard dataclass"
+            )
+        except NotStandardDataclass:
             return None
         fields = tuple(
             field.name
@@ -1608,13 +1621,19 @@ class ProjectionSuppressionPolicy:
         )
 
 
-@dataclass(frozen=True)
-class SemanticAuthorityAffinityPolicy:
-    """Compare authority/projection names without generic role-token affinity."""
+@dataclass(frozen=True, kw_only=True)
+class AuthorityProjectionNames:
+    """The affinity policy compares exactly the names a certificate summary reports."""
 
     authority_name: str
     projection_label: str
     projection_owner_symbol: str
+
+
+@dataclass(frozen=True, kw_only=True)
+class SemanticAuthorityAffinityPolicy(AuthorityProjectionNames):
+    """Compare authority/projection names without generic role-token affinity."""
+
     projection_location_symbol: str
 
     @cached_property
@@ -2942,15 +2961,12 @@ class SemanticDescentProjectionKindCount(SemanticRecord):
     count: int
 
 
-@dataclass(frozen=True)
-class SemanticDescentCertificateSummary(SemanticRecord):
+@dataclass(frozen=True, kw_only=True)
+class SemanticDescentCertificateSummary(AuthorityProjectionNames, SemanticRecord):
     """Compact report row for one missing semantic-descent certificate."""
 
-    authority_name: str
     authority_kind: SemanticAuthorityKind
-    projection_label: str
     projection_kind: PresentationProjectionKind
-    projection_owner_symbol: str
     file_path: str
     line: int
     matched_fact_count: int
@@ -3094,9 +3110,9 @@ class FindingBackedSemanticDescentGraphRequest:
 
     findings: tuple[RefactorFinding, ...]
 
-    @lru_cache(maxsize=16)
+    @cached_property
     def graph(self) -> SemanticDescentGraph:
-        """Derive and cache the graph owned by this immutable request."""
+        """The graph this immutable request derives, held by the request."""
 
         authorities: list[SemanticAuthority] = []
         facts: list[SemanticFact] = []
@@ -3323,7 +3339,7 @@ def build_finding_backed_semantic_descent_graph(
 ) -> SemanticDescentGraph:
     """Project semantic-mirror detector findings into descent graph certificates."""
 
-    return FindingBackedSemanticDescentGraphRequest(findings).graph()
+    return FindingBackedSemanticDescentGraphRequest(findings).graph
 
 
 class FindingAuthorityNamePolicy:
@@ -3821,14 +3837,14 @@ class SemanticDescentGraphCache:
 class SemanticDescentGraphBuildRequest:
     """Immutable authority for deriving one repository semantic-descent graph."""
 
-    modules: tuple[ParsedModule, ...]
+    modules: ParsedModuleSet
 
-    @lru_cache(maxsize=None)
+    @cached_property
     def graph(self) -> SemanticDescentGraph:
-        """Build this request's graph once across equal source snapshots."""
+        """This request's graph, built once and held by the request."""
 
         scan_deadline_checkpoint("semantic_descent_class_index")
-        class_index = build_class_family_index(list(self.modules))
+        class_index = self.modules.fact(ClassFamilyIndex)
         scan_deadline_checkpoint("semantic_descent_authorities")
         authority_catalog = SemanticAuthorityBuilder.from_class_index(
             class_index
@@ -3859,14 +3875,14 @@ class SemanticDescentGraphBuildRequest:
 
 
 def build_semantic_descent_graph(
-    modules: list[ParsedModule],
+    modules: ParsedModuleSet,
     *,
     cache_dir: Path | None = None,
     use_cache: bool = True,
 ) -> SemanticDescentGraph:
     """Build the cached semantic-descent graph for parsed modules."""
 
-    request = SemanticDescentGraphBuildRequest(tuple(modules))
+    request = SemanticDescentGraphBuildRequest(modules)
     resolved_cache_dir = (
         cache_dir
         if cache_dir is not None
@@ -3878,10 +3894,10 @@ def build_semantic_descent_graph(
         cache_lookup = cache.load(identity)
         if cache_lookup.graph is not None:
             return cache_lookup.graph
-        graph = request.graph()
+        graph = request.graph
         cache.store(identity, graph)
         return graph
-    return request.graph()
+    return request.graph
 
 
 def load_cached_semantic_descent_graph_for_roots(
@@ -3926,7 +3942,7 @@ def load_latest_semantic_descent_graph_for_roots(
 class SemanticDescentGraphCacheDirAuthority:
     """Resolve the default persistent graph-cache directory for parsed modules."""
 
-    modules: tuple[ParsedModule, ...]
+    modules: ParsedModuleSet
 
     def cache_dir(self) -> Path | None:
         if not self.modules:
@@ -4169,21 +4185,22 @@ class DataclassSemanticAuthorityProvider(ClassFamilySemanticAuthorityProvider):
         declaration: SemanticAuthorityDeclaration,
     ) -> SemanticAuthorityProviderResult | None:
         indexed_class = declaration.indexed_class
-        dataclass_declaration = indexed_class.dataclass_declaration
-        if (
-            dataclass_declaration is not None
-            and dataclass_declaration.is_standard_dataclass
-        ):
-            facts = tuple(
-                SemanticFact.dataclass_field(indexed_class, field.name, field.line)
-                for field in dataclass_declaration.fields
-                if field.role.contributes_semantic_field
+        try:
+            dataclass_declaration = indexed_class.dataclass_declaration.require_standard(
+                "a dataclass schema is a standard dataclass"
             )
-            if len(facts) >= 2:
-                return SemanticAuthorityProviderResult(
-                    SemanticAuthorityKind.DATACLASS_SCHEMA,
-                    facts,
-                )
+        except NotStandardDataclass:
+            return super().provide(declaration)
+        facts = tuple(
+            SemanticFact.dataclass_field(indexed_class, field.name, field.line)
+            for field in dataclass_declaration.fields
+            if field.role.contributes_semantic_field
+        )
+        if len(facts) >= 2:
+            return SemanticAuthorityProviderResult(
+                SemanticAuthorityKind.DATACLASS_SCHEMA,
+                facts,
+            )
         return super().provide(declaration)
 
 
@@ -4218,7 +4235,7 @@ class SemanticAuthorityProvider(DataclassSemanticAuthorityProvider):
 class SemanticProjectionCollector:
     """Collect presentation-level projections from parsed modules."""
 
-    modules: tuple[ParsedModule, ...]
+    modules: Sequence[ParsedModule]
     class_index: ClassFamilyIndex
 
     def collect(self) -> tuple[PresentationProjection, ...]:
@@ -4262,7 +4279,7 @@ class CompactSemanticModuleProjectionFamily(
                 )
 
         constructed_type_names_by_class_id: dict[int, set[str]] = {}
-        syntax_index = module_syntax_index(parsed_module.module)
+        syntax_index = parsed_module.syntax_index
         for node_index, call in syntax_index.indexed_nodes_of_type(ast.Call):
             type_names = (
                 PresentationAuthorityConstructionCollector.construction_type_names(
@@ -4420,14 +4437,8 @@ class CompactSemanticDescentRepository:
         """Recover the typed semantic join declared by its fact families."""
 
         return cls.from_projections(
-            cast(
-                Sequence[CompactSemanticModuleProjection],
-                projections_by_family[CompactSemanticModuleProjectionFamily],
-            ),
-            cast(
-                Sequence[CompactModuleClassProjection],
-                projections_by_family[CompactModuleClassProjectionFamily],
-            ),
+            CompactSemanticModuleProjectionFamily.modules_in(projections_by_family),
+            CompactModuleClassProjectionFamily.modules_in(projections_by_family),
             class_index=class_index,
         )
 
@@ -4672,8 +4683,11 @@ class MappingReadProjectionCollector(ast.NodeVisitor):
             if not parts:
                 continue
             child = self.parents[index + 1]
-            if isinstance(child, ast.keyword) and child.arg is not None:
-                constructions.add(KeywordMappingReadArgument(parts, key, child.arg))
+            if isinstance(child, ast.keyword):
+                for keyword in CallKeywords.of((child,)).named:
+                    constructions.add(
+                        KeywordMappingReadArgument(parts, key, keyword.name)
+                    )
             for position, argument in enumerate(ancestor.args):
                 if argument is child:
                     constructions.add(
@@ -4712,8 +4726,7 @@ class ProjectionTypeScope:
             *node.args.posonlyargs,
             *node.args.args,
             *node.args.kwonlyargs,
-            *((node.args.vararg,) if node.args.vararg is not None else ()),
-            *((node.args.kwarg,) if node.args.kwarg is not None else ()),
+            *variadic_parameters(node.args),
         )
         for argument in arguments:
             if argument.annotation is None:
@@ -4778,6 +4791,42 @@ class CompactSemanticClassSupplementFrame:
     direct_method_ids: frozenset[int]
     supplement_index: int
     constructed_type_names: set[str] = field(default_factory=set)
+
+
+@dataclass(frozen=True)
+class _AnnotatedPresentation(StatementValueQuestion[None]):
+    """A valued annotation may present a projection; anything else is descended."""
+
+    visitor: _ProjectionVisitor
+    statement: ast.AnnAssign
+
+    def supplied(self, value: SuppliedValue) -> None:
+        if not self.visitor._collect_assignment_projection(
+            self.statement,
+            value.value,
+            axis_type_names=ProjectionTypeScope.annotation_type_names(
+                self.statement.annotation
+            ),
+        ):
+            self.visitor.generic_visit(self.statement)
+
+    def bare(self, value: NoStatementValue) -> None:
+        self.visitor.generic_visit(self.statement)
+
+
+@dataclass(frozen=True)
+class _ReturnedPresentation(StatementValueQuestion[None]):
+    """A valued return may present a projection; anything else is descended."""
+
+    visitor: _ProjectionVisitor
+    statement: ast.Return
+
+    def supplied(self, value: SuppliedValue) -> None:
+        if not self.visitor._collect_return_projection(self.statement, value.value):
+            self.visitor.generic_visit(self.statement)
+
+    def bare(self, value: NoStatementValue) -> None:
+        self.visitor.generic_visit(self.statement)
 
 
 class _ProjectionVisitor(ClassFunctionStackNodeVisitor):
@@ -5031,21 +5080,13 @@ class _ProjectionVisitor(ClassFunctionStackNodeVisitor):
         if not self.include_presentations:
             self.generic_visit(node)
             return
-        if node.value is not None and self._collect_assignment_projection(
-            node,
-            node.value,
-            axis_type_names=ProjectionTypeScope.annotation_type_names(node.annotation),
-        ):
-            return
-        self.generic_visit(node)
+        StatementValue.of(node).answer(_AnnotatedPresentation(self, node))
 
     def visit_Return(self, node: ast.Return) -> None:
         if not self.include_presentations:
             self.generic_visit(node)
             return
-        if node.value is not None and self._collect_return_projection(node, node.value):
-            return
-        self.generic_visit(node)
+        StatementValue.of(node).answer(_ReturnedPresentation(self, node))
 
     def visit_If(self, node: ast.If) -> None:
         if not self.include_presentations:
@@ -6759,15 +6800,15 @@ class CallPresentationTokenProjector(PresentationTokenNodeProjector):
                     arg, PresentationTokenRole.CALL_ARGUMENT
                 )
             )
-        for keyword in node.keywords:
-            if keyword.arg is not None:
+        for keyword in CallKeywords.of(node.keywords).entries:
+            for name in keyword.names:
                 tokens.extend(
                     PresentationToken(
                         value,
                         PresentationTokenKind.STRING_LITERAL,
                         PresentationTokenRole.CALL_KEYWORD_NAME,
                     )
-                    for value in normalized_name_variants(keyword.arg)
+                    for value in normalized_name_variants(name)
                 )
             tokens.extend(
                 PresentationTokenProjection.tokens_for_node(
@@ -6917,9 +6958,7 @@ class PresentationAuthorityConstructionCollector:
 
     @classmethod
     def constructor_field_tokens(cls, node: ast.Call) -> tuple[str, ...]:
-        field_names = [
-            keyword.arg for keyword in node.keywords if keyword.arg is not None
-        ]
+        field_names = list(CallKeywords.of(node.keywords).names)
         field_names.extend(cls.argument_field_name(argument) for argument in node.args)
         return sorted_tuple(
             variant

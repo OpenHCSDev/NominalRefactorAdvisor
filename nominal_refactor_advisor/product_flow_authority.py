@@ -21,12 +21,12 @@ from typing import (
     cast,
 )
 
+from .value_expression import CompactValueExpression
 from .annotation_semantics import NOMINAL_ANNOTATION_SOURCE_AUTHORITY
 from .ast_tools import (
     CollectedFamily,
     ParsedModule,
     ParsedModuleSourceProjection,
-    module_syntax_index,
 )
 from .call_binding import (
     CallValueT,
@@ -118,10 +118,27 @@ class CompactCallTargetResolution(ABC):
         """Project potentially referenced participants through this target's bound."""
         return symbols.intersection(self.possible_symbols)
 
-    @property
-    def declaration(self) -> CompactFunctionDeclaration | None:
-        """The function declaration, when this target denotes a function."""
-        return None
+    def instance_access_or(
+        self, unknown: CompactCallTargetResolution
+    ) -> CompactCallTargetResolution:
+        """Instance access through a declared method; without one, the caller's bound."""
+        return unknown
+
+    def returns_own_class(self, self_types: frozenset[str]) -> bool:
+        """A classmethod declared to return `Self`; no declaration proves it."""
+        return False
+
+    def declared_off_line(self, line: int) -> bool:
+        """A declaration at another line than the selected binding."""
+        return False
+
+    def declared_outside(self, module_name: str, class_qualname: str) -> bool:
+        """A declaration owned by another module or class than the one searched."""
+        return False
+
+    def declares_symbol(self, symbol: str) -> bool:
+        """Whether this target is exactly the function declared at that symbol."""
+        return False
 
     @property
     @abstractmethod
@@ -193,6 +210,30 @@ class ResolvedCompactFunctionTarget(CompactCallTargetResolution):
     @property
     def declaration(self) -> CompactFunctionDeclaration:
         return self.resolved_declaration
+
+    def instance_access_or(
+        self, unknown: CompactCallTargetResolution
+    ) -> CompactCallTargetResolution:
+        return self.through_descriptor(CompactDescriptorAccess.INSTANCE)
+
+    def returns_own_class(self, self_types: frozenset[str]) -> bool:
+        return (
+            self.resolved_declaration.binding_kind
+            is CompactFunctionBindingKind.CLASS_METHOD
+            and self.resolved_declaration.return_annotation_expression in self_types
+        )
+
+    def declared_off_line(self, line: int) -> bool:
+        return self.resolved_declaration.line != line
+
+    def declares_symbol(self, symbol: str) -> bool:
+        return self.resolved_declaration.identity.symbol == symbol
+
+    def declared_outside(self, module_name: str, class_qualname: str) -> bool:
+        return (
+            self.resolved_declaration.identity.module_name != module_name
+            or not self.resolved_declaration.owner_class.is_class(class_qualname)
+        )
 
     @property
     def possible_symbols(self) -> tuple[str, ...]:
@@ -323,10 +364,67 @@ class AlternativeCompactFunctionTargets(CompactCallTargetResolution):
         )
 
 
+class _CompactClassMemberResolution(ABC):
+    """A member name looked up through a class's MRO: one declaration, or why not."""
+
+    @abstractmethod
+    def annotation_classes_in(
+        self, repository: ProductFlowRepository
+    ) -> frozenset[str] | None:
+        """The classes the member's declared annotation admits, when it resolved."""
+        raise NotImplementedError
+
+    @abstractmethod
+    def method_target_in(
+        self,
+        repository: ProductFlowRepository,
+        target: CurrentClassMemberMethodReference,
+        candidate_symbols: tuple[str, ...],
+    ) -> CompactCallTargetResolution:
+        raise NotImplementedError
+
+
 @dataclass(frozen=True)
-class _CompactClassMemberResolution:
-    candidates: tuple[tuple[CompactIndexedClass, CompactClassMemberDeclaration], ...]
-    violation: CompactFunctionTargetResolutionViolation | None
+class _ResolvedClassMember(_CompactClassMemberResolution):
+    declaring_class: CompactIndexedClass
+    declaration: CompactClassMemberDeclaration
+
+    def annotation_classes_in(
+        self, repository: ProductFlowRepository
+    ) -> frozenset[str] | None:
+        return repository._member_annotation_classes(
+            self.declaring_class, self.declaration
+        )
+
+    def method_target_in(
+        self,
+        repository: ProductFlowRepository,
+        target: CurrentClassMemberMethodReference,
+        candidate_symbols: tuple[str, ...],
+    ) -> CompactCallTargetResolution:
+        return repository._member_method_target(
+            target, candidate_symbols, self.declaring_class, self.declaration
+        )
+
+
+@dataclass(frozen=True)
+class _ClassMemberViolation(_CompactClassMemberResolution):
+    violation: CompactFunctionTargetResolutionViolation
+
+    def annotation_classes_in(
+        self, repository: ProductFlowRepository
+    ) -> frozenset[str] | None:
+        return None
+
+    def method_target_in(
+        self,
+        repository: ProductFlowRepository,
+        target: CurrentClassMemberMethodReference,
+        candidate_symbols: tuple[str, ...],
+    ) -> CompactCallTargetResolution:
+        return repository.attribute_target(
+            target.method_name, candidate_symbols, self.violation
+        )
 
 
 class CompactFunctionCallResolution(ABC):
@@ -1080,10 +1178,9 @@ class ProductFlowRepository(
         owner = self._self_returning_receiver(context, target)
         if owner is None:
             return unknown
-        resolution = self._class_method_resolution(owner, target.attribute_name)
-        if resolution.declaration is None:
-            return unknown
-        return resolution.through_descriptor(CompactDescriptorAccess.INSTANCE)
+        return self._class_method_resolution(
+            owner, target.attribute_name
+        ).instance_access_or(unknown)
 
     def _self_returning_receiver(
         self,
@@ -1102,14 +1199,7 @@ class ProductFlowRepository(
         if owner is None:
             return None
         made = self._class_method_resolution(owner, reference.attribute_path[-1])
-        declaration = made.declaration
-        if (
-            declaration is None
-            or declaration.binding_kind is not CompactFunctionBindingKind.CLASS_METHOD
-            or declaration.return_annotation_expression not in self.SELF_TYPES
-        ):
-            return None
-        return owner
+        return owner if made.returns_own_class(self.SELF_TYPES) else None
 
     @cached_property
     def dynamic_attribute_owners(self) -> tuple[str, ...]:
@@ -1393,7 +1483,7 @@ class ProductFlowRepository(
             owner_qualname, _dot, _name = qualname.rpartition(".")
             if not owner_qualname:
                 owners[symbol] = module
-            elif owner_qualname == declaration.owner_class_qualname:
+            elif declaration.owner_class.is_class(owner_qualname):
                 owners[symbol] = f"{module}.{owner_qualname}"
         return owners
 
@@ -1512,20 +1602,26 @@ class ProductFlowRepository(
         declaration = context.declaration
         if (
             declaration is None
-            or declaration.owner_class_qualname is None
             or receiver.root_name != declaration.nominal_receiver_name
             or len(receiver.attribute_path) != 1
         ):
             return None
+        # Only a method has a nominal receiver, so the owner class is present here.
         owner = self.class_index.symbol_for(
-            file_path=context.file_path, qualname=declaration.owner_class_qualname
+            file_path=context.file_path,
+            qualname=declaration.owner_class.require_qualname(),
         )
         if owner is None:
             return None
-        resolution = self._member_declarations_in_mro(owner, receiver.attribute_path[0])
-        if resolution.violation is not None or not resolution.candidates:
-            return None
-        declaring_class, member = resolution.candidates[0]
+        return self._member_declarations_in_mro(
+            owner, receiver.attribute_path[0]
+        ).annotation_classes_in(self)
+
+    def _member_annotation_classes(
+        self,
+        declaring_class: CompactIndexedClass,
+        member: CompactClassMemberDeclaration,
+    ) -> frozenset[str] | None:
         parts = member.annotation_reference_parts
         if parts is None:
             return None
@@ -1561,12 +1657,10 @@ class ProductFlowRepository(
         declaration = context.declaration
         if declaration is None:
             return None
-        if (
-            name == declaration.nominal_receiver_name
-            and declaration.owner_class_qualname is not None
-        ):
+        if name == declaration.nominal_receiver_name:
             owner = self.class_index.symbol_for(
-                file_path=context.file_path, qualname=declaration.owner_class_qualname
+                file_path=context.file_path,
+                qualname=declaration.owner_class.require_qualname(),
             )
             return None if owner is None else (owner,)
         annotation = next(
@@ -1592,7 +1686,7 @@ class ProductFlowRepository(
 
         classes: list[str] = []
         for part in self._annotation_alternatives(expression):
-            if isinstance(part, ast.Constant) and part.value is None:
+            if CompactValueExpression.project(part).value_is_none_literal:
                 continue
             reference = LexicalValueReference.from_expression(part)
             if reference is None:
@@ -1673,14 +1767,7 @@ class ProductFlowRepository(
         for projection in self.class_projections:
             for indexed in projection.classes:
                 for base in indexed.base_references:
-                    parts = base.resolved_parts
-                    qualified = (
-                        f"{builtins.__name__}.{parts[0]}"
-                        if base.root_binding is None
-                        and len(parts) == 1
-                        and hasattr(builtins, parts[0])
-                        else ".".join(parts)
-                    )
+                    qualified = base.builtin_qualified_name
                     if qualified.partition(".")[0] not in self.scanned_roots:
                         found.setdefault(qualified, []).append(indexed.symbol)
         return {base: tuple(classes) for base, classes in found.items()}
@@ -1770,17 +1857,18 @@ class ProductFlowRepository(
                 candidate_symbols,
                 CompactFunctionTargetResolutionViolation.UNSUPPORTED_RECEIVER,
             )
-        member_resolution = self._member_declarations_in_mro(
+        return self._member_declarations_in_mro(
             owner_symbol,
             target.member_name,
-        )
-        if member_resolution.violation is not None:
-            return self.attribute_target(
-                target.method_name,
-                candidate_symbols,
-                member_resolution.violation,
-            )
-        declaring_class, member_declaration = member_resolution.candidates[0]
+        ).method_target_in(self, target, candidate_symbols)
+
+    def _member_method_target(
+        self,
+        target: CurrentClassMemberMethodReference,
+        candidate_symbols: tuple[str, ...],
+        declaring_class: CompactIndexedClass,
+        member_declaration: CompactClassMemberDeclaration,
+    ) -> CompactCallTargetResolution:
         reference_parts = member_declaration.annotation_reference_parts
         if reference_parts is None:
             return self.attribute_target(
@@ -1810,8 +1898,8 @@ class ProductFlowRepository(
     ) -> _CompactClassMemberResolution:
         owner = self.class_index.class_for(owner_symbol)
         if owner is None:
-            return _CompactClassMemberResolution(
-                (), CompactFunctionTargetResolutionViolation.MISSING_DECLARATION
+            return _ClassMemberViolation(
+                CompactFunctionTargetResolutionViolation.MISSING_DECLARATION
             )
         # A direct declaration already owns the member, independent of inherited order.
         owners = (owner,)
@@ -1820,8 +1908,7 @@ class ProductFlowRepository(
         ):
             mro = self.class_index.mro_authority.resolve(owner_symbol).mro_type
             if mro is None:
-                return _CompactClassMemberResolution(
-                    (),
+                return _ClassMemberViolation(
                     CompactFunctionTargetResolutionViolation.INCOMPLETE_RECEIVER_FAMILY,
                 )
             owners = mro.declarations
@@ -1831,21 +1918,14 @@ class ProductFlowRepository(
                 for declaration in current.direct_member_declarations
                 if declaration.name == member_name
             )
+            if len(declarations) == 1:
+                return _ResolvedClassMember(current, declarations[0])
             if declarations:
-                candidates = tuple(
-                    (current, declaration) for declaration in declarations
+                return _ClassMemberViolation(
+                    CompactFunctionTargetResolutionViolation.AMBIGUOUS_DECLARATION
                 )
-                return _CompactClassMemberResolution(
-                    candidates,
-                    (
-                        None
-                        if len(candidates) == 1
-                        else CompactFunctionTargetResolutionViolation.AMBIGUOUS_DECLARATION
-                    ),
-                )
-        return _CompactClassMemberResolution(
-            (),
-            CompactFunctionTargetResolutionViolation.MISSING_DECLARATION,
+        return _ClassMemberViolation(
+            CompactFunctionTargetResolutionViolation.MISSING_DECLARATION
         )
 
     def _lexical_binding_exists(
@@ -1945,16 +2025,18 @@ class ProductFlowRepository(
         self,
         declaration: CompactFunctionDeclaration,
     ) -> CompactPublicNameExposure:
+        return declaration.owner_class.boundary_exposure_in(self, declaration)
+
+    def free_function_boundary_exposure(
+        self, declaration: CompactFunctionDeclaration
+    ) -> CompactPublicNameExposure:
+        """A module-level function is exposed by its own name; a nested one is private."""
+
         qualname = declaration.identity.qualname
-        if declaration.owner_class_qualname is not None:
-            binding_name = declaration.owner_class_qualname.split(".", 1)[0]
-        elif "." not in qualname:
-            binding_name = qualname
-        else:
+        if "." in qualname:
             return CompactPublicNameExposure.PRIVATE
         return self.public_exposure_index.exposure_for(
-            declaration.identity.module_name,
-            binding_name,
+            declaration.identity.module_name, qualname
         )
 
     def callable_component_authority_proof(
@@ -2004,26 +2086,30 @@ class ProductFlowRepository(
         incomplete: set[str] = set()
         for participant_symbol in participant_symbols:
             declaration = self.function_declarations_by_symbol.get(participant_symbol)
-            if declaration is None or declaration.owner_class_qualname is None:
+            if declaration is None:
                 continue
-            owner_symbol = (
-                f"{declaration.identity.module_name}."
-                f"{declaration.owner_class_qualname}"
-            )
-            method_name = declaration.identity.qualname.rsplit(".", 1)[-1]
-            related_class_symbols = (
-                *self.class_index.ancestor_symbols(owner_symbol),
-                *self.class_index.descendant_symbols(owner_symbol),
-            )
-            related_declarations = {
-                f"{class_symbol}.{method_name}"
-                for class_symbol in related_class_symbols
-                if f"{class_symbol}.{method_name}"
-                in self.function_declarations_by_symbol
-            }
-            if related_declarations - participant_symbols:
+            if declaration.owner_class.leaves_method_family_incomplete(
+                self, declaration, participant_symbols
+            ):
                 incomplete.add(participant_symbol)
         return incomplete
+
+    def method_family_leaves_participants(
+        self,
+        owner_symbol: str,
+        method_name: str,
+        participant_symbols: frozenset[str],
+    ) -> bool:
+        related_class_symbols = (
+            *self.class_index.ancestor_symbols(owner_symbol),
+            *self.class_index.descendant_symbols(owner_symbol),
+        )
+        related_declarations = {
+            f"{class_symbol}.{method_name}"
+            for class_symbol in related_class_symbols
+            if f"{class_symbol}.{method_name}" in self.function_declarations_by_symbol
+        }
+        return bool(related_declarations - participant_symbols)
 
     def _lexical_function_target_resolution(
         self,
@@ -2225,10 +2311,7 @@ class ProductFlowRepository(
         """A selected definition must identify this function's source declaration."""
 
         resolution = self._declared_function_resolution(symbol)
-        if (
-            resolution.declaration is not None
-            and resolution.declaration.line != binding.line
-        ):
+        if resolution.declared_off_line(binding.line):
             return OpenCompactFunctionTarget(
                 (symbol,),
                 CompactFunctionTargetResolutionViolation.DYNAMIC_BINDING,
@@ -2275,11 +2358,7 @@ class ProductFlowRepository(
             )
             if resolution is None:
                 continue
-            declaration = resolution.declaration
-            if declaration is not None and (
-                declaration.identity.module_name != current.module_name
-                or declaration.owner_class_qualname != current.qualname
-            ):
+            if resolution.declared_outside(current.module_name, current.qualname):
                 return OpenCompactFunctionTarget(
                     resolution.possible_symbols,
                     CompactFunctionTargetResolutionViolation.UNSUPPORTED_RECEIVER,
@@ -2312,14 +2391,8 @@ class CompactProductFlowRepository(ProductFlowRepository):
         """Recover the typed product-flow join declared by its fact families."""
 
         return cls(
-            product_projections=cast(
-                Sequence[CompactProductFlowModuleProjection],
-                projections_by_family[CompactProductFlowModuleProjectionFamily],
-            ),
-            class_projections=cast(
-                Sequence[CompactModuleClassProjection],
-                projections_by_family[CompactModuleClassProjectionFamily],
-            ),
+            product_projections=CompactProductFlowModuleProjectionFamily.modules_in(projections_by_family),
+            class_projections=CompactModuleClassProjectionFamily.modules_in(projections_by_family),
         )
 
     @classmethod
@@ -2355,7 +2428,7 @@ class SourceProductFlowRepository(RepositoryModuleBindingProof, ProductFlowRepos
         )
         classes = [
             node
-            for _, node in module_syntax_index(module.module).indexed_nodes_of_type(
+            for _, node in module.syntax_index.indexed_nodes_of_type(
                 ast.ClassDef
             )
             if node.lineno == declaration.line
@@ -2409,7 +2482,7 @@ class SourceProductFlowRepository(RepositoryModuleBindingProof, ProductFlowRepos
         )
         if module is None:
             return None
-        syntax = module_syntax_index(module.module)
+        syntax = module.syntax_index
         current: ast.AST = reference
         while True:
             parent = syntax.parent_by_node.get(current)
@@ -2452,7 +2525,7 @@ class SourceProductFlowRepository(RepositoryModuleBindingProof, ProductFlowRepos
             return None
         if name in LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(function.body):
             return None
-        return f"{context.module_name}.{declaration.owner_class_qualname}"
+        return f"{context.module_name}.{declaration.owner_class.require_qualname()}"
 
     def function_class_parameter_type_name(
         self, symbol: str, reference: ast.Name

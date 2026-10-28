@@ -4,13 +4,17 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from collections import Counter, deque
-from collections.abc import Callable, Hashable, Iterable
+from collections.abc import Callable, Hashable, Iterable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from functools import cached_property
 from pathlib import Path
-from typing import ClassVar, Generic, Self, TypeVar
+import sys
+import time
+from typing import ClassVar, Generic, Self, TextIO, TypeVar
 
+from .ast_tools import ParsedModuleSet
 from .analysis import (
     AnalysisPathScope,
     EvidenceLocalFindingReuseAuthority,
@@ -48,6 +52,7 @@ from .codemod_runtime import (
     FindingRecipeTrajectoryObstacle,
 )
 from .detectors import DetectorConfig, IssueDetector, SemanticDescentGraphIssueDetector
+from .owner_picks import OwnerPickReport, OwnerPicks
 from .json_reports import (
     DataclassJsonReport,
     JsonReportAliasProperty,
@@ -100,7 +105,7 @@ class CodemodRefactorTrajectoryStatus(StrEnum):
         True,
         lambda proof: not proof.obstacles
         and not proof.terminals
-        and proof.best_partial_terminal is not None,
+        and len(proof.best_partial_terminals) == 1,
     )
     NO_TERMINAL_STATE = (
         "no_terminal_state",
@@ -119,8 +124,7 @@ class CodemodRefactorTrajectoryStatus(StrEnum):
             len(proof.terminals) > 1
             or (
                 not proof.terminals
-                and bool(proof.partial_terminals)
-                and proof.best_partial_terminal is None
+                and len(proof.best_partial_terminals) > 1
             )
         ),
     )
@@ -232,12 +236,24 @@ class CodemodFindingClassStatus(StrEnum):
     MOVED = (
         "moved",
         lambda change: (
+            bool(change.moved_ids)
+            and not change.removed_ids
+            and not change.added_ids
+            and not change.expected_removed_finding_ids
+        ),
+    )
+    """The same obligations, by stable id, with some evidence elsewhere."""
+    REPLACED = (
+        "replaced",
+        lambda change: (
             bool(change.before_ids)
             and bool(change.after_ids)
             and change.before_count == change.after_count
             and bool(change.removed_ids or change.added_ids)
         ),
     )
+    """As many obligations of the class, but some are other obligations: the
+    smell left one subject and appeared at another."""
     EXPANDED = (
         "expanded",
         lambda change: (
@@ -512,6 +528,8 @@ class CodemodFindingClassChange(CodemodFindingDelta):
     detector_ids: CodemodDetectorIdTransition = json_report_field(
         field_name="detector_transition"
     )
+    moved_ids: tuple[str, ...] = field(default=(), kw_only=True)
+    """Stable ids present before and after whose evidence changed."""
 
     @classmethod
     def from_findings(
@@ -526,10 +544,17 @@ class CodemodFindingClassChange(CodemodFindingDelta):
             before_findings,
             after_findings,
         )
+        evidence_before = {finding.stable_id: finding.evidence for finding in before_findings}
         return cls(
             before_ids=transition.before_ids,
             after_ids=transition.after_ids,
             expected_removed_finding_ids=expected_removed_finding_ids,
+            moved_ids=tuple(
+                finding.stable_id
+                for finding in after_findings
+                if finding.stable_id in evidence_before
+                and evidence_before[finding.stable_id] != finding.evidence
+            ),
             obligation_class=obligation_class,
             detector_ids=CodemodDetectorIdTransition.from_findings(
                 before_findings,
@@ -550,7 +575,12 @@ class CodemodFindingClassChange(CodemodFindingDelta):
 
 @dataclass(frozen=True)
 class CodemodFindingClassDelta(DataclassJsonReport):
-    """Class-level before/after projection for detecting moved smell classes."""
+    """The before/after diff of finding stable ids, counted per obligation class.
+
+    The stable id is the one finding identity: an id in both scans is the same
+    obligation, moved when its evidence changed. The obligation class only
+    groups ids so the no-increase gate counts per class.
+    """
 
     changes: tuple[CodemodFindingClassChange, ...]
 
@@ -605,6 +635,16 @@ class CodemodFindingClassDelta(DataclassJsonReport):
     @json_report_property()
     def moved_class_count(self) -> int:
         return self.count_status(CodemodFindingClassStatus.MOVED)
+
+    @json_report_property()
+    def replaced_class_count(self) -> int:
+        return self.count_status(CodemodFindingClassStatus.REPLACED)
+
+    @json_report_property()
+    def moved_finding_ids(self) -> tuple[str, ...]:
+        """Obligations that kept their stable id while their evidence moved."""
+
+        return tuple(finding_id for change in self.changes for finding_id in change.moved_ids)
 
     @json_report_property()
     def eliminated_class_count(self) -> int:
@@ -1089,18 +1129,18 @@ class CodemodRefactorTrajectoryProof(DataclassJsonReport):
         return len(self.partial_terminals)
 
     @property
-    def best_partial_terminal(self) -> CodemodRefactorPartialTerminal | None:
-        """The partial terminal leaving the fewest targets, when exactly one does."""
+    def best_partial_terminals(self) -> tuple[CodemodRefactorPartialTerminal, ...]:
+        """The partial terminals tied for leaving the fewest targets."""
 
-        if not self.partial_terminals:
-            return None
-        fewest = min(terminal.remaining_target_count for terminal in self.partial_terminals)
-        best = tuple(
+        fewest = min(
+            (terminal.remaining_target_count for terminal in self.partial_terminals),
+            default=0,
+        )
+        return tuple(
             terminal
             for terminal in self.partial_terminals
             if terminal.remaining_target_count == fewest
         )
-        return best[0] if len(best) == 1 else None
 
     @property
     def proved_terminal(
@@ -1110,8 +1150,7 @@ class CodemodRefactorTrajectoryProof(DataclassJsonReport):
             raise TypeError("trajectory proof has no unique proved terminal state")
         if self.terminals:
             return next(iter(self.terminals))
-        best = self.best_partial_terminal
-        assert best is not None
+        (best,) = self.best_partial_terminals
         return best
 
 @dataclass(frozen=True)
@@ -1124,6 +1163,8 @@ class CodemodRefactorGoalReport(DataclassJsonReport):
     migration_type: type[RefactorConcept] = json_report_field(included=False)
     stages: tuple[CodemodRefactorGoalStage, ...]
     trajectory_proof: CodemodRefactorTrajectoryProof
+    owner_picks: OwnerPickReport | None = None
+    """What became of each extract-mixin finding under the owner picks (#67)."""
 
     @json_report_property()
     def stage_count(self) -> int:
@@ -1384,9 +1425,11 @@ class CodemodClassPlanProjectedDeltaReport(DataclassJsonReport):
 
 @dataclass(frozen=True)
 class CodemodWorkflowScan:
-    """Parsed modules and findings for one migration state."""
+    """Parsed modules and findings for one migration state. A later scan of
+    the same parses carries the same module set, so the set's facts are
+    shared."""
 
-    modules: list[ParsedModule]
+    modules: ParsedModuleSet
     findings: list[RefactorFinding]
     scan_mode: CodemodProjectedScanMode = CodemodProjectedScanMode.EXACT
 
@@ -1430,9 +1473,10 @@ class CodemodSimulationFindingProjection:
         ).modules_after_projection()
         if self.report_roots:
             return self.evidence_local_projected_scan(projected_modules)
+        module_set = ParsedModuleSet.of(projected_modules)
         return CodemodWorkflowScan(
-            modules=list(projected_modules),
-            findings=analyze_modules(projected_modules, self.config),
+            modules=module_set,
+            findings=analyze_modules(module_set, self.config),
             scan_mode=CodemodProjectedScanMode.EXACT,
         )
 
@@ -1443,7 +1487,7 @@ class CodemodSimulationFindingProjection:
         changed_paths = self.changed_paths
         if not changed_paths:
             return CodemodWorkflowScan(
-                modules=list(projected_modules),
+                modules=ParsedModuleSet.of(projected_modules),
                 findings=list(self.findings),
                 scan_mode=CodemodProjectedScanMode.EVIDENCE_LOCAL_PARTIAL,
             )
@@ -1477,7 +1521,7 @@ class CodemodSimulationFindingProjection:
             )
         )
         return CodemodWorkflowScan(
-            modules=list(projected_modules),
+            modules=ParsedModuleSet.of(projected_modules),
             findings=findings,
             scan_mode=CodemodProjectedScanMode.EVIDENCE_LOCAL_PARTIAL,
         )
@@ -1518,7 +1562,7 @@ class CodemodSimulationFindingProjection:
             return self.semantic_descent_source
         return SemanticDescentGraphAnalysisSource(
             cached_graph=self.semantic_descent_source.graph_for_modules(
-                list(projected_modules)
+                ParsedModuleSet.of(projected_modules)
             )
         )
 
@@ -1526,12 +1570,12 @@ class CodemodSimulationFindingProjection:
         self,
         projected_modules: tuple[ParsedModule, ...],
         changed_paths: frozenset[str],
-    ) -> list[ParsedModule]:
-        return [
+    ) -> ParsedModuleSet:
+        return ParsedModuleSet.of(
             module
             for module in projected_modules
             if Path(module.path).resolve().as_posix() in changed_paths
-        ]
+        )
 
     @property
     def changed_paths(self) -> frozenset[str]:
@@ -1561,6 +1605,29 @@ class CodemodSimulationFindingProjection:
         )
 
 
+@dataclass
+class CodemodGoalProgress:
+    """One line per goal phase on a stream, so a long run says where it is."""
+
+    stream: TextIO = field(default_factory=lambda: sys.stderr)
+    started: float = field(default_factory=time.perf_counter)
+
+    @contextmanager
+    def phase(self, label: str) -> Iterator[list[str]]:
+        """Time one phase; the caller may append details to the yielded list."""
+
+        start = time.perf_counter()
+        details: list[str] = []
+        yield details
+        print(
+            f"nra goal: {label} {time.perf_counter() - start:.1f}s"
+            + "".join(f" {detail}" for detail in details)
+            + f" (total {time.perf_counter() - self.started:.1f}s)",
+            file=self.stream,
+            flush=True,
+        )
+
+
 @dataclass(frozen=True, kw_only=True)
 class CodemodRefactorGoalRunner:
     """Prove virtual stages, then commit one revision-checked migration batch."""
@@ -1578,6 +1645,9 @@ class CodemodRefactorGoalRunner:
     trajectory_budget: CodemodRefactorTrajectoryBudget = field(
         default_factory=CodemodRefactorTrajectoryBudget
     )
+    owner_picks: OwnerPicks | None = None
+    progress: CodemodGoalProgress = field(default_factory=CodemodGoalProgress)
+    """A picker's owner choices, applied to every scan's extract-mixin findings."""
 
     def starting_scan(self) -> CodemodWorkflowScan:
         if self.initial_scan is None:
@@ -1644,11 +1714,12 @@ class CodemodRefactorGoalRunner:
             simulation=simulation,
             roots=self.roots,
         ).modules_after_projection()
+        module_set = ParsedModuleSet.of(projected_modules)
         return CodemodWorkflowScan(
-            modules=list(projected_modules),
+            modules=module_set,
             findings=self.report_scoped_findings(
                 analyze_detector_types(
-                    list(projected_modules),
+                    module_set,
                     self.config,
                     detector_types=detector_types,
                 )
@@ -1673,13 +1744,31 @@ class CodemodRefactorGoalRunner:
         self,
         findings: Iterable[RefactorFinding],
     ) -> list[RefactorFinding]:
-        return AnalysisPathScope(
+        scoped = AnalysisPathScope(
             analysis_roots=self.roots,
             report_roots=self.report_roots,
         ).filter_findings(list(findings))
+        if self.owner_picks is None:
+            return scoped
+        return self.owner_picks.applied(scoped)[0]
 
     def run(self) -> CodemodRefactorGoalReport:
-        starting_scan = self.starting_scan()
+        with self.progress.phase("starting scan") as details:
+            starting_scan = self.starting_scan()
+            details.append(f"{len(starting_scan.findings)} findings")
+        if self.owner_picks is not None:
+            starting_scan = replace(
+                starting_scan,
+                findings=self.owner_picks.applied(starting_scan.findings)[0],
+            )
+        report = self.proved_run(starting_scan)
+        if self.owner_picks is None:
+            return report
+        return replace(
+            report, owner_picks=self.owner_picks.applied(starting_scan.findings)[1]
+        )
+
+    def proved_run(self, starting_scan: CodemodWorkflowScan) -> CodemodRefactorGoalReport:
         trajectory_proof = self.prove_trajectory(starting_scan)
         if not trajectory_proof.status.proved:
             return self.report(
@@ -1726,9 +1815,11 @@ class CodemodRefactorGoalRunner:
             state: CodemodRefactorTrajectoryState,
             class_plan_report: FindingRecipeClassPlanReport,
         ) -> None:
-            settled = self.partial_terminal_or_dead_end(
-                starting_scan, state, class_plan_report
-            )
+            with self.progress.phase(f"depth {state.depth} settle") as details:
+                settled = self.partial_terminal_or_dead_end(
+                    starting_scan, state, class_plan_report
+                )
+                details.append(type(settled).__name__)
             if isinstance(settled, CodemodRefactorPartialTerminal):
                 partial_terminals.append(settled)
             else:
@@ -1737,7 +1828,9 @@ class CodemodRefactorGoalRunner:
         while pending:
             state = pending.popleft()
             active_scan = state.scan
-            target_findings = self.target_findings(active_scan)
+            with self.progress.phase(f"depth {state.depth} targets") as details:
+                target_findings = self.target_findings(active_scan)
+                details.append(f"{len(target_findings)} targets")
             if not target_findings:
                 active_scan = self.exact_scan(active_scan)
                 target_findings = self.target_findings(active_scan)
@@ -1777,10 +1870,12 @@ class CodemodRefactorGoalRunner:
                     continue
 
             snapshot = active_scan.source_snapshot
-            plan = snapshot.plan_from_findings(
-                target_findings,
-                frontier_budget=self.trajectory_budget.recipe_frontier,
-            )
+            with self.progress.phase(f"depth {state.depth} plan") as details:
+                plan = snapshot.plan_from_findings(
+                    target_findings,
+                    frontier_budget=self.trajectory_budget.recipe_frontier,
+                )
+                details.append(f"{len(plan.trajectory_frontier.branches)} branches")
             class_plan_report = FindingRecipeClassPlanReport.from_finding_plan(
                 target_findings,
                 root=self.class_plan_root(),
@@ -1811,7 +1906,7 @@ class CodemodRefactorGoalRunner:
 
             valid_transition_count = 0
             analyzed_rewritten_source_digests: set[str] = set()
-            for branch in frontier.branches:
+            for branch_number, branch in enumerate(frontier.branches, start=1):
                 simulation = branch.document_simulation
                 if simulation.simulation.applied_rewrite_count == 0:
                     continue
@@ -1821,13 +1916,17 @@ class CodemodRefactorGoalRunner:
                 if rewritten_source_digest in analyzed_rewritten_source_digests:
                     continue
                 analyzed_rewritten_source_digests.add(rewritten_source_digest)
-                projected_scan = self.projected_target_scan(
-                    active_scan,
-                    simulation.simulation,
-                    target_findings,
-                )
-                if not self.target_findings(projected_scan):
-                    projected_scan = self.exact_scan(projected_scan)
+                with self.progress.phase(
+                    f"depth {state.depth} reproof {branch_number}/{len(frontier.branches)}"
+                ) as details:
+                    projected_scan = self.projected_target_scan(
+                        active_scan,
+                        simulation.simulation,
+                        target_findings,
+                    )
+                    if not self.target_findings(projected_scan):
+                        projected_scan = self.exact_scan(projected_scan)
+                    details.append(f"{len(projected_scan.findings)} findings")
                 stage = self.stage(
                     active_scan,
                     projected_scan,
@@ -1919,7 +2018,15 @@ class CodemodRefactorGoalRunner:
             tuple(starting_scan.findings), tuple(exact_scan.findings)
         ).increased_changes
         if increased:
-            return dead_end(f"it grows {len(increased)} finding class(es)")
+            return dead_end(
+                f"it grows {len(increased)} finding class(es): "
+                + "; ".join(
+                    f"{change.obligation_class.declaration.qualname} "
+                    f"{change.before_count}->{change.after_count} "
+                    f"(added {', '.join(change.added_ids)})"
+                    for change in increased
+                )
+            )
         guard_report = self.terminal_guard_report(exact_scan)
         if not guard_report.is_clean:
             return dead_end("its architecture guards fail")
@@ -1997,11 +2104,18 @@ class CodemodRefactorGoalRunner:
         self,
         scan: CodemodWorkflowScan,
     ) -> tuple[RefactorFinding, ...]:
-        return FindingRecipeSynthesizer.findings_for_concept(
+        """The concept's findings; with a picks file, only the picked ones, so
+        no stage serves a finding nobody reviewed."""
+
+        findings = FindingRecipeSynthesizer.findings_for_concept(
             scan.findings,
             self.migration_type,
             scan.source_snapshot,
         )
+        if self.owner_picks is None:
+            return findings
+        picked = self.owner_picks.picked_finding_ids
+        return tuple(finding for finding in findings if finding.stable_id in picked)
 
     def class_plan_root(self) -> Path:
         if self.roots:

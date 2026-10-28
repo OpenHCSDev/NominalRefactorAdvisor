@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from functools import cached_property
 from typing import Annotated, cast
 
-from .ast_tools import module_syntax_index
+from .ast_projection import CallKeywords
 from .class_index import ModuleNominalBindingAuthority, nominal_reference_root_name
 from .codemod_declaration_source import DirectClassDeclarationAuthority
 from .codemod_runtime import CodemodSourceSnapshot
@@ -66,7 +66,7 @@ class FieldMetadataKeywordRemoval(SourceTextGeometry):
         Nested executable scopes are deliberately outside this binding proof.
         """
         module = self.snapshot.parsed_module_for_source_path(self.owner.file_path)
-        syntax = module_syntax_index(module.module)
+        syntax = module.syntax_index
         calls = []
         for index, call in syntax.indexed_nodes_of_type(ast.Call):
             ancestors = syntax.ancestor_nodes(index)
@@ -101,7 +101,7 @@ class FieldMetadataKeywordRemoval(SourceTextGeometry):
             )
         self.selection_count.require_actual_count(len(calls))
         (call,) = calls
-        if any(keyword.arg is None for keyword in call.keywords):
+        if CallKeywords.of(call.keywords).splats:
             raise ValueError(
                 "Expanded keyword arguments leave metadata removal ambiguous"
             )

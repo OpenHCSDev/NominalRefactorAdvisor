@@ -41,7 +41,7 @@ def test_repository_has_no_external_enum_case_recovery() -> None:
 
 def test_repository_has_no_function_local_imports_or_ast_name_projection_duplicates() -> None:
     package_root = Path(__file__).resolve().parents[1] / "nominal_refactor_advisor"
-    modules = tuple(parse_python_modules(package_root))
+    modules = parse_python_modules(package_root)
     nested_imports = tuple(
         (module.file_path, nested.lineno, ast.unparse(nested))
         for module in modules

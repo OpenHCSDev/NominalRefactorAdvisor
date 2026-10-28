@@ -18,6 +18,7 @@ from .carrier_collapse import (
     CarrierCollapseParticipant,
     ClosedCarrierCollapseComponent,
 )
+from .carrier_expansion import ResolvedFieldBindingCall
 from .product_flow import (
     CompactFlowPosition,
     CompactFunctionCall,
@@ -67,11 +68,9 @@ class ParameterConveyorProductProjection:
         )
 
 
-@dataclass(frozen=True)
-class ConstructedProductCallEdge(ParameterConveyorCallEdge):
+@dataclass(frozen=True, kw_only=True)
+class ConstructedProductCallEdge(ResolvedFieldBindingCall, ParameterConveyorCallEdge):
     construction: CompactResolvedProductConstruction
-    resolved_call: CompactResolvedFunctionCall
-    field_bindings: tuple[CarrierCollapseFieldBinding, ...]
     carrier_binding_is_local: bool
     carrier_binding_dominates_call: bool
     intervening_mutation_roots: tuple[str, ...]
@@ -79,10 +78,6 @@ class ConstructedProductCallEdge(ParameterConveyorCallEdge):
     @property
     def authority(self) -> CompactProductAuthority:
         return self.construction.authority
-
-    @property
-    def carrier_source_participant_symbols(self) -> tuple[str, ...]:
-        return ()
 
     def carrier_value_reference(
         self,

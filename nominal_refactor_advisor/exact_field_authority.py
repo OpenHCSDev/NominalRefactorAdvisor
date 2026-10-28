@@ -8,6 +8,13 @@ from functools import cached_property
 from itertools import combinations
 
 from .ast_projection import ExpressionReference
+from .ast_projection import (
+    CallKeywords,
+    NoStatementValue,
+    StatementValue,
+    StatementValueQuestion,
+    SuppliedValue,
+)
 from .ast_tools import (
     ModuleAnnotationEvaluationMode,
     ParsedModule,
@@ -69,9 +76,7 @@ class ExactDataclassDecorator:
 
         frozen = False
         if isinstance(decorator, ast.Call):
-            if decorator.args or any(
-                keyword.arg is None for keyword in decorator.keywords
-            ):
+            if decorator.args or CallKeywords.of(decorator.keywords).splats:
                 raise ValueError(
                     "Dataclass decorator options must be explicit keywords"
                 )
@@ -104,6 +109,19 @@ class ExactDataclassDecorator:
         return cls(frozen, source)
 
 
+class DefaultFreeField(StatementValueQuestion[None]):
+    """A promoted field moves without a default: one with a value stays put."""
+
+    def supplied(self, value: SuppliedValue) -> None:
+        raise ValueError("Promoted dataclass fields must be default-free names")
+
+    def bare(self, value: NoStatementValue) -> None:
+        """A bare annotation is the default-free field the promotion moves."""
+
+
+DEFAULT_FREE_FIELD = DefaultFreeField()
+
+
 @dataclass(frozen=True)
 class ExactDataclassFieldSemantics:
     """One default-free field's class-body normal form, bound only outside the class."""
@@ -121,8 +139,9 @@ class ExactDataclassFieldSemantics:
         comment_lines: SourceCommentLineIndex,
         annotation_mode: type[ModuleAnnotationEvaluationMode],
     ) -> ExactDataclassFieldSemantics:
-        if not isinstance(statement.target, ast.Name) or statement.value is not None:
+        if not isinstance(statement.target, ast.Name):
             raise ValueError("Promoted dataclass fields must be default-free names")
+        StatementValue.of(statement).answer(DEFAULT_FREE_FIELD)
         if comment_lines.intersects(statement) or (
             statement.lineno > 1 and statement.lineno - 1 in comment_lines.comment_lines
         ):
@@ -350,17 +369,16 @@ class ExactDataclassFieldAuthorityComponentBuilder:
         annotation_mode: type[ModuleAnnotationEvaluationMode],
     ) -> ExactDataclassFieldParticipant:
         node = indexed_class.node
-        declaration = indexed_class.dataclass_declaration
+        refusal = "Dataclass is not a base-free promotion participant"
+        declaration = indexed_class.dataclass_declaration.require_standard(refusal)
         if (
             "." in indexed_class.qualname
             or node.bases
             or node.keywords
-            or declaration is None
-            or not declaration.is_standard_dataclass
             or declaration.failures
             or not ClassHeaderSourceSpan(node, source_segments.lines).is_reconstructible
         ):
-            raise ValueError("Dataclass is not a base-free promotion participant")
+            raise ValueError(refusal)
         if any(
             isinstance(child, ast.Name)
             and isinstance(child.ctx, ast.Load)

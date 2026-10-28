@@ -31,6 +31,16 @@ from typing import ClassVar
 
 from metaclass_registry import AutoRegisterMeta
 
+from .ast_field_decoders import declared_annotations
+from .value_expression import CompactValueExpression
+from .ast_projection import (
+    NoStatementValue,
+    StatementValue,
+    StatementValueQuestion,
+    StatementValues,
+    SuppliedValue,
+)
+from .lexical_bindings import ImportBoundNameProjection
 from .ast_tools import (
     AstParentIndex,
     BuiltinCallName,
@@ -186,6 +196,22 @@ def handback(module: ParsedModule, node: ast.AST, reason: str) -> ValueError:
     return ValueError(f"handback: {module.file_path}:{node.lineno}: {reason}")
 
 
+ENUM_BODY_STATEMENT_UNMODELED = "enum body statement is neither member, field, nor method"
+
+
+@dataclass(frozen=True)
+class EnumBodyAnnotation(StatementValueQuestion[None]):
+    """A bare annotation in an enum body is a field; a valued one is unmodeled."""
+
+    module: ParsedModule
+
+    def supplied(self, value: SuppliedValue) -> None:
+        raise handback(self.module, value.statement, ENUM_BODY_STATEMENT_UNMODELED)
+
+    def bare(self, value: NoStatementValue) -> None:
+        """A bare annotation declares a field the family form keeps."""
+
+
 def body_without_docstring(statements: list[ast.stmt]) -> list[ast.stmt]:
     if (
         statements
@@ -238,9 +264,7 @@ def module_bound_names(module: ast.Module) -> frozenset[str]:
         if isinstance(statement, ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef):
             names.add(statement.name)
         elif isinstance(statement, ast.Import | ast.ImportFrom):
-            names.update(
-                (alias.asname or alias.name).split(".")[0] for alias in statement.names
-            )
+            names.update(ImportBoundNameProjection(statement).names())
         elif isinstance(statement, ast.If):
             names.update(module_bound_names(ast.Module(statement.body, [])))
         else:
@@ -927,7 +951,7 @@ class CasesFamily(Cases, Descent):
             )
             for alias in statement.names:
                 if source == declared.module and alias.name == declared.name:
-                    return alias.asname or alias.name
+                    return ImportBoundNameProjection(statement).alias_bound_name(alias)
         return None
 
     def root_base(self, model: CaseModel) -> str:
@@ -963,14 +987,10 @@ class CasesFamily(Cases, Descent):
                 raise handback(
                     module, statement, "async enum method; no family form derived"
                 )
-            if not isinstance(
-                statement, ast.Assign | ast.AnnAssign | ast.FunctionDef
-            ) or (isinstance(statement, ast.AnnAssign) and statement.value is not None):
-                raise handback(
-                    module,
-                    statement,
-                    "enum body statement is neither member, field, nor method",
-                )
+            if not isinstance(statement, ast.Assign | ast.AnnAssign | ast.FunctionDef):
+                raise handback(module, statement, ENUM_BODY_STATEMENT_UNMODELED)
+            if isinstance(statement, ast.AnnAssign):
+                StatementValue.of(statement).answer(EnumBodyAnnotation(module))
             if isinstance(statement, ast.Assign) and not all(
                 isinstance(argument, ast.expr)
                 for member in enum.members
@@ -1207,28 +1227,30 @@ class CasesFamily(Cases, Descent):
     def fold_properties(self, model: CaseModel) -> None:
         """Properties whose one return every member answers with a literal become data."""
 
-        pending = [
-            function
+        properties = (
+            (function, body_without_docstring(function.body))
             for function in model.enum.methods
             if isinstance(function, ast.FunctionDef)
             and decorator_names(function) == ("property",)
             and function.name not in model.forwarded.values()
-        ]
+        )
+        # Only a property whose whole body returns a value can fold.
+        pending = dict(
+            StatementValues.keyed(
+                (function, body[0])
+                for function, body in properties
+                if len(body) == 1 and isinstance(body[0], ast.Return)
+            ).supplied
+        )
         progressed = True
         while progressed:
             progressed = False
-            for function in list(pending):
-                body = body_without_docstring(function.body)
-                if (
-                    len(body) != 1
-                    or not isinstance(body[0], ast.Return)
-                    or body[0].value is None
-                ):
-                    pending.remove(function)
-                    continue
+            for function, returned in list(pending.items()):
                 receiver = function.args.args[0].arg
                 values = {
-                    member.name: self.evaluated(model, member, receiver, body[0].value)
+                    member.name: self.evaluated(
+                        model, member, receiver, returned.value
+                    )
                     for member in model.members
                 }
                 if any(value is UNKNOWN for value in values.values()):
@@ -1238,7 +1260,7 @@ class CasesFamily(Cases, Descent):
                 model.folded[function.name] = (
                     None if function.returns is None else ast.unparse(function.returns)
                 )
-                pending.remove(function)
+                del pending[function]
                 progressed = True
 
     def evaluated(
@@ -2023,7 +2045,7 @@ def held_type(annotation: ast.expr) -> ast.expr:
         sides = [
             side
             for side in (annotation.left, annotation.right)
-            if not (isinstance(side, ast.Constant) and side.value is None)
+            if not CompactValueExpression.project(side).value_is_none_literal
         ]
         if len(sides) == 1:
             return held_type(sides[0])
@@ -2423,11 +2445,11 @@ def literal_value(expression: ast.expr) -> object:
 
 def annotations_of(node: ast.AST) -> tuple[ast.expr, ...]:
     if isinstance(node, ast.arg):
-        return () if node.annotation is None else (node.annotation,)
+        return declared_annotations(node)
     if isinstance(node, ast.AnnAssign):
         return (node.annotation,)
     if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
-        return () if node.returns is None else (node.returns,)
+        return declared_annotations(node)
     return ()
 
 
@@ -2840,7 +2862,7 @@ class Guard(Site):
         ]
         callable_name = next(
             (
-                alias.asname or alias.name
+                ImportBoundNameProjection(statement).alias_bound_name(alias)
                 for statement in model.enum.module.module.body
                 if isinstance(statement, ast.ImportFrom)
                 and statement.module in {"typing", "collections.abc"}

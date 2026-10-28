@@ -8,16 +8,19 @@ from dataclasses import dataclass
 from functools import cached_property
 from typing import Self
 
-from .ast_tools import ParsedModule, module_syntax_index
+from .lexical_bindings import ImportBoundNameProjection
+from .ast_tools import ParsedModule
 from .class_index import (
     ModuleNominalBindingAuthority,
     CompactNominalBinding,
     ModuleNominalBindingSnapshotPolicy,
 )
 from .codemod_foreign_adapter_source import AdapterPropertyBodies
-from .codemod_foreign_family_source import ForeignFamilyReference, RewrittenLineFit
+from .codemod_foreign_family_source import (
+    ForeignFamilyReference,
+    SourceRewriteAuthority,
+)
 from .codemod_source_edits import (
-    SourceTextGeometry,
     SourceTextSpan,
     SourceTextSpanReplacement,
 )
@@ -204,11 +207,11 @@ class StaticProjectionSites:
         """The from-import statement that binds each retired name."""
 
         return {
-            alias.asname or alias.name: statement
+            name: statement
             for statement in ast.walk(self.parsed_module.module)
             if isinstance(statement, ast.ImportFrom)
-            for alias in statement.names
-            if (alias.asname or alias.name) in self.bound_names
+            for name in ImportBoundNameProjection(statement).names()
+            if name in self.bound_names
         }
 
     @cached_property
@@ -226,22 +229,15 @@ class StaticProjectionSites:
 
 
 @dataclass(frozen=True)
-class StaticProjectionAuthority:
+class StaticProjectionAuthority(SourceRewriteAuthority):
     """Every static projection call of one module, as source replacements."""
 
-    parsed_module: ParsedModule
-    geometry: SourceTextGeometry
-    line_length: int
     projection: StaticProjection
     family: ForeignFamilyReference
 
     @cached_property
     def found(self) -> StaticProjectionSites:
         return StaticProjectionSites(self.parsed_module, self.projection)
-
-    @cached_property
-    def fit(self) -> RewrittenLineFit:
-        return RewrittenLineFit(self.geometry, self.line_length)
 
     @cached_property
     def outermost(self) -> tuple[StaticProjectionSite, ...]:
@@ -366,7 +362,7 @@ class StaticProjectionCallModuleFamily(ShapeFamily[ForeignFamilySiteModule]):
 
     @classmethod
     def collect(cls, parsed_module: ParsedModule) -> list[ForeignFamilySiteModule]:
-        index = module_syntax_index(parsed_module.module)
+        index = parsed_module.syntax_index
         node_indices = {
             statement: node_index
             for node_index, statement in index.indexed_nodes_of_type(ast.Call)

@@ -26,10 +26,12 @@ from functools import cache, cached_property
 from pathlib import Path
 from typing import ClassVar
 
+from .lexical_bindings import ImportBoundNameProjection
+from .ast_projection import StatementValues
+from .ast_projection import CallKeywords
 from .ast_tools import (
     ModuleSyntaxIndex,
     ParsedModule,
-    module_syntax_index,
 )
 from .class_index import module_import_aliases
 from .installed_source import InstalledModule
@@ -41,7 +43,11 @@ from .quoted_reference import (
 )
 from .models import SourceLocation
 from .observation_families import ShapeFamily
-from .restated_fact_observations import RestatingSite, RestatingSiteFamily
+from .restated_fact_observations import (
+    RestatingSite,
+    RestatingSiteFamily,
+    RestatingSiteModule,
+)
 
 
 @dataclass(frozen=True)
@@ -138,7 +144,7 @@ class DeclaredIdentityFamily(ShapeFamily[ModuleDeclarations]):
 
     @classmethod
     def collect(cls, parsed_module: ParsedModule) -> list[ModuleDeclarations]:
-        index = module_syntax_index(parsed_module.module)
+        index = parsed_module.syntax_index
         names = QualifiedNames.of(parsed_module)
         top_level = {
             id(statement)
@@ -230,7 +236,7 @@ class DeclaredIdentityFamily(ShapeFamily[ModuleDeclarations]):
                         yield FromImport(
                             index,
                             module,
-                            tuple(alias.asname or alias.name for alias in aliases),
+                            ImportBoundNameProjection(statement).names(),
                         )
 
     SCOPES = (
@@ -306,10 +312,9 @@ class DeclaredIdentityFamily(ShapeFamily[ModuleDeclarations]):
                 name for base in node.bases if (name := cls.base_name(base))
             ),
             keywords=tuple(
-                (keyword.arg, keyword.value.value)
-                for keyword in node.keywords
-                if keyword.arg is not None
-                and isinstance(keyword.value, ast.Constant)
+                (keyword.name, keyword.value.value)
+                for keyword in CallKeywords.of(node.keywords).named
+                if isinstance(keyword.value, ast.Constant)
                 and isinstance(keyword.value.value, str)
             ),
             consumed_keywords=tuple(
@@ -324,10 +329,12 @@ class DeclaredIdentityFamily(ShapeFamily[ModuleDeclarations]):
             ),
             slots=tuple(
                 statement.target.id
-                for statement in node.body
-                if isinstance(statement, ast.AnnAssign)
-                and isinstance(statement.target, ast.Name)
-                and statement.value is None
+                for statement, _bare in StatementValues.keyed(
+                    (statement, statement)
+                    for statement in node.body
+                    if isinstance(statement, ast.AnnAssign)
+                ).bare
+                if isinstance(statement.target, ast.Name)
                 and ClassVar.__name__ in ast.unparse(statement.annotation)
             ),
             constants=tuple(cls.constants(node)),
@@ -1391,7 +1398,7 @@ class IdentityPositions:
 
     def __init__(self, parsed_module: ParsedModule) -> None:
         self.parsed_module = parsed_module
-        self.index: ModuleSyntaxIndex = module_syntax_index(parsed_module.module)
+        self.index: ModuleSyntaxIndex = parsed_module.syntax_index
         self.node_indices = {
             id(node): node_index
             for node_index, node in enumerate(self.index.depth_first_nodes)
@@ -1444,7 +1451,7 @@ class IdentityPositions:
                     found[name] = (index, f"{self.parsed_module.module_name}.{name}")
                 case ast.ImportFrom(names=aliases):
                     for alias in aliases:
-                        bound = alias.asname or alias.name
+                        bound = ImportBoundNameProjection(statement).alias_bound_name(alias)
                         if bound in imports:
                             found[bound] = (index, imports[bound])
         return {name: bound for name, bound in found.items() if counts[name] == 1}
@@ -1534,9 +1541,10 @@ class IdentityPositions:
             yield from self.match_sites(node_index, node)
         for node_index, node in self.index.indexed_nodes_of_type(ast.Call):
             yield from self.call_sites(node_index, node)
-        for node_index, node in self.index.indexed_nodes_of_type(ast.Return):
-            if node.value is not None:
-                yield from self.passed_sites(node_index, node.value, "return")
+        for node_index, returned in StatementValues.keyed(
+            self.index.indexed_nodes_of_type(ast.Return)
+        ).supplied:
+            yield from self.passed_sites(node_index, returned.value, "return")
         yield from self.module_sites()
 
     # Type positions -----------------------------------------------------------
@@ -1828,8 +1836,10 @@ class IdentityPositions:
             )
 
 
-class IdentitySpellingFamily(RestatingSiteFamily):
+class IdentitySpellingFamily(RestatingSiteFamily[RestatingSiteModule]):
     """Literals in positions where a string can stand for a declared identity."""
+
+    item_type = RestatingSiteModule
 
     @classmethod
     def sites(cls, parsed_module: ParsedModule) -> Iterator[RestatingSite]:

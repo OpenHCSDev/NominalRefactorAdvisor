@@ -43,9 +43,9 @@ from .class_index import (
     ClassFamilyIndex,
     CompactModuleClassProjectionFamily,
     RepositoryModuleBindingProof,
-    build_class_family_index,
     build_compact_class_family_index,
 )
+from .ast_tools import ParsedModuleSet
 from .class_overlap import ClassOverlapVerdicts
 from .codemod_architecture_guards import (
     ArchitectureGuardReport,
@@ -273,7 +273,7 @@ class CodemodSourceSnapshot(CodemodSelectorContext):
             canonical_sources,
             analysis_roots=analysis_roots,
         )
-        return cls.from_modules(modules)
+        return cls.from_modules(ParsedModuleSet(tuple(modules)))
 
     @classmethod
     def from_indexed_sources(
@@ -296,7 +296,7 @@ class CodemodSourceSnapshot(CodemodSelectorContext):
         return cls._from_modules_with_indexes(
             modules,
             (
-                build_class_family_index(modules)
+                ParsedModuleSet(modules).fact(ClassFamilyIndex)
                 if class_family_index is None
                 else class_family_index
             ),
@@ -313,15 +313,15 @@ class CodemodSourceSnapshot(CodemodSelectorContext):
     @classmethod
     def from_modules(
         cls,
-        modules: Iterable[ParsedModule],
+        modules: ParsedModuleSet,
         findings: Iterable[RefactorFinding] = (),
     ) -> CodemodSourceSnapshot:
-        module_tuple = tuple(modules)
-        finding_tuple = tuple(findings)
+        """A snapshot of one module set; the set owns its class-family index."""
+
         return cls._from_modules_with_indexes(
-            module_tuple,
-            build_class_family_index(module_tuple),
-            build_source_index_artifacts(module_tuple, finding_tuple),
+            modules.modules,
+            modules.fact(ClassFamilyIndex),
+            build_source_index_artifacts(modules.modules, tuple(findings)),
         )
 
     @classmethod
@@ -826,6 +826,17 @@ class RefactorRecipe(SourceRewriteReferences):
             for operation in self.operations
             for creation in operation.source_file_creations(context)
         )
+
+    def rewrite_context(
+        self,
+        context: CodemodSelectorContext,
+    ) -> CodemodSelectorContext:
+        """Current source plus the files this recipe creates, as its edits see it."""
+
+        creations = self.source_file_creations(context)
+        if not creations:
+            return context
+        return context.execution_snapshot().with_source_file_creations(creations)
 
     def preflight_reports(
         self,
@@ -2727,6 +2738,21 @@ class FindingRecipeEvaluator(ABC):
     ) -> FindingRecipeEvaluation:
         raise NotImplementedError
 
+    def evaluation_declaration_for_finding(
+        self,
+        finding: RefactorFinding,
+        context: CodemodSelectorContext,
+    ) -> type[object]:
+        """The declaration that owns this finding's evaluation.
+
+        An evaluator that hands a finding to one of several derivations only
+        knows which by evaluating it.
+        """
+
+        return self.evaluate_recipe_for_finding(
+            finding, context
+        ).required_evaluation_declaration_type
+
     def rejected_evaluation(self, reason: str) -> RejectedRecipeEvaluation:
         return RejectedRecipeEvaluation(
             reason=reason,
@@ -2812,7 +2838,7 @@ class FindingRecipePlanBuilder:
         if cached_edits is not None:
             return cached_edits
         physical_edits = RefactorRecipeOperationCompiler.from_context(
-            selector_context
+            recipe.rewrite_context(selector_context)
         ).physical_edits_for_recipes((recipe,))
         self.physical_edit_cache[recipe] = physical_edits
         return physical_edits

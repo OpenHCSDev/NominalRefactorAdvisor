@@ -138,7 +138,7 @@ def test_all_identity_factories_preserve_requested_roster(
         else default_detector_types_for_analysis()[:subset_count]
     )
     config = DetectorConfig()
-    modules = tuple(parse_python_modules(source_root))
+    modules = parse_python_modules(source_root)
     paths = tuple(module.path for module in modules)
     identities = (
         AnalysisCacheIdentity.from_roots(roots, config, detector_types=subset),

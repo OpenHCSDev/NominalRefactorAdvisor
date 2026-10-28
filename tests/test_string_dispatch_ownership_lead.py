@@ -2,6 +2,7 @@
 
 from pathlib import Path
 
+from nominal_refactor_advisor.ast_tools import ParsedModuleSet
 from nominal_refactor_advisor.analysis import analyze_path
 from nominal_refactor_advisor.ast_tools import SourceModule
 from nominal_refactor_advisor.cli import MARKDOWN_RENDERER
@@ -16,7 +17,7 @@ from nominal_refactor_advisor.patterns import PatternId
 
 def _findings(source: str):
     module = SourceModule(Path("pkg/handler.py"), "pkg.handler", source).parse()
-    return StringLiteralDispatchOwnershipLeadDetector().detect([module], DetectorConfig())
+    return StringLiteralDispatchOwnershipLeadDetector().detect(ParsedModuleSet.of([module]), DetectorConfig())
 
 
 def test_async_method_reports_original_order_and_fallback_without_recipe_claim():
@@ -40,7 +41,7 @@ def test_async_method_reports_original_order_and_fallback_without_recipe_claim()
     assert [(place.line, place.symbol) for place in finding.evidence] == [
         (4, "Rpc.handle"), (6, "Rpc.handle"), (9, "Rpc.handle")
     ]
-    assert "chain-local else rows (9,)" in finding.summary
+    assert "chain-local else rows 1," in finding.summary
     assert "domain relation OPEN" in finding.summary
     assert "no automatic async or method recipe" in finding.capability_gap
     assert FindingRecipeEvaluator.for_finding(finding) is None
@@ -108,9 +109,9 @@ def test_nested_else_if_and_all_else_rows_remain_open():
     assert len(findings) == 1
     finding = findings[0]
     assert [place.line for place in finding.evidence] == [2, 4, 7, 9, 10]
-    assert "chain-local else rows (7, 9)" in finding.summary
+    assert "chain-local else rows 2," in finding.summary
     assert "else_nested_if True OPEN" in finding.summary
-    assert "trailing sibling rows (10,) OPEN" in finding.summary
+    assert "trailing sibling rows 1 OPEN" in finding.summary
 
 
 def test_single_nested_else_if_is_not_mislabeled_as_a_terminal_fallback():
@@ -141,7 +142,7 @@ def test_root_guard_is_explicitly_unmatched_not_called_intervening():
     )
     assert len(findings) == 1
     assert [place.line for place in findings[0].evidence] == [2, 4, 6]
-    assert "unmatched original guards (including root) ('line 2: authorized(action)',)" in findings[0].summary
+    assert "unmatched original guards (including root) ('branch 1: authorized(action)',)" in findings[0].summary
 
 
 def test_intervening_membership_guard_is_retained_open_not_dropped():
@@ -161,9 +162,9 @@ def test_intervening_membership_guard_is_retained_open_not_dropped():
     finding = findings[0]
     assert finding.metrics.literal_cases == ("'set_goal'", "'ping'")
     assert [place.line for place in finding.evidence] == [3, 5, 7, 10]
-    assert "line 5: action in" in finding.summary
+    assert "branch 2: action in" in finding.summary
     assert "'clear_goal'" in finding.summary
-    assert "chain-local else rows (10,)" in finding.summary
+    assert "chain-local else rows 1," in finding.summary
 
 
 def test_duplicate_case_key_stays_an_ordered_source_row_not_a_closed_set():
@@ -181,7 +182,7 @@ def test_duplicate_case_key_stays_an_ordered_source_row_not_a_closed_set():
         "'set_goal'", "'set_goal'", "'clear_goal'"
     )
     assert [place.line for place in findings[0].evidence] == [2, 4, 6]
-    assert "chain-local else rows ()" in findings[0].summary
+    assert "chain-local else rows 0," in findings[0].summary
 
 
 def test_guarded_event_case_lead_retains_distinct_roots_without_a_recipe():
@@ -199,7 +200,7 @@ def test_guarded_event_case_lead_retains_distinct_roots_without_a_recipe():
     )
     parsed = SourceModule(Path("pkg/handler.py"), "pkg.handler", source).parse()
     finding, = GuardedStringCaseOwnershipLeadDetector().detect(
-        [parsed], DetectorConfig()
+        ParsedModuleSet.of([parsed]), DetectorConfig()
     )
     assert finding.certification == "strong_heuristic"
     assert finding.pattern_id is PatternId.SOURCE_BACKED_DISPATCH_LEAD
@@ -207,8 +208,8 @@ def test_guarded_event_case_lead_retains_distinct_roots_without_a_recipe():
         "'chunk'", "'committed_progress'", "'tool_end'", "'done'"
     )
     assert [site.line for site in finding.evidence] == [3, 5, 7, 9]
-    assert "original decision roots (3, 3, 7, 9)" in finding.summary
-    assert "conjunctive guard lines (3, 5, 7)" in finding.summary
+    assert "decision root of each test (1, 1, 2, 3)" in finding.summary
+    assert "conjunctive guards at tests (1, 2, 3)" in finding.summary
     assert "reply_targets and kind == 'committed_progress'" in finding.summary
     assert "domain relation OPEN" in finding.summary
     assert FindingRecipeEvaluator.for_finding(finding) is None
@@ -242,10 +243,10 @@ def test_rendered_relation_for_both_leads_does_not_assert_closed_family():
         "        return 3\n"
     )
     parsed = SourceModule(Path("pkg/handler.py"), "pkg.handler", source).parse()
-    guarded, = GuardedStringCaseOwnershipLeadDetector().detect([parsed], DetectorConfig())
+    guarded, = GuardedStringCaseOwnershipLeadDetector().detect(ParsedModuleSet.of([parsed]), DetectorConfig())
     ladder_source = source.replace("reply_targets and ", "")
     ladder_parsed = SourceModule(Path("pkg/handler.py"), "pkg.handler", ladder_source).parse()
-    ladder, = StringLiteralDispatchOwnershipLeadDetector().detect([ladder_parsed], DetectorConfig())
+    ladder, = StringLiteralDispatchOwnershipLeadDetector().detect(ParsedModuleSet.of([ladder_parsed]), DetectorConfig())
     for finding in (guarded, ladder):
         output = MARKDOWN_RENDERER.findings([finding])
         assert "Required relation: Selected original source tests" in output
@@ -265,7 +266,7 @@ def test_guarded_cases_in_separate_functions_do_not_form_one_family():
     )
     parsed = SourceModule(Path("pkg/handler.py"), "pkg.handler", source).parse()
     assert GuardedStringCaseOwnershipLeadDetector().detect(
-        [parsed], DetectorConfig()
+        ParsedModuleSet.of([parsed]), DetectorConfig()
     ) == []
 
 
@@ -280,7 +281,7 @@ def test_guard_order_and_false_short_circuit_have_distinct_source_receipts():
         )
         parsed = SourceModule(Path("pkg/handler.py"), "pkg.handler", source).parse()
         finding, = GuardedStringCaseOwnershipLeadDetector().detect(
-            [parsed], DetectorConfig()
+            ParsedModuleSet.of([parsed]), DetectorConfig()
         )
         return finding
 
@@ -303,7 +304,7 @@ def test_same_spelled_rebound_function_is_not_one_lexical_owner():
     )
     parsed = SourceModule(Path("pkg/handler.py"), "pkg.handler", source).parse()
     assert GuardedStringCaseOwnershipLeadDetector().detect(
-        [parsed], DetectorConfig()
+        ParsedModuleSet.of([parsed]), DetectorConfig()
     ) == []
 
 
@@ -315,7 +316,7 @@ def test_two_kind_equalities_in_one_guard_are_not_two_case_alternatives():
     )
     parsed = SourceModule(Path("pkg/handler.py"), "pkg.handler", source).parse()
     assert GuardedStringCaseOwnershipLeadDetector().detect(
-        [parsed], DetectorConfig()
+        ParsedModuleSet.of([parsed]), DetectorConfig()
     ) == []
 
 

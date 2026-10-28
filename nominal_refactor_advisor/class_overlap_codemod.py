@@ -1,27 +1,36 @@
-"""Execute the two class-overlap moves that keep every class identity (#68).
+"""Execute the class-overlap moves (#68), and the owner moves a picker chose (#67).
 
 `ComposeExistingClassOperation` gives a class that restates another class's
 whole body that class as its first base and deletes the restated copy.
 `FoldSharedDeclarationsIntoBaseOperation` moves a block that every direct child
 of a base restates into that base, which becomes a keyword-only dataclass.
 
-Both re-derive the scan's overlap verdict from the current source and refuse
-unless it names this move and no guard fired. Each then proves what the move
-itself changes: method resolution, attribute ownership, dataclass field order,
-frozen-ness and, for the fold, every way a moved field can be bound.
-"""
+An extracted block needs an owner a codemod cannot choose. On a picker's
+choice, `CreateMixinOperation` declares the block once in a new class, and
+`ExtendOwnerOperation` gives an existing partial owner the declarations it
+lacks; the restating classes then compose that owner by their own
+compose-existing verdicts at the next stage.
 
+Every operation re-derives the scan's verdict from the current source and
+refuses unless it names this move and no guard fired. Each then proves what the
+move itself changes: method resolution, attribute ownership, dataclass field
+order, frozen-ness and, where fields are added, every way a field can be bound.
+"""
 from __future__ import annotations
 
 import ast
+import difflib
+from abc import ABC, abstractmethod
 import keyword as keyword_module
-from collections.abc import Iterable
-from dataclasses import dataclass
+import tokenize
+from collections.abc import Iterable, Sequence
+from dataclasses import dataclass, replace
 from functools import cached_property
 from importlib import import_module
 from typing import Self
 
-from .ast_tools import ParsedModule, is_docstring_statement, module_syntax_index
+from .ast_projection import CallKeywords
+from .ast_tools import ParsedModule, is_docstring_statement
 from .class_index import (
     CLASS_METHOD_OWNERSHIP_HOOK_NAMES,
     ClassReferenceRole,
@@ -33,18 +42,20 @@ from .class_member_authority_codemod import (
     ClassMemberPromotionStatement,
     ModuleDeclarationRelocation,
 )
-from .class_body import ClassBodyDeclaration
+from .class_body import ProvedClassBodyDeclaration
 from .class_mro import ClassMroAuthority, NativeMroBase
 from .class_overlap import (
     ClassOverlapCandidate,
     ClassOverlapMetrics,
     ClassOverlapMove,
+    ClassOverlapVerdicts,
     ComposeExisting,
+    ExtractMixin,
     PromoteToSharedBase,
 )
 from .codemod import (
     FindingEvidenceActionKeysMixin,
-    FindingRecipeSynthesizer,
+    SelfDeclaredRecipeSynthesizer,
     RefactorRecipe,
 )
 from .codemod_authority_claims import AstTargetAuthorityClaim
@@ -54,7 +65,9 @@ from .codemod_declaration_source import (
 )
 from .codemod_imports import ModuleImportMutation
 from .codemod_payload import (
+    PayloadRecordArrayValueCodec,
     PayloadRecordValueCodec,
+    RequiredStringPayloadValueCodec,
     StringArrayPayloadValueCodec,
     codemod_payload_field,
 )
@@ -64,11 +77,23 @@ from .codemod_runtime import FindingRecipeEvaluation
 from .codemod_runtime import CodemodSourceSnapshot
 from .codemod_selection_context import CodemodSelectorContext, ResolvedClassTarget
 from .codemod_selector_models import SourceRewriteTarget
-from .codemod_source_edits import NominalSourceEdit, SourceInsertion
+from .codemod_source_edits import (
+    NominalSourceEdit,
+    SourceInsertion,
+    SourceTextGeometry,
+    SourceTextSpanReplacement,
+)
 from .codemod_statement_source import StatementDeletionSource, StatementSource
-from .lexical_bindings import LEXICAL_SCOPE_BINDING_AUTHORITY
+from .lexical_bindings import LEXICAL_SCOPE_BINDING_AUTHORITY, ImportBoundNameProjection
 from .native_class_mro import NativeClassMroDeclaration
 from .models import RefactorFinding
+from .owner_candidates import (
+    ExistingClassOwner,
+    ExistingClassesOwner,
+    NewMixinOwner,
+    OwnerCandidate,
+    SharedBaseOwner,
+)
 from .refactor_concepts import ClassBodyCompositionConcept
 from .semantic_descent import AuthorityClaim, SemanticAuthorityKind
 
@@ -76,25 +101,34 @@ NATIVE_METACLASS_BASES = frozenset(("builtins.type", "abc.ABCMeta"))
 
 
 @dataclass(frozen=True)
-class OverlapClass:
+class OverlapClass(ABC):
     """One class of an overlap: its current source node and its compact facts."""
 
     target: ResolvedClassTarget
     facts: CompactIndexedClass
 
+    @staticmethod
+    def of(target: ResolvedClassTarget, facts: CompactIndexedClass) -> OverlapClass:
+        """The decorator's dataclass arguments, read once, pick the class kind."""
+
+        options = target.dataclass_argument_sources
+        if options is None:
+            return PlainOverlapClass(target, facts)
+        return DataclassOverlapClass(target, facts, options)
+
     @classmethod
     def require(
         cls, snapshot: CodemodSourceSnapshot, reference: SourceRewriteTarget
-    ) -> Self:
+    ) -> OverlapClass:
         target = ResolvedClassTarget.from_rewrite_target(snapshot, reference)
         symbol = target.required_symbol(snapshot)
         facts = snapshot.class_overlap_verdicts.class_index.class_for(symbol)
         if facts is None:
             raise ValueError(f"Class {target.qualname!r} has no compact class facts")
-        return cls(target, facts)
+        return cls.of(target, facts)
 
     @classmethod
-    def for_symbol(cls, snapshot: CodemodSourceSnapshot, symbol: str) -> Self:
+    def for_symbol(cls, snapshot: CodemodSourceSnapshot, symbol: str) -> OverlapClass:
         facts = snapshot.class_overlap_verdicts.class_index.class_for(symbol)
         if facts is None:
             raise ValueError(f"Class {symbol!r} has no compact class facts")
@@ -116,7 +150,9 @@ class OverlapClass:
     def qualname(self) -> str:
         return self.target.qualname
 
-    def declaration(self, snapshot: CodemodSourceSnapshot, name: str) -> ClassBodyDeclaration:
+    def declaration(
+        self, snapshot: CodemodSourceSnapshot, name: str
+    ) -> ProvedClassBodyDeclaration:
         """The class's own declaration of `name`, as the class-body index sees it."""
 
         declaration = snapshot.class_overlap_verdicts.bodies.declarations_of(
@@ -124,9 +160,7 @@ class OverlapClass:
         ).get(name)
         if declaration is None:
             raise ValueError(f"`{self.qualname}` does not declare `{name}` itself")
-        if declaration.identity is None:
-            raise ValueError(f"`{self.qualname}.{name}` reads names nothing binds")
-        return declaration
+        return declaration.require_proved(f"`{self.qualname}.{name}`")
 
     def statements_declaring(self, names: Iterable[str]) -> tuple[ast.stmt, ...]:
         """The body statements that declare exactly these names, each wholly."""
@@ -155,42 +189,170 @@ class OverlapClass:
     def own_field_names(self) -> tuple[str, ...]:
         """The class's own dataclass fields in declaration order; ClassVars excluded."""
 
-        declaration = self.facts.dataclass_declaration
-        if declaration is None:
-            return ()
-        unplaced = tuple(
-            field.name
-            for field in declaration.fields
-            if not field.role.has_known_field_position
-        )
-        if unplaced:
+        names = self.facts.own_dataclass_field_names
+        if names is None:
+            unplaced = [
+                field.name
+                for field in self.facts.dataclass_declaration.fields
+                if not field.role.has_known_field_position
+            ]
             raise ValueError(
-                f"`{self.qualname}` has {list(unplaced)} with no known field position"
+                f"`{self.qualname}` has {unplaced} with no known field position"
             )
-        return tuple(
-            field.name
-            for field in declaration.fields
-            if field.role.contributes_semantic_field
-        )
+        return names
 
-    @property
-    def dataclass_options(self) -> tuple[str, ...] | None:
-        """The dataclass decorator's arguments, or None for an undecorated class."""
-
+    def _require_single_decorator(self) -> None:
         decorators = self.node.decorator_list
         if len(decorators) > 1:
             raise ValueError(f"`{self.qualname}` has {len(decorators)} decorators")
-        options = self.target.dataclass_argument_sources
-        if decorators and options is None:
+
+    @property
+    @abstractmethod
+    def dataclass_options_key(self) -> tuple[tuple[str, ...], ...]:
+        """The dataclass decorator's arguments, if decorated, for kind comparison."""
+        raise NotImplementedError
+
+    @abstractmethod
+    def keyword_only_composed_by(
+        self, composition: ClassComposition
+    ) -> KeywordOnlyComposition | None:
+        """The keyword-only proof composing this class needs; a plain class has
+        no field order, so it needs none."""
+        raise NotImplementedError
+
+    @abstractmethod
+    def require_order_kept_by(self, composition: CoveringComposition) -> None:
+        """Composing the covering owners keeps this composer's field order; a
+        plain class has none."""
+        raise NotImplementedError
+
+    @abstractmethod
+    def require_construction_extended_by(self, extension: OwnerExtension) -> None:
+        """Every construction of this owner's family still binds once the
+        extension adds its members; a plain class binds no fields."""
+        raise NotImplementedError
+
+    @abstractmethod
+    def require_accepts_moved_fields(self, frozen: str) -> None:
+        """As a fold base, this class can hold the moved fields with this frozen-ness."""
+        raise NotImplementedError
+
+    @abstractmethod
+    def decorator_edits_for(
+        self, fold: BaseFold, indentation: str, rationale: str
+    ) -> tuple[NominalSourceEdit, ...]:
+        """The edits that make this fold base a dataclass, if it is not one."""
+        raise NotImplementedError
+
+    @abstractmethod
+    def option(self, name: str) -> str:
+        raise NotImplementedError
+
+    @abstractmethod
+    def require_dataclass(self) -> None:
+        raise NotImplementedError
+
+
+@dataclass(frozen=True)
+class PlainOverlapClass(OverlapClass):
+    """An overlap class with no dataclass decorator."""
+
+    @property
+    def dataclass_options_key(self) -> tuple[tuple[str, ...], ...]:
+        self._require_single_decorator()
+        if self.node.decorator_list:
             raise ValueError(f"`{self.qualname}` has a non-dataclass decorator")
-        return options
+        return ()
+
+    def keyword_only_composed_by(
+        self, composition: ClassComposition
+    ) -> KeywordOnlyComposition | None:
+        self.dataclass_options_key
+        return None
+
+    def require_order_kept_by(self, composition: CoveringComposition) -> None:
+        self.dataclass_options_key
+
+    def require_construction_extended_by(self, extension: OwnerExtension) -> None:
+        self.dataclass_options_key
+
+    def decorator_edits_for(
+        self, fold: BaseFold, indentation: str, rationale: str
+    ) -> tuple[NominalSourceEdit, ...]:
+        self.dataclass_options_key
+        return (
+            SourceInsertion(
+                file_path=self.file_path,
+                insertion_line=self.node.lineno,
+                inserted_lines=(
+                    f"{indentation}@dataclass(frozen={fold.frozen}, kw_only=True)\n",
+                ),
+                rationale=rationale,
+            ),
+            *fold.dataclass_import_edits(rationale),
+        )
+
+    def require_accepts_moved_fields(self, frozen: str) -> None:
+        self.dataclass_options_key
+        if any(isinstance(statement, ast.AnnAssign) for statement in self.node.body):
+            raise ValueError(
+                f"`{self.qualname}` annotates names that would become fields"
+            )
 
     def option(self, name: str) -> str:
-        for option in self.dataclass_options or ():
+        self.dataclass_options_key
+        return "False"
+
+    def require_dataclass(self) -> None:
+        self.dataclass_options_key
+        raise ValueError(f"`{self.qualname}` is not a dataclass")
+
+
+@dataclass(frozen=True)
+class DataclassOverlapClass(OverlapClass):
+    """An overlap class decorated `@dataclass(...)`, with its argument sources."""
+
+    options: tuple[str, ...]
+
+    @property
+    def dataclass_options_key(self) -> tuple[tuple[str, ...], ...]:
+        self._require_single_decorator()
+        return (self.options,)
+
+    def keyword_only_composed_by(
+        self, composition: ClassComposition
+    ) -> KeywordOnlyComposition | None:
+        self._require_single_decorator()
+        return composition.dataclass_keyword_only()
+
+    def require_order_kept_by(self, composition: CoveringComposition) -> None:
+        self._require_single_decorator()
+        composition.require_dataclass_order(self)
+
+    def require_construction_extended_by(self, extension: OwnerExtension) -> None:
+        self._require_single_decorator()
+        extension.require_dataclass_construction()
+
+    def decorator_edits_for(
+        self, fold: BaseFold, indentation: str, rationale: str
+    ) -> tuple[NominalSourceEdit, ...]:
+        self._require_single_decorator()
+        return ()
+
+    def require_accepts_moved_fields(self, frozen: str) -> None:
+        if self.option("kw_only") != "True" or self.option("frozen") != frozen:
+            raise ValueError(f"`{self.qualname}` is a dataclass of another kind")
+
+    def option(self, name: str) -> str:
+        self._require_single_decorator()
+        for option in self.options:
             key, separator, value = option.partition("=")
             if separator and key.strip() == name:
                 return value.strip()
         return "False"
+
+    def require_dataclass(self) -> None:
+        self._require_single_decorator()
 
 
 def source_rewrite_target(indexed_class: CompactIndexedClass) -> SourceRewriteTarget:
@@ -241,7 +403,7 @@ class RestatedDeclarations:
                 raise ValueError(f"`{name}` is name-mangled by its owner")
             mine = source.declaration(snapshot, name)
             theirs = restating.declaration(snapshot, name)
-            if mine.identity != theirs.identity:
+            if not mine.same_declaration_as(theirs):
                 raise ValueError(
                     f"`{restating.qualname}.{name}` differs from "
                     f"`{source.qualname}.{name}`"
@@ -339,7 +501,7 @@ class ClassReferenceSites:
             for alias, qualified_name in aliases.items()
             if qualified_name.rsplit(".", 1)[-1] in terminal_names
         )
-        syntax_index = module_syntax_index(parsed_module.module)
+        syntax_index = parsed_module.syntax_index
         nodes = syntax_index.depth_first_nodes
         parents = syntax_index.parent_indices
         resolver = self.snapshot.class_reference_resolver_for_source_path(
@@ -622,7 +784,7 @@ def obsolete_import_edits(
         for statement in parsed_module.module.body
         if isinstance(statement, ast.ImportFrom)
         for alias in statement.names
-        if alias.asname is None
+        if ImportBoundNameProjection(statement).alias_bound_name(alias) == alias.name
     )
     obsolete = sorted(
         (read_by_deleted & imported) - still_read - exported - reexported
@@ -762,7 +924,9 @@ class ClassComposition:
         ancestry = require_static_c3(self.snapshot, restating.facts)
         if any(ancestor.symbol == owner.symbol for ancestor in ancestry):
             raise ValueError(f"`{owner.qualname}` is already an ancestor")
-        if owner.dataclass_options != restating.dataclass_options:
+        if dataclass_options_besides_kw_only(owner) != dataclass_options_besides_kw_only(
+            restating
+        ):
             raise ValueError(
                 f"`{owner.qualname}` and `{restating.qualname}` differ as dataclasses"
             )
@@ -773,41 +937,40 @@ class ClassComposition:
             raise ValueError(f"`{restating.qualname}` has an unrewritable header")
 
     def require_field_order(self) -> None:
-        """Old and new dataclass collection give the same names in the same order.
+        """Old and new dataclass collection bind the same values.
 
-        Inherited names keep their first position either way, so only names new
-        to the class are compared: the class's own fields before; the owner's,
-        then the class's remaining ones, after.
+        Either the class's own new field names keep their order (the class's
+        own fields before; the owner's, then the class's remaining ones,
+        after), or the owner is keyword-only and the class becomes so too,
+        which `KeywordOnlyComposition` proves safe.
         """
 
+        if self.keyword_only is not None:
+            self.keyword_only.require()
+
+    @cached_property
+    def keyword_only(self) -> KeywordOnlyComposition | None:
+        """The keyword-only proof this composition needs, if its order or its
+        keyword-only-ness changes."""
+
+        return self.restating.keyword_only_composed_by(self)
+
+    def dataclass_keyword_only(self) -> KeywordOnlyComposition | None:
+        """The keyword-only proof a dataclass composer needs."""
+
         restating = self.restating
-        if restating.dataclass_options is None:
-            return
-        class_index = self.snapshot.class_overlap_verdicts.class_index
-        inherited = frozenset(
-            field_name
-            for symbol in class_index.ancestor_symbols(restating.symbol)
-            if (ancestor := class_index.class_for(symbol)) is not None
-            and ancestor.dataclass_declaration is not None
-            for field_name in OverlapClass.for_symbol(self.snapshot, symbol).own_field_names
+        before, after = composed_field_order(
+            self.snapshot, self.owner.own_field_names, restating
         )
-        moved = frozenset(self.restated.names)
-        before = [name for name in restating.own_field_names if name not in inherited]
-        after = [
-            name
-            for name in dict.fromkeys(
-                (
-                    *self.owner.own_field_names,
-                    *(name for name in restating.own_field_names if name not in moved),
-                )
-            )
-            if name not in inherited
-        ]
-        if before != after:
+        if before == after and self.owner.option("kw_only") == restating.option("kw_only"):
+            return None
+        if self.owner.option("kw_only") != "True":
             raise ValueError(
                 f"Composing `{self.owner.qualname}` reorders the fields of "
-                f"`{restating.qualname}`: {before} becomes {after}"
+                f"`{restating.qualname}`: {before} becomes {after}, and the owner "
+                "is not keyword-only"
             )
+        return KeywordOnlyComposition(self.snapshot, restating)
 
     @cached_property
     def relocation(self) -> ModuleDeclarationRelocation:
@@ -837,6 +1000,11 @@ class ClassComposition:
                 file_path=restating.file_path,
                 rationale=rationale,
             ),
+            *(
+                ()
+                if self.keyword_only is None
+                else self.keyword_only.decorator_edits(rationale)
+            ),
             *deletion.physical_edits(
                 file_path=restating.file_path,
                 replacements=deletion.replacements_for_statements(
@@ -850,28 +1018,203 @@ class ClassComposition:
         )
 
     def owner_import_edits(self, rationale: str) -> tuple[ModuleImportMutation, ...]:
-        name = self.owner.target.name
-        resolver = self.snapshot.class_reference_resolver_for_source_path(
-            self.restating.file_path
+        return _owner_import_edits(self.snapshot, self.owner, self.restating, rationale)
+
+
+@dataclass(frozen=True)
+class CoveringComposition:
+    """Classes restating a block that existing classes already own between them
+    compose those classes instead (#96).
+
+    The proof is the extract-mixin verdict's permitted `compose_existing`
+    owner on the current source. Each composer restates every owner's whole
+    body, so deleting its copies loses nothing; each owner is a root, so C3
+    places the owners right after the composer, in the given order, ahead of
+    its old ancestors. The owners are declared in other modules or before
+    every composer, and the composers' dataclass field order must come out
+    the same: no keyword-only route is taken for owners other classes use.
+    """
+
+    snapshot: CodemodSourceSnapshot
+    owners: tuple[OverlapClass, ...]
+    composers: tuple[OverlapClass, ...]
+    restated: tuple[tuple[RestatedDeclarations, ...], ...]
+
+    @classmethod
+    def require(
+        cls,
+        snapshot: CodemodSourceSnapshot,
+        owner_references: Sequence[SourceRewriteTarget],
+        composer_references: Sequence[SourceRewriteTarget],
+    ) -> Self:
+        owners = tuple(OverlapClass.require(snapshot, reference) for reference in owner_references)
+        composers = tuple(
+            OverlapClass.require(snapshot, reference) for reference in composer_references
         )
-        if resolver.symbol_for_reference(ast.Name(id=name, ctx=ast.Load())) == self.owner.symbol:
-            return ()
-        bound = LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(
-            self.snapshot.parsed_module_for_source_path(self.restating.file_path).module.body
+        if len(owners) < 2 or not composers:
+            raise ValueError("A covering composition needs two owners and a composer")
+        block = tuple(
+            declaration.name for owner in owners for declaration in owner.facts.body_declarations
         )
-        if name in bound:
-            raise ValueError(f"`{name}` is bound to another declaration there")
-        return (
-            ModuleImportMutation.from_source(
-                file_path=self.restating.file_path,
-                import_source=self.snapshot.module_import_graph.required_import_source(
-                    importing_file_path=self.restating.file_path,
-                    imported_file_path=self.owner.file_path,
-                    imported_name=name,
-                ),
-                rationale=rationale,
+        require_owner_candidate(
+            snapshot,
+            composers[0].symbol,
+            "compose_existing:" + "+".join(owner.symbol for owner in owners),
+            block,
+        )
+        restated = tuple(
+            tuple(
+                RestatedDeclarations.require(
+                    snapshot,
+                    owner,
+                    composer,
+                    (declaration.name for declaration in owner.facts.body_declarations),
+                )
+                for owner in owners
+            )
+            for composer in composers
+        )
+        composition = cls(snapshot, owners, composers, restated)
+        composition.require_roots()
+        composition.require_field_order()
+        for restatements in restated:
+            for restatement in restatements:
+                restatement.require_no_owner_bound_values(snapshot)
+        ClassReferenceSites(
+            snapshot, frozenset(owner.symbol for owner in owners)
+        ).require_no_identity_reads()
+        return composition
+
+    def require_roots(self) -> None:
+        for owner in self.owners:
+            if owner.node.keywords:
+                raise ValueError(f"`{owner.qualname}` passes class creation keywords")
+            if not owner.facts.base_references_are_complete or any(
+                ".".join(reference.resolved_parts) != NativeMroBase.OBJECT.value
+                for reference in owner.facts.base_references
+            ):
+                raise ValueError(
+                    f"`{owner.qualname}` has bases; its C3 order is not [owner, object]"
+                )
+        for composer in self.composers:
+            ancestry = {ancestor.symbol for ancestor in require_static_c3(self.snapshot, composer.facts)}
+            for owner in self.owners:
+                if owner.symbol in ancestry:
+                    raise ValueError(f"`{owner.qualname}` is already an ancestor")
+                if dataclass_options_besides_kw_only(owner) != dataclass_options_besides_kw_only(
+                    composer
+                ):
+                    raise ValueError(
+                        f"`{owner.qualname}` and `{composer.qualname}` differ as dataclasses"
+                    )
+                if owner.file_path == composer.file_path and (
+                    owner.node.lineno > composer.node.lineno
+                ):
+                    raise ValueError(
+                        f"`{owner.qualname}` is declared after `{composer.qualname}`"
+                    )
+            header = ClassHeaderSpanSourceAuthority(
+                composer.node, self.snapshot.sources_by_file_path[composer.file_path]
+            )
+            if not header.can_rewrite:
+                raise ValueError(f"`{composer.qualname}` has an unrewritable header")
+
+    def require_field_order(self) -> None:
+        for composer in self.composers:
+            composer.require_order_kept_by(self)
+
+    def require_dataclass_order(self, composer: OverlapClass) -> None:
+        """Dataclass collection walks the bases last first, so the owners' fields
+        come in that order, then the composer's remaining own fields."""
+
+        before, after = composed_field_order(
+            self.snapshot,
+            tuple(name for owner in reversed(self.owners) for name in owner.own_field_names),
+            composer,
+        )
+        if before != after or any(
+            owner.option("kw_only") != composer.option("kw_only") for owner in self.owners
+        ):
+            raise ValueError(
+                f"Composing {', '.join(f'`{owner.qualname}`' for owner in self.owners)} "
+                f"reorders the fields of `{composer.qualname}`: {before} becomes {after}"
+            )
+
+    def source_edits(self, rationale: str) -> tuple[NominalSourceEdit, ...]:
+        edits: list[NominalSourceEdit] = []
+        imported: set[tuple[str, str]] = set()
+        for composer, restatements in zip(self.composers, self.restated, strict=True):
+            source = self.snapshot.sources_by_file_path[composer.file_path]
+            header = ClassHeaderSpanSourceAuthority(composer.node, source)
+            deletion = StatementDeletionSource(
+                source=source, node=composer.node, file_path=composer.file_path
+            )
+            statements = tuple(
+                statement
+                for restatement in restatements
+                for statement in restatement.statements
+            )
+            for owner in self.owners:
+                if owner.file_path == composer.file_path or (
+                    composer.file_path,
+                    owner.symbol,
+                ) in imported:
+                    continue
+                imported.add((composer.file_path, owner.symbol))
+                edits.extend(_owner_import_edits(self.snapshot, owner, composer, rationale))
+            edits.extend(
+                (
+                    *header.source_edits(
+                        header.with_base_items(
+                            (
+                                *(owner.target.name for owner in self.owners),
+                                *header.base_items,
+                            )
+                        ),
+                        file_path=composer.file_path,
+                        rationale=rationale,
+                    ),
+                    *deletion.physical_edits(
+                        file_path=composer.file_path,
+                        replacements=deletion.replacements_for_statements(statements),
+                        rationale=rationale,
+                    ),
+                    *obsolete_import_edits(
+                        self.snapshot, composer.file_path, statements, rationale
+                    ),
+                )
+            )
+        return tuple(edits)
+
+
+def _owner_import_edits(
+    snapshot: CodemodSourceSnapshot,
+    owner: OverlapClass,
+    composer: OverlapClass,
+    rationale: str,
+) -> tuple[ModuleImportMutation, ...]:
+    """The import that binds the owner's name where the composer is declared."""
+
+    name = owner.target.name
+    resolver = snapshot.class_reference_resolver_for_source_path(composer.file_path)
+    if resolver.symbol_for_reference(ast.Name(id=name, ctx=ast.Load())) == owner.symbol:
+        return ()
+    bound = LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(
+        snapshot.parsed_module_for_source_path(composer.file_path).module.body
+    )
+    if name in bound:
+        raise ValueError(f"`{name}` is bound to another declaration there")
+    return (
+        ModuleImportMutation.from_source(
+            file_path=composer.file_path,
+            import_source=snapshot.module_import_graph.required_import_source(
+                importing_file_path=composer.file_path,
+                imported_file_path=owner.file_path,
+                imported_name=name,
             ),
-        )
+            rationale=rationale,
+        ),
+    )
 
 
 @dataclass(frozen=True)
@@ -924,7 +1267,7 @@ class BaseFold:
         ClassReferenceSites(
             snapshot, frozenset((base.symbol, *fold.descendant_symbols))
         ).require_keyword_construction()
-        fold.require_no_positional_self_construction(family)
+        require_no_positional_self_construction(snapshot, family)
         return fold
 
     @property
@@ -950,32 +1293,18 @@ class BaseFold:
     def frozen(self) -> str:
         return self.children[0].option("frozen")
 
-    @property
-    def adds_decorator(self) -> bool:
-        return self.base.dataclass_options is None
-
     def require_dataclass_family(self) -> None:
         base = self.base
         if frozenset(self.names) & base.target.bound_names:
             raise ValueError(f"`{base.qualname}` already binds a moved name")
-        if self.adds_decorator:
-            if any(isinstance(statement, ast.AnnAssign) for statement in base.node.body):
-                raise ValueError(
-                    f"`{base.qualname}` annotates names that would become fields"
-                )
-        elif base.option("kw_only") != "True" or base.option("frozen") != self.frozen:
-            raise ValueError(f"`{base.qualname}` is a dataclass of another kind")
+        base.require_accepts_moved_fields(self.frozen)
         class_index = self.snapshot.class_overlap_verdicts.class_index
-        if any(
-            (ancestor := class_index.class_for(symbol)) is not None
-            and ancestor.dataclass_declaration is not None
-            for symbol in class_index.ancestor_symbols(base.symbol)
-        ):
-            raise ValueError(f"`{base.qualname}` inherits dataclass fields")
+        for symbol in class_index.ancestor_symbols(base.symbol):
+            if (ancestor := class_index.class_for(symbol)) is not None:
+                ancestor.dataclass_declaration.refuse_inherited_fields(base.qualname)
         for symbol in self.descendant_symbols:
             descendant = OverlapClass.for_symbol(self.snapshot, symbol)
-            if descendant.dataclass_options is None:
-                raise ValueError(f"`{descendant.qualname}` is not a dataclass")
+            descendant.require_dataclass()
             if descendant.option("frozen") != self.frozen:
                 raise ValueError(f"`{descendant.qualname}` differs in frozen-ness")
             if descendant.option("order") == "True":
@@ -1047,19 +1376,6 @@ class BaseFold:
                 )
             member.require_safe_move(context)
 
-    def require_no_positional_self_construction(self, family: tuple[str, ...]) -> None:
-        for symbol in family:
-            facts = self.snapshot.class_overlap_verdicts.class_index.class_for(symbol)
-            if facts is None:
-                continue
-            owner = OverlapClass.for_symbol(self.snapshot, symbol)
-            for node in ast.walk(owner.node):
-                if isinstance(node, ast.Call) and node.args and _is_own_class(node.func):
-                    raise ValueError(
-                        f"{owner.file_path}:{node.lineno} builds its own class with "
-                        f"{len(node.args)} positional argument(s)"
-                    )
-
     def source_edits(self, rationale: str) -> tuple[NominalSourceEdit, ...]:
         base = self.base
         source = self.snapshot.sources_by_file_path[base.file_path]
@@ -1069,21 +1385,7 @@ class BaseFold:
         header_line = source.splitlines(keepends=True)[base.node.lineno - 1]
         indentation = header_line[: len(header_line) - len(header_line.lstrip())]
         return (
-            *(
-                (
-                    SourceInsertion(
-                        file_path=base.file_path,
-                        insertion_line=base.node.lineno,
-                        inserted_lines=(
-                            f"{indentation}@dataclass(frozen={self.frozen}, kw_only=True)\n",
-                        ),
-                        rationale=rationale,
-                    ),
-                    *self.dataclass_import_edits(rationale),
-                )
-                if self.adds_decorator
-                else ()
-            ),
+            *base.decorator_edits_for(self, indentation, rationale),
             *body.geometry.physical_edits(
                 file_path=base.file_path,
                 replacements=(
@@ -1152,6 +1454,259 @@ class BaseFold:
         )
 
 
+def require_no_positional_self_construction(
+    snapshot: CodemodSourceSnapshot, symbols: Iterable[str]
+) -> None:
+    """No `cls(...)`, `type(self)(...)` or `self.__class__(...)` in these classes
+    passes positional arguments: no read of the class names shows those calls."""
+
+    for symbol in symbols:
+        if snapshot.class_overlap_verdicts.class_index.class_for(symbol) is None:
+            continue
+        owner = OverlapClass.for_symbol(snapshot, symbol)
+        for node in ast.walk(owner.node):
+            if isinstance(node, ast.Call) and node.args and _is_own_class(node.func):
+                raise ValueError(
+                    f"{owner.file_path}:{node.lineno} builds its own class with "
+                    f"{len(node.args)} positional argument(s)"
+                )
+
+
+@dataclass(frozen=True)
+class KeywordOnlyComposition:
+    """A composer whose field order changes becomes keyword-only.
+
+    Composing puts the owner's fields ahead of the composer's own, so the
+    order dataclass collection gives changes. With `kw_only=True` on the owner
+    and on the composer every field of both is keyword-only, and a call that
+    binds by keyword binds the same values in either order. That holds when no
+    read of the composer or a descendant binds a field by position or hands
+    the class on as a value, no `cls(...)` in their bodies passes positions,
+    none declares `order=True` (which compares field tuples in order), none
+    declares its own `__init__` or `__match_args__`, and no method of theirs or
+    of an indexed ancestor digests a whole-instance serialization (`repr`,
+    `str`, `astuple`, `asdict`, `fields` or `pickle.dumps` of `self`, in a method
+    that calls `hashlib` or `json.dumps` without `sort_keys=True`): that digest
+    would change with the field order. Cache identities are refused too until
+    they are told apart from persisted ones. The repr text and the order
+    `fields()` and `astuple()` report still change.
+    """
+
+    snapshot: CodemodSourceSnapshot
+    composer: OverlapClass
+
+    @cached_property
+    def family(self) -> tuple[str, ...]:
+        return (
+            self.composer.symbol,
+            *self.snapshot.class_overlap_verdicts.class_index.descendant_symbols(
+                self.composer.symbol
+            ),
+        )
+
+    def require(self) -> None:
+        for symbol in self.family:
+            member = OverlapClass.for_symbol(self.snapshot, symbol)
+            if member.option("order") == "True":
+                raise ValueError(f"`{member.qualname}` orders by field position")
+            if {"__init__", "__match_args__"} & member.target.bound_names:
+                raise ValueError(
+                    f"`{member.qualname}` declares its own construction surface"
+                )
+        ClassReferenceSites(
+            self.snapshot, frozenset(self.family)
+        ).require_keyword_construction()
+        require_no_positional_self_construction(self.snapshot, self.family)
+        self.require_no_field_order_digest()
+
+    def require_no_field_order_digest(self) -> None:
+        class_index = self.snapshot.class_overlap_verdicts.class_index
+        symbols = dict.fromkeys(
+            symbol
+            for member in self.family
+            for symbol in (member, *class_index.ancestor_symbols(member))
+            if class_index.class_for(symbol) is not None
+        )
+        for symbol in symbols:
+            owner = OverlapClass.for_symbol(self.snapshot, symbol)
+            module = self.snapshot.parsed_module_for_source_path(owner.file_path)
+            for method in owner.node.body:
+                if not isinstance(method, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    continue
+                digest = FieldOrderDigest.in_method(self.snapshot, module, method)
+                if digest is not None:
+                    raise ValueError(
+                        f"{owner.file_path}:{digest} digests `{owner.qualname}."
+                        f"{method.name}`'s serialization of the instance, whose "
+                        "field order the composition changes"
+                    )
+
+    def decorator_edits(self, rationale: str) -> tuple[NominalSourceEdit, ...]:
+        """`kw_only=True` on the composer's dataclass decorator."""
+
+        composer = self.composer
+        if composer.option("kw_only") == "True":
+            return ()
+        source = self.snapshot.sources_by_file_path[composer.file_path]
+        geometry = SourceTextGeometry(source)
+        (decorator,) = composer.node.decorator_list
+        start, end = geometry.required_node_offsets(decorator)
+        replacement = keyword_only_decorator_source(source[start:end], decorator)
+        return geometry.physical_edits(
+            file_path=composer.file_path,
+            replacements=(
+                SourceTextSpanReplacement.from_offsets(
+                    start_offset=start, end_offset=end, replacement_source=replacement
+                ),
+            ),
+            rationale=rationale,
+        )
+
+
+class FieldOrderDigest:
+    """A method that hashes or dumps a serialization of its whole instance."""
+
+    SERIALIZERS = frozenset(
+        (
+            "builtins.repr",
+            "builtins.str",
+            "dataclasses.astuple",
+            "dataclasses.asdict",
+            "dataclasses.fields",
+            "pickle.dumps",
+        )
+    )
+
+    @classmethod
+    def in_method(
+        cls,
+        snapshot: CodemodSourceSnapshot,
+        module: ParsedModule,
+        method: ast.FunctionDef | ast.AsyncFunctionDef,
+    ) -> int | None:
+        """The line of the method's digest of `self`'s serialization, if any."""
+
+        receiver = (
+            method.args.args[0].arg
+            if method.args.args
+            else None
+        )
+        if receiver is None:
+            return None
+        proof = snapshot.module_binding_proof
+        serializes = False
+        sink: int | None = None
+        for node in ast.walk(method):
+            if not isinstance(node, ast.Call):
+                continue
+            witness = proof.reference_or_builtin_witness_at(
+                module, node.func, line=node.lineno
+            )
+            if witness is None:
+                continue
+            name = witness.qualified_name
+            if (
+                name in cls.SERIALIZERS
+                and node.args
+                and isinstance(node.args[0], ast.Name)
+                and node.args[0].id == receiver
+            ):
+                serializes = True
+            if name.startswith("hashlib.") or (
+                name == "json.dumps"
+                and not any(
+                    keyword.arg == "sort_keys"
+                    and isinstance(keyword.value, ast.Constant)
+                    and keyword.value.value is True
+                    for keyword in node.keywords
+                )
+            ):
+                sink = node.lineno if sink is None else sink
+        return sink if serializes else None
+
+
+def _line_difference_edits(
+    file_path: str, before: str, after: str, rationale: str
+) -> tuple[NominalSourceEdit, ...]:
+    """The line spans that differ between two versions of one source."""
+
+    before_lines = before.splitlines(keepends=True)
+    after_lines = after.splitlines(keepends=True)
+    offsets = [0]
+    for line in before_lines:
+        offsets.append(offsets[-1] + len(line))
+    geometry = SourceTextGeometry(before)
+    return geometry.physical_edits(
+        file_path=file_path,
+        replacements=tuple(
+            SourceTextSpanReplacement.from_offsets(
+                start_offset=offsets[first],
+                end_offset=offsets[last],
+                replacement_source="".join(after_lines[new_first:new_last]),
+            )
+            for tag, first, last, new_first, new_last in difflib.SequenceMatcher(
+                a=before_lines, b=after_lines, autojunk=False
+            ).get_opcodes()
+            if tag != "equal"
+        ),
+        rationale=rationale,
+    )
+
+
+def keyword_only_decorator_source(decorator_source: str, decorator: ast.expr) -> str:
+    """A dataclass decorator's source with `kw_only=True` added."""
+
+    if not isinstance(decorator, ast.Call):
+        return f"{decorator_source}(kw_only=True)"
+    if not decorator_source.endswith(")"):
+        raise ValueError(f"`{decorator_source}` is an unrewritable decorator")
+    opened = decorator_source[:-1].rstrip()
+    separator = "" if opened.endswith("(") else ", "
+    return f"{opened}{separator}kw_only=True)"
+
+
+def dataclass_options_besides_kw_only(
+    overlap_class: OverlapClass,
+) -> tuple[tuple[str, ...], ...]:
+    """The dataclass options, keyword-only-ness aside: what composition must keep."""
+
+    return tuple(
+        tuple(
+            option for option in options if option.partition("=")[0].strip() != "kw_only"
+        )
+        for options in overlap_class.dataclass_options_key
+    )
+
+
+def composed_field_order(
+    snapshot: CodemodSourceSnapshot, owner_fields: Iterable[str], composer: OverlapClass
+) -> tuple[list[str], list[str]]:
+    """The composer's own new field names before and after composing an owner
+    declaring `owner_fields`: inherited names keep their first position."""
+
+    class_index = snapshot.class_overlap_verdicts.class_index
+    inherited = frozenset(
+        field_name
+        for symbol in class_index.ancestor_symbols(composer.symbol)
+        if class_index.class_for(symbol) is not None
+        for field_name in OverlapClass.for_symbol(snapshot, symbol).own_field_names
+    )
+    owner_fields = tuple(owner_fields)
+    moved = frozenset(owner_fields)
+    before = [name for name in composer.own_field_names if name not in inherited]
+    after = [
+        name
+        for name in dict.fromkeys(
+            (
+                *owner_fields,
+                *(name for name in composer.own_field_names if name not in moved),
+            )
+        )
+        if name not in inherited
+    ]
+    return before, after
+
+
 def _is_own_class(function: ast.expr) -> bool:
     """`cls`, `type(self)` or `self.__class__`: the receiver's own class."""
 
@@ -1171,6 +1726,259 @@ def _is_own_class(function: ast.expr) -> bool:
         and isinstance(function.args[0], ast.Name)
         and function.args[0].id == "self"
     )
+
+
+@dataclass(frozen=True)
+class PositionalConstruction:
+    """One call that builds a dataclass, or its receiver's class, by position."""
+
+    file_path: str
+    call: ast.Call
+    parameter_names: tuple[str, ...]
+
+    @property
+    def location(self) -> str:
+        return f"{self.file_path}:{self.call.lineno}"
+
+    def require_keywordable(self) -> None:
+        call = self.call
+        if any(isinstance(argument, ast.Starred) for argument in call.args):
+            raise ValueError(f"{self.location} unpacks `*` arguments")
+        if CallKeywords.of(call.keywords).splats:
+            raise ValueError(f"{self.location} unpacks `**` arguments")
+        if len(call.args) > len(self.parameter_names):
+            raise ValueError(
+                f"{self.location} passes {len(call.args)} positional argument(s); "
+                f"the generated `__init__` takes {len(self.parameter_names)}"
+            )
+        if any(isinstance(argument, ast.GeneratorExp) for argument in call.args):
+            raise ValueError(f"{self.location} passes a bare generator expression")
+
+    def replacements(
+        self, geometry: SourceTextGeometry
+    ) -> tuple[SourceTextSpanReplacement, ...]:
+        """`name=` before each positional argument's first token; a walrus the
+        call left bare is parenthesized."""
+
+        call = self.call
+        func_end = geometry.required_node_offsets(call.func)[1]
+        starts: list[int] = []
+        depth = 0
+        expecting = True
+        for token in geometry.tokens:
+            offset = geometry.line_offsets[token.start[0] - 1] + token.start[1]
+            if offset < func_end or token.type in _LAYOUT_TOKENS:
+                continue
+            if depth == 1 and expecting and token.string != ")":
+                starts.append(offset)
+                expecting = False
+            if token.type == tokenize.OP and token.string in "([{":
+                depth += 1
+            elif token.type == tokenize.OP and token.string in ")]}":
+                depth -= 1
+                if depth == 0:
+                    break
+            elif token.type == tokenize.OP and token.string == "," and depth == 1:
+                expecting = True
+        replacements: list[SourceTextSpanReplacement] = []
+        for name, argument, start in zip(self.parameter_names, call.args, starts):
+            argument_start, argument_end = geometry.required_node_offsets(argument)
+            bare_walrus = isinstance(argument, ast.NamedExpr) and argument_start == start
+            replacements.append(
+                SourceTextSpanReplacement.from_offsets(
+                    start_offset=start,
+                    end_offset=start,
+                    replacement_source=f"{name}=" + ("(" if bare_walrus else ""),
+                )
+            )
+            if bare_walrus:
+                replacements.append(
+                    SourceTextSpanReplacement.from_offsets(
+                        start_offset=argument_end,
+                        end_offset=argument_end,
+                        replacement_source=")",
+                    )
+                )
+        if len(starts) < len(call.args):
+            raise ValueError(f"{self.location}: the call's arguments do not tokenize")
+        return tuple(replacements)
+
+
+_LAYOUT_TOKENS = frozenset(
+    (tokenize.COMMENT, tokenize.NL, tokenize.NEWLINE, tokenize.INDENT, tokenize.DEDENT)
+)
+
+
+@dataclass(frozen=True)
+class ConstructionKeywording:
+    """Every positional construction of one dataclass, bound by keyword instead.
+
+    A direct call `C(x, y)` binds the generated `__init__`'s positional
+    parameters in order, so `C(a=x, b=y)` binds the same values. A receiver's
+    own class (`cls(...)` in a classmethod, `type(self)(...)` or
+    `self.__class__(...)` in a method) may be any descendant, so the rewrite
+    also needs every descendant's positional parameters to start with the same
+    names. The class and every such descendant need a closed dataclass schema
+    whose fields' keyword-only-ness is known; any construction that unpacks
+    arguments, passes more than the parameters, or passes a bare generator
+    refuses the whole rewrite. A read that hands the class on as a value or a
+    positional class pattern is left alone: it binds through `__match_args__`
+    or an unknown caller, not this call.
+    """
+
+    snapshot: CodemodSourceSnapshot
+    target: OverlapClass
+
+    @classmethod
+    def require(
+        cls, snapshot: CodemodSourceSnapshot, reference: SourceRewriteTarget
+    ) -> ConstructionKeywording:
+        keywording = cls(snapshot, OverlapClass.require(snapshot, reference))
+        if not keywording.constructions:
+            raise ValueError(f"`{keywording.target.qualname}` is never built by position")
+        for construction in keywording.constructions:
+            construction.require_keywordable()
+        return keywording
+
+    def parameter_names(self, symbol: str) -> tuple[str, ...]:
+        resolution = (
+            self.snapshot.class_overlap_verdicts.class_index.product_authority_resolutions_by_symbol.get(
+                symbol
+            )
+        )
+        authority = None if resolution is None else resolution.authority
+        if authority is None:
+            raise ValueError(f"`{symbol}` has no closed dataclass schema")
+        return authority.positional_parameter_names()
+
+    @cached_property
+    def constructions(self) -> tuple[PositionalConstruction, ...]:
+        parameters = self.parameter_names(self.target.symbol)
+        direct = tuple(
+            PositionalConstruction(site.file_path, site.parent, parameters)
+            for site in ClassReferenceSites(self.snapshot, frozenset((self.target.symbol,))).sites
+            if site.role is ClassReferenceRole.CONSTRUCTION
+            and isinstance(site.parent, ast.Call)
+            and site.parent.args
+        )
+        return (*direct, *self.receiver_constructions(parameters))
+
+    def receiver_constructions(
+        self, parameters: tuple[str, ...]
+    ) -> tuple[PositionalConstruction, ...]:
+        module_bound = LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(
+            self.snapshot.parsed_module_for_source_path(self.target.file_path).module.body
+        )
+        calls = tuple(
+            call
+            for function in self.target.node.body
+            if isinstance(function, (ast.FunctionDef, ast.AsyncFunctionDef))
+            for call in _receiver_class_calls(function, module_bound)
+        )
+        if not calls:
+            return ()
+        widest = max(len(call.args) for call in calls)
+        for symbol in self.snapshot.class_overlap_verdicts.class_index.descendant_symbols(
+            self.target.symbol
+        ):
+            if self.parameter_names(symbol)[:widest] != parameters[:widest]:
+                raise ValueError(
+                    f"`{symbol}` takes other positional parameters than "
+                    f"`{self.target.qualname}`, and its receiver may be one"
+                )
+        return tuple(
+            PositionalConstruction(self.target.file_path, call, parameters) for call in calls
+        )
+
+    def source_edits(self, rationale: str) -> tuple[NominalSourceEdit, ...]:
+        by_file: dict[str, list[PositionalConstruction]] = {}
+        for construction in self.constructions:
+            by_file.setdefault(construction.file_path, []).append(construction)
+        return tuple(
+            edit
+            for file_path, constructions in by_file.items()
+            for geometry in (SourceTextGeometry(self.snapshot.sources_by_file_path[file_path]),)
+            for edit in geometry.physical_edits(
+                file_path=file_path,
+                replacements=tuple(
+                    replacement
+                    for construction in constructions
+                    for replacement in construction.replacements(geometry)
+                ),
+                rationale=rationale,
+            )
+        )
+
+
+def _receiver_class_calls(
+    function: ast.FunctionDef | ast.AsyncFunctionDef, module_bound: frozenset[str]
+) -> tuple[ast.Call, ...]:
+    """Positional calls of the method's receiver's own class: `cls(...)` in a
+    classmethod; `type(self)(...)` or `self.__class__(...)` in an undecorated
+    method. Raises when the receiver or `type` is rebound inside the method."""
+
+    positional = (*function.args.posonlyargs, *function.args.args)
+    if not positional:
+        return ()
+    receiver = positional[0].arg
+    decorators = function.decorator_list
+    is_classmethod = (
+        len(decorators) == 1
+        and isinstance(decorators[0], ast.Name)
+        and decorators[0].id == "classmethod"
+        and "classmethod" not in module_bound
+    )
+    if decorators and not is_classmethod:
+        return ()
+
+    def builds_receiver_class(node: ast.expr) -> bool:
+        if is_classmethod:
+            return isinstance(node, ast.Name) and node.id == receiver
+        if isinstance(node, ast.Attribute):
+            return (
+                node.attr == "__class__"
+                and isinstance(node.value, ast.Name)
+                and node.value.id == receiver
+            )
+        return (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "type"
+            and "type" not in module_bound
+            and len(node.args) == 1
+            and not node.keywords
+            and isinstance(node.args[0], ast.Name)
+            and node.args[0].id == receiver
+        )
+
+    calls = tuple(
+        node
+        for node in ast.walk(function)
+        if isinstance(node, ast.Call) and node.args and builds_receiver_class(node.func)
+    )
+    if calls:
+        rebound = {receiver, "type"} & frozenset(
+            name
+            for node in ast.walk(function)
+            if node is not function
+            for name in (
+                (node.id,)
+                if isinstance(node, ast.Name) and not isinstance(node.ctx, ast.Load)
+                else (node.arg,)
+                if isinstance(node, ast.arg) and node is not positional[0]
+                else (node.name,)
+                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+                else tuple(node.names)
+                if isinstance(node, (ast.Global, ast.Nonlocal))
+                else ()
+            )
+        )
+        if rebound:
+            raise ValueError(
+                f"line {function.lineno}: `{function.name}` rebinds {sorted(rebound)}, "
+                "so its own-class calls are unproved"
+            )
+    return calls
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -1203,6 +2011,47 @@ class ComposeExistingClassOperation(RepositorySourceReprovedOperation):
                 composition.owner.target.target,
                 authority_kind=SemanticAuthorityKind.CLASS_FAMILY,
             ),
+        )
+
+
+@dataclass(frozen=True, kw_only=True)
+class ComposeExistingClassesOperation(RepositorySourceReprovedOperation):
+    """Make every class restating a block compose the existing classes that own it."""
+
+    owners: tuple[SourceRewriteTarget, ...] = codemod_payload_field(
+        PayloadRecordArrayValueCodec(SourceRewriteTarget)
+    )
+    composers: tuple[SourceRewriteTarget, ...] = codemod_payload_field(
+        PayloadRecordArrayValueCodec(SourceRewriteTarget), default=()
+    )
+
+    def composition(self, snapshot: CodemodSourceSnapshot) -> CoveringComposition:
+        return CoveringComposition.require(
+            snapshot, self.owners, (self.target, *self.composers)
+        )
+
+    def source_edits_from_snapshot(
+        self, snapshot: CodemodSourceSnapshot
+    ) -> tuple[NominalSourceEdit, ...]:
+        composition = self.composition(snapshot)
+        return composition.source_edits(
+            self.rationale_text(
+                "Compose "
+                + " + ".join(f"`{owner.qualname}`" for owner in composition.owners)
+                + " instead of restating their declarations."
+            )
+        )
+
+    def current_source_authority_claims(
+        self, context: CodemodSelectorContext
+    ) -> tuple[AuthorityClaim, ...]:
+        composition = self.composition(context.execution_snapshot())
+        return tuple(
+            AstTargetAuthorityClaim.from_target(
+                owner.target.target,
+                authority_kind=SemanticAuthorityKind.CLASS_FAMILY,
+            )
+            for owner in composition.owners
         )
 
 
@@ -1248,17 +2097,553 @@ class FoldSharedDeclarationsIntoBaseOperation(RepositorySourceReprovedOperation)
         )
 
 
+def require_owner_candidate(
+    snapshot: CodemodSourceSnapshot,
+    anchor_symbol: str,
+    candidate_id: str,
+    member_names: Iterable[str],
+) -> tuple[ClassOverlapCandidate, OwnerCandidate]:
+    """An extract-mixin verdict over the anchor whose block holds these names and
+    that offers this owner, with no guard fired on the verdict or the owner."""
+
+    wanted = frozenset(member_names)
+    for verdict in snapshot.class_overlap_verdicts.candidates:
+        if verdict.move is not ExtractMixin or not wanted <= frozenset(verdict.shared_names):
+            continue
+        for owner in verdict.owner_candidates:
+            if owner.candidate_id == candidate_id and anchor_symbol in owner.composers:
+                if not verdict.permitted:
+                    raise ValueError(
+                        "The verdict refuses the move: "
+                        + "; ".join(receipt.detail for receipt in verdict.refusals)
+                    )
+                if not owner.permitted:
+                    raise ValueError(
+                        f"`{candidate_id}` is refused: "
+                        + "; ".join(receipt.detail for receipt in owner.refusals)
+                    )
+                return verdict, owner
+    raise ValueError(
+        f"The current source offers no extract-mixin owner `{candidate_id}` for "
+        f"`{anchor_symbol}` over {sorted(wanted)}"
+    )
+
+
+def movable_members(
+    snapshot: CodemodSourceSnapshot,
+    source: OverlapClass,
+    destination: OverlapClass,
+    statements: tuple[ast.stmt, ...],
+) -> None:
+    """Each statement is a member that moves without reading its class's scope."""
+
+    context = ClassMemberMoveProofContext(
+        source_class=source.target,
+        destination_class=destination.target,
+        source=snapshot.sources_by_file_path[source.file_path],
+        module_bound_names=LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(
+            snapshot.parsed_module_for_source_path(source.file_path).module.body
+        ),
+    )
+    for statement in statements:
+        member = ClassMemberPromotionStatement.for_statement(statement)
+        if member is None:
+            raise ValueError(
+                f"`{source.qualname}` line {statement.lineno} is no movable member"
+            )
+        member.require_safe_move(context)
+
+
+@dataclass(frozen=True)
+class MixinCreation:
+    """A new class declares a block several classes restate; nothing uses it yet.
+
+    The class is a root (`[mixin, object]`) with the anchor's own dataclass
+    declaration, inserted right before the anchor in the anchor's module, so
+    every free name of the copied statements is bound there exactly as in the
+    anchor. Each statement must move without reading the anchor's class scope
+    or learning its owner. Creating it changes no behaviour; each restating
+    class then composes it through its own compose-existing verdict.
+    """
+
+    snapshot: CodemodSourceSnapshot
+    anchor: OverlapClass
+    restated: RestatedDeclarations
+    name: str
+    docstring: str
+    keyword_only: bool
+    """Created keyword-only because composing it reorders some composer's fields;
+    each such composer then becomes keyword-only as it composes the mixin."""
+
+    @classmethod
+    def require(
+        cls,
+        snapshot: CodemodSourceSnapshot,
+        anchor_reference: SourceRewriteTarget,
+        member_names: tuple[str, ...],
+        name: str,
+        docstring: str,
+    ) -> Self:
+        anchor = OverlapClass.require(snapshot, anchor_reference)
+        if not docstring.strip() or '"""' in docstring or "\\" in docstring:
+            raise ValueError("A mixin needs a one-line docstring without quotes")
+        module_name = snapshot.parsed_module_for_source_path(anchor.file_path).module_name
+        _, owner = require_owner_candidate(
+            snapshot, anchor.symbol, f"new_mixin:{module_name}", member_names
+        )
+        if not name.isidentifier() or keyword_module.iskeyword(name):
+            raise ValueError(f"`{name}` is no class name")
+        bound = LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(
+            snapshot.parsed_module_for_source_path(anchor.file_path).module.body
+        )
+        if name in bound:
+            raise ValueError(f"`{name}` is already bound in {anchor.file_path}")
+        anchor.dataclass_options_key
+        restated = RestatedDeclarations.require(snapshot, anchor, anchor, member_names)
+        movable_members(snapshot, anchor, anchor, restated.statements)
+        restated.require_no_owner_bound_values(snapshot)
+        mixin_fields = tuple(
+            name for name in anchor.own_field_names if name in restated.names
+        )
+        keyword_only = anchor.option("kw_only") != "True" and any(
+            before != after
+            for symbol in owner.composers
+            for before, after in (
+                composed_field_order(
+                    snapshot, mixin_fields, OverlapClass.for_symbol(snapshot, symbol)
+                ),
+            )
+        )
+        return cls(snapshot, anchor, restated, name, docstring, keyword_only)
+
+    def decorator_source(self, source: str, decorator: ast.expr) -> str:
+        copied = ast.get_source_segment(source, decorator) or ""
+        if not self.keyword_only:
+            return copied
+        return keyword_only_decorator_source(copied, decorator)
+
+    def source_edits(self, rationale: str) -> tuple[NominalSourceEdit, ...]:
+        anchor = self.anchor
+        source = self.snapshot.sources_by_file_path[anchor.file_path]
+        lines = source.splitlines(keepends=True)
+        first_line = min(
+            (decorator.lineno for decorator in anchor.node.decorator_list),
+            default=anchor.node.lineno,
+        )
+        header = lines[first_line - 1]
+        indentation = header[: len(header) - len(header.lstrip())]
+        member_indentation = indentation + "    "
+        decorators = tuple(
+            f"{indentation}@{self.decorator_source(source, decorator)}\n"
+            for decorator in anchor.node.decorator_list
+        )
+        members: list[str] = []
+        for statement in self.restated.statements:
+            member = StatementSource(source=source, node=statement).member_source(
+                member_indentation
+            )
+            if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef)) and members:
+                members.append("\n")
+            members.append(member if member.endswith("\n") else member + "\n")
+        return (
+            SourceInsertion(
+                file_path=anchor.file_path,
+                insertion_line=first_line,
+                inserted_lines=(
+                    *decorators,
+                    f"{indentation}class {self.name}:\n",
+                    f'{member_indentation}"""{self.docstring}"""\n\n',
+                    *members,
+                    "\n\n",
+                ),
+                rationale=rationale,
+            ),
+        )
+
+
+@dataclass(frozen=True)
+class OwnerExtension:
+    """An existing class gains the block declarations it lacks.
+
+    The owner already declares the rest of the block identically and is
+    composed by other classes. The missing declarations are copied from the
+    anchor, which restates the whole block. That changes the owner's
+    descendants, so it is proved, not scored: the owner and the anchor are
+    created the same way; for a dataclass owner, no added field is required
+    while anything constructs the owner or a descendant, every read of them
+    builds by keyword, tests, annotates or subclasses, and no `cls(...)` in
+    their family passes positions; and for every descendant, the first class
+    in its MRO that declares an added name is unchanged.
+    """
+
+    snapshot: CodemodSourceSnapshot
+    owner: OverlapClass
+    anchor: OverlapClass
+    restated: RestatedDeclarations
+
+    @classmethod
+    def require(
+        cls,
+        snapshot: CodemodSourceSnapshot,
+        owner_reference: SourceRewriteTarget,
+        anchor_reference: SourceRewriteTarget,
+        member_names: tuple[str, ...],
+    ) -> Self:
+        owner = OverlapClass.require(snapshot, owner_reference)
+        anchor = OverlapClass.require(snapshot, anchor_reference)
+        require_owner_candidate(
+            snapshot, anchor.symbol, f"existing_class:{owner.symbol}", member_names
+        )
+        if frozenset(member_names) & owner.target.bound_names:
+            raise ValueError(f"`{owner.qualname}` already binds an added name")
+        dunders = sorted(name for name in member_names if name.startswith("__"))
+        if dunders:
+            raise ValueError(f"Adding {dunders} could shadow a native declaration")
+        if owner.dataclass_options_key != anchor.dataclass_options_key:
+            raise ValueError(
+                f"`{owner.qualname}` and `{anchor.qualname}` differ as dataclasses"
+            )
+        restated = RestatedDeclarations.require(snapshot, anchor, anchor, member_names)
+        movable_members(snapshot, anchor, owner, restated.statements)
+        restated.require_no_owner_bound_values(snapshot)
+        extension = cls(snapshot, owner, anchor, restated)
+        extension.require_construction()
+        extension.require_lookup()
+        return extension
+
+    @cached_property
+    def family(self) -> tuple[str, ...]:
+        return (
+            self.owner.symbol,
+            *self.snapshot.class_overlap_verdicts.class_index.descendant_symbols(
+                self.owner.symbol
+            ),
+        )
+
+    def require_construction(self) -> None:
+        self.owner.require_construction_extended_by(self)
+
+    def require_dataclass_construction(self) -> None:
+        sites = ClassReferenceSites(self.snapshot, frozenset(self.family))
+        added_required = tuple(
+            ast.unparse(statement.target)
+            for statement in self.restated.statements
+            if isinstance(statement, ast.AnnAssign) and statement.value is None
+        )
+        if added_required:
+            built = tuple(site for site in sites.sites if site.role.binds_fields)
+            if built:
+                raise ValueError(
+                    f"{built[0].location} builds `{ast.unparse(built[0].node)}`, which "
+                    f"would need the new required field(s) {list(added_required)}"
+                )
+        sites.require_keyword_construction()
+        require_no_positional_self_construction(self.snapshot, self.family)
+
+    def require_lookup(self) -> None:
+        class_index = self.snapshot.class_overlap_verdicts.class_index
+        authority = ClassMroAuthority(class_index.classes_by_symbol)
+        for symbol in self.family:
+            mro_type = authority.resolve(symbol).mro_type
+            if mro_type is None:
+                raise ValueError(f"`{symbol}` has an open MRO")
+            order = tuple(declaration.symbol for declaration in mro_type.declarations)
+            for name in self.restated.names:
+                declaring = tuple(
+                    declaration.symbol
+                    for declaration in mro_type.declarations
+                    if name in declaration.direct_declared_member_names
+                    or any(item.name == name for item in declaration.body_declarations)
+                )
+                if declaring and order.index(declaring[0]) > order.index(
+                    self.owner.symbol
+                ):
+                    raise ValueError(
+                        f"`{self.owner.qualname}.{name}` would replace `{declaring[0]}`'s "
+                        f"answer for `{symbol}`"
+                    )
+
+    def source_edits(self, rationale: str) -> tuple[NominalSourceEdit, ...]:
+        owner = self.owner
+        source = self.snapshot.sources_by_file_path[owner.file_path]
+        anchor_source = self.snapshot.sources_by_file_path[self.anchor.file_path]
+        body = ClassBodySourceAuthority(owner.node, source)
+        return (
+            *body.geometry.physical_edits(
+                file_path=owner.file_path,
+                replacements=(
+                    body.declaration_block_replacement(
+                        tuple(
+                            (
+                                StatementSource(
+                                    source=anchor_source, node=statement
+                                ).member_source(body.indentation),
+                                isinstance(
+                                    statement, (ast.FunctionDef, ast.AsyncFunctionDef)
+                                ),
+                            )
+                            for statement in self.restated.statements
+                        )
+                    ),
+                ),
+                rationale=rationale,
+            ),
+            *required_name_imports(
+                self.snapshot, self.restated.statements, self.anchor, owner, rationale
+            ),
+        )
+
+
+@dataclass(frozen=True, kw_only=True)
+class CreateMixinOperation(RepositorySourceReprovedOperation):
+    """Declare a block several classes restate once, in a new class before the
+    anchor, and make each composer compose it, as one proved step.
+
+    The mixin is created on the current source, then each composer composes it
+    on the source the previous step left, each through the compose-existing
+    proof. Any refusal refuses the whole operation, so a mixin is never created
+    without every composer that restates its block.
+    """
+
+    member_names: tuple[str, ...] = codemod_payload_field(StringArrayPayloadValueCodec())
+    mixin_name: str = codemod_payload_field(RequiredStringPayloadValueCodec())
+    docstring: str = codemod_payload_field(RequiredStringPayloadValueCodec())
+    composers: tuple[SourceRewriteTarget, ...] = codemod_payload_field(
+        PayloadRecordArrayValueCodec(SourceRewriteTarget), default=()
+    )
+
+    def creation(self, snapshot: CodemodSourceSnapshot) -> MixinCreation:
+        return MixinCreation.require(
+            snapshot, self.target, self.member_names, self.mixin_name, self.docstring
+        )
+
+    def source_edits_from_snapshot(
+        self, snapshot: CodemodSourceSnapshot
+    ) -> tuple[NominalSourceEdit, ...]:
+        rationale = self.rationale_text(
+            f"Declare {', '.join(self.member_names)} once on `{self.mixin_name}`."
+        )
+        creation = self.creation(snapshot)
+        if not self.composers:
+            return creation.source_edits(rationale)
+        mixin = SourceRewriteTarget(
+            file_path=self.target.file_path,
+            qualname=".".join(
+                (*self.target.qualname.split(".")[:-1], self.mixin_name)
+            ),
+        )
+        current = snapshot
+        for step in (
+            replace(self, composers=()),
+            *(
+                ComposeExistingClassOperation(target=composer, owner=mixin)
+                for composer in self.composers
+            ),
+        ):
+            result = RefactorRecipe(recipe_id=f"create-{self.mixin_name}").with_operation(
+                step
+            ).simulate(current)
+            result.preflight_report.require_clean()
+            current = current.with_virtual_sources(result.simulation.rewritten_sources)
+        return tuple(
+            edit
+            for file_path, source in snapshot.sources_by_file_path.items()
+            if current.sources_by_file_path.get(file_path, source) != source
+            for edit in _line_difference_edits(
+                file_path, source, current.sources_by_file_path[file_path], rationale
+            )
+        )
+
+    def current_source_authority_claims(
+        self, context: CodemodSelectorContext
+    ) -> tuple[AuthorityClaim, ...]:
+        creation = self.creation(context.execution_snapshot())
+        return (
+            AstTargetAuthorityClaim.from_target(
+                creation.anchor.target.target,
+                authority_kind=SemanticAuthorityKind.CLASS_FAMILY,
+            ),
+        )
+
+
+@dataclass(frozen=True, kw_only=True)
+class ExtendOwnerOperation(RepositorySourceReprovedOperation):
+    """Give an existing owner the block declarations it lacks, copied from the anchor."""
+
+    anchor: SourceRewriteTarget = codemod_payload_field(
+        PayloadRecordValueCodec(SourceRewriteTarget)
+    )
+    member_names: tuple[str, ...] = codemod_payload_field(StringArrayPayloadValueCodec())
+
+    def extension(self, snapshot: CodemodSourceSnapshot) -> OwnerExtension:
+        return OwnerExtension.require(snapshot, self.target, self.anchor, self.member_names)
+
+    def source_edits_from_snapshot(
+        self, snapshot: CodemodSourceSnapshot
+    ) -> tuple[NominalSourceEdit, ...]:
+        extension = self.extension(snapshot)
+        return extension.source_edits(
+            self.rationale_text(
+                f"Declare {', '.join(self.member_names)} on `{extension.owner.qualname}`, "
+                "the owner of the rest of the block."
+            )
+        )
+
+    def current_source_authority_claims(
+        self, context: CodemodSelectorContext
+    ) -> tuple[AuthorityClaim, ...]:
+        extension = self.extension(context.execution_snapshot())
+        return (
+            AstTargetAuthorityClaim.from_target(
+                extension.owner.target.target,
+                authority_kind=SemanticAuthorityKind.CLASS_FAMILY,
+            ),
+        )
+
+
+@dataclass(frozen=True, kw_only=True)
+class KeywordizeConstructionOperation(RepositorySourceReprovedOperation):
+    """Bind every positional construction of a dataclass by keyword (#86)."""
+
+    def keywording(self, snapshot: CodemodSourceSnapshot) -> ConstructionKeywording:
+        return ConstructionKeywording.require(snapshot, self.target)
+
+    def source_edits_from_snapshot(
+        self, snapshot: CodemodSourceSnapshot
+    ) -> tuple[NominalSourceEdit, ...]:
+        keywording = self.keywording(snapshot)
+        return keywording.source_edits(
+            self.rationale_text(
+                f"Build `{keywording.target.qualname}` by keyword, so its field "
+                "order no longer decides what each call binds."
+            )
+        )
+
+    def current_source_authority_claims(
+        self, context: CodemodSelectorContext
+    ) -> tuple[AuthorityClaim, ...]:
+        keywording = self.keywording(context.execution_snapshot())
+        return (
+            AstTargetAuthorityClaim.from_target(
+                keywording.target.target.target,
+                authority_kind=SemanticAuthorityKind.CLASS_FAMILY,
+            ),
+        )
+
+
 class ClassOverlapFindingRecipeSynthesizer(
     FindingEvidenceActionKeysMixin,
-    FindingRecipeSynthesizer,
+    SelfDeclaredRecipeSynthesizer,
     ClassBodyCompositionConcept,
 ):
     """The verdict's move as a recipe, when the move keeps every class identity.
 
     Compose-existing becomes one composition per restating class; promote to
-    a shared base becomes one fold. Deleting a class and extracting a new
-    mixin change or mint identities and stay findings.
+    a shared base becomes one fold. Extracting a block mints or widens an
+    owner, so it runs only on a picker's choice (#67): see
+    `picked_operations`. Deleting a class changes identities and stays a
+    finding.
     """
+
+    @staticmethod
+    def picked_operations(
+        finding: RefactorFinding,
+        metrics: ClassOverlapMetrics,
+        verdicts: ClassOverlapVerdicts,
+    ) -> tuple[RepositorySourceReprovedOperation, ...] | str:
+        """The operation the picker's owner calls for, or why there is none.
+
+        A new mixin is declared before a composing class in its module; an
+        existing class first gains the block declarations it lacks; a shared
+        base takes the block as a fold. Each restating class then composes the
+        owner through its own compose-existing verdict at the next stage. A
+        verdict covered by a pick on another finding adds nothing itself.
+        """
+
+        pick = metrics.owner_pick
+        if pick is None:
+            return "an extract-mixin move needs an owner pick (--codemod-owner-picks)"
+        if pick.finding != finding.stable_id:
+            return f"covered by the owner pick on {pick.finding}"
+        owner = next(
+            (candidate for candidate in metrics.owner_candidates if candidate.candidate_id == pick.owner),
+            None,
+        )
+        if owner is None or not owner.permitted:
+            return f"`{pick.owner}` is not a permitted candidate of this finding"
+        composers = tuple(
+            indexed_class
+            for symbol in owner.composers
+            if (indexed_class := verdicts.class_index.class_for(symbol)) is not None
+        )
+        match owner:
+            case NewMixinOwner():
+                anchor = next(
+                    (
+                        indexed_class
+                        for indexed_class in composers
+                        if indexed_class.module_name == owner.module_name
+                    ),
+                    None,
+                )
+                if anchor is None or pick.name is None:
+                    return f"no composing class lives in `{owner.module_name}`"
+                if pick.judgement is None:
+                    return "a new mixin needs the pick's judgement for its docstring"
+                return (
+                    CreateMixinOperation(
+                        target=source_rewrite_target(anchor),
+                        member_names=owner.block,
+                        mixin_name=pick.name,
+                        docstring=pick.judgement[:1].upper() + pick.judgement[1:].rstrip(".") + ".",
+                        composers=tuple(
+                            source_rewrite_target(indexed_class)
+                            for indexed_class in composers
+                        ),
+                    ),
+                )
+            case ExistingClassOwner():
+                existing = verdicts.class_index.class_for(owner.symbol)
+                missing = tuple(name for name in owner.block if name not in owner.held)
+                if existing is None or not composers:
+                    return "the picked owner left the source"
+                if not missing:
+                    return f"`{owner.symbol}` already declares the whole block"
+                return (
+                    ExtendOwnerOperation(
+                        target=source_rewrite_target(existing),
+                        anchor=source_rewrite_target(composers[0]),
+                        member_names=missing,
+                    ),
+                )
+            case ExistingClassesOwner():
+                owners = tuple(
+                    indexed_class
+                    for symbol in owner.symbols
+                    if (indexed_class := verdicts.class_index.class_for(symbol)) is not None
+                )
+                if len(owners) != len(owner.symbols) or not composers:
+                    return "the picked owners left the source"
+                return (
+                    ComposeExistingClassesOperation(
+                        target=source_rewrite_target(composers[0]),
+                        owners=tuple(source_rewrite_target(item) for item in owners),
+                        composers=tuple(
+                            source_rewrite_target(item) for item in composers[1:]
+                        ),
+                    ),
+                )
+            case SharedBaseOwner():
+                base = verdicts.class_index.class_for(owner.symbol)
+                if base is None:
+                    return "the picked base left the source"
+                return (
+                    FoldSharedDeclarationsIntoBaseOperation(
+                        target=source_rewrite_target(base),
+                        member_names=owner.block,
+                    ),
+                )
+        return f"`{owner.kind}` owners have no move"
 
     def evaluate_recipe_for_finding(
         self,
@@ -1305,6 +2690,11 @@ class ClassOverlapFindingRecipeSynthesizer(
                     member_names=metrics.shared_declaration_names,
                 ),
             )
+        elif metrics.move is ExtractMixin:
+            picked = self.picked_operations(finding, metrics, verdicts)
+            if isinstance(picked, str):
+                return self.rejected_evaluation(picked)
+            operations = picked
         else:
             return self.rejected_evaluation(
                 f"`{metrics.move.value}` changes a class identity; it stays a finding"

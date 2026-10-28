@@ -8,9 +8,9 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from functools import cached_property
 from importlib import import_module
-from typing import Self
+from typing import ClassVar, Self
 
-from .ast_tools import BuiltinCallName, ParsedModule, module_syntax_index
+from .ast_tools import BuiltinCallName, ParsedModule
 from .cases_family import handback
 from .codemod_declaration_source import PythonExpressionSourceFormatter
 from .codemod_runtime import CodemodSourceSnapshot
@@ -28,8 +28,8 @@ FunctionNode = ast.FunctionDef | ast.AsyncFunctionDef
 
 
 @dataclass(frozen=True)
-class ForeignFamilyReference:
-    """A declared family named by its qualified import path."""
+class ImportedClassReference:
+    """A class named by its qualified import path, imported where a rewrite names it."""
 
     import_path: str
 
@@ -41,14 +41,6 @@ class ForeignFamilyReference:
     def class_name(self) -> str:
         return self.import_path.rpartition(".")[2]
 
-    @cached_property
-    def family(self) -> type[ForeignFamily]:
-        return getattr(import_module(self.module_name), self.class_name)
-
-    @property
-    def member_names(self) -> frozenset[str]:
-        return self.family.member_names()
-
     def import_source_for(
         self, snapshot: CodemodSourceSnapshot, parsed_module: ParsedModule
     ) -> str:
@@ -59,9 +51,7 @@ class ForeignFamilyReference:
         )
         uses_relative_imports = any(
             statement.level
-            for _, statement in module_syntax_index(
-                parsed_module.module
-            ).indexed_nodes_of_type(ast.ImportFrom)
+            for _, statement in parsed_module.syntax_index.indexed_nodes_of_type(ast.ImportFrom)
         )
         reference = (
             snapshot.module_import_graph.import_module_reference(
@@ -73,6 +63,19 @@ class ForeignFamilyReference:
             else None
         )
         return f"from {reference or self.module_name} import {self.class_name}"
+
+
+@dataclass(frozen=True)
+class ForeignFamilyReference(ImportedClassReference):
+    """A declared family named by its qualified import path."""
+
+    @cached_property
+    def family(self) -> type[ForeignFamily]:
+        return getattr(import_module(self.module_name), self.class_name)
+
+    @property
+    def member_names(self) -> frozenset[str]:
+        return self.family.member_names()
 
 
 @dataclass(frozen=True)
@@ -107,6 +110,45 @@ class RewrittenLineFit:
             len(line) <= self.line_length
             for line in f"{prefix}{text}{tail}".split("\n")
         )
+
+
+@dataclass(frozen=True)
+class SourceRewriteAuthority:
+    """One module's tree, source geometry and line budget, for rewriting it."""
+
+    parsed_module: ParsedModule
+    geometry: SourceTextGeometry
+    line_length: int
+
+    @cached_property
+    def fit(self) -> RewrittenLineFit:
+        return RewrittenLineFit(self.geometry, self.line_length)
+
+
+@dataclass(frozen=True)
+class FunctionRewriteAuthority(SourceRewriteAuthority):
+    """A rewrite of one function of the module, located by its declaration."""
+
+    declaration: ast.stmt
+    rewrite_name: ClassVar[str]
+
+    @cached_property
+    def function(self) -> FunctionNode:
+        """The function of the indexed module tree that the target node denotes."""
+
+        position = (self.declaration.lineno, self.declaration.col_offset)
+        matches = tuple(
+            candidate
+            for candidate in FunctionDefinition.within(
+                ast.walk(self.parsed_module.module)
+            )
+            if (candidate.lineno, candidate.col_offset) == position
+        )
+        if len(matches) != 1:
+            raise ValueError(
+                f"{self.rewrite_name} requires a function declaration target"
+            )
+        return matches[0]
 
 
 @dataclass(frozen=True)
@@ -242,35 +284,12 @@ class ContinueFilterSite(FilterSiteABC):
 
 
 @dataclass(frozen=True)
-class ForeignFamilyFilterAuthority:
+class ForeignFamilyFilterAuthority(FunctionRewriteAuthority):
     """Every filter site of one function whose tested classes are a family's."""
 
-    parsed_module: ParsedModule
-    geometry: SourceTextGeometry
-    line_length: int
-    declaration: ast.stmt
     reference: ForeignFamilyReference
     accept_widening: bool
-
-    @cached_property
-    def function(self) -> FunctionNode:
-        """The function of the indexed module tree that the target node denotes."""
-
-        position = (self.declaration.lineno, self.declaration.col_offset)
-        matches = tuple(
-            candidate
-            for candidate in FunctionDefinition.within(
-                ast.walk(self.parsed_module.module)
-            )
-            if (candidate.lineno, candidate.col_offset) == position
-        )
-        if len(matches) != 1:
-            raise ValueError("Filter routing requires a function declaration target")
-        return matches[0]
-
-    @cached_property
-    def fit(self) -> RewrittenLineFit:
-        return RewrittenLineFit(self.geometry, self.line_length)
+    rewrite_name = "Filter routing"
 
     @cached_property
     def resolver(self) -> TypeArgumentResolver:
@@ -326,7 +345,7 @@ class ForeignFamilyFilterModuleFamily(ShapeFamily[ForeignFamilySiteModule]):
 
     @classmethod
     def collect(cls, parsed_module: ParsedModule) -> list[ForeignFamilySiteModule]:
-        index = module_syntax_index(parsed_module.module)
+        index = parsed_module.syntax_index
         node_indices = {
             call: node_index
             for node_index, call in index.indexed_nodes_of_type(ast.Call)

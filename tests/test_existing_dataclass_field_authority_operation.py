@@ -117,7 +117,7 @@ def test_operation_reuses_and_relocates_existing_field_authority(
 ) -> None:
     module_path = _write_fixture(tmp_path)
     before = _runtime_output(tmp_path)
-    snapshot = CodemodSourceSnapshot.from_modules(tuple(parse_python_modules(tmp_path)))
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     operation = _operation(module_path)
     recipe = RefactorRecipe(recipe_id="reuse-projection-identity").with_operation(
         operation
@@ -148,7 +148,7 @@ def test_operation_reuses_and_relocates_existing_field_authority(
     simulation.apply()
     assert _runtime_output(tmp_path) == before
     after_snapshot = CodemodSourceSnapshot.from_modules(
-        tuple(parse_python_modules(tmp_path))
+        parse_python_modules(tmp_path)
     )
     with pytest.raises(
         CodemodOperationPreflightError,
@@ -164,7 +164,7 @@ def test_operation_keeps_an_existing_preceding_authority_in_place(
         tmp_path,
         source=_fixture_source(authority_first=True),
     )
-    snapshot = CodemodSourceSnapshot.from_modules(tuple(parse_python_modules(tmp_path)))
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
 
     simulation = RefactorRecipe(recipe_id="reuse-preceding-authority").with_operation(
         _operation(module_path)
@@ -190,7 +190,7 @@ def test_operation_rejects_an_authority_with_additional_behavior(
             )
         ),
     )
-    snapshot = CodemodSourceSnapshot.from_modules(tuple(parse_python_modules(tmp_path)))
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
 
     with pytest.raises(
         CodemodOperationPreflightError,
@@ -208,7 +208,7 @@ def test_operation_rejects_an_authority_with_additional_fields(
         tmp_path,
         source=_fixture_source(authority_members="    identity_version: int\n"),
     )
-    snapshot = CodemodSourceSnapshot.from_modules(tuple(parse_python_modules(tmp_path)))
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
 
     with pytest.raises(
         CodemodOperationPreflightError,
@@ -226,7 +226,7 @@ def test_operation_rejects_a_name_observed_before_relocation(
         tmp_path,
         source=_fixture_source(intervening_source="ALIAS = ProjectionIdentity\n\n\n"),
     )
-    snapshot = CodemodSourceSnapshot.from_modules(tuple(parse_python_modules(tmp_path)))
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
 
     with pytest.raises(
         CodemodOperationPreflightError,
@@ -249,7 +249,7 @@ def test_operation_allows_a_deferred_name_reference_before_relocation(
             )
         ),
     )
-    snapshot = CodemodSourceSnapshot.from_modules(tuple(parse_python_modules(tmp_path)))
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
 
     simulation = RefactorRecipe(recipe_id="deferred-relocation").with_operation(
         _operation(module_path)

@@ -8,6 +8,7 @@ import sys
 
 import pytest
 
+from nominal_refactor_advisor.ast_tools import ParsedModuleSet
 from nominal_refactor_advisor import native_declarations
 from nominal_refactor_advisor.ast_tools import ParsedModule
 from nominal_refactor_advisor.codemod import (
@@ -45,7 +46,7 @@ def test_batched_collectors_inspect_each_native_base_once(
     path.write_text(source, encoding="utf-8", newline="")
     before = subprocess.check_output([sys.executable, str(path)], text=True)
     module = ParsedModule(path, "probe", False, ast.parse(source), source)
-    snapshot = CodemodSourceSnapshot.from_modules((module, native_collector_module))
+    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of((module, native_collector_module)))
     recipe = RefactorRecipe(
         "derive-twenty-collectors",
         operations=tuple(
@@ -106,7 +107,7 @@ def test_competing_collector_base_does_not_change_forwarded_arguments(
         == "('collected',)"
     )
     module = ParsedModule(path, "probe", False, ast.parse(source), source)
-    snapshot = CodemodSourceSnapshot.from_modules((module, native_collector_module))
+    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of((module, native_collector_module)))
     plan = CodemodPlanSequence.from_operations(
         (
             DeriveCandidateCollectorOperation(
@@ -154,7 +155,7 @@ def test_canonical_name_with_modified_source_is_not_native_authority(
     )
     path = tmp_path / "probe.py"
     module = ParsedModule(path, "probe", False, ast.parse(source), source)
-    snapshot = CodemodSourceSnapshot.from_modules((module, modified_module))
+    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of((module, modified_module)))
     plan = CodemodPlanSequence.from_operations(
         (
             DeriveCandidateCollectorOperation(
@@ -207,7 +208,7 @@ def test_unrelated_same_name_base_cannot_change_inherited_behaviour(
         )
     )
     with pytest.raises(ValueError, match="native|authority"):
-        plan.simulate(CodemodSourceSnapshot.from_modules((module,)))
+        plan.simulate(CodemodSourceSnapshot.from_modules(ParsedModuleSet.of((module,))))
     assert path.read_bytes() == source.encode()
 
 
@@ -225,7 +226,7 @@ def test_registered_collector_base_preserves_native_execution(
     path.write_text(source, encoding="utf-8", newline="")
     before = subprocess.check_output([sys.executable, str(path)], text=True)
     module = ParsedModule(path, "probe", False, ast.parse(source), source)
-    snapshot = CodemodSourceSnapshot.from_modules((module, native_collector_module))
+    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of((module, native_collector_module)))
     plan = CodemodPlanSequence.from_operations(
         (
             DeriveCandidateCollectorOperation(

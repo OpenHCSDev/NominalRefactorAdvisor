@@ -14,6 +14,12 @@ from typing import (
     cast,
 )
 
+from .ast_projection import (
+    NoStatementValue,
+    StatementValue,
+    StatementValueQuestion,
+    SuppliedValue,
+)
 from .ast_tools import ModuleAnnotationEvaluationMode
 from .captured_reference import SingleFlowPrefix
 from .declaration_dependencies import (
@@ -619,6 +625,20 @@ class ClassNamespaceExecutionEvidence:
         bindings.native_reference_environment(module).require_class_creation(owner)
 
 
+@dataclass(frozen=True)
+class _AnnotatedAssignmentSource(StatementValueQuestion[None]):
+    """A valued annotation is also an assignment source; a bare one stores nothing."""
+
+    projection: _ClassNamespaceEffectProjection
+    statement: ast.AnnAssign
+
+    def supplied(self, value: SuppliedValue) -> None:
+        self.projection.visit_Assign(self.statement)
+
+    def bare(self, value: NoStatementValue) -> None:
+        """A bare annotation assigns nothing."""
+
+
 class _ClassNamespaceEffectProjection(ast.NodeVisitor):
     """Select one node's effects; the scope collector alone traverses children."""
 
@@ -712,8 +732,7 @@ class _ClassNamespaceEffectProjection(ast.NodeVisitor):
         self._record_effect(AugmentedAssignmentSourceEffect, node)
 
     def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
-        if node.value is not None:
-            self.visit_Assign(node)
+        StatementValue.of(node).answer(_AnnotatedAssignmentSource(self, node))
         if node.simple and self.scope.scopes[-1].records_variable_annotations:
             self._record_effect(AnnotationStorageEffect, node)
 

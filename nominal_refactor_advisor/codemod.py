@@ -18,6 +18,7 @@ from collections.abc import Callable, Iterable, Mapping
 from dataclasses import (
     dataclass,
     field,
+    replace,
 )
 from enum import StrEnum
 from functools import cached_property
@@ -27,6 +28,11 @@ from typing import ClassVar, Generic, Self, TypeAlias, TypeVar, cast
 
 from metaclass_registry import AutoRegisterMeta
 
+from .ast_field_decoders import (
+    declared_annotations,
+    variadic_parameters,
+)
+from .value_expression import CompactValueExpression
 from .annotation_semantics import NOMINAL_ANNOTATION_SOURCE_AUTHORITY
 from .ast_projection import ExpressionReference
 from .codemod_native_requirements import (
@@ -63,6 +69,7 @@ from .assignment_projection import (
     AssignmentStatementNameProjection,
     SingleAssignmentAndValueNameProjection,
 )
+from .ast_projection import CallKeywords, StatementValue
 from .ast_tools import (
     ROOT_NAME_PROJECTION,
     AstParentIndex,
@@ -530,6 +537,7 @@ from .codemod_source_edits import (
     SimulatedSourceRewrite as SimulatedSourceRewrite,
     SourceEditWindowABC as SourceEditWindowABC,
     SourceIntervalProjectionABC as SourceIntervalProjectionABC,
+    SourceLineSpan,
     SourceOffsetSpan as SourceOffsetSpan,
     SourceRetainedSpanIndex as SourceRetainedSpanIndex,
     SourceRewriteDelta as SourceRewriteDelta,
@@ -637,7 +645,7 @@ from .json_reports import (
     json_report_property,
 )
 from .lexical_bindings import (
-    ImportAliasRequirement as ImportAliasRequirement,
+    ImportAlias as ImportAlias,
     ImportBoundNameProjection,
     ImportFromModuleName as ImportFromModuleName,
     LEXICAL_SCOPE_BINDING_AUTHORITY,
@@ -657,6 +665,8 @@ from .models import (
     RegistrationMetrics,
     SourceLocation,
 )
+from .owner_candidates import OwnerCandidate, OwnerCost, OwnerReceiptKind, ranked
+from .receipts import Receipt
 from .module_move_codemod import (
     DependencyClosureModuleSymbolSelectionOperationABC as DependencyClosureModuleSymbolSelectionOperationABC,
     ExistingModuleSymbolMoveOperationABC as ExistingModuleSymbolMoveOperationABC,
@@ -883,8 +893,7 @@ class ReplaceTargetOperation(SourceReprovedOperation):
         return (
             SourceSpanReplacement(
                 file_path=target.file_path,
-                start_line=span.start_line,
-                end_line=span.end_line,
+                span=SourceLineSpan(span.start_line, span.end_line),
                 replacement_lines=SourceTargetEditor.source_lines(
                     self.replacement_block.indented_source(
                         declaration.declaration_indentation,
@@ -1462,7 +1471,7 @@ class _ClosedCarrierCollapseSourceRewrite:
             )
         nested_scopes = tuple(
             nested
-            for nested in walk_function_body_nodes(node)
+            for nested in walk_function_body_nodes(node.body)
             if isinstance(nested, self._nested_scope_types)
         )
         if nested_scopes:
@@ -1486,14 +1495,13 @@ class _ClosedCarrierCollapseSourceRewrite:
                 *node.args.posonlyargs,
                 *node.args.args,
                 *node.args.kwonlyargs,
-                *((node.args.vararg,) if node.args.vararg is not None else ()),
-                *((node.args.kwarg,) if node.args.kwarg is not None else ()),
+                *variadic_parameters(node.args),
             )
             if argument.arg not in mapped_parameter_names
         }
         occupied_names.update(
             name.id
-            for name in walk_function_body_nodes(node)
+            for name in walk_function_body_nodes(node.body)
             if isinstance(name, ast.Name) and name.id not in mapped_parameter_names
         )
         occupied_names.update(
@@ -1590,7 +1598,7 @@ class _ClosedCarrierCollapseSourceRewrite:
         geometry = self.geometries_by_file_path[rewrite.target.file_path]
         excluded_spans = tuple(call_spans)
         replacements = []
-        for node in walk_function_body_nodes(rewrite.node):
+        for node in walk_function_body_nodes(rewrite.node.body):
             if not (
                 isinstance(node, ast.Name)
                 and isinstance(node.ctx, ast.Load)
@@ -2072,10 +2080,11 @@ class ReplaceFieldsWithCarrierOperation(SourceReprovedOperation):
     ) -> str | None:
         carrier_sources: set[str] = set()
         projection_map = self.field_projection_map
-        for keyword in projected_keywords:
-            if keyword.arg is None:
-                return None
-            expected_attribute = projection_map[keyword.arg]
+        keywords = CallKeywords.of(projected_keywords)
+        if keywords.splats:
+            return None
+        for keyword in keywords.named:
+            expected_attribute = projection_map[keyword.name]
             value = keyword.value
             if not isinstance(value, ast.Attribute):
                 return None
@@ -3471,8 +3480,7 @@ class DeriveAutoregisterInstanceViewOperation(
             assignment_source = f"{component.assignment_name} = {value_source}"
         return SourceSpanReplacement(
             file_path=source_path,
-            start_line=statement.lineno,
-            end_line=statement.end_lineno or statement.lineno,
+            span=SourceLineSpan(statement.lineno, statement.end_lineno or statement.lineno),
             replacement_lines=SourceTargetEditor.source_lines(assignment_source),
             rationale=self.rationale_text(
                 f"Derive {component.assignment_name!r} from "
@@ -3824,8 +3832,7 @@ class ConvertManualRegistryToAutoregisterOperation(
             replacements.append(
                 SourceSpanReplacement(
                     file_path=source_path,
-                    start_line=statement.lineno,
-                    end_line=statement.end_lineno or statement.lineno,
+                    span=SourceLineSpan(statement.lineno, statement.end_lineno or statement.lineno),
                     replacement_lines=SourceTargetEditor.source_lines(
                         self.derived_registry_assignment_source(statement, component)
                     ),
@@ -3839,8 +3846,7 @@ class ConvertManualRegistryToAutoregisterOperation(
             *(
                 SourceSpanDeletion(
                     file_path=source_path,
-                    start_line=statement.lineno,
-                    end_line=statement.end_lineno or statement.lineno,
+                    span=SourceLineSpan(statement.lineno, statement.end_lineno or statement.lineno),
                     rationale=self.rationale_text("Delete manual registry write."),
                 )
                 for statement in component.registration_statements
@@ -3955,7 +3961,7 @@ class DispatchPolymorphismFunction:
             or self.axis_parameter not in self.node.args.args
             or any(
                 isinstance(node, (ast.Yield, ast.YieldFrom))
-                for node in walk_function_body_nodes(self.node)
+                for node in walk_function_body_nodes(self.node.body)
             )
         )
 
@@ -4219,7 +4225,7 @@ class DispatchPolymorphismSource:
     def source_names(self) -> frozenset[str]:
         return frozenset(
             node.id
-            for node in walk_function_body_nodes(self.dispatch_function.node)
+            for node in walk_function_body_nodes(self.dispatch_function.node.body)
             if isinstance(node, ast.Name)
         ) | frozenset(self.dispatch_function.parameter_names)
 
@@ -4479,8 +4485,7 @@ class DispatchToPolymorphismOperation(SourceReprovedOperation):
         ).indentation_for_line(body_start)
         return SourceSpanReplacement(
             file_path=target_digest.file_path,
-            start_line=body_start,
-            end_line=body_end,
+            span=SourceLineSpan(body_start, body_end),
             replacement_lines=tuple(
                 f"{body_indent}{line}\n" for line in source.dispatch_call_lines()
             ),
@@ -4733,12 +4738,8 @@ class FindingRecipeSynthesizer(FindingRecipeEvaluator, ABC):
         evaluator = FindingRecipeEvaluator.for_finding(finding)
         if evaluator is None:
             return False
-        evaluation = evaluator.evaluate_recipe_for_finding(
-            finding,
-            selector_context,
-        )
         return issubclass(
-            evaluation.required_evaluation_declaration_type,
+            evaluator.evaluation_declaration_for_finding(finding, selector_context),
             concept_type,
         )
 
@@ -4785,6 +4786,23 @@ class FindingRecipeSynthesizer(FindingRecipeEvaluator, ABC):
             executable_recipe=recipe,
             evaluation_declaration_type=type(self),
         )
+
+
+class SelfDeclaredRecipeSynthesizer(FindingRecipeSynthesizer, ABC):
+    """A synthesizer whose every evaluation names its own declaration.
+
+    It returns only `rejected_evaluation` and `executable_evaluation`, both of
+    which name `type(self)`, so a finding's concept is read off the type with
+    no evaluation.
+    """
+
+    def evaluation_declaration_for_finding(
+        self,
+        finding: RefactorFinding,
+        context: CodemodSelectorContext,
+    ) -> type[object]:
+        del finding, context
+        return type(self)
 
 
 class PrimaryEvidenceActionKeysMixin:
@@ -5296,9 +5314,10 @@ class RepeatedBuilderCallSite:
     def field_names(self) -> tuple[str, ...]:
         """Return the exact keyword schema observed at this constructor call."""
 
-        if self.call.args or any(keyword.arg is None for keyword in self.call.keywords):
+        keywords = CallKeywords.of(self.call.keywords)
+        if self.call.args or keywords.splats:
             return ()
-        return tuple(cast(str, keyword.arg) for keyword in self.call.keywords)
+        return keywords.names
 
     @property
     def mapping_key(self) -> tuple[tuple[str, ...], tuple[str, ...]]:
@@ -5318,7 +5337,7 @@ class RepeatedBuilderCallSite:
             *self.participant.node.args.args,
             *self.participant.node.args.kwonlyargs,
         ):
-            if parameter.arg == root_name and parameter.annotation is not None:
+            if parameter.arg == root_name and declared_annotations(parameter):
                 return parameter
         return None
 
@@ -5335,13 +5354,18 @@ class RepeatedBuilderCallSite:
         )
 
 
-@dataclass(frozen=True)
-class ConsumerFamilyBuilderAuthorityCandidate:
-    """Existing shared-family method that constructs the observed record schema."""
+@dataclass(frozen=True, kw_only=True)
+class ExistingMethodOwner(OwnerCandidate):
+    """An existing shared-family method that constructs the observed record schema:
+    an owner candidate for repeated construction (#67)."""
 
-    declaration: IndexedClass
-    method: ast.FunctionDef
-    constructor: NominalConstructorCall
+    declaration: IndexedClass = json_report_field(included=False)
+    method: ast.FunctionDef = json_report_field(included=False)
+    constructor: NominalConstructorCall = json_report_field(included=False)
+    KIND: ClassVar[str] = "existing_method"
+
+    def describe(self) -> str:
+        return f"existing method `{self.symbol}`"
 
     @property
     def symbol(self) -> str:
@@ -5437,6 +5461,10 @@ class ConsumerFamilyBuilderAuthorityCandidate:
         ):
             return None
         return cls(
+            candidate_id=f"existing_method:{declaration.symbol}.{method.name}",
+            module_name=declaration.module_name,
+            receipts=(),
+            cost=OwnerCost(statements_rewritten=0, imports_added=0, cycles_created=0),
             declaration=declaration,
             method=method,
             constructor=constructor,
@@ -5519,6 +5547,47 @@ class ConsumerFamilyBuilderAuthorityCandidate:
             )
         return context.source_index.target_by_id[target_ids[0]]
 
+    def scored(
+        self,
+        context: CodemodSelectorContext,
+        call_sites: tuple[RepeatedBuilderCallSite, ...],
+        descent: InheritedConsumerBuilderAuthorityDescent | None,
+    ) -> Self:
+        """The candidate with its receipts: the call sites it already serves, and
+        whether every one of them substitutes into it exactly."""
+
+        served = tuple(
+            call_site for call_site in call_sites if self.is_inherited_by(context, call_site)
+        )
+        location = SourceLocation(self.declaration.file_path, self.method.lineno, self.symbol)
+        receipts = [
+            Receipt(
+                OwnerReceiptKind.SERVES_CALL_SITES,
+                f"`{self.declaration.qualname}` is inherited by the owners of "
+                f"{len(served)} of the {len(call_sites)} constructor call(s)",
+                (location,),
+                count=len(served),
+            )
+        ]
+        if descent is None:
+            receipts.append(
+                Receipt(
+                    OwnerReceiptKind.NO_EXACT_SUBSTITUTION,
+                    f"`{self.symbol}` has no complete exact parameter substitution "
+                    "for its inheriting call sites",
+                    (location,),
+                )
+            )
+        return replace(
+            self,
+            receipts=tuple(receipts),
+            cost=OwnerCost(
+                statements_rewritten=0 if descent is None else len(descent.projections),
+                imports_added=0,
+                cycles_created=0,
+            ),
+        )
+
     def is_inherited_by(
         self,
         context: CodemodSelectorContext,
@@ -5588,7 +5657,7 @@ class ConsumerFamilyBuilderCallProjection:
     @classmethod
     def from_candidate(
         cls,
-        candidate: ConsumerFamilyBuilderAuthorityCandidate,
+        candidate: ExistingMethodOwner,
         signature: ConsumerFamilyBuilderInvocationSignature,
         call_site: RepeatedBuilderCallSite,
     ) -> Self | None:
@@ -5629,7 +5698,7 @@ class ConsumerFamilyBuilderCallProjection:
 
     def required_replacement(
         self,
-        candidate: ConsumerFamilyBuilderAuthorityCandidate,
+        candidate: ExistingMethodOwner,
         geometry: SourceTextGeometry,
     ) -> SourceTextSpanReplacement:
         offsets = geometry.required_node_offsets(self.call_site.call)
@@ -5687,37 +5756,38 @@ class RepeatedBuilderSourceDerivation(ABC):
             authority,
             projection_reference,
         )
-        candidates = ConsumerFamilyBuilderAuthorityCandidate.from_context(
+        candidates = ExistingMethodOwner.from_context(
             context,
             authority,
             call_sites,
         )
-        descents = tuple(
-            descent
+        descents = {
+            candidate.candidate_id: InheritedConsumerBuilderAuthorityDescent.from_candidate(
+                context,
+                authority,
+                candidate,
+                call_sites,
+            )
             for candidate in candidates
-            if (
-                descent := InheritedConsumerBuilderAuthorityDescent.from_candidate(
-                    context,
-                    authority,
-                    candidate,
-                    call_sites,
-                )
-            )
-            is not None
+        }
+        owners = ranked(
+            candidate.scored(context, call_sites, descents[candidate.candidate_id])
+            for candidate in candidates
         )
-        if len(descents) > 1:
+        permitted = tuple(owner for owner in owners if owner.permitted)
+        if len(permitted) == 1:
+            return descents[permitted[0].candidate_id]
+        if permitted:
             raise ValueError(
-                "Repeated-builder descent found multiple executable consumer-family "
-                "constructor authorities: "
-                + ", ".join(descent.candidate.symbol for descent in descents)
+                "Repeated-builder descent has several executable consumer-family "
+                "constructor authorities; pick one (confidence uncalibrated): "
+                + OwnerCandidate.ranked_text(owners)
             )
-        if descents:
-            return descents[0]
-        if candidates:
+        if owners:
             raise ValueError(
                 "Existing consumer-family constructor authorities lack one "
                 "complete exact parameter substitution: "
-                + ", ".join(candidate.symbol for candidate in candidates)
+                + OwnerCandidate.ranked_text(owners)
             )
         return RepeatedBuilderAuthorityDerivation.from_authority(
             context,
@@ -5815,8 +5885,7 @@ class RepeatedBuilderSourceDerivation(ABC):
             edits.append(
                 SourceSpanReplacement(
                     file_path=participant.source_path,
-                    start_line=participant.target.line,
-                    end_line=participant.target.end_line,
+                    span=SourceLineSpan(participant.target.line, participant.target.end_line),
                     replacement_lines=SourceTargetEditor.source_lines(
                         geometry.target_source_with_replacements(
                             participant.target,
@@ -5837,7 +5906,7 @@ class InheritedConsumerBuilderAuthorityDescent(
     """Route duplicated construction through one existing inherited method."""
 
     authority: DataclassPayloadAuthorityTarget
-    candidate: ConsumerFamilyBuilderAuthorityCandidate
+    candidate: ExistingMethodOwner
     call_sites: tuple[RepeatedBuilderCallSite, ...]
     projections: tuple[ConsumerFamilyBuilderCallProjection, ...]
 
@@ -5846,7 +5915,7 @@ class InheritedConsumerBuilderAuthorityDescent(
         cls,
         context: CodemodSelectorContext,
         authority: DataclassPayloadAuthorityTarget,
-        candidate: ConsumerFamilyBuilderAuthorityCandidate,
+        candidate: ExistingMethodOwner,
         call_sites: tuple[RepeatedBuilderCallSite, ...],
     ) -> Self | None:
         signature = candidate.invocation_signature()
@@ -6100,7 +6169,7 @@ class RepeatedBuilderCallFindingRecipeSynthesizer(
         resolver = context.class_reference_resolver_for_source_path(source_path)
         nominal_calls = tuple(
             child
-            for child in walk_function_body_nodes(node)
+            for child in walk_function_body_nodes(node.body)
             if isinstance(child, ast.Call)
             and child.lineno == evidence.line
             and resolver.symbol_for_reference(child.func) is not None
@@ -6129,7 +6198,7 @@ class RepeatedBuilderCallFindingRecipeSynthesizer(
             )
             if sum(
                 1
-                for call in walk_function_body_nodes(node)
+                for call in walk_function_body_nodes(node.body)
                 if isinstance(call, ast.Call)
                 and context.class_reference_resolver_for_source_path(
                     target.file_path
@@ -6349,9 +6418,7 @@ class RepeatedBuilderAuthorityMethodDeriver(ABC):
     @staticmethod
     def call_source_root_name(call: ast.Call) -> str | None:
         roots: set[str] = set()
-        for keyword in call.keywords:
-            if keyword.arg is None:
-                continue
+        for keyword in CallKeywords.of(call.keywords).named:
             roots.update(ROOT_NAME_PROJECTION.root_names(keyword.value))
         if len(roots) != 1:
             return None
@@ -6362,11 +6429,7 @@ class RepeatedBuilderAuthorityMethodDeriver(ABC):
         call: ast.Call,
         field_names: tuple[str, ...],
     ) -> dict[str, ast.expr] | None:
-        values_by_field = {
-            keyword.arg: keyword.value
-            for keyword in call.keywords
-            if keyword.arg is not None
-        }
+        values_by_field = dict(CallKeywords.of(call.keywords).by_name)
         if frozenset(values_by_field) != frozenset(field_names):
             return None
         return {field_name: values_by_field[field_name] for field_name in field_names}
@@ -6948,12 +7011,12 @@ class RepeatedBuilderAuthorityDerivation(
                 continue
             call_sites.extend(
                 RepeatedBuilderCallSite(call=node, participant=participant)
-                for node in walk_function_body_nodes(participant.node)
+                for node in walk_function_body_nodes(participant.node.body)
                 if isinstance(node, ast.Call)
                 and resolver.symbol_for_reference(node.func) == authority_symbol
                 and not node.args
                 and bool(node.keywords)
-                and all(keyword.arg is not None for keyword in node.keywords)
+                and not CallKeywords.of(node.keywords).splats
             )
         return tuple(call_sites)
 
@@ -6978,9 +7041,9 @@ class RepeatedBuilderAuthorityDerivation(
     ) -> bool:
         return bool(
             not call.args
-            and all(keyword.arg is not None for keyword in call.keywords)
+            and not CallKeywords.of(call.keywords).splats
             and len(call.keywords) == len(field_names)
-            and frozenset(keyword.arg for keyword in call.keywords)
+            and frozenset(CallKeywords.of(call.keywords).names)
             == frozenset(field_names)
         )
 
@@ -6999,8 +7062,7 @@ class RepeatedBuilderAuthorityDerivation(
         return (
             SourceSpanReplacement(
                 file_path=self.authority.file_path,
-                start_line=self.authority.target.line,
-                end_line=self.authority.target.end_line,
+                span=SourceLineSpan(self.authority.target.line, self.authority.target.end_line),
                 replacement_lines=SourceTargetEditor.source_lines(constructor_source),
                 rationale=(
                     "Insert the source-derived builder on its constructor authority."
@@ -7600,9 +7662,7 @@ class AutoRegisterMroOrderingDerivation:
                 target.node,
                 registry_key_name,
             )
-            if registry_key is None or (
-                isinstance(registry_key, ast.Constant) and registry_key.value is None
-            ):
+            if registry_key is None or CompactValueExpression.project(registry_key).value_is_none_literal:
                 continue
             if child_names_by_parent[class_name]:
                 return None
@@ -8567,8 +8627,7 @@ class DeriveEnumSubsetOperation(SourceDerivedAuthorityProjectionOperation):
         edits.append(
             SourceSpanReplacement(
                 file_path=derivation.projection_path,
-                start_line=statement.lineno,
-                end_line=statement.end_lineno or statement.lineno,
+                span=SourceLineSpan(statement.lineno, statement.end_lineno or statement.lineno),
                 replacement_lines=SourceTargetEditor.source_lines(
                     derivation.assignment_source()
                 ),
@@ -8834,7 +8893,7 @@ class FunctionReturnProjectionTarget(ResolvedFunctionProjectionTarget):
             return None
         matches = tuple(
             child
-            for child in walk_function_body_nodes(function.node)
+            for child in walk_function_body_nodes(function.node.body)
             if isinstance(child, ast.Return) and child.lineno == line
         )
         if len(matches) != 1:
@@ -9758,7 +9817,7 @@ class DataclassFieldNameCollectionProjectionTarget(ResolvedFunctionProjectionTar
                 node=function.node,
                 collection_node=collection,
             )
-            for statement in walk_function_body_nodes(function.node)
+            for statement in walk_function_body_nodes(function.node.body)
             if (pair := SingleAssignmentAndValueNameProjection(statement).pair)
             is not None
             if isinstance((collection := pair[1]), ast.Tuple | ast.List)
@@ -9864,7 +9923,7 @@ class DataclassesModuleReference:
         if module is None or source is None:
             return None
         imported_aliases = tuple(
-            alias.asname or alias.name
+            ImportBoundNameProjection(statement).alias_bound_name(alias)
             for statement in module.body
             if isinstance(statement, ast.Import)
             for alias in statement.names
@@ -10107,7 +10166,7 @@ class DataclassPayloadProjectionDerivation(
         )
         candidates = tuple(
             candidate
-            for node in walk_function_body_nodes(boundary.function.node)
+            for node in walk_function_body_nodes(boundary.function.node.body)
             if isinstance(node, ast.Return) and isinstance(node.value, ast.Dict)
             if (
                 candidate := cls.candidate_from_return(
@@ -10349,7 +10408,7 @@ class DataclassKeyValueSequenceProjectionDerivation(
         )
         candidates = tuple(
             candidate
-            for node in walk_function_body_nodes(boundary.function.node)
+            for node in walk_function_body_nodes(boundary.function.node.body)
             if isinstance(node, ast.Return)
             if (
                 candidate := cls.candidate_from_return(
@@ -10887,10 +10946,11 @@ class NominalConstructorCall:
         scope: ast.FunctionDef | ast.AsyncFunctionDef | None,
         call_node: ast.Call,
     ) -> NominalConstructorCall | None:
-        if call_node.args or any(keyword.arg is None for keyword in call_node.keywords):
+        keywords = CallKeywords.of(call_node.keywords)
+        if call_node.args or keywords.splats:
             return None
         keyword_arguments = tuple(call_node.keywords)
-        keyword_names = tuple(cast(str, keyword.arg) for keyword in keyword_arguments)
+        keyword_names = keywords.names
         if len(frozenset(keyword_names)) != len(keyword_names):
             return None
         if scope is not None:
@@ -11000,8 +11060,7 @@ class DataclassConstructorProjectionMethod:
             or len(body) != 1
             or not isinstance(body[0], ast.Return)
             or not isinstance(body[0].value, ast.Call)
-            or method_node.args.vararg is not None
-            or method_node.args.kwarg is not None
+            or variadic_parameters(method_node.args)
         ):
             return None
         positional_parameters = (
@@ -11120,9 +11179,9 @@ class DataclassConstructorProjectionDerivation(
         boundary.authority.require_transparent_direct_construction()
         candidates = tuple(
             candidate
-            for node in walk_function_body_nodes(boundary.function.node)
-            if isinstance(node, ast.Return) and node.value is not None
-            for call_node in ast.walk(node.value)
+            for node in walk_function_body_nodes(boundary.function.node.body)
+            if isinstance(node, ast.Return)
+            for call_node in StatementValue.of(node).walk()
             if isinstance(call_node, ast.Call)
             if (
                 candidate := cls.candidate_from_call(
@@ -11339,7 +11398,7 @@ class DataclassConstructorProjectionMappingRecipeBuilder(
         return any(
             field_names
             <= frozenset(
-                keyword.arg for keyword in call.keywords if keyword.arg is not None
+                CallKeywords.of(call.keywords).names
             )
             for call in ast.walk(function_return.return_node.value)
             if isinstance(call, ast.Call)
@@ -11918,8 +11977,7 @@ class DeriveClassFamilyCollectionOperation(SourceDerivedAuthorityProjectionOpera
         edits.append(
             SourceSpanReplacement(
                 file_path=derivation.projection_path,
-                start_line=statement.lineno,
-                end_line=statement.end_lineno or statement.lineno,
+                span=SourceLineSpan(statement.lineno, statement.end_lineno or statement.lineno),
                 replacement_lines=SourceTargetEditor.source_lines(
                     derivation.replacement_source()
                 ),

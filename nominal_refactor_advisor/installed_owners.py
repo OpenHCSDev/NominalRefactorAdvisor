@@ -46,13 +46,46 @@ from .declared_root import DeclaredRoot
 
 
 class RegistrationRole(StrEnum):
-    """How an owner registers the classes of its family."""
+    """How an owner registers the classes of its family, with how it is said."""
 
-    METACLASS = "metaclass"
+    receipt_text: str
+    finding_text: str
+
+    def __new__(cls, value: str, receipt_text: str, finding_text: str) -> RegistrationRole:
+        member = str.__new__(cls, value)
+        member._value_ = value
+        member.receipt_text = receipt_text
+        member.finding_text = finding_text
+        return member
+
+    METACLASS = (
+        "metaclass",
+        "is a metaclass that stores each class it creates in a mapping",
+        "stores each class it creates in a mapping",
+    )
     """Its `__new__` or `__init__` stores each class it creates."""
 
-    SUBCLASS_HOOK = "subclass_hook"
+    SUBCLASS_HOOK = (
+        "subclass_hook",
+        "stores each subclass in a mapping from `__init_subclass__`",
+        "stores each subclass in a mapping from `__init_subclass__`",
+    )
     """Its `__init_subclass__` stores each subclass."""
+
+    @classmethod
+    def played(
+        cls, stores_created_class: bool, stores_subclass: bool
+    ) -> tuple[RegistrationRole, ...]:
+        """The roles a class plays, from what its creation path stores."""
+
+        return tuple(
+            role
+            for role, stores in (
+                (cls.METACLASS, stores_created_class),
+                (cls.SUBCLASS_HOOK, stores_subclass),
+            )
+            if stores
+        )
 
 
 @dataclass(frozen=True)
@@ -106,17 +139,9 @@ class InstalledRegistrationOwner:
     def receipt(self) -> str:
         return (
             f"`{self.symbol}` ({self.distribution} {self.version}, RECORD sha256 "
-            f"{self.record_digest[:12]}) {self.role_text}, read from "
+            f"{self.record_digest[:12]}) {self.role.receipt_text}, read from "
             f"{self.file_path}:{self.line}"
         )
-
-    @property
-    def role_text(self) -> str:
-        match self.role:
-            case RegistrationRole.METACLASS:
-                return "is a metaclass that stores each class it creates in a mapping"
-            case RegistrationRole.SUBCLASS_HOOK:
-                return "stores each subclass in a mapping from `__init_subclass__`"
 
 
 @dataclass(frozen=True)
@@ -222,14 +247,9 @@ class InstalledDistributionOwners:
                 if not isinstance(node, ast.ClassDef):
                     continue
                 store = CreatedClassStore.of(node, module)
-                role = (
-                    RegistrationRole.SUBCLASS_HOOK
-                    if store.stores_subclass()
-                    else RegistrationRole.METACLASS
-                    if store.stores_created_class()
-                    else None
-                )
-                if role is not None:
+                for role in RegistrationRole.played(
+                    store.stores_created_class(), store.stores_subclass()
+                )[:1]:
                     yield InstalledRegistrationOwner(
                         name,
                         version,
