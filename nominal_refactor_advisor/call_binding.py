@@ -8,6 +8,7 @@ from abc import (
 from dataclasses import (
     dataclass,
 )
+from functools import cached_property
 from enum import StrEnum
 from typing import (
     Generic,
@@ -15,8 +16,6 @@ from typing import (
     TypeVar,
 )
 
-from .annotation_semantics import NOMINAL_ANNOTATION_SOURCE_AUTHORITY
-from .ast_field_decoders import declared_annotations
 from .lexical_bindings import (
     CompactParameterKind as CompactParameterKind,
     DefaultedParameterSource,
@@ -65,97 +64,167 @@ class CompactKeywordArgument(Generic[CallValueT], DataclassGraphValue):
 
 @dataclass(frozen=True)
 class CompactFunctionParameter(ABC):
-    """One declared parameter; its subtype says whether it declares a default."""
+    """One declared parameter.
+
+    Two axes refine it: whether it declares a default (Defaulted/Undefaulted) and
+    whether it declares an annotation (Annotated/Unannotated). Each concrete record
+    is one cell of that product, composed from one mixin per axis.
+    """
 
     name: str
     kind: CompactParameterKind
-    annotation_expression: str | None = None
 
     @staticmethod
     def from_source(source: FunctionParameterSource) -> CompactFunctionParameter:
         return source.answer(PARAMETER_RECORD)
 
-    @classmethod
-    def of_source(cls, source: FunctionParameterSource) -> Self:
-        """This record for a declared parameter, its annotation unparsed once."""
+    @staticmethod
+    def declared_by(
+        argument: ast.arg, kind: CompactParameterKind
+    ) -> UndefaultedFunctionParameter:
+        """The record `argument` declares, before any default is associated."""
 
-        return cls(
-            source.argument.arg,
-            source.kind,
-            next(
-                (
-                    ast.unparse(annotation)
-                    for annotation in declared_annotations(source.argument)
-                ),
-                None,
-            ),
-        )
+        match argument:
+            case ast.arg(annotation=ast.expr() as annotation):
+                return UndefaultedAnnotatedParameter(
+                    argument.arg, kind, ast.unparse(annotation)
+                )
+        return UndefaultedUnannotatedParameter(argument.arg, kind)
 
     def with_default_from(self, names: frozenset[str]) -> CompactFunctionParameter:
         """This parameter as declared with a default exactly when `names` holds it."""
 
-        record = (
-            DefaultedFunctionParameter
-            if self.name in names
-            else UndefaultedFunctionParameter
-        )
-        return record(self.name, self.kind, self.annotation_expression)
+        if self.name in names:
+            return self.defaulted()
+        return self.undefaulted()
 
-    @property
     @abstractmethod
-    def required(self) -> bool:
-        """Whether a call must supply this parameter."""
+    def defaulted(self) -> DefaultedFunctionParameter:
+        """This parameter, annotated as it is, declared with a default."""
+        raise NotImplementedError
+
+    @abstractmethod
+    def undefaulted(self) -> UndefaultedFunctionParameter:
+        """This parameter, annotated as it is, declared without a default."""
         raise NotImplementedError
 
     @property
-    def has_annotation(self) -> bool:
-        return self.annotation_expression is not None
+    @abstractmethod
+    def required_names(self) -> frozenset[str]:
+        """The names among this parameter's that a call must supply."""
+        raise NotImplementedError
 
     @property
-    def annotation_reference_parts(self) -> tuple[str, ...] | None:
-        return (
-            None
-            if self.annotation_expression is None
-            else NOMINAL_ANNOTATION_SOURCE_AUTHORITY.reference_parts_from_source(
-                self.annotation_expression
-            )
-        )
+    @abstractmethod
+    def plain_required_names(self) -> frozenset[str]:
+        """Required names whose removal erases no declaration-time semantics."""
+        raise NotImplementedError
 
     @property
-    def is_plain_required(self) -> bool:
-        """Whether removing this parameter erases no declaration-time semantics."""
-
-        return self.required and not self.has_annotation
+    @abstractmethod
+    def annotations_by_name(self) -> dict[str, str]:
+        """The annotation source this parameter declares, keyed by its name."""
+        raise NotImplementedError
 
 
 @dataclass(frozen=True)
-class DefaultedFunctionParameter(CompactFunctionParameter):
+class DefaultedFunctionParameter(CompactFunctionParameter, ABC):
     """A parameter a call may omit: its declared default supplies it."""
 
     @property
-    def required(self) -> bool:
-        return False
+    def required_names(self) -> frozenset[str]:
+        return frozenset()
 
 
 @dataclass(frozen=True)
-class UndefaultedFunctionParameter(CompactFunctionParameter):
+class UndefaultedFunctionParameter(CompactFunctionParameter, ABC):
     """A parameter without a default: a call supplies it unless it is variadic."""
 
     @property
-    def required(self) -> bool:
-        return not self.kind.variadic
+    def required_names(self) -> frozenset[str]:
+        if self.kind.variadic:
+            return frozenset()
+        return frozenset({self.name})
+
+
+@dataclass(frozen=True)
+class AnnotatedParameter(CompactFunctionParameter, ABC):
+    """A parameter that declares an annotation, kept as its unparsed source."""
+
+    annotation_expression: str
+
+    def defaulted(self) -> DefaultedFunctionParameter:
+        return DefaultedAnnotatedParameter(
+            self.name, self.kind, self.annotation_expression
+        )
+
+    def undefaulted(self) -> UndefaultedFunctionParameter:
+        return UndefaultedAnnotatedParameter(
+            self.name, self.kind, self.annotation_expression
+        )
+
+    @property
+    def plain_required_names(self) -> frozenset[str]:
+        return frozenset()
+
+    @property
+    def annotations_by_name(self) -> dict[str, str]:
+        return {self.name: self.annotation_expression}
+
+
+@dataclass(frozen=True)
+class UnannotatedParameter(CompactFunctionParameter, ABC):
+    """A parameter that declares no annotation."""
+
+    def defaulted(self) -> DefaultedFunctionParameter:
+        return DefaultedUnannotatedParameter(self.name, self.kind)
+
+    def undefaulted(self) -> UndefaultedFunctionParameter:
+        return UndefaultedUnannotatedParameter(self.name, self.kind)
+
+    @property
+    def plain_required_names(self) -> frozenset[str]:
+        return self.required_names
+
+    @property
+    def annotations_by_name(self) -> dict[str, str]:
+        return {}
+
+
+@dataclass(frozen=True)
+class DefaultedAnnotatedParameter(DefaultedFunctionParameter, AnnotatedParameter):
+    pass
+
+
+@dataclass(frozen=True)
+class DefaultedUnannotatedParameter(DefaultedFunctionParameter, UnannotatedParameter):
+    pass
+
+
+@dataclass(frozen=True)
+class UndefaultedAnnotatedParameter(UndefaultedFunctionParameter, AnnotatedParameter):
+    pass
+
+
+@dataclass(frozen=True)
+class UndefaultedUnannotatedParameter(
+    UndefaultedFunctionParameter, UnannotatedParameter
+):
+    pass
 
 
 class ParameterRecord(ParameterDefaultQuestion[CompactFunctionParameter]):
     """The binding record a declared parameter source projects to."""
 
     def defaulted(self, source: DefaultedParameterSource) -> CompactFunctionParameter:
-        return DefaultedFunctionParameter.of_source(source)
+        return CompactFunctionParameter.declared_by(
+            source.argument, source.kind
+        ).defaulted()
 
     def undefaulted(
         self, source: UndefaultedParameterSource
     ) -> CompactFunctionParameter:
-        return UndefaultedFunctionParameter.of_source(source)
+        return CompactFunctionParameter.declared_by(source.argument, source.kind)
 
 
 PARAMETER_RECORD = ParameterRecord()
@@ -237,6 +306,29 @@ class CompactFunctionSignature:
     """Python signature declaration which owns exact call binding semantics."""
 
     parameters: tuple[CompactFunctionParameter, ...]
+
+    @cached_property
+    def required_names(self) -> frozenset[str]:
+        """The parameter names every call must supply."""
+        return frozenset().union(
+            *(parameter.required_names for parameter in self.parameters)
+        )
+
+    @cached_property
+    def plain_required_names(self) -> frozenset[str]:
+        """Required parameters that carry no annotation either."""
+        return frozenset().union(
+            *(parameter.plain_required_names for parameter in self.parameters)
+        )
+
+    @cached_property
+    def annotations_by_name(self) -> dict[str, str]:
+        """The annotation source each annotated parameter declares."""
+        return {
+            name: annotation
+            for parameter in self.parameters
+            for name, annotation in parameter.annotations_by_name.items()
+        }
 
     def with_default_names(self, names: frozenset[str]) -> Self:
         """Project a complete default association while retaining parameter structure."""
@@ -331,10 +423,7 @@ class CompactFunctionSignature:
                 (argument.value, argument.name)
             )
 
-        if any(
-            parameter.required and parameter.name not in values_by_parameter
-            for parameter in self.parameters
-        ):
+        if self.required_names - values_by_parameter.keys():
             return ViolatedCompactCallBinding(
                 CompactCallBindingViolation.MISSING_REQUIRED_ARGUMENT
             )

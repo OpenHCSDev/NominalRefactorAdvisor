@@ -170,7 +170,9 @@ def test_compact_signature_consumes_the_shared_source_projection(
     assert parameter.name == selected.argument.arg
     assert parameter.kind is selected.kind
     assert isinstance(parameter, DefaultedFunctionParameter)
-    assert parameter.annotation_expression == ast.unparse(selected.argument.annotation)
+    assert compact.annotations_by_name == {
+        parameter.name: ast.unparse(selected.argument.annotation)
+    }
 
 
 def test_source_receipt_is_frozen_but_owns_original_syntax() -> None:

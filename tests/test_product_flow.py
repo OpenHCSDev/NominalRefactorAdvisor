@@ -7,6 +7,7 @@ import pickle
 
 import pytest
 
+from nominal_refactor_advisor.annotation_semantics import NOMINAL_ANNOTATION_SOURCE_AUTHORITY
 from nominal_refactor_advisor.ast_tools import ImportBoundNameProjection, ParsedModule
 from nominal_refactor_advisor.product_flow import (
     BareCallTargetReference,
@@ -255,14 +256,20 @@ def test_function_projection_retains_nominal_annotation_declarations() -> None:
         )
     )
     declaration = projection.function_declarations[0]
-    item, values = declaration.signature.parameters
+    annotations = declaration.signature.annotations_by_name
 
-    assert item.annotation_expression == "pkg.models.Item"
-    assert item.annotation_reference_parts == ("pkg", "models", "Item")
-    assert item.has_annotation
-    assert not item.is_plain_required
-    assert values.annotation_expression == "list[int]"
-    assert values.annotation_reference_parts is None
+    assert annotations == {"item": "pkg.models.Item", "values": "list[int]"}
+    assert NOMINAL_ANNOTATION_SOURCE_AUTHORITY.reference_parts_from_source(
+        annotations["item"]
+    ) == ("pkg", "models", "Item")
+    assert declaration.signature.required_names == {"item", "values"}
+    assert not declaration.signature.plain_required_names
+    assert (
+        NOMINAL_ANNOTATION_SOURCE_AUTHORITY.reference_parts_from_source(
+            annotations["values"]
+        )
+        is None
+    )
     assert declaration.return_annotation_expression == "'pkg.Result'"
     assert declaration.return_annotation_reference_parts == ("pkg", "Result")
 

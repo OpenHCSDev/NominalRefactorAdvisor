@@ -2248,27 +2248,25 @@ class Scope(ABC):
 
 @dataclass(frozen=True)
 class FunctionScope(Scope):
-    """A read inside a function, and the class that function is declared in."""
+    """A read inside a function: its parameters and locals declare bare names."""
 
     function: ast.FunctionDef | ast.AsyncFunctionDef
-    owner: ast.ClassDef | None
+
+    @staticmethod
+    def arguments_of(
+        function: ast.FunctionDef | ast.AsyncFunctionDef,
+    ) -> list[ast.arg]:
+        return [
+            *function.args.posonlyargs,
+            *function.args.args,
+            *function.args.kwonlyargs,
+        ]
 
     def name_type(
         self, types: DeclaredTypes, module: ParsedModule, node: ast.Name, depth: int
     ) -> DeclaredType:
         function = self.function
-        arguments = [
-            *function.args.posonlyargs,
-            *function.args.args,
-            *function.args.kwonlyargs,
-        ]
-        if (
-            self.owner is not None
-            and arguments
-            and arguments[0].arg == node.id
-            and "staticmethod" not in decorator_names(function)
-        ):
-            return Typed(module, ast.Name(self.owner.name, ast.Load()))
+        arguments = self.arguments_of(function)
         for argument in arguments:
             if argument.arg == node.id:
                 for annotation in declared_annotations(argument):
@@ -2315,6 +2313,21 @@ class FunctionScope(Scope):
         return UNKNOWN_TYPE
 
 
+@dataclass(frozen=True)
+class MethodScope(FunctionScope):
+    """A read inside a method bound to `owner`: its receiver is an `owner`."""
+
+    owner: ast.ClassDef
+    receiver: ast.arg
+
+    def name_type(
+        self, types: DeclaredTypes, module: ParsedModule, node: ast.Name, depth: int
+    ) -> DeclaredType:
+        if node.id == self.receiver.arg:
+            return Typed(module, ast.Name(self.owner.name, ast.Load()))
+        return super().name_type(types, module, node, depth)
+
+
 class ModuleScope(Scope):
     """A read outside every function: no parameter or local declares its names."""
 
@@ -2349,18 +2362,32 @@ class DeclaredTypes:
 
     @staticmethod
     def scopes(module: ParsedModule) -> dict[int, Scope]:
-        found: dict[int, Scope] = {}
-        owners = {
-            id(statement): node
-            for node in ast.walk(module.module)
-            if isinstance(node, ast.ClassDef)
-            for statement in node.body
+        functions = [
+            function
+            for function in ast.walk(module.module)
+            if isinstance(function, ast.FunctionDef | ast.AsyncFunctionDef)
+        ]
+        scope_by_function: dict[int, FunctionScope] = {
+            id(function): FunctionScope(function) for function in functions
         }
-        for function in ast.walk(module.module):
-            if isinstance(function, ast.FunctionDef | ast.AsyncFunctionDef):
-                scope = FunctionScope(function, owners.get(id(function)))
-                for node in scope_walk(function):
-                    found[id(node)] = scope
+        scope_by_function.update(
+            {
+                id(method): MethodScope(
+                    method, owner, FunctionScope.arguments_of(method)[0]
+                )
+                for owner in ast.walk(module.module)
+                if isinstance(owner, ast.ClassDef)
+                for method in owner.body
+                if isinstance(method, ast.FunctionDef | ast.AsyncFunctionDef)
+                and FunctionScope.arguments_of(method)
+                and "staticmethod" not in decorator_names(method)
+            }
+        )
+        found: dict[int, Scope] = {}
+        for function in functions:
+            scope = scope_by_function[id(function)]
+            for node in scope_walk(function):
+                found[id(node)] = scope
         return found
 
     def of(
