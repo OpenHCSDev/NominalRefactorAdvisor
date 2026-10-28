@@ -10,7 +10,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from enum import StrEnum
-from functools import cached_property, lru_cache
+from functools import cached_property
 from typing import TYPE_CHECKING, TypeAlias
 
 from .collection_algebra import sorted_tuple
@@ -366,13 +366,6 @@ def collect_structural_observations(
 
 def build_observation_graph(modules: list[ParsedModule]) -> ObservationGraph:
     """Build one observation graph from a list of parsed modules."""
-    return _build_observation_graph_cached(tuple(modules))
-
-
-@lru_cache(maxsize=None)
-def _build_observation_graph_cached(
-    modules: tuple[ParsedModule, ...],
-) -> ObservationGraph:
     observations: list[StructuralObservation] = []
     for module in modules:
         observations.extend(collect_structural_observations(module))

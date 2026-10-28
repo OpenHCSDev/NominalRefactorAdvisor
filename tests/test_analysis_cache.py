@@ -36,7 +36,6 @@ from nominal_refactor_advisor.analysis import (
     analyze_path,
     accumulate_compact_global_projections_for_roots,
     default_detector_types_for_analysis,
-    release_module_analysis_memory,
 )
 from nominal_refactor_advisor.analysis_cache import (
     AnalysisCacheIdentity,
@@ -369,17 +368,6 @@ def test_cache_retention_throttles_repeated_tree_walks(tmp_path: Path) -> None:
 
     assert report.skipped
     assert late_root.is_dir()
-
-
-def test_module_analysis_memory_release_preserves_compiled_native_queries() -> None:
-    query_source = "(class_definition) @class"
-    syntax_index = NativePythonSyntaxIndex.from_source("class Role: pass\n")
-    expected_query = native_syntax_module._python_query(query_source)
-    assert syntax_index.captures(query_source)["class"]
-
-    release_module_analysis_memory()
-
-    assert native_syntax_module._python_query(query_source) is expected_query
 
 
 def test_native_syntax_index_shares_frozen_captures_between_families() -> None:
@@ -2128,7 +2116,6 @@ def test_uncertified_family_cache_payload_is_invalidated(
             protocol=pickle.HIGHEST_PROTOCOL,
         )
     )
-    release_module_analysis_memory()
 
     reloaded_module = parse_python_modules(package_root, cache_dir=cache_dir)[0]
     actual_items = collect_family_items(reloaded_module, BuilderCallShapeFamily)
@@ -2217,7 +2204,6 @@ def test_generated_boundary_global_projection_reuses_compact_module_cache(
         first_module,
         runtime_detectors.GeneratedBoundarySemanticConstantSiteFamily,
     )
-    release_module_analysis_memory()
 
     def unexpected_collection(
         cls: type,
@@ -2267,7 +2253,6 @@ def test_warm_compact_projection_stream_skips_ast_deserialization(
         cache_dir=cache_dir,
     )
     assert first.projection_count == 1
-    release_module_analysis_memory()
 
     def unexpected_ast_load(self, paths):
         del self, paths
@@ -5021,9 +5006,7 @@ def test_bounded_multi_family_joins_reuse_the_single_class_anchor(
     )
 
     calls = 0
-    collect_cycles_calls: list[bool] = []
     original_builder = base_detectors.build_compact_class_family_index
-    original_release = analysis_module.release_module_analysis_memory
 
     def counting_builder(projections):
         nonlocal calls
@@ -5032,10 +5015,6 @@ def test_bounded_multi_family_joins_reuse_the_single_class_anchor(
 
     def forbidden_builder(_projections):
         raise AssertionError("multi-family detector rebuilt the compact class graph")
-
-    def observing_release(*, collect_cycles=True):
-        collect_cycles_calls.append(collect_cycles)
-        return original_release(collect_cycles=collect_cycles)
 
     monkeypatch.setattr(
         base_detectors,
@@ -5052,17 +5031,11 @@ def test_bounded_multi_family_joins_reuse_the_single_class_anchor(
             "build_compact_class_family_index",
             forbidden_builder,
         )
-    monkeypatch.setattr(
-        analysis_module,
-        "release_module_analysis_memory",
-        observing_release,
-    )
 
     findings = manifest.findings_by_detector(DetectorConfig())
 
     assert calls == 1
     assert set(findings) == set(detector_types)
-    assert collect_cycles_calls[-1] is True
 
 
 def test_compact_repeated_keyed_family_preserves_grouping_semantics(
@@ -5582,7 +5555,6 @@ def test_compact_class_method_projection_reuses_exact_tiny_roles_from_warm_cache
     assert cold_methods[0].promotion_hazards == ()
     assert tuple((cache_dir / "collected-family").glob("*.pickle"))
 
-    release_module_analysis_memory()
     warm_module = parse_python_modules(package_root, cache_dir=cache_dir)[0]
     cached = warm_module.collected_family_cache.load_items(family)
     warm = collect_family_items(warm_module, family)

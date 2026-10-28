@@ -491,68 +491,6 @@ def default_detector_types_for_analysis() -> tuple[type[IssueDetector], ...]:
     return tuple(type(detector) for detector in default_detectors())
 
 
-_MODULE_ANALYSIS_SCANNED_CLASS_IDS: set[int] = set()
-_MODULE_ANALYSIS_CLASS_CACHE_CALLABLES: dict[int, object] = {}
-
-
-def release_module_analysis_memory(*, collect_cycles: bool = True) -> int:
-    """Clear AST-bound scan caches after a module-isolated analysis shard."""
-
-    cleared_cache_count = 0
-    seen_cache_ids: set[int] = set()
-
-    def clear_cached_callable(candidate: object) -> None:
-        nonlocal cleared_cache_count
-        candidate_id = id(candidate)
-        if candidate_id in seen_cache_ids:
-            return
-        seen_cache_ids.add(candidate_id)
-        cache_clear = getattr(candidate, "cache_clear", None)
-        cache_info = getattr(candidate, "cache_info", None)
-        if cache_clear is None or cache_info is None:
-            return
-        try:
-            cache_state = cache_info()
-        except (AttributeError, TypeError):
-            return
-        if cache_state.maxsize == 1 or cache_state.currsize == 0:
-            return
-        cache_clear()
-        cleared_cache_count += 1
-
-    for cached_callable in _MODULE_ANALYSIS_CLASS_CACHE_CALLABLES.values():
-        clear_cached_callable(cached_callable)
-
-    for module_name, module in tuple(sys.modules.items()):
-        if not module_name.startswith("nominal_refactor_advisor") or module is None:
-            continue
-        for candidate in vars(module).values():
-            clear_cached_callable(candidate)
-            if not isinstance(candidate, type):
-                continue
-            candidate_id = id(candidate)
-            if candidate_id in _MODULE_ANALYSIS_SCANNED_CLASS_IDS:
-                continue
-            _MODULE_ANALYSIS_SCANNED_CLASS_IDS.add(candidate_id)
-            for class_attribute in vars(candidate).values():
-                cached_callable = (
-                    class_attribute.__func__
-                    if isinstance(class_attribute, (classmethod, staticmethod))
-                    else class_attribute
-                )
-                if (
-                    getattr(cached_callable, "cache_clear", None) is not None
-                    and getattr(cached_callable, "cache_info", None) is not None
-                ):
-                    _MODULE_ANALYSIS_CLASS_CACHE_CALLABLES[id(cached_callable)] = (
-                        cached_callable
-                    )
-                clear_cached_callable(cached_callable)
-    if collect_cycles:
-        gc.collect()
-    return cleared_cache_count
-
-
 @dataclass(frozen=True)
 class DetectorTypePartition:
     """Declaration tuple with cache-granularity projections owned by the enum."""
@@ -988,7 +926,6 @@ def accumulate_compact_global_projections_for_roots(
                         tuple(collect_family_items(module, family)),
                     )
                 del module
-            release_module_analysis_memory(collect_cycles=False)
     gc.collect()
     return accumulator
 
@@ -1292,7 +1229,6 @@ def build_compact_projection_shard(
         and not request.family_demands
         and source.bundle_is_complete(request.bundle_families)
     )
-    release_module_analysis_memory(collect_cycles=False)
     return CompactProjectionBuildResult(
         path=source.path,
         projection_batches=(
@@ -1638,7 +1574,6 @@ class BoundedCompactProjectionManifest:
             if CompactGlobalProjectionAccumulator._retains_ast(projection):
                 raise TypeError(f"{family.__name__} repaired projection retains an AST")
         del module
-        release_module_analysis_memory(collect_cycles=False)
         return repaired
 
     @suspend_cyclic_gc()
@@ -1771,10 +1706,8 @@ class BoundedCompactProjectionManifest:
                 remaining_groups.remove(families)
                 del projections_by_family
                 del projections
-                release_module_analysis_memory(collect_cycles=False)
             del anchor_projections
             shared_contexts.clear()
-            release_module_analysis_memory(collect_cycles=True)
 
         for families in detector_types_by_families:
             if families not in remaining_groups:
@@ -1787,7 +1720,6 @@ class BoundedCompactProjectionManifest:
                 projections_by_family,
             )
             del projections_by_family
-            release_module_analysis_memory(collect_cycles=False)
         gc.collect()
         return findings
 
@@ -2087,7 +2019,6 @@ def analyze_compact_roots_with_cache(
                 class_demand,
                 header_core_only=True,
             )
-        release_module_analysis_memory(collect_cycles=False)
     projection_manifest.family_demands = report_family_demands
     projection_manifest.report_scope = report_scope
     local_findings: list[RefactorFinding] = []
@@ -3230,9 +3161,6 @@ class IncrementalAnalysisCacheResolver:
         try:
             return self._result_without_cyclic_gc()
         finally:
-            # Detector caches may retain repository AST projections after their
-            # findings have been materialized. They are not part of the result.
-            release_module_analysis_memory(collect_cycles=False)
             if cyclic_gc_was_enabled:
                 gc.enable()
                 gc.collect()

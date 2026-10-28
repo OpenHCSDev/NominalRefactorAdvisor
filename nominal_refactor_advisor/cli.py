@@ -46,7 +46,6 @@ from .analysis import (
     default_detector_types_for_analysis,
     plan_path,  # noqa: F401 - re-exported by nominal_refactor_advisor.__init__
     plan_paths,  # noqa: F401 - re-exported by nominal_refactor_advisor.__init__
-    release_module_analysis_memory,
 )
 from .analysis_cache import (
     AnalysisCacheIdentity,
@@ -3970,7 +3969,6 @@ def _main_without_deadline(invocation: CliArguments) -> int:
                     )
                     findings.extend(module_result.findings)
                     module_cache_statuses.append(module_result.cache_status)
-                release_module_analysis_memory()
                 analysis_elapsed += perf_counter() - started
                 del local_modules
             modules = []

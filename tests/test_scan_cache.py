@@ -11,7 +11,6 @@ import weakref
 
 import pytest
 
-from nominal_refactor_advisor.analysis import release_module_analysis_memory
 from nominal_refactor_advisor.analysis_cache import (
     AnalysisEngineSignature,
     detector_module_source_hash,
@@ -75,7 +74,6 @@ def test_module_cleanup_keeps_declarations_but_releases_ast():
         original = BuilderCallShapeFamily.implementation_identity()
         tree = ast.parse("def action(): return 1")
         tree_ref = weakref.ref(tree)
-        release_module_analysis_memory()
         assert BuilderCallShapeFamily.implementation_identity() is original
         del tree
         gc.collect()
@@ -141,7 +139,6 @@ def test_engine_identity_reused_per_owner_and_refreshed_between_scans(
 
     with ScanCache.scope():
         original = Engine.current()
-        release_module_analysis_memory()
         assert Engine.current() is original
         assert type(OtherEngine.current()) is OtherEngine
     stat = path.stat()

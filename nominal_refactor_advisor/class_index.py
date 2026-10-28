@@ -8158,8 +8158,10 @@ def _single_assignment_target_name(node: ast.Assign | ast.AnnAssign) -> str | No
     return None
 
 
-def build_class_family_index(modules: list[ParsedModule]) -> ClassFamilyIndex:
-    return _build_class_family_index_cached(tuple(modules))
+def build_class_family_index(modules: Sequence[ParsedModule]) -> ClassFamilyIndex:
+    """Build one class-family index; the caller that owns the modules holds it."""
+
+    return ClassFamilyIndexBuilder(tuple(modules)).build()
 
 
 def overlay_class_family_index(
@@ -8174,13 +8176,6 @@ def overlay_class_family_index(
         changed_modules,
         base_records=unchanged_records,
     ).build()
-
-
-@lru_cache(maxsize=None)
-def _build_class_family_index_cached(
-    modules: tuple[ParsedModule, ...],
-) -> ClassFamilyIndex:
-    return ClassFamilyIndexBuilder(modules).build()
 
 
 @dataclass(frozen=True)
