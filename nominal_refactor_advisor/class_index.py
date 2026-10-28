@@ -16,6 +16,7 @@ import re
 from abc import ABC, abstractmethod
 from collections import defaultdict, deque
 from collections.abc import (
+    Collection,
     Hashable,
     Mapping,
     Iterator,
@@ -951,15 +952,90 @@ class CompactUnresolvedPublicExportContract(CompactModulePublicExportContract):
         return False
 
 
+class CompactModuleStarImportOrigin(ABC):
+    """One module-scope star import; its subtype says whether its module resolved."""
+
+    @staticmethod
+    def resolved_as(module_name: str | None) -> CompactModuleStarImportOrigin:
+        """The import resolver's answer, read once, picks the origin kind."""
+
+        if module_name is None:
+            return UnresolvedStarImportOrigin()
+        return ResolvedStarImportOrigin(module_name)
+
+    @abstractmethod
+    def exposure_in(
+        self, authority: RepositoryPublicExposureAuthority, binding_name: str
+    ) -> CompactPublicNameExposure:
+        raise NotImplementedError
+
+    @abstractmethod
+    def settled_binding_in(
+        self, authority: CompactRepositoryPublicExposureIndex, name: str
+    ) -> tuple[str | None, ...]:
+        """() when this origin leaves the name alone; else the one settled binding."""
+        raise NotImplementedError
+
+    @abstractmethod
+    def within(self, module_names: Collection[str]) -> bool:
+        raise NotImplementedError
+
+    @abstractmethod
+    def leaves_open(self, consumer: CompactModuleClassHeader, name: str) -> bool:
+        """An unknown origin in a consumer that does not close the name over."""
+        raise NotImplementedError
+
+
 @dataclass(frozen=True)
-class CompactModuleStarImportOrigin:
-    """One module-scope star import and its optional resolved module origin."""
+class ResolvedStarImportOrigin(CompactModuleStarImportOrigin):
+    module_name: str
 
-    module_name: str | None
+    def exposure_in(
+        self, authority: RepositoryPublicExposureAuthority, binding_name: str
+    ) -> CompactPublicNameExposure:
+        return authority.exposure_for(self.module_name, binding_name)
 
-    @property
-    def is_resolved(self) -> bool:
-        return self.module_name is not None
+    def settled_binding_in(
+        self, authority: CompactRepositoryPublicExposureIndex, name: str
+    ) -> tuple[str | None, ...]:
+        exposure = self.exposure_in(authority, name)
+        if exposure.proves_public_exposure:
+            origin_projection = authority.projections_by_module_name[self.module_name]
+            return (
+                dict(origin_projection.import_aliases).get(
+                    name, f"{self.module_name}.{name}"
+                ),
+            )
+        if exposure.introduces_uncertainty:
+            return (None,)
+        return ()
+
+    def within(self, module_names: Collection[str]) -> bool:
+        return self.module_name in module_names
+
+    def leaves_open(self, consumer: CompactModuleClassHeader, name: str) -> bool:
+        return False
+
+
+@dataclass(frozen=True)
+class UnresolvedStarImportOrigin(CompactModuleStarImportOrigin):
+    """A star import whose module the repository cannot name: it decides nothing."""
+
+    def exposure_in(
+        self, authority: RepositoryPublicExposureAuthority, binding_name: str
+    ) -> CompactPublicNameExposure:
+        return CompactPublicNameExposure.UNRESOLVED
+
+    def settled_binding_in(
+        self, authority: CompactRepositoryPublicExposureIndex, name: str
+    ) -> tuple[str | None, ...]:
+        return (None,)
+
+    def within(self, module_names: Collection[str]) -> bool:
+        return False
+
+    def leaves_open(self, consumer: CompactModuleClassHeader, name: str) -> bool:
+        return consumer.public_export_contract.exposure_for(name).blocks_closed_boundary
 
 
 class RepositoryPublicExposureAuthority(ABC):
@@ -988,11 +1064,7 @@ class RepositoryPublicExposureAuthority(ABC):
         """Prove every star-import origin excludes the queried binding."""
 
         return self.contains_module(module_name) and all(
-            origin.module_name is not None
-            and not self.exposure_for(
-                origin.module_name,
-                binding_name,
-            ).blocks_closed_boundary
+            not origin.exposure_in(self, binding_name).blocks_closed_boundary
             for origin in self.star_import_origins_for(module_name)
         )
 
@@ -1056,16 +1128,8 @@ class CompactRepositoryPublicExposureIndex(RepositoryPublicExposureAuthority):
         if not self.contains_module(module_name):
             return None
         for origin in reversed(self.star_import_origins_for(module_name)):
-            if origin.module_name is None:
-                return None
-            exposure = self.exposure_for(origin.module_name, name)
-            if exposure.proves_public_exposure:
-                origin_projection = self.projections_by_module_name[origin.module_name]
-                return dict(origin_projection.import_aliases).get(
-                    name, f"{origin.module_name}.{name}"
-                )
-            if exposure.introduces_uncertainty:
-                return None
+            for settled in origin.settled_binding_in(self, name):
+                return settled
         return unshadowed
 
     @cached_property
@@ -1123,10 +1187,7 @@ class CompactRepositoryPublicExposureIndex(RepositoryPublicExposureAuthority):
             symbol = f"{current_module}.{current_name}"
             pending.extend(self.named_reexports_by_target_symbol.get(symbol, ()))
             if any(
-                not origin.is_resolved
-                and consumer.public_export_contract.exposure_for(
-                    current_name
-                ).blocks_closed_boundary
+                origin.leaves_open(consumer, current_name)
                 for consumer in self.module_projections
                 for origin in consumer.star_import_origins
             ):
@@ -4283,12 +4344,10 @@ def module_star_import_origins(
         def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
             if any(alias.name == "*" for alias in node.names):
                 origins.append(
-                    CompactModuleStarImportOrigin(
-                        (
-                            parsed_module.module_path_identity.resolve_import_from_module(
-                                imported_module=node.module,
-                                level=node.level,
-                            )
+                    CompactModuleStarImportOrigin.resolved_as(
+                        parsed_module.module_path_identity.resolve_import_from_module(
+                            imported_module=node.module,
+                            level=node.level,
                         )
                     )
                 )

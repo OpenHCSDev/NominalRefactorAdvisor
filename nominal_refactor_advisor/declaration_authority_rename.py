@@ -493,10 +493,10 @@ class DeclarationAuthorityModuleRenameProof:
         repository_bindings: RepositoryModuleBindingProof,
     ) -> None:
         for origin in module_star_import_origins(module):
-            if origin.module_name not in binding_closure.renamed_module_names:
+            if not origin.within(binding_closure.renamed_module_names):
                 continue
             exposures = tuple(
-                repository_bindings.exposure_for(origin.module_name, name)
+                origin.exposure_in(repository_bindings, name)
                 for name in (target.name, new_name)
             )
             if any(exposure.introduces_uncertainty for exposure in exposures):
