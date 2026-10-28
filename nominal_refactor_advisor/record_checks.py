@@ -6,6 +6,7 @@ import ast
 from dataclasses import dataclass
 
 from .annotation_semantics import NOMINAL_ANNOTATION_SOURCE_AUTHORITY
+from .ast_field_decoders import declared_annotations
 from .ast_tools import BuiltinCallName, ClassFunctionStackNodeVisitor, ParsedModule
 from .class_index import (
     CompactClassFamilyIndex,
@@ -64,12 +65,13 @@ class DeclaredAttributeCheckCollector(ClassFunctionStackNodeVisitor):
         parameters = (*node.args.posonlyargs, *node.args.args, *node.args.kwonlyargs)
         subjects = {}
         for parameter in parameters:
-            if parameter.arg not in assigned and parameter.annotation is not None:
-                parts = NOMINAL_ANNOTATION_SOURCE_AUTHORITY.reference_parts_or_none(
-                    parameter.annotation
-                )
-                if parts is not None:
-                    subjects[parameter.arg] = parts
+            if parameter.arg not in assigned:
+                for declared_annotation in declared_annotations(parameter):
+                    parts = NOMINAL_ANNOTATION_SOURCE_AUTHORITY.reference_parts_or_none(
+                        declared_annotation
+                    )
+                    if parts is not None:
+                        subjects[parameter.arg] = parts
         if (
             self.class_stack
             and not self.function_stack

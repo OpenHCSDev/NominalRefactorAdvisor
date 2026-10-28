@@ -23,6 +23,10 @@ from ..codemod import (
     RefactorRecipeOperation,
 )
 from ..codemod_legacy_path_recipe import LegacyPathErasureFindingRecipeSynthesizer
+from ..codemod_optional_ast_field import (
+    OptionalAstFieldDecoderFindingRecipeSynthesizer,
+    RouteOptionalAstFieldProbesOperation,
+)
 from ..models import (
     DispatchCountMetrics,
     ForwardingFacadeMetrics,
@@ -395,7 +399,9 @@ class ExactKeySetDetector(JoinedRestatedFactDetector[DeclaredRecords]):
         return {} if not declared else {"authority_evidence": declared[0]}
 
 
-class ForeignAbsenceProbeDetector(SingleFamilyRestatedFactDetector):
+class ForeignAbsenceProbeDetector(
+    SingleFamilyRestatedFactDetector, OptionalAstFieldDecoderFindingRecipeSynthesizer
+):
     """`other.attr is None` or `is not None` on an object that is not the method's own."""
 
     module_projection_family = ForeignAbsenceSiteFamily
@@ -403,6 +409,7 @@ class ForeignAbsenceProbeDetector(SingleFamilyRestatedFactDetector):
         fact="Each probe restates a state of the other object's type, a second copy of that type's state that the type does not declare.",
         owner="The owner is the other object's type: its states as subclasses, or a null member.",
         factoring="Give the type its states as subclasses (for example PausedGoal and ActiveGoal) or a null member, and let the consumer call a method instead of probing the attribute.",
+        operations=(RouteOptionalAstFieldProbesOperation,),
     )
     finding_spec = restated.spec(
         PatternId.FOREIGN_ABSENCE_PROBE,

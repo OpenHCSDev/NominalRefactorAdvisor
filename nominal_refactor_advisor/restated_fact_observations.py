@@ -17,6 +17,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
 
+from .ast_field_decoders import ParameterAnnotations
 from .lexical_bindings import ImportAlias, ImportBoundNameProjection
 from .ast_projection import AbsentStatementValue, CallKeywords, StatementValue
 from .ast_tools import BuiltinCallName, ParsedModule
@@ -533,13 +534,16 @@ class ForwardingFacadeSiteFamily(RestatingSiteFamily):
                 held[statement.target.id] = cls.annotated_class(statement.annotation)
             if isinstance(statement, ast.FunctionDef) and statement.name == "__init__":
                 annotations = {
-                    argument.arg: cls.annotated_class(argument.annotation)
-                    for argument in (
-                        *statement.args.posonlyargs,
-                        *statement.args.args,
-                        *statement.args.kwonlyargs,
+                    argument.arg: cls.annotated_class(
+                        argument.annotation
                     )
-                    if argument.annotation is not None
+                    for argument in ParameterAnnotations.of(
+                        (
+                            *statement.args.posonlyargs,
+                            *statement.args.args,
+                            *statement.args.kwonlyargs,
+                        )
+                    ).annotated
                 }
                 for assigned in statement.body:
                     match assigned:

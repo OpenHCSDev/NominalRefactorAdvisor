@@ -31,6 +31,7 @@ from typing import ClassVar
 
 from metaclass_registry import AutoRegisterMeta
 
+from .ast_field_decoders import declared_annotations
 from .value_expression import CompactValueExpression
 from .ast_projection import StatementValue
 from .lexical_bindings import ImportBoundNameProjection
@@ -2427,11 +2428,11 @@ def literal_value(expression: ast.expr) -> object:
 
 def annotations_of(node: ast.AST) -> tuple[ast.expr, ...]:
     if isinstance(node, ast.arg):
-        return () if node.annotation is None else (node.annotation,)
+        return declared_annotations(node)
     if isinstance(node, ast.AnnAssign):
         return (node.annotation,)
     if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
-        return () if node.returns is None else (node.returns,)
+        return declared_annotations(node)
     return ()
 
 

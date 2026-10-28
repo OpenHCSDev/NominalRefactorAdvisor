@@ -16,9 +16,11 @@ from .class_index import (
     ModuleNominalBindingSnapshotPolicy,
 )
 from .codemod_foreign_adapter_source import AdapterPropertyBodies
-from .codemod_foreign_family_source import ForeignFamilyReference, RewrittenLineFit
+from .codemod_foreign_family_source import (
+    ForeignFamilyReference,
+    SourceRewriteAuthority,
+)
 from .codemod_source_edits import (
-    SourceTextGeometry,
     SourceTextSpan,
     SourceTextSpanReplacement,
 )
@@ -227,22 +229,15 @@ class StaticProjectionSites:
 
 
 @dataclass(frozen=True)
-class StaticProjectionAuthority:
+class StaticProjectionAuthority(SourceRewriteAuthority):
     """Every static projection call of one module, as source replacements."""
 
-    parsed_module: ParsedModule
-    geometry: SourceTextGeometry
-    line_length: int
     projection: StaticProjection
     family: ForeignFamilyReference
 
     @cached_property
     def found(self) -> StaticProjectionSites:
         return StaticProjectionSites(self.parsed_module, self.projection)
-
-    @cached_property
-    def fit(self) -> RewrittenLineFit:
-        return RewrittenLineFit(self.geometry, self.line_length)
 
     @cached_property
     def outermost(self) -> tuple[StaticProjectionSite, ...]:

@@ -40,6 +40,7 @@ from typing import (
 
 from metaclass_registry import AutoRegisterMeta
 
+from ..ast_field_decoders import ParameterAnnotations
 from ..ast_projection import ExpressionReference
 from ..constructor_algebra import (
     ConstructorConstant,
@@ -5850,12 +5851,14 @@ class SupportProjectionAuthority:
     ) -> frozenset[str]:
         return frozenset(
             parameter.arg
-            for parameter in (
-                *node.args.posonlyargs,
-                *node.args.args,
-                *node.args.kwonlyargs,
-            )
-            if parameter.arg not in {"self", "cls"} and parameter.annotation is not None
+            for parameter in ParameterAnnotations.of(
+                (
+                    *node.args.posonlyargs,
+                    *node.args.args,
+                    *node.args.kwonlyargs,
+                )
+            ).annotated
+            if parameter.arg not in {"self", "cls"}
         )
 
     def shared_reversed_token_suffix(

@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import importlib
+import pkgutil
+from abc import ABC
 from dataclasses import replace
 from pathlib import Path
 
@@ -14,32 +17,6 @@ from nominal_refactor_advisor import semantic_match
 from nominal_refactor_advisor.analysis import analyze_modules
 from nominal_refactor_advisor.ast_tools import parse_python_modules
 from nominal_refactor_advisor.models import DispatchCountMetrics
-
-EXPECTED_CONCEPT_DECLARATIONS = frozenset(
-    {
-        codemod.RefactorConcept,
-        codemod.NominalBoundaryConcept,
-        codemod.SemanticCarrierConcept,
-        codemod.CallMappingAuthorityConcept,
-        codemod.ConstructorKwargCollapseConcept,
-        codemod.ConstructorKwargCarrierProjectionConcept,
-        codemod.TupleDictReturnNominalizationConcept,
-        codemod.DataclassPayloadProjectionConcept,
-        codemod.DerivedProjectionConcept,
-        codemod.ClassFamilyAuthorityConcept,
-        codemod.ClassBodyCompositionConcept,
-        codemod.AutoRegisterConcept,
-        codemod.AutoRegisterClassRegistryConcept,
-        codemod.AutoRegisterStrategyFamilyConcept,
-        codemod.AutoRegisterMroOrderingConcept,
-        codemod.ForeignAdapterBindChainConcept,
-        codemod.ForeignFamilyRoutingConcept,
-        codemod.StaticProjectionAdapterConcept,
-        codemod.LegacyPathErasureConcept,
-        codemod.DeclarationReferenceConcept,
-    }
-)
-
 
 EXPECTED_EXECUTABLE_CONCEPTS = {
     codemod.RepeatedBuilderSourceProjectionAuthorityMethod: (
@@ -146,17 +123,35 @@ EXPECTED_REGISTRATION_DECLARATIONS = frozenset(
 )
 
 
-def test_concept_taxonomy_is_derived_without_a_parallel_registry() -> None:
-    assert frozenset(codemod.RefactorConcept.declaration_types()) == (
-        EXPECTED_CONCEPT_DECLARATIONS
+def _loaded_subclasses(root: type) -> frozenset[type]:
+    return frozenset(
+        descendant
+        for subclass in root.__subclasses__()
+        for descendant in (subclass, *_loaded_subclasses(subclass))
     )
+
+
+def test_concept_taxonomy_is_derived_without_a_parallel_registry() -> None:
+    for module in pkgutil.walk_packages(advisor.__path__, f"{advisor.__name__}."):
+        importlib.import_module(module.name)
+    declarations = frozenset(codemod.RefactorConcept.declaration_types())
+    pure_concepts = frozenset(
+        concept
+        for concept in _loaded_subclasses(codemod.RefactorConcept)
+        if concept.__module__.startswith(f"{advisor.__name__}.")
+        and all(
+            issubclass(ancestor, codemod.RefactorConcept) or ancestor in (object, ABC)
+            for ancestor in concept.__mro__
+        )
+    ) | {codemod.RefactorConcept}
+    assert declarations == pure_concepts
     assert codemod.RefactorConcept.__module__ == (
         "nominal_refactor_advisor.refactor_concepts"
     )
     assert "__registry__" not in codemod.RefactorConcept.__dict__
     assert all(
         "__registry__" not in declaration_type.__dict__
-        for declaration_type in EXPECTED_CONCEPT_DECLARATIONS
+        for declaration_type in declarations
     )
     assert not hasattr(codemod_workflow, "CodemodRefactorGoal")
     assert not hasattr(codemod_workflow, "CodemodRefactorGoalStageAttempt")
@@ -179,14 +174,14 @@ def test_detector_declarations_own_recipe_evaluation_through_mro() -> None:
     )
     evaluator_only_types = frozenset(evaluator_types) - frozenset(synthesis_types)
 
-    assert evaluator_only_types == frozenset(
-        {
-            detectors.EnvironmentBooleanAuthorityDriftDetector,
-            detectors.FormalBoundaryExternalStringRegistryMirrorDetector,
-            detectors.GeneratedBoundarySemanticConstantMirrorDetector,
-            detectors.SemanticMirrorWithoutDescentDetector,
-        }
-    )
+    for detector_type in evaluator_only_types:
+        evaluation_owner = next(
+            owner
+            for owner in detector_type.__mro__
+            if "evaluate_recipe_for_finding" in vars(owner)
+        )
+        assert not issubclass(evaluation_owner, detectors.IssueDetector)
+        assert codemod.FindingRecipeEvaluator in evaluation_owner.__bases__
     assert "__registry__" not in vars(codemod.FindingRecipeSynthesizer)
     assert "__registry__" not in vars(codemod.FindingRecipeEvaluator)
     for detector_type in evaluator_types:

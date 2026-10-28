@@ -43,6 +43,7 @@ from .annotation_semantics import (
     CLASSVAR_ANNOTATION_AUTHORITY,
     NOMINAL_ANNOTATION_SOURCE_AUTHORITY,
 )
+from .ast_field_decoders import ParameterAnnotations
 from .ast_projection import ExpressionReference
 from .ast_projection import AbsentStatementValue, CallKeywords, StatementValue
 from .observation_graph import ObservationGraph, collect_structural_observations
@@ -3829,12 +3830,14 @@ class FunctionNominalParameterBindingAuthority:
         rebound = LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(self.function.body)
         return {
             parameter.arg: parameter.annotation
-            for parameter in (
-                *self.function.args.posonlyargs,
-                *self.function.args.args,
-                *self.function.args.kwonlyargs,
-            )
-            if parameter.arg not in rebound and parameter.annotation is not None
+            for parameter in ParameterAnnotations.of(
+                (
+                    *self.function.args.posonlyargs,
+                    *self.function.args.args,
+                    *self.function.args.kwonlyargs,
+                )
+            ).annotated
+            if parameter.arg not in rebound
         }
 
     @cached_property

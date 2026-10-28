@@ -28,6 +28,10 @@ from typing import ClassVar, Generic, Self, TypeAlias, TypeVar, cast
 
 from metaclass_registry import AutoRegisterMeta
 
+from .ast_field_decoders import (
+    declared_annotations,
+    variadic_parameters,
+)
 from .value_expression import CompactValueExpression
 from .annotation_semantics import NOMINAL_ANNOTATION_SOURCE_AUTHORITY
 from .ast_projection import ExpressionReference
@@ -1491,8 +1495,7 @@ class _ClosedCarrierCollapseSourceRewrite:
                 *node.args.posonlyargs,
                 *node.args.args,
                 *node.args.kwonlyargs,
-                *((node.args.vararg,) if node.args.vararg is not None else ()),
-                *((node.args.kwarg,) if node.args.kwarg is not None else ()),
+                *variadic_parameters(node.args),
             )
             if argument.arg not in mapped_parameter_names
         }
@@ -5338,7 +5341,7 @@ class RepeatedBuilderCallSite:
             *self.participant.node.args.args,
             *self.participant.node.args.kwonlyargs,
         ):
-            if parameter.arg == root_name and parameter.annotation is not None:
+            if parameter.arg == root_name and declared_annotations(parameter):
                 return parameter
         return None
 
@@ -11064,8 +11067,7 @@ class DataclassConstructorProjectionMethod:
             or len(body) != 1
             or not isinstance(body[0], ast.Return)
             or not isinstance(body[0].value, ast.Call)
-            or method_node.args.vararg is not None
-            or method_node.args.kwarg is not None
+            or variadic_parameters(method_node.args)
         ):
             return None
         positional_parameters = (

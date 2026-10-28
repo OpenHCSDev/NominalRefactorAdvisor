@@ -15,11 +15,10 @@ from .ast_tools import BuiltinCallName, ParsedModule
 from .cases_family import body_without_docstring
 from .codemod_foreign_family_source import (
     FunctionNode,
+    FunctionRewriteAuthority,
     ForeignFamilyReference,
-    RewrittenLineFit,
 )
 from .codemod_source_edits import (
-    SourceTextGeometry,
     SourceTextSpan,
     SourceTextSpanReplacement,
 )
@@ -340,28 +339,11 @@ class FreshNames:
 
 
 @dataclass(frozen=True)
-class AdapterBindChainAuthority:
+class AdapterBindChainAuthority(FunctionRewriteAuthority):
     """Every foldable bind chain of one function, as source replacements."""
 
-    parsed_module: ParsedModule
-    geometry: SourceTextGeometry
-    line_length: int
-    declaration: ast.stmt
     reference: ForeignFamilyReference
-
-    @cached_property
-    def function(self) -> FunctionNode:
-        position = (self.declaration.lineno, self.declaration.col_offset)
-        matches = tuple(
-            candidate
-            for candidate in FunctionDefinition.within(
-                ast.walk(self.parsed_module.module)
-            )
-            if (candidate.lineno, candidate.col_offset) == position
-        )
-        if len(matches) != 1:
-            raise ValueError("Adapter folding requires a function declaration target")
-        return matches[0]
+    rewrite_name = "Adapter folding"
 
     @cached_property
     def folds(self) -> tuple[AdapterFold, ...]:
@@ -412,7 +394,7 @@ class AdapterBindChainAuthority:
                     *reads,
                 ]
         text = "\n".join(indentation + item for item in lines)
-        if not RewrittenLineFit(self.geometry, self.line_length).fits("", text, ""):
+        if not self.fit.fits("", text, ""):
             raise ValueError("Bind chain rewrite would exceed the line length")
         trailer = "\n" if self.geometry.source[start:end].endswith("\n") else ""
         return SourceTextSpanReplacement.from_offsets(

@@ -138,6 +138,10 @@ class ForeignFamilyRoutingConcept(ClassFamilyAuthorityConcept):
     """Route type tests on foreign classes through one declared family."""
 
 
+class OptionalAstFieldDecoderConcept(ClassFamilyAuthorityConcept):
+    """Route absence probes of an optional ast field through its boundary decoder."""
+
+
 class ForeignAdapterBindChainConcept(ClassFamilyAuthorityConcept):
     """Fold per-class bindings of foreign nodes into one declared adapter family."""
 

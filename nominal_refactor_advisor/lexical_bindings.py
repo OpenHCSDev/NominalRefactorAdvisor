@@ -20,6 +20,10 @@ from typing import (
 )
 
 from .assignment_projection import AssignmentTargetNameProjection
+from .ast_field_decoders import (
+    capture_names,
+    declared_annotations,
+)
 from .python_module_identity import PythonModulePathIdentity
 
 
@@ -613,8 +617,8 @@ class ScopeBindingCollector(ast.NodeVisitor):
         for decorator in node.decorator_list:
             self.visit(decorator)
         self.visit(node.args)
-        if node.returns is not None:
-            self.visit(node.returns)
+        for declared_annotation in declared_annotations(node):
+            self.visit(declared_annotation)
 
     visit_AsyncFunctionDef = visit_FunctionDef
 
@@ -639,22 +643,22 @@ class ScopeBindingCollector(ast.NodeVisitor):
         self.nonlocal_names.update(node.names)
 
     def visit_ExceptHandler(self, node: ast.ExceptHandler) -> None:
-        if node.name is not None:
-            self.bound_names.add(node.name)
+        for capture_name in capture_names(node):
+            self.bound_names.add(capture_name)
         self.generic_visit(node)
 
     def visit_MatchAs(self, node: ast.MatchAs) -> None:
-        if node.name is not None:
-            self.bound_names.add(node.name)
+        for capture_name in capture_names(node):
+            self.bound_names.add(capture_name)
         self.generic_visit(node)
 
     def visit_MatchStar(self, node: ast.MatchStar) -> None:
-        if node.name is not None:
-            self.bound_names.add(node.name)
+        for capture_name in capture_names(node):
+            self.bound_names.add(capture_name)
 
     def visit_MatchMapping(self, node: ast.MatchMapping) -> None:
-        if node.rest is not None:
-            self.bound_names.add(node.rest)
+        for capture_name in capture_names(node):
+            self.bound_names.add(capture_name)
         self.generic_visit(node)
 
     def visit_ListComp(self, node: ast.ListComp) -> None:
