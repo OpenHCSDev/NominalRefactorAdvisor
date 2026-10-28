@@ -144,6 +144,7 @@ from ..class_index import (
     module_import_aliases,
     build_class_family_index,
     build_compact_class_family_index,
+    star_resolved_projections,
 )
 from ..collection_algebra import UniqueIdentityIndexAuthority, sorted_tuple
 from ..models import (
@@ -945,10 +946,11 @@ class CompactClassRepositoryContext:
         projections: Sequence[CompactModuleClassProjection],
         config: DetectorConfig,
     ) -> CompactClassRepositoryContext:
+        resolved = star_resolved_projections(tuple(projections))
         return cls(
-            projections=projections,
+            projections=resolved,
             config=config,
-            class_index=build_compact_class_family_index(projections),
+            class_index=build_compact_class_family_index(resolved),
         )
 
     @classmethod

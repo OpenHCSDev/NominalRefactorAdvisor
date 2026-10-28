@@ -180,3 +180,36 @@ def test_a_finding_a_stage_does_not_touch_keeps_its_id_when_its_lines_move() -> 
         detector._finding_for_candidate(after).stable_id
         == detector._finding_for_candidate(before).stable_id
     )
+
+
+def test_a_star_imported_module_s_field_order_is_settled_the_same_way_on_every_path() -> None:
+    """A dataclass in a module with `from x import *` reads `str` and `int`; the
+    star origin's `__all__` excludes them. The detector context and the
+    collected projections settle the field order through the same resolution."""
+
+    from nominal_refactor_advisor.ast_tools import collect_family_items
+    from nominal_refactor_advisor.detectors._base import CompactClassRepositoryContext
+    from nominal_refactor_advisor.detectors import DetectorConfig
+
+    modules = (
+        _module("pkg.base", '__all__ = ["Thing"]\n\n\nclass Thing:\n    pass\n'),
+        _module(
+            "pkg.records",
+            "from dataclasses import dataclass\n"
+            "from pkg.base import *\n\n\n"
+            "@dataclass(frozen=True)\nclass Record:\n    name: str\n    size: int\n",
+        ),
+    )
+    collected = CompactModuleClassProjectionFamily.collect_modules(modules)
+    per_module = tuple(
+        item
+        for module in modules
+        for item in collect_family_items(module, CompactModuleClassProjectionFamily)
+    )
+    context = CompactClassRepositoryContext.from_projections(per_module, DetectorConfig())
+    symbol = "pkg.records.Record"
+
+    assert build_compact_class_family_index(collected).class_for(
+        symbol
+    ).own_dataclass_field_names == ("name", "size")
+    assert context.class_index.class_for(symbol).own_dataclass_field_names == ("name", "size")

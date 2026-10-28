@@ -682,6 +682,27 @@ class _CompactProductLineage:
 
 
 @dataclass(frozen=True)
+class CompactStarResolvedFacets:
+    """A class's binding-sensitive facts as they are when the module's star
+    imports bind none of the names the class reads.
+
+    A module with `from x import *` cannot tell, alone, whether a later name is
+    the star import's or its own: its projection keeps the conservative facts.
+    These are the facts with every name in `root_names` taken as the module's
+    own. The class index uses them when the repository's export contracts
+    prove that every star origin excludes every one of those names.
+    """
+
+    root_names: frozenset[str]
+    base_references: tuple[CompactNominalReference, ...]
+    base_references_are_complete: bool
+    product_base_bindings_are_exact: bool
+    class_decorators_are_promotion_safe: bool
+    dataclass_declaration: CompactDataclassDeclaration | None
+    enum_declaration: PythonEnumDeclarationAuthority | None
+
+
+@dataclass(frozen=True)
 class CompactClassHeader(ClassDeclaration):
     """Class-index surface sufficient for inheritance reconstruction."""
 
@@ -691,6 +712,9 @@ class CompactClassHeader(ClassDeclaration):
     product_base_bindings_are_exact: bool = False
     is_final: bool = False
     mro_bases_are_static: bool = False
+    star_resolution: CompactStarResolvedFacets | None = field(default=None, kw_only=True)
+    """The facts past the module's star imports, when it has any; the index
+    settles them once the repository's exports are known."""
 
     @property
     def base_resolution_is_complete(self) -> bool:
@@ -704,6 +728,33 @@ class CompactClassHeader(ClassDeclaration):
 @dataclass(frozen=True)
 class CompactIndexedClass(CompactClassHeader):
     """AST-free class declaration used to reconstruct inheritance globally."""
+
+    def resolved_past_star_imports(
+        self, exposure: RepositoryPublicExposureAuthority
+    ) -> Self:
+        """The class with its star-resolved facts when every star origin of its
+        module excludes every name they read; otherwise its conservative facts."""
+
+        resolution = self.star_resolution
+        if resolution is None:
+            return self
+        if not all(
+            exposure.star_imports_exclude(self.module_name, name)
+            for name in resolution.root_names
+        ):
+            return replace(self, star_resolution=None)
+        return replace(
+            self,
+            base_references=resolution.base_references,
+            base_references_are_complete=resolution.base_references_are_complete,
+            product_base_bindings_are_exact=resolution.product_base_bindings_are_exact,
+            class_decorators_are_promotion_safe=(
+                resolution.class_decorators_are_promotion_safe
+            ),
+            dataclass_declaration=resolution.dataclass_declaration,
+            enum_declaration=resolution.enum_declaration,
+            star_resolution=None,
+        )
 
     def with_registering_metaclass(self, registers: bool) -> Self:
         return replace(
@@ -1029,9 +1080,7 @@ class CompactModuleClassHeader(CompactModuleIdentity):
     @ScanCache.cached
     def from_modules(cls, modules: tuple[ParsedModule, ...]) -> tuple[Self, ...]:
         """Join original declarations with the repository's namespace proof."""
-        return RepositoryModuleBindingProof(modules).refined_class_projections(
-            cls.from_module
-        )
+        return star_resolved_projections(tuple(cls.from_module(module) for module in modules))
 
     @classmethod
     @ScanCache.cached
@@ -3988,26 +4037,6 @@ class RepositoryModuleBindingProof(
 
     modules: tuple[ParsedModule, ...]
 
-    def refined_class_projections(
-        self,
-        collect: Callable[[ParsedModule], ClassProjectionT],
-    ) -> tuple[ClassProjectionT, ...]:
-        """Refine original declarations through this repository's export evidence."""
-        projections = []
-        for module in self.modules:
-            excluded_names = frozenset(
-                name
-                for name in _class_nominal_reference_root_names(module)
-                if self.star_imports_exclude(module.module_name, name)
-            )
-            projection = collect(module)
-            if excluded_names:
-                projection = _repository_refined_class_projection(
-                    module, projection, excluded_names
-                )
-            projections.append(projection)
-        return tuple(projections)
-
     @cached_property
     def public_export_contract_by_module_name(
         self,
@@ -4529,6 +4558,16 @@ def _compact_indexed_classes(
         tuple(node.lineno for _qualname, node in indexed_class_nodes),
         include_final=False,
     )
+    star_snapshots = (
+        _module_nominal_binding_snapshots(
+            ModuleNominalBindingAuthority(parsed_module),
+            tuple(node.lineno for _qualname, node in indexed_class_nodes),
+            include_final=False,
+            star_import_excluded_names=_class_nominal_reference_root_names(parsed_module),
+        )
+        if module_star_import_origins(parsed_module)
+        else None
+    )
     body_scopes = (
         ClassBodyModuleScope.for_lines(
             parsed_module, (node.lineno for _qualname, node in indexed_class_nodes)
@@ -4647,6 +4686,17 @@ def _compact_indexed_classes(
                 if include_body_facets
                 else ()
             ),
+            star_resolution=(
+                None
+                if star_snapshots is None
+                else _star_resolved_facets(
+                    node,
+                    star_snapshots[node.lineno],
+                    parsed_module.module_name,
+                    qualname,
+                    include_body_facets=include_body_facets,
+                )
+            ),
         )
         for qualname, node in indexed_class_nodes
         for module_binding_snapshot in (binding_snapshots[node.lineno],)
@@ -4667,10 +4717,63 @@ def _class_nominal_reference_root_names(
 ) -> frozenset[str]:
     """Return module bindings queried while projecting class declarations."""
 
+    return frozenset(
+        name
+        for _qualname, class_node in iter_class_definitions(
+            list(parsed_module.module.body)
+        )
+        for name in _class_reference_root_names(class_node)
+    )
+
+
+def _star_resolved_facets(
+    node: ast.ClassDef,
+    star_snapshot: ModuleNominalBindingSnapshot,
+    module_name: str,
+    qualname: str,
+    *,
+    include_body_facets: bool,
+) -> CompactStarResolvedFacets:
+    facets = _compact_class_binding_facets(
+        node, star_snapshot, module_name, qualname, include_body_facets=include_body_facets
+    )
+    return CompactStarResolvedFacets(
+        root_names=_class_reference_root_names(node),
+        base_references=facets.base_references,
+        base_references_are_complete=len(facets.base_references) == len(node.bases),
+        product_base_bindings_are_exact=facets.product_base_bindings_are_exact,
+        class_decorators_are_promotion_safe=facets.class_decorators_are_promotion_safe,
+        dataclass_declaration=facets.dataclass_declaration,
+        enum_declaration=facets.enum_declaration,
+    )
+
+
+def star_resolved_projections(
+    projections: tuple[ClassProjectionT, ...],
+) -> tuple[ClassProjectionT, ...]:
+    """Settle every class's star-import-dependent facts from the repository's
+    export contracts: the one place those facts are resolved."""
+
+    exposure = CompactRepositoryPublicExposureIndex(projections)
+    return tuple(
+        projection
+        if not projection.star_import_origins
+        else replace(
+            projection,
+            classes=tuple(
+                indexed_class.resolved_past_star_imports(exposure)
+                for indexed_class in projection.classes
+            ),
+        )
+        for projection in projections
+    )
+
+
+def _class_reference_root_names(class_node: ast.ClassDef) -> frozenset[str]:
+    """The module bindings one class declaration reads while it is projected."""
+
     reference_nodes: list[ast.AST] = []
-    for _qualname, class_node in iter_class_definitions(
-        list(parsed_module.module.body)
-    ):
+    for class_node in (class_node,):
         reference_nodes.extend(class_node.bases)
         reference_nodes.extend(class_node.decorator_list)
         reference_nodes.extend(keyword.value for keyword in class_node.keywords)
@@ -4687,48 +4790,6 @@ def _class_nominal_reference_root_names(
         for node in ast.walk(reference_node)
         if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load)
     )
-
-
-def _repository_refined_class_projection(parsed_module: ParsedModule, projection: ClassProjectionT, star_import_excluded_names: frozenset[str]) -> ClassProjectionT:
-    """Refine only binding-sensitive class facts from repository export proof."""
-
-    class_nodes_by_qualname = dict(
-        iter_class_definitions(list(parsed_module.module.body))
-    )
-    binding_snapshots = _module_nominal_binding_snapshots(
-        ModuleNominalBindingAuthority(parsed_module),
-        tuple(node.lineno for node in class_nodes_by_qualname.values()),
-        include_final=False,
-        star_import_excluded_names=star_import_excluded_names,
-    )
-    refined_classes = []
-    for indexed_class in projection.classes:
-        node = class_nodes_by_qualname[indexed_class.qualname]
-        binding_snapshot = binding_snapshots[node.lineno]
-        binding_facets = _compact_class_binding_facets(
-            node,
-            binding_snapshot,
-            parsed_module.module_name,
-            indexed_class.qualname,
-            include_body_facets=True,
-        )
-        refined_classes.append(
-            replace(
-                indexed_class,
-                base_references=binding_facets.base_references,
-                base_references_are_complete=len(binding_facets.base_references)
-                == len(node.bases),
-                product_base_bindings_are_exact=(
-                    binding_facets.product_base_bindings_are_exact
-                ),
-                class_decorators_are_promotion_safe=(
-                    binding_facets.class_decorators_are_promotion_safe
-                ),
-                dataclass_declaration=binding_facets.dataclass_declaration,
-                enum_declaration=binding_facets.enum_declaration,
-            )
-        )
-    return replace(projection, classes=tuple(refined_classes))
 
 
 class CompactModuleClassProjectionFamily(CollectedFamily[CompactModuleClassProjection]):
@@ -4829,9 +4890,9 @@ class CompactModuleClassProjectionFamily(CollectedFamily[CompactModuleClassProje
     ) -> tuple[CompactModuleClassProjection, ...]:
         """Collect the single module projection declared by this family."""
 
-        return RepositoryModuleBindingProof(
-            tuple(parsed_modules)
-        ).refined_class_projections(cls._required_module_projection)
+        return star_resolved_projections(
+            tuple(cls._required_module_projection(module) for module in parsed_modules)
+        )
 
     @classmethod
     def collect_demanded(
@@ -7236,7 +7297,7 @@ class CompactClassFamilyIndexBuilder:
             UniqueIdentityIndexAuthority.unambiguous_declarations_by_handle(
                 (
                     record
-                    for projection in self.projections
+                    for projection in star_resolved_projections(tuple(self.projections))
                     for record in projection.classes
                 ),
                 lambda record: record.symbol,
