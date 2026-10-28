@@ -45,6 +45,7 @@ from .ast_projection import ExpressionReference
 from .ast_tools import (
     CompactModuleIdentity,
     CollectedFamily,
+    LexicalSyntaxScope,
     ParsedModule,
     PythonSourcePathPolicy,
     SourceModule,
@@ -6296,6 +6297,37 @@ _GENERIC_ALIAS_ROOTS = frozenset(
 )
 
 
+def _classmethod_receiver_class(
+    node: ast.AST,
+    scope: LexicalSyntaxScope,
+    nodes: Sequence[ast.AST],
+    parent_indices: Sequence[int],
+    module_bound_names: frozenset[str],
+) -> tuple[str, ...] | None:
+    """The class a `@classmethod`'s receiver parameter denotes, read directly in
+    that method: its class-name path, which resolves like a module-level name."""
+
+    if not isinstance(node, ast.Name) or not scope.function_node_indices:
+        return None
+    function_index = scope.function_node_indices[-1]
+    function = nodes[function_index]
+    if not isinstance(function, (ast.FunctionDef, ast.AsyncFunctionDef)):
+        return None
+    if not isinstance(nodes[parent_indices[function_index]], ast.ClassDef):
+        return None
+    if "classmethod" in module_bound_names or not any(
+        isinstance(decorator, ast.Name) and decorator.id == "classmethod"
+        for decorator in function.decorator_list
+    ):
+        return None
+    positional = (*function.args.posonlyargs, *function.args.args)
+    if not positional or positional[0].arg != node.id:
+        return None
+    if not scope.class_names or scope.class_names[0] not in module_bound_names:
+        return None
+    return scope.class_names
+
+
 def _copied_keyword_fields(call: ast.Call) -> tuple[str, ...]:
     """The keywords one call passes as `x.<same name>`, for the value `x` that
     supplies the most of them."""
@@ -6360,15 +6392,21 @@ def _compact_class_references(
             parent = nodes[parent_index] if parent_index >= 0 else None
             if isinstance(parent, ast.Attribute) and parent.value is node:
                 continue
-            parts = ExpressionReference.decoded(node).attribute_chain
-            if parts is None or parts[0] not in module_bound_names:
-                continue
             scope = syntax_index.scopes[syntax_index.scope_ids[node_index]]
-            if any(
-                parts[0] in locals_by_function_index.get(function_index, ())
-                for function_index in scope.function_node_indices
-            ):
-                continue
+            receiver_class = _classmethod_receiver_class(
+                node, scope, nodes, parent_indices, module_bound_names
+            )
+            if receiver_class is not None:
+                parts = receiver_class
+            else:
+                parts = ExpressionReference.decoded(node).attribute_chain
+                if parts is None or parts[0] not in module_bound_names:
+                    continue
+                if any(
+                    parts[0] in locals_by_function_index.get(function_index, ())
+                    for function_index in scope.function_node_indices
+                ):
+                    continue
             grandparent_index = parent_indices[parent_index] if parent is not None else -1
             grandparent = nodes[grandparent_index] if grandparent_index >= 0 else None
             role = ClassReferenceRole.of_reference(node, parent, grandparent, import_aliases)

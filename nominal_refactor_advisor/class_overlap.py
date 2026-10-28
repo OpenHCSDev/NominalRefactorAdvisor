@@ -710,7 +710,7 @@ class ClassOverlapVerdicts:
                 return ()
             return tuple(
                 (use.location, use.reference.copied_fields)
-                for use in self.uses.uses_of(indexed_class)
+                for use in self.uses.uses_by_symbol.get(indexed_class.symbol, ())
                 if use.role is ClassReferenceRole.CONSTRUCTION
                 and use.reference.copied_fields
             )

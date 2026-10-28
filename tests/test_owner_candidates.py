@@ -235,3 +235,22 @@ def test_a_block_copied_off_one_value_refuses_a_mixin_and_ranks_holding_the_sour
     assert hold.composers == ("pkg.records.Second",)
     assert hold.symbol == "pkg.records.First"
     assert verdict.owner_candidates[0] is hold
+
+
+def test_a_classmethod_building_its_own_class_off_one_value_is_a_copy() -> None:
+    (verdict,) = _mixin_verdicts(
+        (
+            "pkg.records",
+            "class First:\n" + BLOCK + "    own_first: int\n\n\n"
+            "class Second:\n" + BLOCK + "    own_second: int\n\n"
+            "    @classmethod\n"
+            "    def of(cls, first: First) -> 'Second':\n"
+            "        return cls(alpha=first.alpha, beta=first.beta, own_second=0)\n",
+        ),
+    )
+
+    kinds = {owner.kind: owner for owner in verdict.owner_candidates}
+    assert OwnerReceiptKind.COPIED_FROM in {
+        receipt.kind for receipt in kinds["new_mixin"].refusals
+    }
+    assert kinds["hold_source"].composers == ("pkg.records.Second",)
