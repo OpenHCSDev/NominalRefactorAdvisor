@@ -49,6 +49,7 @@ from .ast_tools import (
     CollectedFamily,
     CompactModuleIdentity,
     ParsedModule,
+    ParsedModuleSet,
     PythonSourcePathPolicy,
     python_module_path_identities_for_roots,
 )
@@ -72,7 +73,6 @@ from .class_index import (
     CompactModuleClassProjectionFamily,
     IndexedClass,
     ModuleClassReferenceResolver,
-    build_class_family_index,
     build_compact_class_family_index,
     iter_class_definitions,
     overlay_class_family_index,
@@ -597,7 +597,7 @@ class SemanticDescentGraphCacheIdentity:
     @classmethod
     def from_modules(
         cls,
-        modules: tuple[ParsedModule, ...],
+        modules: ParsedModuleSet,
         *,
         roots: tuple[Path | str, ...] | None = None,
     ) -> SemanticDescentGraphCacheIdentity:
@@ -3837,14 +3837,14 @@ class SemanticDescentGraphCache:
 class SemanticDescentGraphBuildRequest:
     """Immutable authority for deriving one repository semantic-descent graph."""
 
-    modules: tuple[ParsedModule, ...]
+    modules: ParsedModuleSet
 
     @cached_property
     def graph(self) -> SemanticDescentGraph:
         """This request's graph, built once and held by the request."""
 
         scan_deadline_checkpoint("semantic_descent_class_index")
-        class_index = build_class_family_index(list(self.modules))
+        class_index = self.modules.fact(ClassFamilyIndex)
         scan_deadline_checkpoint("semantic_descent_authorities")
         authority_catalog = SemanticAuthorityBuilder.from_class_index(
             class_index
@@ -3875,14 +3875,14 @@ class SemanticDescentGraphBuildRequest:
 
 
 def build_semantic_descent_graph(
-    modules: list[ParsedModule],
+    modules: ParsedModuleSet,
     *,
     cache_dir: Path | None = None,
     use_cache: bool = True,
 ) -> SemanticDescentGraph:
     """Build the cached semantic-descent graph for parsed modules."""
 
-    request = SemanticDescentGraphBuildRequest(tuple(modules))
+    request = SemanticDescentGraphBuildRequest(modules)
     resolved_cache_dir = (
         cache_dir
         if cache_dir is not None
@@ -3942,7 +3942,7 @@ def load_latest_semantic_descent_graph_for_roots(
 class SemanticDescentGraphCacheDirAuthority:
     """Resolve the default persistent graph-cache directory for parsed modules."""
 
-    modules: tuple[ParsedModule, ...]
+    modules: ParsedModuleSet
 
     def cache_dir(self) -> Path | None:
         if not self.modules:
@@ -4235,7 +4235,7 @@ class SemanticAuthorityProvider(DataclassSemanticAuthorityProvider):
 class SemanticProjectionCollector:
     """Collect presentation-level projections from parsed modules."""
 
-    modules: tuple[ParsedModule, ...]
+    modules: Sequence[ParsedModule]
     class_index: ClassFamilyIndex
 
     def collect(self) -> tuple[PresentationProjection, ...]:

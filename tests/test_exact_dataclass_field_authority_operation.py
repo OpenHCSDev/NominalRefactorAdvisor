@@ -176,7 +176,7 @@ def test_operation_reproves_field_component_without_serializing_rosters(
 ) -> None:
     module_path = _write_fixture(tmp_path)
     before = _runtime_output(tmp_path)
-    modules = tuple(parse_python_modules(tmp_path))
+    modules = parse_python_modules(tmp_path)
     snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(modules))
     operation = _operation(module_path)
     recipe = RefactorRecipe(recipe_id="factor-projection-identity").with_operation(

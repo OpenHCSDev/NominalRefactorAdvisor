@@ -29,7 +29,7 @@ def indexes(tmp_path: Path):
         "from family import Root as Parent\nclass Imported(Parent): pass\nclass Root: pass\n",
         encoding="utf-8",
     )
-    modules = tuple(parse_python_modules(tmp_path))
+    modules = parse_python_modules(tmp_path)
     return build_class_family_index(
         list(modules)
     ), CompactClassFamilyIndex.from_modules(modules)
@@ -122,7 +122,7 @@ def test_repeated_class_identity_is_unproved_in_both_record_forms(
         "class Base: first = True\nclass Base: second = True\nclass Child(Base): pass\n",
         encoding="utf-8",
     )
-    modules = tuple(parse_python_modules(tmp_path))
+    modules = parse_python_modules(tmp_path)
     full = build_class_family_index(list(modules))
     compact = CompactClassFamilyIndex.from_modules(modules)
     for index in (full, compact):

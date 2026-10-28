@@ -3315,13 +3315,11 @@ def _walk_nodes(node: ast.AST) -> tuple[ast.AST, ...]:
     return tuple(ast.walk(node))
 
 
-def walk_function_body_nodes(
-    function: ast.FunctionDef | ast.AsyncFunctionDef,
-) -> tuple[ast.AST, ...]:
-    """Return one bounded, reusable walk that excludes nested definition bodies."""
+def walk_function_body_nodes(body: list[ast.stmt]) -> tuple[ast.AST, ...]:
+    """Walk a function body without entering nested definition bodies."""
 
     nodes: list[ast.AST] = []
-    stack = list(reversed(statements_without_docstring(function.body)))
+    stack = list(reversed(statements_without_docstring(body)))
     while stack:
         node = stack.pop()
         nodes.append(node)
@@ -3940,7 +3938,7 @@ def _dynamic_method_injection_observations(
     function: ast.FunctionDef | ast.AsyncFunctionDef,
 ) -> tuple[DynamicMethodInjectionObservation, ...]:
     observations: list[DynamicMethodInjectionObservation] = []
-    for node in walk_function_body_nodes(function):
+    for node in walk_function_body_nodes(function.body):
         if not isinstance(node, ast.Call):
             continue
         if ExpressionReference.decoded(node.func).terminal_name != _SETATTR_BUILTIN:

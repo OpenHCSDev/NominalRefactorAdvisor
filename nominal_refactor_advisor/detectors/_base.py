@@ -1065,7 +1065,7 @@ class CompactModuleProjectionDetectorMixin(Generic[CompactProjectionItemT]):
 
     def _collect_findings(
         self,
-        modules: list[ParsedModule],
+        modules: ParsedModuleSet,
         config: DetectorConfig,
     ) -> list[RefactorFinding]:
         return self._findings_from_compact_projection_groups(
@@ -1222,7 +1222,7 @@ class SemanticDescentGraphIssueDetector(ContextualGlobalCacheContract):
     def _collect_findings_from_graph(
         self,
         graph: SemanticDescentGraph,
-        modules: list[ParsedModule],
+        modules: ParsedModuleSet,
         config: DetectorConfig,
     ) -> list[RefactorFinding]:
         raise NotImplementedError
@@ -1230,7 +1230,7 @@ class SemanticDescentGraphIssueDetector(ContextualGlobalCacheContract):
     def _collect_focused_findings_from_graph(
         self,
         graph: SemanticDescentGraph,
-        modules: list[ParsedModule],
+        modules: ParsedModuleSet,
         config: DetectorConfig,
         *,
         includes_path: Callable[[Path], bool],
@@ -1616,10 +1616,10 @@ SourceModuleCandidateCollector = Callable[
     Sequence[CandidateItemT] | None,
 ]
 CrossModuleCandidateCollector = Callable[
-    [Sequence[ParsedModule]], Sequence[CandidateItemT]
+    [ParsedModuleSet], Sequence[CandidateItemT]
 ]
 ConfiguredCrossModuleCandidateCollector = Callable[
-    [Sequence[ParsedModule], DetectorConfig], Sequence[CandidateItemT]
+    [ParsedModuleSet, DetectorConfig], Sequence[CandidateItemT]
 ]
 CandidateSortKeyValue: TypeAlias = str | int | float
 CandidateSortKey: TypeAlias = tuple[CandidateSortKeyValue, ...]
@@ -2045,7 +2045,7 @@ class CompactProjectionCandidateDetector(
 
     def _candidate_items(
         self,
-        modules: list[ParsedModule],
+        modules: ParsedModuleSet,
         config: DetectorConfig,
     ) -> Sequence[CandidateItemT]:
         return self._candidates_from_compact_projections(
@@ -2082,7 +2082,7 @@ class CompactMultiProjectionCandidateDetector(
 
     def _candidate_items(
         self,
-        modules: list[ParsedModule],
+        modules: ParsedModuleSet,
         config: DetectorConfig,
     ) -> Sequence[CandidateItemT]:
         projections_by_family = type(self).compact_module_projection_groups(modules)
@@ -2727,7 +2727,7 @@ class FiberCollectedShapeIssueDetector(
             )
         )
         groups = SUPPORT_PROJECTION_AUTHORITY.fiber_grouped_shapes(
-            modules, shapes, self.observation_kind, self.execution_level
+            shapes, self.observation_kind, self.execution_level
         )
         return [shape for group in groups for shape in group]
 
@@ -2755,7 +2755,6 @@ class CompactFiberCollectedShapeIssueDetector(
             shape for shape in projections if self._include_shape(shape, config)
         )
         grouped_shapes = SUPPORT_PROJECTION_AUTHORITY.fiber_grouped_shapes(
-            [],
             cast(tuple[object, ...], included_shapes),
             self.observation_kind,
             self.execution_level,
@@ -3065,15 +3064,16 @@ class ModuleBuilderCallShapes(ParsedModuleFact):
     def derive(cls, parsed_module: ParsedModule) -> Self:
         return cls(_derive_builder_call_shapes(parsed_module))
 
+    def calling(self, callee_names: frozenset[str]) -> tuple[BuilderCallShape, ...]:
+        """The shapes whose callee is one of ``callee_names``."""
 
-def _module_builder_call_shapes(
-    module: ParsedModule,
-    callee_names: frozenset[str] | None = None,
-) -> tuple[BuilderCallShape, ...]:
-    shapes = module.fact(ModuleBuilderCallShapes).shapes
-    if callee_names is None:
-        return shapes
-    return tuple(shape for shape in shapes if shape.callee_name in callee_names)
+        return tuple(
+            shape for shape in self.shapes if shape.callee_name in callee_names
+        )
+
+
+def _module_builder_call_shapes(module: ParsedModule) -> tuple[BuilderCallShape, ...]:
+    return module.fact(ModuleBuilderCallShapes).shapes
 
 
 def _derive_builder_call_shapes(module: ParsedModule) -> tuple[BuilderCallShape, ...]:
@@ -3082,7 +3082,7 @@ def _derive_builder_call_shapes(module: ParsedModule) -> tuple[BuilderCallShape,
 
     for qualname, function in module.syntax_index.named_functions:
         owner_name = qualname.rsplit(".", 1)[0] if "." in qualname else None
-        for node in walk_function_body_nodes(function):
+        for node in walk_function_body_nodes(function.body):
             if not isinstance(node, ast.Call):
                 continue
             shape = _builder_call_shape(
@@ -6035,12 +6035,10 @@ class SupportProjectionAuthority:
 
     def fiber_grouped_shapes(
         self,
-        modules: list[ParsedModule],
         shapes: tuple[object, ...],
         observation_kind: ObservationKind,
         execution_level: StructuralExecutionLevel,
     ) -> list[tuple[object, ...]]:
-        del modules
         lookup = _carrier_lookup(shapes)
         groups: list[tuple[object, ...]] = []
         graph = ObservationGraph(

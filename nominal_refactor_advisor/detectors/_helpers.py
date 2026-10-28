@@ -4125,7 +4125,7 @@ class TupleIndexSemanticOpacityCandidateCollector:
         qualname: str,
         function: NamedFunctionNode,
     ) -> tuple[TupleIndexSemanticOpacityCandidate, ...]:
-        body_nodes = walk_function_body_nodes(function)
+        body_nodes = walk_function_body_nodes(function.body)
         carrier_call_names = sorted_tuple(
             {
                 call_name

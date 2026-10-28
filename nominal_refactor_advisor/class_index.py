@@ -3390,7 +3390,7 @@ def declared_nominal_base_count(declaration: ClassDeclaration) -> int:
 @dataclass(frozen=True)
 class ClassFamilyIndex(ClassDeclarationIndex[IndexedClass], ParsedModuleSetFact):
     @classmethod
-    def derive(cls, modules: ParsedModuleSet) -> Self:
+    def derive(cls, modules: ParsedModuleSet) -> ClassFamilyIndex:
         return ClassFamilyIndexBuilder(modules.modules).build()
 
     def class_records_excluding_files(

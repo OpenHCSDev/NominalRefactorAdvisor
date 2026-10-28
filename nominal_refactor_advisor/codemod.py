@@ -1471,7 +1471,7 @@ class _ClosedCarrierCollapseSourceRewrite:
             )
         nested_scopes = tuple(
             nested
-            for nested in walk_function_body_nodes(node)
+            for nested in walk_function_body_nodes(node.body)
             if isinstance(nested, self._nested_scope_types)
         )
         if nested_scopes:
@@ -1501,7 +1501,7 @@ class _ClosedCarrierCollapseSourceRewrite:
         }
         occupied_names.update(
             name.id
-            for name in walk_function_body_nodes(node)
+            for name in walk_function_body_nodes(node.body)
             if isinstance(name, ast.Name) and name.id not in mapped_parameter_names
         )
         occupied_names.update(
@@ -1598,7 +1598,7 @@ class _ClosedCarrierCollapseSourceRewrite:
         geometry = self.geometries_by_file_path[rewrite.target.file_path]
         excluded_spans = tuple(call_spans)
         replacements = []
-        for node in walk_function_body_nodes(rewrite.node):
+        for node in walk_function_body_nodes(rewrite.node.body):
             if not (
                 isinstance(node, ast.Name)
                 and isinstance(node.ctx, ast.Load)
@@ -3961,7 +3961,7 @@ class DispatchPolymorphismFunction:
             or self.axis_parameter not in self.node.args.args
             or any(
                 isinstance(node, (ast.Yield, ast.YieldFrom))
-                for node in walk_function_body_nodes(self.node)
+                for node in walk_function_body_nodes(self.node.body)
             )
         )
 
@@ -4225,7 +4225,7 @@ class DispatchPolymorphismSource:
     def source_names(self) -> frozenset[str]:
         return frozenset(
             node.id
-            for node in walk_function_body_nodes(self.dispatch_function.node)
+            for node in walk_function_body_nodes(self.dispatch_function.node.body)
             if isinstance(node, ast.Name)
         ) | frozenset(self.dispatch_function.parameter_names)
 
@@ -6169,7 +6169,7 @@ class RepeatedBuilderCallFindingRecipeSynthesizer(
         resolver = context.class_reference_resolver_for_source_path(source_path)
         nominal_calls = tuple(
             child
-            for child in walk_function_body_nodes(node)
+            for child in walk_function_body_nodes(node.body)
             if isinstance(child, ast.Call)
             and child.lineno == evidence.line
             and resolver.symbol_for_reference(child.func) is not None
@@ -6198,7 +6198,7 @@ class RepeatedBuilderCallFindingRecipeSynthesizer(
             )
             if sum(
                 1
-                for call in walk_function_body_nodes(node)
+                for call in walk_function_body_nodes(node.body)
                 if isinstance(call, ast.Call)
                 and context.class_reference_resolver_for_source_path(
                     target.file_path
@@ -7011,7 +7011,7 @@ class RepeatedBuilderAuthorityDerivation(
                 continue
             call_sites.extend(
                 RepeatedBuilderCallSite(call=node, participant=participant)
-                for node in walk_function_body_nodes(participant.node)
+                for node in walk_function_body_nodes(participant.node.body)
                 if isinstance(node, ast.Call)
                 and resolver.symbol_for_reference(node.func) == authority_symbol
                 and not node.args
@@ -8893,7 +8893,7 @@ class FunctionReturnProjectionTarget(ResolvedFunctionProjectionTarget):
             return None
         matches = tuple(
             child
-            for child in walk_function_body_nodes(function.node)
+            for child in walk_function_body_nodes(function.node.body)
             if isinstance(child, ast.Return) and child.lineno == line
         )
         if len(matches) != 1:
@@ -9817,7 +9817,7 @@ class DataclassFieldNameCollectionProjectionTarget(ResolvedFunctionProjectionTar
                 node=function.node,
                 collection_node=collection,
             )
-            for statement in walk_function_body_nodes(function.node)
+            for statement in walk_function_body_nodes(function.node.body)
             if (pair := SingleAssignmentAndValueNameProjection(statement).pair)
             is not None
             if isinstance((collection := pair[1]), ast.Tuple | ast.List)
@@ -10166,7 +10166,7 @@ class DataclassPayloadProjectionDerivation(
         )
         candidates = tuple(
             candidate
-            for node in walk_function_body_nodes(boundary.function.node)
+            for node in walk_function_body_nodes(boundary.function.node.body)
             if isinstance(node, ast.Return) and isinstance(node.value, ast.Dict)
             if (
                 candidate := cls.candidate_from_return(
@@ -10408,7 +10408,7 @@ class DataclassKeyValueSequenceProjectionDerivation(
         )
         candidates = tuple(
             candidate
-            for node in walk_function_body_nodes(boundary.function.node)
+            for node in walk_function_body_nodes(boundary.function.node.body)
             if isinstance(node, ast.Return)
             if (
                 candidate := cls.candidate_from_return(
@@ -11179,7 +11179,7 @@ class DataclassConstructorProjectionDerivation(
         boundary.authority.require_transparent_direct_construction()
         candidates = tuple(
             candidate
-            for node in walk_function_body_nodes(boundary.function.node)
+            for node in walk_function_body_nodes(boundary.function.node.body)
             if isinstance(node, ast.Return)
             for call_node in StatementValue.of(node).walk()
             if isinstance(call_node, ast.Call)

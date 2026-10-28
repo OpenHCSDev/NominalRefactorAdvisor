@@ -1199,7 +1199,7 @@ class JsonLoopCachePayloadBuilder:
 class JsonSemanticDescentPayloadSource:
     """Repository graph source for the semantic-descent JSON section."""
 
-    modules: list[ParsedModule]
+    modules: ParsedModuleSet
     graph_source: SemanticDescentGraphAnalysisSource = field(
         default_factory=SemanticDescentGraphAnalysisSource
     )
@@ -2551,7 +2551,7 @@ class ParseCacheDirAuthority(ParseCachePolicy):
 class ArchitectureGuardSourceEvaluator:
     """Evaluate architecture guards against an in-memory source projection."""
 
-    modules: list[ParsedModule]
+    modules: ParsedModuleSet
     rules: tuple[ArchitectureGuardRule, ...]
 
     def report_for_sources(

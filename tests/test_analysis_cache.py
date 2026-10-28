@@ -236,7 +236,7 @@ def test_codemod_source_context_cache_preserves_its_nominal_entry(
 ) -> None:
     module_path = tmp_path / "module.py"
     module_path.write_text("class Example:\n    pass\n", encoding="utf-8", newline="")
-    modules = tuple(parse_python_modules(tmp_path, use_parse_cache=False))
+    modules = parse_python_modules(tmp_path, use_parse_cache=False)
     identity = AnalysisCacheIdentity.from_modules(
         (tmp_path,),
         modules,
@@ -407,7 +407,7 @@ def test_function_body_consumers_share_bounded_projection_authority(
     environment_nodes = scope.nodes
 
     assert environment_nodes is scope.nodes
-    assert environment_nodes == ast_tools_module.walk_function_body_nodes(scope.node)
+    assert environment_nodes == ast_tools_module.walk_function_body_nodes(scope.node.body)
     assert isinstance(environment_nodes[0], ast.Assign)
     assert not any(
         isinstance(node, ast.Constant)
@@ -4309,7 +4309,7 @@ def test_compact_keyed_axis_projection_is_the_only_global_candidate_authority(
         encoding="utf-8",
         newline="",
     )
-    modules = tuple(parse_python_modules(package_root, use_parse_cache=False))
+    modules = parse_python_modules(package_root, use_parse_cache=False)
     projections = (
         systemic_detectors.ParallelKeyedAxisFamilyDetector.compact_module_projections(
             modules
@@ -4420,7 +4420,7 @@ def test_compact_dataclass_cli_projection_preserves_semantics_without_ast_shadow
         encoding="utf-8",
         newline="",
     )
-    modules = tuple(parse_python_modules(package_root, use_parse_cache=False))
+    modules = parse_python_modules(package_root, use_parse_cache=False)
     projections = systemic_detectors.DataclassNamespaceCliMirrorDetector.compact_module_projections(
         modules
     )
@@ -4490,7 +4490,7 @@ def test_compact_exact_type_guard_projection_matches_legacy_ast_candidates(
         encoding="utf-8",
         newline="",
     )
-    modules = tuple(parse_python_modules(package_root, use_parse_cache=False))
+    modules = parse_python_modules(package_root, use_parse_cache=False)
     detector = runtime_detectors.ExactTypeGuardInheritanceRetreatDetector()
     projections = detector.compact_module_projections(modules)
     candidates = (
@@ -4553,7 +4553,7 @@ def test_compact_autoregister_projection_retains_neutral_registry_evidence(
         encoding="utf-8",
         newline="",
     )
-    modules = tuple(parse_python_modules(package_root, use_parse_cache=False))
+    modules = parse_python_modules(package_root, use_parse_cache=False)
     projections = class_index_module.CompactModuleClassProjectionFamily.collect_modules(
         modules
     )
@@ -4631,7 +4631,7 @@ def test_compact_keyed_registry_axis_facts_preserve_axis_semantics(
         encoding="utf-8",
         newline="",
     )
-    modules = tuple(parse_python_modules(package_root, use_parse_cache=False))
+    modules = parse_python_modules(package_root, use_parse_cache=False)
     config = DetectorConfig()
     projections = tuple(
         replace(
@@ -4726,7 +4726,7 @@ def test_compact_registry_projection_candidates_preserve_projection_semantics(
         encoding="utf-8",
         newline="",
     )
-    modules = tuple(parse_python_modules(package_root, use_parse_cache=False))
+    modules = parse_python_modules(package_root, use_parse_cache=False)
     config = DetectorConfig()
     projections = (
         systemic_detectors.RegistryProjectionSurfaceDetector.compact_module_projections(
@@ -4975,7 +4975,7 @@ def test_bounded_multi_family_joins_reuse_the_single_class_anchor(
         systemic_detectors.RepeatedConcreteTypeCaseAnalysisDetector,
         semantic_descent_detectors.SemanticMirrorWithoutDescentDetector,
     )
-    modules = tuple(parse_python_modules(package_root, use_parse_cache=False))
+    modules = parse_python_modules(package_root, use_parse_cache=False)
     manifest = analysis_module.BoundedCompactProjectionManifest(detector_types)
     projections_by_family = {
         family: tuple(
@@ -5054,7 +5054,7 @@ def test_compact_repeated_keyed_family_preserves_grouping_semantics(
             encoding="utf-8",
             newline="",
         )
-    modules = tuple(parse_python_modules(package_root, use_parse_cache=False))
+    modules = parse_python_modules(package_root, use_parse_cache=False)
     config = DetectorConfig()
     projections = (
         systemic_detectors.RepeatedKeyedFamilyDetector.compact_module_projections(
@@ -5147,7 +5147,7 @@ def test_compact_concrete_family_candidates_preserve_semantics(
         encoding="utf-8",
         newline="",
     )
-    modules = tuple(parse_python_modules(package_root, use_parse_cache=False))
+    modules = parse_python_modules(package_root, use_parse_cache=False)
     config = DetectorConfig()
     projections = runtime_detectors.PredicateSelectedConcreteFamilyDetector.compact_module_projections(
         modules
@@ -5263,7 +5263,7 @@ def test_compact_roster_candidates_preserve_semantics(
         encoding="utf-8",
         newline="",
     )
-    modules = tuple(parse_python_modules(package_root, use_parse_cache=False))
+    modules = parse_python_modules(package_root, use_parse_cache=False)
     config = DetectorConfig()
     projections = runtime_detectors.ManualConcreteSubclassRosterDetector.compact_module_projections(
         modules
@@ -5722,7 +5722,7 @@ def test_compact_method_family_candidates_preserve_semantics_without_ast_shadow(
 ) -> None:
     package_root = tmp_path / "pkg"
     _write_compact_method_family_fixture(package_root)
-    modules = tuple(parse_python_modules(package_root, use_parse_cache=False))
+    modules = parse_python_modules(package_root, use_parse_cache=False)
     config = DetectorConfig()
     projections = (
         structural_detectors.SemanticOverlapMethodDetector.compact_module_projections(
@@ -5867,7 +5867,7 @@ def test_compact_method_family_profiles_are_derived_after_the_family_join(
 ) -> None:
     package_root = tmp_path / "pkg"
     _write_compact_method_family_fixture(package_root)
-    modules = tuple(parse_python_modules(package_root, use_parse_cache=False))
+    modules = parse_python_modules(package_root, use_parse_cache=False)
     projection_family = class_index_module.CompactModuleClassProjectionFamily
     projections = tuple(
         projection
@@ -5980,7 +5980,7 @@ def test_compact_semantic_descent_graph_matches_legacy_ast_graph(
         encoding="utf-8",
         newline="",
     )
-    modules = tuple(parse_python_modules(package_root, use_parse_cache=False))
+    modules = parse_python_modules(package_root, use_parse_cache=False)
     detector = semantic_descent_detectors.SemanticMirrorWithoutDescentDetector()
     groups = type(detector).compact_module_projection_groups(modules)
     semantic_projections = groups[CompactSemanticModuleProjectionFamily]
@@ -6008,7 +6008,7 @@ def test_compact_semantic_descent_graph_matches_legacy_ast_graph(
         == legacy_supplements
     )
 
-    legacy_graph = build_semantic_descent_graph(list(modules), use_cache=False)
+    legacy_graph = build_semantic_descent_graph(modules, use_cache=False)
     compact_graph = build_compact_semantic_descent_graph(
         semantic_projections,
         class_projections,
@@ -6071,7 +6071,7 @@ def test_compact_semantic_descent_graph_matches_legacy_ast_graph(
     )
     expected_findings = detector._collect_findings_from_graph(
         legacy_graph,
-        list(modules),
+        modules,
         config,
     )
     assert (
