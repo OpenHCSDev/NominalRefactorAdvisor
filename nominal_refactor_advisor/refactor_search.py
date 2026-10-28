@@ -182,7 +182,12 @@ class SearchTurn(SemanticRecord):
                     for move in self.scored
                     if not any(other.dominates(move) for other in self.scored)
                 ),
-                key=lambda move: (*(-axis for axis in move.axes), move.concept),
+                key=lambda move: (
+                    -move.slop_per_kilotoken,
+                    -move.line_add_member_edits_removed,
+                    -move.line_derived_gained,
+                    move.concept,
+                ),
             )
         )
 
