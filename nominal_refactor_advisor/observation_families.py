@@ -1105,7 +1105,7 @@ class TypeArgumentResolver:
         if parts is None or parts[0] in shadowed:
             return None
         reference = self.snapshot.reference_for(parts)
-        return None if reference.root_binding is None else reference.qualified_name
+        return reference.qualified_name_or(lambda: None)
 
     def qualified_class_at(
         self, member: ast.expr, ancestors: Sequence[ast.AST]

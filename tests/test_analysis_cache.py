@@ -3196,7 +3196,7 @@ def test_class_demand_omits_unreportable_autoregister_reference_graph(
         base_references=(),
         registry_facts=class_index_module.ClassRegistryFacts(
             metaclass_references=(
-                class_index_module.CompactNominalReference(("AutoRegisterMeta",), None),
+                class_index_module.UnboundNominalReference(("AutoRegisterMeta",)),
             ),
         ),
     )

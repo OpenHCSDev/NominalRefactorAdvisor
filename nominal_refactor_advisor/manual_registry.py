@@ -143,7 +143,7 @@ class SourceModuleMappingKeyAuthority(MappingKeyResolverABC[ast.Module]):
                 if not parts or parts[0] in shadowed_names:
                     return None
                 nominal = snapshot.reference_for(parts)
-                return None if nominal.root_binding is None else nominal.qualified_name
+                return nominal.qualified_name_or(lambda: None)
 
             try:
                 declarations[name] = PYTHON_ENUM_BASE_AUTHORITY.declaration_from_node(

@@ -270,19 +270,40 @@ class CompactClassValueConstruction:
     line: int
 
 
-class CompactNominalReference(NamedTuple):
-    """One source reference together with its declaration-time root binding."""
+_ReferenceFoldT = TypeVar("_ReferenceFoldT")
+
+
+class CompactNominalReference(ABC):
+    """One source reference; its subtype says whether a declaration-time binding roots it."""
 
     source_parts: tuple[str, ...]
-    root_binding: CompactNominalBinding | None
+
+    @staticmethod
+    def bound_as(
+        parts: tuple[str, ...], binding: CompactNominalBinding | None
+    ) -> CompactNominalReference:
+        """The binding lookup's answer, read once, picks the reference kind."""
+
+        if binding is None:
+            return UnboundNominalReference(parts)
+        return BoundNominalReference(parts, binding)
+
+    @abstractmethod
+    def fold_binding(
+        self,
+        bound: Callable[[CompactNominalBinding], _ReferenceFoldT],
+        unbound: Callable[[], _ReferenceFoldT],
+    ) -> _ReferenceFoldT:
+        raise NotImplementedError
 
     @property
     def resolved_parts(self) -> tuple[str, ...]:
-        if self.root_binding is None:
-            return self.source_parts
-        return (
-            *self.root_binding.qualified_name.split("."),
-            *self.source_parts[1:],
+        return self.fold_binding(
+            lambda binding: (
+                *binding.qualified_name.split("."),
+                *self.source_parts[1:],
+            ),
+            lambda: self.source_parts,
         )
 
     @property
@@ -294,11 +315,49 @@ class CompactNominalReference(NamedTuple):
         return self.resolved_parts[-1]
 
     @property
-    def permits_root_relative_resolution(self) -> bool:
-        return (
-            self.root_binding is not None
-            and self.root_binding.kind.projects_as_import_alias
+    def binds_exactly(self) -> bool:
+        """Whether a declaration-time binding fixes what this reference names."""
+
+        return self.fold_binding(lambda _binding: True, lambda: False)
+
+    def qualified_name_or(self, fallback: Callable[[], str | None]) -> str | None:
+        return self.fold_binding(lambda _binding: self.qualified_name, fallback)
+
+    def shares_binding_with(self, other: CompactNominalReference) -> bool:
+        return self.fold_binding(
+            lambda _binding: other.fold_binding(
+                lambda _other_binding: other.qualified_name == self.qualified_name,
+                lambda: False,
+            ),
+            lambda: False,
         )
+
+
+@dataclass(frozen=True)
+class BoundNominalReference(CompactNominalReference):
+    source_parts: tuple[str, ...]
+    root_binding: CompactNominalBinding
+
+    def fold_binding(
+        self,
+        bound: Callable[[CompactNominalBinding], _ReferenceFoldT],
+        unbound: Callable[[], _ReferenceFoldT],
+    ) -> _ReferenceFoldT:
+        return bound(self.root_binding)
+
+
+@dataclass(frozen=True)
+class UnboundNominalReference(CompactNominalReference):
+    """A reference no binding in scope roots: only its source spelling is known."""
+
+    source_parts: tuple[str, ...]
+
+    def fold_binding(
+        self,
+        bound: Callable[[CompactNominalBinding], _ReferenceFoldT],
+        unbound: Callable[[], _ReferenceFoldT],
+    ) -> _ReferenceFoldT:
+        return unbound()
 
 
 class CompactClassMemberDeclaration(NamedTuple):
@@ -3316,7 +3375,7 @@ class ModuleNominalBindingSnapshot:
                 qualified_name=f"builtins.{parts[0]}",
                 kind=CompactNominalBindingKind.BUILTIN,
             )
-        return CompactNominalReference(parts, binding)
+        return CompactNominalReference.bound_as(parts, binding)
 
     def resolves_unshadowed_builtin(
         self,
@@ -3432,7 +3491,7 @@ class ModuleNominalBindingAuthority:
         if parts is None or parts[0] in class_bound_names:
             return None
         resolved = self.snapshot_before(line).reference_for(parts)
-        return resolved.qualified_name if resolved.root_binding is not None else None
+        return resolved.qualified_name_or(lambda: None)
 
     def iterated_class_annotation_name_at(
         self,
@@ -4656,7 +4715,7 @@ class _CompactClassBindingFacets:
     @property
     def product_base_bindings_are_exact(self) -> bool:
         return all(
-            reference.root_binding is not None
+            reference.binds_exactly
             for reference in self.base_references
             if ClassSymbolResolutionAuthority.establishes_nominal_family(
                 ".".join(reference.source_parts)
@@ -7367,10 +7426,8 @@ class RegisteringMetaclassAuthority(Generic[ClassDeclarationT]):
         )
         if symbol is not None:
             return self.scanned[symbol]
-        qualified_name = (
-            ".".join(reference.resolved_parts)
-            if reference.root_binding is not None
-            else self.star_settled_name(reference, module_name)
+        qualified_name = reference.qualified_name_or(
+            lambda: self.star_settled_name(reference, module_name)
         )
         if qualified_name is None:
             return None
@@ -7451,14 +7508,19 @@ class CompactClassFamilyIndexBuilder:
         candidate = ".".join(reference.resolved_parts)
         if candidate in known_symbols:
             return candidate
-        if reference.root_binding is not None:
-            if reference.permits_root_relative_resolution:
-                return unique_symbols_by_suffix.root_relative_match(candidate)
-            return None
-        module_local = ".".join((module_name, *reference.source_parts))
-        if module_local in known_symbols:
-            return module_local
-        return None
+
+        def module_local_symbol() -> str | None:
+            module_local = ".".join((module_name, *reference.source_parts))
+            return module_local if module_local in known_symbols else None
+
+        return reference.fold_binding(
+            lambda binding: (
+                unique_symbols_by_suffix.root_relative_match(candidate)
+                if binding.kind.projects_as_import_alias
+                else None
+            ),
+            module_local_symbol,
+        )
 
     @staticmethod
     def _resolved_symbol(
