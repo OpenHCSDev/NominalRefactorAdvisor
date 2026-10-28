@@ -236,12 +236,24 @@ class CodemodFindingClassStatus(StrEnum):
     MOVED = (
         "moved",
         lambda change: (
+            bool(change.moved_ids)
+            and not change.removed_ids
+            and not change.added_ids
+            and not change.expected_removed_finding_ids
+        ),
+    )
+    """The same obligations, by stable id, with some evidence elsewhere."""
+    REPLACED = (
+        "replaced",
+        lambda change: (
             bool(change.before_ids)
             and bool(change.after_ids)
             and change.before_count == change.after_count
             and bool(change.removed_ids or change.added_ids)
         ),
     )
+    """As many obligations of the class, but some are other obligations: the
+    smell left one subject and appeared at another."""
     EXPANDED = (
         "expanded",
         lambda change: (
@@ -516,6 +528,8 @@ class CodemodFindingClassChange(CodemodFindingDelta):
     detector_ids: CodemodDetectorIdTransition = json_report_field(
         field_name="detector_transition"
     )
+    moved_ids: tuple[str, ...] = field(default=(), kw_only=True)
+    """Stable ids present before and after whose evidence changed."""
 
     @classmethod
     def from_findings(
@@ -530,10 +544,17 @@ class CodemodFindingClassChange(CodemodFindingDelta):
             before_findings,
             after_findings,
         )
+        evidence_before = {finding.stable_id: finding.evidence for finding in before_findings}
         return cls(
             before_ids=transition.before_ids,
             after_ids=transition.after_ids,
             expected_removed_finding_ids=expected_removed_finding_ids,
+            moved_ids=tuple(
+                finding.stable_id
+                for finding in after_findings
+                if finding.stable_id in evidence_before
+                and evidence_before[finding.stable_id] != finding.evidence
+            ),
             obligation_class=obligation_class,
             detector_ids=CodemodDetectorIdTransition.from_findings(
                 before_findings,
@@ -554,7 +575,12 @@ class CodemodFindingClassChange(CodemodFindingDelta):
 
 @dataclass(frozen=True)
 class CodemodFindingClassDelta(DataclassJsonReport):
-    """Class-level before/after projection for detecting moved smell classes."""
+    """The before/after diff of finding stable ids, counted per obligation class.
+
+    The stable id is the one finding identity: an id in both scans is the same
+    obligation, moved when its evidence changed. The obligation class only
+    groups ids so the no-increase gate counts per class.
+    """
 
     changes: tuple[CodemodFindingClassChange, ...]
 
@@ -609,6 +635,16 @@ class CodemodFindingClassDelta(DataclassJsonReport):
     @json_report_property()
     def moved_class_count(self) -> int:
         return self.count_status(CodemodFindingClassStatus.MOVED)
+
+    @json_report_property()
+    def replaced_class_count(self) -> int:
+        return self.count_status(CodemodFindingClassStatus.REPLACED)
+
+    @json_report_property()
+    def moved_finding_ids(self) -> tuple[str, ...]:
+        """Obligations that kept their stable id while their evidence moved."""
+
+        return tuple(finding_id for change in self.changes for finding_id in change.moved_ids)
 
     @json_report_property()
     def eliminated_class_count(self) -> int:
