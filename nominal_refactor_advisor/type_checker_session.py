@@ -88,6 +88,16 @@ class TypeCheckerSources(ABC):
     def build_sources(self, options: Options) -> list[BuildSource]:
         raise NotImplementedError
 
+    def pathed(self, options: Options) -> tuple[tuple[str, BuildSource], ...]:
+        """Every source with the file it reads; mypy's optional path is refused here, once."""
+
+        pathed = []
+        for source in self.build_sources(options):
+            if source.path is None:
+                raise ValueError(f"mypy source `{source.module}` names no file")
+            pathed.append((source.path, source))
+        return tuple(pathed)
+
 
 @dataclass(frozen=True)
 class SourceFiles(TypeCheckerSources):
@@ -154,17 +164,18 @@ class TypeCheckerSession(ABC):
         options.follow_imports = "skip"
         options.ignore_missing_imports = True
         options.python_version = sys.version_info[:2]
-        sources_by_module = defaultdict(list)
-        for source in sources.build_sources(options):
-            sources_by_module[source.module].append(source)
+        sources_by_module: defaultdict[str, list[tuple[str, BuildSource]]] = defaultdict(list)
+        for path, source in sources.pathed(options):
+            sources_by_module[source.module].append((path, source))
         # mypy refuses the whole build when two files claim one module name.
         shared = {
-            source.path: f"module `{module}` is shared by {len(sources)} scanned files"
-            for module, sources in sources_by_module.items()
-            if len(sources) > 1
-            for source in sources
+            path: f"module `{module}` is shared by {len(found)} scanned files"
+            for module, found in sources_by_module.items()
+            if len(found) > 1
+            for path, _source in found
         }
-        built = [found for found, *rest in sources_by_module.values() if not rest]
+        unique = [only for only, *rest in sources_by_module.values() if not rest]
+        built = [source for _path, source in unique]
         started = perf_counter()
         try:
             result = build.build(built, options)
@@ -173,7 +184,7 @@ class TypeCheckerSession(ABC):
                 "the mypy build failed: " + "\n".join(error.messages)[-500:]
             )
         session = BuiltTypeChecker.of(
-            result, options, frozenset(source.path for source in built), shared
+            result, options, frozenset(path for path, _source in unique), shared
         )
         TypeCheckerTimingLedger.active().record(
             TypeCheckerTiming(build_seconds=perf_counter() - started)
