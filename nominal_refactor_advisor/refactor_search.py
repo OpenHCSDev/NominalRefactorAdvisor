@@ -1,12 +1,14 @@
 """Choose refactors by what they remove and what they make derived, a few moves ahead (#131).
 
 Each move is one refactor concept's goal search, run in memory from the current
-state. A move is scored on two axes kept apart: slop removed (findings that no
-longer appear) and amortization gained (the census's derived total: inherited
-pairs plus generic field uses). A move that leaves both no better than another
-move is dominated; the turn keeps the rest, its Pareto front. Lookahead plays
-again from each of the best front moves' end states, so a move that pays little
-now but opens a large next move can win over a greedy one.
+state. A move is scored on three axes kept apart: slop removed per token spent
+(findings that no longer appear, per thousand tokens of the diff a reader must
+write or review), add-member edits removed (what the next member of a family no
+longer has to touch) and members made derived (the census's derived total). A
+move no better than another on every axis is dominated; the turn keeps the rest,
+its Pareto front. Lookahead plays again from the best front moves' end states,
+and a move's line follows its best continuation, so a move that pays little now
+but opens a large next move can win over a greedy one.
 
 The run-time introspection term is not re-recorded per state; a search state
 never ran. Inherited pairs are scored on each state's own source text.
@@ -15,8 +17,9 @@ never ran. Inherited pairs are scored on each state's own source text.
 from __future__ import annotations
 
 from abc import ABC
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field, replace
+from difflib import SequenceMatcher
 from pathlib import Path
 
 from .amortization import IntrospectionSource, NoTrace
@@ -40,6 +43,26 @@ class StateScore(SemanticRecord):
     findings: int
     derived: int
     add_member_edits: int
+
+
+# Characters per token of Python source, for the token cost of a diff.
+CHARACTERS_PER_TOKEN = 4
+
+
+def edit_tokens(before: Mapping[str, str], after: Mapping[str, str]) -> int:
+    """Tokens of every line a diff from `before` to `after` removes or writes."""
+
+    characters = 0
+    for path in before.keys() | after.keys():
+        old = before.get(path, "").splitlines(keepends=True)
+        new = after.get(path, "").splitlines(keepends=True)
+        for tag, old_start, old_end, new_start, new_end in SequenceMatcher(
+            None, old, new, autojunk=False
+        ).get_opcodes():
+            if tag != "equal":
+                characters += sum(map(len, old[old_start:old_end]))
+                characters += sum(map(len, new[new_start:new_end]))
+    return -(-characters // CHARACTERS_PER_TOKEN)
 
 
 @dataclass(frozen=True)
@@ -70,6 +93,8 @@ class ScoredMove(SearchMove):
     """A completed goal search: how far it moved both axes."""
 
     stages: int
+    tokens: int
+    """Tokens of the move's diff: what a reader writes or reviews to make it."""
     before: StateScore
     after: StateScore
     end: CodemodWorkflowScan = json_report_field(included=False, compare=False, repr=False)
@@ -91,24 +116,44 @@ class ScoredMove(SearchMove):
     def add_member_edits_removed(self) -> int:
         return self.before.add_member_edits - self.after.add_member_edits
 
+    @property
+    def line(self) -> tuple[ScoredMove, ...]:
+        """This move, then the best continuation found from its end state."""
+        return (self, *(self.following[0].line if self.following else ()))
+
     @json_report_property()
     def line_findings_removed(self) -> int:
-        """Slop removed along this move and the best continuation found."""
-        return self.findings_removed + max(
-            (move.line_findings_removed for move in self.following), default=0
-        )
+        return sum(move.findings_removed for move in self.line)
+
+    @json_report_property()
+    def line_tokens(self) -> int:
+        return sum(move.tokens for move in self.line)
+
+    @json_report_property()
+    def line_add_member_edits_removed(self) -> int:
+        return sum(move.add_member_edits_removed for move in self.line)
 
     @json_report_property()
     def line_derived_gained(self) -> int:
-        """Amortization gained along this move and the best continuation found."""
-        return self.derived_gained + max(
-            (move.line_derived_gained for move in self.following), default=0
+        return sum(move.derived_gained for move in self.line)
+
+    @json_report_property()
+    def slop_per_kilotoken(self) -> float:
+        """Findings the line removes per thousand tokens of its diffs."""
+        return 1000 * self.line_findings_removed / max(self.line_tokens, 1)
+
+    @property
+    def axes(self) -> tuple[float, int, int]:
+        return (
+            self.slop_per_kilotoken,
+            self.line_add_member_edits_removed,
+            self.line_derived_gained,
         )
 
     def dominates(self, other: ScoredMove) -> bool:
-        mine = (self.line_findings_removed, self.line_derived_gained)
-        theirs = (other.line_findings_removed, other.line_derived_gained)
-        return mine != theirs and all(a >= b for a, b in zip(mine, theirs))
+        return self.axes != other.axes and all(
+            mine >= theirs for mine, theirs in zip(self.axes, other.axes)
+        )
 
 
 @dataclass(frozen=True)
@@ -137,11 +182,7 @@ class SearchTurn(SemanticRecord):
                     for move in self.scored
                     if not any(other.dominates(move) for other in self.scored)
                 ),
-                key=lambda move: (
-                    -move.line_findings_removed,
-                    -move.line_derived_gained,
-                    move.concept,
-                ),
+                key=lambda move: (*(-axis for axis in move.axes), move.concept),
             )
         )
 
@@ -224,6 +265,7 @@ class RefactorSearch:
         return ScoredMove(
             concept=key,
             stages=len(report.stages),
+            tokens=edit_tokens(scan.sources_by_file_path, end.sources_by_file_path),
             before=start,
             after=self.score(end),
             end=end,

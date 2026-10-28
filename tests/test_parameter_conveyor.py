@@ -104,6 +104,7 @@ def test_refactor_search_scores_the_conveyor_collapse_and_looks_past_it(
         if move.concept == SemanticCarrierConcept.concept_key()
     )
     assert carrier.stages == 1
+    assert carrier.tokens > 0
     assert carrier.findings_removed >= 1
     assert carrier.before == turn.start
     assert carrier in turn.front

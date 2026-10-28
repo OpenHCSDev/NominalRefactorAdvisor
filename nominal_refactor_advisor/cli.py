@@ -427,8 +427,9 @@ _CLI_ARGUMENT_SPECS = (
             action="store_true",
             help=(
                 "Play every refactor concept's goal search in memory, score each "
-                "end state on slop removed and members made derived, and keep the "
-                "moves no other move beats, looking --search-depth moves ahead."
+                "end state on slop removed per token of its diff, add-member edits "
+                "removed and members made derived, and keep the moves no other "
+                "move beats, looking --search-depth moves ahead."
             ),
         ),
         CliArgumentSpec(
@@ -2070,8 +2071,9 @@ class MarkdownReportRenderer(ABC):
         ]
         lines.extend(self.search_moves(turn.front, "   "))
         lines.extend(
-            f"   - dominated {move.concept}: -{move.findings_removed} finding(s), "
-            f"+{move.derived_gained} derived"
+            f"   - dominated {move.concept}: -{move.findings_removed} finding(s) "
+            f"for {move.tokens} token(s), -{move.add_member_edits_removed} add-member "
+            f"edit(s), +{move.derived_gained} derived"
             for move in turn.scored
             if move not in turn.front
         )
@@ -2084,10 +2086,13 @@ class MarkdownReportRenderer(ABC):
         lines: list[str] = []
         for move in moves:
             lines.append(
-                f"{indent}- {move.concept} ({move.stages} stage(s)): "
-                f"-{move.findings_removed} finding(s), +{move.derived_gained} derived, "
-                f"-{move.add_member_edits_removed} add-member edit(s); line "
-                f"-{move.line_findings_removed} / +{move.line_derived_gained}"
+                f"{indent}- {move.concept} ({move.stages} stage(s), {move.tokens} "
+                f"token(s)): -{move.findings_removed} finding(s), "
+                f"-{move.add_member_edits_removed} add-member edit(s), "
+                f"+{move.derived_gained} derived; line "
+                f"{move.slop_per_kilotoken:.1f} finding(s) per 1k tokens, "
+                f"-{move.line_add_member_edits_removed} add-member, "
+                f"+{move.line_derived_gained} derived"
             )
             lines.extend(self.search_moves(move.following, indent + "   "))
         return lines
