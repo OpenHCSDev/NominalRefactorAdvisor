@@ -314,9 +314,8 @@ def _location(indexed_class: CompactIndexedClass, line: int | None = None, membe
 
 
 def _construction(indexed_class: CompactIndexedClass) -> tuple[object, ...]:
-    declaration = indexed_class.dataclass_declaration
     return (
-        None if declaration is None else declaration.runtime_declaration,
+        indexed_class.dataclass_declaration.runtime_declaration,
         indexed_class.metaclass_names,
         indexed_class.class_keyword_names,
         indexed_class.class_decorators_are_promotion_safe,
@@ -333,13 +332,13 @@ def _literal_tags(
 
     tags = []
     for member in indexed_class.direct_member_declarations:
-        if member.annotation_expression is None or member.constant_string is None:
+        if member.annotation_expression is None or member.value.constant_string is None:
             continue
         annotation = ast.parse(member.annotation_expression, mode="eval").body
         if not (
             isinstance(annotation, ast.Subscript)
             and isinstance(annotation.slice, ast.Constant)
-            and annotation.slice.value == member.constant_string
+            and annotation.slice.value == member.value.constant_string
         ):
             continue
         parts = ExpressionReference.decoded(annotation.value).attribute_chain
@@ -347,15 +346,21 @@ def _literal_tags(
             continue
         qualified = ".".join((import_aliases.get(parts[0], parts[0]), *parts[1:]))
         if qualified in LITERAL_FORMS:
-            tags.append((member.name, member.line, member.constant_string))
+            tags.append((member.name, member.line, member.value.constant_string))
     return tuple(tags)
 
 
 def _declared_identity(indexed_class: CompactIndexedClass) -> str | None:
     """Why class creation itself makes this class an identity, if it does."""
 
-    if indexed_class.enum_declaration is not None:
-        return "its members are enum identities"
+    return indexed_class.enum_declaration.identity_reason_or(
+        _creation_identity(indexed_class)
+    )
+
+
+def _creation_identity(indexed_class: CompactIndexedClass) -> str | None:
+    """Why the class statement's own machinery makes this class an identity."""
+
     if indexed_class.class_keyword_names:
         return f"class keywords {', '.join(indexed_class.class_keyword_names)} run at creation"
     if indexed_class.metaclass_names:
@@ -654,9 +659,14 @@ class ClassOverlapVerdicts:
         """Where the block `first` and `second` share could live; `first`'s
         declarations are the block's identities."""
 
-        identities = {
-            name: self.bodies.declarations_of(first.symbol)[name].identity
+        block_declarations = {
+            name: self.bodies.declarations_of(first.symbol)[name].require_proved(
+                f"`{first.qualname}.{name}`"
+            )
             for name in block
+        }
+        identities = {
+            name: declaration.identity for name, declaration in block_declarations.items()
         }
 
         def own_holders_of(name: str) -> frozenset[str]:
@@ -676,7 +686,7 @@ class ClassOverlapVerdicts:
                     continue
                 declaration = self.bodies.declarations_of(declaring).get(name)
                 if declaration is not None:
-                    return declaration.identity != identities[name]
+                    return not declaration.same_declaration_as(block_declarations[name])
             return False
 
         def declared_names(symbol: str) -> frozenset[str]:
@@ -767,9 +777,11 @@ class ClassOverlapVerdicts:
         first_declarations = self.bodies.declarations_of(first.symbol)
         candidates: set[str] | None = None
         for shared in extractable:
-            holders = set(
-                self.bodies.holders.get(first_declarations[shared.name].identity, ())
-            )
+            holders = {
+                holder
+                for identity in first_declarations[shared.name].identities
+                for holder in self.bodies.holders.get(identity, ())
+            }
             having = holders | {
                 descendant
                 for holder in holders
@@ -855,7 +867,7 @@ class ClassOverlapVerdicts:
                     name not in axis
                     and name in first_declarations
                     and any(shared.name == name for shared in overlap.shared)
-                    and declaration.identity != first_declarations[name].identity
+                    and not declaration.same_declaration_as(first_declarations[name])
                 ):
                     axis[name] = sibling.rsplit(".", 1)[-1]
         return axis

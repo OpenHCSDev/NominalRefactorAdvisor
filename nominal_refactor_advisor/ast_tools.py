@@ -35,6 +35,7 @@ from metaclass_registry import AutoRegisterMeta
 
 from .foreign_family import FunctionDefinition
 from .interpreter import PythonVersion
+from .ast_projection import CallKeywords, StatementValue
 from .ast_projection import (
     AstNameFamily,
     ExpressionReference,
@@ -109,21 +110,6 @@ from .semantic_match import (
 from .value_graph import CachedDataclassRepresentation, StoredDataclassState
 
 FunctionDefinitionNode: TypeAlias = ast.FunctionDef | ast.AsyncFunctionDef
-
-
-@dataclass(frozen=True)
-class AstKeywordSourceProjection:
-    """Render one call or declaration keyword from its AST declaration."""
-
-    keyword: ast.keyword
-
-    def source(self) -> str:
-        value_source = ast.unparse(self.keyword.value)
-        match self.keyword.arg:
-            case str() as name:
-                return f"{name}={value_source}"
-            case None:
-                return f"**{value_source}"
 
 
 _TYPE_BUILTIN = "type"
@@ -1533,8 +1519,7 @@ class EagerNameLoadCollector(EagerFunctionAnnotationVisitor):
         self.visit(node.target)
         if self.annotation_mode.annotations_execute_at_declaration:
             self.visit(node.annotation)
-        if node.value is not None:
-            self.visit(node.value)
+        StatementValue.of(node).visit_with(self)
 
 
 @dataclass(frozen=True)
@@ -3928,7 +3913,8 @@ def _builder_call_shape(
                 field_pairs=(
                     positional_field_pairs(call, callee_name)
                     + tuple(
-                        (kw.arg, kw.value) for kw in call.keywords if kw.arg is not None
+                        (keyword.name, keyword.value)
+                        for keyword in CallKeywords.of(call.keywords).named
                     )
                 ),
             ),

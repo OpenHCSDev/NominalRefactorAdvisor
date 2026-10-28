@@ -22,8 +22,8 @@ from typing import (
 )
 
 from .assignment_projection import NamedAssignmentSelection
+from .ast_projection import CallKeyword
 from .ast_tools import (
-    AstKeywordSourceProjection,
     AstParentIndex,
     FunctionDefinitionNode,
     is_docstring_statement,
@@ -321,7 +321,7 @@ class ClassHeaderSpanSourceAuthority(ClassSourceAuthority):
     @property
     def keyword_items(self) -> tuple[str, ...]:
         return tuple(
-            AstKeywordSourceProjection(keyword).source()
+            CallKeyword.decoded(keyword).source()
             for keyword in self.node.keywords
         )
 

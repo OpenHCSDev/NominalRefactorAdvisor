@@ -12,7 +12,10 @@ from typing import ClassVar
 
 from metaclass_registry import AutoRegisterMeta
 
+from ..value_expression import CompactValueExpression
+from ..lexical_bindings import ImportBoundNameProjection
 from ..ast_projection import ExpressionReference
+from ..ast_projection import CallKeywords, StatementValue
 from ..ast_tools import (
     BuiltinCallName,
     CollectedFamily,
@@ -195,11 +198,11 @@ class _EnvironmentImportAliases:
             if isinstance(statement, ast.Import):
                 for alias in statement.names:
                     if alias.name == "os":
-                        os_modules.add(alias.asname or alias.name)
+                        os_modules.add(ImportBoundNameProjection(statement).alias_bound_name(alias))
             elif isinstance(statement, ast.ImportFrom) and statement.module == "os":
                 for alias in statement.names:
                     imported_members.setdefault(alias.name, set()).add(
-                        alias.asname or alias.name
+                        ImportBoundNameProjection(statement).alias_bound_name(alias)
                     )
         return cls(
             os_modules=frozenset(os_modules),
@@ -254,7 +257,8 @@ class _FunctionScope:
         return tuple(
             node
             for node in nodes
-            if isinstance(node, (ast.Assign, ast.AnnAssign)) and node.value is not None
+            if isinstance(node, (ast.Assign, ast.AnnAssign))
+            and StatementValue.of(node).supplies_value
         )
 
 
@@ -407,11 +411,7 @@ class _EnvironmentReadSyntax(_MissingValueSemantics):
         kind: EnvironmentReadKind,
         node: ast.Call,
     ) -> _EnvironmentReadSyntax | None:
-        keyword_values = {
-            keyword.arg: keyword.value
-            for keyword in node.keywords
-            if keyword.arg is not None
-        }
+        keyword_values = dict(CallKeywords.of(node.keywords).by_name)
         key_node = (
             node.args[0]
             if node.args
@@ -593,7 +593,7 @@ def _none_checked_names(node: ast.AST) -> tuple[str, ...]:
         return ()
     operands = (node.left, node.comparators[0])
     if not any(
-        isinstance(operand, ast.Constant) and operand.value is None
+        CompactValueExpression.project(operand).value_is_none_literal
         for operand in operands
     ):
         return ()
@@ -1164,9 +1164,8 @@ def _fixed_key_authority_wrapper_facts(
         key_expression = next(
             (
                 keyword.value
-                for keyword in call.keywords
-                if keyword.arg is not None
-                and EnvironmentSemanticNameAuthority.tokens(keyword.arg)
+                for keyword in CallKeywords.of(call.keywords).named
+                if EnvironmentSemanticNameAuthority.tokens(keyword.name)
                 & _ENVIRONMENT_KEY_PARAMETER_TOKENS
             ),
             None,

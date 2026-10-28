@@ -164,7 +164,6 @@ class BindArm:
         if (
             assignment is None
             or assignment.annotation is not None
-            or assignment.value is None
             or assignment.single_name is None
         ):
             return None

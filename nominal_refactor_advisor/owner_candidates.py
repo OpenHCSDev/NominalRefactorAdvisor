@@ -626,7 +626,7 @@ class BlockOwnerQuestion:
         unknown: list[str] = []
         for symbol in self._composers():
             composer = self.class_for(symbol)
-            if composer is None or composer.dataclass_declaration is None:
+            if composer is None:
                 continue
             own = composer.own_dataclass_field_names
             if own is None:
@@ -709,7 +709,7 @@ class BlockOwnerQuestion:
         changes; a plain class's annotations are not parameters.
         """
 
-        if not added or owner.dataclass_declaration is None:
+        if not added or not owner.dataclass_declaration.generates_construction:
             return ()
         receipts: list[Receipt] = []
         required = [name for name in added if name in self.required_fields]

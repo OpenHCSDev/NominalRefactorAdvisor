@@ -30,7 +30,7 @@ from nominal_refactor_advisor.detectors._base import (
     _compact_keyed_family_axis_specs_from_index,
 )
 from nominal_refactor_advisor.semantic_shape_algebra import InjectiveTypeRegistryProof
-from nominal_refactor_advisor.value_expression import CompactValueExpression
+from nominal_refactor_advisor.value_expression import UnassignedValueExpression, CompactValueExpression
 
 
 def parsed(source):
@@ -195,9 +195,9 @@ def test_original_value_is_projected_once_and_display_is_not_reparsed(monkeypatc
     assert sum(value is original for value in visited) == 1
     assert first.value is second.value
     assert first.value.require_mapping_key() == 1
-    assert absent.value is None
+    assert isinstance(absent.value, UnassignedValueExpression)
     assert empty.value.require_mapping_key() is None
-    assert empty.value_is_none_literal and not absent.value_is_none_literal
+    assert empty.value.value_is_none_literal and not absent.value.value_is_none_literal
     assert "constant_string" not in first._fields
     assert "value_is_none_literal" not in first._fields
     changed_display = first._replace(expression="not even valid Python !")

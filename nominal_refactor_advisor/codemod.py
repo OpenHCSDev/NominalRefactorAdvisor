@@ -28,6 +28,7 @@ from typing import ClassVar, Generic, Self, TypeAlias, TypeVar, cast
 
 from metaclass_registry import AutoRegisterMeta
 
+from .value_expression import CompactValueExpression
 from .annotation_semantics import NOMINAL_ANNOTATION_SOURCE_AUTHORITY
 from .ast_projection import ExpressionReference
 from .codemod_native_requirements import (
@@ -64,6 +65,7 @@ from .assignment_projection import (
     AssignmentStatementNameProjection,
     SingleAssignmentAndValueNameProjection,
 )
+from .ast_projection import CallKeywords, StatementValue
 from .ast_tools import (
     ROOT_NAME_PROJECTION,
     AstParentIndex,
@@ -638,7 +640,7 @@ from .json_reports import (
     json_report_property,
 )
 from .lexical_bindings import (
-    ImportAliasRequirement as ImportAliasRequirement,
+    ImportAlias as ImportAlias,
     ImportBoundNameProjection,
     ImportFromModuleName as ImportFromModuleName,
     LEXICAL_SCOPE_BINDING_AUTHORITY,
@@ -2075,10 +2077,11 @@ class ReplaceFieldsWithCarrierOperation(SourceReprovedOperation):
     ) -> str | None:
         carrier_sources: set[str] = set()
         projection_map = self.field_projection_map
-        for keyword in projected_keywords:
-            if keyword.arg is None:
-                return None
-            expected_attribute = projection_map[keyword.arg]
+        keywords = CallKeywords.of(projected_keywords)
+        if keywords.splats:
+            return None
+        for keyword in keywords.named:
+            expected_attribute = projection_map[keyword.name]
             value = keyword.value
             if not isinstance(value, ast.Attribute):
                 return None
@@ -5312,9 +5315,10 @@ class RepeatedBuilderCallSite:
     def field_names(self) -> tuple[str, ...]:
         """Return the exact keyword schema observed at this constructor call."""
 
-        if self.call.args or any(keyword.arg is None for keyword in self.call.keywords):
+        keywords = CallKeywords.of(self.call.keywords)
+        if self.call.args or keywords.splats:
             return ()
-        return tuple(cast(str, keyword.arg) for keyword in self.call.keywords)
+        return keywords.names
 
     @property
     def mapping_key(self) -> tuple[tuple[str, ...], tuple[str, ...]]:
@@ -6416,9 +6420,7 @@ class RepeatedBuilderAuthorityMethodDeriver(ABC):
     @staticmethod
     def call_source_root_name(call: ast.Call) -> str | None:
         roots: set[str] = set()
-        for keyword in call.keywords:
-            if keyword.arg is None:
-                continue
+        for keyword in CallKeywords.of(call.keywords).named:
             roots.update(ROOT_NAME_PROJECTION.root_names(keyword.value))
         if len(roots) != 1:
             return None
@@ -6429,11 +6431,7 @@ class RepeatedBuilderAuthorityMethodDeriver(ABC):
         call: ast.Call,
         field_names: tuple[str, ...],
     ) -> dict[str, ast.expr] | None:
-        values_by_field = {
-            keyword.arg: keyword.value
-            for keyword in call.keywords
-            if keyword.arg is not None
-        }
+        values_by_field = dict(CallKeywords.of(call.keywords).by_name)
         if frozenset(values_by_field) != frozenset(field_names):
             return None
         return {field_name: values_by_field[field_name] for field_name in field_names}
@@ -7020,7 +7018,7 @@ class RepeatedBuilderAuthorityDerivation(
                 and resolver.symbol_for_reference(node.func) == authority_symbol
                 and not node.args
                 and bool(node.keywords)
-                and all(keyword.arg is not None for keyword in node.keywords)
+                and not CallKeywords.of(node.keywords).splats
             )
         return tuple(call_sites)
 
@@ -7045,9 +7043,9 @@ class RepeatedBuilderAuthorityDerivation(
     ) -> bool:
         return bool(
             not call.args
-            and all(keyword.arg is not None for keyword in call.keywords)
+            and not CallKeywords.of(call.keywords).splats
             and len(call.keywords) == len(field_names)
-            and frozenset(keyword.arg for keyword in call.keywords)
+            and frozenset(CallKeywords.of(call.keywords).names)
             == frozenset(field_names)
         )
 
@@ -7667,9 +7665,7 @@ class AutoRegisterMroOrderingDerivation:
                 target.node,
                 registry_key_name,
             )
-            if registry_key is None or (
-                isinstance(registry_key, ast.Constant) and registry_key.value is None
-            ):
+            if registry_key is None or CompactValueExpression.project(registry_key).value_is_none_literal:
                 continue
             if child_names_by_parent[class_name]:
                 return None
@@ -9931,7 +9927,7 @@ class DataclassesModuleReference:
         if module is None or source is None:
             return None
         imported_aliases = tuple(
-            alias.asname or alias.name
+            ImportBoundNameProjection(statement).alias_bound_name(alias)
             for statement in module.body
             if isinstance(statement, ast.Import)
             for alias in statement.names
@@ -10954,10 +10950,11 @@ class NominalConstructorCall:
         scope: ast.FunctionDef | ast.AsyncFunctionDef | None,
         call_node: ast.Call,
     ) -> NominalConstructorCall | None:
-        if call_node.args or any(keyword.arg is None for keyword in call_node.keywords):
+        keywords = CallKeywords.of(call_node.keywords)
+        if call_node.args or keywords.splats:
             return None
         keyword_arguments = tuple(call_node.keywords)
-        keyword_names = tuple(cast(str, keyword.arg) for keyword in keyword_arguments)
+        keyword_names = keywords.names
         if len(frozenset(keyword_names)) != len(keyword_names):
             return None
         if scope is not None:
@@ -11188,8 +11185,8 @@ class DataclassConstructorProjectionDerivation(
         candidates = tuple(
             candidate
             for node in walk_function_body_nodes(boundary.function.node)
-            if isinstance(node, ast.Return) and node.value is not None
-            for call_node in ast.walk(node.value)
+            if isinstance(node, ast.Return)
+            for call_node in StatementValue.of(node).walk()
             if isinstance(call_node, ast.Call)
             if (
                 candidate := cls.candidate_from_call(
@@ -11406,7 +11403,7 @@ class DataclassConstructorProjectionMappingRecipeBuilder(
         return any(
             field_names
             <= frozenset(
-                keyword.arg for keyword in call.keywords if keyword.arg is not None
+                CallKeywords.of(call.keywords).names
             )
             for call in ast.walk(function_return.return_node.value)
             if isinstance(call, ast.Call)

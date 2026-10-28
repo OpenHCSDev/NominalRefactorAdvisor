@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from nominal_refactor_advisor.product_flow_authority import ResolvedCompactFunctionTarget
 import ast
 from dataclasses import replace
 import json
@@ -1012,7 +1013,7 @@ def test_possible_callable_escape_blocks_signature_collapse(
     builder = _builder(module)
     escapes = builder.repository.callable_escapes_for("escape._build")
     assert len(escapes) == 1
-    assert escapes[0].target_resolution.declaration is None
+    assert not isinstance(escapes[0].target_resolution, ResolvedCompactFunctionTarget)
     assert "escape._build" in escapes[0].target_resolution.possible_symbols
     assert ClosedParameterConveyorAuthorityViolation.ESCAPING_CALLABLE_REFERENCE in (
         builder.assessed_components()[0].proof.violations

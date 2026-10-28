@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from functools import cached_property
 from typing import Annotated, cast
 
+from .ast_projection import CallKeywords
 from .ast_tools import module_syntax_index
 from .class_index import ModuleNominalBindingAuthority, nominal_reference_root_name
 from .codemod_declaration_source import DirectClassDeclarationAuthority
@@ -101,7 +102,7 @@ class FieldMetadataKeywordRemoval(SourceTextGeometry):
             )
         self.selection_count.require_actual_count(len(calls))
         (call,) = calls
-        if any(keyword.arg is None for keyword in call.keywords):
+        if CallKeywords.of(call.keywords).splats:
             raise ValueError(
                 "Expanded keyword arguments leave metadata removal ambiguous"
             )

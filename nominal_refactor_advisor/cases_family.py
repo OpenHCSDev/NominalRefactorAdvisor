@@ -31,6 +31,9 @@ from typing import ClassVar
 
 from metaclass_registry import AutoRegisterMeta
 
+from .value_expression import CompactValueExpression
+from .ast_projection import StatementValue
+from .lexical_bindings import ImportBoundNameProjection
 from .ast_tools import (
     AstParentIndex,
     BuiltinCallName,
@@ -238,9 +241,7 @@ def module_bound_names(module: ast.Module) -> frozenset[str]:
         if isinstance(statement, ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef):
             names.add(statement.name)
         elif isinstance(statement, ast.Import | ast.ImportFrom):
-            names.update(
-                (alias.asname or alias.name).split(".")[0] for alias in statement.names
-            )
+            names.update(ImportBoundNameProjection(statement).names())
         elif isinstance(statement, ast.If):
             names.update(module_bound_names(ast.Module(statement.body, [])))
         else:
@@ -927,7 +928,7 @@ class CasesFamily(Cases, Descent):
             )
             for alias in statement.names:
                 if source == declared.module and alias.name == declared.name:
-                    return alias.asname or alias.name
+                    return ImportBoundNameProjection(statement).alias_bound_name(alias)
         return None
 
     def root_base(self, model: CaseModel) -> str:
@@ -965,7 +966,10 @@ class CasesFamily(Cases, Descent):
                 )
             if not isinstance(
                 statement, ast.Assign | ast.AnnAssign | ast.FunctionDef
-            ) or (isinstance(statement, ast.AnnAssign) and statement.value is not None):
+            ) or (
+                isinstance(statement, ast.AnnAssign)
+                and StatementValue.of(statement).supplies_value
+            ):
                 raise handback(
                     module,
                     statement,
@@ -1222,7 +1226,7 @@ class CasesFamily(Cases, Descent):
                 if (
                     len(body) != 1
                     or not isinstance(body[0], ast.Return)
-                    or body[0].value is None
+                    or not StatementValue.of(body[0]).supplies_value
                 ):
                     pending.remove(function)
                     continue
@@ -2023,7 +2027,7 @@ def held_type(annotation: ast.expr) -> ast.expr:
         sides = [
             side
             for side in (annotation.left, annotation.right)
-            if not (isinstance(side, ast.Constant) and side.value is None)
+            if not CompactValueExpression.project(side).value_is_none_literal
         ]
         if len(sides) == 1:
             return held_type(sides[0])
@@ -2840,7 +2844,7 @@ class Guard(Site):
         ]
         callable_name = next(
             (
-                alias.asname or alias.name
+                ImportBoundNameProjection(statement).alias_bound_name(alias)
                 for statement in model.enum.module.module.body
                 if isinstance(statement, ast.ImportFrom)
                 and statement.module in {"typing", "collections.abc"}

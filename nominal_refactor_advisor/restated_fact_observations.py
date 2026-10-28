@@ -17,6 +17,8 @@ from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
 
+from .lexical_bindings import ImportAlias, ImportBoundNameProjection
+from .ast_projection import AbsentStatementValue, CallKeywords, StatementValue
 from .ast_tools import BuiltinCallName, ParsedModule, module_syntax_index
 from .declared_root import DeclaredRoot
 from .models import SourceLocation
@@ -207,11 +209,11 @@ def imported_module_names(parsed_module: ParsedModule) -> frozenset[str]:
     """Names this module binds with `import x` / `import x as y`: modules, not instances."""
 
     return frozenset(
-        alias.asname or alias.name.partition(".")[0]
+        name
         for _node_index, node in module_syntax_index(
             parsed_module.module
         ).indexed_nodes_of_type(ast.Import)
-        for alias in node.names
+        for name in ImportBoundNameProjection(node).names()
     )
 
 
@@ -758,34 +760,37 @@ class LegacyMarkerSiteFamily(RestatingSiteFamily):
             *index.indexed_nodes_of_type(ast.AnnAssign),
         ):
             owner = index.parent_node(node_index)
-            if node.value is not None and isinstance(owner, (ast.Module, ast.ClassDef)):
-                replacement = cls.aliased(node.value)
-                for target in cls.assigned_names(node):
-                    if replacement is not None and LegacyWord.in_identifier(target):
-                        yield cls.site(
-                            parsed_module,
-                            node,
-                            cls.declared_symbol(
-                                index.lexical_symbol(node_index), target
-                            ),
-                            target,
-                            ("alias", f"of {replacement}"),
-                        )
+            if not isinstance(owner, (ast.Module, ast.ClassDef)):
+                continue
+            try:
+                value = StatementValue.of(node).require_value("a bare annotation")
+            except AbsentStatementValue:
+                continue
+            replacement = cls.aliased(value)
+            for target in cls.assigned_names(node):
+                if replacement is not None and LegacyWord.in_identifier(target):
+                    yield cls.site(
+                        parsed_module,
+                        node,
+                        cls.declared_symbol(
+                            index.lexical_symbol(node_index), target
+                        ),
+                        target,
+                        ("alias", f"of {replacement}"),
+                    )
         for node_index, node in index.indexed_nodes_of_type(ast.alias):
             # An alias renames the old path; a plain import of a marked name is its consumer.
-            bound = node.asname or ""
-            if (
-                bound
-                and LegacyWord.in_identifier(bound)
-                and not LegacyWord.in_identifier(node.name)
-            ):
-                yield cls.site(
-                    parsed_module,
-                    node,
-                    cls.declared_symbol(index.lexical_symbol(node_index), bound),
-                    bound,
-                    ("import alias", f"of {node.name}"),
-                )
+            if LegacyWord.in_identifier(node.name):
+                continue
+            for bound in ImportAlias.from_alias(node).legacy_marker_spellings():
+                if LegacyWord.in_identifier(bound):
+                    yield cls.site(
+                        parsed_module,
+                        node,
+                        cls.declared_symbol(index.lexical_symbol(node_index), bound),
+                        bound,
+                        ("import alias", f"of {node.name}"),
+                    )
         for node_index, call in index.indexed_nodes_of_type(ast.Call):
             warned = cls.warned_legacy_class(call)
             if warned is not None:
@@ -981,9 +986,10 @@ class ModuleReferenceFamily(ShapeFamily[ModuleReferenceFacts]):
                 for _i, node in index.indexed_nodes_of_type(ast.Attribute)
             ),
             *(
-                (node.arg, node.value.lineno)
-                for _i, node in index.indexed_nodes_of_type(ast.keyword)
-                if node.arg is not None
+                (keyword.name, keyword.value.lineno)
+                for keyword in CallKeywords.of(
+                    node for _i, node in index.indexed_nodes_of_type(ast.keyword)
+                ).named
             ),
         ]
         referenced: dict[str, int] = {}

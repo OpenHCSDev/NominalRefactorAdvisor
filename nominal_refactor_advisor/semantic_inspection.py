@@ -15,7 +15,9 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Iterable, Sequence
 
+from .lexical_bindings import ImportBoundNameProjection
 from .analysis import analyze_modules
+from .ast_projection import CallKeyword, StatementValue
 from .ast_tools import ParsedModule, parse_python_module_roots
 from .detectors import DetectorConfig
 from .export_tools import PublicExportPolicy, derive_public_exports
@@ -531,7 +533,7 @@ class _ModuleSemanticVisitor(ast.NodeVisitor):
                 import_kind=ImportSummaryKind.IMPORT,
                 imported_module=None,
                 imported_names=imported_names,
-                alias_names=_alias_names(node.names),
+                alias_names=ImportBoundNameProjection(node).names(),
             )
         )
 
@@ -551,7 +553,7 @@ class _ModuleSemanticVisitor(ast.NodeVisitor):
                 import_kind=ImportSummaryKind.FROM_IMPORT,
                 imported_module=node.module,
                 imported_names=imported_names,
-                alias_names=_alias_names(node.names),
+                alias_names=ImportBoundNameProjection(node).names(),
                 level=node.level,
             )
         )
@@ -646,10 +648,7 @@ class _ModuleSemanticVisitor(ast.NodeVisitor):
         self.generic_visit(node)
 
     def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
-        if node.value is None:
-            value_kind = "None"
-        else:
-            value_kind = type(node.value).__name__
+        value_kind = StatementValue.of(node).value_kind_name
         self._append_assignment_with_value_kind(
             node=node,
             target_names=_target_names(node.target),
@@ -867,16 +866,6 @@ def _node_line(node: ast.AST) -> int:
     raise TypeError(f"expected statement node, got {type(node).__name__}")
 
 
-def _alias_names(aliases: Iterable[ast.alias]) -> tuple[str, ...]:
-    names: list[str] = []
-    for alias in aliases:
-        if alias.asname is None:
-            names.append(alias.name)
-        else:
-            names.append(alias.asname)
-    return tuple(names)
-
-
 def _decorator_names(decorators: Iterable[ast.expr]) -> tuple[str, ...]:
     return tuple(_expression_label(decorator) for decorator in decorators)
 
@@ -912,9 +901,7 @@ def _target_names(node: ast.expr) -> tuple[str, ...]:
 
 
 def _keyword_name(keyword: ast.keyword) -> str:
-    if keyword.arg is None:
-        return "**"
-    return keyword.arg
+    return CallKeyword.decoded(keyword).spelled_name
 
 
 def _expression_label(node: ast.AST) -> str:

@@ -3,10 +3,15 @@
 from __future__ import annotations
 
 import ast
-from dataclasses import dataclass
-from typing import Self, cast
+from abc import ABC, abstractmethod
+from collections.abc import Iterable, Mapping
+from dataclasses import dataclass, field
+from typing import Self, TypeVar, cast
 
 from .declared_family import ForeignAdapter
+from .value_expression import CompactValueExpression, UnassignedValueExpression
+
+TargetT = TypeVar("TargetT")
 
 
 class ExpressionReference(ForeignAdapter):
@@ -134,7 +139,7 @@ class AstClassProjection:
         alongside a direct keyword. Other direct keywords remain separate
         construction obligations; this projection does not prove full binding.
         """
-        if any(keyword.arg is None for keyword in node.keywords):
+        if CallKeywords.of(node.keywords).splats:
             raise ValueError(
                 "Expanded class keywords leave metaclass selection unproved"
             )
@@ -174,3 +179,251 @@ class AstNameFamily:
 
     def matches(self, node: ast.AST) -> bool:
         return self.matching_name(node) is not None
+
+
+class CallKeyword(ABC):
+    """One keyword of a call or class header: `name=value` or a `**mapping` splat."""
+
+    node: ast.keyword
+
+    @staticmethod
+    def decoded(keyword: ast.keyword) -> CallKeyword:
+        """The ast boundary: `arg` absent means a `**` mapping splat."""
+
+        if keyword.arg is None:
+            return KeywordSplat(keyword)
+        return NamedKeyword(keyword, keyword.arg)
+
+    @property
+    def value(self) -> ast.expr:
+        return self.node.value
+
+    @property
+    @abstractmethod
+    def spelled_name(self) -> str:
+        raise NotImplementedError
+
+    @property
+    @abstractmethod
+    def names(self) -> tuple[str, ...]:
+        """The keyword names this entry spells: one for `name=value`, none for `**`."""
+        raise NotImplementedError
+
+    @abstractmethod
+    def source(self) -> str:
+        raise NotImplementedError
+
+    @abstractmethod
+    def sort_into(
+        self, named: list[NamedKeyword], splats: list[KeywordSplat]
+    ) -> None:
+        raise NotImplementedError
+
+
+@dataclass(frozen=True)
+class NamedKeyword(CallKeyword):
+    node: ast.keyword
+    name: str
+
+    @property
+    def spelled_name(self) -> str:
+        return self.name
+
+    @property
+    def names(self) -> tuple[str, ...]:
+        return (self.name,)
+
+    def source(self) -> str:
+        return f"{self.name}={ast.unparse(self.value)}"
+
+    def sort_into(
+        self, named: list[NamedKeyword], splats: list[KeywordSplat]
+    ) -> None:
+        named.append(self)
+
+
+@dataclass(frozen=True)
+class KeywordSplat(CallKeyword):
+    node: ast.keyword
+
+    @property
+    def spelled_name(self) -> str:
+        return "**"
+
+    @property
+    def names(self) -> tuple[str, ...]:
+        return ()
+
+    def source(self) -> str:
+        return f"**{ast.unparse(self.value)}"
+
+    def sort_into(
+        self, named: list[NamedKeyword], splats: list[KeywordSplat]
+    ) -> None:
+        splats.append(self)
+
+
+@dataclass(frozen=True)
+class CallKeywords:
+    """A keyword list split into explicit `name=value` keywords and `**` splats."""
+
+    entries: tuple[CallKeyword, ...]
+    named: tuple[NamedKeyword, ...]
+    splats: tuple[KeywordSplat, ...]
+
+    @classmethod
+    def of(cls, keywords: Iterable[ast.keyword]) -> CallKeywords:
+        entries = tuple(CallKeyword.decoded(keyword) for keyword in keywords)
+        named: list[NamedKeyword] = []
+        splats: list[KeywordSplat] = []
+        for entry in entries:
+            entry.sort_into(named, splats)
+        return cls(entries, tuple(named), tuple(splats))
+
+    @property
+    def names(self) -> tuple[str, ...]:
+        return tuple(keyword.name for keyword in self.named)
+
+    @property
+    def by_name(self) -> Mapping[str, ast.expr]:
+        return {keyword.name: keyword.value for keyword in self.named}
+
+
+class AbsentStatementValue(ValueError):
+    """A bare annotation or bare `return` supplies no value."""
+
+
+ValuedStatement = ast.Assign | ast.AnnAssign | ast.Return
+
+
+class StatementValue(ABC):
+    """The value an assignment, annotation or `return` supplies, or its absence."""
+
+    statement: ValuedStatement
+
+    @staticmethod
+    def of(statement: ValuedStatement) -> StatementValue:
+        """The ast boundary: a bare annotation or bare `return` has no value."""
+
+        if statement.value is None:
+            return NoStatementValue(statement)
+        return SuppliedValue(statement, statement.value)
+
+    @property
+    @abstractmethod
+    def supplies_value(self) -> bool:
+        """Whether executing the statement evaluates a value (Python semantics:
+        `x: T` declares without binding; bare `return` returns None implicitly)."""
+        raise NotImplementedError
+
+    @abstractmethod
+    def require_value(self, reason: str) -> ast.expr:
+        raise NotImplementedError
+
+    @abstractmethod
+    def visit_with(self, visitor: ast.NodeVisitor) -> None:
+        raise NotImplementedError
+
+    @abstractmethod
+    def walk(self) -> Iterable[ast.AST]:
+        """Every node inside the supplied value; nothing without one."""
+        raise NotImplementedError
+
+    @abstractmethod
+    def paired_with(self, target: TargetT) -> tuple[TargetT, ast.expr] | None:
+        """The (target, value) pair of a projection whose contract is optional."""
+        raise NotImplementedError
+
+    @property
+    @abstractmethod
+    def value_kind_name(self) -> str:
+        raise NotImplementedError
+
+    @abstractmethod
+    def compact_value(self) -> CompactValueExpression:
+        raise NotImplementedError
+
+    @property
+    @abstractmethod
+    def supplies_none_literal(self) -> bool:
+        """Whether the statement spells the `None` literal (a bare `return` does not)."""
+        raise NotImplementedError
+
+    @property
+    @abstractmethod
+    def value_source(self) -> str | None:
+        """Unparsed value for record keys, where an absent value is spelled None."""
+        raise NotImplementedError
+
+
+@dataclass(frozen=True)
+class SuppliedValue(StatementValue):
+    statement: ValuedStatement
+    value: ast.expr
+
+    @property
+    def supplies_value(self) -> bool:
+        return True
+
+    def require_value(self, reason: str) -> ast.expr:
+        return self.value
+
+    def visit_with(self, visitor: ast.NodeVisitor) -> None:
+        visitor.visit(self.value)
+
+    def walk(self) -> Iterable[ast.AST]:
+        return ast.walk(self.value)
+
+    def paired_with(self, target: TargetT) -> tuple[TargetT, ast.expr] | None:
+        return target, self.value
+
+    @property
+    def value_kind_name(self) -> str:
+        return type(self.value).__name__
+
+    def compact_value(self) -> CompactValueExpression:
+        return CompactValueExpression.project(self.value)
+
+    @property
+    def supplies_none_literal(self) -> bool:
+        return CompactValueExpression.project(self.value).value_is_none_literal
+
+    @property
+    def value_source(self) -> str | None:
+        return ast.unparse(self.value)
+
+
+@dataclass(frozen=True)
+class NoStatementValue(StatementValue):
+    statement: ValuedStatement
+
+    @property
+    def supplies_value(self) -> bool:
+        return False
+
+    def require_value(self, reason: str) -> ast.expr:
+        raise AbsentStatementValue(reason)
+
+    def visit_with(self, visitor: ast.NodeVisitor) -> None:
+        return None
+
+    def walk(self) -> Iterable[ast.AST]:
+        return ()
+
+    def paired_with(self, target: TargetT) -> tuple[TargetT, ast.expr] | None:
+        return None
+
+    @property
+    def value_kind_name(self) -> str:
+        return "None"
+
+    def compact_value(self) -> CompactValueExpression:
+        return UnassignedValueExpression()
+
+    @property
+    def supplies_none_literal(self) -> bool:
+        return False
+
+    @property
+    def value_source(self) -> str | None:
+        return None

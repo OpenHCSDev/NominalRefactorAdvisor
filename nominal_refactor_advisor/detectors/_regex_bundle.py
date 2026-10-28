@@ -13,6 +13,7 @@ from itertools import combinations
 import re
 
 from ..ast_projection import ExpressionReference
+from ..ast_projection import CallKeywords
 from ..ast_tools import ParsedModule, named_function_nodes, walk_function_body_nodes
 from ..class_index import (
     ModuleNominalBindingAuthority,
@@ -67,7 +68,7 @@ class RegexPatternOperation(StrEnum):
     def pattern_literal(self, call: ast.Call) -> str | None:
         if (
             any(isinstance(argument, ast.Starred) for argument in call.args)
-            or any(keyword.arg is None for keyword in call.keywords)
+            or CallKeywords.of(call.keywords).splats
             or len({keyword.arg for keyword in call.keywords}) != len(call.keywords)
         ):
             return None

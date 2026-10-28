@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from functools import cached_property
 from typing import Self
 
+from .lexical_bindings import ImportBoundNameProjection
 from .ast_tools import ParsedModule, module_syntax_index
 from .class_index import (
     ModuleNominalBindingAuthority,
@@ -204,11 +205,11 @@ class StaticProjectionSites:
         """The from-import statement that binds each retired name."""
 
         return {
-            alias.asname or alias.name: statement
+            name: statement
             for statement in ast.walk(self.parsed_module.module)
             if isinstance(statement, ast.ImportFrom)
-            for alias in statement.names
-            if (alias.asname or alias.name) in self.bound_names
+            for name in ImportBoundNameProjection(statement).names()
+            if name in self.bound_names
         }
 
     @cached_property

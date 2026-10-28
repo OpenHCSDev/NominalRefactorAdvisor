@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from nominal_refactor_advisor.product_flow_authority import ResolvedCompactFunctionTarget
 import ast
 from dataclasses import fields
 from pathlib import Path
@@ -49,7 +50,7 @@ def test_target_resolution_obeys_declared_mro_instead_of_concrete_class_dispatch
     resolution = repository.resolve_function_target(
         context, target, context.flow.calls[0].position
     )
-    assert resolution.declaration is not None
+    assert isinstance(resolution, ResolvedCompactFunctionTarget)
     assert resolution.declaration.identity.symbol == "pkg.local.consume"
 
 
@@ -511,7 +512,7 @@ def test_unresolved_noncall_uses_keep_their_resolution_evidence() -> None:
     assert resolution is not None
     assert resolution.context is context
     assert resolution.use is use
-    assert resolution.target_resolution.declaration is None
+    assert not isinstance(resolution.target_resolution, ResolvedCompactFunctionTarget)
     assert resolution.target_resolution.possible_symbols == ()
     assert resolution in repository.callable_escapes
 
