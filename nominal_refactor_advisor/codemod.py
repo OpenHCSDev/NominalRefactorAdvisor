@@ -4514,6 +4514,15 @@ class SemanticDescentRecipeEvaluation(ExecutableRecipeEvaluation):
         finding: RefactorFinding,
     ) -> FindingRecipeEvaluation:
         del finding
+        # Preflight first: an operation whose source no longer proves its
+        # claims is reported by the preflight, not raised from claim lookup.
+        return self.gated_by_recipe_preflight(context).gated_by_effective_claims(
+            context
+        )
+
+    def gated_by_effective_claims(
+        self, context: CodemodSelectorContext | None
+    ) -> FindingRecipeEvaluation:
         if not self.executable_recipe.effective_authority_claims(context):
             return RejectedRecipeEvaluation(
                 reason=(
@@ -4521,7 +4530,7 @@ class SemanticDescentRecipeEvaluation(ExecutableRecipeEvaluation):
                 ),
                 evaluation_declaration_type=self.evaluation_declaration_type,
             )
-        return self.gated_by_recipe_preflight(context)
+        return self
 
 
 @dataclass(frozen=True)

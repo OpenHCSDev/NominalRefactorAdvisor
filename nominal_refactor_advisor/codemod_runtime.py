@@ -2244,6 +2244,14 @@ class FindingRecipeEvaluation(ABC):
         del context, finding
         return self
 
+    def gated_by_effective_claims(
+        self, context: CodemodSelectorContext | None
+    ) -> FindingRecipeEvaluation:
+        """Only an executable semantic-descent outcome still owes its claims."""
+
+        del context
+        return self
+
     def terminal_evaluation(
         self,
         context: CodemodSelectorContext | None,
