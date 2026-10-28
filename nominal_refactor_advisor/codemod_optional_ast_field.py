@@ -27,6 +27,7 @@ from . import ast_field_decoders, ast_projection
 from .ast_tools import ParsedModule
 from .cases_family import handback
 from .codemod import FindingEvidenceActionKeysMixin, FindingRecipeSynthesizer
+from .codemod_declaration_source import PythonExpressionSourceFormatter
 from .codemod_foreign_family_source import (
     FunctionRewriteAuthority,
     ImportedClassReference,
@@ -128,6 +129,38 @@ class CollectionProbeSite(ProbeSite, ABC):
     """A probe on the element variable of a decoded collection."""
 
     decoder: type[CollectionDecoder]
+
+    @staticmethod
+    def drops_cleanly(probe: ast.Compare, conjunction: ast.BoolOp) -> bool:
+        """Whether the probe can leave the ``and`` without changing what runs.
+
+        Operands before it ran for every element and will now run only for
+        present ones; that is safe only when they call nothing.
+        """
+
+        index = next(i for i, value in enumerate(conjunction.values) if value is probe)
+        return not any(
+            isinstance(node, ast.Call)
+            for value in conjunction.values[:index]
+            for node in ast.walk(value)
+        )
+
+    @staticmethod
+    def dropped_operand(
+        geometry: SourceTextGeometry, probe: ast.Compare, conjunction: ast.BoolOp
+    ) -> SourceTextSpanReplacement:
+        """The edit removing the probe and one adjoining ``and``."""
+
+        values = conjunction.values
+        index = next(i for i, value in enumerate(values) if value is probe)
+        start, end = geometry.required_node_offsets(probe)
+        if index == 0:
+            end, _ = geometry.required_node_offsets(values[1])
+        else:
+            _, start = geometry.required_node_offsets(values[index - 1])
+        return SourceTextSpanReplacement.from_offsets(
+            start_offset=start, end_offset=end, replacement_source=""
+        )
 
     def reads_field(self, node: ast.AST) -> TypeGuard[ast.Attribute]:
         """Whether ``node`` reads an attribute of the probed variable."""
@@ -276,7 +309,7 @@ class ComprehensionFilterProbeSite(CollectionProbeSite):
         condition: ast.AST = probe
         parent = parents.get(probe)
         if isinstance(parent, ast.BoolOp) and isinstance(parent.op, ast.And):
-            if parent.values[0] is not probe:
+            if not cls.drops_cleanly(probe, parent):
                 return None
             condition = parent
             parent = parents.get(parent)
@@ -312,9 +345,13 @@ class ComprehensionFilterProbeSite(CollectionProbeSite):
         ]
         if self.condition is self.probe:
             removal_start = geometry.required_node_offsets(self.previous_part())[1]
-            separator = geometry.source[removal_start:condition_start]
-            if re.fullmatch(r"\s+if\s+", separator) is None:
+            separator = re.fullmatch(
+                r"((?:\s*\))*)\s+if\s+", geometry.source[removal_start:condition_start]
+            )
+            if separator is None:
                 raise authority.refusal(self.probe, "the filter is not a bare `if`")
+            # Closing parentheses of the iterable stay; only ` if PROBE` goes.
+            removal_start += len(separator.group(1))
             edits.append(
                 SourceTextSpanReplacement.from_offsets(
                     start_offset=removal_start,
@@ -324,14 +361,7 @@ class ComprehensionFilterProbeSite(CollectionProbeSite):
             )
         else:
             assert isinstance(self.condition, ast.BoolOp)
-            next_start, _ = geometry.required_node_offsets(self.condition.values[1])
-            edits.append(
-                SourceTextSpanReplacement.from_offsets(
-                    start_offset=condition_start,
-                    end_offset=next_start,
-                    replacement_source="",
-                )
-            )
+            edits.append(self.dropped_operand(geometry, self.probe, self.condition))
         edits.extend(
             self.renamed_field_reads(authority, self.comprehension_node, self.probe)
         )
@@ -346,6 +376,69 @@ class ComprehensionFilterProbeSite(CollectionProbeSite):
             if clause_if is self.condition
         )
         return self.clause.ifs[index - 1] if index else self.clause.iter
+
+
+@dataclass(frozen=True)
+class AnyPresentProbeSite(CollectionProbeSite):
+    """``any(A and V.f is not None and B for V in ITER)``: present elements only."""
+
+    generator: ast.GeneratorExp
+    conjunction: ast.BoolOp
+
+    @classmethod
+    def at(cls, probe, authority):
+        parents = authority.parents
+        conjunction = parents.get(probe)
+        if not (
+            isinstance(conjunction, ast.BoolOp)
+            and isinstance(conjunction.op, ast.And)
+            and cls.drops_cleanly(probe, conjunction)
+        ):
+            return None
+        generator = parents.get(conjunction)
+        match generator:
+            case ast.GeneratorExp(
+                elt=elt,
+                generators=[
+                    ast.comprehension(target=ast.Name(id=name), iter=iterable, ifs=[])
+                ],
+            ) if (
+                elt is conjunction
+            ):
+                pass
+            case _:
+                return None
+        match parents.get(generator):
+            case ast.Call(func=ast.Name(id="any"), args=[only], keywords=[]) if (
+                only is generator
+            ):
+                pass
+            case _:
+                return None
+        variable = cls.probed(probe, authority.decoder, absent=False)
+        if variable != name or not authority.iterates_elements(iterable):
+            return None
+        return cls(authority.decoder, probe, variable, generator, conjunction)
+
+    def replacements(self, authority):
+        geometry = authority.geometry
+        start, end = geometry.required_node_offsets(self.generator)
+        if geometry.span_contains_comment(SourceTextSpan(start, end)):
+            raise authority.refusal(self.probe, "the quantifier holds a comment")
+        (clause,) = self.generator.generators
+        edits = [
+            self.dropped_operand(geometry, self.probe, self.conjunction),
+            SourceTextSpanReplacement.from_offsets(
+                start_offset=geometry.required_node_offsets(clause.iter)[0],
+                end_offset=geometry.required_node_offsets(clause.iter)[1],
+                replacement_source=(
+                    f"{self.decoder.collected(authority.source_of(clause.iter))}"
+                    f".{self.decoder.present}"
+                ),
+            ),
+            *self.renamed_field_reads(authority, self.generator, self.probe),
+        ]
+        return (authority.fitted_rewrite(self.generator, edits),)
 
 
 @dataclass(frozen=True)
@@ -407,8 +500,10 @@ class LoopGuardProbeSite(CollectionProbeSite):
                 SourceTextSpanReplacement.from_offsets(
                     start_offset=iterable_start,
                     end_offset=iterable_end,
-                    replacement_source=(
-                        f"{self.decoder.collected(iterable_source)}.{self.decoder.present}"
+                    replacement_source=authority.formatted(
+                        f"{self.decoder.collected(iterable_source)}"
+                        f".{self.decoder.present}",
+                        iterable_start,
                     ),
                 )
             )
@@ -549,6 +644,16 @@ class IfPresentProbeSite(SingleNodeProbeSite):
             and _same_expression(node.value, self.subject)
         ]
         decoded = self.decoder.single(authority.source_of(self.subject))
+        if not reads:
+            # Nothing reads the field: the probe only asks presence.
+            probe_start, probe_end = geometry.required_node_offsets(self.probe)
+            return (
+                SourceTextSpanReplacement.from_offsets(
+                    start_offset=probe_start,
+                    end_offset=probe_end,
+                    replacement_source=decoded,
+                ),
+            )
         if not self.guards:
             _, test_end = geometry.required_node_offsets(statement.test)
             header = SourceTextSpanReplacement.from_offsets(
@@ -823,7 +928,6 @@ class OptionalAstFieldDecoder(ABC):
     fields: ClassVar[Mapping[type[ast.AST], str]]
     owners: ClassVar[tuple[type | object, ...]]
     shapes: ClassVar[tuple[type[ProbeSite], ...]]
-    collection_elements: ClassVar[Mapping[str, type[ast.AST]]] = {}
 
     def __init_subclass__(cls, **kwargs: object) -> None:
         super().__init_subclass__(**kwargs)
@@ -853,6 +957,18 @@ class OptionalAstFieldDecoder(ABC):
         )
 
     @classmethod
+    def collects(
+        cls, collection: ast.Attribute, authority: OptionalAstFieldAuthority
+    ) -> bool:
+        """Whether reading ``collection`` yields this decoder's elements."""
+        return False
+
+    @classmethod
+    def collected_classes(cls) -> frozenset[str]:
+        """The ast classes a proved collection of this decoder holds."""
+        return frozenset()
+
+    @classmethod
     def present_name(cls) -> str:
         """The name a decoded value is read under: the decoder's own, in snake case."""
 
@@ -874,12 +990,17 @@ class OptionalAstFieldDecoder(ABC):
 class CollectionDecoder(OptionalAstFieldDecoder, ABC):
     """A decoder that also splits a collection into present and absent elements."""
 
+    element_type: ClassVar[type[ast.AST]]
     collection_owner: ClassVar[str]
     present: ClassVar[str]
     absent: ClassVar[str]
     present_field: ClassVar[str]
     present_attributes: ClassVar[frozenset[str]]
     collection_variable: ClassVar[str]
+
+    @classmethod
+    def collected_classes(cls) -> frozenset[str]:
+        return frozenset((cls.element_type.__name__,))
 
     @classmethod
     def collected(cls, iterable_source: str) -> str:
@@ -900,13 +1021,17 @@ class KeywordNameDecoder(CollectionDecoder):
         IfPresentProbeSite,
         SpliceProbeSite,
     )
-    collection_elements = {"keywords": ast.keyword}
+    element_type = ast.keyword
     collection_owner = "CallKeywords"
     present = "named"
     absent = "splats"
     present_field = "name"
     present_attributes = frozenset(("arg", "value", "node"))
     collection_variable = "keywords"
+
+    @classmethod
+    def collects(cls, collection, authority):
+        return collection.attr == "keywords"
 
     @classmethod
     def single(cls, subject_source: str) -> str:
@@ -930,16 +1055,49 @@ class CaptureNameDecoder(OptionalAstFieldDecoder):
         return f"capture_names({subject_source})"
 
 
-class DeclaredAnnotationDecoder(OptionalAstFieldDecoder):
-    """The annotation a parameter declares, or the return annotation of a function."""
+class DeclaredAnnotationDecoder(CollectionDecoder):
+    """The annotation a parameter declares, or the return annotation of a function.
+
+    A parameter list splits into annotated and unannotated parameters.
+    """
 
     fields = {
         ast.arg: "annotation",
         ast.FunctionDef: "returns",
         ast.AsyncFunctionDef: "returns",
     }
-    owners = (ast_field_decoders.declared_annotations,)
-    shapes = (IfPresentProbeSite, SpliceProbeSite)
+    owners = (
+        ast_field_decoders.declared_annotations,
+        ast_field_decoders.AnnotatedParameter,
+        ast_field_decoders.ParameterAnnotations,
+    )
+    shapes = (
+        *CollectionProbeSite.__subclasses__(),
+        IfPresentProbeSite,
+        SpliceProbeSite,
+    )
+    element_type = ast.arg
+    collection_owner = "ParameterAnnotations"
+    present = "annotated"
+    absent = "unannotated"
+    present_field = "annotation"
+    present_attributes = frozenset(("arg", "annotation", "node"))
+    collection_variable = "parameters"
+
+    @classmethod
+    def collects(cls, collection, authority):
+        """``X.posonlyargs`` / ``X.kwonlyargs``, or ``args`` of a proved signature."""
+
+        match collection:
+            case ast.Attribute(attr="posonlyargs" | "kwonlyargs"):
+                return True
+            case ast.Attribute(attr="args", value=ast.Attribute(attr="args")):
+                return True
+            case ast.Attribute(attr="args", value=signature):
+                return authority.classes_of(signature, collection) == frozenset(
+                    ("arguments",)
+                )
+        return False
 
     @classmethod
     def single(cls, subject_source: str) -> str:
@@ -1238,26 +1396,24 @@ class OptionalAstFieldAuthority(FunctionRewriteAuthority):
         return frozenset()
 
     def iterated(self, name: str, at: ast.AST) -> frozenset[str]:
-        """Classes proved by iterating a decoder's collection attribute into ``name``."""
+        """Classes proved by iterating a decoder's collection into ``name``."""
 
-        elements = self.decoder.collection_elements
         for child, parent in self.ancestors(at):
             match parent:
-                case ast.For(target=ast.Name(id=target), iter=ast.Attribute(attr=attr)):
-                    if target == name and attr in elements and child is not parent.iter:
-                        return frozenset((elements[attr].__name__,))
+                case ast.For(target=ast.Name(id=target), iter=iterable) if (
+                    target == name and child is not iterable
+                ):
+                    if self.iterates_elements(iterable):
+                        return self.decoder.collected_classes()
                 case (
                     ast.ListComp() | ast.SetComp() | ast.GeneratorExp() | ast.DictComp()
                 ):
                     for generator in parent.generators:
                         match generator:
                             case ast.comprehension(
-                                target=ast.Name(id=target),
-                                iter=ast.Attribute(attr=attr),
-                            ) if (
-                                target == name and attr in elements
-                            ):
-                                return frozenset((elements[attr].__name__,))
+                                target=ast.Name(id=target), iter=iterable
+                            ) if target == name and self.iterates_elements(iterable):
+                                return self.decoder.collected_classes()
         return frozenset()
 
     def classes_of(self, subject: ast.expr, at: ast.AST) -> frozenset[str]:
@@ -1283,26 +1439,61 @@ class OptionalAstFieldAuthority(FunctionRewriteAuthority):
         return bool(classes) and classes <= self.decoder.classes_with(field)
 
     def iterates_elements(self, iterable: ast.expr) -> bool:
-        """Whether the iterable is proved a collection of the decoder's elements."""
+        """Whether the iterable is proved a collection of the decoder's elements.
 
-        elements = self.decoder.collection_elements
+        Proved by a collecting attribute, a tuple or concatenation of proved
+        collections, a parameter annotated with the element type, or a local
+        bound once to a proved collection.
+        """
+
         match iterable:
-            case ast.Attribute(attr=attribute):
-                return attribute in elements
-            case ast.Name(id=name):
-                arguments = self.function.args
-                return any(
-                    argument.arg == name
-                    and any(
-                        f"ast.{element.__name__}" in ast.unparse(argument)
-                        for element in elements.values()
-                    )
-                    for argument in (
-                        *arguments.posonlyargs,
-                        *arguments.args,
-                        *arguments.kwonlyargs,
-                    )
+            case ast.Attribute():
+                return self.decoder.collects(iterable, self)
+            case ast.Tuple(elts=items) if items:
+                return all(
+                    isinstance(item, ast.Starred) and self.iterates_elements(item.value)
+                    for item in items
                 )
+            case ast.BinOp(left=left, op=ast.Add(), right=right):
+                return self.iterates_elements(left) and self.iterates_elements(right)
+            case ast.Call(func=ast.Name(id="tuple" | "list"), args=[only], keywords=[]):
+                return self.iterates_elements(only)
+            case ast.Name(id=name):
+                return self.annotated_collection(name) or self.bound_collection(name)
+        return False
+
+    def annotated_collection(self, name: str) -> bool:
+        classes = self.decoder.collected_classes()
+        arguments = self.function.args
+        return any(
+            argument.arg == name
+            and any(
+                re.search(rf"\bast\.{element}\b", ast.unparse(annotation))
+                for element in classes
+                for annotation in ast_field_decoders.declared_annotations(argument)
+            )
+            for argument in (
+                *arguments.posonlyargs,
+                *arguments.args,
+                *arguments.kwonlyargs,
+            )
+        )
+
+    def bound_collection(self, name: str) -> bool:
+        """Whether ``name`` is bound exactly once, to a proved collection."""
+
+        bindings = [
+            node
+            for node in ast.walk(self.function)
+            if isinstance(node, ast.Name)
+            and node.id == name
+            and isinstance(node.ctx, ast.Store)
+        ]
+        if len(bindings) != 1:
+            return False
+        match self.parents.get(bindings[0]):
+            case ast.Assign(targets=[target], value=value) if target is bindings[0]:
+                return self.iterates_elements(value)
         return False
 
     # source -------------------------------------------------------------
@@ -1408,7 +1599,31 @@ class OptionalAstFieldAuthority(FunctionRewriteAuthority):
         return SourceTextSpanReplacement.from_offsets(
             start_offset=start,
             end_offset=end,
-            replacement_source=self.fit.fitted(rewritten, start, end),
+            replacement_source=(
+                self.formatted(rewritten, start)
+                if "\n" in rewritten
+                else self.fit.fitted(rewritten, start, end)
+            ),
+        )
+
+    def formatted(self, expression: str, start: int) -> str:
+        """A multi-line expression laid out by the formatter, from its own column.
+
+        Edits inside a multi-line expression keep the old line breaks around
+        new text; the formatter lays the whole expression out again.
+        """
+
+        if "\n" not in expression:
+            return expression
+        line_start = self.geometry.line_offsets[
+            self.geometry.line_number_for_offset(start) - 1
+        ]
+        prefix = self.geometry.source[line_start:start]
+        indentation = prefix[: len(prefix) - len(prefix.lstrip())]
+        return PythonExpressionSourceFormatter(
+            self.line_length - (len(prefix) - len(indentation))
+        ).replacement_source(
+            ast.parse(expression.strip(), mode="eval").body, line_prefix=indentation
         )
 
     def source_of(self, node: ast.AST) -> str:

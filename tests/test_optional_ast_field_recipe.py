@@ -268,3 +268,75 @@ def test_new_file_takes_the_import_root_of_its_package(tmp_path: Path) -> None:
         for module in projected.parsed_modules
         if str(module.path) == created
     } == {"pkg.ast_field_decoders"}
+
+
+@pytest.mark.parametrize(
+    ("statement", "expected"),
+    (
+        (
+            "a = {p.arg: p.annotation for p in (*node.args.posonlyargs,"
+            " *node.args.args) if p.arg not in skip and p.annotation is not None}",
+            "a = {p.arg: p.annotation for p in ParameterAnnotations.of((*node.args."
+            "posonlyargs, *node.args.args)).annotated if p.arg not in skip}",
+        ),
+        (
+            "a = any(p.arg == x and p.annotation is not None and check(p.annotation)"
+            " for p in node.args.kwonlyargs)",
+            "a = any(p.arg == x and check(p.annotation) for p in "
+            "ParameterAnnotations.of(node.args.kwonlyargs).annotated)",
+        ),
+    ),
+)
+def test_parameter_lists_split_into_annotated_parameters(
+    statement: str, expected: str
+) -> None:
+    rewritten = _rewritten(
+        f"def f(node, skip, x):\n    {statement}\n", DeclaredAnnotationDecoder
+    )
+    assert ast.dump(ast.parse(rewritten)) == ast.dump(
+        ast.parse(f"def f(node, skip, x):\n    {expected}\n")
+    )
+
+
+def test_call_before_the_probe_keeps_the_filter() -> None:
+    with pytest.raises(ValueError, match="no shape"):
+        _rewritten(
+            "def f(node):\n"
+            "    return [p for p in node.args.kwonlyargs"
+            " if seen(p) and p.annotation is not None]\n",
+            DeclaredAnnotationDecoder,
+        )
+
+
+def test_loop_over_a_once_bound_parameter_tuple_drops_unannotated() -> None:
+    source = (
+        "def f(node):\n"
+        "    parameters = (*node.args.posonlyargs, *node.args.kwonlyargs)\n"
+        "    for parameter in parameters:\n"
+        "        if parameter.annotation is None:\n"
+        "            continue\n"
+        "        use(parameter.arg, parameter.annotation)\n"
+    )
+    assert _rewritten(source, DeclaredAnnotationDecoder) == (
+        "def f(node):\n"
+        "    parameters = (*node.args.posonlyargs, *node.args.kwonlyargs)\n"
+        "    for parameter in ParameterAnnotations.of(parameters).annotated:\n"
+        "        use(parameter.arg, parameter.annotation)\n"
+    )
+
+
+def test_filter_after_a_parenthesized_iterable_keeps_the_parenthesis() -> None:
+    source = (
+        "def f(node):\n"
+        "    return [\n"
+        "        p.arg\n"
+        "        for p in (\n"
+        "            tuple(node.args.posonlyargs) + tuple(node.args.kwonlyargs)\n"
+        "        )\n"
+        "        if p.annotation is not None\n"
+        "    ]\n"
+    )
+    rewritten = _rewritten(source, DeclaredAnnotationDecoder)
+    assert "if p.annotation" not in rewritten
+    assert "ParameterAnnotations.of(" in rewritten and ".annotated" in rewritten
+    assert max(len(line) for line in rewritten.splitlines()) <= 88

@@ -8,6 +8,8 @@ asked ``node.field is None`` reads these instead.
 from __future__ import annotations
 
 import ast
+from collections.abc import Iterable
+from dataclasses import dataclass
 
 
 def capture_names(
@@ -41,6 +43,38 @@ def declared_annotations(
     return ()
 
 
+@dataclass(frozen=True)
+class AnnotatedParameter:
+    """A parameter together with the annotation it declares."""
+
+    node: ast.arg
+    annotation: ast.expr
+
+    @property
+    def arg(self) -> str:
+        return self.node.arg
+
+
+@dataclass(frozen=True)
+class ParameterAnnotations:
+    """Parameters split into the annotated ones and the unannotated ones."""
+
+    annotated: tuple[AnnotatedParameter, ...]
+    unannotated: tuple[ast.arg, ...]
+
+    @classmethod
+    def of(cls, parameters: Iterable[ast.arg]) -> ParameterAnnotations:
+        annotated: list[AnnotatedParameter] = []
+        unannotated: list[ast.arg] = []
+        for parameter in parameters:
+            match parameter:
+                case ast.arg(annotation=ast.expr() as annotation):
+                    annotated.append(AnnotatedParameter(parameter, annotation))
+                case _:
+                    unannotated.append(parameter)
+        return cls(tuple(annotated), tuple(unannotated))
+
+
 def variadic_parameters(arguments: ast.arguments) -> tuple[ast.arg, ...]:
     """The `*args` and `**kwargs` parameters a signature declares, in that order."""
 
@@ -54,4 +88,10 @@ def variadic_parameters(arguments: ast.arguments) -> tuple[ast.arg, ...]:
     return ()
 
 
-__all__ = ("capture_names", "declared_annotations", "variadic_parameters")
+__all__ = (
+    "AnnotatedParameter",
+    "ParameterAnnotations",
+    "capture_names",
+    "declared_annotations",
+    "variadic_parameters",
+)

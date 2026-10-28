@@ -33,7 +33,10 @@ from typing import Callable, ClassVar, Generic, TypeAlias, TypeVar, cast
 
 from metaclass_registry import AutoRegisterMeta
 
-from .ast_field_decoders import declared_annotations
+from .ast_field_decoders import (
+    ParameterAnnotations,
+    declared_annotations,
+)
 from .foreign_family import FunctionDefinition
 from .interpreter import PythonVersion
 from .ast_projection import CallKeywords, StatementValue
@@ -3422,9 +3425,7 @@ def _parameter_annotation_map(
     function: ast.FunctionDef,
 ) -> dict[str, tuple[str, str]]:
     annotations: dict[str, tuple[str, str]] = {}
-    for arg in function.args.args:
-        if arg.annotation is None:
-            continue
+    for arg in ParameterAnnotations.of(function.args.args).annotated:
         annotations[arg.arg] = (
             ast.unparse(arg.annotation),
             _annotation_fingerprint(arg.annotation),

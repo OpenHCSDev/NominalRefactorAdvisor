@@ -28,7 +28,10 @@ from typing import ClassVar, Generic, Self, TypeAlias, TypeVar, cast
 
 from metaclass_registry import AutoRegisterMeta
 
-from .ast_field_decoders import variadic_parameters
+from .ast_field_decoders import (
+    declared_annotations,
+    variadic_parameters,
+)
 from .value_expression import CompactValueExpression
 from .annotation_semantics import NOMINAL_ANNOTATION_SOURCE_AUTHORITY
 from .ast_projection import ExpressionReference
@@ -5338,7 +5341,7 @@ class RepeatedBuilderCallSite:
             *self.participant.node.args.args,
             *self.participant.node.args.kwonlyargs,
         ):
-            if parameter.arg == root_name and parameter.annotation is not None:
+            if parameter.arg == root_name and declared_annotations(parameter):
                 return parameter
         return None
 
