@@ -2105,10 +2105,10 @@ class DeclaredType(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def member_read(
-        self, reads: ValueReads, module: ParsedModule, subject: ast.Attribute
-    ) -> bool:
-        """Whether a `.value` read of `subject` reads an enum member's value."""
+    def rename_member_read(
+        self, reads: ValueReads, read: MemberValueRead, subject: ast.Attribute
+    ) -> None:
+        """Rename `read` when this type says `subject` holds an enum member."""
         raise NotImplementedError
 
 
@@ -2160,10 +2160,11 @@ class Typed(DeclaredType):
     def otherwise(self, alternative: DeclaredType) -> DeclaredType:
         return self
 
-    def member_read(
-        self, reads: ValueReads, module: ParsedModule, subject: ast.Attribute
-    ) -> bool:
-        return reads.holds_member(self.module, self.annotation)
+    def rename_member_read(
+        self, reads: ValueReads, read: MemberValueRead, subject: ast.Attribute
+    ) -> None:
+        if reads.holds_member(self.module, self.annotation):
+            read.rename()
 
 
 class UnknownType(DeclaredType):
@@ -2181,17 +2182,20 @@ class UnknownType(DeclaredType):
     def otherwise(self, alternative: DeclaredType) -> DeclaredType:
         return alternative
 
-    def member_read(
-        self, reads: ValueReads, module: ParsedModule, subject: ast.Attribute
-    ) -> bool:
+    def rename_member_read(
+        self, reads: ValueReads, read: MemberValueRead, subject: ast.Attribute
+    ) -> None:
+        # Undeclared here, so the field's name decides (closed world): a name
+        # some class declares holding the enum, unless another declaration of
+        # it may carry its own `value`.
         if subject.attr in reads.ambiguous_fields:
             raise handback(
-                module,
+                read.module,
                 subject,
                 f"{ast.unparse(subject)}.value: field {subject.attr} is declared"
                 " holding the enum and holding another type that may carry value",
             )
-        return True
+        read.rename()
 
 
 UNKNOWN_TYPE = UnknownType()
@@ -2573,25 +2577,25 @@ class ValueReads:
     def types(self) -> DeclaredTypes:
         return DeclaredTypes(self.snapshot)
 
-    def is_member(
-        self,
-        module: ParsedModule,
-        subject: ast.expr,
-        held: frozenset[int],
-        scope: Scope,
-    ) -> bool:
-        names = self.enum_names(module)
+    def rename_if_member(
+        self, read: MemberValueRead, held: frozenset[int], scope: Scope
+    ) -> None:
+        """Rename `read` when its subject holds an enum member."""
+        subject = read.node.value
+        names = self.enum_names(read.module)
         if id(subject) in held:
-            return True
-        if isinstance(subject, ast.Call):
-            return is_name(subject.func, names)
-        if not isinstance(subject, ast.Attribute):
-            return False
-        if is_name(subject.value, names):
-            return subject.attr in self.model.class_names
-        if subject.attr not in self.held_fields:
-            return False
-        return self.types.of(module, subject, scope).member_read(self, module, subject)
+            read.rename()
+        elif isinstance(subject, ast.Call):
+            if is_name(subject.func, names):
+                read.rename()
+        elif isinstance(subject, ast.Attribute):
+            if is_name(subject.value, names):
+                if subject.attr in self.model.class_names:
+                    read.rename()
+            elif subject.attr in self.held_fields:
+                self.types.of(read.module, subject, scope).rename_member_read(
+                    self, read, subject
+                )
 
     def rewrite(self, rewrite: Rewrite, handled: set[int]) -> None:
         attribute = self.model.declared.value
@@ -2606,16 +2610,28 @@ class ValueReads:
                     and node.attr == "value"
                     and isinstance(node.ctx, ast.Load)
                     and id(node) not in handled
-                    and self.is_member(
-                        module,
-                        node.value,
+                ):
+                    self.rename_if_member(
+                        MemberValueRead(rewrite, module, node, attribute, handled),
                         held,
                         scopes.get(id(node), MODULE_SCOPE),
                     )
-                ):
-                    end = rewrite.geometry(module).required_node_offsets(node)[1]
-                    rewrite.span(module, end - len("value"), end, attribute)
-                    handled.add(id(node))
+
+
+@dataclass(frozen=True)
+class MemberValueRead:
+    """One `.value` load; renaming it is the work a member read does."""
+
+    rewrite: Rewrite
+    module: ParsedModule
+    node: ast.Attribute
+    attribute: str
+    handled: set[int]
+
+    def rename(self) -> None:
+        end = self.rewrite.geometry(self.module).required_node_offsets(self.node)[1]
+        self.rewrite.span(self.module, end - len("value"), end, self.attribute)
+        self.handled.add(id(self.node))
 
 
 def literal_value(expression: ast.expr) -> object:
