@@ -10,19 +10,40 @@ would delete could have an effect.
 from __future__ import annotations
 
 import ast
+import io
+import re
+import tokenize
 from abc import ABC, abstractmethod
-from collections.abc import Iterator, Sequence
-from dataclasses import dataclass
+from collections import defaultdict
+from collections.abc import Callable, Iterator, Mapping, Sequence
+from dataclasses import dataclass, replace
+from enum import StrEnum
 from functools import cached_property
 from itertools import groupby
+from operator import attrgetter
+from types import EllipsisType
+from typing import Any, cast
 
-from .ast_tools import BuiltinCallName, ParsedModule, walk_function_body_nodes
+from .ast_tools import (
+    BuiltinCallName,
+    CollectedFamily,
+    ParsedModule,
+    walk_function_body_nodes,
+)
 from .codemod_source_edits import (
     SourceTextGeometry,
     SourceTextSpan,
     SourceTextSpanReplacement,
 )
+from .class_index import (
+    BoundNominalReference,
+    CompactClassFamilyIndex,
+    CompactNominalBinding,
+    CompactNominalBindingKind,
+)
 from .codemod_foreign_family_source import RewrittenLineFit
+from .enum_semantics import PythonEnumBaseKind, PythonEnumDeclarationAuthority
+from .observation_families import ShapeFamily
 from .restated_fact_observations import (
     RestatingSite,
     RestatingSiteFamily,
@@ -39,6 +60,13 @@ def same_code(left: Sequence[ast.AST], right: Sequence[ast.AST]) -> bool:
     return len(left) == len(right) and all(
         ast.dump(one) == ast.dump(other) for one, other in zip(left, right)
     )
+
+
+def node_source(geometry: SourceTextGeometry, node: ast.AST) -> str:
+    """The exact source text of one parsed node."""
+
+    start, end = geometry.required_node_offsets(node)
+    return geometry.source[start:end]
 
 
 def evaluates_without_effect(node: ast.AST) -> bool:
@@ -560,9 +588,9 @@ class AdjacentTypeArms(UndistinguishedTypeArms):
         self, geometry: SourceTextGeometry, fit: RewrittenLineFit
     ) -> tuple[SourceTextSpanReplacement, ...]:
         start, end = geometry.required_node_offsets(self.merged[0].branch.test)
-        subject = self.source_of(geometry, self.subject)
+        subject = node_source(geometry, self.subject)
         classes = ", ".join(
-            self.source_of(geometry, tested)
+            node_source(geometry, tested)
             for rung in self.merged
             for tested in rung.classes
         )
@@ -574,10 +602,6 @@ class AdjacentTypeArms(UndistinguishedTypeArms):
             *(self.deleted(geometry, rung) for rung in self.merged[1:]),
         )
 
-    @staticmethod
-    def source_of(geometry: SourceTextGeometry, node: ast.expr) -> str:
-        start, end = geometry.required_node_offsets(node)
-        return geometry.source[start:end]
 
 
 @dataclass(frozen=True)
@@ -622,3 +646,677 @@ class UndistinguishedTypeArmsSiteFamily(RestatingSiteFamily[RestatingSiteModule]
                 f"line {branch.lineno}",
                 tuple(ast.unparse(tested) for rung in arms.merged for tested in rung.classes),
             )
+
+
+class NameUseKind(StrEnum):
+    """What one spelling of a name does with the object it names."""
+
+    CONSTRUCT = "construct"
+    RAISE = "raise"
+    OTHER = "other"
+
+    @classmethod
+    def of(cls, node: ast.AST, parent: ast.AST | None) -> NameUseKind:
+        match parent:
+            case ast.Call(func=callee) if callee is node:
+                return cls.CONSTRUCT
+            case ast.Raise(exc=raised) if raised is node:
+                return cls.RAISE
+        return cls.OTHER
+
+    @classmethod
+    def only_builds(cls) -> frozenset[NameUseKind]:
+        """The uses that only make an instance: calling the class, raising it."""
+
+        return frozenset((cls.CONSTRUCT, cls.RAISE))
+
+
+@dataclass(frozen=True)
+class NameUse:
+    """One name spelled somewhere in a module, and what that spelling does."""
+
+    name: str
+    kind: NameUseKind
+
+    @classmethod
+    def in_module(cls, parsed_module: ParsedModule) -> frozenset[NameUse]:
+        """Every name the module spells: references by what they do; the
+        capitalised words of strings and comments, and explicit re-exports
+        (`from m import X as X`), as other uses."""
+
+        module = parsed_module.module
+        parents = {
+            id(child): node for node in ast.walk(module) for child in ast.iter_child_nodes(node)
+        }
+        uses: set[NameUse] = set()
+        for node in ast.walk(module):
+            match node:
+                case ast.Name(id=name) | ast.Attribute(attr=name):
+                    uses.add(cls(name, NameUseKind.of(node, parents.get(id(node)))))
+                case ast.Constant(value=str() as text):
+                    uses.update(cls(word, NameUseKind.OTHER) for word in SPELLED_WORD.findall(text))
+                case ast.alias(name=name, asname=exported) if exported == name:
+                    uses.add(cls(name, NameUseKind.OTHER))
+        for token in tokenize.generate_tokens(io.StringIO(parsed_module.source).readline):
+            if token.type == tokenize.COMMENT:
+                uses.update(
+                    cls(word, NameUseKind.OTHER) for word in SPELLED_WORD.findall(token.string)
+                )
+        return frozenset(uses)
+
+
+SPELLED_WORD = re.compile(r"(?<![\w])[A-Z]\w*")
+
+
+@dataclass(frozen=True)
+class EmptySubclass:
+    """A top-level class with one base, spelled as a bare name, and no body.
+
+    It has no decorators and no class keywords; its body is at most a
+    docstring, `pass` or `...`.
+    """
+
+    node: ast.ClassDef
+    base: ast.Name
+
+    @classmethod
+    def decoded(cls, node: ast.AST) -> Iterator[EmptySubclass]:
+        match node:
+            case ast.ClassDef(
+                bases=[ast.Name() as base], keywords=[], decorator_list=[], body=body
+            ) if all(cls.is_filler(statement) for statement in body):
+                yield cls(node, base)
+
+    @staticmethod
+    def is_filler(statement: ast.stmt) -> bool:
+        match statement:
+            case ast.Pass() | ast.Expr(value=ast.Constant(value=str() | EllipsisType())):
+                return True
+        return False
+
+    @property
+    def name(self) -> str:
+        return self.node.name
+
+
+@dataclass(frozen=True)
+class EmptySubclassSiteModule(RestatingSiteModule):
+    """One module's empty subclasses as sites, and every name it spells."""
+
+    uses: tuple[NameUse, ...] = ()
+
+
+class EmptySubclassSiteFamily(ShapeFamily[EmptySubclassSiteModule]):
+    """Top-level empty subclasses, one site each, with the module's name uses."""
+
+    item_type = EmptySubclassSiteModule
+
+    @classmethod
+    def collect(cls, parsed_module: ParsedModule) -> list[EmptySubclassSiteModule]:
+        return [
+            EmptySubclassSiteModule(
+                module_name=parsed_module.module_name,
+                sites=tuple(
+                    RestatingSite(
+                        parsed_module.file_path,
+                        subclass.node.lineno,
+                        subclass.name,
+                        subclass.name,
+                        (f"{parsed_module.module_name}.{subclass.name}", subclass.base.id),
+                    )
+                    for statement in parsed_module.module.body
+                    for subclass in EmptySubclass.decoded(statement)
+                ),
+                uses=tuple(
+                    sorted(NameUse.in_module(parsed_module), key=attrgetter("name", "kind"))
+                ),
+            )
+        ]
+
+
+@dataclass(frozen=True)
+class EmptySubclassIndex:
+    """The scan's empty subclasses that differ from their base only by name.
+
+    A class qualifies when its simple name is unique in the scan; every
+    spelling of that name anywhere constructs or raises it; it and every
+    ancestor resolve to scanned classes or builtins, none with a metaclass,
+    class keywords, a registering metaclass or an `__init_subclass__` that
+    stores the subclass (the class index's registration facts); and its base
+    is concrete, so constructing the base instead still works.
+    """
+
+    class_index: CompactClassFamilyIndex
+    kinds_by_name: Mapping[str, frozenset[NameUseKind]]
+    bases_by_symbol: Mapping[str, str]
+
+    @classmethod
+    def from_projection_groups(
+        cls, projections_by_family: dict[type[CollectedFamily[Any]], Sequence[object]]
+    ) -> EmptySubclassIndex:
+        class_index = CompactClassFamilyIndex.from_projection_groups(projections_by_family)
+        modules = EmptySubclassSiteFamily.modules_in(projections_by_family)
+        kinds: dict[str, set[NameUseKind]] = defaultdict(set)
+        for module in modules:
+            for use in module.uses:
+                kinds[use.name].add(use.kind)
+        index = cls(class_index, {name: frozenset(found) for name, found in kinds.items()}, {})
+        return replace(
+            index,
+            bases_by_symbol={
+                site.detail[0]: base
+                for module in modules
+                for site in module.sites
+                for base in index.undistinguished_base(site.detail[0], site.group)
+            },
+        )
+
+    def undistinguished_base(self, symbol: str, name: str) -> Iterator[str]:
+        """The base symbol, when `symbol` differs from it only by name."""
+
+        indexed = self.class_index.classes_by_symbol.get(symbol)
+        if indexed is None or not self.only_built(symbol, name):
+            return
+        match indexed.resolved_base_symbols:
+            case ():
+                yield indexed.declared_base_names[0]
+            case (base,) if not self.abstract(base):
+                yield base
+
+    def only_built(self, symbol: str, name: str) -> bool:
+        """Unique in the scan, built by every spelling, and with a closed, unregistered lineage."""
+
+        lineage = (symbol, *self.class_index.ancestor_symbols(symbol))
+        return (
+            self.class_index.symbols_by_simple_name.get(name) == (symbol,)
+            and self.kinds_by_name.get(name, frozenset()) <= NameUseKind.only_builds()
+            and all(map(self.closed_and_unregistered, lineage))
+        )
+
+    def closed_and_unregistered(self, symbol: str) -> bool:
+        indexed = self.class_index.classes_by_symbol.get(symbol)
+        if indexed is None:
+            return False
+        builtins_bases = sum(
+            1 for reference in indexed.base_references if self.builtin(reference)
+        )
+        return (
+            builtins_bases + len(indexed.resolved_base_symbols) == len(indexed.base_references)
+            and not indexed.declares_autoregister_meta
+            and not indexed.is_registration_authority
+            and not indexed.registry_facts.stores_subclass
+            and not indexed.metaclass_names
+            and not indexed.class_keyword_names
+        )
+
+    @staticmethod
+    def builtin(reference: object) -> bool:
+        match reference:
+            case BoundNominalReference(
+                root_binding=CompactNominalBinding(kind=CompactNominalBindingKind.BUILTIN)
+            ):
+                return True
+        return False
+
+    def abstract(self, symbol: str) -> bool:
+        indexed = self.class_index.classes_by_symbol[symbol]
+        return indexed.is_abstract or bool(indexed.abstract_method_names)
+
+    def siblings(self, symbol: str) -> tuple[str, ...]:
+        base = self.bases_by_symbol[symbol]
+        return tuple(
+            sorted(
+                other.rpartition(".")[2]
+                for other, other_base in self.bases_by_symbol.items()
+                if other_base == base and other != symbol
+            )
+        )
+
+
+@dataclass(frozen=True)
+class EnumMemberUse(ABC):
+    """One spelling of `Owner.MEMBER`, with the members spelled beside it."""
+
+    owner: str
+    member: str
+    together: tuple[str, ...]
+    line: int
+
+    @abstractmethod
+    def record(self, groups_by_member: dict[str, set[tuple[str, ...]]], alone: set[str]) -> None:
+        """Count this spelling toward the member's groups, or mark it named alone."""
+
+        raise NotImplementedError
+
+    @abstractmethod
+    def refusals(self, file_path: str, folded: tuple[str, ...]) -> Iterator[str]:
+        """Why this spelling forbids folding `folded`."""
+
+        raise NotImplementedError
+
+
+@dataclass(frozen=True)
+class GroupedMemberUse(EnumMemberUse):
+    """A member spelled inside a grouped test."""
+
+    def record(self, groups_by_member: dict[str, set[tuple[str, ...]]], alone: set[str]) -> None:
+        groups_by_member[self.member].add(self.together)
+
+    def refusals(self, file_path: str, folded: tuple[str, ...]) -> Iterator[str]:
+        missing = [other for other in folded if other not in self.together]
+        if self.member in folded and missing:
+            yield (
+                f"{file_path}:{self.line} names `{self.owner}.{self.member}` without "
+                f"{', '.join(f'`{other}`' for other in missing)}"
+            )
+
+
+@dataclass(frozen=True)
+class LoneMemberUse(EnumMemberUse):
+    """A member spelled on its own: read, passed, compared or reached by attribute."""
+
+    def record(self, groups_by_member: dict[str, set[tuple[str, ...]]], alone: set[str]) -> None:
+        alone.add(self.member)
+
+    def refusals(self, file_path: str, folded: tuple[str, ...]) -> Iterator[str]:
+        if self.member in folded:
+            yield (
+                f"{file_path}:{self.line} names `{self.owner}.{self.member}` outside a grouped test"
+            )
+
+
+def spelled_through(member: ast.Attribute, owner: str) -> bool:
+    """Whether `member` is an `owner.MEMBER` access."""
+
+    match member.value:
+        case ast.Name(id=spelled) | ast.Attribute(attr=spelled):
+            return spelled == owner
+    return False
+
+
+@dataclass(frozen=True)
+class MemberGroup(ABC):
+    """Where enum members are spelled: together in one grouped test, or alone."""
+
+    members: tuple[ast.Attribute, ...]
+
+    @abstractmethod
+    def use(self, owner: str, member: ast.Attribute) -> EnumMemberUse:
+        raise NotImplementedError
+
+    @abstractmethod
+    def folded(
+        self,
+        geometry: SourceTextGeometry,
+        owner: str,
+        folded: frozenset[str],
+        file_path: str,
+    ) -> Iterator[SourceTextSpanReplacement]:
+        """This group's source without the folded members' spellings."""
+
+        raise NotImplementedError
+
+    def names(self, owner: str) -> tuple[str, ...]:
+        return tuple(
+            sorted({member.attr for member in self.members if spelled_through(member, owner)})
+        )
+
+    @classmethod
+    def of(cls, member: ast.Attribute, parents: Mapping[int, ast.AST]) -> MemberGroup:
+        parent = parents.get(id(member))
+        grandparent = None if parent is None else parents.get(id(parent))
+        match parent, grandparent:
+            case (
+                ast.Tuple(elts=elements) | ast.List(elts=elements) | ast.Set(elts=elements),
+                ast.Compare(ops=[ast.In() | ast.NotIn()], comparators=[literal]),
+            ) if literal is parent:
+                return GroupedMembers(tuple(cls.members_in(elements)), parent)
+            case (ast.MatchValue(), ast.MatchOr(patterns=patterns)):
+                return GroupedMembers(
+                    tuple(
+                        value
+                        for pattern in patterns
+                        for value in cls.members_in(
+                            [pattern.value] if isinstance(pattern, ast.MatchValue) else []
+                        )
+                    ),
+                    grandparent,
+                )
+            case (
+                ast.Compare(ops=[ast.Is()], comparators=[compared]),
+                ast.BoolOp(op=ast.Or(), values=values),
+            ) if compared is member and cls.is_identity_chain(values):
+                return GroupedMembers(
+                    tuple(
+                        comparator
+                        for value in values
+                        for comparator in cls.members_in(cast(ast.Compare, value).comparators)
+                    ),
+                    grandparent,
+                )
+        return LoneMember((member,))
+
+    @staticmethod
+    def members_in(nodes: Sequence[ast.AST]) -> Iterator[ast.Attribute]:
+        for node in nodes:
+            match node:
+                case ast.Attribute(value=ast.Name() | ast.Attribute()):
+                    yield node
+
+    @staticmethod
+    def is_identity_chain(values: Sequence[ast.expr]) -> bool:
+        """`s is E.A or s is E.B ...`: every operand an `is` test of one subject."""
+
+        subjects = [
+            ast.dump(left)
+            for value in values
+            for left in (
+                [value.left]
+                if isinstance(value, ast.Compare) and isinstance(value.ops[0], ast.Is)
+                and len(value.ops) == 1
+                else []
+            )
+        ]
+        return len(subjects) == len(values) and len(set(subjects)) == 1
+
+
+@dataclass(frozen=True)
+class GroupedMembers(MemberGroup):
+    """`x in (E.A, E.B)`, `case E.A | E.B:` or `x is E.A or x is E.B`."""
+
+    node: ast.expr | ast.pattern
+
+    def use(self, owner: str, member: ast.Attribute) -> EnumMemberUse:
+        return GroupedMemberUse(owner, member.attr, self.names(owner), member.lineno)
+
+    def folded(
+        self,
+        geometry: SourceTextGeometry,
+        owner: str,
+        folded: frozenset[str],
+        file_path: str,
+    ) -> Iterator[SourceTextSpanReplacement]:
+        if folded.isdisjoint(self.names(owner)):
+            return
+        start, end = geometry.required_node_offsets(self.node)
+        if geometry.span_contains_comment(SourceTextSpan(start, end)):
+            raise ValueError(f"{file_path}:{self.node.lineno} folding would drop a comment")
+        yield SourceTextSpanReplacement.from_offsets(
+            start_offset=start,
+            end_offset=end,
+            replacement_source=self.source_without(geometry, owner, folded),
+        )
+
+    def source_without(
+        self, geometry: SourceTextGeometry, owner: str, folded: frozenset[str]
+    ) -> str:
+        """The grouped test's source with the folded members' spellings dropped."""
+
+        match self.node:
+            case ast.Tuple(elts=elements):
+                remaining = self.kept(geometry, elements, owner, folded)
+                return f"({remaining[0]},)" if len(remaining) == 1 else f"({', '.join(remaining)})"
+            case ast.List(elts=elements):
+                return f"[{', '.join(self.kept(geometry, elements, owner, folded))}]"
+            case ast.Set(elts=elements):
+                return f"{{{', '.join(self.kept(geometry, elements, owner, folded))}}}"
+            case ast.MatchOr(patterns=patterns):
+                return " | ".join(self.kept(geometry, patterns, owner, folded))
+            case ast.BoolOp(values=values):
+                return " or ".join(self.kept(geometry, values, owner, folded))
+        raise ValueError("Folding met a node that is not a grouped test")
+
+    @classmethod
+    def kept(
+        cls,
+        geometry: SourceTextGeometry,
+        parts: Sequence[ast.AST],
+        owner: str,
+        folded: frozenset[str],
+    ) -> list[str]:
+        """The source of each part that does not spell a folded member."""
+
+        return [
+            node_source(geometry, part)
+            for part in parts
+            if not cls.names_folded(part, owner, folded)
+        ]
+
+    @staticmethod
+    def names_folded(part: ast.AST, owner: str, folded: frozenset[str]) -> bool:
+        match part:
+            case ast.MatchValue(value=ast.Attribute() as member) | (
+                ast.Compare(comparators=[ast.Attribute() as member])
+            ) | (ast.Attribute() as member):
+                return member.attr in folded and spelled_through(member, owner)
+        return False
+
+
+@dataclass(frozen=True)
+class LoneMember(MemberGroup):
+    """One member spelled outside any grouped test."""
+
+    def use(self, owner: str, member: ast.Attribute) -> EnumMemberUse:
+        return LoneMemberUse(owner, member.attr, (member.attr,), member.lineno)
+
+    def folded(
+        self,
+        geometry: SourceTextGeometry,
+        owner: str,
+        folded: frozenset[str],
+        file_path: str,
+    ) -> Iterator[SourceTextSpanReplacement]:
+        """Nothing: a folded member spelled alone refuses the fold before any edit."""
+
+        yield from ()
+
+
+class EnumUseKind(StrEnum):
+    """What one spelling of an enum class name does."""
+
+    MEMBER = "member"
+    TYPE = "type"
+    OTHER = "other"
+
+    @classmethod
+    def of(cls, node: ast.AST, parents: Mapping[int, ast.AST]) -> EnumUseKind:
+        """A member access, a type use (annotation or `isinstance`), or anything else.
+
+        Calling, subscripting or iterating the class reaches members by value,
+        name or order, which a fold would change.
+        """
+
+        parent = parents.get(id(node))
+        match parent:
+            case ast.Attribute(value=owner) if owner is node:
+                return cls.MEMBER
+            case ast.arg(annotation=annotation) | ast.AnnAssign(annotation=annotation) if (
+                annotation is node
+            ):
+                return cls.TYPE
+            case ast.FunctionDef(returns=returned) | ast.AsyncFunctionDef(returns=returned) if (
+                returned is node
+            ):
+                return cls.TYPE
+            case ast.Call(func=callee, args=[_, tested]) if tested is node and any(
+                name.is_callee(callee) for name in BuiltinCallName.type_test_names()
+            ):
+                return cls.TYPE
+        return cls.OTHER
+
+
+@dataclass(frozen=True)
+class EnumClassUse:
+    """One spelling of a class name, by what it does."""
+
+    owner: str
+    kind: EnumUseKind
+    line: int
+
+
+@dataclass(frozen=True)
+class EnumMembers:
+    """A top-level class whose body only binds names to constants."""
+
+    node: ast.ClassDef
+
+    @classmethod
+    def decoded(cls, node: ast.AST) -> Iterator[EnumMembers]:
+        match node:
+            case ast.ClassDef(body=body, decorator_list=[]) if body and all(
+                cls.binds_member(statement) or EmptySubclass.is_filler(statement)
+                for statement in body
+            ):
+                yield cls(node)
+
+    @staticmethod
+    def binds_member(statement: ast.stmt) -> bool:
+        match statement:
+            case ast.Assign(targets=[ast.Name()], value=ast.Constant()):
+                return True
+        return False
+
+    @property
+    def statements_by_member(self) -> dict[str, ast.stmt]:
+        return {
+            target.id: statement
+            for statement in self.node.body
+            if self.binds_member(statement)
+            for target in cast(ast.Assign, statement).targets
+            if isinstance(target, ast.Name)
+        }
+
+
+@dataclass(frozen=True)
+class EnumUseModule(RestatingSiteModule):
+    """One module's literal-valued classes as sites, and every enum-shaped spelling."""
+
+    member_uses: tuple[EnumMemberUse, ...] = ()
+    class_uses: tuple[EnumClassUse, ...] = ()
+
+
+def enum_uses(
+    module: ast.Module, owners: Callable[[str], bool]
+) -> tuple[list[EnumMemberUse], list[EnumClassUse], list[MemberGroup]]:
+    """Every `Owner.MEMBER` and every other spelling of an owner that `owners` admits."""
+
+    parents = {id(child): node for node in ast.walk(module) for child in ast.iter_child_nodes(node)}
+    member_uses: list[EnumMemberUse] = []
+    class_uses: list[EnumClassUse] = []
+    groups: list[MemberGroup] = []
+    for node in ast.walk(module):
+        match node:
+            case ast.Attribute(value=ast.Name(id=owner) | ast.Attribute(attr=owner)) if owners(
+                owner
+            ):
+                group = MemberGroup.of(node, parents)
+                groups.append(group)
+                member_uses.append(group.use(owner, node))
+        match node:
+            case ast.Name(id=owner) | ast.Attribute(attr=owner) if owners(owner):
+                class_uses.append(
+                    EnumClassUse(owner, EnumUseKind.of(node, parents), node.lineno)
+                )
+    return member_uses, class_uses, groups
+
+
+class EnumUseSiteFamily(ShapeFamily[EnumUseModule]):
+    """Literal-valued classes, one site each, and the module's enum-shaped spellings.
+
+    Owners are spelled names that some scanned class could be: capitalised,
+    the shape a class name takes. The join keeps only plain Enum classes.
+    """
+
+    item_type = EnumUseModule
+
+    @classmethod
+    def collect(cls, parsed_module: ParsedModule) -> list[EnumUseModule]:
+        member_uses, class_uses, _groups = enum_uses(
+            parsed_module.module, cls.spelled_like_a_class
+        )
+        return [
+            EnumUseModule(
+                module_name=parsed_module.module_name,
+                sites=tuple(
+                    RestatingSite(
+                        parsed_module.file_path,
+                        members.node.lineno,
+                        members.node.name,
+                        members.node.name,
+                        (f"{parsed_module.module_name}.{members.node.name}",),
+                    )
+                    for statement in parsed_module.module.body
+                    for members in EnumMembers.decoded(statement)
+                ),
+                member_uses=tuple(dict.fromkeys(member_uses)),
+                class_uses=tuple(dict.fromkeys(class_uses)),
+            )
+        ]
+
+    @staticmethod
+    def spelled_like_a_class(name: str) -> bool:
+        return name[:1].isupper()
+
+
+@dataclass(frozen=True)
+class EnumMemberIndex:
+    """Plain-Enum members that every spelling in the scan names together.
+
+    Members qualify when the class is a plain `Enum` with literal values and a
+    simple name unique in the scan; every spelling of the class is a member
+    access or a type use; every spelling of each member sits in a grouped
+    form; and the members share exactly the same groups.
+    """
+
+    class_index: CompactClassFamilyIndex
+    folds: Mapping[str, tuple[tuple[str, ...], ...]]
+
+    @classmethod
+    def from_projection_groups(
+        cls, projections_by_family: dict[type[CollectedFamily[Any]], Sequence[object]]
+    ) -> EnumMemberIndex:
+        class_index = CompactClassFamilyIndex.from_projection_groups(projections_by_family)
+        modules = EnumUseSiteFamily.modules_in(projections_by_family)
+        member_uses: dict[str, list[EnumMemberUse]] = defaultdict(list)
+        class_kinds: dict[str, set[EnumUseKind]] = defaultdict(set)
+        for module in modules:
+            for use in module.member_uses:
+                member_uses[use.owner].append(use)
+            for class_use in module.class_uses:
+                class_kinds[class_use.owner].add(class_use.kind)
+        folds = {
+            site.detail[0]: found
+            for module in modules
+            for site in module.sites
+            if cls.plain_enum(class_index, site.detail[0], site.group)
+            and class_kinds.get(site.group, set()) <= {EnumUseKind.MEMBER, EnumUseKind.TYPE}
+            for found in [cls.undistinguished(member_uses.get(site.group, []))]
+            if found
+        }
+        return cls(class_index, folds)
+
+    @staticmethod
+    def plain_enum(class_index: CompactClassFamilyIndex, symbol: str, name: str) -> bool:
+        indexed = class_index.classes_by_symbol.get(symbol)
+        if indexed is None or class_index.symbols_by_simple_name.get(name) != (symbol,):
+            return False
+        match indexed.enum_declaration:
+            case PythonEnumDeclarationAuthority(base=PythonEnumBaseKind.ENUM):
+                return not indexed.method_names
+        return False
+
+    @staticmethod
+    def undistinguished(uses: Sequence[EnumMemberUse]) -> tuple[tuple[str, ...], ...]:
+        """Sets of two or more members spelled only in groups, and always together."""
+
+        groups_by_member: dict[str, set[tuple[str, ...]]] = defaultdict(set)
+        alone: set[str] = set()
+        for use in uses:
+            use.record(groups_by_member, alone)
+        by_groups: dict[frozenset[tuple[str, ...]], list[str]] = defaultdict(list)
+        for member, groups in groups_by_member.items():
+            if member not in alone:
+                by_groups[frozenset(groups)].append(member)
+        return tuple(
+            sorted(tuple(sorted(members)) for members in by_groups.values() if len(members) > 1)
+        )

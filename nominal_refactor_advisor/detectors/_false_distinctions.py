@@ -8,13 +8,22 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
+from ..class_index import CompactModuleClassProjectionFamily
 from ..codemod_false_distinctions import (
     CollapseIdenticalArmsOperation,
+    EnumFoldFindingRecipeSynthesizer,
+    FoldEnumMembersOperation,
+    EmptySubclassFindingRecipeSynthesizer,
+    RedirectEmptySubclassOperation,
     IdenticalArmsFindingRecipeSynthesizer,
     MergeTypeTestArmsOperation,
     UndistinguishedTypeTestFindingRecipeSynthesizer,
 )
 from ..false_distinction_observations import (
+    EmptySubclassIndex,
+    EnumMemberIndex,
+    EnumUseSiteFamily,
+    EmptySubclassSiteFamily,
     IdenticalArmsSiteFamily,
     UndistinguishedTypeArmsSiteFamily,
 )
@@ -22,6 +31,7 @@ from ..patterns import PatternId
 from ..restated_fact_observations import RestatingSite
 from ..taxonomy import ObservationTag
 from ._restated_facts import (
+    JoinedRestatedFactDetector,
     RestatedFact,
     SingleFamilyRestatedFactDetector,
     _listed,
@@ -86,4 +96,90 @@ class UndistinguishedTypeTestDetector(
         return f"`{sites[0].symbol}` tests classes whose arms run the same code: {groups}."
 
 
-__all__ = ("IdenticalArmsDetector", "UndistinguishedTypeTestDetector")
+class NameOnlySubclassDetector(
+    JoinedRestatedFactDetector[EmptySubclassIndex, RestatingSite],
+    EmptySubclassFindingRecipeSynthesizer,
+):
+    """An empty subclass that every spelling only constructs or raises."""
+
+    module_projection_families = (
+        EmptySubclassSiteFamily,
+        CompactModuleClassProjectionFamily,
+    )
+    compact_shared_group_context_builder = staticmethod(
+        EmptySubclassIndex.from_projection_groups
+    )
+    restated = RestatedFact(
+        fact="The subclass declares nothing and nothing in the scan tells it apart from its base: every spelling of it constructs or raises it, so its name is the only difference.",
+        owner="The owner is the base class, which already is everything the subclass is.",
+        factoring="Delete the subclass and rewrite every import and reference onto the base; a reference that tests, catches, annotates or spells the subclass is a distinction, so the class stays.",
+        operations=(RedirectEmptySubclassOperation,),
+    )
+    finding_spec = restated.spec(
+        PatternId.NAME_ONLY_SUBCLASS,
+        "A subclass differs from its base only by name",
+        "the subclass deleted and its consumers using the base",
+        "a top-level, undecorated, unregistered class with one concrete base and no body, whose name is unique in the scan and every spelling of which constructs or raises it",
+        (),
+        (ObservationTag.CLASS_FAMILY,),
+    )
+
+    def admits(self, sites: Sequence[RestatingSite], context: EmptySubclassIndex) -> bool:
+        return sites[0].detail[0] in context.bases_by_symbol
+
+    def describe(self, sites: Sequence[RestatingSite], context: EmptySubclassIndex) -> str:
+        symbol, base = sites[0].detail
+        siblings = context.siblings(symbol)
+        named = ", ".join(f"`{name}`" for name in siblings)
+        alongside = {
+            0: "",
+            1: f"; its sibling {named} differs the same way",
+        }.get(len(siblings), f"; its siblings {named} differ the same way")
+        return (
+            f"`{sites[0].symbol}` differs from its base `{base}` only by name: "
+            f"every spelling of it constructs or raises it{alongside}."
+        )
+
+
+class UndistinguishedEnumMembersDetector(
+    JoinedRestatedFactDetector[EnumMemberIndex, RestatingSite],
+    EnumFoldFindingRecipeSynthesizer,
+):
+    """Plain-Enum members that every spelling names together."""
+
+    module_projection_families = (EnumUseSiteFamily, CompactModuleClassProjectionFamily)
+    compact_shared_group_context_builder = staticmethod(
+        EnumMemberIndex.from_projection_groups
+    )
+    restated = RestatedFact(
+        fact="Every test that names one of these members names the others with it, so the enum declares a distinction between them that no code makes.",
+        owner="The owner is one member: the first of them, which every grouped test already accepts.",
+        factoring="Delete the other members and drop their spellings from each grouped test; a member read alone, by value, by name or by iterating the enum is a distinction, so the members stay.",
+        operations=(FoldEnumMembersOperation,),
+    )
+    finding_spec = restated.spec(
+        PatternId.UNDISTINGUISHED_ENUM_MEMBERS,
+        "Enum members are only ever named together",
+        "one member where the code never tells them apart",
+        "members of a plain Enum with literal values, unique in the scan and spelled only by member access or as a type, whose every spelling is in `in (...)`, `case A | B` or `is A or is B` with all of them",
+        (),
+        (ObservationTag.CLOSED_FAMILY_CASES,),
+    )
+
+    def admits(self, sites: Sequence[RestatingSite], context: EnumMemberIndex) -> bool:
+        return sites[0].detail[0] in context.folds
+
+    def describe(self, sites: Sequence[RestatingSite], context: EnumMemberIndex) -> str:
+        folds = "; ".join(
+            ", ".join(f"`{sites[0].symbol}.{member}`" for member in members)
+            for members in context.folds[sites[0].detail[0]]
+        )
+        return f"`{sites[0].symbol}` has members that every spelling names together: {folds}."
+
+
+__all__ = (
+    "IdenticalArmsDetector",
+    "UndistinguishedEnumMembersDetector",
+    "NameOnlySubclassDetector",
+    "UndistinguishedTypeTestDetector",
+)

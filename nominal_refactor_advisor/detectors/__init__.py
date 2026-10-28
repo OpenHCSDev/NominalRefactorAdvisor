@@ -38,6 +38,8 @@ from ._environment import (
 )
 from ._false_distinctions import (
     IdenticalArmsDetector,
+    NameOnlySubclassDetector,
+    UndistinguishedEnumMembersDetector,
     UndistinguishedTypeTestDetector,
 )
 from ._record_checks import (
@@ -113,6 +115,8 @@ __all__ = (
     "ExactKeySetDetector",
     "HandRolledRegistrationDetector",
     "IdenticalArmsDetector",
+    "NameOnlySubclassDetector",
+    "UndistinguishedEnumMembersDetector",
     "UndistinguishedTypeTestDetector",
     "ExactLeafMethodAncestorPromotionDetector",
     "ExternalEnumCaseRecoveryDetector",

@@ -7,8 +7,9 @@ import io
 import re
 import tokenize
 from collections import defaultdict, deque
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from functools import cached_property
+from typing import ClassVar, Self
 
 from .lexical_bindings import ImportAlias, ImportBoundNameProjection
 from .annotation_semantics import StringizedAnnotationSurface
@@ -72,6 +73,41 @@ class TopLevelBindingRenameTarget:
         binding_name: str,
         new_name: str,
     ) -> TopLevelBindingRenameTarget:
+        source_module, declaration_index = cls._located(parsed_modules, source_path)
+        if binding_name == new_name:
+            raise ValueError("Declaration rename requires a distinct name")
+        if new_name in declaration_index.binding_statements_by_name:
+            raise ValueError(f"Replacement name {new_name!r} is already bound")
+        return cls._exported(source_module, declaration_index, binding_name)
+
+    @classmethod
+    def require_redirect(
+        cls,
+        parsed_modules: tuple[ParsedModule, ...],
+        target: AstTargetDigest,
+        node: ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef,
+        *,
+        bound_name: str,
+    ) -> TopLevelBindingRenameTarget:
+        """The declaration a redirect deletes: its consumers read `bound_name`,
+        which its module already binds."""
+
+        if target.qualname != target.name:
+            raise ValueError("Declaration redirect requires a top-level target")
+        source_module, declaration_index = cls._located(parsed_modules, target.file_path)
+        if bound_name == target.name:
+            raise ValueError("Declaration redirect requires a distinct name")
+        if bound_name not in declaration_index.binding_statements_by_name:
+            raise ValueError(f"Redirect name {bound_name!r} is not bound at the top level")
+        redirected = cls._exported(source_module, declaration_index, target.name)
+        if redirected.declaration.node is not node:
+            raise ValueError("Declaration redirect target is not one exact binding")
+        return redirected
+
+    @staticmethod
+    def _located(
+        parsed_modules: tuple[ParsedModule, ...], source_path: str
+    ) -> tuple[ParsedModule, SourceTopLevelDeclarationIndex]:
         modules_by_path = {module.file_path: module for module in parsed_modules}
         if len(modules_by_path) != len(parsed_modules):
             raise ValueError("Declaration rename requires unique source modules")
@@ -82,15 +118,19 @@ class TopLevelBindingRenameTarget:
         source_module = modules_by_path.get(source_path)
         if source_module is None:
             raise ValueError(f"Source module {source_path!r} is unavailable")
-        declaration_index = SourceTopLevelDeclarationIndex(
+        return source_module, SourceTopLevelDeclarationIndex(
             source_path=source_path,
             module=source_module.module,
         )
+
+    @classmethod
+    def _exported(
+        cls,
+        source_module: ParsedModule,
+        declaration_index: SourceTopLevelDeclarationIndex,
+        binding_name: str,
+    ) -> TopLevelBindingRenameTarget:
         declaration = declaration_index.required_declaration(binding_name)
-        if binding_name == new_name:
-            raise ValueError("Declaration rename requires a distinct name")
-        if new_name in declaration_index.binding_statements_by_name:
-            raise ValueError(f"Replacement name {new_name!r} is already bound")
         if (
             module_public_export_contract(source_module)
             .exposure_for(binding_name)
@@ -351,7 +391,7 @@ class DeclarationAuthorityModuleRenameProof:
         new_name: str,
         binding_closure: DeclarationAuthorityRenameBindingClosure,
         repository_bindings: RepositoryModuleBindingProof,
-    ) -> DeclarationAuthorityModuleRenameProof:
+    ) -> Self:
         target = binding_closure.target
         imports = binding_closure.imports_for(module)
         cls._require_supported_import_surfaces(
@@ -701,9 +741,73 @@ class DeclarationAuthorityModuleRenameProof:
 
 
 @dataclass(frozen=True)
+class DeclarationAuthorityModuleRedirectProof(DeclarationAuthorityModuleRenameProof):
+    """Rename surfaces of one module for a declaration deleted in favour of a
+    name its own module already binds.
+
+    A consumer that already binds that name to the same object drops its
+    import of the deleted declaration instead of renaming it; a consumer that
+    binds the name to anything else is a collision.
+    """
+
+    redirected_imports_are_removed: bool = False
+    """Whether this consumer already binds the redirect name, so its imports of
+    the deleted declaration are removed rather than renamed."""
+
+    @classmethod
+    def require(
+        cls,
+        module: ParsedModule,
+        new_name: str,
+        binding_closure: DeclarationAuthorityRenameBindingClosure,
+        repository_bindings: RepositoryModuleBindingProof,
+    ) -> Self:
+        proof = super().require(module, new_name, binding_closure, repository_bindings)
+        return replace(
+            proof,
+            redirected_imports_are_removed=module.file_path != binding_closure.target.file_path
+            and new_name
+            in SourceTopLevelDeclarationIndex(
+                source_path=module.file_path, module=module.module
+            ).binding_statements_by_name,
+        )
+
+    @staticmethod
+    def _require_import_binding_collisions_absent(
+        module: ParsedModule,
+        target: TopLevelBindingRenameTarget,
+        new_name: str,
+        imports: tuple[DeclarationAuthorityImportReference, ...],
+    ) -> None:
+        bound = SourceTopLevelDeclarationIndex(
+            source_path=module.file_path, module=module.module
+        ).binding_statements_by_name
+        if new_name not in bound:
+            DeclarationAuthorityModuleRenameProof._require_import_binding_collisions_absent(
+                module, target, new_name, imports
+            )
+            return
+        if not imports:
+            return
+        expected = (
+            ModuleNominalBindingAuthority(target.source_module)
+            .snapshot_before()
+            .binding_for(new_name)
+        )
+        found = ModuleNominalBindingAuthority(module).snapshot_before().binding_for(new_name)
+        if expected is None or found is None or found.qualified_name != expected.qualified_name:
+            raise ValueError(
+                f"Redirect name {new_name!r} binds another object in {module.file_path!r}"
+            )
+
+
+@dataclass(frozen=True)
 class DeclarationAuthorityRenameProof:
     """Closed repository proof for one top-level declaration-authority rename."""
 
+    module_proof_type: ClassVar[type[DeclarationAuthorityModuleRenameProof]] = (
+        DeclarationAuthorityModuleRenameProof
+    )
     binding_closure: DeclarationAuthorityRenameBindingClosure
     modules: tuple[DeclarationAuthorityModuleRenameProof, ...]
 
@@ -759,7 +863,7 @@ class DeclarationAuthorityRenameProof:
         )
         repository_bindings = RepositoryModuleBindingProof(parsed_modules)
         modules = tuple(
-            DeclarationAuthorityModuleRenameProof.require(
+            cls.module_proof_type.require(
                 module,
                 new_name,
                 binding_closure,
@@ -819,3 +923,27 @@ class DeclarationAuthorityRenameProof:
                         f"Declaration authority {target.name!r} has a comment "
                         "name surface"
                     )
+
+
+@dataclass(frozen=True)
+class DeclarationRedirectProof(DeclarationAuthorityRenameProof):
+    """Closed repository proof that one declaration can be deleted and every
+    consumer read a name its module already binds."""
+
+    module_proof_type: ClassVar[type[DeclarationAuthorityModuleRenameProof]] = (
+        DeclarationAuthorityModuleRedirectProof
+    )
+
+    @classmethod
+    def require_redirect(
+        cls,
+        parsed_modules: tuple[ParsedModule, ...],
+        target: AstTargetDigest,
+        node: ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef,
+        *,
+        bound_name: str,
+    ) -> DeclarationAuthorityRenameProof:
+        redirected = TopLevelBindingRenameTarget.require_redirect(
+            parsed_modules, target, node, bound_name=bound_name
+        )
+        return cls._from_target(parsed_modules, redirected, new_name=bound_name)
