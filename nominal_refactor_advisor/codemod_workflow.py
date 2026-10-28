@@ -100,7 +100,7 @@ class CodemodRefactorTrajectoryStatus(StrEnum):
         True,
         lambda proof: not proof.obstacles
         and not proof.terminals
-        and proof.best_partial_terminal is not None,
+        and len(proof.best_partial_terminals) == 1,
     )
     NO_TERMINAL_STATE = (
         "no_terminal_state",
@@ -119,8 +119,7 @@ class CodemodRefactorTrajectoryStatus(StrEnum):
             len(proof.terminals) > 1
             or (
                 not proof.terminals
-                and bool(proof.partial_terminals)
-                and proof.best_partial_terminal is None
+                and len(proof.best_partial_terminals) > 1
             )
         ),
     )
@@ -1089,18 +1088,18 @@ class CodemodRefactorTrajectoryProof(DataclassJsonReport):
         return len(self.partial_terminals)
 
     @property
-    def best_partial_terminal(self) -> CodemodRefactorPartialTerminal | None:
-        """The partial terminal leaving the fewest targets, when exactly one does."""
+    def best_partial_terminals(self) -> tuple[CodemodRefactorPartialTerminal, ...]:
+        """The partial terminals tied for leaving the fewest targets."""
 
-        if not self.partial_terminals:
-            return None
-        fewest = min(terminal.remaining_target_count for terminal in self.partial_terminals)
-        best = tuple(
+        fewest = min(
+            (terminal.remaining_target_count for terminal in self.partial_terminals),
+            default=0,
+        )
+        return tuple(
             terminal
             for terminal in self.partial_terminals
             if terminal.remaining_target_count == fewest
         )
-        return best[0] if len(best) == 1 else None
 
     @property
     def proved_terminal(
@@ -1110,8 +1109,7 @@ class CodemodRefactorTrajectoryProof(DataclassJsonReport):
             raise TypeError("trajectory proof has no unique proved terminal state")
         if self.terminals:
             return next(iter(self.terminals))
-        best = self.best_partial_terminal
-        assert best is not None
+        (best,) = self.best_partial_terminals
         return best
 
 @dataclass(frozen=True)
