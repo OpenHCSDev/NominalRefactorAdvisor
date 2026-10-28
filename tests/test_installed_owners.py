@@ -99,9 +99,14 @@ def test_a_declared_owner_package_names_the_installed_owner(tmp_path: Path) -> N
     (manual,) = _summaries(root, detectors.ManualClassRegistrationDetector)
 
     assert hand_rolled.startswith(
-        "`RegistryMeta` stores each class it creates in a mapping. Installed "
-        f"`{OWNER}` (metaclass-registry "
+        "`RegistryMeta` stores each class it creates in a mapping. Installed owners "
+        f"(confidence uncalibrated): 1.00 inherit or compose installed `{OWNER}` "
+        "(metaclass-registry "
     )
+    # Declared but not yet imported, so the move adds the dependency; only the
+    # hand-rolled metaclass plays the owner's role.
+    assert "(-0.25 import_added, +1.00 plays_same_role)" in hand_rolled
+    assert "(-0.25 import_added)" in manual
     assert f"Move: make the family inherit or compose `{OWNER}`" in hand_rolled
     assert f"Move: register through `{OWNER}` at class creation" in manual
     for summary in (hand_rolled, manual):

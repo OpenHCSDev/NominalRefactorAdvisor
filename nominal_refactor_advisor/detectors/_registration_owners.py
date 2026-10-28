@@ -6,11 +6,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from ..class_index import CompactIndexedClass
-from ..installed_owners import (
-    InstalledRegistrationOwner,
-    RegistrationOwners,
-    RegistrationRole,
-)
+from ..installed_owners import RegistrationOwners, RegistrationRole
+from ..owner_candidates import OwnerCandidate, ranked
 from ..models import RefactorFinding, SourceLocation
 from ..patterns import PatternId
 from ..taxonomy import CapabilityTag, ObservationTag
@@ -29,7 +26,8 @@ class HandRolledRegistration:
 
     indexed_class: CompactIndexedClass
     role: RegistrationRole
-    owners: tuple[InstalledRegistrationOwner, ...]
+    owners: tuple[OwnerCandidate, ...]
+    """The installed owners, ranked."""
     scope: RegistrationOwners
 
     @property
@@ -80,7 +78,9 @@ class HandRolledRegistrationDetector(
                     Path(indexed_class.file_path),
                 ),
             )
-            owners = scope.owners_besides(indexed_class.symbol)
+            owners = ranked(
+                scope.candidates(frozenset({indexed_class.symbol}), roles, 0)
+            )
             if owners:
                 candidates.append(
                     HandRolledRegistration(indexed_class, roles[0], owners, scope)
@@ -92,9 +92,10 @@ class HandRolledRegistrationDetector(
         how = candidate.role.finding_text
         return self.build_finding(
             (
-                f"`{candidate.indexed_class.qualname}` {how}. Installed "
-                + "; ".join(owner.receipt for owner in candidate.owners)
-                + f". Move: make the family inherit or compose `{owner.symbol}` and "
+                f"`{candidate.indexed_class.qualname}` {how}. Installed owners "
+                "(confidence uncalibrated): "
+                + OwnerCandidate.ranked_text(candidate.owners)
+                + f". Move: make the family inherit or compose `{owner.candidate_id}` and "
                 "delete this class's own registration. Considered: "
                 + (", ".join(candidate.scope.distributions) or "no distributions")
                 + f"; {candidate.scope.premise}"

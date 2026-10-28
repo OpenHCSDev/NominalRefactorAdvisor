@@ -76,6 +76,7 @@ from ..codemod import (
 )
 from ..collection_algebra import sorted_tuple
 from ..installed_owners import RegistrationOwners
+from ..owner_candidates import OwnerCandidate, ranked
 from ..models import (
     ConstructorOwnedMappingMetrics,
     HierarchyCandidateMetrics,
@@ -1689,11 +1690,12 @@ class ManualClassRegistrationDetector(
         class_names = {item.registered_class for item in registrations}
         registry_name = registrations[0].registry_name
         scope = candidate.scope
+        owners = ranked(scope.candidates(frozenset(), (), len(registrations)))
         owner_text = (
-            "Installed owner: "
-            + "; ".join(owner.receipt for owner in scope.owners)
-            + f". Move: register through `{scope.owners[0].symbol}` at class creation."
-            if scope.owners
+            "Installed owners (confidence uncalibrated): "
+            + OwnerCandidate.ranked_text(owners)
+            + f". Move: register through `{owners[0].candidate_id}` at class creation."
+            if owners
             else "No installed dependency declares a class-creation registration "
             "owner (gap); declare one in owner-packages, or own registration in one "
             "metaclass or `__init_subclass__` base here."

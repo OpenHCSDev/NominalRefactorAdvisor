@@ -36,6 +36,7 @@ from collections.abc import Iterable, Iterator
 from dataclasses import asdict, dataclass
 from enum import StrEnum
 from functools import cache
+from typing import ClassVar
 from importlib import metadata
 from pathlib import Path
 
@@ -43,6 +44,9 @@ from .cache_paths import AdvisorCacheLayout
 from .class_creation_store import CreatedClassStore
 from .class_index import CompactModuleClassHeader
 from .declared_root import DeclaredRoot
+from .models import SourceLocation
+from .owner_candidates import OwnerCandidate, OwnerCost, OwnerReceiptKind
+from .receipts import Receipt
 
 
 class RegistrationRole(StrEnum):
@@ -148,6 +152,20 @@ class InstalledRegistrationOwner:
             f"{self.record_digest[:12]}) {self.role.receipt_text}, read from "
             f"{self.file_path}:{self.line}"
         )
+
+
+@dataclass(frozen=True, kw_only=True)
+class InstalledOwner(OwnerCandidate):
+    """An installed class that already registers its family, as the owner a
+    hand-rolled registration would inherit or compose instead (#71). It is
+    ranked with the same receipts and softmax as every other owner candidate."""
+
+    installed: InstalledRegistrationOwner
+
+    KIND: ClassVar[str] = "installed_owner"
+
+    def describe(self) -> str:
+        return f"inherit or compose installed {self.installed.receipt}"
 
 
 @dataclass(frozen=True)
@@ -273,6 +291,9 @@ class RegistrationOwners:
 
     owners: tuple[InstalledRegistrationOwner, ...]
     distributions: tuple[str, ...]
+    imported: frozenset[str]
+    """The distributions the scanned package already imports; a declared one
+    it does not import yet is a dependency the move adds."""
     gaps: tuple[str, ...]
     declaration: OwnerPackagesDeclaration | None
 
@@ -293,6 +314,7 @@ class RegistrationOwners:
         }
         declared = () if declaration is None else declaration.packages
         found: list[InstalledDistributionOwners] = []
+        imported: set[str] = set()
         gaps: list[str] = []
         for distribution in sorted(wanted | set(declared)):
             owners = InstalledDistributionOwners.of(distribution)
@@ -305,9 +327,12 @@ class RegistrationOwners:
                     )
                 continue
             found.append(owners)
+            if distribution in wanted:
+                imported.add(owners.distribution)
         return cls(
             tuple(owner for distribution in found for owner in distribution.owners),
             tuple(f"{item.distribution} {item.version}" for item in found),
+            frozenset(imported),
             tuple(gaps),
             declaration,
         )
@@ -336,8 +361,55 @@ class RegistrationOwners:
             source,
         )
 
-    def owners_besides(self, symbol: str) -> tuple[InstalledRegistrationOwner, ...]:
-        return tuple(owner for owner in self.owners if owner.symbol != symbol)
+    def candidates(
+        self,
+        besides: frozenset[str],
+        roles: tuple[RegistrationRole, ...],
+        rewritten: int,
+    ) -> tuple[InstalledOwner, ...]:
+        """Each installed owner not in ``besides`` as an owner candidate for a
+        registration that plays ``roles`` and rewrites ``rewritten`` statements."""
+
+        return tuple(
+            InstalledOwner(
+                candidate_id=owner.symbol,
+                module_name=owner.symbol.rpartition(".")[0],
+                receipts=self._receipts(owner, roles),
+                cost=OwnerCost(
+                    rewritten, int(owner.distribution not in self.imported), 0
+                ),
+                installed=owner,
+            )
+            for owner in self.owners
+            if owner.symbol not in besides
+        )
+
+    def _receipts(
+        self, owner: InstalledRegistrationOwner, roles: tuple[RegistrationRole, ...]
+    ) -> tuple[Receipt, ...]:
+        evidence = (SourceLocation(owner.file_path, owner.line, owner.symbol),)
+        imported = owner.distribution in self.imported
+        return (
+            Receipt(
+                OwnerReceiptKind.ALREADY_IMPORTED
+                if imported
+                else OwnerReceiptKind.IMPORT_ADDED,
+                f"{owner.distribution} is "
+                + ("already imported" if imported else "declared, not yet imported"),
+                evidence,
+            ),
+            *(
+                (
+                    Receipt(
+                        OwnerReceiptKind.PLAYS_SAME_ROLE,
+                        f"registers as a {owner.role.value}, as the local class does",
+                        evidence,
+                    ),
+                )
+                if owner.role in roles
+                else ()
+            ),
+        )
 
     @property
     def premise(self) -> str:
@@ -359,6 +431,7 @@ def _distributions_by_top_level() -> dict[str, tuple[str, ...]]:
 
 __all__ = (
     "InstalledDistributionOwners",
+    "InstalledOwner",
     "InstalledRegistrationOwner",
     "OwnerPackagesDeclaration",
     "RegistrationOwners",
