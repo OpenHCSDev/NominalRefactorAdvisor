@@ -94,6 +94,8 @@ from .value_graph import (
 
 if TYPE_CHECKING:
     from .native_reference import NativeReferenceEnvironment
+    from .class_index import CompactPublicNameExposure
+    from .product_flow_authority import ProductFlowRepository
 
 
 SourcePositionedNode: TypeAlias = (
@@ -238,10 +240,10 @@ class CompactFunctionBindingKind(StrEnum):
 
     def matches_declaration(
         self,
-        owner_class_qualname: str | None,
+        owner_class: FunctionOwnerClass,
         decorators: tuple[CompactValueExpression, ...],
     ) -> bool:
-        if (owner_class_qualname is not None) != self._class_owned:
+        if not owner_class.admits(self):
             return False
         if self._binding_decorator is not None:
             return self._binding_decorator.matches_any(decorators)
@@ -258,13 +260,13 @@ class CompactFunctionBindingKind(StrEnum):
     @classmethod
     def from_declaration(
         cls,
-        owner_class_qualname: str | None,
+        owner_class: FunctionOwnerClass,
         decorators: tuple[CompactValueExpression, ...],
     ) -> Self:
         return next(
             member
             for member in cls
-            if member.matches_declaration(owner_class_qualname, decorators)
+            if member.matches_declaration(owner_class, decorators)
         )
 
 
@@ -2853,11 +2855,146 @@ class CompactNamespaceFlowOwner(CompactFlowOwner):
         return None
 
 
+class FunctionOwnerClass(ABC):
+    """The class whose body directly defines a function, or none for a free function."""
+
+    @abstractmethod
+    def admits(self, binding_kind: CompactFunctionBindingKind) -> bool:
+        """Whether a function owned this way can bind as this kind."""
+        raise NotImplementedError
+
+    @abstractmethod
+    def is_class(self, class_qualname: str) -> bool:
+        raise NotImplementedError
+
+    @abstractmethod
+    def require_qualname(self) -> str:
+        """The owning class qualname; a free function has none to give."""
+        raise NotImplementedError
+
+    @abstractmethod
+    def preserves_alias_call_binding(
+        self,
+        alias: CompactExactValueAlias,
+        owner: CompactFlowOwner,
+        declaring_module_name: str,
+        module_name: str,
+    ) -> bool:
+        raise NotImplementedError
+
+    @abstractmethod
+    def boundary_exposure_in(
+        self,
+        authority: ProductFlowRepository,
+        declaration: CompactFunctionDeclaration,
+    ) -> CompactPublicNameExposure:
+        raise NotImplementedError
+
+    @abstractmethod
+    def leaves_method_family_incomplete(
+        self,
+        authority: ProductFlowRepository,
+        declaration: CompactFunctionDeclaration,
+        participant_symbols: frozenset[str],
+    ) -> bool:
+        """Whether a related override outside the participants can bind this method."""
+        raise NotImplementedError
+
+
+@dataclass(frozen=True)
+class NoOwnerClass(FunctionOwnerClass):
+    """A free function: module-level or nested in another function."""
+
+    def admits(self, binding_kind: CompactFunctionBindingKind) -> bool:
+        return not binding_kind._class_owned
+
+    def is_class(self, class_qualname: str) -> bool:
+        return False
+
+    def require_qualname(self) -> str:
+        raise ValueError("A free function has no owning class")
+
+    def preserves_alias_call_binding(
+        self,
+        alias: CompactExactValueAlias,
+        owner: CompactFlowOwner,
+        declaring_module_name: str,
+        module_name: str,
+    ) -> bool:
+        return not owner.kind.is_class_body_scope
+
+    def boundary_exposure_in(
+        self,
+        authority: ProductFlowRepository,
+        declaration: CompactFunctionDeclaration,
+    ) -> CompactPublicNameExposure:
+        return authority.free_function_boundary_exposure(declaration)
+
+    def leaves_method_family_incomplete(
+        self,
+        authority: ProductFlowRepository,
+        declaration: CompactFunctionDeclaration,
+        participant_symbols: frozenset[str],
+    ) -> bool:
+        return False
+
+
+@dataclass(frozen=True)
+class OwnerClass(FunctionOwnerClass):
+    """The class whose body directly defines the method."""
+
+    qualname: str
+
+    def admits(self, binding_kind: CompactFunctionBindingKind) -> bool:
+        return binding_kind._class_owned
+
+    def is_class(self, class_qualname: str) -> bool:
+        return self.qualname == class_qualname
+
+    def require_qualname(self) -> str:
+        return self.qualname
+
+    def preserves_alias_call_binding(
+        self,
+        alias: CompactExactValueAlias,
+        owner: CompactFlowOwner,
+        declaring_module_name: str,
+        module_name: str,
+    ) -> bool:
+        return (
+            owner.kind.is_class_body_scope
+            and not alias.source.attribute_path
+            and declaring_module_name == module_name
+            and self.qualname == owner.qualname
+        )
+
+    def boundary_exposure_in(
+        self,
+        authority: ProductFlowRepository,
+        declaration: CompactFunctionDeclaration,
+    ) -> CompactPublicNameExposure:
+        return authority.public_exposure_index.exposure_for(
+            declaration.identity.module_name, self.qualname.split(".", 1)[0]
+        )
+
+    def leaves_method_family_incomplete(
+        self,
+        authority: ProductFlowRepository,
+        declaration: CompactFunctionDeclaration,
+        participant_symbols: frozenset[str],
+    ) -> bool:
+        return authority.method_family_leaves_participants(
+            f"{declaration.identity.module_name}.{self.qualname}",
+            declaration.identity.qualname.rsplit(".", 1)[-1],
+            participant_symbols,
+        )
+
+
 @dataclass(frozen=True)
 class CompactFunctionDeclaration(CompactDefinitionFlowOwner):
     identity: CompactFunctionIdentity
     execution: NativeFunctionExecution
-    owner_class_qualname: str | None
+    owner_class: FunctionOwnerClass
     signature: CompactFunctionSignature
     decorators: tuple[CompactValueExpression, ...] = ()
     return_annotation_expression: str | None = None
@@ -2912,7 +3049,7 @@ class CompactFunctionDeclaration(CompactDefinitionFlowOwner):
     @cached_property
     def binding_kind(self) -> CompactFunctionBindingKind:
         return CompactFunctionBindingKind.from_declaration(
-            self.owner_class_qualname,
+            self.owner_class,
             self.decorators,
         )
 
@@ -2925,13 +3062,8 @@ class CompactFunctionDeclaration(CompactDefinitionFlowOwner):
         receiver evidence beyond a lexical alias; keep those bindings open.
         """
 
-        return (
-            self.owner_class_qualname is None and not owner.kind.is_class_body_scope
-        ) or (
-            owner.kind.is_class_body_scope
-            and not alias.source.attribute_path
-            and self.identity.module_name == module_name
-            and self.owner_class_qualname == owner.qualname
+        return self.owner_class.preserves_alias_call_binding(
+            alias, owner, self.identity.module_name, module_name
         )
 
     @cached_property
@@ -3585,8 +3717,10 @@ class _DeclarationCollector(ast.NodeVisitor):
             execution=self.module.native_compilation.execution_for(
                 SourceByteSpan.require_node(node)
             ),
-            owner_class_qualname=(
-                self.class_qualnames[-1] if direct_class_owner else None
+            owner_class=(
+                OwnerClass(self.class_qualnames[-1])
+                if direct_class_owner
+                else NoOwnerClass()
             ),
             signature=CompactFunctionSignature.from_arguments(node.args),
             decorators=decorators,

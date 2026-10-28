@@ -225,7 +225,7 @@ class ResolvedCompactFunctionTarget(CompactCallTargetResolution):
     def declared_outside(self, module_name: str, class_qualname: str) -> bool:
         return (
             self.resolved_declaration.identity.module_name != module_name
-            or self.resolved_declaration.owner_class_qualname != class_qualname
+            or not self.resolved_declaration.owner_class.is_class(class_qualname)
         )
 
     @property
@@ -1476,7 +1476,7 @@ class ProductFlowRepository(
             owner_qualname, _dot, _name = qualname.rpartition(".")
             if not owner_qualname:
                 owners[symbol] = module
-            elif owner_qualname == declaration.owner_class_qualname:
+            elif declaration.owner_class.is_class(owner_qualname):
                 owners[symbol] = f"{module}.{owner_qualname}"
         return owners
 
@@ -1595,13 +1595,14 @@ class ProductFlowRepository(
         declaration = context.declaration
         if (
             declaration is None
-            or declaration.owner_class_qualname is None
             or receiver.root_name != declaration.nominal_receiver_name
             or len(receiver.attribute_path) != 1
         ):
             return None
+        # Only a method has a nominal receiver, so the owner class is present here.
         owner = self.class_index.symbol_for(
-            file_path=context.file_path, qualname=declaration.owner_class_qualname
+            file_path=context.file_path,
+            qualname=declaration.owner_class.require_qualname(),
         )
         if owner is None:
             return None
@@ -1649,12 +1650,10 @@ class ProductFlowRepository(
         declaration = context.declaration
         if declaration is None:
             return None
-        if (
-            name == declaration.nominal_receiver_name
-            and declaration.owner_class_qualname is not None
-        ):
+        if name == declaration.nominal_receiver_name:
             owner = self.class_index.symbol_for(
-                file_path=context.file_path, qualname=declaration.owner_class_qualname
+                file_path=context.file_path,
+                qualname=declaration.owner_class.require_qualname(),
             )
             return None if owner is None else (owner,)
         annotation = next(
@@ -2019,16 +2018,18 @@ class ProductFlowRepository(
         self,
         declaration: CompactFunctionDeclaration,
     ) -> CompactPublicNameExposure:
+        return declaration.owner_class.boundary_exposure_in(self, declaration)
+
+    def free_function_boundary_exposure(
+        self, declaration: CompactFunctionDeclaration
+    ) -> CompactPublicNameExposure:
+        """A module-level function is exposed by its own name; a nested one is private."""
+
         qualname = declaration.identity.qualname
-        if declaration.owner_class_qualname is not None:
-            binding_name = declaration.owner_class_qualname.split(".", 1)[0]
-        elif "." not in qualname:
-            binding_name = qualname
-        else:
+        if "." in qualname:
             return CompactPublicNameExposure.PRIVATE
         return self.public_exposure_index.exposure_for(
-            declaration.identity.module_name,
-            binding_name,
+            declaration.identity.module_name, qualname
         )
 
     def callable_component_authority_proof(
@@ -2078,26 +2079,30 @@ class ProductFlowRepository(
         incomplete: set[str] = set()
         for participant_symbol in participant_symbols:
             declaration = self.function_declarations_by_symbol.get(participant_symbol)
-            if declaration is None or declaration.owner_class_qualname is None:
+            if declaration is None:
                 continue
-            owner_symbol = (
-                f"{declaration.identity.module_name}."
-                f"{declaration.owner_class_qualname}"
-            )
-            method_name = declaration.identity.qualname.rsplit(".", 1)[-1]
-            related_class_symbols = (
-                *self.class_index.ancestor_symbols(owner_symbol),
-                *self.class_index.descendant_symbols(owner_symbol),
-            )
-            related_declarations = {
-                f"{class_symbol}.{method_name}"
-                for class_symbol in related_class_symbols
-                if f"{class_symbol}.{method_name}"
-                in self.function_declarations_by_symbol
-            }
-            if related_declarations - participant_symbols:
+            if declaration.owner_class.leaves_method_family_incomplete(
+                self, declaration, participant_symbols
+            ):
                 incomplete.add(participant_symbol)
         return incomplete
+
+    def method_family_leaves_participants(
+        self,
+        owner_symbol: str,
+        method_name: str,
+        participant_symbols: frozenset[str],
+    ) -> bool:
+        related_class_symbols = (
+            *self.class_index.ancestor_symbols(owner_symbol),
+            *self.class_index.descendant_symbols(owner_symbol),
+        )
+        related_declarations = {
+            f"{class_symbol}.{method_name}"
+            for class_symbol in related_class_symbols
+            if f"{class_symbol}.{method_name}" in self.function_declarations_by_symbol
+        }
+        return bool(related_declarations - participant_symbols)
 
     def _lexical_function_target_resolution(
         self,
@@ -2519,7 +2524,7 @@ class SourceProductFlowRepository(RepositoryModuleBindingProof, ProductFlowRepos
             return None
         if name in LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(function.body):
             return None
-        return f"{context.module_name}.{declaration.owner_class_qualname}"
+        return f"{context.module_name}.{declaration.owner_class.require_qualname()}"
 
     def function_class_parameter_type_name(
         self, symbol: str, reference: ast.Name
