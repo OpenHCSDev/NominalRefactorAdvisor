@@ -440,8 +440,6 @@ class ForeignAbsenceSiteModule(RestatingSiteModule):
 class ForeignAbsenceSiteFamily(RestatingSiteFamily):
     """`other.attr is None` and `is not None` on an object that is not the method's own."""
 
-    item_type = ForeignAbsenceSiteModule
-
     @classmethod
     def collect(cls, parsed_module: ParsedModule) -> list[RestatingSiteModule]:
         return [

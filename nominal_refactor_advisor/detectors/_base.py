@@ -1116,7 +1116,7 @@ class CompactMultiModuleProjectionDetectorMixin(
 
     module_projection_families: ClassVar[tuple[type[CollectedFamily], ...]]
     compact_shared_group_context_builder: ClassVar[
-        CompactProjectionGroupContextBuilder | None
+        staticmethod[[CompactProjectionGroups], object] | None
     ] = None
 
     @classmethod
