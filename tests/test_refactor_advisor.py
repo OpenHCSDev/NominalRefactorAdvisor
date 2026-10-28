@@ -21053,7 +21053,7 @@ def test_module_cli_simulates_projected_findings_for_created_files(
     )
 
 
-def test_codemod_finding_class_delta_distinguishes_moved_from_eliminated(
+def test_codemod_finding_class_delta_distinguishes_replaced_from_eliminated(
     tmp_path: Path,
 ) -> None:
     from nominal_refactor_advisor.codemod_workflow import CodemodFindingClassDelta
@@ -21102,13 +21102,13 @@ def test_codemod_finding_class_delta_distinguishes_moved_from_eliminated(
         for change in delta.changes
     }
 
-    assert payload["moved_class_count"] == 1
+    assert payload["replaced_class_count"] == 1
     assert payload["eliminated_class_count"] == 1
     assert (
         statuses_by_declaration[
             SemanticMirrorWithoutDescentDetector.required_relation_identity()
         ]
-        == "moved"
+        == "replaced"
     )
     assert (
         statuses_by_declaration[
@@ -21151,8 +21151,11 @@ def test_codemod_finding_class_delta_ignores_presentation_and_coordinate_changes
 
     delta = CodemodFindingClassDelta.from_findings((before,), (after,))
 
-    assert before.stable_id != after.stable_id
+    assert before.stable_id == after.stable_id
     assert delta.moved_class_count == 1
+    assert delta.moved_finding_ids == (before.stable_id,)
+    (change,) = delta.changes
+    assert change.removed_ids == () and change.added_ids == ()
     assert json_report_object(delta)["status_counts"] == {"moved": 1}
 
 
@@ -21320,7 +21323,7 @@ def test_finding_class_status_members_own_transition_classification(
 
     assert status((), (first,)) is CodemodFindingClassStatus.INTRODUCED
     assert status((first,), ()) is CodemodFindingClassStatus.ELIMINATED
-    assert status((first,), (second,)) is CodemodFindingClassStatus.MOVED
+    assert status((first,), (second,)) is CodemodFindingClassStatus.REPLACED
     assert status((first,), (first, second)) is CodemodFindingClassStatus.EXPANDED
     assert status((first, second), (first,)) is (
         CodemodFindingClassStatus.PARTIALLY_ELIMINATED
@@ -21334,6 +21337,17 @@ def test_finding_class_status_members_own_transition_classification(
         is CodemodFindingClassStatus.PERSISTED
     )
     assert status((first,), (first,)) is CodemodFindingClassStatus.UNCHANGED
+    moved_first = spec.build(
+        "semantic_mirror_without_descent",
+        "Alpha mirrors Authority.",
+        (SourceLocation(source_path.as_posix(), 30, "Alpha.run"),),
+    )
+    assert moved_first.stable_id == first.stable_id
+    assert status((first,), (moved_first,)) is CodemodFindingClassStatus.MOVED
+    assert (
+        status((first,), (moved_first,), (first.stable_id,))
+        is CodemodFindingClassStatus.PERSISTED
+    )
 
 
 def test_codemod_class_plan_groups_typed_synthesis_records(
