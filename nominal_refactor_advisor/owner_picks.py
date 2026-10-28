@@ -13,7 +13,9 @@ NRA ranks where an extracted block could live; it does not choose. A picker
 Each pick must name a candidate the finding offers and no guard refuses, and
 must cite a receipt kind that candidate carries, so a wrong pick shows up as
 a disagreement with a cited fact. A new mixin needs a name: naming a new
-identity is the picker's decision. A pick also covers every other verdict
+identity is the picker's decision. A pick whose `owner` is null declines the
+finding, with `because` saying why (the classes are not one concept, or
+another pick already decides them). A pick also covers every other verdict
 among the classes that would compose the same owner. An extract-mixin
 verdict with no valid pick and no covering pick is reported as missing,
 never guessed; a pick naming no current finding is reported as unmatched.
@@ -70,7 +72,7 @@ class OwnerPicks:
             tuple(
                 OwnerPick(
                     finding=str(item["finding"]),
-                    owner=str(item["owner"]),
+                    owner=None if item.get("owner") is None else str(item["owner"]),
                     because=str(item.get("because", "")),
                     name=None if item.get("name") is None else str(item["name"]),
                 )
@@ -96,6 +98,11 @@ class OwnerPicks:
         for finding in mixins:
             pick = by_finding.get(finding.stable_id)
             if pick is None:
+                continue
+            if pick.owner is None:
+                outcomes[finding.stable_id] = OwnerPickOutcome(
+                    finding.stable_id, "declined", pick.because
+                )
                 continue
             reason = self._invalid(pick, finding.metrics.owner_candidates)
             if reason is not None:

@@ -709,6 +709,22 @@ class CompactIndexedClass(CompactClassHeader):
             is_registration_authority=self.is_registration_authority or registers,
         )
 
+    @property
+    def own_dataclass_field_names(self) -> tuple[str, ...] | None:
+        """The class's own dataclass fields in declaration order, ClassVars excluded;
+        empty for a plain class, None when a field's position is unknown."""
+
+        declaration = self.dataclass_declaration
+        if declaration is None:
+            return ()
+        if not all(field.role.has_known_field_position for field in declaration.fields):
+            return None
+        return tuple(
+            field.name
+            for field in declaration.fields
+            if field.role.contributes_semantic_field
+        )
+
     direct_member_declarations: tuple[CompactClassMemberDeclaration, ...] = ()
     metaclass_names: tuple[str, ...] = ()
     class_keyword_names: tuple[str, ...] = ()

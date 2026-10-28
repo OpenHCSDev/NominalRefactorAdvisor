@@ -169,23 +169,17 @@ class OverlapClass:
     def own_field_names(self) -> tuple[str, ...]:
         """The class's own dataclass fields in declaration order; ClassVars excluded."""
 
-        declaration = self.facts.dataclass_declaration
-        if declaration is None:
-            return ()
-        unplaced = tuple(
-            field.name
-            for field in declaration.fields
-            if not field.role.has_known_field_position
-        )
-        if unplaced:
+        names = self.facts.own_dataclass_field_names
+        if names is None:
+            unplaced = [
+                field.name
+                for field in self.facts.dataclass_declaration.fields
+                if not field.role.has_known_field_position
+            ]
             raise ValueError(
-                f"`{self.qualname}` has {list(unplaced)} with no known field position"
+                f"`{self.qualname}` has {unplaced} with no known field position"
             )
-        return tuple(
-            field.name
-            for field in declaration.fields
-            if field.role.contributes_semantic_field
-        )
+        return names
 
     @property
     def dataclass_options(self) -> tuple[str, ...] | None:

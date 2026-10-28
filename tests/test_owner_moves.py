@@ -282,3 +282,27 @@ def test_a_pick_citing_a_receipt_its_owner_lacks_is_rejected(tmp_path: Path) -> 
         for finding in applied
         if isinstance(finding.metrics, ClassOverlapMetrics)
     )
+
+
+def test_a_pick_without_an_owner_declines_the_finding(tmp_path: Path) -> None:
+    _write(tmp_path, {"pkg/__init__.py": "", "pkg/records.py": RECORDS})
+    findings = analyze_modules(
+        parse_python_modules(tmp_path, use_parse_cache=False), DetectorConfig()
+    )
+    (mixin,) = (
+        finding
+        for finding in findings
+        if isinstance(finding.metrics, ClassOverlapMetrics)
+        and finding.metrics.move is ExtractMixin
+    )
+    picks = OwnerPicks(
+        "picks.json",
+        "0",
+        (OwnerPick(finding=mixin.stable_id, owner=None, because="not one concept"),),
+    )
+
+    _applied, report = picks.applied(findings)
+
+    assert [(outcome.outcome, outcome.detail) for outcome in report.outcomes] == [
+        ("declined", "not one concept")
+    ]

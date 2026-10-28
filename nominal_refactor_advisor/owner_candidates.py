@@ -53,6 +53,9 @@ class OwnerReceiptKind(ReceiptKind):
     BRINGS_DECLARATIONS = "brings_declarations", -0.25, False
     CYCLE_CREATED = "cycle_created", 0.0, True
     CONSTRUCTION_CHANGED = "construction_changed", 0.0, True
+    FIELD_ORDER_CHANGED = "field_order_changed", 0.0, True
+    BASE_SERVES_OTHERS = "base_serves_others", 0.0, True
+    OWNER_NOT_CONTAINED = "owner_not_contained", 0.0, True
     DIFFERENT_CONSTRUCTION = "different_construction", 0.0, True
     CONFLICTING_DECLARATION = "conflicting_declaration", 0.0, True
     SERVES_CALL_SITES = "serves_call_sites", 0.5, False
@@ -158,7 +161,8 @@ class OwnerPick(SemanticRecord):
     and, for a new mixin, the class name."""
 
     finding: str
-    owner: str
+    owner: str | None
+    """The chosen `candidate_id`; None declines the finding."""
     because: str
     name: str | None = None
 
@@ -309,6 +313,15 @@ class BlockOwnerQuestion:
             if others:
                 receipts.append(
                     Receipt(
+                        OwnerReceiptKind.BASE_SERVES_OTHERS,
+                        f"`{base.qualname}` has descendants that do not restate the "
+                        "block; a fold is proved only for a base whose every "
+                        "descendant restates it",
+                        (_location(base),),
+                    )
+                )
+                receipts.append(
+                    Receipt(
                         OwnerReceiptKind.OTHER_DESCENDANT,
                         f"{len(others)} other descendant(s) would gain the block: "
                         + ", ".join(f"`{other}`" for other in others[:4]),
@@ -374,6 +387,19 @@ class BlockOwnerQuestion:
                     ),
                 ),
             ]
+            receipts.extend(
+                self._field_order_receipts(
+                    owner,
+                    (
+                        *(owner.own_dataclass_field_names or ()),
+                        *(
+                            name
+                            for name in self.first.own_dataclass_field_names or ()
+                            if name in self.block and name not in held
+                        ),
+                    ),
+                )
+            )
             if not self.same_construction(owner, self.first):
                 receipts.append(
                     Receipt(
@@ -410,6 +436,20 @@ class BlockOwnerQuestion:
         ):
             imports, cycles, import_receipts = self._import_receipts(module_name, ())
             restaters = self._co_restaters()
+            anchor = next(
+                indexed_class
+                for symbol in self._composers()
+                if (indexed_class := self.class_for(symbol)) is not None
+                and indexed_class.module_name == module_name
+            )
+            order_receipts = self._field_order_receipts(
+                anchor,
+                tuple(
+                    name
+                    for name in anchor.own_dataclass_field_names or ()
+                    if name in self.block
+                ),
+            )
             yield NewMixinOwner(
                 candidate_id=f"new_mixin:{module_name}",
                 module_name=module_name,
@@ -422,6 +462,7 @@ class BlockOwnerQuestion:
                     ),
                     *self._restater_receipts(restaters),
                     *import_receipts,
+                    *order_receipts,
                 ),
                 cost=OwnerCost(
                     statements_rewritten=1
@@ -433,6 +474,56 @@ class BlockOwnerQuestion:
                 composers=self._composers(),
                 block=self.block,
             )
+
+    def _field_order_receipts(
+        self, owner: CompactIndexedClass, owner_fields: Sequence[str]
+    ) -> tuple[Receipt, ...]:
+        """Composing an owner puts its fields ahead of each composer's own.
+
+        A dataclass composer keeps its field order only when the owner's fields
+        are its leading own fields, in the same order; otherwise its
+        constructor, repr and comparisons change. A field whose position is
+        unknown leaves the order unproved.
+        """
+
+        moved = frozenset(owner_fields)
+        reordered: list[str] = []
+        unknown: list[str] = []
+        for symbol in self._composers():
+            composer = self.class_for(symbol)
+            if composer is None or composer.dataclass_declaration is None:
+                continue
+            own = composer.own_dataclass_field_names
+            if own is None:
+                unknown.append(composer.qualname)
+                continue
+            kept = [name for name in own if name in moved]
+            if tuple(own[: len(kept)]) != tuple(name for name in owner_fields if name in kept):
+                reordered.append(composer.qualname)
+        receipts = []
+        if reordered:
+            receipts.append(
+                Receipt(
+                    OwnerReceiptKind.FIELD_ORDER_CHANGED,
+                    f"composing `{owner.qualname}` reorders the dataclass fields of "
+                    + ", ".join(f"`{name}`" for name in reordered)
+                    + ": the block is not their leading fields in the owner's order",
+                    (_location(owner),),
+                    count=len(reordered),
+                )
+            )
+        if unknown:
+            receipts.append(
+                Receipt(
+                    OwnerReceiptKind.FIELD_ORDER_CHANGED,
+                    "the field order of "
+                    + ", ".join(f"`{name}`" for name in unknown)
+                    + " is unknown, so composing leaves it unproved",
+                    (_location(owner),),
+                    count=len(unknown),
+                )
+            )
+        return tuple(receipts)
 
     def _construction_receipts(
         self,
@@ -532,6 +623,12 @@ class BlockOwnerQuestion:
                 + ", ".join(f"`{name}`" for name in brought[:6]),
                 (_location(owner),),
                 count=len(brought),
+            ),
+            Receipt(
+                OwnerReceiptKind.OWNER_NOT_CONTAINED,
+                f"`{owner.qualname}` declares more than the block; composition is "
+                "proved only for an owner whose whole body each composer restates",
+                (_location(owner),),
             ),
         )
 
