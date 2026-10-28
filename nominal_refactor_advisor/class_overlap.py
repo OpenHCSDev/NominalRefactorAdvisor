@@ -49,6 +49,7 @@ from .ast_projection import ExpressionReference
 from .case_root import Case
 from .class_body import (
     ClassBodyDeclaration,
+    ResolvedClassBodyDeclaration,
     SharedClassBodyDeclaration,
     ClassBodyIndex,
     ClassBodyOverlap,
@@ -285,6 +286,15 @@ def _location(indexed_class: CompactIndexedClass, line: int | None = None, membe
     return SourceLocation(indexed_class.file_path, indexed_class.line if line is None else line, symbol)
 
 
+def _shared_locations(shared: SharedClassBodyDeclaration) -> tuple[SourceLocation, SourceLocation]:
+    """Where each class's copy of one shared declaration is made."""
+
+    return (
+        _location(shared.first_owner, shared.first_line, shared.name),
+        _location(shared.second_owner, shared.second_line, shared.name),
+    )
+
+
 def _construction(indexed_class: CompactIndexedClass) -> tuple[object, ...]:
     return (
         indexed_class.dataclass_declaration.runtime_declaration,
@@ -385,10 +395,7 @@ class ClassOverlapCandidate(ScoredByReceipts):
             *(
                 location
                 for shared in self.overlap.shared
-                for location in (
-                    _location(first, shared.first_line, shared.name),
-                    _location(second, shared.second_line, shared.name),
-                )
+                for location in _shared_locations(shared)
             ),
         )
 
@@ -484,11 +491,95 @@ class ClassOverlapVerdicts:
 
     @cached_property
     def candidates(self) -> tuple[ClassOverlapCandidate, ...]:
-        return tuple(
-            candidate
-            for overlap in self.bodies.overlaps
-            if (candidate := self.verdict(overlap)) is not None
-        )
+        """A verdict per pair of classes: on their own declarations, or, when
+        those are too few, on the declarations they have through their MROs."""
+
+        candidates: list[ClassOverlapCandidate] = []
+        judged: set[tuple[str, str]] = set()
+        for overlap in self.bodies.overlaps:
+            candidate = self.verdict(overlap)
+            if candidate is not None:
+                candidates.append(candidate)
+                judged.add((overlap.first.symbol, overlap.second.symbol))
+        for first, second in sorted(self._inheriting_pairs - judged):
+            overlap = self.bodies.overlap(first, second).with_inherited(
+                self.resolved_declarations(first), self.resolved_declarations(second)
+            )
+            if (
+                overlap.inherited
+                and not self._restated_through_an_ancestor(overlap)
+                and (candidate := self.verdict(overlap)) is not None
+            ):
+                candidates.append(candidate)
+        return tuple(candidates)
+
+    @cached_property
+    def resolved_declarations_by_symbol(
+        self,
+    ) -> Mapping[str, Mapping[str, ResolvedClassBodyDeclaration]]:
+        """Each scanned class's declarations through the known prefix of its MRO."""
+
+        return {
+            symbol: self.bodies.resolved_declarations_of(
+                self.class_index.mro_authority.lookup_prefix(symbol)
+            )
+            for symbol in self.bodies.classes_by_symbol
+        }
+
+    def resolved_declarations(
+        self, symbol: str
+    ) -> Mapping[str, ResolvedClassBodyDeclaration]:
+        return self.resolved_declarations_by_symbol[symbol]
+
+    def _restated_through_an_ancestor(self, overlap: ClassBodyOverlap) -> bool:
+        """One class has every shared copy exactly as one of its ancestors has
+        it: that ancestor and the other class are the overlap, judged as their
+        own pair, and every descendant would only repeat it."""
+
+        for indexed_class, owners in (
+            (overlap.first, {shared.name: shared.first_owner.symbol for shared in overlap.shared}),
+            (overlap.second, {shared.name: shared.second_owner.symbol for shared in overlap.shared}),
+        ):
+            for ancestor in self.class_index.ancestor_symbols(indexed_class.symbol):
+                resolved = self.resolved_declarations_by_symbol.get(ancestor, {})
+                if all(
+                    name in resolved and resolved[name].owner.symbol == owner
+                    for name, owner in owners.items()
+                ):
+                    return True
+        return False
+
+    def declaration(self, symbol: str, name: str) -> ClassBodyDeclaration:
+        """The declaration of `name` the class answers with, own or inherited."""
+
+        return self.resolved_declarations(symbol)[name].declaration
+
+    @cached_property
+    def _inheriting_pairs(self) -> frozenset[tuple[str, str]]:
+        """Pairs where one class inherits a declaration the other makes itself.
+
+        The other is not the ancestor it inherits from, and neither is an
+        ancestor of the other. Declarations more than `holder_limit` classes
+        make do not pair, as for own declarations.
+        """
+
+        pairs: set[tuple[str, str]] = set()
+        for symbol, declarations in self.resolved_declarations_by_symbol.items():
+            family = {symbol, *self.class_index.ancestor_symbols(symbol)}
+            for resolved in declarations.values():
+                if resolved.owner.symbol == symbol:
+                    continue
+                for identity in resolved.declaration.identities:
+                    holders = self.bodies.holders.get(identity, ())
+                    if len(holders) > self.bodies.holder_limit:
+                        continue
+                    for holder in holders:
+                        if holder in family or symbol in self.class_index.ancestor_symbols(
+                            holder
+                        ):
+                            continue
+                        pairs.add((min(holder, symbol), max(holder, symbol)))
+        return frozenset(pairs)
 
     def resolved(self, indexed_class: CompactIndexedClass) -> CompactIndexedClass:
         """The class as the family index resolved it: its bases are symbols there."""
@@ -512,12 +603,9 @@ class ClassOverlapVerdicts:
         )
         shared_receipts = tuple(
             Receipt(
-                self.bodies.declarations_of(first.symbol)[shared.name].kind.shared_receipt,
+                self.declaration(first.symbol, shared.name).kind.shared_receipt,
                 f"`{shared.name}` is declared identically",
-                (
-                    _location(first, shared.first_line, shared.name),
-                    _location(second, shared.second_line, shared.name),
-                ),
+                _shared_locations(shared),
             )
             for shared in extractable
         )
@@ -526,10 +614,7 @@ class ClassOverlapVerdicts:
                 OverlapReceiptKind.FAMILY_AXIS_VALUE,
                 f"`{shared.name}` is equal here but `{axis[shared.name]}` answers "
                 "it differently: a row of the family's value table, not a shared block",
-                (
-                    _location(first, shared.first_line, shared.name),
-                    _location(second, shared.second_line, shared.name),
-                ),
+                _shared_locations(shared),
             )
             for shared in overlap.shared
             if shared.name in axis
@@ -595,6 +680,7 @@ class ClassOverlapVerdicts:
                     )
                 ),
                 *axis_receipts,
+                *self._inherited_receipts(overlap),
                 *self._size_receipts(extractable, first, second),
                 *self._member_receipts(overlap, members),
                 *self._kept_difference_receipts(overlap),
@@ -627,7 +713,7 @@ class ClassOverlapVerdicts:
         declarations are the block's identities."""
 
         block_declarations = {
-            name: self.bodies.declarations_of(first.symbol)[name].require_proved(
+            name: self.declaration(first.symbol, name).require_proved(
                 f"`{first.qualname}.{name}`"
             )
             for name in block
@@ -663,8 +749,6 @@ class ClassOverlapVerdicts:
                 if declaring in self.bodies.classes_by_symbol
                 for name in self.bodies.declarations_of(declaring)
             )
-
-        first_declarations = self.bodies.declarations_of(first.symbol)
 
         def constructions_of(symbol: str, positional: bool = False) -> tuple[SourceLocation, ...]:
             indexed_class = self.class_index.class_for(symbol)
@@ -703,12 +787,12 @@ class ClassOverlapVerdicts:
             required_fields=frozenset(
                 name
                 for name in block
-                if first_declarations[name].kind is ClassBodyDeclarationKind.FIELD
+                if block_declarations[name].kind is ClassBodyDeclarationKind.FIELD
             ),
             block_fields=frozenset(
                 name
                 for name in block
-                if first_declarations[name].kind.is_field
+                if block_declarations[name].kind.is_field
             ),
             constructions_of=constructions_of,
             positional_constructions_of=lambda symbol: constructions_of(
@@ -740,12 +824,11 @@ class ClassOverlapVerdicts:
         block.
         """
 
-        first_declarations = self.bodies.declarations_of(first.symbol)
         candidates: set[str] | None = None
         for shared in extractable:
             holders = {
                 holder
-                for identity in first_declarations[shared.name].identities
+                for identity in self.declaration(first.symbol, shared.name).identities
                 for holder in self.bodies.holders.get(identity, ())
             }
             having = holders | {
@@ -875,6 +958,26 @@ class ClassOverlapVerdicts:
         )
 
     @staticmethod
+    def _inherited_receipts(overlap: ClassBodyOverlap) -> tuple[Receipt, ...]:
+        """A move deletes a class's own copies; an inherited copy is its
+        ancestor's, which the move does not touch."""
+
+        return tuple(
+            Receipt(
+                OverlapReceiptKind.INHERITED_DECLARATION,
+                f"`{indexed_class.qualname}` inherits `{shared.name}` from "
+                f"`{owner.qualname}`: the move deletes only declarations a class makes itself",
+                _shared_locations(shared),
+            )
+            for shared in overlap.inherited
+            for indexed_class, owner in (
+                (overlap.first, shared.first_owner),
+                (overlap.second, shared.second_owner),
+            )
+            if owner.symbol != indexed_class.symbol
+        )
+
+    @staticmethod
     def _size_receipts(
         extractable: Sequence[object],
         first: CompactIndexedClass,
@@ -906,7 +1009,7 @@ class ClassOverlapVerdicts:
                 f"({', '.join(shared.name for shared in shared_members[:4])}) are "
                 "identities of each enum and stay where they are",
                 tuple(
-                    _location(overlap.first, shared.first_line, shared.name)
+                    _location(shared.first_owner, shared.first_line, shared.name)
                     for shared in shared_members[:4]
                 ),
             ),
