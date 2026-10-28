@@ -26,6 +26,8 @@ from ..class_index import (
     CompactModuleClassProjection,
     CompactModuleClassProjectionFamily,
 )
+from ..probe_owner import ProbeOwnerContext, ScannedClasses
+from ..type_checker_session import TypeCheckerSession
 from ..codemod_legacy_path_recipe import LegacyPathErasureFindingRecipeSynthesizer
 from ..codemod_optional_ast_field import (
     OptionalAstFieldDecoderFindingRecipeSynthesizer,
@@ -46,6 +48,7 @@ from ..restated_fact_observations import (
     ForwardingFacadeSiteFamily,
     ForeignAbsenceSite,
     ForeignAbsenceSiteFamily,
+    ForeignAbsenceSiteModule,
     LegacyMarkerSiteFamily,
     ModuleReferenceFacts,
     ModuleReferenceFamily,
@@ -54,7 +57,6 @@ from ..restated_fact_observations import (
     RestatingSite,
     RestatingSiteFamily,
     RestatingSiteModule,
-    ScannedClasses,
     StringDispatchSiteFamily,
     UnreachedModules,
 )
@@ -408,8 +410,15 @@ class ExactKeySetDetector(JoinedRestatedFactDetector[DeclaredRecords, RestatingS
         return {} if not declared else {"authority_evidence": declared[0]}
 
 
-def _scanned_classes(projections_by_family: CompactProjectionGroups) -> ScannedClasses:
-    return ScannedClasses(
+def _probe_owner_context(
+    projections_by_family: CompactProjectionGroups,
+) -> ProbeOwnerContext:
+    """The scan's classes, and the type checker's owner for each unannotated receiver.
+
+    The type checker runs only when some receiver declares no annotation.
+    """
+
+    classes = ScannedClasses.of(
         {
             indexed_class.symbol: indexed_class
             for projection in cast(
@@ -419,10 +428,26 @@ def _scanned_classes(projections_by_family: CompactProjectionGroups) -> ScannedC
             for indexed_class in projection.classes
         }
     )
+    spans = tuple(
+        span
+        for module in cast(
+            Sequence[ForeignAbsenceSiteModule],
+            projections_by_family[ForeignAbsenceSiteFamily],
+        )
+        for site in module.sites
+        for span in site.owner.type_checker_spans()
+    )
+    if not spans:
+        return ProbeOwnerContext(classes, {})
+    with TypeCheckerSession.session(span.file_path for span in spans) as session:
+        answers = session.receiver_types(spans)
+    return ProbeOwnerContext(
+        classes, {span: answer.owner(classes) for span, answer in answers.items()}
+    )
 
 
 class ForeignAbsenceProbeDetector(
-    JoinedRestatedFactDetector[ScannedClasses, ForeignAbsenceSite],
+    JoinedRestatedFactDetector[ProbeOwnerContext, ForeignAbsenceSite],
     OptionalAstFieldDecoderFindingRecipeSynthesizer,
 ):
     """`other.attr is None` or `is not None` on an object that is not the method's own."""
@@ -431,7 +456,7 @@ class ForeignAbsenceProbeDetector(
         ForeignAbsenceSiteFamily,
         CompactModuleClassProjectionFamily,
     )
-    compact_shared_group_context_builder = staticmethod(_scanned_classes)
+    compact_shared_group_context_builder = staticmethod(_probe_owner_context)
     restated = RestatedFact(
         fact="Each probe restates a state of the other object's type, a second copy of that type's state that the type does not declare.",
         owner="The owner is the other object's type: its states as subclasses, or a null member.",
@@ -448,7 +473,7 @@ class ForeignAbsenceProbeDetector(
     )
 
     def describe(
-        self, sites: Sequence[ForeignAbsenceSite], context: ScannedClasses
+        self, sites: Sequence[ForeignAbsenceSite], context: ProbeOwnerContext
     ) -> str:
         probes = sorted({f"{site.detail[0]} {site.detail[1]}" for site in sites})
         located = "; ".join(

@@ -17,15 +17,15 @@ from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
 
-from .annotation_semantics import NOMINAL_ANNOTATION_SOURCE_AUTHORITY
-from .ast_field_decoders import ParameterAnnotations, variadic_parameters
+from .ast_field_decoders import ParameterAnnotations
 from .lexical_bindings import ImportAlias, ImportBoundNameProjection
 from .ast_projection import CallKeywords, StatementValues
 from .ast_tools import BuiltinCallName, ParsedModule, module_syntax_index
 from .declared_root import DeclaredRoot
 from .models import SourceLocation
-from .class_index import CompactIndexedClass, ModuleNominalBindingAuthority
+from .class_index import ModuleNominalBindingAuthority
 from .observation_families import ShapeFamily
+from .probe_owner import ProbeOwner, ProbeOwnerResolver
 from .python_module_identity import PythonModulePathIdentity
 
 # A subject needs this many distinct string arms before it is a family spelled out.
@@ -425,146 +425,6 @@ class ExactKeySetSiteFamily(RestatingSiteFamily):
                 return
 
 
-class ProbeOwner(ABC):
-    """The declared class whose field a foreign absence probe reads, or why none is known."""
-
-    @abstractmethod
-    def describe(self, field_name: str, classes: ScannedClasses) -> str:
-        raise NotImplementedError
-
-
-@dataclass(frozen=True)
-class ResolvedProbeOwner(ProbeOwner):
-    """The receiver's declared annotation binds to this qualified class."""
-
-    qualified_name: str
-
-    def describe(self, field_name: str, classes: ScannedClasses) -> str:
-        return classes.describe_field(self.qualified_name, field_name)
-
-
-@dataclass(frozen=True)
-class UnresolvedProbeOwner(ProbeOwner):
-    """No declared annotation names the receiver's class; the reason says which step failed."""
-
-    reason: str
-
-    def describe(self, field_name: str, classes: ScannedClasses) -> str:
-        return f"owner unresolved: {self.reason}"
-
-
-@dataclass(frozen=True)
-class ScannedClasses:
-    """The scan's classes by qualified symbol, for naming a probe's owner."""
-
-    by_symbol: Mapping[str, CompactIndexedClass]
-
-    def describe_field(self, qualified_name: str, field_name: str) -> str:
-        if qualified_name not in self.by_symbol:
-            return f"owner `{qualified_name}` is not a scanned class"
-        owner = self.by_symbol[qualified_name]
-        declared = tuple(
-            member
-            for member in owner.direct_member_declarations
-            if member.name == field_name
-        )
-        where = f"`{qualified_name}` ({owner.file_path}:{owner.line})"
-        for member in declared:
-            return (
-                f"owner {where} declares `{field_name}: {member.annotation_expression}`"
-            )
-        return f"owner {where} declares no `{field_name}` directly"
-
-
-_OPTIONAL_WRAPPERS = frozenset({"Optional", "typing.Optional"})
-
-
-def _present_alternative(annotation: ast.expr) -> ast.expr:
-    """`X | None`, `None | X` and `Optional[X]` declare X; anything else declares itself."""
-
-    match annotation:
-        case ast.BinOp(op=ast.BitOr(), left=present, right=ast.Constant(value=None)):
-            return present
-        case ast.BinOp(op=ast.BitOr(), left=ast.Constant(value=None), right=present):
-            return present
-        case ast.Subscript(value=wrapper, slice=present) if (
-            ast.unparse(wrapper) in _OPTIONAL_WRAPPERS
-        ):
-            return present
-    return annotation
-
-
-@dataclass(frozen=True)
-class ProbeOwnerResolver:
-    """Names the class whose field a probe reads, from the receiver's declared annotation."""
-
-    bindings: ModuleNominalBindingAuthority
-
-    def owner(self, receiver: ast.expr, function: ast.AST) -> ProbeOwner:
-        match receiver, function:
-            case ast.Name(id=name), ast.FunctionDef() | ast.AsyncFunctionDef():
-                return self.local_owner(name, function)
-            case ast.Name(id=name), _:
-                return UnresolvedProbeOwner(f"`{name}` is probed outside a function")
-            case ast.Attribute(), _:
-                return UnresolvedProbeOwner(
-                    f"`{ast.unparse(receiver)}` is reached through an attribute; "
-                    "its holder's field type is not followed"
-                )
-        return UnresolvedProbeOwner(
-            f"`{ast.unparse(receiver)}` is a {type(receiver).__name__} expression, "
-            "not a declared name"
-        )
-
-    def local_owner(
-        self, name: str, function: ast.FunctionDef | ast.AsyncFunctionDef
-    ) -> ProbeOwner:
-        arguments = function.args
-        parameters = ParameterAnnotations.of(
-            (
-                *arguments.posonlyargs,
-                *arguments.args,
-                *arguments.kwonlyargs,
-                *variadic_parameters(arguments),
-            )
-        )
-        declared = (
-            *(
-                parameter.annotation
-                for parameter in parameters.annotated
-                if parameter.arg == name
-            ),
-            *(
-                statement.annotation
-                for statement in ast.walk(function)
-                if isinstance(statement, ast.AnnAssign)
-                and isinstance(statement.target, ast.Name)
-                and statement.target.id == name
-            ),
-        )
-        for annotation in declared:
-            return self.annotation_owner(annotation)
-        return UnresolvedProbeOwner(f"`{name}` has no annotation in `{function.name}`")
-
-    def annotation_owner(self, annotation: ast.expr) -> ProbeOwner:
-        spelled = _present_alternative(
-            ast.parse(annotation.value, mode="eval").body
-            if isinstance(annotation, ast.Constant) and isinstance(annotation.value, str)
-            else annotation
-        )
-        reference = NOMINAL_ANNOTATION_SOURCE_AUTHORITY.reference_or_none(spelled)
-        if reference is None:
-            return UnresolvedProbeOwner(
-                f"annotation `{ast.unparse(annotation)}` is not one class"
-            )
-        qualified = self.bindings.qualified_name_at(reference, line=None)
-        if qualified is None:
-            return UnresolvedProbeOwner(
-                f"annotation `{ast.unparse(annotation)}` binds to nothing in its module"
-            )
-        return ResolvedProbeOwner(qualified)
-
-
 @dataclass(frozen=True)
 class ForeignAbsenceSite(RestatingSite):
     """A foreign absence probe with the class its receiver is declared as."""
@@ -572,14 +432,34 @@ class ForeignAbsenceSite(RestatingSite):
     owner: ProbeOwner
 
 
+@dataclass(frozen=True)
+class ForeignAbsenceSiteModule(RestatingSiteModule):
+    """One module's foreign absence probes, each with its owner."""
+
+    sites: tuple[ForeignAbsenceSite, ...]
+
+
 class ForeignAbsenceSiteFamily(RestatingSiteFamily):
     """`other.attr is None` and `is not None` on an object that is not the method's own."""
 
+    item_type = ForeignAbsenceSiteModule
+
     @classmethod
-    def sites(cls, parsed_module: ParsedModule) -> Iterator[RestatingSite]:
+    def collect(cls, parsed_module: ParsedModule) -> list[RestatingSiteModule]:
+        return [
+            ForeignAbsenceSiteModule(
+                module_name=parsed_module.module_name,
+                sites=tuple(cls.sites(parsed_module)),
+            )
+        ]
+
+    @classmethod
+    def sites(cls, parsed_module: ParsedModule) -> Iterator[ForeignAbsenceSite]:
         index = module_syntax_index(parsed_module.module)
         modules = imported_module_names(parsed_module)
-        resolver = ProbeOwnerResolver(ModuleNominalBindingAuthority(parsed_module))
+        resolver = ProbeOwnerResolver(
+            parsed_module.file_path, ModuleNominalBindingAuthority(parsed_module)
+        )
         for node_index, node in index.indexed_nodes_of_type(ast.Compare):
             match node:
                 case ast.Compare(

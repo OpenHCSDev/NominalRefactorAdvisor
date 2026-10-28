@@ -273,18 +273,59 @@ def test_each_probe_names_its_line_and_the_declared_owner_or_why_not(tmp_path: P
     )
     source = (
         "from owner import Goal\n\n\n"
+        "def make() -> Goal:\n    return Goal()\n\n\n"
         "def f(goal: Goal | None, other):\n"
+        "    made = make()\n"
         "    if goal.paused_at is None:\n        return other.paused_at is None\n"
+        "    return made.paused_at is not None\n"
     )
     findings = _findings(
         tmp_path, ForeignAbsenceProbeDetector, {"owner": owner, "m": source}
     )
     by_receiver = {finding.summary.split("`")[1]: finding.summary for finding in findings}
     assert (
-        f"{tmp_path / 'm.py'}:5 `goal.paused_at is None`, owner `owner.Goal` "
+        f"{tmp_path / 'm.py'}:10 `goal.paused_at is None`, owner `owner.Goal` "
         f"({tmp_path / 'owner.py'}:5) declares `paused_at: int | None`"
     ) in by_receiver["goal"]
-    assert "owner unresolved: `other` has no annotation in `f`" in by_receiver["other"]
+    assert (
+        "owner unresolved: the type checker infers `Any`, not one class"
+        in by_receiver["other"]
+    )
+    assert (
+        f"owner `owner.Goal` ({tmp_path / 'owner.py'}:5) declares "
+        "`paused_at: int | None` (the type checker infers `Goal`)"
+    ) in by_receiver["made"]
+
+
+_INFERRED_PROBE = (
+    "from owner import Goal\n\n\n"
+    "def make() -> Goal:\n    return Goal()\n\n\n"
+    "def f() -> bool:\n    made = make()\n    return made.paused_at is None\n"
+)
+_GOAL = "class Goal:\n    paused_at: int | None = None\n"
+
+
+def test_a_type_name_two_scanned_classes_share_is_refused(tmp_path: Path):
+    (finding,) = _findings(
+        tmp_path,
+        ForeignAbsenceProbeDetector,
+        {"owner": _GOAL, "other_owner": _GOAL, "m": _INFERRED_PROBE},
+    )
+    assert "owner unresolved: type name `Goal` binds to 2 scanned classes" in (
+        finding.summary
+    )
+
+
+def test_without_mypy_the_owner_says_so(tmp_path: Path, monkeypatch):
+    from nominal_refactor_advisor import type_checker_session
+
+    monkeypatch.setattr(
+        type_checker_session.importlib.util, "find_spec", lambda name: None
+    )
+    (finding,) = _findings(
+        tmp_path, ForeignAbsenceProbeDetector, {"owner": _GOAL, "m": _INFERRED_PROBE}
+    )
+    assert "owner unresolved: type checker: mypy is not installed" in finding.summary
 
 
 def test_own_state_modules_and_truth_tests_are_not_foreign_probes(tmp_path: Path):
