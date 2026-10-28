@@ -18,6 +18,7 @@ from collections.abc import Callable, Iterable, Mapping
 from dataclasses import (
     dataclass,
     field,
+    replace,
 )
 from enum import StrEnum
 from functools import cached_property
@@ -657,6 +658,8 @@ from .models import (
     RegistrationMetrics,
     SourceLocation,
 )
+from .owner_candidates import OwnerCandidate, OwnerCost, OwnerReceiptKind, ranked
+from .receipts import Receipt
 from .module_move_codemod import (
     DependencyClosureModuleSymbolSelectionOperationABC as DependencyClosureModuleSymbolSelectionOperationABC,
     ExistingModuleSymbolMoveOperationABC as ExistingModuleSymbolMoveOperationABC,
@@ -5335,13 +5338,18 @@ class RepeatedBuilderCallSite:
         )
 
 
-@dataclass(frozen=True)
-class ConsumerFamilyBuilderAuthorityCandidate:
-    """Existing shared-family method that constructs the observed record schema."""
+@dataclass(frozen=True, kw_only=True)
+class ExistingMethodOwner(OwnerCandidate):
+    """An existing shared-family method that constructs the observed record schema:
+    an owner candidate for repeated construction (#67)."""
 
-    declaration: IndexedClass
-    method: ast.FunctionDef
-    constructor: NominalConstructorCall
+    declaration: IndexedClass = json_report_field(included=False)
+    method: ast.FunctionDef = json_report_field(included=False)
+    constructor: NominalConstructorCall = json_report_field(included=False)
+    KIND: ClassVar[str] = "existing_method"
+
+    def describe(self) -> str:
+        return f"existing method `{self.symbol}`"
 
     @property
     def symbol(self) -> str:
@@ -5437,6 +5445,10 @@ class ConsumerFamilyBuilderAuthorityCandidate:
         ):
             return None
         return cls(
+            candidate_id=f"existing_method:{declaration.symbol}.{method.name}",
+            module_name=declaration.module_name,
+            receipts=(),
+            cost=OwnerCost(statements_rewritten=0, imports_added=0, cycles_created=0),
             declaration=declaration,
             method=method,
             constructor=constructor,
@@ -5519,6 +5531,47 @@ class ConsumerFamilyBuilderAuthorityCandidate:
             )
         return context.source_index.target_by_id[target_ids[0]]
 
+    def scored(
+        self,
+        context: CodemodSelectorContext,
+        call_sites: tuple[RepeatedBuilderCallSite, ...],
+        descent: InheritedConsumerBuilderAuthorityDescent | None,
+    ) -> Self:
+        """The candidate with its receipts: the call sites it already serves, and
+        whether every one of them substitutes into it exactly."""
+
+        served = tuple(
+            call_site for call_site in call_sites if self.is_inherited_by(context, call_site)
+        )
+        location = SourceLocation(self.declaration.file_path, self.method.lineno, self.symbol)
+        receipts = [
+            Receipt(
+                OwnerReceiptKind.SERVES_CALL_SITES,
+                f"`{self.declaration.qualname}` is inherited by the owners of "
+                f"{len(served)} of the {len(call_sites)} constructor call(s)",
+                (location,),
+                count=len(served),
+            )
+        ]
+        if descent is None:
+            receipts.append(
+                Receipt(
+                    OwnerReceiptKind.NO_EXACT_SUBSTITUTION,
+                    f"`{self.symbol}` has no complete exact parameter substitution "
+                    "for its inheriting call sites",
+                    (location,),
+                )
+            )
+        return replace(
+            self,
+            receipts=tuple(receipts),
+            cost=OwnerCost(
+                statements_rewritten=0 if descent is None else len(descent.projections),
+                imports_added=0,
+                cycles_created=0,
+            ),
+        )
+
     def is_inherited_by(
         self,
         context: CodemodSelectorContext,
@@ -5588,7 +5641,7 @@ class ConsumerFamilyBuilderCallProjection:
     @classmethod
     def from_candidate(
         cls,
-        candidate: ConsumerFamilyBuilderAuthorityCandidate,
+        candidate: ExistingMethodOwner,
         signature: ConsumerFamilyBuilderInvocationSignature,
         call_site: RepeatedBuilderCallSite,
     ) -> Self | None:
@@ -5629,7 +5682,7 @@ class ConsumerFamilyBuilderCallProjection:
 
     def required_replacement(
         self,
-        candidate: ConsumerFamilyBuilderAuthorityCandidate,
+        candidate: ExistingMethodOwner,
         geometry: SourceTextGeometry,
     ) -> SourceTextSpanReplacement:
         offsets = geometry.required_node_offsets(self.call_site.call)
@@ -5687,37 +5740,38 @@ class RepeatedBuilderSourceDerivation(ABC):
             authority,
             projection_reference,
         )
-        candidates = ConsumerFamilyBuilderAuthorityCandidate.from_context(
+        candidates = ExistingMethodOwner.from_context(
             context,
             authority,
             call_sites,
         )
-        descents = tuple(
-            descent
+        descents = {
+            candidate.candidate_id: InheritedConsumerBuilderAuthorityDescent.from_candidate(
+                context,
+                authority,
+                candidate,
+                call_sites,
+            )
             for candidate in candidates
-            if (
-                descent := InheritedConsumerBuilderAuthorityDescent.from_candidate(
-                    context,
-                    authority,
-                    candidate,
-                    call_sites,
-                )
-            )
-            is not None
+        }
+        owners = ranked(
+            candidate.scored(context, call_sites, descents[candidate.candidate_id])
+            for candidate in candidates
         )
-        if len(descents) > 1:
+        permitted = tuple(owner for owner in owners if owner.permitted)
+        if len(permitted) == 1:
+            return descents[permitted[0].candidate_id]
+        if permitted:
             raise ValueError(
-                "Repeated-builder descent found multiple executable consumer-family "
-                "constructor authorities: "
-                + ", ".join(descent.candidate.symbol for descent in descents)
+                "Repeated-builder descent has several executable consumer-family "
+                "constructor authorities; pick one (confidence uncalibrated): "
+                + OwnerCandidate.ranked_text(owners)
             )
-        if descents:
-            return descents[0]
-        if candidates:
+        if owners:
             raise ValueError(
                 "Existing consumer-family constructor authorities lack one "
                 "complete exact parameter substitution: "
-                + ", ".join(candidate.symbol for candidate in candidates)
+                + OwnerCandidate.ranked_text(owners)
             )
         return RepeatedBuilderAuthorityDerivation.from_authority(
             context,
@@ -5837,7 +5891,7 @@ class InheritedConsumerBuilderAuthorityDescent(
     """Route duplicated construction through one existing inherited method."""
 
     authority: DataclassPayloadAuthorityTarget
-    candidate: ConsumerFamilyBuilderAuthorityCandidate
+    candidate: ExistingMethodOwner
     call_sites: tuple[RepeatedBuilderCallSite, ...]
     projections: tuple[ConsumerFamilyBuilderCallProjection, ...]
 
@@ -5846,7 +5900,7 @@ class InheritedConsumerBuilderAuthorityDescent(
         cls,
         context: CodemodSelectorContext,
         authority: DataclassPayloadAuthorityTarget,
-        candidate: ConsumerFamilyBuilderAuthorityCandidate,
+        candidate: ExistingMethodOwner,
         call_sites: tuple[RepeatedBuilderCallSite, ...],
     ) -> Self | None:
         signature = candidate.invocation_signature()

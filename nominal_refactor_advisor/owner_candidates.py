@@ -12,10 +12,13 @@ an agent. The candidates are:
 
 **The score.** Each receipt has a fixed log-odds weight per unit, stated on its
 kind below, times its count. A candidate's log-odds is the sum of its
-receipts. Its probability is the softmax of the log-odds over the candidates
-no guard refuses; a refused candidate has probability 0. As with #70, the
-weights are set by hand rather than fitted, and the score decomposes into the
-receipts that produced it. Guards weigh nothing and only refuse.
+receipts. Its confidence is the softmax of the log-odds over the candidates
+no guard refuses; a refused candidate has confidence 0. The confidence is
+uncalibrated: as with #70's concept score, the weights are set by hand, not
+fitted, and are checked against labeled picks
+(`tests/fixtures/owner_pick_labels.json`) whose Brier score and calibration
+error are pinned. The score decomposes into the receipts that produced it.
+Guards weigh nothing and only refuse.
 
 **The cost** is what the move would do to the source: the statements it
 rewrites, the imports it adds, and the import cycles those imports would
@@ -49,7 +52,11 @@ class OwnerReceiptKind(ReceiptKind):
     NEW_CLASS = "new_class", -0.5, False
     BRINGS_DECLARATIONS = "brings_declarations", -0.25, False
     CYCLE_CREATED = "cycle_created", 0.0, True
+    CONSTRUCTION_CHANGED = "construction_changed", 0.0, True
+    DIFFERENT_CONSTRUCTION = "different_construction", 0.0, True
     CONFLICTING_DECLARATION = "conflicting_declaration", 0.0, True
+    SERVES_CALL_SITES = "serves_call_sites", 0.5, False
+    NO_EXACT_SUBSTITUTION = "no_exact_substitution", 0.0, True
 
 
 SERVED_CONSUMER_CAP = 4
@@ -74,7 +81,7 @@ class OwnerCandidate(ScoredByReceipts, SemanticRecord, ABC):
     module_name: str
     receipts: tuple[Receipt, ...]
     cost: OwnerCost
-    probability: float = 0.0
+    confidence: float = 0.0
     kind: str = field(init=False, default="")
 
     KIND: ClassVar[str]
@@ -86,9 +93,33 @@ class OwnerCandidate(ScoredByReceipts, SemanticRecord, ABC):
     def describe(self) -> str:
         """The candidate in a few words."""
 
+    @staticmethod
+    def ranked_text(candidates: Iterable[OwnerCandidate]) -> str:
+        """Ranked candidates in one line, each with its score and receipts."""
 
-@dataclass(frozen=True)
-class SharedBaseOwner(OwnerCandidate):
+        return "; ".join(
+            f"{candidate.confidence:.2f} {candidate.describe()} ("
+            + ", ".join(
+                f"{receipt.weight:+.2f} {receipt.kind.value}" for receipt in candidate.receipts
+            )
+            + ")"
+            for candidate in candidates
+        )
+
+
+@dataclass(frozen=True, kw_only=True)
+class BlockOwnerCandidate(OwnerCandidate, ABC):
+    """A place for a block of class-body declarations several classes restate."""
+
+    composers: tuple[str, ...]
+    """The classes that would compose this owner: the two, and every other class
+    that restates the whole block. A pick covers every verdict among them."""
+    block: tuple[str, ...]
+    """The block's declaration names."""
+
+
+@dataclass(frozen=True, kw_only=True)
+class SharedBaseOwner(BlockOwnerCandidate):
     """A scanned base both classes already descend from."""
 
     symbol: str = ""
@@ -98,25 +129,38 @@ class SharedBaseOwner(OwnerCandidate):
         return f"shared base `{self.symbol}`"
 
 
-@dataclass(frozen=True)
-class ExistingClassOwner(OwnerCandidate):
+@dataclass(frozen=True, kw_only=True)
+class ExistingClassOwner(BlockOwnerCandidate):
     """A scanned class outside both families that already declares part of the block."""
 
     symbol: str = ""
+    held: tuple[str, ...] = ()
+    """The block names it already declares identically."""
     KIND: ClassVar[str] = "existing_class"
 
     def describe(self) -> str:
         return f"existing class `{self.symbol}`"
 
 
-@dataclass(frozen=True)
-class NewMixinOwner(OwnerCandidate):
+@dataclass(frozen=True, kw_only=True)
+class NewMixinOwner(BlockOwnerCandidate):
     """A mixin NRA would create in `module_name`, composed by both classes."""
 
     KIND: ClassVar[str] = "new_mixin"
 
     def describe(self) -> str:
         return f"new mixin in `{self.module_name}`"
+
+
+@dataclass(frozen=True)
+class OwnerPick(SemanticRecord):
+    """One picker's choice of owner for one finding, with the receipt it rests on
+    and, for a new mixin, the class name."""
+
+    finding: str
+    owner: str
+    because: str
+    name: str | None = None
 
 
 @dataclass(frozen=True)
@@ -189,6 +233,11 @@ class BlockOwnerQuestion:
     holders_of: Callable[[str], frozenset[str]]
     own_holders_of: Callable[[str], frozenset[str]]
     declared_names: Callable[[str], frozenset[str]]
+    required_fields: frozenset[str]
+    """Block names that are dataclass fields without a default."""
+    constructions_of: Callable[[str], tuple[SourceLocation, ...]]
+    positional_constructions_of: Callable[[str], tuple[SourceLocation, ...]]
+    same_construction: Callable[[CompactIndexedClass, CompactIndexedClass], bool]
     declares_differently: Callable[[str, str], bool]
     class_for: Callable[[str], CompactIndexedClass | None]
     ancestors_of: Callable[[str], tuple[str, ...]]
@@ -251,6 +300,11 @@ class BlockOwnerQuestion:
                 *self._consumer_receipts(base),
                 *self._conflict_receipts(base),
                 *self._restater_receipts(restaters),
+                *self._construction_receipts(
+                    base,
+                    tuple(name for name in self.block if name not in held),
+                    (symbol, *others),
+                ),
             ]
             if others:
                 receipts.append(
@@ -277,8 +331,13 @@ class BlockOwnerQuestion:
                     imports_added=0,
                     cycles_created=0,
                 ),
+                composers=self._composers(),
+                block=self.block,
                 symbol=symbol,
             )
+
+    def _composers(self) -> tuple[str, ...]:
+        return (self.first.symbol, self.second.symbol, *self._co_restaters())
 
     def _held(self, symbol: str) -> tuple[str, ...]:
         return tuple(name for name in self.block if symbol in self.holders_of(name))
@@ -302,7 +361,29 @@ class BlockOwnerQuestion:
                 *self._brought_receipts(owner),
                 *self._consumer_receipts(owner),
                 *self._conflict_receipts(owner),
+                *self._construction_receipts(
+                    owner,
+                    tuple(name for name in self.block if name not in held),
+                    (
+                        symbol,
+                        *(
+                            descendant
+                            for descendant in self.descendants_of(symbol)
+                            if descendant not in (self.first.symbol, self.second.symbol)
+                        ),
+                    ),
+                ),
             ]
+            if not self.same_construction(owner, self.first):
+                receipts.append(
+                    Receipt(
+                        OwnerReceiptKind.DIFFERENT_CONSTRUCTION,
+                        f"`{owner.qualname}` is created differently from "
+                        f"`{self.first.qualname}` (dataclass declaration, metaclass "
+                        "or class keywords): composing it changes construction",
+                        (_location(owner), _location(self.first)),
+                    )
+                )
             imports, cycles, import_receipts = self._import_receipts(
                 owner.module_name, (owner,)
             )
@@ -317,7 +398,10 @@ class BlockOwnerQuestion:
                     imports_added=imports,
                     cycles_created=cycles,
                 ),
+                composers=self._composers(),
+                block=self.block,
                 symbol=symbol,
+                held=held,
             )
 
     def _new_mixins(self) -> Iterator[NewMixinOwner]:
@@ -346,7 +430,60 @@ class BlockOwnerQuestion:
                     imports_added=imports,
                     cycles_created=cycles,
                 ),
+                composers=self._composers(),
+                block=self.block,
             )
+
+    def _construction_receipts(
+        self,
+        owner: CompactIndexedClass,
+        added: Sequence[str],
+        affected: Sequence[str],
+    ) -> tuple[Receipt, ...]:
+        """Adding declarations to a class others build changes how they are built.
+
+        A field with no default becomes a required argument of every affected
+        class, so any place that constructs one breaks; and the added fields
+        come after the owner's own, so any positional construction of an
+        affected class binds other parameters. Either refuses until the
+        operation proves otherwise. Only a dataclass owner's construction
+        changes; a plain class's annotations are not parameters.
+        """
+
+        if not added or owner.dataclass_declaration is None:
+            return ()
+        receipts: list[Receipt] = []
+        required = [name for name in added if name in self.required_fields]
+        built = tuple(
+            location for symbol in affected for location in self.constructions_of(symbol)
+        )
+        if required and built:
+            receipts.append(
+                Receipt(
+                    OwnerReceiptKind.CONSTRUCTION_CHANGED,
+                    f"adding required field(s) {', '.join(f'`{name}`' for name in required)} "
+                    f"to `{owner.qualname}` breaks {len(built)} construction(s) of it "
+                    "or its descendants",
+                    built[:4],
+                    count=len(built),
+                )
+            )
+        positional = tuple(
+            location
+            for symbol in affected
+            for location in self.positional_constructions_of(symbol)
+        )
+        if positional:
+            receipts.append(
+                Receipt(
+                    OwnerReceiptKind.CONSTRUCTION_CHANGED,
+                    f"{len(positional)} construction(s) of `{owner.qualname}` or its "
+                    "descendants bind fields by position; added fields would shift them",
+                    positional[:4],
+                    count=len(positional),
+                )
+            )
+        return tuple(receipts)
 
     def _widened_receipts(
         self, owner: CompactIndexedClass, held: Sequence[str]
@@ -521,7 +658,7 @@ class BlockOwnerQuestion:
 
 
 def ranked(candidates: Iterable[OwnerCandidate]) -> tuple[OwnerCandidate, ...]:
-    """The candidates with probabilities: a softmax over the permitted ones' log-odds."""
+    """The candidates with confidence scores: a softmax over the permitted ones' log-odds, uncalibrated."""
 
     candidates = tuple(candidates)
     permitted = [candidate for candidate in candidates if candidate.permitted]
@@ -530,7 +667,7 @@ def ranked(candidates: Iterable[OwnerCandidate]) -> tuple[OwnerCandidate, ...]:
     scored = tuple(
         replace(
             candidate,
-            probability=round(math.exp(candidate.log_odds - top) / mass, 4)
+            confidence=round(math.exp(candidate.log_odds - top) / mass, 4)
             if candidate.permitted
             else 0.0,
         )
@@ -539,7 +676,7 @@ def ranked(candidates: Iterable[OwnerCandidate]) -> tuple[OwnerCandidate, ...]:
     return tuple(
         sorted(
             scored,
-            key=lambda candidate: (-candidate.probability, -candidate.log_odds, candidate.candidate_id),
+            key=lambda candidate: (-candidate.confidence, -candidate.log_odds, candidate.candidate_id),
         )
     )
 
@@ -549,6 +686,7 @@ def _location(indexed_class: CompactIndexedClass) -> SourceLocation:
 
 
 __all__ = (
+    "BlockOwnerCandidate",
     "BlockOwnerQuestion",
     "ExistingClassOwner",
     "ModuleImportGraph",

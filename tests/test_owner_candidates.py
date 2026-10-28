@@ -57,7 +57,7 @@ def test_candidates_are_ranked_by_a_softmax_over_their_receipts() -> None:
 
     (owner,) = verdict.owner_candidates
     assert owner.candidate_id == "new_mixin:pkg.records"
-    assert owner.probability == 1.0
+    assert owner.confidence == 1.0
     assert owner.cost.imports_added == 0
     payload = json_report_object(owner)
     assert payload["kind"] == "new_mixin"
@@ -77,8 +77,8 @@ def test_a_new_mixin_that_closes_an_import_cycle_is_refused() -> None:
     owners = {owner.candidate_id: owner for owner in verdict.owner_candidates}
 
     low, high = owners["new_mixin:pkg.low"], owners["new_mixin:pkg.high"]
-    assert low.permitted and low.probability == 1.0
-    assert not high.permitted and high.probability == 0.0
+    assert low.permitted and low.confidence == 1.0
+    assert not high.permitted and high.confidence == 0.0
     assert {receipt.kind for receipt in high.refusals} == {OwnerReceiptKind.CYCLE_CREATED}
     assert high.cost.cycles_created == 1
 
@@ -99,4 +99,4 @@ def test_an_existing_composed_class_holding_most_of_the_block_outranks_a_new_mix
     assert {receipt.kind for receipt in ranked[0].receipts} >= {
         OwnerReceiptKind.HOLDS_DECLARATION
     }
-    assert math.isclose(sum(owner.probability for owner in ranked), 1.0, abs_tol=1e-3)
+    assert math.isclose(sum(owner.confidence for owner in ranked), 1.0, abs_tol=1e-3)

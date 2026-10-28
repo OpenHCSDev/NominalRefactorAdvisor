@@ -63,7 +63,12 @@ from .class_index import (
     CompactModuleClassProjection,
 )
 from .receipts import Receipt, ReceiptKind, ScoredByReceipts
-from .owner_candidates import BlockOwnerQuestion, ModuleImportGraph, OwnerCandidate
+from .owner_candidates import (
+    BlockOwnerQuestion,
+    ModuleImportGraph,
+    OwnerCandidate,
+    OwnerPick,
+)
 from .models import FindingMetrics, ImpactDelta, SourceLocation
 
 
@@ -393,6 +398,8 @@ class ClassOverlapMetrics(FindingMetrics):
     move_permitted: bool
     receipts: tuple[Receipt, ...]
     owner_candidates: tuple[OwnerCandidate, ...] = ()
+    owner_pick: OwnerPick | None = None
+    """The picker's choice among `owner_candidates`, from a picks file (#67)."""
 
     @classmethod
     def of(cls, candidate: ClassOverlapCandidate) -> ClassOverlapMetrics:
@@ -630,6 +637,23 @@ class ClassOverlapVerdicts:
                 for name in self.bodies.declarations_of(declaring)
             )
 
+        first_declarations = self.bodies.declarations_of(first.symbol)
+
+        def constructions_of(symbol: str, positional: bool = False) -> tuple[SourceLocation, ...]:
+            indexed_class = self.class_index.class_for(symbol)
+            if indexed_class is None:
+                return ()
+            return tuple(
+                use.location
+                for use in self.uses.uses_of(indexed_class)
+                if use.role is ClassReferenceRole.CONSTRUCTION
+                and (
+                    not positional
+                    or use.reference.positional_arguments
+                    or use.reference.unpacked_arguments
+                )
+            )
+
         return BlockOwnerQuestion(
             first=first,
             second=second,
@@ -637,6 +661,17 @@ class ClassOverlapVerdicts:
             holders_of=holders_of,
             own_holders_of=own_holders_of,
             declared_names=declared_names,
+            required_fields=frozenset(
+                name
+                for name in block
+                if first_declarations[name].kind is ClassBodyDeclarationKind.FIELD
+                and not first_declarations[name].declaration.assigns_value
+            ),
+            constructions_of=constructions_of,
+            positional_constructions_of=lambda symbol: constructions_of(
+                symbol, positional=True
+            ),
+            same_construction=lambda one, other: _construction(one) == _construction(other),
             declares_differently=declares_differently,
             class_for=self.class_index.class_for,
             ancestors_of=self.class_index.ancestor_symbols,

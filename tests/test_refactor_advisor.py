@@ -15898,9 +15898,10 @@ def test_repeated_builder_rejects_ambiguous_consumer_family_authorities(
 
     assert len(findings) == 1
     assert plan.records[0].status.value == "rejected_by_safety_check"
-    assert "multiple executable consumer-family constructor authorities" in (
-        plan.records[0].reason
-    )
+    reason = plan.records[0].reason
+    assert "several executable consumer-family constructor authorities" in reason
+    assert reason.count("existing method `") == 2
+    assert "serves_call_sites" in reason
 
 
 @pytest.mark.parametrize("annotation_source", ("", ": object", ": Any"))

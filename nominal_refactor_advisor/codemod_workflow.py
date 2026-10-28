@@ -48,6 +48,7 @@ from .codemod_runtime import (
     FindingRecipeTrajectoryObstacle,
 )
 from .detectors import DetectorConfig, IssueDetector, SemanticDescentGraphIssueDetector
+from .owner_picks import OwnerPickReport, OwnerPicks
 from .json_reports import (
     DataclassJsonReport,
     JsonReportAliasProperty,
@@ -1124,6 +1125,8 @@ class CodemodRefactorGoalReport(DataclassJsonReport):
     migration_type: type[RefactorConcept] = json_report_field(included=False)
     stages: tuple[CodemodRefactorGoalStage, ...]
     trajectory_proof: CodemodRefactorTrajectoryProof
+    owner_picks: OwnerPickReport | None = None
+    """What became of each extract-mixin finding under the owner picks (#67)."""
 
     @json_report_property()
     def stage_count(self) -> int:
@@ -1578,6 +1581,8 @@ class CodemodRefactorGoalRunner:
     trajectory_budget: CodemodRefactorTrajectoryBudget = field(
         default_factory=CodemodRefactorTrajectoryBudget
     )
+    owner_picks: OwnerPicks | None = None
+    """A picker's owner choices, applied to every scan's extract-mixin findings."""
 
     def starting_scan(self) -> CodemodWorkflowScan:
         if self.initial_scan is None:
@@ -1673,13 +1678,29 @@ class CodemodRefactorGoalRunner:
         self,
         findings: Iterable[RefactorFinding],
     ) -> list[RefactorFinding]:
-        return AnalysisPathScope(
+        scoped = AnalysisPathScope(
             analysis_roots=self.roots,
             report_roots=self.report_roots,
         ).filter_findings(list(findings))
+        if self.owner_picks is None:
+            return scoped
+        return self.owner_picks.applied(scoped)[0]
 
     def run(self) -> CodemodRefactorGoalReport:
         starting_scan = self.starting_scan()
+        if self.owner_picks is not None:
+            starting_scan = replace(
+                starting_scan,
+                findings=self.owner_picks.applied(starting_scan.findings)[0],
+            )
+        report = self.proved_run(starting_scan)
+        if self.owner_picks is None:
+            return report
+        return replace(
+            report, owner_picks=self.owner_picks.applied(starting_scan.findings)[1]
+        )
+
+    def proved_run(self, starting_scan: CodemodWorkflowScan) -> CodemodRefactorGoalReport:
         trajectory_proof = self.prove_trajectory(starting_scan)
         if not trajectory_proof.status.proved:
             return self.report(

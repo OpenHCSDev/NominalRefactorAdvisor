@@ -1,16 +1,21 @@
-"""Execute the two class-overlap moves that keep every class identity (#68).
+"""Execute the class-overlap moves (#68), and the owner moves a picker chose (#67).
 
 `ComposeExistingClassOperation` gives a class that restates another class's
 whole body that class as its first base and deletes the restated copy.
 `FoldSharedDeclarationsIntoBaseOperation` moves a block that every direct child
 of a base restates into that base, which becomes a keyword-only dataclass.
 
-Both re-derive the scan's overlap verdict from the current source and refuse
-unless it names this move and no guard fired. Each then proves what the move
-itself changes: method resolution, attribute ownership, dataclass field order,
-frozen-ness and, for the fold, every way a moved field can be bound.
-"""
+An extracted block needs an owner a codemod cannot choose. On a picker's
+choice, `CreateMixinOperation` declares the block once in a new class, and
+`ExtendOwnerOperation` gives an existing partial owner the declarations it
+lacks; the restating classes then compose that owner by their own
+compose-existing verdicts at the next stage.
 
+Every operation re-derives the scan's verdict from the current source and
+refuses unless it names this move and no guard fired. Each then proves what the
+move itself changes: method resolution, attribute ownership, dataclass field
+order, frozen-ness and, where fields are added, every way a field can be bound.
+"""
 from __future__ import annotations
 
 import ast
@@ -39,7 +44,9 @@ from .class_overlap import (
     ClassOverlapCandidate,
     ClassOverlapMetrics,
     ClassOverlapMove,
+    ClassOverlapVerdicts,
     ComposeExisting,
+    ExtractMixin,
     PromoteToSharedBase,
 )
 from .codemod import (
@@ -55,6 +62,7 @@ from .codemod_declaration_source import (
 from .codemod_imports import ModuleImportMutation
 from .codemod_payload import (
     PayloadRecordValueCodec,
+    RequiredStringPayloadValueCodec,
     StringArrayPayloadValueCodec,
     codemod_payload_field,
 )
@@ -69,6 +77,12 @@ from .codemod_statement_source import StatementDeletionSource, StatementSource
 from .lexical_bindings import LEXICAL_SCOPE_BINDING_AUTHORITY
 from .native_class_mro import NativeClassMroDeclaration
 from .models import RefactorFinding
+from .owner_candidates import (
+    ExistingClassOwner,
+    NewMixinOwner,
+    OwnerCandidate,
+    SharedBaseOwner,
+)
 from .refactor_concepts import ClassBodyCompositionConcept
 from .semantic_descent import AuthorityClaim, SemanticAuthorityKind
 
@@ -1248,6 +1262,355 @@ class FoldSharedDeclarationsIntoBaseOperation(RepositorySourceReprovedOperation)
         )
 
 
+def require_owner_candidate(
+    snapshot: CodemodSourceSnapshot,
+    anchor_symbol: str,
+    candidate_id: str,
+    member_names: Iterable[str],
+) -> tuple[ClassOverlapCandidate, OwnerCandidate]:
+    """An extract-mixin verdict over the anchor whose block holds these names and
+    that offers this owner, with no guard fired on the verdict or the owner."""
+
+    wanted = frozenset(member_names)
+    for verdict in snapshot.class_overlap_verdicts.candidates:
+        if verdict.move is not ExtractMixin or not wanted <= frozenset(verdict.shared_names):
+            continue
+        for owner in verdict.owner_candidates:
+            if owner.candidate_id == candidate_id and anchor_symbol in owner.composers:
+                if not verdict.permitted:
+                    raise ValueError(
+                        "The verdict refuses the move: "
+                        + "; ".join(receipt.detail for receipt in verdict.refusals)
+                    )
+                if not owner.permitted:
+                    raise ValueError(
+                        f"`{candidate_id}` is refused: "
+                        + "; ".join(receipt.detail for receipt in owner.refusals)
+                    )
+                return verdict, owner
+    raise ValueError(
+        f"The current source offers no extract-mixin owner `{candidate_id}` for "
+        f"`{anchor_symbol}` over {sorted(wanted)}"
+    )
+
+
+def movable_members(
+    snapshot: CodemodSourceSnapshot,
+    source: OverlapClass,
+    destination: OverlapClass,
+    statements: tuple[ast.stmt, ...],
+) -> None:
+    """Each statement is a member that moves without reading its class's scope."""
+
+    context = ClassMemberMoveProofContext(
+        source_class=source.target,
+        destination_class=destination.target,
+        source=snapshot.sources_by_file_path[source.file_path],
+        module_bound_names=LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(
+            snapshot.parsed_module_for_source_path(source.file_path).module.body
+        ),
+    )
+    for statement in statements:
+        member = ClassMemberPromotionStatement.for_statement(statement)
+        if member is None:
+            raise ValueError(
+                f"`{source.qualname}` line {statement.lineno} is no movable member"
+            )
+        member.require_safe_move(context)
+
+
+@dataclass(frozen=True)
+class MixinCreation:
+    """A new class declares a block several classes restate; nothing uses it yet.
+
+    The class is a root (`[mixin, object]`) with the anchor's own dataclass
+    declaration, inserted right before the anchor in the anchor's module, so
+    every free name of the copied statements is bound there exactly as in the
+    anchor. Each statement must move without reading the anchor's class scope
+    or learning its owner. Creating it changes no behaviour; each restating
+    class then composes it through its own compose-existing verdict.
+    """
+
+    snapshot: CodemodSourceSnapshot
+    anchor: OverlapClass
+    restated: RestatedDeclarations
+    name: str
+
+    @classmethod
+    def require(
+        cls,
+        snapshot: CodemodSourceSnapshot,
+        anchor_reference: SourceRewriteTarget,
+        member_names: tuple[str, ...],
+        name: str,
+    ) -> Self:
+        anchor = OverlapClass.require(snapshot, anchor_reference)
+        module_name = snapshot.parsed_module_for_source_path(anchor.file_path).module_name
+        require_owner_candidate(
+            snapshot, anchor.symbol, f"new_mixin:{module_name}", member_names
+        )
+        if not name.isidentifier() or keyword_module.iskeyword(name):
+            raise ValueError(f"`{name}` is no class name")
+        bound = LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(
+            snapshot.parsed_module_for_source_path(anchor.file_path).module.body
+        )
+        if name in bound:
+            raise ValueError(f"`{name}` is already bound in {anchor.file_path}")
+        anchor.dataclass_options
+        restated = RestatedDeclarations.require(snapshot, anchor, anchor, member_names)
+        movable_members(snapshot, anchor, anchor, restated.statements)
+        restated.require_no_owner_bound_values(snapshot)
+        return cls(snapshot, anchor, restated, name)
+
+    def source_edits(self, rationale: str) -> tuple[NominalSourceEdit, ...]:
+        anchor = self.anchor
+        source = self.snapshot.sources_by_file_path[anchor.file_path]
+        lines = source.splitlines(keepends=True)
+        first_line = min(
+            (decorator.lineno for decorator in anchor.node.decorator_list),
+            default=anchor.node.lineno,
+        )
+        header = lines[first_line - 1]
+        indentation = header[: len(header) - len(header.lstrip())]
+        member_indentation = indentation + "    "
+        decorators = tuple(
+            f"{indentation}@{ast.get_source_segment(source, decorator)}\n"
+            for decorator in anchor.node.decorator_list
+        )
+        names = ", ".join(f"`{name}`" for name in self.restated.names)
+        members: list[str] = []
+        for statement in self.restated.statements:
+            member = StatementSource(source=source, node=statement).member_source(
+                member_indentation
+            )
+            if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef)) and members:
+                members.append("\n")
+            members.append(member if member.endswith("\n") else member + "\n")
+        return (
+            SourceInsertion(
+                file_path=anchor.file_path,
+                insertion_line=first_line,
+                inserted_lines=(
+                    *decorators,
+                    f"{indentation}class {self.name}:\n",
+                    f'{member_indentation}"""Declares {names} once for the classes '
+                    'that restated them."""\n\n',
+                    *members,
+                    "\n\n",
+                ),
+                rationale=rationale,
+            ),
+        )
+
+
+@dataclass(frozen=True)
+class OwnerExtension:
+    """An existing class gains the block declarations it lacks.
+
+    The owner already declares the rest of the block identically and is
+    composed by other classes. The missing declarations are copied from the
+    anchor, which restates the whole block. That changes the owner's
+    descendants, so it is proved, not scored: the owner and the anchor are
+    created the same way; for a dataclass owner, no added field is required
+    while anything constructs the owner or a descendant, every read of them
+    builds by keyword, tests, annotates or subclasses, and no `cls(...)` in
+    their family passes positions; and for every descendant, the first class
+    in its MRO that declares an added name is unchanged.
+    """
+
+    snapshot: CodemodSourceSnapshot
+    owner: OverlapClass
+    anchor: OverlapClass
+    restated: RestatedDeclarations
+
+    @classmethod
+    def require(
+        cls,
+        snapshot: CodemodSourceSnapshot,
+        owner_reference: SourceRewriteTarget,
+        anchor_reference: SourceRewriteTarget,
+        member_names: tuple[str, ...],
+    ) -> Self:
+        owner = OverlapClass.require(snapshot, owner_reference)
+        anchor = OverlapClass.require(snapshot, anchor_reference)
+        require_owner_candidate(
+            snapshot, anchor.symbol, f"existing_class:{owner.symbol}", member_names
+        )
+        if frozenset(member_names) & owner.target.bound_names:
+            raise ValueError(f"`{owner.qualname}` already binds an added name")
+        dunders = sorted(name for name in member_names if name.startswith("__"))
+        if dunders:
+            raise ValueError(f"Adding {dunders} could shadow a native declaration")
+        if owner.dataclass_options != anchor.dataclass_options:
+            raise ValueError(
+                f"`{owner.qualname}` and `{anchor.qualname}` differ as dataclasses"
+            )
+        restated = RestatedDeclarations.require(snapshot, anchor, anchor, member_names)
+        movable_members(snapshot, anchor, owner, restated.statements)
+        restated.require_no_owner_bound_values(snapshot)
+        extension = cls(snapshot, owner, anchor, restated)
+        extension.require_construction()
+        extension.require_lookup()
+        return extension
+
+    @cached_property
+    def family(self) -> tuple[str, ...]:
+        return (
+            self.owner.symbol,
+            *self.snapshot.class_overlap_verdicts.class_index.descendant_symbols(
+                self.owner.symbol
+            ),
+        )
+
+    def require_construction(self) -> None:
+        if self.owner.dataclass_options is None:
+            return
+        sites = ClassReferenceSites(self.snapshot, frozenset(self.family))
+        added_required = tuple(
+            ast.unparse(statement.target)
+            for statement in self.restated.statements
+            if isinstance(statement, ast.AnnAssign) and statement.value is None
+        )
+        if added_required:
+            built = tuple(site for site in sites.sites if site.role.binds_fields)
+            if built:
+                raise ValueError(
+                    f"{built[0].location} builds `{ast.unparse(built[0].node)}`, which "
+                    f"would need the new required field(s) {list(added_required)}"
+                )
+        sites.require_keyword_construction()
+        for symbol in self.family:
+            member = OverlapClass.for_symbol(self.snapshot, symbol)
+            for node in ast.walk(member.node):
+                if isinstance(node, ast.Call) and node.args and _is_own_class(node.func):
+                    raise ValueError(
+                        f"{member.file_path}:{node.lineno} builds its own class with "
+                        f"{len(node.args)} positional argument(s)"
+                    )
+
+    def require_lookup(self) -> None:
+        class_index = self.snapshot.class_overlap_verdicts.class_index
+        authority = ClassMroAuthority(class_index.classes_by_symbol)
+        for symbol in self.family:
+            mro_type = authority.resolve(symbol).mro_type
+            if mro_type is None:
+                raise ValueError(f"`{symbol}` has an open MRO")
+            order = tuple(declaration.symbol for declaration in mro_type.declarations)
+            for name in self.restated.names:
+                declaring = tuple(
+                    declaration.symbol
+                    for declaration in mro_type.declarations
+                    if name in declaration.direct_declared_member_names
+                    or any(item.name == name for item in declaration.body_declarations)
+                )
+                if declaring and order.index(declaring[0]) > order.index(
+                    self.owner.symbol
+                ):
+                    raise ValueError(
+                        f"`{self.owner.qualname}.{name}` would replace `{declaring[0]}`'s "
+                        f"answer for `{symbol}`"
+                    )
+
+    def source_edits(self, rationale: str) -> tuple[NominalSourceEdit, ...]:
+        owner = self.owner
+        source = self.snapshot.sources_by_file_path[owner.file_path]
+        anchor_source = self.snapshot.sources_by_file_path[self.anchor.file_path]
+        body = ClassBodySourceAuthority(owner.node, source)
+        return (
+            *body.geometry.physical_edits(
+                file_path=owner.file_path,
+                replacements=(
+                    body.declaration_block_replacement(
+                        tuple(
+                            (
+                                StatementSource(
+                                    source=anchor_source, node=statement
+                                ).member_source(body.indentation),
+                                isinstance(
+                                    statement, (ast.FunctionDef, ast.AsyncFunctionDef)
+                                ),
+                            )
+                            for statement in self.restated.statements
+                        )
+                    ),
+                ),
+                rationale=rationale,
+            ),
+            *required_name_imports(
+                self.snapshot, self.restated.statements, self.anchor, owner, rationale
+            ),
+        )
+
+
+@dataclass(frozen=True, kw_only=True)
+class CreateMixinOperation(RepositorySourceReprovedOperation):
+    """Declare a block several classes restate once, in a new class before the anchor."""
+
+    member_names: tuple[str, ...] = codemod_payload_field(StringArrayPayloadValueCodec())
+    mixin_name: str = codemod_payload_field(RequiredStringPayloadValueCodec())
+
+    def creation(self, snapshot: CodemodSourceSnapshot) -> MixinCreation:
+        return MixinCreation.require(
+            snapshot, self.target, self.member_names, self.mixin_name
+        )
+
+    def source_edits_from_snapshot(
+        self, snapshot: CodemodSourceSnapshot
+    ) -> tuple[NominalSourceEdit, ...]:
+        creation = self.creation(snapshot)
+        return creation.source_edits(
+            self.rationale_text(
+                f"Declare {', '.join(self.member_names)} once on `{self.mixin_name}`."
+            )
+        )
+
+    def current_source_authority_claims(
+        self, context: CodemodSelectorContext
+    ) -> tuple[AuthorityClaim, ...]:
+        creation = self.creation(context.execution_snapshot())
+        return (
+            AstTargetAuthorityClaim.from_target(
+                creation.anchor.target.target,
+                authority_kind=SemanticAuthorityKind.CLASS_FAMILY,
+            ),
+        )
+
+
+@dataclass(frozen=True, kw_only=True)
+class ExtendOwnerOperation(RepositorySourceReprovedOperation):
+    """Give an existing owner the block declarations it lacks, copied from the anchor."""
+
+    anchor: SourceRewriteTarget = codemod_payload_field(
+        PayloadRecordValueCodec(SourceRewriteTarget)
+    )
+    member_names: tuple[str, ...] = codemod_payload_field(StringArrayPayloadValueCodec())
+
+    def extension(self, snapshot: CodemodSourceSnapshot) -> OwnerExtension:
+        return OwnerExtension.require(snapshot, self.target, self.anchor, self.member_names)
+
+    def source_edits_from_snapshot(
+        self, snapshot: CodemodSourceSnapshot
+    ) -> tuple[NominalSourceEdit, ...]:
+        extension = self.extension(snapshot)
+        return extension.source_edits(
+            self.rationale_text(
+                f"Declare {', '.join(self.member_names)} on `{extension.owner.qualname}`, "
+                "the owner of the rest of the block."
+            )
+        )
+
+    def current_source_authority_claims(
+        self, context: CodemodSelectorContext
+    ) -> tuple[AuthorityClaim, ...]:
+        extension = self.extension(context.execution_snapshot())
+        return (
+            AstTargetAuthorityClaim.from_target(
+                extension.owner.target.target,
+                authority_kind=SemanticAuthorityKind.CLASS_FAMILY,
+            ),
+        )
+
+
 class ClassOverlapFindingRecipeSynthesizer(
     FindingEvidenceActionKeysMixin,
     FindingRecipeSynthesizer,
@@ -1256,9 +1619,87 @@ class ClassOverlapFindingRecipeSynthesizer(
     """The verdict's move as a recipe, when the move keeps every class identity.
 
     Compose-existing becomes one composition per restating class; promote to
-    a shared base becomes one fold. Deleting a class and extracting a new
-    mixin change or mint identities and stay findings.
+    a shared base becomes one fold. Extracting a block mints or widens an
+    owner, so it runs only on a picker's choice (#67): see
+    `picked_operations`. Deleting a class changes identities and stays a
+    finding.
     """
+
+    @staticmethod
+    def picked_operations(
+        finding: RefactorFinding,
+        metrics: ClassOverlapMetrics,
+        verdicts: ClassOverlapVerdicts,
+    ) -> tuple[RepositorySourceReprovedOperation, ...] | str:
+        """The operation the picker's owner calls for, or why there is none.
+
+        A new mixin is declared before a composing class in its module; an
+        existing class first gains the block declarations it lacks; a shared
+        base takes the block as a fold. Each restating class then composes the
+        owner through its own compose-existing verdict at the next stage. A
+        verdict covered by a pick on another finding adds nothing itself.
+        """
+
+        pick = metrics.owner_pick
+        if pick is None:
+            return "an extract-mixin move needs an owner pick (--codemod-owner-picks)"
+        if pick.finding != finding.stable_id:
+            return f"covered by the owner pick on {pick.finding}"
+        owner = next(
+            (candidate for candidate in metrics.owner_candidates if candidate.candidate_id == pick.owner),
+            None,
+        )
+        if owner is None or not owner.permitted:
+            return f"`{pick.owner}` is not a permitted candidate of this finding"
+        composers = tuple(
+            indexed_class
+            for symbol in owner.composers
+            if (indexed_class := verdicts.class_index.class_for(symbol)) is not None
+        )
+        match owner:
+            case NewMixinOwner():
+                anchor = next(
+                    (
+                        indexed_class
+                        for indexed_class in composers
+                        if indexed_class.module_name == owner.module_name
+                    ),
+                    None,
+                )
+                if anchor is None or pick.name is None:
+                    return f"no composing class lives in `{owner.module_name}`"
+                return (
+                    CreateMixinOperation(
+                        target=source_rewrite_target(anchor),
+                        member_names=owner.block,
+                        mixin_name=pick.name,
+                    ),
+                )
+            case ExistingClassOwner():
+                existing = verdicts.class_index.class_for(owner.symbol)
+                missing = tuple(name for name in owner.block if name not in owner.held)
+                if existing is None or not composers:
+                    return "the picked owner left the source"
+                if not missing:
+                    return f"`{owner.symbol}` already declares the whole block"
+                return (
+                    ExtendOwnerOperation(
+                        target=source_rewrite_target(existing),
+                        anchor=source_rewrite_target(composers[0]),
+                        member_names=missing,
+                    ),
+                )
+            case SharedBaseOwner():
+                base = verdicts.class_index.class_for(owner.symbol)
+                if base is None:
+                    return "the picked base left the source"
+                return (
+                    FoldSharedDeclarationsIntoBaseOperation(
+                        target=source_rewrite_target(base),
+                        member_names=owner.block,
+                    ),
+                )
+        return f"`{owner.kind}` owners have no move"
 
     def evaluate_recipe_for_finding(
         self,
@@ -1305,6 +1746,11 @@ class ClassOverlapFindingRecipeSynthesizer(
                     member_names=metrics.shared_declaration_names,
                 ),
             )
+        elif metrics.move is ExtractMixin:
+            picked = self.picked_operations(finding, metrics, verdicts)
+            if isinstance(picked, str):
+                return self.rejected_evaluation(picked)
+            operations = picked
         else:
             return self.rejected_evaluation(
                 f"`{metrics.move.value}` changes a class identity; it stays a finding"

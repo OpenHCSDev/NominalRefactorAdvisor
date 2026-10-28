@@ -66,9 +66,9 @@ class ClassOverlapDetectorABC(
                 f"{concept}. Move {candidate.move.value}: "
                 + (f"refused: {refusals}." if refusals else "permitted.")
                 + (
-                    " Owner to pick (see metrics.owner_candidates): "
+                    " Owner to pick, confidence uncalibrated (see metrics.owner_candidates): "
                     + "; ".join(
-                        f"{owner.probability:.0%} {owner.describe()}"
+                        f"{owner.confidence:.2f} {owner.describe()}"
                         + ("" if owner.permitted else " (refused)")
                         for owner in candidate.owner_candidates
                     )
