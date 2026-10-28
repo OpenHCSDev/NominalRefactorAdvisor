@@ -2082,20 +2082,249 @@ CONTAINERS = frozenset(
 )
 
 
+class DeclaredType(ABC):
+    """What declarations alone say an expression's type is: an annotation, or nothing."""
+
+    @abstractmethod
+    def declared_class(self, types: DeclaredTypes) -> DeclaredClass:
+        raise NotImplementedError
+
+    @abstractmethod
+    def element(self) -> DeclaredType:
+        """The type every element of this container has."""
+        raise NotImplementedError
+
+    @abstractmethod
+    def element_at(self, index: int) -> DeclaredType:
+        """The type of one position of this container."""
+        raise NotImplementedError
+
+    @abstractmethod
+    def otherwise(self, alternative: DeclaredType) -> DeclaredType:
+        """This type when declarations name one, else the alternative."""
+        raise NotImplementedError
+
+    @abstractmethod
+    def member_read(
+        self, reads: ValueReads, module: ParsedModule, subject: ast.Attribute
+    ) -> bool:
+        """Whether a `.value` read of `subject` reads an enum member's value."""
+        raise NotImplementedError
+
+
 @dataclass(frozen=True)
-class Typed:
+class Typed(DeclaredType):
     """An annotation read in the module that wrote it."""
 
     module: ParsedModule
     annotation: ast.expr
 
+    def declared_class(self, types: DeclaredTypes) -> DeclaredClass:
+        held = held_type(self.annotation)
+        if not isinstance(held, ast.Name):
+            return UNKNOWN_CLASS
+        found = types.classes.get(held.id, [])
+        if len(found) != 1:
+            return UNKNOWN_CLASS
+        module, node = found[0]
+        return KnownClass(module, node)
+
+    def _elements(self) -> tuple[bool, list[ast.expr]]:
+        """Whether the container is a tuple, and its element annotations (none if not one)."""
+
+        held = held_type(self.annotation)
+        if not (isinstance(held, ast.Subscript) and is_name(held.value, CONTAINERS)):
+            return False, []
+        elements = held.slice.elts if isinstance(held.slice, ast.Tuple) else [held.slice]
+        return is_name(held.value, ["tuple"]), elements
+
+    def _variadic(self, elements: list[ast.expr]) -> bool:
+        return (
+            len(elements) == 2
+            and isinstance(elements[1], ast.Constant)
+            and elements[1].value is Ellipsis
+        )
+
+    def element(self) -> DeclaredType:
+        is_tuple, elements = self._elements()
+        if self._variadic(elements) or (len(elements) == 1 and not is_tuple):
+            return Typed(self.module, elements[0])
+        return UNKNOWN_TYPE
+
+    def element_at(self, index: int) -> DeclaredType:
+        is_tuple, elements = self._elements()
+        if is_tuple and not self._variadic(elements):
+            return Typed(self.module, elements[index]) if index < len(elements) else UNKNOWN_TYPE
+        return self.element()
+
+    def otherwise(self, alternative: DeclaredType) -> DeclaredType:
+        return self
+
+    def member_read(
+        self, reads: ValueReads, module: ParsedModule, subject: ast.Attribute
+    ) -> bool:
+        return reads.holds_member(self.module, self.annotation)
+
+
+class UnknownType(DeclaredType):
+    """Declarations alone do not say what this expression is."""
+
+    def declared_class(self, types: DeclaredTypes) -> DeclaredClass:
+        return UNKNOWN_CLASS
+
+    def element(self) -> DeclaredType:
+        return self
+
+    def element_at(self, index: int) -> DeclaredType:
+        return self
+
+    def otherwise(self, alternative: DeclaredType) -> DeclaredType:
+        return alternative
+
+    def member_read(
+        self, reads: ValueReads, module: ParsedModule, subject: ast.Attribute
+    ) -> bool:
+        if subject.attr in reads.ambiguous_fields:
+            raise handback(
+                module,
+                subject,
+                f"{ast.unparse(subject)}.value: field {subject.attr} is declared"
+                " holding the enum and holding another type that may carry value",
+            )
+        return True
+
+
+UNKNOWN_TYPE = UnknownType()
+
+
+class DeclaredClass(ABC):
+    """The one class a declared type names, or none."""
+
+    @abstractmethod
+    def field(self, types: DeclaredTypes, name: str, depth: int) -> DeclaredType:
+        raise NotImplementedError
+
 
 @dataclass(frozen=True)
-class Scope:
-    """Where a read sits: its innermost function and that function's class."""
+class KnownClass(DeclaredClass):
+    module: ParsedModule
+    node: ast.ClassDef
 
-    function: ast.FunctionDef | ast.AsyncFunctionDef | None
+    def field(self, types: DeclaredTypes, name: str, depth: int) -> DeclaredType:
+        if depth > 20:
+            return UNKNOWN_TYPE
+        for statement in self.node.body:
+            if isinstance(statement, ast.AnnAssign) and is_name(
+                statement.target, [name]
+            ):
+                return Typed(self.module, statement.annotation)
+        found: DeclaredType = UNKNOWN_TYPE
+        for base in self.node.bases:
+            found = found.otherwise(
+                Typed(self.module, base)
+                .declared_class(types)
+                .field(types, name, depth + 1)
+            )
+        return found
+
+
+class UnknownClass(DeclaredClass):
+    def field(self, types: DeclaredTypes, name: str, depth: int) -> DeclaredType:
+        return UNKNOWN_TYPE
+
+
+UNKNOWN_CLASS = UnknownClass()
+
+
+class Scope(ABC):
+    """Where a read sits, which decides what a bare name in it is declared as."""
+
+    @abstractmethod
+    def name_type(
+        self, types: DeclaredTypes, module: ParsedModule, node: ast.Name, depth: int
+    ) -> DeclaredType:
+        raise NotImplementedError
+
+
+@dataclass(frozen=True)
+class FunctionScope(Scope):
+    """A read inside a function, and the class that function is declared in."""
+
+    function: ast.FunctionDef | ast.AsyncFunctionDef
     owner: ast.ClassDef | None
+
+    def name_type(
+        self, types: DeclaredTypes, module: ParsedModule, node: ast.Name, depth: int
+    ) -> DeclaredType:
+        function = self.function
+        arguments = [
+            *function.args.posonlyargs,
+            *function.args.args,
+            *function.args.kwonlyargs,
+        ]
+        if (
+            self.owner is not None
+            and arguments
+            and arguments[0].arg == node.id
+            and "staticmethod" not in decorator_names(function)
+        ):
+            return Typed(module, ast.Name(self.owner.name, ast.Load()))
+        for argument in arguments:
+            if argument.arg == node.id:
+                for annotation in declared_annotations(argument):
+                    return Typed(module, annotation)
+                return UNKNOWN_TYPE
+        bindings = [
+            binding
+            for binding in scope_walk(function)
+            if node.id
+            in stored_names(
+                [binding.target]
+                if isinstance(binding, ast.For | ast.comprehension | ast.AnnAssign)
+                else binding.targets if isinstance(binding, ast.Assign) else []
+            )
+        ]
+        if len(bindings) != 1:
+            return UNKNOWN_TYPE
+        (binding,) = bindings
+        if isinstance(binding, ast.AnnAssign):
+            return Typed(module, binding.annotation)
+        if isinstance(binding, ast.Assign):
+            if len(binding.targets) != 1:
+                return UNKNOWN_TYPE
+            target, value = binding.targets[0], binding.value
+            if isinstance(target, ast.Name):
+                return types.of(module, value, self, depth + 1)
+            if (
+                isinstance(target, ast.Tuple)
+                and isinstance(value, ast.Tuple)
+                and len(target.elts) == len(value.elts)
+            ):
+                for element, source in zip(target.elts, value.elts):
+                    if is_name(element, [node.id]):
+                        return types.of(module, source, self, depth + 1)
+            return UNKNOWN_TYPE
+        assert isinstance(binding, ast.For | ast.comprehension)
+        item = types.of(module, binding.iter, self, depth + 1).element()
+        if isinstance(binding.target, ast.Name):
+            return item
+        if isinstance(binding.target, ast.Tuple):
+            for index, element in enumerate(binding.target.elts):
+                if is_name(element, [node.id]):
+                    return item.element_at(index)
+        return UNKNOWN_TYPE
+
+
+class ModuleScope(Scope):
+    """A read outside every function: no parameter or local declares its names."""
+
+    def name_type(
+        self, types: DeclaredTypes, module: ParsedModule, node: ast.Name, depth: int
+    ) -> DeclaredType:
+        return UNKNOWN_TYPE
+
+
+MODULE_SCOPE = ModuleScope()
 
 
 @dataclass
@@ -2118,56 +2347,6 @@ class DeclaredTypes:
                     found.setdefault(node.name, []).append((module, node))
         return found
 
-    def class_of(self, typed: Typed | None) -> tuple[ParsedModule, ast.ClassDef] | None:
-        if typed is None:
-            return None
-        held = held_type(typed.annotation)
-        if not isinstance(held, ast.Name):
-            return None
-        found = self.classes.get(held.id, [])
-        return found[0] if len(found) == 1 else None
-
-    def field(
-        self, owner: tuple[ParsedModule, ast.ClassDef] | None, name: str, depth: int
-    ) -> Typed | None:
-        if owner is None or depth > 20:
-            return None
-        module, node = owner
-        for statement in node.body:
-            if isinstance(statement, ast.AnnAssign) and is_name(
-                statement.target, [name]
-            ):
-                return Typed(module, statement.annotation)
-        for base in node.bases:
-            found = self.field(self.class_of(Typed(module, base)), name, depth + 1)
-            if found is not None:
-                return found
-        return None
-
-    @staticmethod
-    def element(typed: Typed | None, index: int | None) -> Typed | None:
-        """The element type of a container annotation, by position for a tuple."""
-
-        if typed is None:
-            return None
-        held = held_type(typed.annotation)
-        if not (isinstance(held, ast.Subscript) and is_name(held.value, CONTAINERS)):
-            return None
-        elements = (
-            held.slice.elts if isinstance(held.slice, ast.Tuple) else [held.slice]
-        )
-        if (
-            len(elements) == 2
-            and isinstance(elements[1], ast.Constant)
-            and elements[1].value is Ellipsis
-        ):
-            return Typed(typed.module, elements[0])
-        if is_name(held.value, ["tuple"]):
-            if index is None or index >= len(elements):
-                return None
-            return Typed(typed.module, elements[index])
-        return Typed(typed.module, elements[0]) if len(elements) == 1 else None
-
     @staticmethod
     def scopes(module: ParsedModule) -> dict[int, Scope]:
         found: dict[int, Scope] = {}
@@ -2179,80 +2358,25 @@ class DeclaredTypes:
         }
         for function in ast.walk(module.module):
             if isinstance(function, ast.FunctionDef | ast.AsyncFunctionDef):
-                scope = Scope(function, owners.get(id(function)))
+                scope = FunctionScope(function, owners.get(id(function)))
                 for node in scope_walk(function):
                     found[id(node)] = scope
         return found
 
     def of(
         self, module: ParsedModule, node: ast.expr, scope: Scope, depth: int = 0
-    ) -> Typed | None:
+    ) -> DeclaredType:
         if depth > 20:
-            return None
+            return UNKNOWN_TYPE
         if isinstance(node, ast.Attribute):
-            base = self.of(module, node.value, scope, depth + 1)
-            return self.field(self.class_of(base), node.attr, depth + 1)
-        if not isinstance(node, ast.Name) or scope.function is None:
-            return None
-        function = scope.function
-        arguments = [
-            *function.args.posonlyargs,
-            *function.args.args,
-            *function.args.kwonlyargs,
-        ]
-        if (
-            scope.owner is not None
-            and arguments
-            and arguments[0].arg == node.id
-            and "staticmethod" not in decorator_names(function)
-        ):
-            return Typed(module, ast.Name(scope.owner.name, ast.Load()))
-        for argument in arguments:
-            if argument.arg == node.id:
-                return (
-                    None
-                    if argument.annotation is None
-                    else Typed(module, argument.annotation)
-                )
-        bindings = [
-            binding
-            for binding in scope_walk(function)
-            if node.id
-            in stored_names(
-                [binding.target]
-                if isinstance(binding, ast.For | ast.comprehension | ast.AnnAssign)
-                else binding.targets if isinstance(binding, ast.Assign) else []
+            return (
+                self.of(module, node.value, scope, depth + 1)
+                .declared_class(self)
+                .field(self, node.attr, depth + 1)
             )
-        ]
-        if len(bindings) != 1:
-            return None
-        (binding,) = bindings
-        if isinstance(binding, ast.AnnAssign):
-            return Typed(module, binding.annotation)
-        if isinstance(binding, ast.Assign):
-            if len(binding.targets) != 1:
-                return None
-            target, value = binding.targets[0], binding.value
-            if isinstance(target, ast.Name):
-                return self.of(module, value, scope, depth + 1)
-            if (
-                isinstance(target, ast.Tuple)
-                and isinstance(value, ast.Tuple)
-                and len(target.elts) == len(value.elts)
-            ):
-                for element, source in zip(target.elts, value.elts):
-                    if is_name(element, [node.id]):
-                        return self.of(module, source, scope, depth + 1)
-            return None
-        assert isinstance(binding, ast.For | ast.comprehension)
-        item = self.element(self.of(module, binding.iter, scope, depth + 1), None)
-        if isinstance(binding.target, ast.Name):
-            return item
-        if isinstance(binding.target, ast.Tuple):
-            for index, element in enumerate(binding.target.elts):
-                if is_name(element, [node.id]):
-                    return self.element(item, index)
-        return None
+        if isinstance(node, ast.Name):
+            return scope.name_type(self, module, node, depth)
+        return UNKNOWN_TYPE
 
 
 @dataclass
@@ -2398,17 +2522,7 @@ class ValueReads:
             return subject.attr in self.model.class_names
         if subject.attr not in self.held_fields:
             return False
-        typed = self.types.of(module, subject, scope)
-        if typed is not None:
-            return self.holds_member(typed.module, typed.annotation)
-        if subject.attr in self.ambiguous_fields:
-            raise handback(
-                module,
-                subject,
-                f"{ast.unparse(subject)}.value: field {subject.attr} is declared"
-                " holding the enum and holding another type that may carry value",
-            )
-        return True
+        return self.types.of(module, subject, scope).member_read(self, module, subject)
 
     def rewrite(self, rewrite: Rewrite, handled: set[int]) -> None:
         attribute = self.model.declared.value
@@ -2427,7 +2541,7 @@ class ValueReads:
                         module,
                         node.value,
                         held,
-                        scopes.get(id(node), Scope(None, None)),
+                        scopes.get(id(node), MODULE_SCOPE),
                     )
                 ):
                     end = rewrite.geometry(module).required_node_offsets(node)[1]
