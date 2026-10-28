@@ -198,13 +198,24 @@ class AutoRegisterClassAuthority:
             REGISTRY_KEY_ATTRIBUTE_NAME,
         } <= assignment_names
 
-    @property
-    def keyed_metaclass_family(self) -> bool:
-        """It names a metaclass and a registry key. Which metaclass is not read
-        from its name: `require_native_metaclass` proves the operand."""
+    @staticmethod
+    def decoded(node: ast.ClassDef) -> AutoRegisterClassAuthority:
+        """The class's authority, decoded once: a keyed metaclass family when it
+        names a metaclass and a registry key, else only its declared shape."""
 
-        return self.registry_key_attribute is not None and any(
-            keyword.arg == "metaclass" for keyword in self.node.keywords
+        declared = AutoRegisterClassAuthority(node)
+        key_attribute = declared.registry_key_attribute
+        if key_attribute is None or not any(
+            keyword.arg == "metaclass" for keyword in node.keywords
+        ):
+            return declared
+        return KeyedMetaclassFamily(node, key_attribute)
+
+    def keyed_family(self) -> KeyedMetaclassFamily:
+        """This class as a keyed metaclass family, which a declared shape is not."""
+
+        raise ValueError(
+            f"{self.node.name!r} declares no metaclass and registry key"
         )
 
     @property
@@ -248,3 +259,14 @@ class AutoRegisterClassAuthority:
         if isinstance(value, ast.Name) and value.id == "DEFAULT_REGISTRY_KEY_ATTRIBUTE":
             return DEFAULT_REGISTRY_KEY_ATTRIBUTE
         return None
+
+
+@dataclass(frozen=True)
+class KeyedMetaclassFamily(AutoRegisterClassAuthority):
+    """A class that names a metaclass and a registry key. Which metaclass is
+    not read from its name: `require_native_metaclass` proves the operand."""
+
+    key_attribute: str
+
+    def keyed_family(self) -> KeyedMetaclassFamily:
+        return self

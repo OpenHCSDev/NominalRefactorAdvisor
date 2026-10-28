@@ -31,6 +31,7 @@ from .registry_identity import (
     DEFAULT_REGISTRY_KEY_ATTRIBUTE,
     REGISTRY_ATTRIBUTE_NAME,
     AutoRegisterClassAuthority,
+    KeyedMetaclassFamily,
 )
 from .value_expression import (
     CompactValueExpression,
@@ -711,7 +712,7 @@ class AutoRegisterInstanceViewComponent(RegistryEntries):
     """One constructor-valued view proved against its AutoRegister authority."""
 
     module: ast.Module
-    authority_node: ast.ClassDef
+    authority: KeyedMetaclassFamily
     assignment: RegistryAssignment
     entries: tuple[SourceClassKeyEntry, ...]
 
@@ -733,13 +734,14 @@ class AutoRegisterInstanceViewComponent(RegistryEntries):
             raise ValueError(
                 f"AutoRegister authority {authority_name!r} is not a top-level class"
             )
+        authority = AutoRegisterClassAuthority.decoded(authority_node).keyed_family()
         candidates = tuple(
             candidate
             for statement in module.body
             if (
                 candidate := cls.from_assignment(
                     module,
-                    authority_node,
+                    authority,
                     statement,
                     class_graph,
                 )
@@ -759,7 +761,7 @@ class AutoRegisterInstanceViewComponent(RegistryEntries):
     def from_assignment(
         cls,
         module: ast.Module,
-        authority_node: ast.ClassDef,
+        authority: KeyedMetaclassFamily,
         statement: ast.stmt,
         class_graph: DirectModuleClassGraph,
     ) -> AutoRegisterInstanceViewComponent | None:
@@ -792,20 +794,20 @@ class AutoRegisterInstanceViewComponent(RegistryEntries):
             class_node = class_graph.classes_by_name.get(value_node.func.id)
             if class_node is None or not class_graph.descends_from(
                 class_node,
-                authority_node.name,
+                authority.node.name,
             ):
                 return None
             entries.append(ConstructorClassKeyEntry(class_node, key, value_node))
         return cls(
             module=module,
-            authority_node=authority_node,
+            authority=authority,
             assignment=statement,
             entries=tuple(entries),
         )
 
-    @cached_property
-    def authority(self) -> AutoRegisterClassAuthority:
-        return AutoRegisterClassAuthority(self.authority_node)
+    @property
+    def authority_node(self) -> ast.ClassDef:
+        return self.authority.node
 
     @property
     def authority_name(self) -> str:
@@ -822,18 +824,9 @@ class AutoRegisterInstanceViewComponent(RegistryEntries):
 
     @property
     def registry_key_attribute(self) -> str:
-        registry_key_attribute = self.authority.registry_key_attribute
-        if registry_key_attribute is None:
-            raise ValueError(
-                f"AutoRegister authority {self.authority_name!r} has no registry key"
-            )
-        return registry_key_attribute
+        return self.authority.key_attribute
 
     def require_complete(self, class_graph: DirectModuleClassGraph) -> None:
-        if not self.authority.keyed_metaclass_family:
-            raise ValueError(
-                f"{self.authority_name!r} declares no metaclass and registry key"
-            )
         if self.authority.declares_registry:
             registry_value = self.authority.assignment_value(REGISTRY_ATTRIBUTE_NAME)
             if not (
