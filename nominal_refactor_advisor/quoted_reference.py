@@ -21,6 +21,7 @@ from functools import cache, cached_property
 from itertools import pairwise
 from pathlib import Path
 
+from .lexical_bindings import ImportAlias, ImportBoundNameProjection
 from .declared_root import DeclaredRoot
 
 
@@ -139,15 +140,9 @@ class ModuleReferenceScope:
                     | ast.AsyncFunctionDef(name=name)
                 ):
                     bound.setdefault(name, statement.end_lineno or statement.lineno)
-                case ast.Import(names=aliases):
-                    for alias in aliases:
-                        bound.setdefault(
-                            alias.asname or alias.name.partition(".")[0],
-                            statement.lineno,
-                        )
-                case ast.ImportFrom(names=aliases):
-                    for alias in aliases:
-                        bound.setdefault(alias.asname or alias.name, statement.lineno)
+                case ast.Import() | ast.ImportFrom():
+                    for name in ImportBoundNameProjection(statement).names():
+                        bound.setdefault(name, statement.lineno)
                 case ast.Assign(targets=targets):
                     for target in targets:
                         if isinstance(target, ast.Name):
@@ -367,8 +362,8 @@ class ModuleReferenceScope:
             if not isinstance(statement, ast.Import):
                 continue
             for alias in statement.names:
-                if alias.asname is not None:
-                    reachable[alias.name] = alias.asname
+                if ImportAlias.from_alias(alias).spells_as_clause:
+                    reachable[alias.name] = ImportBoundNameProjection(statement).alias_bound_name(alias)
                     continue
                 parts = alias.name.split(".")
                 for stop in range(1, len(parts) + 1):
@@ -387,11 +382,10 @@ class ModuleReferenceScope:
         match node:
             case ast.Import(names=aliases):
                 for alias in aliases:
-                    if alias.asname is not None:
-                        yield alias.asname
-            case ast.ImportFrom(names=aliases):
-                for alias in aliases:
-                    yield alias.asname or alias.name
+                    if ImportAlias.from_alias(alias).spells_as_clause:
+                        yield ImportBoundNameProjection(node).alias_bound_name(alias)
+            case ast.ImportFrom():
+                yield from ImportBoundNameProjection(node).names()
             case ast.Name(id=name, ctx=ast.Store() | ast.Del()):
                 yield name
             case (

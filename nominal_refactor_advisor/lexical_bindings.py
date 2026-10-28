@@ -192,6 +192,23 @@ class ImportAlias:
         return cls(name=alias.name, asname=alias.asname)
 
     @property
+    def spells_as_clause(self) -> bool:
+        return self.asname is not None
+
+    @property
+    def declares_reexport(self) -> bool:
+        """`X as X` is the explicit public re-export spelling."""
+
+        return self.asname == self.name
+
+    def renamed(self, new_name: str) -> ImportAlias:
+        """The alias for a renamed declaration: keep a foreign `as` binding, else follow."""
+
+        if self.asname is None or self.asname == self.name:
+            return ImportAlias(new_name, self.asname and new_name)
+        return ImportAlias(new_name, self.asname)
+
+    @property
     def canonical_key(self) -> tuple[str, str]:
         """Return the source-spelling key for commutative import merging."""
 
@@ -387,9 +404,7 @@ class ModuleImportDeclaration(ImportDeclarationABC):
         module_identity: PythonModulePathIdentity,
     ) -> str:
         return (
-            alias.name
-            if alias.asname is not None
-            else self._unaliased_bound_name(alias)
+            alias.name if alias.spells_as_clause else self._unaliased_bound_name(alias)
         )
 
 

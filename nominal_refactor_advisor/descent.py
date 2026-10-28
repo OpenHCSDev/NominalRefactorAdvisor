@@ -51,7 +51,11 @@ from .enum_keyed_query import (
     EnumKeyedDerivedMapFacadeComponentBuilder,
 )
 from .foreign_family import FunctionDefinition
-from .lexical_bindings import LEXICAL_SCOPE_BINDING_AUTHORITY, ImportFromModuleName
+from .lexical_bindings import (
+    LEXICAL_SCOPE_BINDING_AUTHORITY,
+    ImportBoundNameProjection,
+    ImportFromModuleName,
+)
 from .semantic_descent import AuthorityClaim, SemanticAuthorityKind
 
 
@@ -615,7 +619,7 @@ class Rewrite:
             alias.name
             for statement in statements
             for alias in statement.names
-            if alias.asname is None
+            if ImportBoundNameProjection(statement).alias_bound_name(alias) == alias.name
         }
         missing = sorted(set(names) - bound, key=alias_order)
         if not missing:
@@ -763,10 +767,10 @@ class Rewrite:
                 for source, name in self.imports.get(module.file_path, ())
                 if source == ImportFromModuleName.from_node(statement).source
                 and name
-                not in {alias.asname or alias.name for alias in statement.names}
+                not in ImportBoundNameProjection(statement).names()
             )
             for alias in statement.names:
-                local = alias.asname or alias.name
+                local = ImportBoundNameProjection(statement).alias_bound_name(alias)
                 if local in replaced:
                     # The local itself keeps its authored alias (``X as X`` re-exports).
                     aliases.extend(
@@ -798,7 +802,7 @@ class Rewrite:
             present = {
                 (
                     ImportFromModuleName.from_node(statement).source,
-                    alias.asname or alias.name,
+                    ImportBoundNameProjection(statement).alias_bound_name(alias),
                 )
                 for statement in module.module.body
                 if isinstance(statement, ast.ImportFrom)
