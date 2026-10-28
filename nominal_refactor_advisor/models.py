@@ -352,6 +352,21 @@ class FindingMetrics(SemanticRecord, ABC):
 
         return ()
 
+    def finding_identity(
+        self, summary: str, evidence: tuple[SourceLocation, ...]
+    ) -> tuple[str, ...]:
+        """What makes a finding the same finding across scans.
+
+        By default that is its rendered summary and evidence sites. Metrics
+        whose summary carries derived scores override this with the obligation
+        itself, so rescoring does not re-key the finding.
+        """
+
+        return (
+            summary,
+            "|".join(stable_source_location_id(item) for item in evidence),
+        )
+
 
 @dataclass(frozen=True)
 class SemanticMirrorMetricRelation:
@@ -1072,15 +1087,11 @@ class RefactorFinding(FindingSemantics):
     def stable_id(self) -> str:
         """Source-derived finding id for compact, repeatable agent targeting."""
 
-        evidence_key = "|".join(
-            stable_source_location_id(item) for item in self.evidence
-        )
         payload = "|".join(
             (
                 self.detector_id,
                 str(self.pattern_id.value),
-                self.summary,
-                evidence_key,
+                *self.metrics.finding_identity(self.summary, self.evidence),
             )
         )
         return hashlib.blake2s(payload.encode("utf-8"), digest_size=5).hexdigest()

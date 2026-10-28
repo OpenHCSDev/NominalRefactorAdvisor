@@ -119,3 +119,30 @@ def test_a_mixin_that_would_reorder_dataclass_fields_is_refused() -> None:
     assert {receipt.kind for receipt in owner.refusals} == {
         OwnerReceiptKind.FIELD_ORDER_CHANGED
     }
+
+
+def test_a_finding_id_names_the_obligation_not_its_score() -> None:
+    from dataclasses import replace
+
+    from nominal_refactor_advisor.class_overlap import ClassOverlapMetrics
+    from nominal_refactor_advisor.detectors._class_overlap import MissingMixinDetector
+
+    (verdict,) = _mixin_verdicts(
+        (
+            "pkg.records",
+            "class First:\n" + BLOCK + "    own_first: int\n\n\n"
+            "class Second:\n" + BLOCK + "    own_second: int\n",
+        ),
+    )
+    metrics = ClassOverlapMetrics.of(verdict)
+    finding = MissingMixinDetector()._finding_for_candidate(verdict)
+    rescored = replace(
+        finding,
+        summary="0.12 summary",
+        metrics=replace(metrics, confidence_score=0.12, owner_candidates=()),
+    )
+    assert rescored.stable_id == finding.stable_id
+    other_block = replace(
+        finding, metrics=replace(metrics, shared_declaration_names=("alpha",))
+    )
+    assert other_block.stable_id != finding.stable_id

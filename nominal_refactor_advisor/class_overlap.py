@@ -90,6 +90,18 @@ class ClassOverlapMove(Case):
     reorders_fields: bool
 
     @classmethod
+    def obligation_classes(
+        cls, owner_symbol: str, restating_symbols: Sequence[str]
+    ) -> tuple[str, ...]:
+        """The classes that name this obligation, in an order the move fixes.
+
+        The owner keeps its place: the move keeps it and redirects or composes
+        the others, so each choice of owner is its own obligation.
+        """
+
+        return (owner_symbol, *sorted(restating_symbols))
+
+    @classmethod
     @abstractmethod
     def guarded_classes(
         cls, owner: CompactIndexedClass, restating: CompactIndexedClass
@@ -132,6 +144,14 @@ class PromoteToSharedBase(ClassOverlapMove):
     reorders_fields = True
 
     @classmethod
+    def obligation_classes(
+        cls, owner_symbol: str, restating_symbols: Sequence[str]
+    ) -> tuple[str, ...]:
+        """No class is kept as owner: the block moves out of all of them."""
+
+        return tuple(sorted((owner_symbol, *restating_symbols)))
+
+    @classmethod
     def guarded_classes(
         cls, owner: CompactIndexedClass, restating: CompactIndexedClass
     ) -> tuple[CompactIndexedClass, ...]:
@@ -143,6 +163,14 @@ class ExtractMixin(ClassOverlapMove):
 
     value = "extract_mixin"
     reorders_fields = True
+
+    @classmethod
+    def obligation_classes(
+        cls, owner_symbol: str, restating_symbols: Sequence[str]
+    ) -> tuple[str, ...]:
+        """No class is kept as owner: the block moves out of all of them."""
+
+        return tuple(sorted((owner_symbol, *restating_symbols)))
 
     @classmethod
     def guarded_classes(
@@ -430,6 +458,22 @@ class ClassOverlapMetrics(FindingMetrics):
     @property
     def plan_class_names(self) -> tuple[str, ...]:
         return (self.owner_symbol, *self.restating_symbols)
+
+    def finding_identity(
+        self, summary: str, evidence: tuple[SourceLocation, ...]
+    ) -> tuple[str, ...]:
+        """The obligation: the move, the classes that restate the block, and the
+        block.
+
+        Scores, receipts and owner candidates are derived from it and stay out,
+        so a pick keyed by this id survives rescoring and line moves.
+        """
+
+        return (
+            self.move.value,
+            ",".join(self.move.obligation_classes(self.owner_symbol, self.restating_symbols)),
+            ",".join(sorted(self.shared_declaration_names)),
+        )
 
     @property
     def plan_field_names(self) -> tuple[str, ...]:
