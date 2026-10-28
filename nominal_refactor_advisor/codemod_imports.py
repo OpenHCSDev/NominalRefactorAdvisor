@@ -1253,7 +1253,7 @@ class RequestedImportStatement:
         aliases: Iterable[ImportAlias],
     ) -> RequestedImportStatement:
         alias_nodes = [
-            ast.alias(name=alias.name, asname=alias.asname) for alias in aliases
+            alias.ast_alias for alias in aliases
         ]
         if isinstance(self.statement, ast.Import):
             return RequestedImportStatement(

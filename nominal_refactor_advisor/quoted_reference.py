@@ -362,13 +362,7 @@ class ModuleReferenceScope:
             if not isinstance(statement, ast.Import):
                 continue
             for alias in statement.names:
-                if ImportAlias.from_alias(alias).spells_as_clause:
-                    reachable[alias.name] = ImportBoundNameProjection(statement).alias_bound_name(alias)
-                    continue
-                parts = alias.name.split(".")
-                for stop in range(1, len(parts) + 1):
-                    dotted = ".".join(parts[:stop])
-                    reachable[dotted] = dotted
+                reachable.update(ImportAlias.from_alias(alias).module_spellings)
         aliased = set(reachable.values()) - set(reachable)
         return {
             dotted: expression
@@ -382,8 +376,13 @@ class ModuleReferenceScope:
         match node:
             case ast.Import(names=aliases):
                 for alias in aliases:
-                    if ImportAlias.from_alias(alias).spells_as_clause:
-                        yield ImportBoundNameProjection(node).alias_bound_name(alias)
+                    yield from (
+                        spelling
+                        for dotted, spelling in ImportAlias.from_alias(
+                            alias
+                        ).module_spellings
+                        if spelling != dotted
+                    )
             case ast.ImportFrom():
                 yield from ImportBoundNameProjection(node).names()
             case ast.Name(id=name, ctx=ast.Store() | ast.Del()):

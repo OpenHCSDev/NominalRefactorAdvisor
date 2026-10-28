@@ -178,41 +178,100 @@ class FunctionAnnotationVisitor(FunctionDefaultVisitor):
 
 @dataclass(frozen=True)
 class ImportAlias:
-    """One import alias as spelled; its statement kind owns the name it binds."""
+    """One import alias spelled without an `as` clause."""
 
     name: str
-    asname: str | None
-
-    @property
-    def source(self) -> str:
-        return self.name if self.asname is None else f"{self.name} as {self.asname}"
 
     @classmethod
     def from_alias(cls, alias: ast.alias) -> ImportAlias:
-        return cls(name=alias.name, asname=alias.asname)
+        """The ast boundary: the authored `as` clause picks the alias type."""
+
+        if alias.asname is None:
+            return ImportAlias(alias.name)
+        return RenamedImportAlias(alias.name, alias.asname)
 
     @property
-    def spells_as_clause(self) -> bool:
-        return self.asname is not None
+    def source(self) -> str:
+        return self.name
 
     @property
-    def declares_reexport(self) -> bool:
-        """`X as X` is the explicit public re-export spelling."""
-
-        return self.asname == self.name
-
-    def renamed(self, new_name: str) -> ImportAlias:
-        """The alias for a renamed declaration: keep a foreign `as` binding, else follow."""
-
-        if self.asname is None or self.asname == self.name:
-            return ImportAlias(new_name, self.asname and new_name)
-        return ImportAlias(new_name, self.asname)
+    def ast_alias(self) -> ast.alias:
+        return ast.alias(name=self.name)
 
     @property
     def canonical_key(self) -> tuple[str, str]:
         """Return the source-spelling key for commutative import merging."""
 
-        return self.name, self.asname or ""
+        return self.name, ""
+
+    @property
+    def declares_reexport(self) -> bool:
+        """`X as X` is the explicit public re-export spelling."""
+
+        return False
+
+    def renamed(self, new_name: str) -> ImportAlias:
+        """The alias importing a renamed declaration under the binding it implies."""
+
+        return ImportAlias(new_name)
+
+    def bound_name_in(self, declaration: ImportDeclarationABC) -> str:
+        return declaration._unaliased_bound_name(self)
+
+    def module_reference_in(self, declaration: ModuleImportDeclaration) -> str:
+        """The dotted module path a module import of this alias reaches by its binding."""
+
+        return declaration._unaliased_bound_name(self)
+
+    @property
+    def module_spellings(self) -> tuple[tuple[str, str], ...]:
+        """Dotted module paths this module-import alias makes reachable, with their spelling."""
+
+        parts = self.name.split(".")
+        return tuple(
+            (dotted, dotted)
+            for dotted in (".".join(parts[:stop]) for stop in range(1, len(parts) + 1))
+        )
+
+
+@dataclass(frozen=True)
+class RenamedImportAlias(ImportAlias):
+    """One import alias spelled with an `as` clause."""
+
+    asname: str
+
+    @property
+    def source(self) -> str:
+        return f"{self.name} as {self.asname}"
+
+    @property
+    def ast_alias(self) -> ast.alias:
+        return ast.alias(name=self.name, asname=self.asname)
+
+    @property
+    def canonical_key(self) -> tuple[str, str]:
+        return self.name, self.asname
+
+    @property
+    def declares_reexport(self) -> bool:
+        return self.asname == self.name
+
+    def renamed(self, new_name: str) -> ImportAlias:
+        """A foreign `as` binding survives; a re-export follows the new name."""
+
+        return RenamedImportAlias(
+            new_name, new_name if self.declares_reexport else self.asname
+        )
+
+    def bound_name_in(self, declaration: ImportDeclarationABC) -> str:
+        return self.asname
+
+    def module_reference_in(self, declaration: ModuleImportDeclaration) -> str:
+        return self.name
+
+    @property
+    def module_spellings(self) -> tuple[tuple[str, str], ...]:
+        return ((self.name, self.asname),)
 
 
 @dataclass(frozen=True)
@@ -316,7 +375,7 @@ class ImportDeclarationABC(ABC):
     def bound_name(self, alias: ImportAlias) -> str | None:
         if alias.name == "*":
             return None
-        return alias.asname or self._unaliased_bound_name(alias)
+        return alias.bound_name_in(self)
 
     @abstractmethod
     def _unaliased_bound_name(self, alias: ImportAlias) -> str:
@@ -403,9 +462,7 @@ class ModuleImportDeclaration(ImportDeclarationABC):
         alias: ImportAlias,
         module_identity: PythonModulePathIdentity,
     ) -> str:
-        return (
-            alias.name if alias.spells_as_clause else self._unaliased_bound_name(alias)
-        )
+        return alias.module_reference_in(self)
 
 
 @dataclass(frozen=True)
