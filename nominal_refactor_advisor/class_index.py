@@ -785,6 +785,16 @@ class CompactDataclassFieldRole(StrEnum):
             None,
         )
 
+    def binding_of_later_fields(
+        self, binding: DataclassInitBinding
+    ) -> DataclassInitBinding:
+        """How the fields after this member bind: a `KW_ONLY` sentinel makes
+        them keyword-only; any other member leaves the binding as it was."""
+
+        if self is CompactDataclassFieldRole.KEYWORD_ONLY_SENTINEL:
+            return DataclassInitBinding.KEYWORD_ONLY
+        return binding
+
     @property
     def has_known_field_position(self) -> bool:
         """Whether this member's place in the dataclass field order is known.
@@ -7300,8 +7310,7 @@ def _dataclass_fields(
                     ),
                 )
             )
-            if role is CompactDataclassFieldRole.KEYWORD_ONLY_SENTINEL:
-                class_binding = DataclassInitBinding.KEYWORD_ONLY
+            class_binding = role.binding_of_later_fields(class_binding)
         direct_aliases: dict[str, str] = {}
         if isinstance(statement, ast.Assign | ast.AnnAssign):
             alias_name = _single_assignment_target_name(statement)
