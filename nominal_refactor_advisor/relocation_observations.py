@@ -16,7 +16,9 @@ import builtins
 from collections.abc import Iterator
 from dataclasses import dataclass
 
+from .ast_field_decoders import variadic_parameters
 from .ast_tools import ParsedModule
+from .class_index import ModuleNominalBindingAuthority
 from .observation_families import ShapeFamily
 from .restated_fact_observations import (
     RestatingSite,
@@ -116,9 +118,8 @@ def takes_only_receiver(node: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
     arguments = node.args
     return (
         len([*arguments.posonlyargs, *arguments.args]) == 1
-        and arguments.vararg is None
+        and not variadic_parameters(arguments)
         and not arguments.kwonlyargs
-        and arguments.kwarg is None
     )
 
 
@@ -140,26 +141,23 @@ def declares_abstract(node: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
     return False
 
 
-def base_names(node: ast.ClassDef) -> tuple[str, ...]:
-    """Each base as the last name it is spelled with (`pkg.Base[T]` is `Base`)."""
+def is_frozen_record(
+    node: ast.ClassDef, bindings: ModuleNominalBindingAuthority
+) -> bool:
+    """A frozen dataclass or a NamedTuple: its state is fixed once built.
 
-    names = []
-    for base in node.bases:
-        unsubscripted = base.value if isinstance(base, ast.Subscript) else base
-        match unsubscripted:
-            case ast.Name(id=name) | ast.Attribute(attr=name):
-                names.append(name)
-    return tuple(names)
+    The decorator and the base are resolved through the module's bindings, so a
+    local class named `dataclass` or `NamedTuple` is not one.
+    """
 
+    def resolves_to(reference: ast.expr, qualified_name: str) -> bool:
+        return bindings.qualified_name_at(reference, line=node.lineno) == qualified_name
 
-def is_frozen_record(node: ast.ClassDef) -> bool:
-    """A frozen dataclass or a NamedTuple: its state is fixed once built."""
-
-    if "NamedTuple" in base_names(node):
+    if any(resolves_to(base, "typing.NamedTuple") for base in node.bases):
         return True
     return any(
         isinstance(decorator, ast.Call)
-        and ast.unparse(decorator.func) in ("dataclass", "dataclasses.dataclass")
+        and resolves_to(decorator.func, "dataclasses.dataclass")
         and any(
             keyword.arg == "frozen"
             and isinstance(keyword.value, ast.Constant)
@@ -243,17 +241,23 @@ class ClassBodyReading:
 
     answers: list[ConstantAnswer]
     computed: set[str]
+    declared: set[str]
     folds: list[FoldDeclaration]
     arities: list[TupleArity]
 
     @classmethod
     def of(cls, node: ast.ClassDef) -> ClassBodyReading:
-        reading = cls([], set(), [], [])
+        reading = cls([], set(), set(), [], [])
         for statement in node.body:
             reading.read(statement)
         return reading
 
     def read(self, statement: ast.stmt) -> None:
+        match statement:
+            case ast.FunctionDef(name=name) | ast.AsyncFunctionDef(name=name) | ast.Assign(
+                targets=[ast.Name(id=name)]
+            ) | ast.AnnAssign(target=ast.Name(id=name)):
+                self.declared.add(name)
         match statement:
             case ast.FunctionDef(name=name) | ast.AsyncFunctionDef(name=name):
                 self.read_definition(name, statement)
@@ -303,17 +307,15 @@ class ClassBodyReading:
 
 @dataclass(frozen=True)
 class ClassShape:
-    """What one class declares that a family join needs: its bases and its answers."""
+    """The members one class declares, and which of them it computes.
 
-    file_path: str
-    lineno: int
-    name: str
-    qualname: str
-    bases: tuple[str, ...]
-    constant_answers: tuple[ConstantAnswer, ...]
-    computed_members: frozenset[str]
-    folds: tuple[FoldDeclaration, ...]
-    tuple_arities: tuple[TupleArity, ...]
+    `symbol` is the class's module-qualified name, the key the compact class
+    index (`CompactClassFamilyIndex`) resolves its bases under.
+    """
+
+    symbol: str
+    declared: frozenset[str]
+    computed: frozenset[str]
 
     @classmethod
     def of(
@@ -321,15 +323,9 @@ class ClassShape:
     ) -> ClassShape:
         reading = ClassBodyReading.of(node)
         return cls(
-            file_path=parsed_module.file_path,
-            lineno=node.lineno,
-            name=node.name,
-            qualname=qualname,
-            bases=base_names(node),
-            constant_answers=tuple(reading.answers),
-            computed_members=frozenset(reading.computed),
-            folds=tuple(reading.folds),
-            tuple_arities=tuple(reading.arities),
+            symbol=f"{parsed_module.module_name}.{qualname}",
+            declared=frozenset(reading.declared),
+            computed=frozenset(reading.computed),
         )
 
 
@@ -486,7 +482,7 @@ class ConstantAnswerSiteFamily(RestatingSiteFamily[RestatingSiteModule]):
                     answer.lineno,
                     f"{qualname}.{answer.member}",
                     answer.member,
-                    (node.name, answer.value),
+                    (f"{parsed_module.module_name}.{qualname}", answer.value),
                 )
 
 
@@ -520,8 +516,9 @@ class OwnStateBoolSiteFamily(RestatingSiteFamily[RestatingSiteModule]):
 
     @classmethod
     def sites(cls, parsed_module: ParsedModule) -> Iterator[RestatingSite]:
+        bindings = ModuleNominalBindingAuthority(parsed_module)
         for qualname, node in scoped_classes(parsed_module.module):
-            if not is_frozen_record(node):
+            if not is_frozen_record(node, bindings):
                 continue
             for statement in node.body:
                 match statement:
@@ -550,26 +547,30 @@ class OwnStateBoolSiteFamily(RestatingSiteFamily[RestatingSiteModule]):
                             statement.lineno,
                             f"{qualname}.{name}",
                             name,
-                            (node.name, accessed, own_state_shape(expression)),
+                            (
+                                f"{parsed_module.module_name}.{qualname}",
+                                accessed,
+                                own_state_shape(expression),
+                            ),
                         )
 
 
-def handled_names(handler: ast.ExceptHandler) -> tuple[str, ...]:
+def handled_types(handler: ast.ExceptHandler) -> list[ast.expr]:
     match handler.type:
         case ast.Tuple(elts=elements):
-            caught = elements
+            return elements
         case ast.expr() as single:
-            caught = [single]
-        case _:
-            caught = []
-    return tuple(ast.unparse(name).rsplit(".", 1)[-1] for name in caught)
+            return [single]
+    return []
 
 
 class ExceptionAbsenceSiteFamily(RestatingSiteFamily[RestatingSiteModule]):
     """`try:` around one statement whose `except` arm is behaviour, not a re-raise.
 
-    `group` is the caught name and `detail` the guarded statement; the join keeps
-    the sites whose caught name the scan declares as an exception.
+    `group` is the caught class's qualified name, resolved through the module's
+    bindings at the handler (a name that binds nothing is left out), and
+    `detail` the guarded statement; the join keeps the sites whose caught class
+    the class index derives from a builtin exception.
     """
 
     item_type = RestatingSiteModule
@@ -577,6 +578,7 @@ class ExceptionAbsenceSiteFamily(RestatingSiteFamily[RestatingSiteModule]):
     @classmethod
     def sites(cls, parsed_module: ParsedModule) -> Iterator[RestatingSite]:
         symbols = enclosing_symbols(parsed_module.module)
+        bindings = ModuleNominalBindingAuthority(parsed_module)
         for node in ast.walk(parsed_module.module):
             match node:
                 case ast.Try(body=[guarded], handlers=handlers) if any(
@@ -589,14 +591,16 @@ class ExceptionAbsenceSiteFamily(RestatingSiteFamily[RestatingSiteModule]):
             for handler in handlers:
                 if all(isinstance(statement, ast.Raise) for statement in handler.body):
                     continue
-                for name in handled_names(handler):
-                    yield RestatingSite(
-                        parsed_module.file_path,
-                        handler.lineno,
-                        symbols.get(id(node), "<module>"),
-                        name,
-                        (spelled,),
-                    )
+                for caught in handled_types(handler):
+                    match bindings.qualified_name_at(caught, line=handler.lineno):
+                        case str() as qualified:
+                            yield RestatingSite(
+                                parsed_module.file_path,
+                                handler.lineno,
+                                symbols.get(id(node), "<module>"),
+                                qualified,
+                                (spelled,),
+                            )
 
 
 class LambdaFoldSiteFamily(RestatingSiteFamily[RestatingSiteModule]):
@@ -613,7 +617,7 @@ class LambdaFoldSiteFamily(RestatingSiteFamily[RestatingSiteModule]):
                     fold.lineno,
                     f"{qualname}.{fold.member}",
                     fold.member,
-                    (node.name, fold.called_parameter),
+                    (f"{parsed_module.module_name}.{qualname}", fold.called_parameter),
                 )
 
 
@@ -632,7 +636,7 @@ class ZeroOneTupleSiteFamily(RestatingSiteFamily[RestatingSiteModule]):
             if not arities:
                 continue
             owner = (
-                definition.owner.name
+                f"{parsed_module.module_name}.{definition.qualname.rsplit('.', 1)[0]}"
                 if isinstance(definition.owner, ast.ClassDef)
                 else ""
             )
@@ -645,13 +649,17 @@ class ZeroOneTupleSiteFamily(RestatingSiteFamily[RestatingSiteModule]):
             )
 
 
+def spells_none(node: ast.AST) -> bool:
+    match node:
+        case ast.Constant(value=None):
+            return True
+    return False
+
+
 def optional_annotation(annotation: ast.expr | None) -> bool:
     match annotation:
         case ast.BinOp(op=ast.BitOr()):
-            return any(
-                isinstance(part, ast.Constant) and part.value is None
-                for part in ast.walk(annotation)
-            )
+            return any(spells_none(part) for part in ast.walk(annotation))
         case ast.Subscript(value=ast.Name(id="Optional") | ast.Attribute(attr="Optional")):
             return True
         case ast.Constant(value=str() as text):
@@ -665,7 +673,7 @@ def undefaulted_parameters(node: ast.FunctionDef | ast.AsyncFunctionDef) -> list
     undefaulted.extend(
         argument
         for argument, default in zip(node.args.kwonlyargs, node.args.kw_defaults)
-        if default is None
+        if not isinstance(default, ast.expr)
     )
     return undefaulted
 

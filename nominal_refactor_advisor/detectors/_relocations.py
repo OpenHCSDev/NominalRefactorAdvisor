@@ -13,7 +13,14 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from collections import defaultdict
 from collections.abc import Iterable, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass
+from functools import cached_property
+from operator import attrgetter
+
+from ..class_index import (
+    CompactClassFamilyIndex,
+    CompactModuleClassProjectionFamily,
+)
 
 from ..models import RefactorFinding, SourceLocation
 from ..patterns import PatternId
@@ -44,71 +51,80 @@ from ._restated_facts import (
 
 
 @dataclass
-class ClassFamilies:
-    """Scanned classes joined into families through the bases they name.
+class MemberFamilies:
+    """Which declarations of one member answer the same question.
 
-    A base is matched by its last spelled name against every scanned class of
-    that name (closed world), so two classes that share a name join one family.
+    The class graph is the compact class index's: each class's bases as
+    `resolved_base_symbols`, never a spelled name. A declaration's family is the
+    set of its topmost declaring ancestors. A class whose own or an ancestor's
+    base references are incomplete is open: it stays alone, never joined by a
+    guess.
     """
 
-    classes: dict[tuple[str, str], ClassShape]
-    parents: dict[tuple[str, str], tuple[str, str]] = field(default_factory=dict)
+    class_index: CompactClassFamilyIndex
+    shapes: dict[str, ClassShape]
 
-    @classmethod
-    def of(cls, shapes: Iterable[ClassShape]) -> ClassFamilies:
-        families = cls({(shape.file_path, shape.qualname): shape for shape in shapes})
-        by_name: dict[str, list[tuple[str, str]]] = defaultdict(list)
-        for key, shape in families.classes.items():
-            by_name[shape.name].append(key)
-        for key, shape in families.classes.items():
-            for base in shape.bases:
-                for parent in by_name.get(base, ()):
-                    families.join(key, parent)
-        return families
+    def is_open(self, symbol: str) -> bool:
+        classes = self.class_index.classes_by_symbol
+        return symbol not in classes or not all(
+            classes[lineage].base_references_are_complete
+            for lineage in (symbol, *self.class_index.ancestor_symbols(symbol))
+        )
 
-    def root(self, key: tuple[str, str]) -> tuple[str, str]:
-        parent = self.parents.get(key, key)
-        if parent == key:
-            return key
-        found = self.root(parent)
-        self.parents[key] = found
-        return found
+    def declares(self, symbol: str, member: str) -> bool:
+        return symbol in self.shapes and member in self.shapes[symbol].declared
 
-    def join(self, first: tuple[str, str], second: tuple[str, str]) -> None:
-        roots = sorted({self.root(first), self.root(second)})
-        for other in roots[1:]:
-            self.parents[other] = roots[0]
+    def family(self, symbol: str, member: str) -> str:
+        """The topmost declarations of `member` above `symbol`, as one key."""
 
-    def family_of(self, file_path: str, member_symbol: str) -> tuple[str, str]:
-        """The family root of the class declaring `Class.member` in `file_path`."""
+        if self.is_open(symbol):
+            return f"open {symbol}"
+        declaring = [
+            lineage
+            for lineage in (symbol, *self.class_index.ancestor_symbols(symbol))
+            if self.declares(lineage, member)
+        ]
+        return ", ".join(
+            sorted(
+                lineage
+                for lineage in declaring
+                if not any(
+                    self.declares(ancestor, member)
+                    for ancestor in self.class_index.ancestor_symbols(lineage)
+                )
+            )
+        )
 
-        return self.root((file_path, member_symbol.rsplit(".", 1)[0]))
+    @cached_property
+    def computed_by_family(self) -> dict[tuple[str, str], list[str]]:
+        computed: dict[tuple[str, str], list[str]] = defaultdict(list)
+        for symbol, shape in self.shapes.items():
+            for member in shape.computed:
+                computed[(self.family(symbol, member), member)].append(symbol)
+        return dict(computed)
 
-    def members(self, root: tuple[str, str]) -> list[ClassShape]:
-        return [shape for key, shape in self.classes.items() if self.root(key) == root]
+    @cached_property
+    def exception_symbols(self) -> frozenset[str]:
+        """Scanned classes whose own or inherited bases bind a builtin exception."""
 
-    def name(self, root: tuple[str, str]) -> str:
-        return f"`{root[1]}` ({root[0]})"
-
-    def exception_names(self) -> frozenset[str]:
-        """Names of scanned classes whose bases reach a builtin exception."""
-
-        found = set(BUILTIN_EXCEPTIONS)
-        grown = True
-        while grown:
-            grown = False
-            for shape in self.classes.values():
-                if shape.name not in found and any(base in found for base in shape.bases):
-                    found.add(shape.name)
-                    grown = True
-        return frozenset(found - BUILTIN_EXCEPTIONS)
+        builtin = frozenset(f"builtins.{name}" for name in BUILTIN_EXCEPTIONS)
+        classes = self.class_index.classes_by_symbol
+        return frozenset(
+            symbol
+            for symbol in classes
+            if any(
+                reference.qualified_name in builtin
+                for lineage in (symbol, *self.class_index.ancestor_symbols(symbol))
+                for reference in classes[lineage].base_references
+            )
+        )
 
 
 @dataclass
 class RelocationIndex:
-    """The scan's class families and the consumers that branch on members."""
+    """The scan's member families and the consumers that branch on members."""
 
-    families: ClassFamilies
+    families: MemberFamilies
     branch_reads: dict[str, list[BranchRead]]
     lambda_calls: dict[str, list[LambdaCall]]
 
@@ -125,10 +141,13 @@ def _relocation_index(projections_by_family: CompactProjectionGroups) -> Relocat
         for call in module.lambda_calls:
             calls[call.member].append(call)
     return RelocationIndex(
-        ClassFamilies.of(
-            shape
-            for module in ClassShapeFamily.modules_in(projections_by_family)
-            for shape in module.classes
+        MemberFamilies(
+            CompactClassFamilyIndex.from_projection_groups(projections_by_family),
+            {
+                shape.symbol: shape
+                for module in ClassShapeFamily.modules_in(projections_by_family)
+                for shape in module.classes
+            },
         ),
         dict(reads),
         dict(calls),
@@ -171,7 +190,7 @@ class RelocationDetector(
             groups[self.group_of(site, context)].append(site)
         findings = []
         for _key, group in sorted(groups.items()):
-            ordered = sorted(group, key=lambda site: (site.file_path, site.lineno))
+            ordered = sorted(group, key=attrgetter("file_path", "lineno"))
             if not self.admits(ordered, context):
                 continue
             summary = (
@@ -186,15 +205,17 @@ class RelocationDetector(
 
 
 class FamilyMemberRelocationDetector(RelocationDetector, ABC):
-    """One finding per (class family, member): the sites are its declarations."""
+    """One finding per (member family, member): the sites are its declarations.
+
+    `detail[0]` of each site is the declaring class's symbol.
+    """
 
     def group_of(self, site: RestatingSite, context: RelocationIndex) -> tuple[str, str, str]:
-        root = context.families.family_of(site.file_path, site.symbol)
-        return (*root, site.group)
+        return (context.families.family(site.detail[0], site.group), site.group, "")
 
     def owner(self, sites: Sequence[RestatingSite], context: RelocationIndex) -> str:
-        root = context.families.family_of(sites[0].file_path, sites[0].symbol)
-        return f"{self.restated.owner} Family root: {context.families.name(root)}."
+        family = context.families.family(sites[0].detail[0], sites[0].group)
+        return f"{self.restated.owner} Declared first by: {family}."
 
 
 class ConstantSubtypeAnswerDetector(FamilyMemberRelocationDetector):
@@ -202,6 +223,7 @@ class ConstantSubtypeAnswerDetector(FamilyMemberRelocationDetector):
 
     module_projection_families = (
         ConstantAnswerSiteFamily,
+        CompactModuleClassProjectionFamily,
         ClassShapeFamily,
         ConsumerShapeFamily,
     )
@@ -221,13 +243,10 @@ class ConstantSubtypeAnswerDetector(FamilyMemberRelocationDetector):
 
     def computed_elsewhere(
         self, sites: Sequence[RestatingSite], context: RelocationIndex
-    ) -> list[ClassShape]:
-        root = context.families.family_of(sites[0].file_path, sites[0].symbol)
-        return [
-            shape
-            for shape in context.families.members(root)
-            if sites[0].group in shape.computed_members
-        ]
+    ) -> list[str]:
+        member = sites[0].group
+        family = context.families.family(sites[0].detail[0], member)
+        return context.families.computed_by_family.get((family, member), [])
 
     def admits(self, sites: Sequence[RestatingSite], context: RelocationIndex) -> bool:
         return len(sites) >= 2 and not self.computed_elsewhere(sites, context)
@@ -238,7 +257,9 @@ class ConstantSubtypeAnswerDetector(FamilyMemberRelocationDetector):
         return context.branch_reads.get(sites[0].group, [])
 
     def describe(self, sites: Sequence[RestatingSite], context: RelocationIndex) -> str:
-        answers = _listed(f"{site.detail[0]}={site.detail[1]}" for site in sites)
+        answers = _listed(
+            f"{site.detail[0].rsplit('.', 1)[-1]}={site.detail[1]}" for site in sites
+        )
         return (
             f"`{sites[0].group}` is answered by a constant in {len(sites)} members "
             f"of one family ({answers}); "
@@ -259,6 +280,7 @@ class OwnStateBranchAnswerDetector(RelocationDetector):
 
     module_projection_families = (
         OwnStateBoolSiteFamily,
+        CompactModuleClassProjectionFamily,
         ClassShapeFamily,
         ConsumerShapeFamily,
     )
@@ -308,6 +330,7 @@ class ExceptionAsAbsenceDetector(RelocationDetector):
 
     module_projection_families = (
         ExceptionAbsenceSiteFamily,
+        CompactModuleClassProjectionFamily,
         ClassShapeFamily,
         ConsumerShapeFamily,
     )
@@ -329,7 +352,7 @@ class ExceptionAsAbsenceDetector(RelocationDetector):
         return (site.file_path, site.symbol, site.group)
 
     def admits(self, sites: Sequence[RestatingSite], context: RelocationIndex) -> bool:
-        return sites[0].group in context.families.exception_names()
+        return sites[0].group in context.families.exception_symbols
 
     def describe(self, sites: Sequence[RestatingSite], context: RelocationIndex) -> str:
         guarded = _listed(f"line {site.lineno}: `{site.detail[0]}`" for site in sites)
@@ -344,6 +367,7 @@ class LambdaFoldDetector(FamilyMemberRelocationDetector):
 
     module_projection_families = (
         LambdaFoldSiteFamily,
+        CompactModuleClassProjectionFamily,
         ClassShapeFamily,
         ConsumerShapeFamily,
     )
@@ -372,7 +396,9 @@ class LambdaFoldDetector(FamilyMemberRelocationDetector):
         )
 
     def describe(self, sites: Sequence[RestatingSite], context: RelocationIndex) -> str:
-        overrides = _listed(f"{site.detail[0]} calls `{site.detail[1]}`" for site in sites)
+        overrides = _listed(
+            f"{site.detail[0].rsplit('.', 1)[-1]} calls `{site.detail[1]}`" for site in sites
+        )
         return (
             f"`{sites[0].group}` folds over its callables ({overrides}); "
             f"{_consumer_text(self.calls(sites, context), 'call(s) pass lambdas')}"
@@ -392,6 +418,7 @@ class ZeroOneTupleDetector(RelocationDetector):
 
     module_projection_families = (
         ZeroOneTupleSiteFamily,
+        CompactModuleClassProjectionFamily,
         ClassShapeFamily,
         ConsumerShapeFamily,
     )
@@ -413,7 +440,7 @@ class ZeroOneTupleDetector(RelocationDetector):
         owner = site.detail[0]
         if not owner:
             return (site.file_path, site.symbol, site.group)
-        return (*context.families.family_of(site.file_path, site.symbol), site.group)
+        return (context.families.family(owner, site.group), site.group, "")
 
     def admits(self, sites: Sequence[RestatingSite], context: RelocationIndex) -> bool:
         return {arity for site in sites for arity in site.detail[1:]} == {"0", "1"}
