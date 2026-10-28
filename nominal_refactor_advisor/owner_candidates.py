@@ -54,6 +54,8 @@ class OwnerReceiptKind(ReceiptKind):
     CYCLE_CREATED = "cycle_created", 0.0, True
     CONSTRUCTION_CHANGED = "construction_changed", 0.0, True
     FIELD_ORDER_CHANGED = "field_order_changed", 0.0, True
+    KEYWORD_ONLY_COMPOSITION = "keyword_only_composition", -0.25, False
+    POSITIONAL_CONSTRUCTION = "positional_construction", 0.0, True
     BASE_SERVES_OTHERS = "base_serves_others", 0.0, True
     OWNER_NOT_CONTAINED = "owner_not_contained", 0.0, True
     DIFFERENT_CONSTRUCTION = "different_construction", 0.0, True
@@ -398,6 +400,7 @@ class BlockOwnerQuestion:
                             if name in self.block and name not in held
                         ),
                     ),
+                    keyword_only_route=False,
                 )
             )
             if not self.same_construction(owner, self.first):
@@ -449,6 +452,7 @@ class BlockOwnerQuestion:
                     for name in anchor.own_dataclass_field_names or ()
                     if name in self.block
                 ),
+                keyword_only_route=True,
             )
             yield NewMixinOwner(
                 candidate_id=f"new_mixin:{module_name}",
@@ -476,14 +480,26 @@ class BlockOwnerQuestion:
             )
 
     def _field_order_receipts(
-        self, owner: CompactIndexedClass, owner_fields: Sequence[str]
+        self,
+        owner: CompactIndexedClass,
+        owner_fields: Sequence[str],
+        *,
+        keyword_only_route: bool,
     ) -> tuple[Receipt, ...]:
         """Composing an owner puts its fields ahead of each composer's own.
 
         A dataclass composer keeps its field order only when the owner's fields
-        are its leading own fields, in the same order; otherwise its
-        constructor, repr and comparisons change. A field whose position is
-        unknown leaves the order unproved.
+        are its leading own fields, in the same order. Otherwise its generated
+        `__init__` takes them in another order. A new mixin is created
+        keyword-only, and each reordered composer becomes keyword-only too,
+        so a call that binds by keyword binds the same values: that costs a
+        receipt, and a construction of a reordered composer or a descendant
+        that binds by position refuses. The re-proof also refuses `order=True`,
+        an own `__init__` or `__match_args__`, positional class patterns and
+        the class handed on as a value. An existing owner would have to become
+        keyword-only for its other users too, which is not proved here, so a
+        reorder refuses it. A field whose position is unknown leaves the order
+        unproved.
         """
 
         moved = frozenset(owner_fields)
@@ -499,14 +515,47 @@ class BlockOwnerQuestion:
                 continue
             kept = [name for name in own if name in moved]
             if tuple(own[: len(kept)]) != tuple(name for name in owner_fields if name in kept):
-                reordered.append(composer.qualname)
+                reordered.append(symbol)
+        reordered_names = [
+            indexed_class.qualname
+            for symbol in reordered
+            if (indexed_class := self.class_for(symbol)) is not None
+        ]
         receipts = []
-        if reordered:
+        if reordered and keyword_only_route:
+            receipts.append(
+                Receipt(
+                    OwnerReceiptKind.KEYWORD_ONLY_COMPOSITION,
+                    f"composing `{owner.qualname}` reorders the dataclass fields of "
+                    + ", ".join(f"`{name}`" for name in reordered_names)
+                    + ", so the owner and they become keyword-only; their repr "
+                    "and field order change",
+                    (_location(owner),),
+                    count=len(reordered),
+                )
+            )
+            positional = tuple(
+                location
+                for symbol in reordered
+                for member in (symbol, *self.descendants_of(symbol))
+                for location in self.positional_constructions_of(member)
+            )
+            if positional:
+                receipts.append(
+                    Receipt(
+                        OwnerReceiptKind.POSITIONAL_CONSTRUCTION,
+                        f"{len(positional)} construction(s) of a reordered composer or "
+                        "a descendant bind fields by position",
+                        positional[:4],
+                        count=len(positional),
+                    )
+                )
+        elif reordered:
             receipts.append(
                 Receipt(
                     OwnerReceiptKind.FIELD_ORDER_CHANGED,
                     f"composing `{owner.qualname}` reorders the dataclass fields of "
-                    + ", ".join(f"`{name}`" for name in reordered)
+                    + ", ".join(f"`{name}`" for name in reordered_names)
                     + ": the block is not their leading fields in the owner's order",
                     (_location(owner),),
                     count=len(reordered),

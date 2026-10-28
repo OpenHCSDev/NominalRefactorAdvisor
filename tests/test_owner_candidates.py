@@ -102,22 +102,34 @@ def test_an_existing_composed_class_holding_most_of_the_block_outranks_a_new_mix
     assert math.isclose(sum(owner.confidence for owner in ranked), 1.0, abs_tol=1e-3)
 
 
-def test_a_mixin_that_would_reorder_dataclass_fields_is_refused() -> None:
+REORDERED = (
+    "from dataclasses import dataclass\n\n\n"
+    "@dataclass(frozen=True)\nclass First:\n"
+    "    lead: int\n    alpha: int\n    beta: str\n    gamma: float\n\n\n"
+    "@dataclass(frozen=True)\nclass Second:\n"
+    "    alpha: int\n    beta: str\n    gamma: float\n    own: int\n"
+)
+
+
+def test_a_mixin_that_reorders_dataclass_fields_makes_them_keyword_only() -> None:
+    (verdict,) = _mixin_verdicts(("pkg.records", REORDERED))
+
+    (owner,) = verdict.owner_candidates
+    assert owner.permitted
+    assert OwnerReceiptKind.KEYWORD_ONLY_COMPOSITION in {
+        receipt.kind for receipt in owner.receipts
+    }
+
+
+def test_a_reordered_composer_built_by_position_refuses_the_mixin() -> None:
     (verdict,) = _mixin_verdicts(
-        (
-            "pkg.records",
-            "from dataclasses import dataclass\n\n\n"
-            "@dataclass(frozen=True)\nclass First:\n"
-            "    lead: int\n    alpha: int\n    beta: str\n    gamma: float\n\n\n"
-            "@dataclass(frozen=True)\nclass Second:\n"
-            "    alpha: int\n    beta: str\n    gamma: float\n    own: int\n",
-        ),
+        ("pkg.records", REORDERED),
+        ("pkg.use", "from pkg.records import First\n\n\ndef build():\n    return First(0, 1, 'b', 2.0)\n"),
     )
 
     (owner,) = verdict.owner_candidates
-    assert not owner.permitted
     assert {receipt.kind for receipt in owner.refusals} == {
-        OwnerReceiptKind.FIELD_ORDER_CHANGED
+        OwnerReceiptKind.POSITIONAL_CONSTRUCTION
     }
 
 

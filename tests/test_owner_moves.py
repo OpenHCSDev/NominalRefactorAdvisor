@@ -306,3 +306,90 @@ def test_a_pick_without_an_owner_declines_the_finding(tmp_path: Path) -> None:
     assert [(outcome.outcome, outcome.detail) for outcome in report.outcomes] == [
         ("declined", "not one concept")
     ]
+
+
+REORDERED = (
+    "from dataclasses import dataclass\n\n\n"
+    "@dataclass(frozen=True)\n"
+    "class First:\n"
+    "    lead: int\n"
+    "    alpha: int\n"
+    "    beta: str\n\n"
+    "    def gamma(self) -> str:\n"
+    "        return f'{self.beta}{self.alpha}'\n\n\n"
+    "@dataclass(frozen=True)\n"
+    "class Second:\n"
+    "    alpha: int\n"
+    "    beta: str\n\n"
+    "    def gamma(self) -> str:\n"
+    "        return f'{self.beta}{self.alpha}'\n\n"
+    "    own_second: int = 0\n"
+)
+
+REORDERED_PROBE = (
+    "from pkg.records import First, Second\n"
+    "print(First(lead=0, alpha=1, beta='x').gamma(), "
+    "Second(alpha=3, beta='y', own_second=4).gamma())\n"
+)
+
+
+def _goal_with_pick(root: Path, name: str) -> object:
+    modules = parse_python_modules(root, use_parse_cache=False)
+    findings = analyze_modules(modules, DetectorConfig())
+    (mixin,) = (
+        finding
+        for finding in findings
+        if isinstance(finding.metrics, ClassOverlapMetrics)
+        and finding.metrics.move is ExtractMixin
+    )
+    return CodemodRefactorGoalRunner(
+        roots=(root,),
+        config=DetectorConfig(),
+        parse_workers=1,
+        dry_run=False,
+        guard_suite=ArchitectureGuardSuite(),
+        initial_scan=CodemodWorkflowScan(modules=modules, findings=findings),
+        migration_type=ClassBodyCompositionConcept,
+        owner_picks=OwnerPicks(
+            "picks.json",
+            "0",
+            (
+                OwnerPick(
+                    finding=mixin.stable_id,
+                    owner="new_mixin:pkg.records",
+                    because="new_class",
+                    name=name,
+                ),
+            ),
+        ),
+    ).run()
+
+
+def test_a_reordering_mixin_is_keyword_only_and_so_is_each_composer(tmp_path: Path) -> None:
+    _write(tmp_path, {"pkg/__init__.py": "", "pkg/records.py": REORDERED})
+    before = _run(tmp_path, REORDERED_PROBE)
+
+    report = _goal_with_pick(tmp_path, "Lettered")
+
+    source = (tmp_path / "pkg/records.py").read_text()
+    assert report.stage_count == 3
+    assert "@dataclass(frozen=True, kw_only=True)\nclass Lettered:\n" in source
+    assert "@dataclass(frozen=True, kw_only=True)\nclass First(Lettered):\n    lead: int\n" in source
+    assert "@dataclass(frozen=True, kw_only=True)\nclass Second(Lettered):\n" in source
+    assert _run(tmp_path, REORDERED_PROBE) == before
+
+
+def test_a_reordered_composer_that_orders_by_field_position_is_not_composed(
+    tmp_path: Path,
+) -> None:
+    ordered = REORDERED.replace(
+        "@dataclass(frozen=True)\nclass First:", "@dataclass(frozen=True, order=True)\nclass First:"
+    ).replace(
+        "@dataclass(frozen=True)\nclass Second:", "@dataclass(frozen=True, order=True)\nclass Second:"
+    )
+    _write(tmp_path, {"pkg/__init__.py": "", "pkg/records.py": ordered})
+
+    report = _goal_with_pick(tmp_path, "Lettered")
+
+    assert report.stage_count == 0
+    assert (tmp_path / "pkg/records.py").read_text() == ordered
