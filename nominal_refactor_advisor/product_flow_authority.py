@@ -18,7 +18,6 @@ from pathlib import Path
 from typing import (
     ClassVar,
     Self,
-    TypeVar,
     cast,
 )
 
@@ -324,20 +323,23 @@ class AlternativeCompactFunctionTargets(CompactCallTargetResolution):
         )
 
 
-_MemberFoldT = TypeVar("_MemberFoldT")
-
-
 class _CompactClassMemberResolution(ABC):
     """A member name looked up through a class's MRO: one declaration, or why not."""
 
     @abstractmethod
-    def fold(
+    def annotation_classes_in(
+        self, repository: ProductFlowRepository
+    ) -> frozenset[str] | None:
+        """The classes the member's declared annotation admits, when it resolved."""
+        raise NotImplementedError
+
+    @abstractmethod
+    def method_target_in(
         self,
-        member: Callable[
-            [CompactIndexedClass, CompactClassMemberDeclaration], _MemberFoldT
-        ],
-        violation: Callable[[CompactFunctionTargetResolutionViolation], _MemberFoldT],
-    ) -> _MemberFoldT:
+        repository: ProductFlowRepository,
+        target: CurrentClassMemberMethodReference,
+        candidate_symbols: tuple[str, ...],
+    ) -> CompactCallTargetResolution:
         raise NotImplementedError
 
 
@@ -346,28 +348,42 @@ class _ResolvedClassMember(_CompactClassMemberResolution):
     declaring_class: CompactIndexedClass
     declaration: CompactClassMemberDeclaration
 
-    def fold(
+    def annotation_classes_in(
+        self, repository: ProductFlowRepository
+    ) -> frozenset[str] | None:
+        return repository._member_annotation_classes(
+            self.declaring_class, self.declaration
+        )
+
+    def method_target_in(
         self,
-        member: Callable[
-            [CompactIndexedClass, CompactClassMemberDeclaration], _MemberFoldT
-        ],
-        violation: Callable[[CompactFunctionTargetResolutionViolation], _MemberFoldT],
-    ) -> _MemberFoldT:
-        return member(self.declaring_class, self.declaration)
+        repository: ProductFlowRepository,
+        target: CurrentClassMemberMethodReference,
+        candidate_symbols: tuple[str, ...],
+    ) -> CompactCallTargetResolution:
+        return repository._member_method_target(
+            target, candidate_symbols, self.declaring_class, self.declaration
+        )
 
 
 @dataclass(frozen=True)
 class _ClassMemberViolation(_CompactClassMemberResolution):
     violation: CompactFunctionTargetResolutionViolation
 
-    def fold(
+    def annotation_classes_in(
+        self, repository: ProductFlowRepository
+    ) -> frozenset[str] | None:
+        return None
+
+    def method_target_in(
         self,
-        member: Callable[
-            [CompactIndexedClass, CompactClassMemberDeclaration], _MemberFoldT
-        ],
-        violation: Callable[[CompactFunctionTargetResolutionViolation], _MemberFoldT],
-    ) -> _MemberFoldT:
-        return violation(self.violation)
+        repository: ProductFlowRepository,
+        target: CurrentClassMemberMethodReference,
+        candidate_symbols: tuple[str, ...],
+    ) -> CompactCallTargetResolution:
+        return repository.attribute_target(
+            target.method_name, candidate_symbols, self.violation
+        )
 
 
 class CompactFunctionCallResolution(ABC):
@@ -1565,7 +1581,7 @@ class ProductFlowRepository(
             return None
         return self._member_declarations_in_mro(
             owner, receiver.attribute_path[0]
-        ).fold(self._member_annotation_classes, lambda _violation: None)
+        ).annotation_classes_in(self)
 
     def _member_annotation_classes(
         self,
@@ -1812,14 +1828,7 @@ class ProductFlowRepository(
         return self._member_declarations_in_mro(
             owner_symbol,
             target.member_name,
-        ).fold(
-            lambda declaring_class, member_declaration: self._member_method_target(
-                target, candidate_symbols, declaring_class, member_declaration
-            ),
-            lambda violation: self.attribute_target(
-                target.method_name, candidate_symbols, violation
-            ),
-        )
+        ).method_target_in(self, target, candidate_symbols)
 
     def _member_method_target(
         self,
