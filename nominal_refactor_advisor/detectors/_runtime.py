@@ -14,6 +14,7 @@ import tempfile
 from collections import defaultdict
 from collections.abc import Sequence
 from dataclasses import dataclass
+from pathlib import Path
 from enum import StrEnum
 from functools import lru_cache
 from typing import Generic, TypeAlias, TypeVar, cast
@@ -73,6 +74,7 @@ from ..codemod import (
     TypedMirrorFindingRecipeSynthesizer,
 )
 from ..collection_algebra import sorted_tuple
+from ..installed_owners import RegistrationOwners
 from ..models import (
     ConstructorOwnedMappingMetrics,
     HierarchyCandidateMetrics,
@@ -1552,17 +1554,29 @@ class RepeatedBuilderCallDetector(
         return findings
 
 
+@dataclass(frozen=True)
+class ManualRegistrationGroup:
+    """One registry's manual registration sites, with the installed owners the
+    registering package may compose instead."""
+
+    registrations: tuple[RegistrationShape, ...]
+    scope: RegistrationOwners
+
+
 class ManualClassRegistrationDetector(
-    CompactGroupedShapeIssueDetector[RegistrationShape, str],
+    CompactMultiProjectionCandidateDetector[ManualRegistrationGroup],
     ManualClassRegistrationFindingRecipeSynthesizer,
 ):
-    module_projection_family = RegistrationShapeFamily
+    module_projection_families = (
+        RegistrationShapeFamily,
+        CompactModuleClassProjectionFamily,
+    )
     compact_report_context_requires_target_projection = True
     finding_spec = certified_spec(
         PatternId.AUTO_REGISTER_META,
-        "Manual class registration should become metaclass-registry AutoRegisterMeta",
-        "The docs say repeated class-level registration boilerplate is a class-level non-orthogonal algorithm. It should move into one authoritative `metaclass-registry` base so abstract-class skipping, uniqueness, and inheritance behavior are enforced in one place.",
-        "single authoritative metaclass-registry class-registration algorithm with nominal class identity",
+        "Manual class registration should move into class creation",
+        "The docs say repeated class-level registration boilerplate is a class-level non-orthogonal algorithm. It should move into one authoritative class-creation owner, a metaclass or `__init_subclass__` base that stores each class it creates, so abstract-class skipping, uniqueness, and inheritance behavior are enforced in one place. An owner the project's installed dependencies already declare is named in the finding.",
+        "single authoritative class-creation registration algorithm with nominal class identity",
         "same registry key family repeated through manual class-level registration assignments",
         (
             CapabilityTag.CLASS_LEVEL_REGISTRATION,
@@ -1576,51 +1590,86 @@ class ManualClassRegistrationDetector(
         ),
     )
 
-    def _collect_shapes(
-        self, modules: list[ParsedModule], config: DetectorConfig
-    ) -> list[RegistrationShape]:
-        return [
-            shape
-            for module in modules
-            for shape in CANDIDATE_COLLECTION_AUTHORITY.typed_family_items(
-                module, RegistrationShapeFamily, RegistrationShape
-            )
-        ]
-
-    def _group_key(self, shape: RegistrationShape) -> str:
-        return shape.registry_name
-
-    def _finding_from_group(
-        self, shapes: Sequence[RegistrationShape], config: DetectorConfig
-    ) -> RefactorFinding | None:
-        registrations = sorted_tuple(
-            shapes,
-            key=lambda item: (item.file_path, item.lineno),
+    def _candidates_from_compact_projection_groups_context(
+        self,
+        projections_by_family: CompactProjectionGroups,
+        context: object | None,
+        config: DetectorConfig,
+    ) -> Sequence[ManualRegistrationGroup]:
+        del context
+        class_projections = cast(
+            Sequence[CompactModuleClassProjection],
+            projections_by_family[CompactModuleClassProjectionFamily],
         )
-        if len(registrations) < config.min_registration_sites:
-            return None
+        module_names = {
+            projection.file_path: projection.module_name
+            for projection in class_projections
+        }
+        groups: dict[str, list[RegistrationShape]] = defaultdict(list)
+        for shape in cast(
+            Sequence[RegistrationShape], projections_by_family[RegistrationShapeFamily]
+        ):
+            groups[shape.registry_name].append(shape)
+        candidates: list[ManualRegistrationGroup] = []
+        for shapes in groups.values():
+            registrations = sorted_tuple(
+                shapes,
+                key=lambda item: (item.file_path, item.lineno),
+            )
+            if len(registrations) < config.min_registration_sites:
+                continue
+            if (
+                len({item.registered_class for item in registrations})
+                < config.min_registration_sites
+            ):
+                continue
+            first = registrations[0]
+            candidates.append(
+                ManualRegistrationGroup(
+                    registrations,
+                    RegistrationOwners.for_package(
+                        class_projections,
+                        module_names.get(first.file_path, ""),
+                        Path(first.file_path),
+                    ),
+                )
+            )
+        return candidates
+
+    def _finding_for_candidate(
+        self, candidate: ManualRegistrationGroup
+    ) -> RefactorFinding:
+        registrations = candidate.registrations
         class_names = {item.registered_class for item in registrations}
-        if len(class_names) < config.min_registration_sites:
-            return None
-        evidence = tuple(
-            (
+        registry_name = registrations[0].registry_name
+        scope = candidate.scope
+        owner_text = (
+            "Installed owner: "
+            + "; ".join(owner.receipt for owner in scope.owners)
+            + f". Move: register through `{scope.owners[0].symbol}` at class creation."
+            if scope.owners
+            else "No installed dependency declares a class-creation registration "
+            "owner (gap); declare one in owner-packages, or own registration in one "
+            "metaclass or `__init_subclass__` base here."
+        )
+        return self.build_finding(
+            f"Registry `{registry_name}` is populated manually for {len(class_names)} "
+            f"classes across {len(registrations)} sites. {owner_text} Considered: "
+            + (", ".join(scope.distributions) or "no distributions")
+            + f"; {scope.premise}"
+            + "".join(f"; gap: {gap}" for gap in scope.gaps)
+            + ".",
+            tuple(
                 SourceLocation(item.file_path, item.lineno, item.symbol)
                 for item in registrations[:6]
-            )
-        )
-        registry_name = registrations[0].registry_name
-        return self.build_finding(
-            f"Registry `{registry_name}` is populated manually for {len(class_names)} classes across {len(registrations)} sites.",
-            evidence,
+            ),
             metrics=RegistrationMetrics(
                 registration_site_count=len(registrations),
                 registry_name=registry_name,
                 class_names=sorted_tuple(class_names),
                 class_key_pairs=tuple(
-                    (
-                        f"{item.registered_class}={item.key_expression}"
-                        for item in registrations
-                    )
+                    f"{item.registered_class}={item.key_expression}"
+                    for item in registrations
                 ),
             ),
         )

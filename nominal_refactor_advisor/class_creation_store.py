@@ -2,10 +2,18 @@
 
 A class registers the classes it creates when that is what it does, not when
 it is named like a registry or reads a library's configuration names. The
-creation path is the language's: a metaclass's `__new__` (from the class its
-`super().__new__(...)` or `type.__new__(...)` returns) and `__init__` (its
-first parameter), and a base's `__init_subclass__` (its first parameter).
-Along that path the created class may be stored directly
+creation path is the language's own protocol:
+
+- a metaclass's `__new__`, from what its `__new__(...)` call returns when
+  that call forwards the class-creation triple (the method's own `name`,
+  `bases` and `namespace` parameters, in order);
+- a metaclass's `__init__`, from its first parameter, when it forwards that
+  triple to an `__init__(...)` call;
+- a base's `__init_subclass__`, from its first parameter.
+
+Forwarding the triple is what makes a `__new__` or `__init__` a class
+creation rather than an instance's: an instance never receives bases and a
+namespace. Along that path the created class may be stored directly
 (`mapping[key] = created`, `mapping.setdefault(key, created)`,
 `mapping.__setitem__(key, created)`, `dict.__setitem__(mapping, key,
 created)`, `mapping.update({key: created})`) or passed, by position or
@@ -74,7 +82,14 @@ class CreatedClassStore:
         if new is not None and self._stores(new, self._created_by_new(new), 0):
             return True
         init = self.methods.get("__init__")
-        return init is not None and self._stores(init, self._receiver(init), 0)
+        return (
+            init is not None
+            and any(
+                self._forwards_creation(init, call)
+                for call in self._calls_of(init, "__init__")
+            )
+            and self._stores(init, self._receiver(init), 0)
+        )
 
     def stores_subclass(self) -> bool:
         """As a base: `__init_subclass__` stores the subclass being created."""
@@ -88,7 +103,29 @@ class CreatedClassStore:
         return frozenset(parameters[:1])
 
     @staticmethod
-    def _created_by_new(function: FunctionNode) -> frozenset[str]:
+    def _calls_of(function: FunctionNode, method: str) -> Iterator[ast.Call]:
+        for node in ast.walk(function):
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr == method
+            ):
+                yield node
+
+    @staticmethod
+    def _forwards_creation(function: FunctionNode, call: ast.Call) -> bool:
+        """The call receives the method's `name`, `bases`, `namespace` parameters, in order."""
+
+        triple = _parameters(function)[1:4]
+        passed = [
+            argument.id if isinstance(argument, ast.Name) else None
+            for argument in call.args
+        ]
+        return len(triple) == 3 and any(
+            passed[start : start + 3] == triple for start in range(len(passed))
+        )
+
+    def _created_by_new(self, function: FunctionNode) -> frozenset[str]:
         names: set[str] = set()
         for node in ast.walk(function):
             value = getattr(node, "value", None)
@@ -96,6 +133,7 @@ class CreatedClassStore:
                 isinstance(value, ast.Call)
                 and isinstance(value.func, ast.Attribute)
                 and value.func.attr == "__new__"
+                and self._forwards_creation(function, value)
             ):
                 continue
             match node:
