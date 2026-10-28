@@ -695,7 +695,8 @@ class CompactProductDeclarationFailure(NamedTuple):
     violation: CompactProductAuthorityViolation
 
 
-_FacetFoldT = TypeVar("_FacetFoldT")
+class NotStandardDataclass(ValueError):
+    """A class that is not a standard `dataclasses.dataclass` declaration."""
 
 
 class CompactDataclassFacet(ABC):
@@ -706,31 +707,33 @@ class CompactDataclassFacet(ABC):
     failures: tuple[CompactProductDeclarationFailure, ...]
 
     @abstractmethod
-    def fold_declared(
-        self,
-        declared: Callable[[CompactDataclassDeclaration], _FacetFoldT],
-        absent: Callable[[], _FacetFoldT],
-    ) -> _FacetFoldT:
-        raise NotImplementedError
-
-    @abstractmethod
-    def fold_standard(
-        self,
-        standard: Callable[[CompactDataclassDeclaration], _FacetFoldT],
-        otherwise: Callable[[], _FacetFoldT],
-    ) -> _FacetFoldT:
-        """Split on a standard `dataclasses.dataclass` declaration."""
-        raise NotImplementedError
-
     def require_standard(self, reason: str) -> CompactDataclassDeclaration:
-        def refuse() -> CompactDataclassDeclaration:
-            raise ValueError(reason)
-
-        return self.fold_standard(lambda declaration: declaration, refuse)
+        """This standard dataclass declaration, or NotStandardDataclass."""
+        raise NotImplementedError
 
     @abstractmethod
     def refuse_inherited_fields(self, heir_qualname: str) -> None:
         """An ancestor's dataclass declaration refuses a heir that adds the decorator."""
+        raise NotImplementedError
+
+    @abstractmethod
+    def base_lineage_in(
+        self,
+        composer: _ProductLineageComposer,
+        base_symbol: str,
+        heir: CompactIndexedClass,
+        pending_symbols: frozenset[str],
+    ) -> _CompactProductLineage:
+        """What this class contributes as the single direct base of a product."""
+        raise NotImplementedError
+
+    @abstractmethod
+    def product_resolution_in(
+        self,
+        composer: _ProductLineageComposer,
+        class_symbol: str,
+        indexed_class: CompactIndexedClass,
+    ) -> CompactProductAuthorityResolution:
         raise NotImplementedError
 
 
@@ -742,27 +745,35 @@ class CompactDataclassDeclaration(CompactDataclassFacet):
     fields: tuple[CompactDataclassFieldDeclaration, ...]
     failures: tuple[CompactProductDeclarationFailure, ...] = ()
 
-    def fold_declared(
-        self,
-        declared: Callable[[CompactDataclassDeclaration], _FacetFoldT],
-        absent: Callable[[], _FacetFoldT],
-    ) -> _FacetFoldT:
-        return declared(self)
-
-    def fold_standard(
-        self,
-        standard: Callable[[CompactDataclassDeclaration], _FacetFoldT],
-        otherwise: Callable[[], _FacetFoldT],
-    ) -> _FacetFoldT:
+    def require_standard(self, reason: str) -> CompactDataclassDeclaration:
         if (
-            self.runtime_declaration is not None
-            and self.runtime_declaration.is_dataclass_decorator
+            self.runtime_declaration is None
+            or not self.runtime_declaration.is_dataclass_decorator
         ):
-            return standard(self)
-        return otherwise()
+            raise NotStandardDataclass(reason)
+        return self
 
     def refuse_inherited_fields(self, heir_qualname: str) -> None:
         raise ValueError(f"`{heir_qualname}` inherits dataclass fields")
+
+    def base_lineage_in(
+        self,
+        composer: _ProductLineageComposer,
+        base_symbol: str,
+        heir: CompactIndexedClass,
+        pending_symbols: frozenset[str],
+    ) -> _CompactProductLineage:
+        return composer.compose(
+            base_symbol, self, pending_symbols | frozenset((heir.symbol,))
+        )
+
+    def product_resolution_in(
+        self,
+        composer: _ProductLineageComposer,
+        class_symbol: str,
+        indexed_class: CompactIndexedClass,
+    ) -> CompactProductAuthorityResolution:
+        return composer.resolve(class_symbol, indexed_class, self)
 
 
 @dataclass(frozen=True)
@@ -773,22 +784,35 @@ class NoDataclassDeclaration(CompactDataclassFacet):
     fields = ()
     failures = ()
 
-    def fold_declared(
-        self,
-        declared: Callable[[CompactDataclassDeclaration], _FacetFoldT],
-        absent: Callable[[], _FacetFoldT],
-    ) -> _FacetFoldT:
-        return absent()
-
-    def fold_standard(
-        self,
-        standard: Callable[[CompactDataclassDeclaration], _FacetFoldT],
-        otherwise: Callable[[], _FacetFoldT],
-    ) -> _FacetFoldT:
-        return otherwise()
+    def require_standard(self, reason: str) -> CompactDataclassDeclaration:
+        raise NotStandardDataclass(reason)
 
     def refuse_inherited_fields(self, heir_qualname: str) -> None:
         return None
+
+    def base_lineage_in(
+        self,
+        composer: _ProductLineageComposer,
+        base_symbol: str,
+        heir: CompactIndexedClass,
+        pending_symbols: frozenset[str],
+    ) -> _CompactProductLineage:
+        return _CompactProductLineage(
+            (),
+            (
+                composer.failure(
+                    heir, CompactProductAuthorityViolation.NON_DATACLASS_BASE
+                ),
+            ),
+        )
+
+    def product_resolution_in(
+        self,
+        composer: _ProductLineageComposer,
+        class_symbol: str,
+        indexed_class: CompactIndexedClass,
+    ) -> CompactProductAuthorityResolution:
+        return AbsentCompactProductAuthority(class_symbol)
 
 
 @dataclass(frozen=True)
@@ -2693,6 +2717,131 @@ class ClassDeclarationIndex(Generic[ClassDeclarationT]):
         return self.inheritance_graph.reversed.reachable_from(base_symbol)
 
 
+@dataclass
+class _ProductLineageComposer:
+    """Compose dataclass products through their exact direct-base chains, memoized."""
+
+    classes_by_symbol: Mapping[str, CompactIndexedClass]
+    lineages: dict[str, _CompactProductLineage] = field(default_factory=dict)
+
+    @staticmethod
+    def failure(
+        indexed_class: CompactIndexedClass,
+        violation: CompactProductAuthorityViolation,
+        *,
+        line: int | None = None,
+    ) -> CompactProductAuthorityFailure:
+        return CompactProductAuthorityFailure(
+            class_symbol=indexed_class.symbol,
+            file_path=indexed_class.file_path,
+            line=indexed_class.line if line is None else line,
+            violation=violation,
+        )
+
+    def compose(
+        self,
+        class_symbol: str,
+        declaration: CompactDataclassDeclaration,
+        pending_symbols: frozenset[str],
+    ) -> _CompactProductLineage:
+        if (lineage := self.lineages.get(class_symbol)) is not None:
+            return lineage
+        indexed_class = self.classes_by_symbol[class_symbol]
+        if class_symbol in pending_symbols:
+            return _CompactProductLineage(
+                (),
+                (
+                    self.failure(
+                        indexed_class,
+                        CompactProductAuthorityViolation.CYCLIC_PRODUCT_LINEAGE,
+                    ),
+                ),
+            )
+        failures = tuple(
+            self.failure(indexed_class, failure.violation, line=failure.line)
+            for failure in declaration.failures
+        )
+        effective_fields: tuple[CompactProductField, ...] = ()
+        direct_base_count = indexed_class.direct_base_count
+        if (
+            not indexed_class.base_references_are_complete
+            or not indexed_class.product_base_bindings_are_exact
+            or len(indexed_class.resolved_base_symbols) != direct_base_count
+        ):
+            failures = (
+                *failures,
+                self.failure(
+                    indexed_class,
+                    CompactProductAuthorityViolation.INCOMPLETE_BASE_RESOLUTION,
+                ),
+            )
+        elif direct_base_count > 1:
+            failures = (
+                *failures,
+                self.failure(
+                    indexed_class,
+                    CompactProductAuthorityViolation.MULTIPLE_PRODUCT_BASES,
+                ),
+            )
+        elif direct_base_count == 1:
+            base_symbol = indexed_class.resolved_base_symbols[0]
+            base_lineage = self.classes_by_symbol[
+                base_symbol
+            ].dataclass_declaration.base_lineage_in(
+                self, base_symbol, indexed_class, pending_symbols
+            )
+            effective_fields = base_lineage.effective_fields
+            failures = (*failures, *base_lineage.failures)
+
+        fields_by_name = {field.name: field for field in effective_fields}
+        for field_declaration in declaration.fields:
+            fields_by_name[field_declaration.name] = CompactProductField(
+                name=field_declaration.name,
+                role=field_declaration.role,
+                declaring_class_symbol=class_symbol,
+                file_path=indexed_class.file_path,
+                line=field_declaration.line,
+            )
+        lineage = _CompactProductLineage(
+            effective_fields=tuple(fields_by_name.values()),
+            failures=tuple(dict.fromkeys(failures)),
+        )
+        self.lineages[class_symbol] = lineage
+        return lineage
+
+    def resolve(
+        self,
+        class_symbol: str,
+        indexed_class: CompactIndexedClass,
+        declaration: CompactDataclassDeclaration,
+    ) -> CompactProductAuthorityResolution:
+        lineage = self.compose(class_symbol, declaration, frozenset())
+        role_failures = tuple(
+            CompactProductAuthorityFailure(
+                class_symbol=class_symbol,
+                file_path=field.file_path,
+                line=field.line,
+                violation=violation,
+            )
+            for field in lineage.effective_fields
+            if (violation := field.role.authority_violation) is not None
+        )
+        failures = tuple(dict.fromkeys((*lineage.failures, *role_failures)))
+        return (
+            OpenCompactProductAuthority(class_symbol, failures)
+            if failures
+            else ResolvedCompactProductAuthority(
+                class_symbol,
+                CompactProductAuthority(
+                    class_symbol=class_symbol,
+                    effective_fields=lineage.effective_fields,
+                    file_path=indexed_class.file_path,
+                    line=indexed_class.line,
+                ),
+            )
+        )
+
+
 @dataclass(frozen=True)
 class CompactClassFamilyIndex(ClassDeclarationIndex[CompactIndexedClass]):
     """Repository inheritance graph reconstructed from compact declarations."""
@@ -2789,150 +2938,13 @@ class CompactClassFamilyIndex(ClassDeclarationIndex[CompactIndexedClass]):
     ) -> dict[str, CompactProductAuthorityResolution]:
         """Compose every dataclass product through its exact direct-base chain."""
 
-        lineages: dict[str, _CompactProductLineage] = {}
-
-        def compose_lineage(
-            class_symbol: str,
-            declaration: CompactDataclassDeclaration,
-            pending_symbols: frozenset[str],
-        ) -> _CompactProductLineage:
-            if (lineage := lineages.get(class_symbol)) is not None:
-                return lineage
-            indexed_class = self.classes_by_symbol[class_symbol]
-            if class_symbol in pending_symbols:
-                return _CompactProductLineage(
-                    (),
-                    (
-                        self._product_authority_failure(
-                            indexed_class,
-                            CompactProductAuthorityViolation.CYCLIC_PRODUCT_LINEAGE,
-                        ),
-                    ),
-                )
-            failures = tuple(
-                self._product_authority_failure(
-                    indexed_class,
-                    failure.violation,
-                    line=failure.line,
-                )
-                for failure in declaration.failures
-            )
-            effective_fields: tuple[CompactProductField, ...] = ()
-            direct_base_count = indexed_class.direct_base_count
-            if (
-                not indexed_class.base_references_are_complete
-                or not indexed_class.product_base_bindings_are_exact
-                or len(indexed_class.resolved_base_symbols) != direct_base_count
-            ):
-                failures = (
-                    *failures,
-                    self._product_authority_failure(
-                        indexed_class,
-                        CompactProductAuthorityViolation.INCOMPLETE_BASE_RESOLUTION,
-                    ),
-                )
-            elif direct_base_count > 1:
-                failures = (
-                    *failures,
-                    self._product_authority_failure(
-                        indexed_class,
-                        CompactProductAuthorityViolation.MULTIPLE_PRODUCT_BASES,
-                    ),
-                )
-            elif direct_base_count == 1:
-                base_symbol = indexed_class.resolved_base_symbols[0]
-                base_class = self.classes_by_symbol[base_symbol]
-                base_lineage = base_class.dataclass_declaration.fold_declared(
-                    lambda base_declaration: compose_lineage(
-                        base_symbol,
-                        base_declaration,
-                        pending_symbols | frozenset((class_symbol,)),
-                    ),
-                    lambda: _CompactProductLineage(
-                        (),
-                        (
-                            self._product_authority_failure(
-                                indexed_class,
-                                CompactProductAuthorityViolation.NON_DATACLASS_BASE,
-                            ),
-                        ),
-                    ),
-                )
-                effective_fields = base_lineage.effective_fields
-                failures = (*failures, *base_lineage.failures)
-
-            fields_by_name = {field.name: field for field in effective_fields}
-            for field_declaration in declaration.fields:
-                fields_by_name[field_declaration.name] = CompactProductField(
-                    name=field_declaration.name,
-                    role=field_declaration.role,
-                    declaring_class_symbol=class_symbol,
-                    file_path=indexed_class.file_path,
-                    line=field_declaration.line,
-                )
-            lineage = _CompactProductLineage(
-                effective_fields=tuple(fields_by_name.values()),
-                failures=tuple(dict.fromkeys(failures)),
-            )
-            lineages[class_symbol] = lineage
-            return lineage
-
-        def resolve_declared(
-            class_symbol: str,
-            indexed_class: CompactIndexedClass,
-            declaration: CompactDataclassDeclaration,
-        ) -> CompactProductAuthorityResolution:
-            lineage = compose_lineage(class_symbol, declaration, frozenset())
-            role_failures = tuple(
-                CompactProductAuthorityFailure(
-                    class_symbol=class_symbol,
-                    file_path=field.file_path,
-                    line=field.line,
-                    violation=violation,
-                )
-                for field in lineage.effective_fields
-                if (violation := field.role.authority_violation) is not None
-            )
-            failures = tuple(dict.fromkeys((*lineage.failures, *role_failures)))
-            return (
-                OpenCompactProductAuthority(class_symbol, failures)
-                if failures
-                else ResolvedCompactProductAuthority(
-                    class_symbol,
-                    CompactProductAuthority(
-                        class_symbol=class_symbol,
-                        effective_fields=lineage.effective_fields,
-                        file_path=indexed_class.file_path,
-                        line=indexed_class.line,
-                    ),
-                )
-            )
-
+        composer = _ProductLineageComposer(self.classes_by_symbol)
         return {
-            class_symbol: indexed_class.dataclass_declaration.fold_declared(
-                lambda declaration, class_symbol=class_symbol, indexed_class=indexed_class: (
-                    resolve_declared(class_symbol, indexed_class, declaration)
-                ),
-                lambda class_symbol=class_symbol: AbsentCompactProductAuthority(
-                    class_symbol
-                ),
+            class_symbol: indexed_class.dataclass_declaration.product_resolution_in(
+                composer, class_symbol, indexed_class
             )
             for class_symbol, indexed_class in self.classes_by_symbol.items()
         }
-
-    @staticmethod
-    def _product_authority_failure(
-        indexed_class: CompactIndexedClass,
-        violation: CompactProductAuthorityViolation,
-        *,
-        line: int | None = None,
-    ) -> CompactProductAuthorityFailure:
-        return CompactProductAuthorityFailure(
-            class_symbol=indexed_class.symbol,
-            file_path=indexed_class.file_path,
-            line=indexed_class.line if line is None else line,
-            violation=violation,
-        )
 
 
 ClosedLeafMethodAuthorityPredicate: TypeAlias = Callable[

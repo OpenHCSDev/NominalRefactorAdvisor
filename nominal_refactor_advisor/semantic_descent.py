@@ -55,6 +55,7 @@ from .cache_checkout import (
 from .cache_paths import default_semantic_descent_cache_dir
 from .case_root import Case
 from .class_index import (
+    NotStandardDataclass,
     ClassDeclaration,
     ClassFamilyIndex,
     CompactClassFamilyIndex,
@@ -1338,22 +1339,21 @@ class MappingReadConstructor:
         owner = None if symbol is None else class_index.class_for(symbol)
         if owner is None:
             return None
-        return owner.dataclass_declaration.fold_standard(
-            lambda declaration: (
-                symbol
-                if all(
-                    arg.matches_fields(
-                        tuple(
-                            field.name
-                            for field in declaration.fields
-                            if field.role.contributes_semantic_field
-                        )
-                    )
-                    for arg in self.arguments
-                )
-                else None
-            ),
-            lambda: None,
+        try:
+            declaration = owner.dataclass_declaration.require_standard(
+                "a mapping schema is a standard dataclass"
+            )
+        except NotStandardDataclass:
+            return None
+        fields = tuple(
+            field.name
+            for field in declaration.fields
+            if field.role.contributes_semantic_field
+        )
+        return (
+            symbol
+            if all(arg.matches_fields(fields) for arg in self.arguments)
+            else None
         )
 
 
@@ -4175,13 +4175,16 @@ class DataclassSemanticAuthorityProvider(ClassFamilySemanticAuthorityProvider):
         declaration: SemanticAuthorityDeclaration,
     ) -> SemanticAuthorityProviderResult | None:
         indexed_class = declaration.indexed_class
-        facts = indexed_class.dataclass_declaration.fold_standard(
-            lambda dataclass_declaration: tuple(
-                SemanticFact.dataclass_field(indexed_class, field.name, field.line)
-                for field in dataclass_declaration.fields
-                if field.role.contributes_semantic_field
-            ),
-            tuple,
+        try:
+            dataclass_declaration = indexed_class.dataclass_declaration.require_standard(
+                "a dataclass schema is a standard dataclass"
+            )
+        except NotStandardDataclass:
+            return super().provide(declaration)
+        facts = tuple(
+            SemanticFact.dataclass_field(indexed_class, field.name, field.line)
+            for field in dataclass_declaration.fields
+            if field.role.contributes_semantic_field
         )
         if len(facts) >= 2:
             return SemanticAuthorityProviderResult(
