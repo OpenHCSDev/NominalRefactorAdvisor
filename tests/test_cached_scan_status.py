@@ -10,14 +10,15 @@ import pytest
 
 from nominal_refactor_advisor import cli
 from nominal_refactor_advisor.analysis import (
-    CachedAnalysisResult,
+    FAST_CACHE_MISS,
+    ExactCacheHit,
+    PartialCacheReuse,
     CachedPathAnalysisRequest,
     FastCachedPathAnalysisAuthority,
     FastCacheReusePolicy,
 )
 from nominal_refactor_advisor.analysis_cache import (
     AnalysisCacheIdentity,
-    AnalysisCacheStatus,
     AnalysisFindingCache,
     AnalysisFindingSummaryCachePayload,
     AnalysisFindingSummaryLookup,
@@ -137,8 +138,8 @@ def test_exact_status_and_summary_derive_the_validated_roster(tmp_path, monkeypa
         raise AssertionError("The validated identity already owns its roster")
 
     monkeypatch.setattr(cli, "default_detector_types_for_analysis", forbidden)
-    result = CachedAnalysisResult([], Hit, identity)
-    status = cli.JsonScanStatus.exact_cache(result.exact_cache_identity)
+    result = ExactCacheHit([], identity)
+    status = cli.JsonScanStatus.exact_cache(result.cache_identity)
     assert status.analyzed_detector_count == 2
     assert status.mode is cli.JsonScanMode.exact_cache
     assert status.complete and status.omitted_detector_count == 0
@@ -147,21 +148,14 @@ def test_exact_status_and_summary_derive_the_validated_roster(tmp_path, monkeypa
     assert report["scan_status"]["mode"] == "exact_cache"
 
 
-@pytest.mark.parametrize("status", tuple(AnalysisCacheStatus.__subclasses__()))
-def test_exact_identity_does_not_relabel_partial_shard_reuse(tmp_path, status):
+def test_served_results_carry_their_status_as_their_type(tmp_path):
     package, _source = source_tree(tmp_path)
     identity = AnalysisCacheIdentity.from_roots((package,), DetectorConfig())
-    result = CachedAnalysisResult([], status, identity)
-    if status is Hit:
-        assert result.exact_cache_identity is identity
-    else:
-        with pytest.raises(ValueError, match="exact cache result"):
-            _ = result.exact_cache_identity
+    assert ExactCacheHit([], identity).cache_status is Hit
+    assert PartialCacheReuse([], identity).cache_status is Partial
 
 
-def test_exact_hit_requires_its_identity_and_summary_payload():
-    with pytest.raises(ValueError, match="exact cache result"):
-        _ = CachedAnalysisResult([], Hit).exact_cache_identity
+def test_summary_hit_requires_its_payload():
     with pytest.raises(ValueError, match="validated payload"):
         AnalysisFindingSummaryLookup(Hit)
 
@@ -195,7 +189,7 @@ def test_summary_fast_path_retains_identity_and_partial_isolation(tmp_path):
     assert summary is not None and summary.identity == original
     assert summary.summary.finding_count == 1
     exact = authority.result()
-    assert exact is not None and exact.exact_cache_identity == original
+    assert isinstance(exact, ExactCacheHit) and exact.cache_identity == original
     assert exact.findings == [finding]
 
     source.write_text(SOURCE + "changed = 1\n")
@@ -206,21 +200,19 @@ def test_summary_fast_path_retains_identity_and_partial_isolation(tmp_path):
     assert cache.load(current).status is Miss
     assert cache.load_summary(current).payload is None
     assert authority.summary_result() is None
-    assert authority.result() is None
+    assert authority.result() is FAST_CACHE_MISS
     partial = FastCachedPathAnalysisAuthority(
         replace(request, reuse_policy=FastCacheReusePolicy.EVIDENCE_LOCAL_PARTIAL)
     ).result()
-    assert partial is not None and partial.cache_status is Partial
+    assert isinstance(partial, PartialCacheReuse)
     assert partial.findings == [finding]
-    with pytest.raises(ValueError, match="exact cache result"):
-        _ = partial.exact_cache_identity
 
     cache.store(current, [finding])
     summary = authority.summary_result()
     assert summary is not None and summary.identity == current
     assert summary.summary.finding_count == 1
     exact = authority.result()
-    assert exact is not None and exact.exact_cache_identity == current
+    assert isinstance(exact, ExactCacheHit) and exact.cache_identity == current
     assert exact.findings == [finding]
 
 

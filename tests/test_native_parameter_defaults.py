@@ -5,7 +5,10 @@ import dataclasses
 
 import pytest
 
-from nominal_refactor_advisor.call_binding import CompactFunctionSignature
+from nominal_refactor_advisor.call_binding import (
+    CompactFunctionSignature,
+    DefaultedFunctionParameter,
+)
 from nominal_refactor_advisor.native_declarations import NativeParameterDefault
 from nominal_refactor_advisor.scan_cache import ScanCache
 from test_native_dataclass_factory import factory_environment
@@ -100,11 +103,15 @@ def test_signature_default_projection_replaces_source_defaults_without_mutation(
     arguments = ast.parse("def f(first, second=2, *, option=3): pass").body[0].args
     original = CompactFunctionSignature.from_arguments(arguments)
     projected = original.with_default_names(frozenset(("first",)))
-    assert [p.name for p in original.parameters if p.has_default] == [
+    assert [
+        p.name for p in original.parameters if isinstance(p, DefaultedFunctionParameter)
+    ] == [
         "second",
         "option",
     ]
-    assert [p.name for p in projected.parameters if p.has_default] == ["first"]
+    assert [
+        p.name for p in projected.parameters if isinstance(p, DefaultedFunctionParameter)
+    ] == ["first"]
     assert [p.kind for p in projected.parameters] == [
         p.kind for p in original.parameters
     ]

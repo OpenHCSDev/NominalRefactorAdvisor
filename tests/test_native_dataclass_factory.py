@@ -15,7 +15,10 @@ from nominal_refactor_advisor.native_call import (
     NativeReturnedClosureFactorySource,
 )
 from nominal_refactor_advisor.native_compilation import NativePythonCompilation
-from nominal_refactor_advisor.lexical_bindings import FunctionParameterSource
+from nominal_refactor_advisor.lexical_bindings import (
+    DefaultedParameterSource,
+    FunctionParameterSource,
+)
 from nominal_refactor_advisor.native_declarations import DataclassRuntimeDeclaration
 from nominal_refactor_advisor.source_entry import ImportedSourceModuleEntryPremise
 from nominal_refactor_advisor.source_execution import SourceModuleExecution
@@ -159,7 +162,8 @@ def test_every_runtime_keyword_is_derived_from_the_native_declaration():
     keywords = tuple(
         parameter.argument.arg
         for parameter in FunctionParameterSource.from_arguments(declaration.args)
-        if parameter.kind.accepts_keyword and parameter.default is not None
+        if parameter.kind.accepts_keyword
+        and isinstance(parameter, DefaultedParameterSource)
     )
     arguments = ", ".join(f"{name}=None" for name in keywords)
     environment, operation = factory_environment(arguments)

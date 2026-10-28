@@ -1663,16 +1663,10 @@ class ProductFlowRepository(
                 qualname=declaration.owner_class.require_qualname(),
             )
             return None if owner is None else (owner,)
-        annotation = next(
-            (
-                parameter.annotation_expression
-                for parameter in declaration.signature.parameters
-                if parameter.name == name
-            ),
-            None,
-        )
-        if annotation is None:
+        annotations = declaration.signature.annotations_by_name
+        if name not in annotations:
             return None
+        annotation = annotations[name]
         try:
             expression = ast.parse(annotation, mode="eval").body
         except SyntaxError:
@@ -2061,21 +2055,13 @@ class ProductFlowRepository(
         context: CompactFlowContext,
         parameter_names: frozenset[str],
     ) -> bool:
-        parameters_by_name = {
-            parameter.name: parameter
-            for parameter in declaration.call_signature.parameters
-        }
         return (
-            parameter_names <= parameters_by_name.keys()
+            parameter_names <= declaration.call_signature.plain_required_names
             and not declaration.signature_decorator_hazard
             and not context.flow.local_signature_is_observed
             and not (
                 declaration.nominal_receiver_name is None
                 and declaration.binding_kind.implicit_parameter_count
-            )
-            and all(
-                parameters_by_name[parameter_name].is_plain_required
-                for parameter_name in parameter_names
             )
         )
 

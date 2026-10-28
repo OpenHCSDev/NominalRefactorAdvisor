@@ -64,7 +64,10 @@ from .class_namespace import SourceExecutionEffectEvidence
 from .class_mro import DeclarationMroType
 from .descriptor_algebra import AliasProperty
 from .lexical_bindings import (
+    DefaultedParameterSource,
     FunctionParameterSource,
+    ParameterDefaultQuestion,
+    UndefaultedParameterSource,
     ImportedNameOrigin,
     ImportOriginResolverABC,
 )
@@ -659,6 +662,24 @@ class SourceCreatedFunctionCapture(
         self.execution.require_binding_write(self.node)
 
 
+@dataclass(frozen=True)
+class _UnboundEntryParameter(ParameterDefaultQuestion[CapturedReferenceResolution]):
+    """A parameter no argument binds enters with its default, evaluated closed;
+    without a default the entry is unproved."""
+
+    execution: SourceExecutionABC
+
+    def defaulted(self, source: DefaultedParameterSource) -> CapturedReferenceResolution:
+        value = self.execution.capture_value(source.default)
+        value.require_closed()
+        return value
+
+    def undefaulted(
+        self, source: UndefaultedParameterSource
+    ) -> CapturedReferenceResolution:
+        raise ValueError("Function entry has no bound parameter value")
+
+
 class SourceFunctionActivationABC(ABC):
     """One exact source-function activation, independent of invocation syntax."""
 
@@ -710,10 +731,7 @@ class SourceFunctionActivationABC(ABC):
             if source.kind.variadic:
                 raise ValueError("Variadic function activation remains unproved")
             if values is None:
-                if source.default is None:
-                    raise ValueError("Function entry has no bound parameter value")
-                value = self.callee.execution.capture_value(source.default)
-                value.require_closed()
+                value = source.answer(_UnboundEntryParameter(self.callee.execution))
             else:
                 if len(values) != 1:
                     raise ValueError(

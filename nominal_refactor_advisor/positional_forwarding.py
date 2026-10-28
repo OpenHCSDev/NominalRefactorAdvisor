@@ -35,10 +35,13 @@ class PositionalForwardingCall:
         cls, function: ast.FunctionDef
     ) -> PositionalForwardingCall | None:
         signature = CompactFunctionSignature.from_arguments(function.args)
-        if function.decorator_list or any(
-            parameter.kind is not CompactParameterKind.POSITIONAL_OR_KEYWORD
-            or not parameter.required
-            for parameter in signature.parameters
+        if (
+            function.decorator_list
+            or any(
+                parameter.kind is not CompactParameterKind.POSITIONAL_OR_KEYWORD
+                for parameter in signature.parameters
+            )
+            or len(signature.required_names) != len(signature.parameters)
         ):
             return None
         body = statements_without_docstring(function.body)

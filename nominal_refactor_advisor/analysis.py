@@ -19,7 +19,8 @@ import os
 from pathlib import Path
 import sys
 from time import perf_counter
-from typing import TypeVar, cast
+from abc import ABC, abstractmethod
+from typing import ClassVar, Generic, TypeVar, cast
 
 from .analysis_cache import (
     CachedSourceFileSignature,
@@ -1756,6 +1757,124 @@ class DeferredCompactProjectionFamily(DeferredBatchSequence[object]):
         )
 
 
+GraphAnswerT = TypeVar("GraphAnswerT")
+
+
+class SemanticDescentGraphQuestion(ABC, Generic[GraphAnswerT]):
+    """A consumer's work on a graph holding, one arm per holding."""
+
+    @abstractmethod
+    def held(self, graph: SemanticDescentGraph) -> GraphAnswerT:
+        raise NotImplementedError
+
+    @abstractmethod
+    def absent(self) -> GraphAnswerT:
+        raise NotImplementedError
+
+
+class SemanticDescentGraphHolding(ABC):
+    """Whether a scan already holds its repository semantic-descent graph."""
+
+    @staticmethod
+    def of(graph: SemanticDescentGraph | None) -> SemanticDescentGraphHolding:
+        """The holding for a graph the cache store may not have had."""
+        # The graph cache's lookups answer `graph | None` at the pickle store;
+        # this is the one place that absence becomes a holding.
+        if graph is None:
+            return NO_HELD_GRAPH
+        return HeldSemanticDescentGraph(graph)
+
+    @abstractmethod
+    def answer(
+        self, question: SemanticDescentGraphQuestion[GraphAnswerT]
+    ) -> GraphAnswerT:
+        raise NotImplementedError
+
+    @abstractmethod
+    def or_else(
+        self, alternative: SemanticDescentGraphHolding
+    ) -> SemanticDescentGraphHolding:
+        """This holding when it holds a graph, else the alternative."""
+        raise NotImplementedError
+
+    @abstractmethod
+    def serve(self, result: ReusedCacheResult) -> FastCacheAnswer:
+        """A reused result that needs this graph: served with it, or missed."""
+        raise NotImplementedError
+
+    @abstractmethod
+    def store_into(self, context: SemanticDescentGraphCacheContext) -> None:
+        """Publish a held graph as the context's exact graph."""
+        raise NotImplementedError
+
+    @abstractmethod
+    def analysis_source(
+        self,
+        base: SemanticDescentGraphAnalysisSource,
+        context: SemanticDescentGraphCacheContext,
+    ) -> SemanticDescentGraphAnalysisSource:
+        """The detector graph source: overlaying a held graph, else `base`."""
+        raise NotImplementedError
+
+
+@dataclass(frozen=True)
+class HeldSemanticDescentGraph(SemanticDescentGraphHolding):
+    graph: SemanticDescentGraph
+
+    def answer(
+        self, question: SemanticDescentGraphQuestion[GraphAnswerT]
+    ) -> GraphAnswerT:
+        return question.held(self.graph)
+
+    def or_else(
+        self, alternative: SemanticDescentGraphHolding
+    ) -> SemanticDescentGraphHolding:
+        return self
+
+    def serve(self, result: ReusedCacheResult) -> FastCacheAnswer:
+        return replace(result, semantic_descent_graph=self)
+
+    def store_into(self, context: SemanticDescentGraphCacheContext) -> None:
+        context.store_exact_graph(self.graph)
+
+    def analysis_source(
+        self,
+        base: SemanticDescentGraphAnalysisSource,
+        context: SemanticDescentGraphCacheContext,
+    ) -> SemanticDescentGraphAnalysisSource:
+        return SemanticDescentGraphAnalysisSource(
+            cached_graph=self.graph, cache_context=context
+        )
+
+
+class NoHeldSemanticDescentGraph(SemanticDescentGraphHolding):
+    def answer(
+        self, question: SemanticDescentGraphQuestion[GraphAnswerT]
+    ) -> GraphAnswerT:
+        return question.absent()
+
+    def or_else(
+        self, alternative: SemanticDescentGraphHolding
+    ) -> SemanticDescentGraphHolding:
+        return alternative
+
+    def serve(self, result: ReusedCacheResult) -> FastCacheAnswer:
+        return FAST_CACHE_MISS
+
+    def store_into(self, context: SemanticDescentGraphCacheContext) -> None:
+        return
+
+    def analysis_source(
+        self,
+        base: SemanticDescentGraphAnalysisSource,
+        context: SemanticDescentGraphCacheContext,
+    ) -> SemanticDescentGraphAnalysisSource:
+        return base
+
+
+NO_HELD_GRAPH = NoHeldSemanticDescentGraph()
+
+
 @dataclass(frozen=True)
 class CompactPathAnalysisResult:
     """Exact streamed findings and split preparation/analysis timings."""
@@ -1766,7 +1885,7 @@ class CompactPathAnalysisResult:
     preparation_seconds: float
     analysis_seconds: float
     projection_count: int
-    semantic_descent_graph: SemanticDescentGraph | None = None
+    semantic_descent_graph: SemanticDescentGraphHolding = NO_HELD_GRAPH
 
 
 @ScanCache.scope()
@@ -2403,21 +2522,23 @@ def analyze_compact_roots_with_cache(
     )
     if report_scope is not None and report_scope.has_report_filter:
         findings = report_scope.filter_findings(findings)
-    semantic_descent_graph = None
+    semantic_descent_graph: SemanticDescentGraphHolding = NO_HELD_GRAPH
     if include_semantic_descent_graph:
-        semantic_descent_graph = build_compact_semantic_descent_graph(
-            cast(
-                Sequence[CompactSemanticModuleProjection],
-                projection_manifest.projections_for_family(
-                    CompactSemanticModuleProjectionFamily
+        semantic_descent_graph = HeldSemanticDescentGraph(
+            build_compact_semantic_descent_graph(
+                cast(
+                    Sequence[CompactSemanticModuleProjection],
+                    projection_manifest.projections_for_family(
+                        CompactSemanticModuleProjectionFamily
+                    ),
                 ),
-            ),
-            cast(
-                Sequence[CompactModuleClassProjection],
-                projection_manifest.projections_for_family(
-                    CompactModuleClassProjectionFamily
+                cast(
+                    Sequence[CompactModuleClassProjection],
+                    projection_manifest.projections_for_family(
+                        CompactModuleClassProjectionFamily
+                    ),
                 ),
-            ),
+            )
         )
     analysis_seconds = local_analysis_seconds + perf_counter() - join_started
     projection_manifest.store_content_signature_indexes()
@@ -2721,6 +2842,14 @@ class SemanticDescentGraphCacheContext:
             self._loaded_graphs_by_token[identity.cache_token] = graph
         return graph
 
+    def held_graph(self) -> SemanticDescentGraphHolding:
+        """The exact graph this context's cache holds for its roots."""
+        return SemanticDescentGraphHolding.of(self.cached_graph())
+
+    def latest_held_graph(self) -> SemanticDescentGraphHolding:
+        """The latest overlay-capable predecessor graph the cache holds."""
+        return SemanticDescentGraphHolding.of(self.latest_graph())
+
     def store_exact_graph(self, graph: SemanticDescentGraph) -> None:
         """Publish one exact graph without claiming incremental overlay support."""
 
@@ -2830,14 +2959,186 @@ class CachedAnalysisResult:
     findings: list[RefactorFinding]
     cache_status: type[AnalysisCacheStatus]
     cache_identity: AnalysisCacheIdentity | None = None
-    previous_cache_identity: AnalysisCacheIdentity | None = None
-    previous_findings: tuple[RefactorFinding, ...] = ()
+
+
+FastCacheAnswerT = TypeVar("FastCacheAnswerT")
+
+
+class FastCacheQuestion(ABC, Generic[FastCacheAnswerT]):
+    """A consumer's work on what the fast cache path served, one arm per answer."""
+
+    @abstractmethod
+    def exact(self, result: ExactCacheHit) -> FastCacheAnswerT:
+        raise NotImplementedError
+
+    @abstractmethod
+    def partial(self, result: PartialCacheReuse) -> FastCacheAnswerT:
+        raise NotImplementedError
+
+    @abstractmethod
+    def miss(self) -> FastCacheAnswerT:
+        raise NotImplementedError
+
+
+class FastCacheAnswer(ABC):
+    """What the persistent cache serves for a path request before any parsing."""
+
+    @abstractmethod
+    def answer(
+        self, question: FastCacheQuestion[FastCacheAnswerT]
+    ) -> FastCacheAnswerT:
+        raise NotImplementedError
+
+
+@dataclass(frozen=True)
+class ReusedCacheResult(FastCacheAnswer, ABC):
+    """Findings the cache serves for the request whose identity it validated."""
+
+    cache_status: ClassVar[type[AnalysisCacheStatus]]
+
+    findings: list[RefactorFinding]
+    cache_identity: AnalysisCacheIdentity
+    semantic_descent_graph: SemanticDescentGraphHolding = NO_HELD_GRAPH
+
+
+@dataclass(frozen=True)
+class ExactCacheHit(ReusedCacheResult):
+    """The cache holds this exact request's findings."""
+
+    cache_status = Hit
+
+    def answer(
+        self, question: FastCacheQuestion[FastCacheAnswerT]
+    ) -> FastCacheAnswerT:
+        return question.exact(self)
+
+
+@dataclass(frozen=True)
+class PartialCacheReuse(ReusedCacheResult):
+    """Previous findings reused where no changed path touched their evidence."""
+
+    cache_status = Partial
+
+    def answer(
+        self, question: FastCacheQuestion[FastCacheAnswerT]
+    ) -> FastCacheAnswerT:
+        return question.partial(self)
+
+
+class FastCacheMiss(FastCacheAnswer):
+    """The cache serves nothing for this request: its consumer analyses it."""
+
+    def answer(
+        self, question: FastCacheQuestion[FastCacheAnswerT]
+    ) -> FastCacheAnswerT:
+        return question.miss()
+
+
+FAST_CACHE_MISS = FastCacheMiss()
+
+
+class SemanticDescentGraphDemand(ABC):
+    """Whether serving a reused result first needs the repository graph."""
+
+    @abstractmethod
+    def serve(self, result: ReusedCacheResult) -> FastCacheAnswer:
+        raise NotImplementedError
+
+
+class NoGraphDemand(SemanticDescentGraphDemand):
+    """The consumer reads no graph: a reused result is served as it is."""
+
+    def serve(self, result: ReusedCacheResult) -> FastCacheAnswer:
+        return result
+
+
+NO_GRAPH_DEMAND = NoGraphDemand()
+
+
+@dataclass(frozen=True)
+class CachedGraphDemand(SemanticDescentGraphDemand):
+    """The consumer reads the graph: serve only with the cached exact graph,
+    else with `fallback`; without either the request is a miss."""
+
+    cache_context: SemanticDescentGraphCacheContext
+    fallback: SemanticDescentGraphHolding
+
+    def serve(self, result: ReusedCacheResult) -> FastCacheAnswer:
+        return self.cache_context.held_graph().or_else(self.fallback).serve(result)
+
+
+class LoadedAnalysisCache(ABC):
+    """What the persistent cache holds for a request, before any reuse policy."""
 
     @property
-    def exact_cache_identity(self) -> AnalysisCacheIdentity:
-        """Require exact request reuse, separately from partial shard reuse."""
-        self.cache_status.require_exact_identity(self.cache_identity)
-        return self.cache_identity
+    @abstractmethod
+    def cached_result(self) -> CachedAnalysisResult:
+        """The holding as the cache-resolution authority consumes it."""
+        raise NotImplementedError
+
+    @abstractmethod
+    def fast_answer(self, authority: FastCachedPathAnalysisAuthority) -> FastCacheAnswer:
+        """What the fast path serves from this holding under `authority`'s policy."""
+        raise NotImplementedError
+
+
+class DisabledAnalysisCache(LoadedAnalysisCache):
+    """No cache directory: nothing is held and no identity is computed."""
+
+    @property
+    def cached_result(self) -> CachedAnalysisResult:
+        return CachedAnalysisResult([], Disabled)
+
+    def fast_answer(self, authority: FastCachedPathAnalysisAuthority) -> FastCacheAnswer:
+        return FAST_CACHE_MISS
+
+
+DISABLED_ANALYSIS_CACHE = DisabledAnalysisCache()
+
+
+@dataclass(frozen=True)
+class HeldExactFindings(LoadedAnalysisCache):
+    """The cache holds findings stored under this exact request identity."""
+
+    findings: tuple[RefactorFinding, ...]
+    cache_identity: AnalysisCacheIdentity
+
+    @property
+    def cached_result(self) -> CachedAnalysisResult:
+        return CachedAnalysisResult(
+            list(self.findings), Hit, cache_identity=self.cache_identity
+        )
+
+    def fast_answer(self, authority: FastCachedPathAnalysisAuthority) -> FastCacheAnswer:
+        return authority.serve(ExactCacheHit(list(self.findings), self.cache_identity))
+
+
+@dataclass(frozen=True)
+class HeldNothingForRequest(LoadedAnalysisCache):
+    """The cache holds nothing for this request or for any earlier one of its family."""
+
+    cache_status: type[AnalysisCacheStatus]
+    cache_identity: AnalysisCacheIdentity
+
+    @property
+    def cached_result(self) -> CachedAnalysisResult:
+        return CachedAnalysisResult(
+            [], self.cache_status, cache_identity=self.cache_identity
+        )
+
+    def fast_answer(self, authority: FastCachedPathAnalysisAuthority) -> FastCacheAnswer:
+        return FAST_CACHE_MISS
+
+
+@dataclass(frozen=True)
+class HeldPreviousFindings(HeldNothingForRequest):
+    """The cache misses this request but holds its family's latest findings."""
+
+    previous_cache_identity: AnalysisCacheIdentity
+    previous_findings: tuple[RefactorFinding, ...]
+
+    def fast_answer(self, authority: FastCachedPathAnalysisAuthority) -> FastCacheAnswer:
+        return authority.previous_answer(self)
 
 
 @dataclass(frozen=True)
@@ -3595,7 +3896,7 @@ def analyze_modules_with_cache(
             analysis_cache_dir=analysis_cache_dir,
             source_policy=source_policy,
             source_paths=source_paths,
-        )
+        ).cached_result
     authority = AnalysisCacheResolutionAuthority(
         roots=roots,
         modules=modules,
@@ -3622,12 +3923,12 @@ def load_analysis_cache_for_roots(
     source_policy: PythonSourcePathPolicy | None = None,
     source_paths: tuple[Path, ...] | None = None,
     report_roots: tuple[Path, ...] = (),
-) -> CachedAnalysisResult:
+) -> LoadedAnalysisCache:
     """Load detector findings from persistent cache without parsed modules."""
 
     config = config or DetectorConfig()
     if analysis_cache_dir is None:
-        return CachedAnalysisResult([], Disabled)
+        return DISABLED_ANALYSIS_CACHE
     identity_authority = AnalysisCacheIdentityAuthority(
         roots,
         config,
@@ -3640,26 +3941,17 @@ def load_analysis_cache_for_roots(
     analysis_cache = AnalysisFindingCache(analysis_cache_dir)
     cache_lookup = analysis_cache.load(cache_identity)
     if cache_lookup.status.is_hit:
-        return CachedAnalysisResult(
-            list(cache_lookup.findings),
-            cache_lookup.status,
-            cache_identity=cache_identity,
-        )
+        return HeldExactFindings(tuple(cache_lookup.findings), cache_identity)
     family_identity = identity_authority.family_identity(cache_identity)
     latest_cache_entry = analysis_cache.load_latest(family_identity)
     if latest_cache_entry is None:
-        return CachedAnalysisResult(
-            [],
-            cache_lookup.status,
-            cache_identity=cache_identity,
-        )
+        return HeldNothingForRequest(cache_lookup.status, cache_identity)
     previous_cache_identity, previous_findings = latest_cache_entry
-    return CachedAnalysisResult(
-        [],
+    return HeldPreviousFindings(
         cache_lookup.status,
-        cache_identity=cache_identity,
-        previous_cache_identity=previous_cache_identity,
-        previous_findings=previous_findings,
+        cache_identity,
+        previous_cache_identity,
+        tuple(previous_findings),
     )
 
 
@@ -3740,6 +4032,7 @@ class CachedPathAnalysisRequest(ParseCacheDirectory):
     semantic_descent_source: SemanticDescentGraphAnalysisSource = field(
         default_factory=SemanticDescentGraphAnalysisSource
     )
+    graph_demand: SemanticDescentGraphDemand = NO_GRAPH_DEMAND
 
     @property
     def analysis_cache_dir(self) -> Path | None:
@@ -3756,15 +4049,20 @@ class FastCachedPathAnalysisAuthority:
     def __init__(self, request: CachedPathAnalysisRequest) -> None:
         self._request = request
 
-    def result(self) -> CachedAnalysisResult | None:
+    def result(self) -> FastCacheAnswer:
         if not self._request.use_parse_cache:
-            return None
-        cache_result = self._load_cache_result()
-        if cache_result.cache_status.is_hit:
-            return cache_result
-        if not self._can_reuse_previous(cache_result):
-            return None
-        return self._partial_result(cache_result)
+            return FAST_CACHE_MISS
+        return self._load_cache_result().fast_answer(self)
+
+    def previous_answer(self, held: HeldPreviousFindings) -> FastCacheAnswer:
+        """Reuse the family's latest findings only when the request's policy allows it."""
+        if self._request.reuse_policy is not FastCacheReusePolicy.EVIDENCE_LOCAL_PARTIAL:
+            return FAST_CACHE_MISS
+        return self.serve(self._partial_result(held))
+
+    def serve(self, result: ReusedCacheResult) -> FastCacheAnswer:
+        """Serve a reused result once the request's graph demand is met."""
+        return self._request.graph_demand.serve(result)
 
     def summary_result(self) -> AnalysisFindingSummaryCachePayload | None:
         if not self._request.use_parse_cache:
@@ -3777,7 +4075,7 @@ class FastCachedPathAnalysisAuthority:
             report_roots=self._request.report_roots,
         )
 
-    def _load_cache_result(self) -> CachedAnalysisResult:
+    def _load_cache_result(self) -> LoadedAnalysisCache:
         return load_analysis_cache_for_roots(
             self._request.roots,
             self._request.config,
@@ -3786,33 +4084,15 @@ class FastCachedPathAnalysisAuthority:
             report_roots=self._request.report_roots,
         )
 
-    def _can_reuse_previous(self, cache_result: CachedAnalysisResult) -> bool:
-        return bool(
-            self._request.reuse_policy is FastCacheReusePolicy.EVIDENCE_LOCAL_PARTIAL
-            and cache_result.cache_identity is not None
-            and cache_result.previous_cache_identity is not None
-        )
-
-    def _partial_result(
-        self,
-        cache_result: CachedAnalysisResult,
-    ) -> CachedAnalysisResult:
-        if cache_result.cache_identity is None:
-            raise ValueError("partial cache reuse requires cache identity")
-        if cache_result.previous_cache_identity is None:
-            raise ValueError("partial cache reuse requires previous cache identity")
+    def _partial_result(self, cache_result: HeldPreviousFindings) -> PartialCacheReuse:
         analysis_cache = AnalysisFindingCache(self._request.analysis_cache_dir)
         partial_cache_lookup = analysis_cache.load_partial(
             cache_result.cache_identity,
             cache_result.previous_cache_identity,
         )
         if partial_cache_lookup.status.is_partial:
-            return CachedAnalysisResult(
-                list(partial_cache_lookup.findings),
-                Partial,
-                cache_identity=cache_result.cache_identity,
-                previous_cache_identity=cache_result.previous_cache_identity,
-                previous_findings=cache_result.previous_findings,
+            return PartialCacheReuse(
+                list(partial_cache_lookup.findings), cache_result.cache_identity
             )
         changed_paths = ChangedSourcePathAuthority.paths(
             cache_result.cache_identity,
@@ -3855,13 +4135,7 @@ class FastCachedPathAnalysisAuthority:
             cache_result.previous_cache_identity,
             findings,
         )
-        return CachedAnalysisResult(
-            findings,
-            Partial,
-            cache_identity=cache_result.cache_identity,
-            previous_cache_identity=cache_result.previous_cache_identity,
-            previous_findings=cache_result.previous_findings,
-        )
+        return PartialCacheReuse(findings, cache_result.cache_identity)
 
     def _changed_findings(
         self,
@@ -3943,6 +4217,64 @@ class ChangedPathRootAssignment:
         raise ValueError(f"changed source path is outside analysis roots: {path}")
 
 
+@dataclass(frozen=True)
+class PathRequestFindings(FastCacheQuestion[list[RefactorFinding]], ABC):
+    """A path request's findings: the cache's when it serves them, else analysed."""
+
+    request: CachedPathAnalysisRequest
+
+    def exact(self, result: ExactCacheHit) -> list[RefactorFinding]:
+        return result.findings
+
+    def partial(self, result: PartialCacheReuse) -> list[RefactorFinding]:
+        return result.findings
+
+    def miss(self) -> list[RefactorFinding]:
+        request = self.request
+        return analyze_modules_with_cache(
+            request.roots,
+            self.modules(),
+            request.config,
+            analysis_cache_dir=request.analysis_cache_dir,
+            analysis_workers=request.analysis_workers,
+            source_policy=request.source_policy,
+            semantic_descent_source=request.semantic_descent_source,
+        ).findings
+
+    @abstractmethod
+    def modules(self) -> ParsedModuleSet:
+        """The request's parsed modules, parsed when the cache serves nothing."""
+        raise NotImplementedError
+
+
+class SingleRootFindings(PathRequestFindings):
+    """Findings for one file or directory root."""
+
+    def modules(self) -> ParsedModuleSet:
+        request = self.request
+        return parse_python_modules(
+            request.roots[0],
+            cache_dir=request.parse_cache_dir,
+            use_parse_cache=request.use_parse_cache,
+            parse_workers=request.parse_workers,
+            source_policy=request.source_policy,
+        )
+
+
+class MultiRootFindings(PathRequestFindings):
+    """Findings for several roots, their modules de-duplicated by path."""
+
+    def modules(self) -> ParsedModuleSet:
+        request = self.request
+        return parse_python_module_roots(
+            request.roots,
+            cache_dir=request.parse_cache_dir,
+            use_parse_cache=request.use_parse_cache,
+            parse_workers=request.parse_workers,
+            source_policy=request.source_policy,
+        )
+
+
 @ScanCache.scope()
 def analyze_path(
     root: Path,
@@ -3962,40 +4294,21 @@ def analyze_path(
         use_parse_cache,
         source_policy,
     )
-    fast_result = FastCachedPathAnalysisAuthority(
-        CachedPathAnalysisRequest(
-            roots=(root,),
-            config=config,
-            parse_cache_dir=cache_dir,
-            use_parse_cache=use_parse_cache,
-            parse_workers=parse_workers,
-            analysis_workers=analysis_workers,
-            source_policy=source_policy,
-            semantic_descent_source=semantic_descent_source,
-        )
-    ).result()
-    if fast_result is not None:
-        return fast_result.findings
-    modules = parse_python_modules(
-        root,
-        cache_dir=cache_dir,
+    request = CachedPathAnalysisRequest(
+        roots=(root,),
+        config=config,
+        parse_cache_dir=cache_dir,
         use_parse_cache=use_parse_cache,
         parse_workers=parse_workers,
-        source_policy=source_policy,
-    )
-    return analyze_modules_with_cache(
-        (root,),
-        modules,
-        config,
-        analysis_cache_dir=analysis_cache_dir_for_root(
-            root,
-            cache_dir,
-            use_parse_cache,
-        ),
         analysis_workers=analysis_workers,
         source_policy=source_policy,
         semantic_descent_source=semantic_descent_source,
-    ).findings
+    )
+    return (
+        FastCachedPathAnalysisAuthority(request)
+        .result()
+        .answer(SingleRootFindings(request))
+    )
 
 
 @ScanCache.scope()
@@ -4017,41 +4330,21 @@ def analyze_paths(
         use_parse_cache,
         source_policy,
     )
-    fast_result = FastCachedPathAnalysisAuthority(
-        CachedPathAnalysisRequest(
-            roots=roots,
-            config=config,
-            parse_cache_dir=cache_dir,
-            use_parse_cache=use_parse_cache,
-            parse_workers=parse_workers,
-            analysis_workers=analysis_workers,
-            source_policy=source_policy,
-            semantic_descent_source=semantic_descent_source,
-        )
-    ).result()
-    if fast_result is not None:
-        return fast_result.findings
-    modules = parse_python_module_roots(
-        roots,
-        cache_dir=cache_dir,
+    request = CachedPathAnalysisRequest(
+        roots=roots,
+        config=config,
+        parse_cache_dir=cache_dir,
         use_parse_cache=use_parse_cache,
         parse_workers=parse_workers,
-        source_policy=source_policy,
-    )
-    root = roots[0]
-    return analyze_modules_with_cache(
-        roots,
-        modules,
-        config,
-        analysis_cache_dir=analysis_cache_dir_for_root(
-            root,
-            cache_dir,
-            use_parse_cache,
-        ),
         analysis_workers=analysis_workers,
         source_policy=source_policy,
         semantic_descent_source=semantic_descent_source,
-    ).findings
+    )
+    return (
+        FastCachedPathAnalysisAuthority(request)
+        .result()
+        .answer(MultiRootFindings(request))
+    )
 
 
 def analyze_lean_export(path: Path) -> list[RefactorFinding]:

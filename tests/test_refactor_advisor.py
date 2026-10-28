@@ -55,10 +55,12 @@ import nominal_refactor_advisor.observation_families as observation_families_mod
 from nominal_refactor_advisor import analysis_cache as analysis_cache_module
 from nominal_refactor_advisor.analysis import (
     AnalysisPathScope,
+    NO_HELD_GRAPH,
     CachedPathAnalysisRequest,
     DetectorAnalysisWorkerPlan,
     FastCacheReusePolicy,
     FastCachedPathAnalysisAuthority,
+    PartialCacheReuse,
     SemanticDescentGraphCacheContext,
     SemanticDescentGraphAnalysisSource,
     SortedFindingsAuthority,
@@ -12836,8 +12838,8 @@ def test_fast_cache_evidence_local_partial_reuses_unchanged_findings_when_reques
         )
     ).result()
 
-    assert fast_result is not None
-    assert second_fast_result is not None
+    assert isinstance(fast_result, PartialCacheReuse)
+    assert isinstance(second_fast_result, PartialCacheReuse)
     assert fast_result.cache_status is Partial
     assert second_fast_result.cache_status is Partial
     assert {finding.summary for finding in first_findings} == {
@@ -12930,7 +12932,7 @@ def test_fast_partial_cache_does_not_poison_exact_cache(
     ).result()
     exact_findings = analyze_paths((root,), DetectorConfig(), cache_dir=cache_dir)
 
-    assert fast_result is not None
+    assert isinstance(fast_result, PartialCacheReuse)
     assert fast_result.cache_status is Partial
     assert {finding.summary for finding in first_findings} == {"a.py:1", "b.py:1"}
     assert {finding.summary for finding in fast_result.findings} == {"a.py:1"}
@@ -19141,7 +19143,7 @@ def test_loop_preparse_partial_loads_latest_repo_semantic_graph_lazily(
         cache_context=cache_context,
     ).context()
 
-    assert context.latest_graph is None
+    assert context.latest_graph is NO_HELD_GRAPH
     lazy_source = context.analysis_source.with_latest_cached_graph()
     assert lazy_source.cached_graph is not None
     assert lazy_source.cached_graph.authorities == cached_graph.authorities
