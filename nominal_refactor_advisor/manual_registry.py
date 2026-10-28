@@ -21,6 +21,7 @@ from .ast_tools import (
     REGISTRATION_DECORATOR_FAMILY,
 )
 from .class_index import ModuleNominalBindingAuthority
+from .class_mro import UnboundReference
 from .collection_algebra import UniqueIdentityIndexAuthority
 from .descriptor_algebra import CollectionAttributeProjection
 from .lexical_bindings import LEXICAL_SCOPE_BINDING_AUTHORITY
@@ -142,8 +143,11 @@ class SourceModuleMappingKeyAuthority(MappingKeyResolverABC[ast.Module]):
                 parts = ExpressionReference.decoded(reference).attribute_chain
                 if not parts or parts[0] in shadowed_names:
                     return None
-                nominal = snapshot.reference_for(parts)
-                return nominal.qualified_name_or(lambda: None)
+                try:
+                    return snapshot.reference_for(parts).require_bound_name()
+                except UnboundReference:
+                    # QualifiedReferenceResolver's str | None protocol.
+                    return None
 
             try:
                 declarations[name] = PYTHON_ENUM_BASE_AUTHORITY.declaration_from_node(

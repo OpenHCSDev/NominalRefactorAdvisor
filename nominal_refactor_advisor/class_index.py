@@ -27,6 +27,7 @@ from enum import StrEnum
 from functools import cache, cached_property, lru_cache
 from heapq import merge
 from typing import (
+    Any,
     Callable,
     ClassVar,
     Generic,
@@ -60,7 +61,7 @@ from .collection_algebra import (
     UniqueIdentityIndexAuthority,
     sorted_tuple,
 )
-from .class_mro import ClassMroAuthority, UnboundBaseReference
+from .class_mro import ClassMroAuthority, UnboundReference
 from .foreign_family import (
     AssignmentStatement,
     FunctionDefinition,
@@ -151,6 +152,126 @@ class ClassRegistryFacts(NamedTuple):
         )
 
 
+class NotStandardDataclass(ValueError):
+    """A class that is not a standard `dataclasses.dataclass` declaration."""
+
+
+class CompactDataclassFacet(ABC):
+    """A class's dataclass facet: a dataclass-like declaration, or none."""
+
+    runtime_declaration: DataclassRuntimeDeclaration | None
+    fields: tuple[CompactDataclassFieldDeclaration, ...]
+    failures: tuple[CompactProductDeclarationFailure, ...]
+
+    @abstractmethod
+    def require_standard(self, reason: str) -> CompactDataclassDeclaration:
+        """This standard dataclass declaration, or NotStandardDataclass."""
+        raise NotImplementedError
+
+    @abstractmethod
+    def refuse_inherited_fields(self, heir_qualname: str) -> None:
+        """An ancestor's dataclass declaration refuses a heir that adds the decorator."""
+        raise NotImplementedError
+
+    @abstractmethod
+    def base_lineage_in(
+        self,
+        composer: _ProductLineageComposer,
+        base_symbol: str,
+        heir: CompactIndexedClass,
+        pending_symbols: frozenset[str],
+    ) -> _CompactProductLineage:
+        """What this class contributes as the single direct base of a product."""
+        raise NotImplementedError
+
+    @abstractmethod
+    def product_resolution_in(
+        self,
+        composer: _ProductLineageComposer,
+        class_symbol: str,
+        indexed_class: CompactIndexedClass,
+    ) -> CompactProductAuthorityResolution:
+        raise NotImplementedError
+
+
+@dataclass(frozen=True)
+class CompactDataclassDeclaration(CompactDataclassFacet):
+    """One dataclass-like declaration, including fail-closed unknown semantics."""
+
+    runtime_declaration: DataclassRuntimeDeclaration | None
+    fields: tuple[CompactDataclassFieldDeclaration, ...]
+    failures: tuple[CompactProductDeclarationFailure, ...] = ()
+
+    def require_standard(self, reason: str) -> CompactDataclassDeclaration:
+        if (
+            self.runtime_declaration is None
+            or not self.runtime_declaration.is_dataclass_decorator
+        ):
+            raise NotStandardDataclass(reason)
+        return self
+
+    def refuse_inherited_fields(self, heir_qualname: str) -> None:
+        raise ValueError(f"`{heir_qualname}` inherits dataclass fields")
+
+    def base_lineage_in(
+        self,
+        composer: _ProductLineageComposer,
+        base_symbol: str,
+        heir: CompactIndexedClass,
+        pending_symbols: frozenset[str],
+    ) -> _CompactProductLineage:
+        return composer.compose(
+            base_symbol, self, pending_symbols | frozenset((heir.symbol,))
+        )
+
+    def product_resolution_in(
+        self,
+        composer: _ProductLineageComposer,
+        class_symbol: str,
+        indexed_class: CompactIndexedClass,
+    ) -> CompactProductAuthorityResolution:
+        return composer.resolve(class_symbol, indexed_class, self)
+
+
+@dataclass(frozen=True)
+class NoDataclassDeclaration(CompactDataclassFacet):
+    """A class no dataclass-like decorator declares: no runtime, no fields."""
+
+    runtime_declaration = None
+    fields = ()
+    failures = ()
+
+    def require_standard(self, reason: str) -> CompactDataclassDeclaration:
+        raise NotStandardDataclass(reason)
+
+    def refuse_inherited_fields(self, heir_qualname: str) -> None:
+        return None
+
+    def base_lineage_in(
+        self,
+        composer: _ProductLineageComposer,
+        base_symbol: str,
+        heir: CompactIndexedClass,
+        pending_symbols: frozenset[str],
+    ) -> _CompactProductLineage:
+        return _CompactProductLineage(
+            (),
+            (
+                composer.failure(
+                    heir, CompactProductAuthorityViolation.NON_DATACLASS_BASE
+                ),
+            ),
+        )
+
+    def product_resolution_in(
+        self,
+        composer: _ProductLineageComposer,
+        class_symbol: str,
+        indexed_class: CompactIndexedClass,
+    ) -> CompactProductAuthorityResolution:
+        return AbsentCompactProductAuthority(class_symbol)
+
+
 @dataclass(frozen=True)
 class ClassDeclaration(QualifiedDeclaration):
     """Source-form-independent identity shared by repository class indexes."""
@@ -164,7 +285,7 @@ class ClassDeclaration(QualifiedDeclaration):
     declared_base_names: tuple[str, ...]
     resolved_base_symbols: tuple[str, ...] = field(default=(), kw_only=True)
     dataclass_declaration: CompactDataclassFacet = field(
-        default_factory=lambda: NoDataclassDeclaration(),
+        default_factory=NoDataclassDeclaration,
         kw_only=True,
     )
     class_decorators_are_promotion_safe: bool = field(default=True, kw_only=True)
@@ -299,13 +420,15 @@ class CompactNominalReference(ABC):
         return self.resolved_parts[-1]
 
     @abstractmethod
-    def require_bound(self) -> None:
-        """Refuse, with UnboundBaseReference, a reference no binding roots."""
+    def require_bound_name(self) -> str:
+        """The bound qualified name; an unbound reference raises UnboundReference."""
         raise NotImplementedError
 
     @abstractmethod
-    def qualified_name_or(self, fallback: Callable[[], str | None]) -> str | None:
-        """The bound name; an unbound reference defers to the caller's other evidence."""
+    def settled_qualified_name(
+        self, authority: RegisteringMetaclassAuthority[Any], module_name: str
+    ) -> str | None:
+        """The bound name, or what the module's star imports settle the spelling to."""
         raise NotImplementedError
 
     @abstractmethod
@@ -351,10 +474,12 @@ class BoundNominalReference(CompactNominalReference):
             *self.source_parts[1:],
         )
 
-    def require_bound(self) -> None:
-        return None
+    def require_bound_name(self) -> str:
+        return self.qualified_name
 
-    def qualified_name_or(self, fallback: Callable[[], str | None]) -> str | None:
+    def settled_qualified_name(
+        self, authority: RegisteringMetaclassAuthority[Any], module_name: str
+    ) -> str | None:
         return self.qualified_name
 
     def shares_binding_with(self, other: CompactNominalReference) -> bool:
@@ -392,11 +517,13 @@ class UnboundNominalReference(CompactNominalReference):
     def resolved_parts(self) -> tuple[str, ...]:
         return self.source_parts
 
-    def require_bound(self) -> None:
-        raise UnboundBaseReference(f"`{'.'.join(self.source_parts)}` has no binding")
+    def require_bound_name(self) -> str:
+        raise UnboundReference(f"`{'.'.join(self.source_parts)}` has no binding")
 
-    def qualified_name_or(self, fallback: Callable[[], str | None]) -> str | None:
-        return fallback()
+    def settled_qualified_name(
+        self, authority: RegisteringMetaclassAuthority[Any], module_name: str
+    ) -> str | None:
+        return authority.star_settled_name(self, module_name)
 
     def shares_binding_with(self, other: CompactNominalReference) -> bool:
         return False
@@ -693,126 +820,6 @@ class CompactProductDeclarationFailure(NamedTuple):
 
     line: int
     violation: CompactProductAuthorityViolation
-
-
-class NotStandardDataclass(ValueError):
-    """A class that is not a standard `dataclasses.dataclass` declaration."""
-
-
-class CompactDataclassFacet(ABC):
-    """A class's dataclass facet: a dataclass-like declaration, or none."""
-
-    runtime_declaration: DataclassRuntimeDeclaration | None
-    fields: tuple[CompactDataclassFieldDeclaration, ...]
-    failures: tuple[CompactProductDeclarationFailure, ...]
-
-    @abstractmethod
-    def require_standard(self, reason: str) -> CompactDataclassDeclaration:
-        """This standard dataclass declaration, or NotStandardDataclass."""
-        raise NotImplementedError
-
-    @abstractmethod
-    def refuse_inherited_fields(self, heir_qualname: str) -> None:
-        """An ancestor's dataclass declaration refuses a heir that adds the decorator."""
-        raise NotImplementedError
-
-    @abstractmethod
-    def base_lineage_in(
-        self,
-        composer: _ProductLineageComposer,
-        base_symbol: str,
-        heir: CompactIndexedClass,
-        pending_symbols: frozenset[str],
-    ) -> _CompactProductLineage:
-        """What this class contributes as the single direct base of a product."""
-        raise NotImplementedError
-
-    @abstractmethod
-    def product_resolution_in(
-        self,
-        composer: _ProductLineageComposer,
-        class_symbol: str,
-        indexed_class: CompactIndexedClass,
-    ) -> CompactProductAuthorityResolution:
-        raise NotImplementedError
-
-
-@dataclass(frozen=True)
-class CompactDataclassDeclaration(CompactDataclassFacet):
-    """One dataclass-like declaration, including fail-closed unknown semantics."""
-
-    runtime_declaration: DataclassRuntimeDeclaration | None
-    fields: tuple[CompactDataclassFieldDeclaration, ...]
-    failures: tuple[CompactProductDeclarationFailure, ...] = ()
-
-    def require_standard(self, reason: str) -> CompactDataclassDeclaration:
-        if (
-            self.runtime_declaration is None
-            or not self.runtime_declaration.is_dataclass_decorator
-        ):
-            raise NotStandardDataclass(reason)
-        return self
-
-    def refuse_inherited_fields(self, heir_qualname: str) -> None:
-        raise ValueError(f"`{heir_qualname}` inherits dataclass fields")
-
-    def base_lineage_in(
-        self,
-        composer: _ProductLineageComposer,
-        base_symbol: str,
-        heir: CompactIndexedClass,
-        pending_symbols: frozenset[str],
-    ) -> _CompactProductLineage:
-        return composer.compose(
-            base_symbol, self, pending_symbols | frozenset((heir.symbol,))
-        )
-
-    def product_resolution_in(
-        self,
-        composer: _ProductLineageComposer,
-        class_symbol: str,
-        indexed_class: CompactIndexedClass,
-    ) -> CompactProductAuthorityResolution:
-        return composer.resolve(class_symbol, indexed_class, self)
-
-
-@dataclass(frozen=True)
-class NoDataclassDeclaration(CompactDataclassFacet):
-    """A class no dataclass-like decorator declares: no runtime, no fields."""
-
-    runtime_declaration = None
-    fields = ()
-    failures = ()
-
-    def require_standard(self, reason: str) -> CompactDataclassDeclaration:
-        raise NotStandardDataclass(reason)
-
-    def refuse_inherited_fields(self, heir_qualname: str) -> None:
-        return None
-
-    def base_lineage_in(
-        self,
-        composer: _ProductLineageComposer,
-        base_symbol: str,
-        heir: CompactIndexedClass,
-        pending_symbols: frozenset[str],
-    ) -> _CompactProductLineage:
-        return _CompactProductLineage(
-            (),
-            (
-                composer.failure(
-                    heir, CompactProductAuthorityViolation.NON_DATACLASS_BASE
-                ),
-            ),
-        )
-
-    def product_resolution_in(
-        self,
-        composer: _ProductLineageComposer,
-        class_symbol: str,
-        indexed_class: CompactIndexedClass,
-    ) -> CompactProductAuthorityResolution:
-        return AbsentCompactProductAuthority(class_symbol)
 
 
 @dataclass(frozen=True)
@@ -3550,25 +3557,32 @@ class ModuleNominalBindingAuthority:
         envelope = NOMINAL_ANNOTATION_SOURCE_AUTHORITY.subscript_or_none(annotation)
         if envelope is None:
             return None
-        if (
-            self._annotation_factory_name_at(
-                envelope.value, line=line, class_bound_names=class_bound_names
-            )
-            != "builtins.type"
+        if not self._annotation_factory_is(
+            envelope.value,
+            ("builtins.type",),
+            line=line,
+            class_bound_names=class_bound_names,
         ):
             return None
         return self.nominal_annotation_name_at(
             envelope.slice, line=line, class_bound_names=class_bound_names
         )
 
-    def _annotation_factory_name_at(
-        self, reference: ast.AST, *, line: int, class_bound_names: frozenset[str]
-    ) -> str | None:
+    def _annotation_factory_is(
+        self,
+        reference: ast.AST,
+        factory_names: tuple[str, ...],
+        *,
+        line: int,
+        class_bound_names: frozenset[str],
+    ) -> bool:
+        """Whether a binding proves the annotation's factory is one of these names."""
+
         parts = ExpressionReference.decoded(reference).attribute_chain
         if parts is None or parts[0] in class_bound_names:
-            return None
+            return False
         resolved = self.snapshot_before(line).reference_for(parts)
-        return resolved.qualified_name_or(lambda: None)
+        return any(resolved.has_bound_name(name) for name in factory_names)
 
     def iterated_class_annotation_name_at(
         self,
@@ -3581,10 +3595,12 @@ class ModuleNominalBindingAuthority:
         envelope = NOMINAL_ANNOTATION_SOURCE_AUTHORITY.subscript_or_none(annotation)
         if envelope is None:
             return None
-        factory = self._annotation_factory_name_at(
-            envelope.value, line=line, class_bound_names=class_bound_names
-        )
-        if factory not in ("builtins.tuple", "typing.Tuple"):
+        if not self._annotation_factory_is(
+            envelope.value,
+            ("builtins.tuple", "typing.Tuple"),
+            line=line,
+            class_bound_names=class_bound_names,
+        ):
             return None
         items = (
             envelope.slice.elts
@@ -4796,8 +4812,8 @@ class _CompactClassBindingFacets:
                 if ClassSymbolResolutionAuthority.establishes_nominal_family(
                     ".".join(reference.source_parts)
                 ):
-                    reference.require_bound()
-        except UnboundBaseReference:
+                    reference.require_bound_name()
+        except UnboundReference:
             return False
         return True
 
@@ -7505,9 +7521,7 @@ class RegisteringMetaclassAuthority(Generic[ClassDeclarationT]):
         )
         if symbol is not None:
             return self.scanned[symbol]
-        qualified_name = reference.qualified_name_or(
-            lambda: self.star_settled_name(reference, module_name)
-        )
+        qualified_name = reference.settled_qualified_name(self, module_name)
         if qualified_name is None:
             return None
         return self.scanned.get(
