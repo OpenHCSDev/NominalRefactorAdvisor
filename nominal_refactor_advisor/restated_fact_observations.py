@@ -19,7 +19,7 @@ from pathlib import Path
 
 from .ast_field_decoders import ParameterAnnotations
 from .lexical_bindings import ImportAlias, ImportBoundNameProjection
-from .ast_projection import AbsentStatementValue, CallKeywords, StatementValue
+from .ast_projection import CallKeywords, StatementValues
 from .ast_tools import BuiltinCallName, ParsedModule
 from .declared_root import DeclaredRoot
 from .models import SourceLocation
@@ -757,18 +757,15 @@ class LegacyMarkerSiteFamily(RestatingSiteFamily):
                         argument,
                         ("parameter", "beside its replacement"),
                     )
-        for node_index, node in (
-            *index.indexed_nodes_of_type(ast.Assign),
-            *index.indexed_nodes_of_type(ast.AnnAssign),
-        ):
+        for node_index, assigned in StatementValues.keyed(
+            (*index.indexed_nodes_of_type(ast.Assign),
+             *index.indexed_nodes_of_type(ast.AnnAssign))
+        ).supplied:
+            node = assigned.statement
             owner = index.parent_node(node_index)
             if not isinstance(owner, (ast.Module, ast.ClassDef)):
                 continue
-            try:
-                value = StatementValue.of(node).require_value("a bare annotation")
-            except AbsentStatementValue:
-                continue
-            replacement = cls.aliased(value)
+            replacement = cls.aliased(assigned.value)
             for target in cls.assigned_names(node):
                 if replacement is not None and LegacyWord.in_identifier(target):
                     yield cls.site(

@@ -522,7 +522,7 @@ class PropertyIsNone(Guard):
         if (
             len(body) == 1
             and isinstance(body[0], ast.Return)
-            and StatementValue.of(body[0]).supplies_none_literal
+            and StatementValue.of(body[0]).compact_value().value_is_none_literal
         ):
             return not self.negated
         if found.returns is not None and "None" not in ast.unparse(found.returns):

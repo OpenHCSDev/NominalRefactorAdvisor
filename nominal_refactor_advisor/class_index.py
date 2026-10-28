@@ -45,7 +45,16 @@ from .annotation_semantics import (
 )
 from .ast_field_decoders import ParameterAnnotations
 from .ast_projection import ExpressionReference
-from .ast_projection import AbsentStatementValue, CallKeywords, StatementValue
+from .ast_projection import (
+    CallKeywords,
+    KeyT,
+    NoStatementValue,
+    StatementValue,
+    StatementValueQuestion,
+    StatementValues,
+    SuppliedValue,
+    single_name_targets,
+)
 from .observation_graph import ObservationGraph, collect_structural_observations
 from .ast_tools import (
     CompactModuleIdentity,
@@ -64,7 +73,8 @@ from .collection_algebra import (
     UniqueIdentityIndexAuthority,
     sorted_tuple,
 )
-from .class_mro import ClassMroAuthority, UnboundReference
+from .class_mro import ClassMroAuthority
+from .overlap_receipts import OverlapReceiptKind
 from .foreign_family import (
     AssignmentStatement,
     FunctionDefinition,
@@ -438,8 +448,11 @@ class CompactNominalReference(ABC):
         return self.resolved_parts[-1]
 
     @abstractmethod
-    def require_bound_name(self) -> str:
-        """The bound qualified name; an unbound reference raises UnboundReference."""
+    def sort_into(
+        self,
+        bound: list[BoundNominalReference],
+        unbound: list[UnboundNominalReference],
+    ) -> None:
         raise NotImplementedError
 
     @abstractmethod
@@ -492,8 +505,12 @@ class BoundNominalReference(CompactNominalReference):
             *self.source_parts[1:],
         )
 
-    def require_bound_name(self) -> str:
-        return self.qualified_name
+    def sort_into(
+        self,
+        bound: list[BoundNominalReference],
+        unbound: list[UnboundNominalReference],
+    ) -> None:
+        bound.append(self)
 
     def settled_qualified_name(
         self, authority: RegisteringMetaclassAuthority[Any], module_name: str
@@ -535,8 +552,12 @@ class UnboundNominalReference(CompactNominalReference):
     def resolved_parts(self) -> tuple[str, ...]:
         return self.source_parts
 
-    def require_bound_name(self) -> str:
-        raise UnboundReference(f"`{'.'.join(self.source_parts)}` has no binding")
+    def sort_into(
+        self,
+        bound: list[BoundNominalReference],
+        unbound: list[UnboundNominalReference],
+    ) -> None:
+        unbound.append(self)
 
     def settled_qualified_name(
         self, authority: RegisteringMetaclassAuthority[Any], module_name: str
@@ -974,6 +995,26 @@ class _CompactProductLineage:
 
 
 @dataclass(frozen=True)
+class NominalReferences:
+    """References split into those a declaration-time binding roots and the rest."""
+
+    bound: tuple[BoundNominalReference, ...]
+    unbound: tuple[UnboundNominalReference, ...]
+
+    @classmethod
+    def of(cls, references: Iterable[CompactNominalReference]) -> NominalReferences:
+        bound: list[BoundNominalReference] = []
+        unbound: list[UnboundNominalReference] = []
+        for reference in references:
+            reference.sort_into(bound, unbound)
+        return cls(tuple(bound), tuple(unbound))
+
+    @property
+    def bound_names(self) -> tuple[str, ...]:
+        return tuple(reference.qualified_name for reference in self.bound)
+
+
+@dataclass(frozen=True)
 class CompactClassBindingFacets:
     """Class facts whose authority depends on one module binding snapshot."""
 
@@ -985,15 +1026,13 @@ class CompactClassBindingFacets:
 
     @property
     def product_base_bindings_are_exact(self) -> bool:
-        try:
-            for reference in self.base_references:
-                if ClassSymbolResolutionAuthority.establishes_nominal_family(
-                    ".".join(reference.source_parts)
-                ):
-                    reference.require_bound_name()
-        except UnboundReference:
-            return False
-        return True
+        return not NominalReferences.of(
+            reference
+            for reference in self.base_references
+            if ClassSymbolResolutionAuthority.establishes_nominal_family(
+                ".".join(reference.source_parts)
+            )
+        ).unbound
 
 
 @dataclass(frozen=True)
@@ -1025,6 +1064,10 @@ class CompactClassHeader(ClassDeclaration):
     star_resolution: CompactStarResolvedFacets | None = field(default=None, kw_only=True)
     """The facts past the module's star imports, when it has any; the index
     settles them once the repository's exports are known."""
+
+    @property
+    def base_bindings(self) -> NominalReferences:
+        return NominalReferences.of(self.base_references)
 
     @property
     def base_resolution_is_complete(self) -> bool:
@@ -1332,6 +1375,14 @@ class CompactUnresolvedPublicExportContract(CompactModulePublicExportContract):
 class StarNameSettlement(ABC):
     """What the star imports seen so far (latest first) do to one module binding."""
 
+    @staticmethod
+    def unshadowed(binding: str | None) -> StarNameSettlement:
+        """The ast-side lookup, read once: the module's own binding, if it has one."""
+
+        if binding is None:
+            return NameUnbound()
+        return NameUntouched(binding)
+
     @abstractmethod
     def or_settled_by(
         self,
@@ -1343,12 +1394,17 @@ class StarNameSettlement(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def binding_or(self, unshadowed: str | None) -> str | None:
+    def sort_into(
+        self,
+        key: KeyT,
+        settled: list[tuple[KeyT, str]],
+        unsettled: list[KeyT],
+    ) -> None:
         raise NotImplementedError
 
 
-class NameUntouched(StarNameSettlement):
-    """No star import exposes the name: the module's own binding stands."""
+class UntouchedSettlement(StarNameSettlement):
+    """No star import seen so far exposes the name: an earlier one may still decide."""
 
     def or_settled_by(
         self,
@@ -1356,10 +1412,34 @@ class NameUntouched(StarNameSettlement):
         authority: CompactRepositoryPublicExposureIndex,
         name: str,
     ) -> StarNameSettlement:
-        return origin.settlement_in(authority, name)
+        return origin.settlement_in(authority, name, self)
 
-    def binding_or(self, unshadowed: str | None) -> str | None:
-        return unshadowed
+
+@dataclass(frozen=True)
+class NameUntouched(UntouchedSettlement):
+    """No star import exposes the name: the module's own binding stands."""
+
+    own_binding: str
+
+    def sort_into(
+        self,
+        key: KeyT,
+        settled: list[tuple[KeyT, str]],
+        unsettled: list[KeyT],
+    ) -> None:
+        settled.append((key, self.own_binding))
+
+
+class NameUnbound(UntouchedSettlement):
+    """No star import exposes the name and the module binds it nowhere else."""
+
+    def sort_into(
+        self,
+        key: KeyT,
+        settled: list[tuple[KeyT, str]],
+        unsettled: list[KeyT],
+    ) -> None:
+        unsettled.append(key)
 
 
 class NameUncertain(StarNameSettlement):
@@ -1373,8 +1453,13 @@ class NameUncertain(StarNameSettlement):
     ) -> StarNameSettlement:
         return self
 
-    def binding_or(self, unshadowed: str | None) -> str | None:
-        return None
+    def sort_into(
+        self,
+        key: KeyT,
+        settled: list[tuple[KeyT, str]],
+        unsettled: list[KeyT],
+    ) -> None:
+        unsettled.append(key)
 
 
 @dataclass(frozen=True)
@@ -1391,8 +1476,31 @@ class NameSettled(StarNameSettlement):
     ) -> StarNameSettlement:
         return self
 
-    def binding_or(self, unshadowed: str | None) -> str | None:
-        return self.binding
+    def sort_into(
+        self,
+        key: KeyT,
+        settled: list[tuple[KeyT, str]],
+        unsettled: list[KeyT],
+    ) -> None:
+        settled.append((key, self.binding))
+
+
+@dataclass(frozen=True)
+class StarSettlements(Generic[KeyT]):
+    """Keyed names split into those the star imports settle to a binding and the rest."""
+
+    settled: tuple[tuple[KeyT, str], ...]
+    unsettled: tuple[KeyT, ...]
+
+    @classmethod
+    def keyed(
+        cls, pairs: Iterable[tuple[KeyT, StarNameSettlement]]
+    ) -> StarSettlements[KeyT]:
+        settled: list[tuple[KeyT, str]] = []
+        unsettled: list[KeyT] = []
+        for key, settlement in pairs:
+            settlement.sort_into(key, settled, unsettled)
+        return cls(tuple(settled), tuple(unsettled))
 
 
 class CompactModuleStarImportOrigin(ABC):
@@ -1414,7 +1522,10 @@ class CompactModuleStarImportOrigin(ABC):
 
     @abstractmethod
     def settlement_in(
-        self, authority: CompactRepositoryPublicExposureIndex, name: str
+        self,
+        authority: CompactRepositoryPublicExposureIndex,
+        name: str,
+        untouched: UntouchedSettlement,
     ) -> StarNameSettlement:
         raise NotImplementedError
 
@@ -1438,7 +1549,10 @@ class ResolvedStarImportOrigin(CompactModuleStarImportOrigin):
         return authority.exposure_for(self.module_name, binding_name)
 
     def settlement_in(
-        self, authority: CompactRepositoryPublicExposureIndex, name: str
+        self,
+        authority: CompactRepositoryPublicExposureIndex,
+        name: str,
+        untouched: UntouchedSettlement,
     ) -> StarNameSettlement:
         exposure = self.exposure_in(authority, name)
         if exposure.proves_public_exposure:
@@ -1450,7 +1564,7 @@ class ResolvedStarImportOrigin(CompactModuleStarImportOrigin):
             )
         if exposure.introduces_uncertainty:
             return NameUncertain()
-        return NameUntouched()
+        return untouched
 
     def within(self, module_names: Collection[str]) -> bool:
         return self.module_name in module_names
@@ -1469,7 +1583,10 @@ class UnresolvedStarImportOrigin(CompactModuleStarImportOrigin):
         return CompactPublicNameExposure.UNRESOLVED
 
     def settlement_in(
-        self, authority: CompactRepositoryPublicExposureIndex, name: str
+        self,
+        authority: CompactRepositoryPublicExposureIndex,
+        name: str,
+        untouched: UntouchedSettlement,
     ) -> StarNameSettlement:
         return NameUncertain()
 
@@ -1552,10 +1669,10 @@ class CompactRepositoryPublicExposureIndex(RepositoryPublicExposureAuthority):
 
     module_projections: tuple[CompactModuleClassHeader, ...]
 
-    def star_settled_binding(
+    def star_settlement(
         self, module_name: str, name: str, unshadowed: str | None
-    ) -> str | None:
-        """What a name a star import may rebind is bound to, when the repository's exports decide it.
+    ) -> StarNameSettlement:
+        """What a name a star import may rebind is bound to, as the repository's exports decide it.
 
         `unshadowed` is the module's own binding, star imports aside. No star
         import exposing the name leaves that binding; the last star import
@@ -1563,14 +1680,14 @@ class CompactRepositoryPublicExposureIndex(RepositoryPublicExposureAuthority):
         exports are unknown decides nothing.
         """
 
+        settlement = StarNameSettlement.unshadowed(unshadowed)
         if self.star_imports_exclude(module_name, name):
-            return unshadowed
+            return settlement
         if not self.contains_module(module_name):
-            return None
-        settlement: StarNameSettlement = NameUntouched()
+            return NameUncertain()
         for origin in reversed(self.star_import_origins_for(module_name)):
             settlement = settlement.or_settled_by(origin, self, name)
-        return settlement.binding_or(unshadowed)
+        return settlement
 
     @cached_property
     def module_projection_multiplicity(
@@ -2204,32 +2321,25 @@ class LatentRosterObservation:
             body = _trim_leading_docstring(list(statement.body))
             if len(body) != 1 or not isinstance(body[0], ast.Return):
                 return ()
-            try:
-                value = StatementValue.of(body[0]).require_value("a bare return")
-            except AbsentStatementValue:
-                return ()
-            return cls.from_value(
-                parsed_module,
-                statement,
-                roster_name=statement.name,
-                value=value,
+            return StatementValue.of(body[0]).answer(
+                LatentRosterValue(parsed_module, statement, statement.name)
             )
-        target_value: tuple[ast.AST, ast.AST] | None = None
-        if isinstance(statement, ast.Assign) and len(statement.targets) == 1:
-            target_value = statement.targets[0], statement.value
-        elif isinstance(statement, ast.AnnAssign):
-            target_value = StatementValue.of(statement).paired_with(statement.target)
-        if target_value is None or not isinstance(target_value[0], ast.Name):
+        if not isinstance(statement, ast.Assign | ast.AnnAssign):
             return ()
-        target, value = target_value
-        roster_name = (
-            f"{roster_prefix}.{target.id}" if roster_prefix is not None else target.id
-        )
-        return cls.from_value(
-            parsed_module,
-            statement,
-            roster_name=roster_name,
-            value=value,
+        return tuple(
+            observation
+            for target in single_name_targets(statement)
+            for observation in StatementValue.of(statement).answer(
+                LatentRosterValue(
+                    parsed_module,
+                    statement,
+                    (
+                        f"{roster_prefix}.{target.id}"
+                        if roster_prefix is not None
+                        else target.id
+                    ),
+                )
+            )
         )
 
     @classmethod
@@ -2382,6 +2492,26 @@ class LatentRosterObservation:
             missing_names,
             self.projection_policy_hint,
         )
+
+
+@dataclass(frozen=True)
+class LatentRosterValue(StatementValueQuestion[tuple[LatentRosterObservation, ...]]):
+    """The roster a statement's value spells; a bare statement spells none."""
+
+    parsed_module: ParsedModule
+    statement: ast.stmt
+    roster_name: str
+
+    def supplied(self, value: SuppliedValue) -> tuple[LatentRosterObservation, ...]:
+        return LatentRosterObservation.from_value(
+            self.parsed_module,
+            self.statement,
+            roster_name=self.roster_name,
+            value=value.value,
+        )
+
+    def bare(self, value: NoStatementValue) -> tuple[LatentRosterObservation, ...]:
+        return ()
 
 
 @dataclass(frozen=True)
@@ -3464,36 +3594,32 @@ class ModulePublicExportSourceAuthority:
                 return None
         return tuple(references)
 
-    @classmethod
-    def from_statement(
-        cls,
-        statement: ast.stmt,
-    ) -> ModulePublicExportSourceAuthority | None:
-        if (
-            isinstance(statement, ast.Assign)
-            and len(statement.targets) == 1
-            and isinstance(statement.targets[0], ast.Name)
-            and statement.targets[0].id == PYTHON_PUBLIC_EXPORT_ASSIGNMENT
-        ):
-            return cls(statement, statement.targets[0], statement.value)
-        if (
-            isinstance(statement, ast.AnnAssign)
-            and isinstance(statement.target, ast.Name)
-            and statement.target.id == PYTHON_PUBLIC_EXPORT_ASSIGNMENT
-            and (pair := StatementValue.of(statement).paired_with(statement.target))
-        ):
-            return cls(statement, *pair)
-        return None
+    @staticmethod
+    def export_targets(
+        statement: ast.Assign | ast.AnnAssign,
+    ) -> tuple[ast.Name, ...]:
+        """The `__all__` name a module-scope assignment binds, if it binds it."""
+
+        return tuple(
+            target
+            for target in single_name_targets(statement)
+            if target.id == PYTHON_PUBLIC_EXPORT_ASSIGNMENT
+        )
 
     @classmethod
     def from_module(
         cls,
         module: ast.Module,
     ) -> ModulePublicExportSourceAuthority | None:
+        # A bare `__all__: T` declares no export list.
         declarations = tuple(
-            declaration
-            for statement in module.body
-            if (declaration := cls.from_statement(statement)) is not None
+            cls(statement, target, supplied.value)
+            for (target, statement), supplied in StatementValues.keyed(
+                ((target, statement), statement)
+                for statement in module.body
+                if isinstance(statement, ast.Assign | ast.AnnAssign)
+                for target in cls.export_targets(statement)
+            ).supplied
         )
         if len(declarations) != 1:
             return None
@@ -4125,11 +4251,38 @@ class ModuleNominalBindingWitness:
 
 
 class ClassBodyDeclarationKind(StrEnum):
-    """What one direct class-body statement declares."""
+    """What one direct class-body statement declares, the receipt two classes
+    sharing it earn, and whether it is a field.
 
-    FIELD = "field"
-    VALUE = "value"
-    METHOD = "method"
+    A supplied value weighs as a value whether or not it is a field's default.
+    """
+
+    shared_receipt: OverlapReceiptKind
+    is_field: bool
+
+    def __new__(
+        cls, value: str, shared_receipt: OverlapReceiptKind, is_field: bool
+    ) -> Self:
+        member = str.__new__(cls, value)
+        member._value_ = value
+        member.shared_receipt = shared_receipt
+        member.is_field = is_field
+        return member
+
+    FIELD = "field", OverlapReceiptKind.SHARED_FIELD, True
+    DEFAULTED_FIELD = "defaulted_field", OverlapReceiptKind.SHARED_VALUE, True
+    VALUE = "value", OverlapReceiptKind.SHARED_VALUE, False
+    METHOD = "method", OverlapReceiptKind.SHARED_METHOD, False
+
+
+class AnnotatedDeclarationKind(StatementValueQuestion[ClassBodyDeclarationKind]):
+    """An annotation declares a field; with a value it also supplies the default."""
+
+    def supplied(self, value: SuppliedValue) -> ClassBodyDeclarationKind:
+        return ClassBodyDeclarationKind.DEFAULTED_FIELD
+
+    def bare(self, value: NoStatementValue) -> ClassBodyDeclarationKind:
+        return ClassBodyDeclarationKind.FIELD
 
 
 class _ReceiverAliasSubstitution(ast.NodeTransformer):
@@ -4172,7 +4325,6 @@ class ClassBodyDeclarationDigest(NamedTuple):
     digest: str
     deferred: tuple[StarDeferredName, ...]
     unbound: tuple[str, ...]
-    assigns_value: bool
 
 
 @dataclass(frozen=True)
@@ -4265,7 +4417,6 @@ class ClassBodyNormalForm:
     kind: ClassBodyDeclarationKind
     name: str
     line: int
-    assigns_value: bool
     syntax: str
     global_bindings: tuple[ModuleNominalBindingWitness, ...]
     class_scope_names: tuple[str, ...]
@@ -4304,7 +4455,6 @@ class ClassBodyNormalForm:
             self.digest,
             self.deferred_names,
             self.unresolved_names,
-            self.assigns_value,
         )
 
     @classmethod
@@ -4360,7 +4510,7 @@ class ClassBodyNormalForm:
         if isinstance(statement, ast.AnnAssign):
             if not isinstance(statement.target, ast.Name):
                 return ()
-            kind = ClassBodyDeclarationKind.FIELD
+            kind = StatementValue.of(statement).answer(AnnotatedDeclarationKind())
             names: tuple[str, ...] = (statement.target.id,)
         else:
             kind = ClassBodyDeclarationKind.VALUE
@@ -4418,10 +4568,6 @@ class ClassBodyNormalForm:
             kind=kind,
             name=name,
             line=statement.lineno,
-            assigns_value=(
-                isinstance(statement, (ast.Assign, ast.AnnAssign))
-                and StatementValue.of(statement).supplies_value
-            ),
             syntax=ast.dump(normalized, include_attributes=False),
             global_bindings=tuple(global_bindings),
             class_scope_names=tuple(class_scope_names),
@@ -5758,26 +5904,18 @@ def _compact_uses_named_registry(
     )
 
 
-def _compact_assignment_target_value(
-    statement: ast.stmt,
-) -> tuple[ast.AST, ast.AST] | None:
-    if isinstance(statement, ast.Assign) and len(statement.targets) == 1:
-        return statement.targets[0], statement.value
-    if isinstance(statement, ast.AnnAssign):
-        return StatementValue.of(statement).paired_with(statement.target)
-    return None
-
-
 def _compact_named_projection_surfaces(
     parsed_module: ParsedModule,
 ) -> tuple[CompactNamedProjectionSurface, ...]:
     named_values: dict[str, tuple[int, ast.AST]] = {}
     named_sequences: dict[str, tuple[int, ast.Tuple | ast.List]] = {}
-    for statement in _trim_leading_docstring(list(parsed_module.module.body)):
-        target_value = _compact_assignment_target_value(statement)
-        if target_value is None or not isinstance(target_value[0], ast.Name):
-            continue
-        target, value = target_value
+    for (statement, target), assigned in StatementValues.keyed(
+        ((statement, target), statement)
+        for statement in _trim_leading_docstring(list(parsed_module.module.body))
+        if isinstance(statement, ast.Assign | ast.AnnAssign)
+        for target in single_name_targets(statement)
+    ).supplied:
+        value = assigned.value
         named_values[target.id] = (statement.lineno, value)
         if isinstance(value, (ast.Tuple, ast.List)):
             named_sequences[target.id] = (statement.lineno, value)
@@ -7187,48 +7325,64 @@ def _dataclass_field_role(
     )
     if not annotation_is_resolved_plain_field:
         return CompactDataclassFieldRole.UNRESOLVED
-    try:
-        value = StatementValue.of(statement).require_value("a bare field annotation")
-    except AbsentStatementValue:
+    return StatementValue.of(statement).answer(
+        DataclassFieldDefaultRole(
+            module_binding_snapshot, class_aliases, preceding_class_bound_names
+        )
+    )
+
+
+@dataclass(frozen=True)
+class DataclassFieldDefaultRole(StatementValueQuestion[CompactDataclassFieldRole]):
+    """The role a resolved plain field's default gives it; no default stores an init field."""
+
+    module_binding_snapshot: ModuleNominalBindingSnapshot
+    class_aliases: dict[str, str]
+    preceding_class_bound_names: frozenset[str]
+
+    def bare(self, value: NoStatementValue) -> CompactDataclassFieldRole:
         return CompactDataclassFieldRole.STORED_INIT
-    if _is_literal_default(value):
-        return CompactDataclassFieldRole.STORED_INIT
-    if not isinstance(statement.value, ast.Call):
-        return CompactDataclassFieldRole.UNRESOLVED
-    qualified_default_factory = _class_scope_qualified_import_name(
-        module_binding_snapshot,
-        class_aliases,
-        statement.value.func,
-        preceding_class_bound_names,
-    )
-    default_factory_declaration = DataclassRuntimeDeclaration.for_qualified_name(
-        qualified_default_factory
-    )
-    if (
-        default_factory_declaration is None
-        or not default_factory_declaration.is_field_factory
-    ):
-        return CompactDataclassFieldRole.UNRESOLVED
-    if statement.value.args or CallKeywords.of(statement.value.keywords).splats:
-        return CompactDataclassFieldRole.UNRESOLVED
-    init_values = tuple(
-        keyword.value for keyword in statement.value.keywords if keyword.arg == "init"
-    )
-    if len(init_values) > 1:
-        return CompactDataclassFieldRole.UNRESOLVED
-    if not init_values:
-        return CompactDataclassFieldRole.STORED_INIT
-    init_value = init_values[0]
-    if not isinstance(init_value, ast.Constant) or not isinstance(
-        init_value.value,
-        bool,
-    ):
-        return CompactDataclassFieldRole.UNRESOLVED
-    return (
-        CompactDataclassFieldRole.STORED_INIT
-        if init_value.value
-        else CompactDataclassFieldRole.STORED_NON_INIT
-    )
+
+    def supplied(self, supplied: SuppliedValue) -> CompactDataclassFieldRole:
+        value = supplied.value
+        if _is_literal_default(value):
+            return CompactDataclassFieldRole.STORED_INIT
+        if not isinstance(value, ast.Call):
+            return CompactDataclassFieldRole.UNRESOLVED
+        qualified_default_factory = _class_scope_qualified_import_name(
+            self.module_binding_snapshot,
+            self.class_aliases,
+            value.func,
+            self.preceding_class_bound_names,
+        )
+        default_factory_declaration = DataclassRuntimeDeclaration.for_qualified_name(
+            qualified_default_factory
+        )
+        if (
+            default_factory_declaration is None
+            or not default_factory_declaration.is_field_factory
+        ):
+            return CompactDataclassFieldRole.UNRESOLVED
+        if value.args or CallKeywords.of(value.keywords).splats:
+            return CompactDataclassFieldRole.UNRESOLVED
+        init_values = tuple(
+            keyword.value for keyword in value.keywords if keyword.arg == "init"
+        )
+        if len(init_values) > 1:
+            return CompactDataclassFieldRole.UNRESOLVED
+        if not init_values:
+            return CompactDataclassFieldRole.STORED_INIT
+        init_value = init_values[0]
+        if not isinstance(init_value, ast.Constant) or not isinstance(
+            init_value.value,
+            bool,
+        ):
+            return CompactDataclassFieldRole.UNRESOLVED
+        return (
+            CompactDataclassFieldRole.STORED_INIT
+            if init_value.value
+            else CompactDataclassFieldRole.STORED_NON_INIT
+        )
 
 
 def _dataclass_role_reference(annotation: ast.expr) -> ast.expr | None:
@@ -7331,16 +7485,17 @@ def _dataclass_fields(
             class_binding = role.binding_of_later_fields(class_binding)
         direct_aliases: dict[str, str] = {}
         if isinstance(statement, ast.Assign | ast.AnnAssign):
-            alias_name = _single_assignment_target_name(statement)
-            if alias_name is not None and StatementValue.of(statement).supplies_value:
+            for alias_target, assigned in StatementValues.keyed(
+                (target, statement) for target in single_name_targets(statement)
+            ).supplied:
                 qualified_value = _class_scope_qualified_import_name(
                     module_binding_snapshot,
                     class_aliases,
-                    statement.value,
+                    assigned.value,
                     frozenset(preceding_bound_names),
                 )
                 if qualified_value is not None:
-                    direct_aliases[alias_name] = qualified_value
+                    direct_aliases[alias_target.id] = qualified_value
         statement_bound_names = _direct_statement_bound_names(statement)
         preceding_bound_names.update(statement_bound_names)
         for bound_name in statement_bound_names:
@@ -7612,13 +7767,12 @@ def _compact_class_member_declarations(
             if isinstance(value, ast.Call) and constructor_name is not None
             else ()
         )
-        statement_value = StatementValue.of(assignment_statement.node)
-        compact_value = statement_value.compact_value()
+        compact_value = StatementValue.of(assignment_statement.node).compact_value()
         declarations.extend(
             CompactClassMemberDeclaration(
                 name=target.id,
                 line=statement.lineno,
-                expression=statement_value.value_source,
+                expression=ast.unparse(value) if value is not None else None,
                 value=compact_value,
                 constructor_name=constructor_name,
                 constructor_keyword_names=constructor_keyword_names,
@@ -7791,12 +7945,19 @@ class RegisteringMetaclassAuthority(Generic[ClassDeclarationT]):
 
         root, *rest = reference.source_parts
         projection = self.exposure.projections_by_module_name.get(module_name)
-        root_binding = self.exposure.star_settled_binding(
+        settlement = self.exposure.star_settlement(
             module_name,
             root,
             None if projection is None else dict(projection.import_aliases).get(root),
         )
-        return None if root_binding is None else ".".join((root_binding, *rest))
+        # settled_qualified_name's str | None protocol.
+        return next(
+            (
+                ".".join((binding, *rest))
+                for _, binding in StarSettlements.keyed(((root, settlement),)).settled
+            ),
+            None,
+        )
 
     def resolved(self) -> dict[str, ClassDeclarationT]:
         return {

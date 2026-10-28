@@ -29,7 +29,12 @@ from ..ast_field_decoders import (
 from ..value_expression import CompactValueExpression
 from ..annotation_semantics import CLASSVAR_ANNOTATION_AUTHORITY
 from ..ast_projection import ExpressionReference
-from ..ast_projection import AbsentStatementValue, CallKeywords, StatementValue
+from ..ast_projection import (
+    CallKeywords,
+    StatementValue,
+    StatementValues,
+    single_name_targets,
+)
 from ..ast_tools import (
     BuiltinCallName,
     SourceModule,
@@ -194,21 +199,6 @@ class HelperSupportProjectionAuthority:
             (root_name for root_name, count in root_counts.items() if count >= 3)
         )
 
-    def constructor_return_call(self, node: ast.FunctionDef) -> ast.Call | None:
-        body = statements_without_docstring(node.body)
-        if (
-            len(body) != 1
-            or not isinstance(body[0], ast.Return)
-            or not StatementValue.of(body[0]).supplies_value
-        ):
-            return None
-        returned = body[0].value
-        if not isinstance(returned, ast.Call):
-            return None
-        if not isinstance(returned.func, ast.Name) or returned.func.id != "cls":
-            return None
-        return returned
-
     def expression_root_names(self, node: ast.AST) -> set[str]:
         roots: set[str] = set()
 
@@ -231,7 +221,7 @@ class HelperSupportProjectionAuthority:
         return bool(
             len(node.body) == 1
             and isinstance(node.body[0], ast.Return)
-            and StatementValue.of(node.body[0]).supplies_none_literal
+            and StatementValue.of(node.body[0]).compact_value().value_is_none_literal
             and (not node.orelse)
         )
 
@@ -679,6 +669,7 @@ def _guarded_delegator_candidates_for_class(
 ) -> Iterable[GuardedDelegatorCandidate]:
     if not _is_observation_spec_class(node) or CLASS_NODE_AUTHORITY.is_abstract(node):
         return
+    guarded_returns: list[tuple[tuple[ast.FunctionDef | ast.AsyncFunctionDef, ast.If], ast.Return]] = []
     for statement in node.body:
         if not isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef)):
             continue
@@ -701,11 +692,10 @@ def _guarded_delegator_candidates_for_class(
             continue
         if not isinstance(return_stmt, ast.Return):
             continue
-        try:
-            returned = StatementValue.of(return_stmt).require_value("a bare return")
-        except AbsentStatementValue:
-            continue
-        delegate_name = _delegate_name_from_return(returned)
+        guarded_returns.append(((statement, guard), return_stmt))
+    # A bare return delegates to nothing.
+    for (statement, guard), returned in StatementValues.keyed(guarded_returns).supplied:
+        delegate_name = _delegate_name_from_return(returned.value)
         if delegate_name is None:
             continue
         yield GuardedDelegatorCandidate(
@@ -813,16 +803,9 @@ def _linear_query_loop(body: list[ast.stmt]) -> ast.For | None:
 
 
 def _linear_query_return_expr(loop: ast.For, result_name: str) -> ast.AST | None:
-    return_exprs: list[ast.expr] = []
-    for current in _walk_nodes(loop):
-        if not isinstance(current, ast.Return):
-            continue
-        try:
-            return_exprs.append(
-                StatementValue.of(current).require_value("a bare return")
-            )
-        except AbsentStatementValue:
-            continue
+    return_exprs = StatementValues.of(
+        current for current in _walk_nodes(loop) if isinstance(current, ast.Return)
+    ).values
     if len(return_exprs) != 1 or not _name_mentions(return_exprs[0], result_name):
         return None
     return return_exprs[0]
@@ -1178,6 +1161,7 @@ def _guarded_wrapper_function_candidates(
     module: ParsedModule,
 ) -> NamedStringSequenceSpecs:
     candidates: MutableNamedStringSequenceSpecs = []
+    guarded_returns: list[tuple[tuple[ast.FunctionDef, ast.If], ast.Return]] = []
     for statement in module.module.body:
         if not isinstance(statement, ast.FunctionDef):
             continue
@@ -1196,10 +1180,11 @@ def _guarded_wrapper_function_candidates(
             guard, ast.If
         ) or not HELPER_SUPPORT_PROJECTION_AUTHORITY.if_returns_none_only(guard):
             continue
-        if not isinstance(return_stmt, ast.Return) or not StatementValue.of(
-            return_stmt
-        ).supplies_value:
+        if not isinstance(return_stmt, ast.Return):
             continue
+        guarded_returns.append(((statement, guard), return_stmt))
+    # A wrapper whose return is bare wraps nothing.
+    for (statement, guard), _returned in StatementValues.keyed(guarded_returns).supplied:
         node_types = _guarded_wrapper_node_types(guard)
         if not node_types:
             continue
@@ -3676,20 +3661,6 @@ ClassShapeCandidateFactory = Callable[
 
 
 class HelperSyntaxProjectionAuthority:
-    def assignment_target_value(
-        self, statement: ast.stmt
-    ) -> tuple[ast.AST, ast.AST] | None:
-        assignment = as_ast(statement, ast.Assign)
-        if assignment is not None:
-            target = single_assign_target(assignment)
-            return None if target is None else (target, assignment.value)
-        annotated_assignment = as_ast(statement, ast.AnnAssign)
-        if annotated_assignment is None:
-            return None
-        return StatementValue.of(annotated_assignment).paired_with(
-            annotated_assignment.target
-        )
-
     def abstract_method_names(self, node: ast.ClassDef) -> tuple[str, ...]:
         return sorted_tuple(
             (
@@ -4369,33 +4340,6 @@ def _schema_accessor_fetch_call(value: ast.AST) -> tuple[str, str, str] | None:
     )
 
 
-def _schema_accessor_fetch_assignment(
-    statement: ast.stmt,
-) -> tuple[str, str, str, str] | None:
-    if isinstance(statement, ast.Assign):
-        if len(statement.targets) != 1 or not isinstance(
-            statement.targets[0], ast.Name
-        ):
-            return None
-        target_name = statement.targets[0].id
-        fetch = _schema_accessor_fetch_call(statement.value)
-    elif isinstance(statement, ast.AnnAssign) and isinstance(
-        statement.target, ast.Name
-    ):
-        try:
-            value = StatementValue.of(statement).require_value("a bare annotation")
-        except AbsentStatementValue:
-            return None
-        target_name = statement.target.id
-        fetch = _schema_accessor_fetch_call(value)
-    else:
-        return None
-    if fetch is None:
-        return None
-    fetch_mode, enum_name, field_name = fetch
-    return target_name, fetch_mode, enum_name, field_name
-
-
 def _node_mentions_name(node: ast.AST, local_name: str) -> bool:
     return any(
         isinstance(item, ast.Name) and item.id == local_name
@@ -4443,16 +4387,12 @@ def _schema_accessor_coercion_kinds(
 def _schema_accessor_returns_local(
     function: ast.FunctionDef | ast.AsyncFunctionDef, local_name: str
 ) -> bool:
-    for node in _walk_nodes(function):
-        if not isinstance(node, ast.Return):
-            continue
-        try:
-            returned = StatementValue.of(node).require_value("a bare return")
-        except AbsentStatementValue:
-            continue
-        if _node_mentions_name(returned, local_name):
-            return True
-    return False
+    return any(
+        _node_mentions_name(returned, local_name)
+        for returned in StatementValues.of(
+            node for node in _walk_nodes(function) if isinstance(node, ast.Return)
+        ).values
+    )
 
 
 def _schema_accessor_method_row(
@@ -4464,9 +4404,14 @@ def _schema_accessor_method_row(
         return None
     body = statements_without_docstring(list(method.body))
     fetches = tuple(
-        fetch
-        for statement in body
-        if (fetch := _schema_accessor_fetch_assignment(statement)) is not None
+        (target.id, *fetch)
+        for target, assigned in StatementValues.keyed(
+            (target, statement)
+            for statement in body
+            if isinstance(statement, ast.Assign | ast.AnnAssign)
+            for target in single_name_targets(statement)
+        ).supplied
+        if (fetch := _schema_accessor_fetch_call(assigned.value)) is not None
     )
     if len(fetches) != 1:
         return None

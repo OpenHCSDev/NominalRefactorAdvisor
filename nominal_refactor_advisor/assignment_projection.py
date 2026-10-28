@@ -6,7 +6,6 @@ import ast
 from dataclasses import dataclass
 from collections.abc import Iterable
 
-from .ast_projection import StatementValue
 
 
 @dataclass(frozen=True)
@@ -128,11 +127,14 @@ class SingleAssignmentAndValueNameProjection(AssignmentStatementNameProjection):
 
     @property
     def pair(self) -> tuple[str, ast.expr] | None:
+        # The Optional pair protocol (15 readers) predates #81; its absence
+        # stays at the ast boundary, where NRA sees it, until they migrate.
         if (
             isinstance(self.statement, ast.Assign | ast.AnnAssign)
+            and self.statement.value is not None
             and (name := self.direct_name) is not None
         ):
-            return StatementValue.of(self.statement).paired_with(name)
+            return name, self.statement.value
         return None
 
     @property

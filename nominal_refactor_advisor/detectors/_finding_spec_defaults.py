@@ -16,7 +16,7 @@ from ._base import (
     finding_spec_factory_for_constructor_name,
     finding_spec_factory_for_defaults,
 )
-from ._helpers import HELPER_SYNTAX_PROJECTION_AUTHORITY
+from ..ast_projection import StatementValues, single_name_targets
 
 
 @dataclass(frozen=True)
@@ -169,13 +169,13 @@ class FindingSpecConstructionCandidateCollector:
             candidate
             for node in module.module.body
             if isinstance(node, ast.ClassDef)
-            for statement in node.body
-            for target_value in (
-                HELPER_SYNTAX_PROJECTION_AUTHORITY.assignment_target_value(statement),
-            )
-            if target_value is not None
-            for target, value in (target_value,)
-            if isinstance(target, ast.Name) and target.id == "finding_spec"
-            if isinstance(value, ast.Call)
-            for candidate in cls.candidate(module, value)
+            for _target, assigned in StatementValues.keyed(
+                (target, statement)
+                for statement in node.body
+                if isinstance(statement, ast.Assign | ast.AnnAssign)
+                for target in single_name_targets(statement)
+                if target.id == "finding_spec"
+            ).supplied
+            if isinstance(assigned.value, ast.Call)
+            for candidate in cls.candidate(module, assigned.value)
         )

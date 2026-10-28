@@ -16,7 +16,7 @@ from metaclass_registry import AutoRegisterMeta
 from ..value_expression import CompactValueExpression
 from ..lexical_bindings import ImportBoundNameProjection
 from ..ast_projection import ExpressionReference
-from ..ast_projection import CallKeywords, StatementValue
+from ..ast_projection import CallKeywords, StatementValues
 from ..ast_tools import (
     BuiltinCallName,
     CollectedFamily,
@@ -260,9 +260,11 @@ class _FunctionScope:
     ) -> tuple[ast.Assign | ast.AnnAssign, ...]:
         return tuple(
             node
-            for node in nodes
-            if isinstance(node, (ast.Assign, ast.AnnAssign))
-            and StatementValue.of(node).supplies_value
+            for node, _supplied in StatementValues.keyed(
+                (node, node)
+                for node in nodes
+                if isinstance(node, ast.Assign | ast.AnnAssign)
+            ).supplied
         )
 
 
