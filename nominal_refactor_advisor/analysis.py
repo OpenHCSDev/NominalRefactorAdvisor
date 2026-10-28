@@ -2952,13 +2952,57 @@ class SemanticDescentGraphAnalysisSource:
         )
 
 
+AnalysisResultAnswerT = TypeVar("AnalysisResultAnswerT")
+
+
+class AnalysisResultQuestion(ABC, Generic[AnalysisResultAnswerT]):
+    """A consumer's work on an analysis result, one arm per persistence."""
+
+    @abstractmethod
+    def persisted(self, result: PersistedAnalysisResult) -> AnalysisResultAnswerT:
+        raise NotImplementedError
+
+    @abstractmethod
+    def unpersisted(self, result: UnpersistedAnalysisResult) -> AnalysisResultAnswerT:
+        raise NotImplementedError
+
+
 @dataclass(frozen=True)
-class CachedAnalysisResult:
+class CachedAnalysisResult(ABC):
     """Detector findings plus the persistent cache status used to produce them."""
 
     findings: list[RefactorFinding]
     cache_status: type[AnalysisCacheStatus]
-    cache_identity: AnalysisCacheIdentity | None = None
+
+    @abstractmethod
+    def answer(
+        self, question: AnalysisResultQuestion[AnalysisResultAnswerT]
+    ) -> AnalysisResultAnswerT:
+        raise NotImplementedError
+
+
+@dataclass(frozen=True)
+class PersistedAnalysisResult(CachedAnalysisResult):
+    """Findings resolved under a validated request identity."""
+
+    cache_identity: AnalysisCacheIdentity
+
+    def answer(
+        self, question: AnalysisResultQuestion[AnalysisResultAnswerT]
+    ) -> AnalysisResultAnswerT:
+        return question.persisted(self)
+
+
+@dataclass(frozen=True)
+class UnpersistedAnalysisResult(CachedAnalysisResult):
+    """Findings analysed with persistence disabled: no identity was computed."""
+
+    cache_status: type[AnalysisCacheStatus] = Disabled
+
+    def answer(
+        self, question: AnalysisResultQuestion[AnalysisResultAnswerT]
+    ) -> AnalysisResultAnswerT:
+        return question.unpersisted(self)
 
 
 FastCacheAnswerT = TypeVar("FastCacheAnswerT")
@@ -3087,7 +3131,7 @@ class DisabledAnalysisCache(LoadedAnalysisCache):
 
     @property
     def cached_result(self) -> CachedAnalysisResult:
-        return CachedAnalysisResult([], Disabled)
+        return UnpersistedAnalysisResult([])
 
     def fast_answer(self, authority: FastCachedPathAnalysisAuthority) -> FastCacheAnswer:
         return FAST_CACHE_MISS
@@ -3105,7 +3149,7 @@ class HeldExactFindings(LoadedAnalysisCache):
 
     @property
     def cached_result(self) -> CachedAnalysisResult:
-        return CachedAnalysisResult(
+        return PersistedAnalysisResult(
             list(self.findings), Hit, cache_identity=self.cache_identity
         )
 
@@ -3122,7 +3166,7 @@ class HeldNothingForRequest(LoadedAnalysisCache):
 
     @property
     def cached_result(self) -> CachedAnalysisResult:
-        return CachedAnalysisResult(
+        return PersistedAnalysisResult(
             [], self.cache_status, cache_identity=self.cache_identity
         )
 
@@ -3236,18 +3280,14 @@ class AnalysisCacheResolutionAuthority(
                 semantic_descent_source=self._semantic_descent_source,
                 report_scope=self._report_scope,
             ).result()
-            return CachedAnalysisResult(
-                result.findings,
-                Disabled,
-            )
-        return CachedAnalysisResult(
+            return UnpersistedAnalysisResult(result.findings)
+        return UnpersistedAnalysisResult(
             analyze_modules(
                 self._modules,
                 self._config,
                 analysis_workers=self._analysis_workers,
                 semantic_descent_source=self._semantic_descent_source,
-            ),
-            Disabled,
+            )
         )
 
     def analyze_and_store_miss(self) -> CachedAnalysisResult:
@@ -3286,7 +3326,7 @@ class AnalysisCacheResolutionAuthority(
                     semantic_cache_identity,
                     findings,
                 )
-                return CachedAnalysisResult(
+                return PersistedAnalysisResult(
                     findings,
                     Hit,
                     cache_identity=cache_identity,
@@ -3307,14 +3347,14 @@ class AnalysisCacheResolutionAuthority(
                 semantic_cache_identity,
                 findings,
             )
-            return CachedAnalysisResult(
+            return PersistedAnalysisResult(
                 findings,
                 incremental_result.cache_status,
                 cache_identity=cache_identity,
             )
         with analysis_cache.rebuild_lease(cache_identity) as rebuild_lease:
             if rebuild_lease.cached_lookup is not None:
-                return CachedAnalysisResult(
+                return PersistedAnalysisResult(
                     list(rebuild_lease.cached_lookup.findings),
                     Hit,
                     cache_identity=cache_identity,
@@ -3324,7 +3364,7 @@ class AnalysisCacheResolutionAuthority(
                 findings = list(semantic_cache_lookup.findings)
                 if semantic_cache_identity != cache_identity:
                     analysis_cache.store(cache_identity, findings)
-                return CachedAnalysisResult(
+                return PersistedAnalysisResult(
                     findings,
                     Hit,
                     cache_identity=cache_identity,
@@ -3344,7 +3384,7 @@ class AnalysisCacheResolutionAuthority(
                 semantic_cache_identity,
                 findings,
             )
-            return CachedAnalysisResult(
+            return PersistedAnalysisResult(
                 findings,
                 incremental_result.cache_status,
                 cache_identity=cache_identity,
@@ -3884,7 +3924,7 @@ def analyze_modules_with_cache(
         focused_cache_lookup = AnalysisFindingCache(analysis_cache_dir).load(
             focused_cache_identity
         )
-        cache_result = CachedAnalysisResult(
+        cache_result: CachedAnalysisResult = PersistedAnalysisResult(
             list(focused_cache_lookup.findings),
             focused_cache_lookup.status,
             cache_identity=focused_cache_identity,
