@@ -16,11 +16,11 @@ from __future__ import annotations
 import ast
 from abc import ABC, abstractmethod
 import keyword as keyword_module
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from functools import cached_property
 from importlib import import_module
-from typing import Self
+from typing import Self, TypeVar
 
 from .ast_tools import ParsedModule, is_docstring_statement, module_syntax_index
 from .class_index import (
@@ -74,6 +74,7 @@ from .refactor_concepts import ClassBodyCompositionConcept
 from .semantic_descent import AuthorityClaim, SemanticAuthorityKind
 
 NATIVE_METACLASS_BASES = frozenset(("builtins.type", "abc.ABCMeta"))
+_KindFoldT = TypeVar("_KindFoldT")
 
 
 @dataclass(frozen=True)
@@ -192,10 +193,18 @@ class OverlapClass(ABC):
         """The dataclass decorator's arguments, if decorated, for kind comparison."""
         raise NotImplementedError
 
-    @property
     @abstractmethod
-    def adds_decorator(self) -> bool:
-        """Whether becoming a dataclass base needs a decorator added."""
+    def fold_kind(
+        self,
+        plain: Callable[[], _KindFoldT],
+        dataclass: Callable[[], _KindFoldT],
+    ) -> _KindFoldT:
+        """Split on the class kind, after its decorators pass validation."""
+        raise NotImplementedError
+
+    @abstractmethod
+    def require_fold_base(self, frozen: str) -> None:
+        """This class can become the dataclass base of a fold with this frozen-ness."""
         raise NotImplementedError
 
     @abstractmethod
@@ -218,10 +227,20 @@ class PlainOverlapClass(OverlapClass):
             raise ValueError(f"`{self.qualname}` has a non-dataclass decorator")
         return ()
 
-    @property
-    def adds_decorator(self) -> bool:
+    def fold_kind(
+        self,
+        plain: Callable[[], _KindFoldT],
+        dataclass: Callable[[], _KindFoldT],
+    ) -> _KindFoldT:
         self.dataclass_options_key
-        return True
+        return plain()
+
+    def require_fold_base(self, frozen: str) -> None:
+        self.dataclass_options_key
+        if any(isinstance(statement, ast.AnnAssign) for statement in self.node.body):
+            raise ValueError(
+                f"`{self.qualname}` annotates names that would become fields"
+            )
 
     def option(self, name: str) -> str:
         self.dataclass_options_key
@@ -243,10 +262,17 @@ class DataclassOverlapClass(OverlapClass):
         self._require_single_decorator()
         return (self.options,)
 
-    @property
-    def adds_decorator(self) -> bool:
+    def fold_kind(
+        self,
+        plain: Callable[[], _KindFoldT],
+        dataclass: Callable[[], _KindFoldT],
+    ) -> _KindFoldT:
         self._require_single_decorator()
-        return False
+        return dataclass()
+
+    def require_fold_base(self, frozen: str) -> None:
+        if self.option("kw_only") != "True" or self.option("frozen") != frozen:
+            raise ValueError(f"`{self.qualname}` is a dataclass of another kind")
 
     def option(self, name: str) -> str:
         self._require_single_decorator()
@@ -847,9 +873,10 @@ class ClassComposition:
         then the class's remaining ones, after.
         """
 
+        self.restating.fold_kind(lambda: None, self._require_dataclass_field_order)
+
+    def _require_dataclass_field_order(self) -> None:
         restating = self.restating
-        if restating.adds_decorator:
-            return
         class_index = self.snapshot.class_overlap_verdicts.class_index
         inherited = frozenset(
             field_name
@@ -1016,21 +1043,11 @@ class BaseFold:
     def frozen(self) -> str:
         return self.children[0].option("frozen")
 
-    @property
-    def adds_decorator(self) -> bool:
-        return self.base.adds_decorator
-
     def require_dataclass_family(self) -> None:
         base = self.base
         if frozenset(self.names) & base.target.bound_names:
             raise ValueError(f"`{base.qualname}` already binds a moved name")
-        if self.adds_decorator:
-            if any(isinstance(statement, ast.AnnAssign) for statement in base.node.body):
-                raise ValueError(
-                    f"`{base.qualname}` annotates names that would become fields"
-                )
-        elif base.option("kw_only") != "True" or base.option("frozen") != self.frozen:
-            raise ValueError(f"`{base.qualname}` is a dataclass of another kind")
+        base.require_fold_base(self.frozen)
         class_index = self.snapshot.class_overlap_verdicts.class_index
         for symbol in class_index.ancestor_symbols(base.symbol):
             if (ancestor := class_index.class_for(symbol)) is not None:
@@ -1131,8 +1148,8 @@ class BaseFold:
         header_line = source.splitlines(keepends=True)[base.node.lineno - 1]
         indentation = header_line[: len(header_line) - len(header_line.lstrip())]
         return (
-            *(
-                (
+            *base.fold_kind(
+                lambda: (
                     SourceInsertion(
                         file_path=base.file_path,
                         insertion_line=base.node.lineno,
@@ -1142,9 +1159,8 @@ class BaseFold:
                         rationale=rationale,
                     ),
                     *self.dataclass_import_edits(rationale),
-                )
-                if self.adds_decorator
-                else ()
+                ),
+                tuple,
             ),
             *body.geometry.physical_edits(
                 file_path=base.file_path,
