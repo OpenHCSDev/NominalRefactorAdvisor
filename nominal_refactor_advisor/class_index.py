@@ -571,27 +571,42 @@ class CompactProductDeclarationFailure(NamedTuple):
     violation: CompactProductAuthorityViolation
 
 
+_FacetFoldT = TypeVar("_FacetFoldT")
+
+
 class CompactDataclassFacet(ABC):
-    """A class's dataclass facet: declared, or absent with empty answers."""
+    """A class's dataclass facet: a dataclass-like declaration, or none."""
 
     runtime_declaration: DataclassRuntimeDeclaration | None
     fields: tuple[CompactDataclassFieldDeclaration, ...]
     failures: tuple[CompactProductDeclarationFailure, ...]
 
-    @property
-    def is_standard_dataclass(self) -> bool:
-        return (
-            self.runtime_declaration is not None
-            and self.runtime_declaration.is_dataclass_decorator
-        )
-
-    @property
     @abstractmethod
-    def declares_dataclass(self) -> bool:
+    def fold_declared(
+        self,
+        declared: Callable[[CompactDataclassDeclaration], _FacetFoldT],
+        absent: Callable[[], _FacetFoldT],
+    ) -> _FacetFoldT:
         raise NotImplementedError
 
     @abstractmethod
-    def require_declared(self, reason: str) -> CompactDataclassDeclaration:
+    def fold_standard(
+        self,
+        standard: Callable[[CompactDataclassDeclaration], _FacetFoldT],
+        otherwise: Callable[[], _FacetFoldT],
+    ) -> _FacetFoldT:
+        """Split on a standard `dataclasses.dataclass` declaration."""
+        raise NotImplementedError
+
+    def require_standard(self, reason: str) -> CompactDataclassDeclaration:
+        def refuse() -> CompactDataclassDeclaration:
+            raise ValueError(reason)
+
+        return self.fold_standard(lambda declaration: declaration, refuse)
+
+    @abstractmethod
+    def refuse_inherited_fields(self, heir_qualname: str) -> None:
+        """An ancestor's dataclass declaration refuses a heir that adds the decorator."""
         raise NotImplementedError
 
 
@@ -603,12 +618,27 @@ class CompactDataclassDeclaration(CompactDataclassFacet):
     fields: tuple[CompactDataclassFieldDeclaration, ...]
     failures: tuple[CompactProductDeclarationFailure, ...] = ()
 
-    @property
-    def declares_dataclass(self) -> bool:
-        return True
+    def fold_declared(
+        self,
+        declared: Callable[[CompactDataclassDeclaration], _FacetFoldT],
+        absent: Callable[[], _FacetFoldT],
+    ) -> _FacetFoldT:
+        return declared(self)
 
-    def require_declared(self, reason: str) -> CompactDataclassDeclaration:
-        return self
+    def fold_standard(
+        self,
+        standard: Callable[[CompactDataclassDeclaration], _FacetFoldT],
+        otherwise: Callable[[], _FacetFoldT],
+    ) -> _FacetFoldT:
+        if (
+            self.runtime_declaration is not None
+            and self.runtime_declaration.is_dataclass_decorator
+        ):
+            return standard(self)
+        return otherwise()
+
+    def refuse_inherited_fields(self, heir_qualname: str) -> None:
+        raise ValueError(f"`{heir_qualname}` inherits dataclass fields")
 
 
 @dataclass(frozen=True)
@@ -619,12 +649,22 @@ class NoDataclassDeclaration(CompactDataclassFacet):
     fields = ()
     failures = ()
 
-    @property
-    def declares_dataclass(self) -> bool:
-        return False
+    def fold_declared(
+        self,
+        declared: Callable[[CompactDataclassDeclaration], _FacetFoldT],
+        absent: Callable[[], _FacetFoldT],
+    ) -> _FacetFoldT:
+        return absent()
 
-    def require_declared(self, reason: str) -> CompactDataclassDeclaration:
-        raise ValueError(reason)
+    def fold_standard(
+        self,
+        standard: Callable[[CompactDataclassDeclaration], _FacetFoldT],
+        otherwise: Callable[[], _FacetFoldT],
+    ) -> _FacetFoldT:
+        return otherwise()
+
+    def refuse_inherited_fields(self, heir_qualname: str) -> None:
+        return None
 
 
 @dataclass(frozen=True)
@@ -2629,14 +2669,12 @@ class CompactClassFamilyIndex(ClassDeclarationIndex[CompactIndexedClass]):
 
         def compose_lineage(
             class_symbol: str,
+            declaration: CompactDataclassDeclaration,
             pending_symbols: frozenset[str],
         ) -> _CompactProductLineage:
             if (lineage := lineages.get(class_symbol)) is not None:
                 return lineage
             indexed_class = self.classes_by_symbol[class_symbol]
-            declaration = indexed_class.dataclass_declaration.require_declared(
-                "product lineage requires a dataclass declaration"
-            )
             if class_symbol in pending_symbols:
                 return _CompactProductLineage(
                     (),
@@ -2680,21 +2718,24 @@ class CompactClassFamilyIndex(ClassDeclarationIndex[CompactIndexedClass]):
             elif direct_base_count == 1:
                 base_symbol = indexed_class.resolved_base_symbols[0]
                 base_class = self.classes_by_symbol[base_symbol]
-                if not base_class.dataclass_declaration.declares_dataclass:
-                    failures = (
-                        *failures,
-                        self._product_authority_failure(
-                            indexed_class,
-                            CompactProductAuthorityViolation.NON_DATACLASS_BASE,
-                        ),
-                    )
-                else:
-                    base_lineage = compose_lineage(
+                base_lineage = base_class.dataclass_declaration.fold_declared(
+                    lambda base_declaration: compose_lineage(
                         base_symbol,
+                        base_declaration,
                         pending_symbols | frozenset((class_symbol,)),
-                    )
-                    effective_fields = base_lineage.effective_fields
-                    failures = (*failures, *base_lineage.failures)
+                    ),
+                    lambda: _CompactProductLineage(
+                        (),
+                        (
+                            self._product_authority_failure(
+                                indexed_class,
+                                CompactProductAuthorityViolation.NON_DATACLASS_BASE,
+                            ),
+                        ),
+                    ),
+                )
+                effective_fields = base_lineage.effective_fields
+                failures = (*failures, *base_lineage.failures)
 
             fields_by_name = {field.name: field for field in effective_fields}
             for field_declaration in declaration.fields:
@@ -2712,12 +2753,12 @@ class CompactClassFamilyIndex(ClassDeclarationIndex[CompactIndexedClass]):
             lineages[class_symbol] = lineage
             return lineage
 
-        resolutions: dict[str, CompactProductAuthorityResolution] = {}
-        for class_symbol, indexed_class in self.classes_by_symbol.items():
-            if not indexed_class.dataclass_declaration.declares_dataclass:
-                resolutions[class_symbol] = AbsentCompactProductAuthority(class_symbol)
-                continue
-            lineage = compose_lineage(class_symbol, frozenset())
+        def resolve_declared(
+            class_symbol: str,
+            indexed_class: CompactIndexedClass,
+            declaration: CompactDataclassDeclaration,
+        ) -> CompactProductAuthorityResolution:
+            lineage = compose_lineage(class_symbol, declaration, frozenset())
             role_failures = tuple(
                 CompactProductAuthorityFailure(
                     class_symbol=class_symbol,
@@ -2729,7 +2770,7 @@ class CompactClassFamilyIndex(ClassDeclarationIndex[CompactIndexedClass]):
                 if (violation := field.role.authority_violation) is not None
             )
             failures = tuple(dict.fromkeys((*lineage.failures, *role_failures)))
-            resolutions[class_symbol] = (
+            return (
                 OpenCompactProductAuthority(class_symbol, failures)
                 if failures
                 else ResolvedCompactProductAuthority(
@@ -2742,7 +2783,18 @@ class CompactClassFamilyIndex(ClassDeclarationIndex[CompactIndexedClass]):
                     ),
                 )
             )
-        return resolutions
+
+        return {
+            class_symbol: indexed_class.dataclass_declaration.fold_declared(
+                lambda declaration, class_symbol=class_symbol, indexed_class=indexed_class: (
+                    resolve_declared(class_symbol, indexed_class, declaration)
+                ),
+                lambda class_symbol=class_symbol: AbsentCompactProductAuthority(
+                    class_symbol
+                ),
+            )
+            for class_symbol, indexed_class in self.classes_by_symbol.items()
+        }
 
     @staticmethod
     def _product_authority_failure(

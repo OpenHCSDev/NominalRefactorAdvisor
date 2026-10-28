@@ -135,13 +135,13 @@ class PythonEnumMemberDeclaration:
 class PythonEnumDeclarationFacet(ABC):
     """A class's enum facet: a closed standard Enum declaration, or none."""
 
-    @property
     @abstractmethod
-    def declares_enum(self) -> bool:
+    def identity_reason_or(self, fallback: str | None) -> str | None:
+        """Why class creation makes this class an identity, else the fallback reason."""
         raise NotImplementedError
 
     @abstractmethod
-    def require_mapping_key(self, member_name: str) -> Enum:
+    def require_mapping_key(self, member_name: str) -> Hashable:
         raise NotImplementedError
 
 
@@ -149,11 +149,10 @@ class PythonEnumDeclarationFacet(ABC):
 class NoEnumDeclaration(PythonEnumDeclarationFacet):
     """A class that is not a closed standard Enum: no mapping-key semantics."""
 
-    @property
-    def declares_enum(self) -> bool:
-        return False
+    def identity_reason_or(self, fallback: str | None) -> str | None:
+        return fallback
 
-    def require_mapping_key(self, member_name: str) -> Enum:
+    def require_mapping_key(self, member_name: str) -> Hashable:
         raise ValueError("Mapping key declaration semantics remain unproved")
 
 
@@ -189,6 +188,9 @@ class PythonEnumDeclarationAuthority(PythonEnumDeclarationFacet):
         for member in members.values():
             hash(member)
         return members
+
+    def identity_reason_or(self, fallback: str | None) -> str | None:
+        return "its members are enum identities"
 
     def require_mapping_key(self, member_name: str) -> Hashable:
         try:

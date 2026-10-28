@@ -854,8 +854,7 @@ class ClassComposition:
         inherited = frozenset(
             field_name
             for symbol in class_index.ancestor_symbols(restating.symbol)
-            if (ancestor := class_index.class_for(symbol)) is not None
-            and ancestor.dataclass_declaration.declares_dataclass
+            if class_index.class_for(symbol) is not None
             for field_name in OverlapClass.for_symbol(self.snapshot, symbol).own_field_names
         )
         moved = frozenset(self.restated.names)
@@ -1033,12 +1032,9 @@ class BaseFold:
         elif base.option("kw_only") != "True" or base.option("frozen") != self.frozen:
             raise ValueError(f"`{base.qualname}` is a dataclass of another kind")
         class_index = self.snapshot.class_overlap_verdicts.class_index
-        if any(
-            (ancestor := class_index.class_for(symbol)) is not None
-            and ancestor.dataclass_declaration.declares_dataclass
-            for symbol in class_index.ancestor_symbols(base.symbol)
-        ):
-            raise ValueError(f"`{base.qualname}` inherits dataclass fields")
+        for symbol in class_index.ancestor_symbols(base.symbol):
+            if (ancestor := class_index.class_for(symbol)) is not None:
+                ancestor.dataclass_declaration.refuse_inherited_fields(base.qualname)
         for symbol in self.descendant_symbols:
             descendant = OverlapClass.for_symbol(self.snapshot, symbol)
             descendant.require_dataclass()

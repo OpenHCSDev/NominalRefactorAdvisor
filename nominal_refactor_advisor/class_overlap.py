@@ -330,8 +330,14 @@ def _literal_tags(
 def _declared_identity(indexed_class: CompactIndexedClass) -> str | None:
     """Why class creation itself makes this class an identity, if it does."""
 
-    if indexed_class.enum_declaration.declares_enum:
-        return "its members are enum identities"
+    return indexed_class.enum_declaration.identity_reason_or(
+        _creation_identity(indexed_class)
+    )
+
+
+def _creation_identity(indexed_class: CompactIndexedClass) -> str | None:
+    """Why the class statement's own machinery makes this class an identity."""
+
     if indexed_class.class_keyword_names:
         return f"class keywords {', '.join(indexed_class.class_keyword_names)} run at creation"
     if indexed_class.metaclass_names:

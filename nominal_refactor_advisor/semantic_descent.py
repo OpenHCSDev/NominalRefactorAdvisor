@@ -1336,18 +1336,24 @@ class MappingReadConstructor:
     ) -> str | None:
         symbol = resolve_class(self.reference_parts)
         owner = None if symbol is None else class_index.class_for(symbol)
-        if owner is None or not owner.dataclass_declaration.is_standard_dataclass:
+        if owner is None:
             return None
-        declaration = owner.dataclass_declaration
-        fields = tuple(
-            field.name
-            for field in declaration.fields
-            if field.role.contributes_semantic_field
-        )
-        return (
-            symbol
-            if all(arg.matches_fields(fields) for arg in self.arguments)
-            else None
+        return owner.dataclass_declaration.fold_standard(
+            lambda declaration: (
+                symbol
+                if all(
+                    arg.matches_fields(
+                        tuple(
+                            field.name
+                            for field in declaration.fields
+                            if field.role.contributes_semantic_field
+                        )
+                    )
+                    for arg in self.arguments
+                )
+                else None
+            ),
+            lambda: None,
         )
 
 
@@ -4169,18 +4175,19 @@ class DataclassSemanticAuthorityProvider(ClassFamilySemanticAuthorityProvider):
         declaration: SemanticAuthorityDeclaration,
     ) -> SemanticAuthorityProviderResult | None:
         indexed_class = declaration.indexed_class
-        dataclass_declaration = indexed_class.dataclass_declaration
-        if dataclass_declaration.is_standard_dataclass:
-            facts = tuple(
+        facts = indexed_class.dataclass_declaration.fold_standard(
+            lambda dataclass_declaration: tuple(
                 SemanticFact.dataclass_field(indexed_class, field.name, field.line)
                 for field in dataclass_declaration.fields
                 if field.role.contributes_semantic_field
+            ),
+            tuple,
+        )
+        if len(facts) >= 2:
+            return SemanticAuthorityProviderResult(
+                SemanticAuthorityKind.DATACLASS_SCHEMA,
+                facts,
             )
-            if len(facts) >= 2:
-                return SemanticAuthorityProviderResult(
-                    SemanticAuthorityKind.DATACLASS_SCHEMA,
-                    facts,
-                )
         return super().provide(declaration)
 
 

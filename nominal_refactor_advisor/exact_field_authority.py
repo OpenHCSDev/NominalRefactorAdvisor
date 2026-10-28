@@ -350,16 +350,16 @@ class ExactDataclassFieldAuthorityComponentBuilder:
         annotation_mode: type[ModuleAnnotationEvaluationMode],
     ) -> ExactDataclassFieldParticipant:
         node = indexed_class.node
-        declaration = indexed_class.dataclass_declaration
+        refusal = "Dataclass is not a base-free promotion participant"
+        declaration = indexed_class.dataclass_declaration.require_standard(refusal)
         if (
             "." in indexed_class.qualname
             or node.bases
             or node.keywords
-            or not declaration.is_standard_dataclass
             or declaration.failures
             or not ClassHeaderSourceSpan(node, source_segments.lines).is_reconstructible
         ):
-            raise ValueError("Dataclass is not a base-free promotion participant")
+            raise ValueError(refusal)
         if any(
             isinstance(child, ast.Name)
             and isinstance(child.ctx, ast.Load)
