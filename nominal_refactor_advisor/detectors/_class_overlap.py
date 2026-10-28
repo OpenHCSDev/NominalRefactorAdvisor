@@ -65,6 +65,17 @@ class ClassOverlapDetectorABC(
                 f"concept score {candidate.confidence:.2f} (uncalibrated) from: "
                 f"{concept}. Move {candidate.move.value}: "
                 + (f"refused: {refusals}." if refusals else "permitted.")
+                + (
+                    " Owner to pick (see metrics.owner_candidates): "
+                    + "; ".join(
+                        f"{owner.probability:.0%} {owner.describe()}"
+                        + ("" if owner.permitted else " (refused)")
+                        for owner in candidate.owner_candidates
+                    )
+                    + "."
+                    if candidate.owner_candidates
+                    else ""
+                )
             ),
             candidate.evidence,
             metrics=ClassOverlapMetrics.of(candidate),

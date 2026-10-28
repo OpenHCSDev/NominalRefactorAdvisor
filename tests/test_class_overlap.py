@@ -85,7 +85,7 @@ def test_two_protocol_records_with_the_same_fields_are_a_coincidence():
         OverlapReceiptKind.SEPARATE_FAMILIES,
     } <= _kinds(candidate)
     assert candidate.confidence <= 0.5
-    assert not candidate.move_permitted
+    assert not candidate.permitted
     assert {receipt.kind for receipt in candidate.refusals} == {
         OverlapReceiptKind.DIFFERENT_CONSTRUCTION,
         OverlapReceiptKind.IDENTITY_DECLARED,
@@ -125,7 +125,7 @@ def test_a_type_test_on_either_class_refuses_the_move_and_says_where():
             + "    return isinstance(value, FunctionFamilyEvidenceSurface)\n",
         )
     )
-    assert plain.move_permitted
+    assert plain.permitted
     (refusal,) = tested.refusals
     assert refusal.kind is OverlapReceiptKind.IDENTITY_USED
     assert refusal.evidence[0].symbol == "is_family"
