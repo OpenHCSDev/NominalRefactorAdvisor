@@ -35,6 +35,7 @@ from nominal_refactor_advisor.codemod_source_edits import (
     SourceEditOrigin,
     SourceFileCreation,
     SourceInsertion,
+    SourceLineSpan,
     SourceSpanDeletion,
     SourceSpanEdit,
     SourceSpanReplacement,
@@ -193,15 +194,13 @@ def test_span_replacement_owns_deduplication_and_conflict_proof(
     second_origin = SourceEditOrigin("recipe", "SecondOperation", 1)
     first = SourceSpanReplacement(
         file_path=next(iter(context.sources_by_file_path)),
-        start_line=1,
-        end_line=1,
+        span=SourceLineSpan(1, 1),
         replacement_lines=("FIRST = 3\n",),
         origins=(first_origin,),
     )
     equivalent = SourceSpanReplacement(
         file_path=first.file_path,
-        start_line=1,
-        end_line=1,
+        span=SourceLineSpan(1, 1),
         replacement_lines=first.replacement_lines,
         origins=(second_origin,),
     )
@@ -216,8 +215,7 @@ def test_span_replacement_owns_deduplication_and_conflict_proof(
                 first,
                 SourceSpanReplacement(
                     file_path=first.file_path,
-                    start_line=1,
-                    end_line=1,
+                    span=SourceLineSpan(1, 1),
                     replacement_lines=("FIRST = 4\n",),
                 ),
             ),
@@ -229,8 +227,7 @@ def test_span_replacement_owns_deduplication_and_conflict_proof(
     ):
         SourceSpanReplacement(
             file_path=first.file_path,
-            start_line=1,
-            end_line=1,
+            span=SourceLineSpan(1, 1),
             replacement_lines=(),
         )
     assert isinstance(
@@ -248,8 +245,7 @@ def test_span_replacement_owns_deduplication_and_conflict_proof(
                 first,
                 SourceSpanDeletion(
                     file_path=first.file_path,
-                    start_line=1,
-                    end_line=2,
+                    span=SourceLineSpan(1, 2),
                 ),
             )
         )
@@ -262,14 +258,12 @@ def test_span_deletion_coalesces_overlapping_spans(tmp_path: Path) -> None:
     second_origin = SourceEditOrigin("recipe", "SecondDeletion", 1)
     first = SourceSpanDeletion(
         file_path=file_path,
-        start_line=1,
-        end_line=2,
+        span=SourceLineSpan(1, 2),
         origins=(first_origin,),
     )
     second = SourceSpanDeletion(
         file_path=file_path,
-        start_line=2,
-        end_line=3,
+        span=SourceLineSpan(2, 3),
         origins=(second_origin,),
     )
 
@@ -278,8 +272,7 @@ def test_span_deletion_coalesces_overlapping_spans(tmp_path: Path) -> None:
     assert coalesced == (
         SourceSpanDeletion(
             file_path=file_path,
-            start_line=1,
-            end_line=3,
+            span=SourceLineSpan(1, 3),
             origins=(first_origin, second_origin),
         ),
     )
@@ -289,8 +282,8 @@ def test_span_deletion_preserves_adjacent_insertion_boundary(tmp_path: Path) -> 
     _, context = _snapshot(tmp_path, "FIRST = 1\nSECOND = 2\n")
     file_path = next(iter(context.sources_by_file_path))
     deletions = (
-        SourceSpanDeletion(file_path=file_path, start_line=1, end_line=1),
-        SourceSpanDeletion(file_path=file_path, start_line=2, end_line=2),
+        SourceSpanDeletion(file_path=file_path, span=SourceLineSpan(1, 1), ),
+        SourceSpanDeletion(file_path=file_path, span=SourceLineSpan(2, 2), ),
     )
 
     coalesced = NominalSourceEdit.coalesced_by_declaration(deletions, context)

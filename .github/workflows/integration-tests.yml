@@ -52,6 +52,36 @@ jobs:
           if-no-files-found: ignore
           retention-days: 1
 
+  mypy-growth-gate:
+    # No file may gain mypy errors against the base commit. The baseline is the
+    # base commit's own run, computed here, not a committed list.
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Compare mypy errors per file against the base
+        env:
+          BASE_REF: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          if [ -z "$BASE_REF" ] || [ "$BASE_REF" = "0000000000000000000000000000000000000000" ]; then
+            BASE_REF=HEAD~1
+          fi
+          python .github/scripts/mypy_growth_gate.py --base-ref "$BASE_REF"
+
   docs-and-wheel-smoke:
     runs-on: ubuntu-latest
 

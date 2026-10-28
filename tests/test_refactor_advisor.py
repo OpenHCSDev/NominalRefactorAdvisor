@@ -13943,7 +13943,7 @@ def test_registry_lookup_shape_has_no_parallel_detector_authority() -> None:
         "_registry_lookup_shape",
     )
 
-    assert base_detectors.RegistryLookupShape is RegistryLookupShape
+    assert RegistryLookupShape.__module__ == class_index_module.__name__
     assert all(
         not hasattr(base_detectors, name)
         for name in removed_base_names

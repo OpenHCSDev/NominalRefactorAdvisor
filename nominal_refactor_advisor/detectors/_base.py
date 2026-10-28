@@ -199,7 +199,17 @@ from ..taxonomy import (
     ObservationTag,
     SPECULATIVE,
 )
-from ._substrate_support import *
+from ..ast_tools import statements_without_docstring
+from ..name_algebra import CLASS_NAME_ALGEBRA
+from ._substrate_support import (
+    _annotation_type_names,
+    _constant_string,
+    _IGNORED_ANCESTOR_NAMES,
+    _is_abstract_method,
+    _is_dataclass_class,
+    CLASS_INDEX_PROJECTION,
+    CLASS_NODE_AUTHORITY,
+)
 
 _GETATTR_BUILTIN = "getattr"
 _HASATTR_BUILTIN = "hasattr"

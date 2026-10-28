@@ -18,6 +18,7 @@ from nominal_refactor_advisor.codemod_runtime import (
 from nominal_refactor_advisor.codemod_source_edits import (
     SourceFileCreation,
     SourceInsertion,
+    SourceLineSpan,
     SourceSpanReplacement,
     SourceTextGeometry,
     SourceTextMutation,
@@ -143,8 +144,7 @@ def test_equal_opaque_replacement_does_not_supply_fine_read_origin():
         exact(replacement),
         SourceSpanReplacement(
             file_path=PATH,
-            start_line=1,
-            end_line=1,
+            span=SourceLineSpan(1, 1),
             replacement_lines=(rewritten,),
         ),
     )

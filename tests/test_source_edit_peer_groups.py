@@ -10,6 +10,7 @@ from nominal_refactor_advisor.codemod_source_edits import (
     PhysicalSourceEditConflictError,
     SourceEditOrigin,
     SourceInsertion,
+    SourceLineSpan,
     SourceSpanReplacement,
 )
 from nominal_refactor_advisor.codemod_spacing import SourceInsertionBoundary
@@ -28,9 +29,9 @@ def peers(request):
         other = replace(first, insertion_line=2)
     elif request.param is SourceSpanReplacement:
         first = SourceSpanReplacement(
-            file_path=PATH, start_line=1, end_line=1, replacement_lines=("a = 1\n",)
+            file_path=PATH, span=SourceLineSpan(1, 1), replacement_lines=("a = 1\n",)
         )
-        other = replace(first, start_line=2, end_line=2)
+        other = replace(first, span=SourceLineSpan(2, 2))
     else:
         first = ModuleImportMutation.from_source(
             file_path=PATH, import_source="import typing\n"
@@ -111,7 +112,7 @@ def test_duplicate_insertion_keeps_first_boundary_and_all_origins():
 
 def test_group_exposes_conflicting_replacement_inputs_before_merge_rejects():
     first = SourceSpanReplacement(
-        file_path=PATH, start_line=1, end_line=1, replacement_lines=("a = 1\n",)
+        file_path=PATH, span=SourceLineSpan(1, 1), replacement_lines=("a = 1\n",)
     )
     conflicting = replace(first, replacement_lines=("a = 2\n",))
     group = SourceSpanReplacement.peer_groups((first, conflicting))[0]

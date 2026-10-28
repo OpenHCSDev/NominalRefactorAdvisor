@@ -95,9 +95,53 @@ from ..type_keyed_behavior import (
     TypeKeyedBehaviorProjectionComponent,
     TypeKeyedBehaviorProjectionComponentBuilder,
 )
-from ._base import *
+from abc import ABC
+from pathlib import Path
+from typing import ClassVar
+from ..ast_tools import _builder_call_shape, statements_without_docstring
+from ..models import DispatchCountMetrics, MappingMetrics, RegistrationMetrics
+from ..observation_families import (
+    NumericLiteralDispatchObservationFamily,
+    RegistrationShapeFamily,
+)
+from ..observation_shapes import (
+    BuilderCallShape,
+    LiteralDispatchObservation,
+    RegistrationShape,
+)
+from ._base import (
+    _module_builder_call_shapes,
+    CANDIDATE_COLLECTION_AUTHORITY,
+    certified_spec,
+    CompactClassRepositoryCandidateDetector,
+    CompactClassRepositoryContext,
+    CompactContextCandidateDetector,
+    CompactGroupedShapeIssueDetector,
+    CompactModuleProjectionDetectorMixin,
+    CompactMultiProjectionCandidateDetector,
+    CompactProjectionGroups,
+    ConcreteConfigFieldProbeCandidate,
+    ConfiguredModuleCollectorCandidateDetector,
+    DetectorConfig,
+    finding_spec_template,
+    FlattenedModuleCollectorCandidateDetector,
+    high_confidence_spec,
+    IssueDetector,
+    LatentImplementationRosterCandidate,
+    LineWitnessCandidate,
+    ManualConcreteSubclassRosterCandidate,
+    ModuleCollectorCandidateDetector,
+    PerModuleIssueDetector,
+    PredicateSelectedConcreteFamilyCandidate,
+    SemanticMirrorIssueDetector,
+    SsotAuthorityBoundaryDetector,
+)
+from ._helpers import (
+    _concrete_config_field_probe_candidates,
+    _guarded_wrapper_spec_pairs,
+)
+from ._substrate_support import _constant_string
 from ._base import high_confidence_certified_spec
-from ._helpers import *
 
 
 def _literal_dispatch_authority_patch(

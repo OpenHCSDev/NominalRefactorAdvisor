@@ -70,8 +70,99 @@ from ..semantic_description_length import (
     CompressionCertificate,
 )
 from ..semantic_identity import InheritanceIdentityAttributeProjection
-from ._base import *
-from ._substrate_support import *
+import ast
+from collections import Counter
+from typing import Iterable
+from ..ast_tools import (
+    _walk_nodes,
+    is_docstring_statement,
+    ParsedModule,
+    ScopedAstObservation,
+    statements_without_docstring,
+)
+from ..class_index import ClassFamilyIndex, IndexedClass
+from ..collection_algebra import sorted_tuple
+from ..models import SourceLocation
+from ..name_algebra import CLASS_NAME_ALGEBRA
+from ..observation_shapes import BuilderCallShape, RegistrationShape
+from ..semantic_match import (
+    as_ast,
+    attribute_call_match,
+    constant_value,
+    Maybe,
+    name_id,
+    named_call_assignment,
+    named_value_binding,
+    NamedCallAssignment,
+    return_call,
+    single_assign_target,
+    single_item,
+    single_named_call_argument,
+    single_return_call,
+    single_return_value,
+)
+from ._base import (
+    _GETATTR_BUILTIN,
+    _HASATTR_BUILTIN,
+    _is_classmethod,
+    _module_builder_call_shapes,
+    _PIPELINE_ASSIGN_STAGE,
+    _PIPELINE_RETURN_STAGE,
+    _REFLECTIVE_SELF_BUILTINS,
+    _self_attr_name,
+    _string_constant_expression,
+    CANDIDATE_COLLECTION_AUTHORITY,
+    ClassFamilyWitnessCarrier,
+    ClassMethodLineWitnessCandidate,
+    ConcreteCandidateDetectorShape,
+    ConcreteConfigFieldProbeCandidate,
+    ConcreteTypeUnionContractCandidate,
+    DerivedQueryIndexCandidate,
+    DetectorConfig,
+    DISPATCH_ALGEBRA_AUTHORITY,
+    DynamicSelfFieldSelectionCandidate,
+    EnumMetadataTableCandidate,
+    FieldOnlyFrozenDataclassCandidate,
+    FindingAssemblyPipelineCandidate,
+    FragmentedFamilyAuthorityCandidate,
+    GuardedDelegatorCandidate,
+    GuardedWrapperSpecPair,
+    IssueDetector,
+    NamedFunctionNode,
+    NominalAuthorityShape,
+    OverlappingInheritanceFamiliesCandidate,
+    PipelineAssemblyStage,
+    PropertyAliasHookGroup,
+    ReflectiveSelfAttributeCandidate,
+    RegisteredUnionSurfaceCandidate,
+    RepeatedBaseBundleCandidate,
+    RepeatedResultAssemblyPipelineCandidate,
+    ResultAssemblyPipelineFunction,
+    SchemaAccessorFamilyCandidate,
+    SemanticOverlapMethodCandidate,
+    SemanticOverlapMethodFamilyCandidate,
+    SemanticOverlapResidueAxisCandidate,
+    StaticModulePatternDetector,
+    StaticTypedObservationDetectorCandidate,
+    StringBackedReflectiveNominalLookupCandidate,
+    StructuralObservationPropertyCandidate,
+    SUPPORT_PROJECTION_AUTHORITY,
+    SYNTAX_PROJECTION_AUTHORITY,
+    TupleIndexSemanticOpacityCandidate,
+    TypedCandidateCastBoilerplateCandidate,
+)
+from ._substrate_support import (
+    _annotation_type_names,
+    _constant_string,
+    _IGNORED_ANCESTOR_NAMES,
+    _IGNORED_BASE_NAMES,
+    _is_abstract_method,
+    _is_private_symbol_name,
+    _module_class_defs_by_name,
+    _selector_attribute_name,
+    CLASS_INDEX_PROJECTION,
+    CLASS_NODE_AUTHORITY,
+)
 from ._substrate_support import _class_ancestor_name_map
 
 BaseBundleClassGroups: TypeAlias = dict[tuple[str, ...], list[ast.ClassDef]]

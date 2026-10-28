@@ -1621,13 +1621,19 @@ class ProjectionSuppressionPolicy:
         )
 
 
-@dataclass(frozen=True)
-class SemanticAuthorityAffinityPolicy:
-    """Compare authority/projection names without generic role-token affinity."""
+@dataclass(frozen=True, kw_only=True)
+class AuthorityProjectionNames:
+    """The affinity policy compares exactly the names a certificate summary reports."""
 
     authority_name: str
     projection_label: str
     projection_owner_symbol: str
+
+
+@dataclass(frozen=True, kw_only=True)
+class SemanticAuthorityAffinityPolicy(AuthorityProjectionNames):
+    """Compare authority/projection names without generic role-token affinity."""
+
     projection_location_symbol: str
 
     @cached_property
@@ -2955,15 +2961,12 @@ class SemanticDescentProjectionKindCount(SemanticRecord):
     count: int
 
 
-@dataclass(frozen=True)
-class SemanticDescentCertificateSummary(SemanticRecord):
+@dataclass(frozen=True, kw_only=True)
+class SemanticDescentCertificateSummary(AuthorityProjectionNames, SemanticRecord):
     """Compact report row for one missing semantic-descent certificate."""
 
-    authority_name: str
     authority_kind: SemanticAuthorityKind
-    projection_label: str
     projection_kind: PresentationProjectionKind
-    projection_owner_symbol: str
     file_path: str
     line: int
     matched_fact_count: int
