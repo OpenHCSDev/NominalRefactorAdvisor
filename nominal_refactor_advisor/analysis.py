@@ -522,6 +522,11 @@ class DetectorTypePartition:
         )
 
     @property
+    def compact_global_complete(self) -> bool:
+        """Whether compact projections serve every context-dependent detector."""
+        return not self.ast_retaining_context_detector_types
+
+    @property
     def ast_retaining_context_detector_types(self) -> tuple[type[IssueDetector], ...]:
         compact_detector_types = frozenset(self.compact_global_detector_types)
         return tuple(
@@ -1875,13 +1880,63 @@ class NoHeldSemanticDescentGraph(SemanticDescentGraphHolding):
 NO_HELD_GRAPH = NoHeldSemanticDescentGraph()
 
 
+AnalysisResultAnswerT = TypeVar("AnalysisResultAnswerT")
+
+
+class AnalysisResultQuestion(ABC, Generic[AnalysisResultAnswerT]):
+    """A consumer's work on an analysis result, one arm per persistence."""
+
+    @abstractmethod
+    def persisted(self, result: PersistedAnalysisResult) -> AnalysisResultAnswerT:
+        raise NotImplementedError
+
+    @abstractmethod
+    def unpersisted(self, result: UnpersistedAnalysisResult) -> AnalysisResultAnswerT:
+        raise NotImplementedError
+
+
 @dataclass(frozen=True)
-class CompactPathAnalysisResult:
-    """Exact streamed findings and split preparation/analysis timings."""
+class CachedAnalysisResult(ABC):
+    """Detector findings plus the persistent cache status used to produce them."""
 
     findings: list[RefactorFinding]
     cache_status: type[AnalysisCacheStatus]
+
+    @abstractmethod
+    def answer(
+        self, question: AnalysisResultQuestion[AnalysisResultAnswerT]
+    ) -> AnalysisResultAnswerT:
+        raise NotImplementedError
+
+
+@dataclass(frozen=True)
+class PersistedAnalysisResult(CachedAnalysisResult):
+    """Findings resolved under a validated request identity."""
+
     cache_identity: AnalysisCacheIdentity
+
+    def answer(
+        self, question: AnalysisResultQuestion[AnalysisResultAnswerT]
+    ) -> AnalysisResultAnswerT:
+        return question.persisted(self)
+
+
+@dataclass(frozen=True)
+class UnpersistedAnalysisResult(CachedAnalysisResult):
+    """Findings analysed with persistence disabled: no identity was computed."""
+
+    cache_status: type[AnalysisCacheStatus] = Disabled
+
+    def answer(
+        self, question: AnalysisResultQuestion[AnalysisResultAnswerT]
+    ) -> AnalysisResultAnswerT:
+        return question.unpersisted(self)
+
+
+@dataclass(frozen=True)
+class CompactPathAnalysisResult(PersistedAnalysisResult):
+    """Exact streamed findings and split preparation/analysis timings."""
+
     preparation_seconds: float
     analysis_seconds: float
     projection_count: int
@@ -2950,59 +3005,6 @@ class SemanticDescentGraphAnalysisSource:
             cached_graph=cached_graph,
             cache_context=self.cache_context,
         )
-
-
-AnalysisResultAnswerT = TypeVar("AnalysisResultAnswerT")
-
-
-class AnalysisResultQuestion(ABC, Generic[AnalysisResultAnswerT]):
-    """A consumer's work on an analysis result, one arm per persistence."""
-
-    @abstractmethod
-    def persisted(self, result: PersistedAnalysisResult) -> AnalysisResultAnswerT:
-        raise NotImplementedError
-
-    @abstractmethod
-    def unpersisted(self, result: UnpersistedAnalysisResult) -> AnalysisResultAnswerT:
-        raise NotImplementedError
-
-
-@dataclass(frozen=True)
-class CachedAnalysisResult(ABC):
-    """Detector findings plus the persistent cache status used to produce them."""
-
-    findings: list[RefactorFinding]
-    cache_status: type[AnalysisCacheStatus]
-
-    @abstractmethod
-    def answer(
-        self, question: AnalysisResultQuestion[AnalysisResultAnswerT]
-    ) -> AnalysisResultAnswerT:
-        raise NotImplementedError
-
-
-@dataclass(frozen=True)
-class PersistedAnalysisResult(CachedAnalysisResult):
-    """Findings resolved under a validated request identity."""
-
-    cache_identity: AnalysisCacheIdentity
-
-    def answer(
-        self, question: AnalysisResultQuestion[AnalysisResultAnswerT]
-    ) -> AnalysisResultAnswerT:
-        return question.persisted(self)
-
-
-@dataclass(frozen=True)
-class UnpersistedAnalysisResult(CachedAnalysisResult):
-    """Findings analysed with persistence disabled: no identity was computed."""
-
-    cache_status: type[AnalysisCacheStatus] = Disabled
-
-    def answer(
-        self, question: AnalysisResultQuestion[AnalysisResultAnswerT]
-    ) -> AnalysisResultAnswerT:
-        return question.unpersisted(self)
 
 
 FastCacheAnswerT = TypeVar("FastCacheAnswerT")
