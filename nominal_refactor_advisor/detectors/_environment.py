@@ -12,6 +12,7 @@ from typing import ClassVar
 
 from metaclass_registry import AutoRegisterMeta
 
+from ..lexical_bindings import ImportBoundNameProjection
 from ..ast_projection import ExpressionReference
 from ..ast_tools import (
     BuiltinCallName,
@@ -195,11 +196,11 @@ class _EnvironmentImportAliases:
             if isinstance(statement, ast.Import):
                 for alias in statement.names:
                     if alias.name == "os":
-                        os_modules.add(alias.asname or alias.name)
+                        os_modules.add(ImportBoundNameProjection(statement).alias_bound_name(alias))
             elif isinstance(statement, ast.ImportFrom) and statement.module == "os":
                 for alias in statement.names:
                     imported_members.setdefault(alias.name, set()).add(
-                        alias.asname or alias.name
+                        ImportBoundNameProjection(statement).alias_bound_name(alias)
                     )
         return cls(
             os_modules=frozenset(os_modules),

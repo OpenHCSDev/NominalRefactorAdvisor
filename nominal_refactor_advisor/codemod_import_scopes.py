@@ -203,7 +203,7 @@ class TypeCheckingGuardProjection:
         ):
             return tuple(
                 TypeCheckingGuardReference(
-                    ast.Name(id=alias.asname or alias.name, ctx=ast.Load())
+                    ast.Name(id=ImportBoundNameProjection(statement).alias_bound_name(alias), ctx=ast.Load())
                 )
                 for alias in statement.names
                 if alias.name == "TYPE_CHECKING"
@@ -213,7 +213,7 @@ class TypeCheckingGuardProjection:
                 TypeCheckingGuardReference(
                     ast.Attribute(
                         value=ast.Name(
-                            id=alias.asname or "typing",
+                            id=ImportBoundNameProjection(statement).alias_bound_name(alias),
                             ctx=ast.Load(),
                         ),
                         attr="TYPE_CHECKING",

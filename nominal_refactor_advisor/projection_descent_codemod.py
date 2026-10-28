@@ -1142,7 +1142,7 @@ class _TypeKeyedBehaviorSourceDerivation:
                 remaining_aliases = tuple(
                     alias
                     for alias in statement.names
-                    if (alias.asname or alias.name) not in removable_names
+                    if ImportBoundNameProjection(statement).alias_bound_name(alias) not in removable_names
                 )
                 if len(remaining_aliases) == len(statement.names):
                     continue

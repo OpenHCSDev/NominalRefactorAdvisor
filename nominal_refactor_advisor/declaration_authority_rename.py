@@ -10,6 +10,7 @@ from collections import defaultdict, deque
 from dataclasses import dataclass
 from functools import cached_property
 
+from .lexical_bindings import ImportAlias, ImportBoundNameProjection
 from .annotation_semantics import StringizedAnnotationSurface
 from .ast_tools import ModuleAnnotationEvaluationMode, ParsedModule
 from .class_index import (
@@ -151,15 +152,14 @@ class DeclarationAuthorityImportReference:
 
     @property
     def local_name(self) -> str:
-        return self.alias.asname or self.alias.name
+        return ImportBoundNameProjection(self.statement).alias_bound_name(self.alias)
 
     @property
     def changes_local_binding(self) -> bool:
         return self.local_name == self.alias.name
 
     def renamed_source(self, new_name: str) -> str:
-        alias_name = new_name if self.changes_local_binding else self.local_name
-        return new_name if self.alias.asname is None else f"{new_name} as {alias_name}"
+        return ImportAlias.from_alias(self.alias).renamed(new_name).source
 
 
 @dataclass(frozen=True)

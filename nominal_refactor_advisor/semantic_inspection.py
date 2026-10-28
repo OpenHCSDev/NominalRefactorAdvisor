@@ -15,6 +15,7 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Iterable, Sequence
 
+from .lexical_bindings import ImportBoundNameProjection
 from .analysis import analyze_modules
 from .ast_tools import ParsedModule, parse_python_module_roots
 from .detectors import DetectorConfig
@@ -531,7 +532,7 @@ class _ModuleSemanticVisitor(ast.NodeVisitor):
                 import_kind=ImportSummaryKind.IMPORT,
                 imported_module=None,
                 imported_names=imported_names,
-                alias_names=_alias_names(node.names),
+                alias_names=ImportBoundNameProjection(node).names(),
             )
         )
 
@@ -551,7 +552,7 @@ class _ModuleSemanticVisitor(ast.NodeVisitor):
                 import_kind=ImportSummaryKind.FROM_IMPORT,
                 imported_module=node.module,
                 imported_names=imported_names,
-                alias_names=_alias_names(node.names),
+                alias_names=ImportBoundNameProjection(node).names(),
                 level=node.level,
             )
         )
@@ -865,16 +866,6 @@ def _node_line(node: ast.AST) -> int:
     if isinstance(node, ast.stmt):
         return node.lineno
     raise TypeError(f"expected statement node, got {type(node).__name__}")
-
-
-def _alias_names(aliases: Iterable[ast.alias]) -> tuple[str, ...]:
-    names: list[str] = []
-    for alias in aliases:
-        if alias.asname is None:
-            names.append(alias.name)
-        else:
-            names.append(alias.asname)
-    return tuple(names)
 
 
 def _decorator_names(decorators: Iterable[ast.expr]) -> tuple[str, ...]:

@@ -1148,7 +1148,7 @@ class RuntimeNamespaceBridgeDetector(PerModuleIssueDetector):
                         sites.append(
                             RuntimeNamespaceBridgeSite(
                                 line=int(node.lineno),
-                                symbol=alias.asname or alias.name,
+                                symbol=ImportBoundNameProjection(node).alias_bound_name(alias),
                                 bridge_kind=(
                                     RuntimeNamespaceBridgeKind.RUNTIME_BRIDGE_IMPORT
                                 ),
