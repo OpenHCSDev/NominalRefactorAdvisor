@@ -7,8 +7,38 @@ surface.
 from __future__ import annotations
 
 from ..taxonomy import CapabilityTag, ObservationTag
-from ._base import *
-from ._helpers import *
+from collections import defaultdict
+from dataclasses import dataclass
+from typing import Sequence
+from ..ast_tools import ParsedModule
+from ..collection_algebra import sorted_tuple
+from ..models import (
+    FindingBuildContext,
+    MappingMetrics,
+    RefactorFinding,
+    RepeatedMethodMetrics,
+    SourceLocation,
+)
+from ..patterns import PatternId
+from ._base import (
+    CandidateFindingDetector,
+    declare_candidate_rule_detector,
+    DerivedQueryIndexCandidate,
+    DetectorConfig,
+    FragmentedFamilyAuthorityCandidate,
+    high_confidence_spec,
+    IssueDetector,
+    ModuleCollectorCandidateDetector,
+    PerModuleIssueDetector,
+    StructuralObservationPropertyCandidate,
+)
+from ._helpers import (
+    _finding_assembly_pipeline_candidates,
+    _fragmented_family_authority_candidates,
+    _guarded_delegator_candidates,
+    _projection_builder_groups,
+    _structural_observation_property_candidates,
+)
 from ._helpers import (
     _derived_query_index_candidates,
 )
