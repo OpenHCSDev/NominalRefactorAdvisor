@@ -13,6 +13,7 @@ from .analysis_cache import AnalysisCacheStatus
 from .ast_tools import ParsedModule, parse_python_modules
 from .detectors import DetectorConfig
 from .collection_algebra import sorted_tuple
+from .economics import TimedScan
 from .models import RefactorFinding
 from .source_index import build_source_index
 from .json_reports import (
@@ -42,14 +43,11 @@ class ScanTiming(DataclassJsonReport):
             3,
         )
 
-@dataclass(frozen=True)
-class ScanBranchPrediction(SemanticRecord):
+@dataclass(frozen=True, kw_only=True)
+class ScanBranchPrediction(TimedScan, SemanticRecord):
     """One changed-source branch of a scan prediction."""
 
-    label: str
     module_count: int
-    finding_count: int
-    elapsed_seconds: float
     estimated_repository_seconds: float
     source_file_count: int
     ast_target_count: int

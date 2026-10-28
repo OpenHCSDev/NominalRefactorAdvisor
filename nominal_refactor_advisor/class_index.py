@@ -595,14 +595,20 @@ class CompactProductField:
     line: int
 
 
-@dataclass(frozen=True)
-class CompactProductAuthority:
-    """One linearly composed dataclass schema with source-visible fields."""
+@dataclass(frozen=True, kw_only=True)
+class ProductDeclarationSite:
+    """Declares `class_symbol`, `file_path`, `line` once for the classes that restated them."""
 
     class_symbol: str
-    effective_fields: tuple[CompactProductField, ...]
     file_path: str
     line: int
+
+
+@dataclass(frozen=True, kw_only=True)
+class CompactProductAuthority(ProductDeclarationSite):
+    """One linearly composed dataclass schema with source-visible fields."""
+
+    effective_fields: tuple[CompactProductField, ...]
 
     @property
     def fields(self) -> tuple[CompactProductField, ...]:
@@ -617,13 +623,10 @@ class CompactProductAuthority:
         return tuple(field.name for field in self.fields)
 
 
-@dataclass(frozen=True)
-class CompactProductAuthorityFailure:
+@dataclass(frozen=True, kw_only=True)
+class CompactProductAuthorityFailure(ProductDeclarationSite):
     """One failed product obligation attached to its declaration source."""
 
-    class_symbol: str
-    file_path: str
-    line: int
     violation: CompactProductAuthorityViolation
 
 

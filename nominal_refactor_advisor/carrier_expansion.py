@@ -25,18 +25,24 @@ from .product_flow_authority import (
 )
 from .value_expression import LexicalValueReference
 
-@dataclass(frozen=True)
-class DeclaredCarrierExpansion(CarrierCollapseCallEdge):
-    """One call that expands fields from a declaration-typed carrier value."""
+@dataclass(frozen=True, kw_only=True)
+class ResolvedFieldBindingCall:
+    """Declares `resolved_call`, `field_bindings`, `carrier_source_participant_symbols` once for the classes that restated them."""
 
-    carrier_class_symbol: str
-    carrier_reference: LexicalValueReference
     resolved_call: CompactResolvedFunctionCall
     field_bindings: tuple[CarrierCollapseFieldBinding, ...]
 
     @property
     def carrier_source_participant_symbols(self) -> tuple[str, ...]:
         return ()
+
+
+@dataclass(frozen=True, kw_only=True)
+class DeclaredCarrierExpansion(ResolvedFieldBindingCall, CarrierCollapseCallEdge):
+    """One call that expands fields from a declaration-typed carrier value."""
+
+    carrier_class_symbol: str
+    carrier_reference: LexicalValueReference
 
     def carrier_value_reference(
         self,
