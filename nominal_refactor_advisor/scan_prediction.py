@@ -17,6 +17,7 @@ from .collection_algebra import sorted_tuple
 from .economics import TimedScan
 from .models import RefactorFinding
 from .source_index import build_source_index
+from .type_checker_session import TypeCheckerTiming
 from .json_reports import (
     SemanticRecord,
     DataclassJsonReport,
@@ -33,6 +34,8 @@ class ScanTiming(DataclassJsonReport):
     planning_seconds: float = 0.0
     source_index_seconds: float = 0.0
     analysis_cache_status: type[AnalysisCacheStatus] | None = None
+    type_checker: TypeCheckerTiming = TypeCheckerTiming()
+    """Part of analysis: the mypy daemon a probe detector starts for unannotated receivers."""
 
     @json_report_property()
     def total_seconds(self) -> float:

@@ -328,6 +328,19 @@ def test_without_mypy_the_owner_says_so(tmp_path: Path, monkeypatch):
     assert "owner unresolved: type checker: mypy is not installed" in finding.summary
 
 
+def test_the_scan_ledger_records_the_daemon_start_and_each_inspect(tmp_path: Path):
+    from nominal_refactor_advisor.type_checker_session import TypeCheckerTimingLedger
+
+    with TypeCheckerTimingLedger.scope() as ledger:
+        _findings(
+            tmp_path,
+            ForeignAbsenceProbeDetector,
+            {"owner": _GOAL, "m": _INFERRED_PROBE},
+        )
+    assert ledger.timing.inspect_calls == 1
+    assert ledger.timing.daemon_start_seconds > 0
+
+
 def test_own_state_modules_and_truth_tests_are_not_foreign_probes(tmp_path: Path):
     source = (
         "import sys\n\n\nclass Goal:\n"
