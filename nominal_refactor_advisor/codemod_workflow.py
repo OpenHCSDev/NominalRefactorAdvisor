@@ -1979,7 +1979,15 @@ class CodemodRefactorGoalRunner:
             tuple(starting_scan.findings), tuple(exact_scan.findings)
         ).increased_changes
         if increased:
-            return dead_end(f"it grows {len(increased)} finding class(es)")
+            return dead_end(
+                f"it grows {len(increased)} finding class(es): "
+                + "; ".join(
+                    f"{change.obligation_class.declaration.qualname} "
+                    f"{change.before_count}->{change.after_count} "
+                    f"(added {', '.join(change.added_ids)})"
+                    for change in increased
+                )
+            )
         guard_report = self.terminal_guard_report(exact_scan)
         if not guard_report.is_clean:
             return dead_end("its architecture guards fail")
