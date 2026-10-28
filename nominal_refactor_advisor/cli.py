@@ -999,6 +999,15 @@ class JsonSummaryPreparseCachePolicy:
         return CachedGraphDemand(cache_context, latest)
 
     @property
+    def compact_analysis_compatible(self) -> bool:
+        """Whether this JSON payload can be built without retained modules."""
+        return (
+            self.json_enabled
+            and self.payload_profile.sections.compact_analysis_compatible
+            and not self.parsed_modules_required
+        )
+
+    @property
     def uses_evidence_local_partial_reuse(self) -> bool:
         return (
             self.mode.reuse_policy(focused_report_filter=self.focused_report_filter)
@@ -3824,6 +3833,40 @@ class UnanalysedScan(ScanAnalysisOutcome):
     """Findings no detector produced in this run: parse-only or a Lean import."""
 
 
+class ScanAnalysisDemand(ABC):
+    """What this scan needs analysed when the cache serves nothing."""
+
+    @abstractmethod
+    def cold_outcome(self, cold: ColdScanAnalysis) -> ScanAnalysisOutcome:
+        raise NotImplementedError
+
+
+class ParseOnlyDemand(ScanAnalysisDemand):
+    """An exact codemod recipe run: modules only, no detector."""
+
+    def cold_outcome(self, cold: ColdScanAnalysis) -> ScanAnalysisOutcome:
+        return cold.parsed()
+
+
+class CodemodAnalysisDemand(ScanAnalysisDemand):
+    """A codemod command over findings: it needs parsed modules and full analysis."""
+
+    def cold_outcome(self, cold: ColdScanAnalysis) -> ScanAnalysisOutcome:
+        return cold.full()
+
+
+class ReportAnalysisDemand(ScanAnalysisDemand):
+    """A findings report: compact global analysis serves it when eligible."""
+
+    def cold_outcome(self, cold: ColdScanAnalysis) -> ScanAnalysisOutcome:
+        return cold.compact_or_full()
+
+
+PARSE_ONLY_DEMAND = ParseOnlyDemand()
+CODEMOD_ANALYSIS_DEMAND = CodemodAnalysisDemand()
+REPORT_ANALYSIS_DEMAND = ReportAnalysisDemand()
+
+
 @dataclass(frozen=True)
 class ColdScanAnalysis:
     """The scan's analysis when the cache serves nothing: focused, compact or full."""
@@ -3837,8 +3880,7 @@ class ColdScanAnalysis:
     analysis_cache_dir: Path | None
     json_sections: JsonPayloadSections
     preparse_cache_policy: JsonSummaryPreparseCachePolicy
-    scan_analysis_required: bool
-    codemod_requested: bool
+    analysis_demand: ScanAnalysisDemand
     focused_loop_cold_policy: FocusedLoopColdAnalysisPolicy
     semantic_descent_cache_context: SemanticDescentGraphCacheContext
     semantic_descent_analysis_source: SemanticDescentGraphAnalysisSource
@@ -3846,21 +3888,21 @@ class ColdScanAnalysis:
     def outcome(self) -> ScanAnalysisOutcome:
         if self.focused_loop_cold_policy.enabled:
             return self._focused_local()
+        return self.analysis_demand.cold_outcome(self)
+
+    def compact_or_full(self) -> ScanAnalysisOutcome:
+        """Compact global analysis when the payload and every detector allow it."""
         if (
-            self.args.json
-            and self.json_sections.compact_analysis_compatible
-            and not self.preparse_cache_policy.parsed_modules_required
-            and self.scan_analysis_required
-            and not self.codemod_requested
-            and not DetectorTypePartition(
+            self.preparse_cache_policy.compact_analysis_compatible
+            and DetectorTypePartition(
                 default_detector_types_for_analysis()
-            ).ast_retaining_context_detector_types
+            ).compact_global_complete
         ):
             held: SemanticDescentGraphHolding = NO_HELD_GRAPH
             if self.json_sections.semantic_descent_graph:
                 held = self.semantic_descent_cache_context.held_graph()
             return held.answer(CompactGlobalAnalysis(self))
-        return self._full()
+        return self.full()
 
     def _focused_local(self) -> ScanAnalysisOutcome:
         detector_types = default_detector_types_for_analysis()
@@ -3931,7 +3973,8 @@ class ColdScanAnalysis:
             include_semantic_descent_graph=include_semantic_descent_graph,
         )
 
-    def _full(self) -> ScanAnalysisOutcome:
+    def parsed(self) -> UnanalysedScan:
+        """The roots parsed, with no detector run."""
         started = perf_counter()
         modules = parse_python_module_roots(
             self.roots,
@@ -3940,19 +3983,21 @@ class ColdScanAnalysis:
             parse_workers=self.args.parse_workers,
             source_policy=self.source_policy,
         )
-        parse_seconds = round(perf_counter() - started, 3)
-        if not self.scan_analysis_required:
-            return UnanalysedScan(
-                modules=modules,
-                findings=[],
-                parse_seconds=parse_seconds,
-                analysis_seconds=0.0,
-                semantic_descent_graph=NO_HELD_GRAPH,
-            )
+        return UnanalysedScan(
+            modules=modules,
+            findings=[],
+            parse_seconds=round(perf_counter() - started, 3),
+            analysis_seconds=0.0,
+            semantic_descent_graph=NO_HELD_GRAPH,
+        )
+
+    def full(self) -> ScanAnalysisOutcome:
+        """Every detector over the parsed roots."""
+        parsed = self.parsed()
         started = perf_counter()
         analysis_result = analyze_modules_with_cache(
             self.roots,
-            modules,
+            parsed.modules,
             self.config,
             analysis_cache_dir=self.analysis_cache_dir,
             analysis_workers=self.args.analysis_workers,
@@ -3962,41 +4007,40 @@ class ColdScanAnalysis:
         )
         return analysis_result.answer(
             FullScanOutcome(
-                modules=modules,
-                path_scope=self.path_scope,
-                parse_seconds=parse_seconds,
-                analysis_seconds=round(perf_counter() - started, 3),
+                replace(parsed, analysis_seconds=round(perf_counter() - started, 3)),
+                self.path_scope,
             )
         )
 
 
 @dataclass(frozen=True)
 class FullScanOutcome(AnalysisResultQuestion[ScanAnalysisOutcome]):
-    """The full scan's outcome: stored under its identity, or unpersisted."""
+    """The full scan's outcome: the parsed, timed scan with the analysis's
+    findings, stored under its identity or unpersisted."""
 
-    modules: ParsedModuleSet
+    parsed: UnanalysedScan
     path_scope: AnalysisPathScope
-    parse_seconds: float
-    analysis_seconds: float
 
     def persisted(self, result: PersistedAnalysisResult) -> ScanAnalysisOutcome:
+        parsed = self.parsed
         return FullScan(
-            modules=self.modules,
+            modules=parsed.modules,
             findings=self.path_scope.filter_findings(result.findings),
-            parse_seconds=self.parse_seconds,
-            analysis_seconds=self.analysis_seconds,
-            semantic_descent_graph=NO_HELD_GRAPH,
+            parse_seconds=parsed.parse_seconds,
+            analysis_seconds=parsed.analysis_seconds,
+            semantic_descent_graph=parsed.semantic_descent_graph,
             analysis_cache_status=result.cache_status,
             cache_identity=result.cache_identity,
         )
 
     def unpersisted(self, result: UnpersistedAnalysisResult) -> ScanAnalysisOutcome:
+        parsed = self.parsed
         return UnpersistedFullScan(
-            modules=self.modules,
+            modules=parsed.modules,
             findings=self.path_scope.filter_findings(result.findings),
-            parse_seconds=self.parse_seconds,
-            analysis_seconds=self.analysis_seconds,
-            semantic_descent_graph=NO_HELD_GRAPH,
+            parse_seconds=parsed.parse_seconds,
+            analysis_seconds=parsed.analysis_seconds,
+            semantic_descent_graph=parsed.semantic_descent_graph,
             analysis_cache_status=result.cache_status,
         )
 
@@ -4228,6 +4272,11 @@ def _main_without_deadline(invocation: CliArguments) -> int:
         if selected_command_type is not None
         else not codemod_execution_request.exact_recipe_execution
     )
+    analysis_demand: ScanAnalysisDemand = REPORT_ANALYSIS_DEMAND
+    if not scan_analysis_required:
+        analysis_demand = PARSE_ONLY_DEMAND
+    elif codemod_requested:
+        analysis_demand = CODEMOD_ANALYSIS_DEMAND
 
     fast_codemod_source_snapshot = None
     if (
@@ -4299,8 +4348,7 @@ def _main_without_deadline(invocation: CliArguments) -> int:
             analysis_cache_dir=analysis_cache_dir,
             json_sections=json_payload_profile.sections,
             preparse_cache_policy=preparse_cache_policy,
-            scan_analysis_required=scan_analysis_required,
-            codemod_requested=codemod_requested,
+            analysis_demand=analysis_demand,
             focused_loop_cold_policy=focused_loop_cold_policy,
             semantic_descent_cache_context=semantic_descent_cache_context,
             semantic_descent_analysis_source=semantic_descent_analysis_source,
