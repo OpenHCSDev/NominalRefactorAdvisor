@@ -27,7 +27,7 @@ from pathlib import Path
 from typing import ClassVar
 
 from .lexical_bindings import ImportBoundNameProjection
-from .ast_projection import AbsentStatementValue, StatementValue
+from .ast_projection import StatementValues
 from .ast_projection import CallKeywords
 from .ast_tools import (
     ModuleSyntaxIndex,
@@ -326,10 +326,12 @@ class DeclaredIdentityFamily(ShapeFamily[ModuleDeclarations]):
             ),
             slots=tuple(
                 statement.target.id
-                for statement in node.body
-                if isinstance(statement, ast.AnnAssign)
-                and isinstance(statement.target, ast.Name)
-                and not StatementValue.of(statement).supplies_value
+                for statement, _bare in StatementValues.keyed(
+                    (statement, statement)
+                    for statement in node.body
+                    if isinstance(statement, ast.AnnAssign)
+                ).bare
+                if isinstance(statement.target, ast.Name)
                 and ClassVar.__name__ in ast.unparse(statement.annotation)
             ),
             constants=tuple(cls.constants(node)),
@@ -1536,12 +1538,10 @@ class IdentityPositions:
             yield from self.match_sites(node_index, node)
         for node_index, node in self.index.indexed_nodes_of_type(ast.Call):
             yield from self.call_sites(node_index, node)
-        for node_index, node in self.index.indexed_nodes_of_type(ast.Return):
-            try:
-                value = StatementValue.of(node).require_value("a bare return passes nothing")
-            except AbsentStatementValue:
-                continue
-            yield from self.passed_sites(node_index, value, "return")
+        for node_index, returned in StatementValues.keyed(
+            self.index.indexed_nodes_of_type(ast.Return)
+        ).supplied:
+            yield from self.passed_sites(node_index, returned.value, "return")
         yield from self.module_sites()
 
     # Type positions -----------------------------------------------------------

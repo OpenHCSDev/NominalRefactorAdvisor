@@ -94,7 +94,7 @@ from ..semantic_shape_algebra import (
 if TYPE_CHECKING:
     from ..semantic_descent import SemanticDescentGraph
 
-from ..ast_projection import CallKeywords, StatementValue
+from ..ast_projection import CallKeywords
 from ..ast_tools import (
     BuiltinCallName,
     AstParentIndex,
@@ -7526,7 +7526,11 @@ class FieldOnlyFrozenDataclassCandidate(ClassLineWitnessCandidate):
                 (
                     target.id,
                     ast.unparse(assignment.annotation),
-                    StatementValue.of(assignment).value_source,
+                    (
+                        ast.unparse(assignment.value)
+                        if assignment.value is not None
+                        else None
+                    ),
                 )
             )
         if not product_fields:

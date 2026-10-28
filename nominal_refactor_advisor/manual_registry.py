@@ -13,7 +13,7 @@ from typing import (
     TypeAlias,
 )
 
-from .ast_projection import AbsentStatementValue, StatementValue
+from .ast_projection import StatementValue
 from .ast_projection import ExpressionReference
 from .ast_tools import (
     EagerNameLoadCollector,
@@ -21,8 +21,7 @@ from .ast_tools import (
     REGISTRATION_CALL_FAMILY,
     REGISTRATION_DECORATOR_FAMILY,
 )
-from .class_index import ModuleNominalBindingAuthority
-from .class_mro import UnboundReference
+from .class_index import ModuleNominalBindingAuthority, NominalReferences
 from .collection_algebra import UniqueIdentityIndexAuthority
 from .descriptor_algebra import CollectionAttributeProjection
 from .lexical_bindings import LEXICAL_SCOPE_BINDING_AUTHORITY
@@ -144,11 +143,11 @@ class SourceModuleMappingKeyAuthority(MappingKeyResolverABC[ast.Module]):
                 parts = ExpressionReference.decoded(reference).attribute_chain
                 if not parts or parts[0] in shadowed_names:
                     return None
-                try:
-                    return snapshot.reference_for(parts).require_bound_name()
-                except UnboundReference:
-                    # QualifiedReferenceResolver's str | None protocol.
-                    return None
+                # QualifiedReferenceResolver's str | None protocol.
+                return next(
+                    iter(NominalReferences.of((snapshot.reference_for(parts),)).bound_names),
+                    None,
+                )
 
             try:
                 declarations[name] = PYTHON_ENUM_BASE_AUTHORITY.declaration_from_node(
@@ -913,16 +912,11 @@ def _class_declares_non_null_name(node: ast.ClassDef, name: str) -> bool:
                 for target in statement.targets
             ):
                 continue
-            value = statement.value
-        elif (
+        elif not (
             isinstance(statement, ast.AnnAssign)
             and ExpressionReference.decoded(statement.target).identifier == name
         ):
-            try:
-                value = StatementValue.of(statement).require_value("a bare annotation")
-            except AbsentStatementValue:
-                return True
-        else:
             continue
-        return not CompactValueExpression.project(value).value_is_none_literal
+        # A bare annotation assigns nothing, so it is not the None literal either.
+        return not StatementValue.of(statement).compact_value().value_is_none_literal
     return False

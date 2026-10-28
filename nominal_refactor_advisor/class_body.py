@@ -25,6 +25,7 @@ from .class_index import (
     CompactIndexedClass,
     CompactModuleClassHeader,
     CompactRepositoryPublicExposureIndex,
+    StarSettlements,
 )
 
 
@@ -304,17 +305,20 @@ class ClassBodyIndex:
 
         if declaration.unbound:
             return UnprovedClassBodyDeclaration(declaration)
-        star_bindings: list[tuple[str, str]] = []
-        for deferred in declaration.deferred:
-            qualified_name = self.exposure.star_settled_binding(
-                module_name, deferred.name, deferred.unshadowed
+        settlements = StarSettlements.keyed(
+            (
+                deferred.name,
+                self.exposure.star_settlement(
+                    module_name, deferred.name, deferred.unshadowed
+                ),
             )
-            if qualified_name is None:
-                return UnprovedClassBodyDeclaration(declaration)
-            star_bindings.append((deferred.name, qualified_name))
+            for deferred in declaration.deferred
+        )
+        if settlements.unsettled:
+            return UnprovedClassBodyDeclaration(declaration)
         return ProvedClassBodyDeclaration(
             declaration,
-            ClassBodyDeclarationIdentity(declaration.digest, tuple(star_bindings)),
+            ClassBodyDeclarationIdentity(declaration.digest, settlements.settled),
         )
 
 

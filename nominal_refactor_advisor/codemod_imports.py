@@ -649,14 +649,14 @@ class ModuleImportMutation(KeyedSourceEditCoalescence):
             requested_statement = RequestedImportStatement(statement, scope=scope)
             retained_aliases: list[ImportAlias] = []
             for alias in aliases_by_statement[id(statement)]:
-                bound_name = requested_statement.bound_name(alias)
-                removal = (
+                removals = requested_bound_name_removals.intersection(
                     ImportBoundNameRemoval(name=bound_name, scope=scope)
-                    if bound_name is not None
-                    else None
+                    for bound_name in alias.bound_names_in(
+                        requested_statement.declaration
+                    )
                 )
-                if removal is not None and removal in requested_bound_name_removals:
-                    matched_bound_name_removals.add(removal)
+                if removals:
+                    matched_bound_name_removals |= removals
                 else:
                     retained_aliases.append(alias)
             aliases_by_statement[id(statement)] = retained_aliases
@@ -1232,9 +1232,6 @@ class RequestedImportStatement:
     @property
     def bound_names(self) -> tuple[str, ...]:
         return self.declaration.names()
-
-    def bound_name(self, alias: ImportAlias) -> str | None:
-        return self.declaration.bound_name(alias)
 
     @property
     def source(self) -> str:

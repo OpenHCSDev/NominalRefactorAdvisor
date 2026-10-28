@@ -10,7 +10,7 @@ from enum import Enum, Flag, IntEnum, IntFlag, StrEnum
 from functools import cached_property
 from typing import Callable, Self
 
-from .ast_projection import StatementValue
+from .ast_projection import StatementValues
 from .value_expression import LiteralExpressionEffects
 
 QualifiedReferenceResolver = Callable[[ast.expr, frozenset[str]], str | None]
@@ -136,9 +136,10 @@ class PythonEnumMemberDeclaration:
 class PythonEnumDeclarationFacet(ABC):
     """A class's enum facet: a closed standard Enum declaration, or none."""
 
+    @property
     @abstractmethod
-    def identity_reason_or(self, fallback: str | None) -> str | None:
-        """Why class creation makes this class an identity, else the fallback reason."""
+    def identity_reasons(self) -> tuple[str, ...]:
+        """Why the enum declaration makes this class an identity: nothing for a non-enum."""
         raise NotImplementedError
 
     @abstractmethod
@@ -150,8 +151,9 @@ class PythonEnumDeclarationFacet(ABC):
 class NoEnumDeclaration(PythonEnumDeclarationFacet):
     """A class that is not a closed standard Enum: no mapping-key semantics."""
 
-    def identity_reason_or(self, fallback: str | None) -> str | None:
-        return fallback
+    @property
+    def identity_reasons(self) -> tuple[str, ...]:
+        return ()
 
     def require_mapping_key(self, member_name: str) -> Hashable:
         raise ValueError("Mapping key declaration semantics remain unproved")
@@ -190,8 +192,9 @@ class PythonEnumDeclarationAuthority(PythonEnumDeclarationFacet):
             hash(member)
         return members
 
-    def identity_reason_or(self, fallback: str | None) -> str | None:
-        return "its members are enum identities"
+    @property
+    def identity_reasons(self) -> tuple[str, ...]:
+        return ("its members are enum identities",)
 
     def require_mapping_key(self, member_name: str) -> Hashable:
         try:
@@ -257,6 +260,7 @@ class PythonEnumBaseAuthority:
         base = self.require_base(qualified_base)
         declarations: list[PythonEnumMemberDeclaration] = []
         declared_names: set[str] = set()
+        member_statements: list[ast.Assign | ast.AnnAssign] = []
         for statement in node.body:
             if (
                 isinstance(statement, ast.Expr)
@@ -264,26 +268,21 @@ class PythonEnumBaseAuthority:
                 and type(statement.value.value) is str
             ):
                 continue
-            if (
-                isinstance(statement, ast.AnnAssign)
-                and not StatementValue.of(statement).supplies_value
-            ):
-                continue
-            targets: tuple[ast.expr, ...]
-            value: ast.expr | None
-            if isinstance(statement, ast.AnnAssign):
-                targets, value = (statement.target,), statement.value
-            elif isinstance(statement, ast.Assign):
-                targets, value = tuple(statement.targets), statement.value
-            else:
+            if not isinstance(statement, ast.Assign | ast.AnnAssign):
                 raise ValueError("Enum key proof requires a closed member-only body")
-            if (
-                value is None
-                or len(targets) != 1
-                or not isinstance(targets[0], ast.Name)
-            ):
-                raise ValueError("Enum member binding remains ambiguous")
-            name = targets[0].id
+            member_statements.append(statement)
+        # A bare annotation declares no member.
+        for statement, assigned in StatementValues.keyed(
+            (statement, statement) for statement in member_statements
+        ).supplied:
+            match statement:
+                case ast.Assign(targets=[ast.Name(id=name)]) | ast.AnnAssign(
+                    target=ast.Name(id=name)
+                ):
+                    pass
+                case _:
+                    raise ValueError("Enum member binding remains ambiguous")
+            value = assigned.value
             if name.startswith("_") or not self.permits_new_member(name):
                 raise ValueError(
                     "Enum key proof rejects configuration and hook bindings"

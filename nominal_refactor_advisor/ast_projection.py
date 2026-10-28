@@ -6,12 +6,11 @@ import ast
 from abc import ABC, abstractmethod
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
-from typing import Self, TypeVar, cast
+from typing import Generic, Self, TypeVar, cast
 
 from .declared_family import ForeignAdapter
 from .value_expression import CompactValueExpression, UnassignedValueExpression
 
-TargetT = TypeVar("TargetT")
 
 
 class ExpressionReference(ForeignAdapter):
@@ -289,11 +288,36 @@ class CallKeywords:
         return {keyword.name: keyword.value for keyword in self.named}
 
 
-class AbsentStatementValue(ValueError):
-    """A bare annotation or bare `return` supplies no value."""
-
-
 ValuedStatement = ast.Assign | ast.AnnAssign | ast.Return
+
+
+def single_name_targets(statement: ast.Assign | ast.AnnAssign) -> tuple[ast.Name, ...]:
+    """The name a single-target assignment binds: none for tuples, attributes or chains."""
+
+    match statement:
+        case ast.Assign(targets=[ast.Name() as target]) | ast.AnnAssign(
+            target=ast.Name() as target
+        ):
+            return (target,)
+    return ()
+KeyT = TypeVar("KeyT")
+AnswerT = TypeVar("AnswerT")
+
+
+class StatementValueQuestion(ABC, Generic[AnswerT]):
+    """A consumer's question about one statement's value, answered once per state.
+
+    The consumer declares both arms as overrides; the value's own subtype picks
+    the arm, so no caller tests for a missing value.
+    """
+
+    @abstractmethod
+    def supplied(self, value: SuppliedValue) -> AnswerT:
+        raise NotImplementedError
+
+    @abstractmethod
+    def bare(self, value: NoStatementValue) -> AnswerT:
+        raise NotImplementedError
 
 
 class StatementValue(ABC):
@@ -309,15 +333,17 @@ class StatementValue(ABC):
             return NoStatementValue(statement)
         return SuppliedValue(statement, statement.value)
 
-    @property
     @abstractmethod
-    def supplies_value(self) -> bool:
-        """Whether executing the statement evaluates a value (Python semantics:
-        `x: T` declares without binding; bare `return` returns None implicitly)."""
+    def answer(self, question: StatementValueQuestion[AnswerT]) -> AnswerT:
         raise NotImplementedError
 
     @abstractmethod
-    def require_value(self, reason: str) -> ast.expr:
+    def sort_into(
+        self,
+        key: KeyT,
+        supplied: list[tuple[KeyT, SuppliedValue]],
+        bare: list[tuple[KeyT, NoStatementValue]],
+    ) -> None:
         raise NotImplementedError
 
     @abstractmethod
@@ -329,11 +355,6 @@ class StatementValue(ABC):
         """Every node inside the supplied value; nothing without one."""
         raise NotImplementedError
 
-    @abstractmethod
-    def paired_with(self, target: TargetT) -> tuple[TargetT, ast.expr] | None:
-        """The (target, value) pair of a projection whose contract is optional."""
-        raise NotImplementedError
-
     @property
     @abstractmethod
     def value_kind_name(self) -> str:
@@ -341,18 +362,6 @@ class StatementValue(ABC):
 
     @abstractmethod
     def compact_value(self) -> CompactValueExpression:
-        raise NotImplementedError
-
-    @property
-    @abstractmethod
-    def supplies_none_literal(self) -> bool:
-        """Whether the statement spells the `None` literal (a bare `return` does not)."""
-        raise NotImplementedError
-
-    @property
-    @abstractmethod
-    def value_source(self) -> str | None:
-        """Unparsed value for record keys, where an absent value is spelled None."""
         raise NotImplementedError
 
 
@@ -361,21 +370,22 @@ class SuppliedValue(StatementValue):
     statement: ValuedStatement
     value: ast.expr
 
-    @property
-    def supplies_value(self) -> bool:
-        return True
+    def sort_into(
+        self,
+        key: KeyT,
+        supplied: list[tuple[KeyT, SuppliedValue]],
+        bare: list[tuple[KeyT, NoStatementValue]],
+    ) -> None:
+        supplied.append((key, self))
 
-    def require_value(self, reason: str) -> ast.expr:
-        return self.value
+    def answer(self, question: StatementValueQuestion[AnswerT]) -> AnswerT:
+        return question.supplied(self)
 
     def visit_with(self, visitor: ast.NodeVisitor) -> None:
         visitor.visit(self.value)
 
     def walk(self) -> Iterable[ast.AST]:
         return ast.walk(self.value)
-
-    def paired_with(self, target: TargetT) -> tuple[TargetT, ast.expr] | None:
-        return target, self.value
 
     @property
     def value_kind_name(self) -> str:
@@ -384,34 +394,27 @@ class SuppliedValue(StatementValue):
     def compact_value(self) -> CompactValueExpression:
         return CompactValueExpression.project(self.value)
 
-    @property
-    def supplies_none_literal(self) -> bool:
-        return CompactValueExpression.project(self.value).value_is_none_literal
-
-    @property
-    def value_source(self) -> str | None:
-        return ast.unparse(self.value)
-
 
 @dataclass(frozen=True)
 class NoStatementValue(StatementValue):
     statement: ValuedStatement
 
-    @property
-    def supplies_value(self) -> bool:
-        return False
+    def sort_into(
+        self,
+        key: KeyT,
+        supplied: list[tuple[KeyT, SuppliedValue]],
+        bare: list[tuple[KeyT, NoStatementValue]],
+    ) -> None:
+        bare.append((key, self))
 
-    def require_value(self, reason: str) -> ast.expr:
-        raise AbsentStatementValue(reason)
+    def answer(self, question: StatementValueQuestion[AnswerT]) -> AnswerT:
+        return question.bare(self)
 
     def visit_with(self, visitor: ast.NodeVisitor) -> None:
         return None
 
     def walk(self) -> Iterable[ast.AST]:
         return ()
-
-    def paired_with(self, target: TargetT) -> tuple[TargetT, ast.expr] | None:
-        return None
 
     @property
     def value_kind_name(self) -> str:
@@ -420,10 +423,30 @@ class NoStatementValue(StatementValue):
     def compact_value(self) -> CompactValueExpression:
         return UnassignedValueExpression()
 
-    @property
-    def supplies_none_literal(self) -> bool:
-        return False
+
+@dataclass(frozen=True)
+class StatementValues(Generic[KeyT]):
+    """Keyed statements split into those that supply a value and the bare ones."""
+
+    supplied: tuple[tuple[KeyT, SuppliedValue], ...]
+    bare: tuple[tuple[KeyT, NoStatementValue], ...]
+
+    @classmethod
+    def keyed(
+        cls, pairs: Iterable[tuple[KeyT, ValuedStatement]]
+    ) -> StatementValues[KeyT]:
+        supplied: list[tuple[KeyT, SuppliedValue]] = []
+        bare: list[tuple[KeyT, NoStatementValue]] = []
+        for key, statement in pairs:
+            StatementValue.of(statement).sort_into(key, supplied, bare)
+        return cls(tuple(supplied), tuple(bare))
+
+    @staticmethod
+    def of(
+        statements: Iterable[ValuedStatement],
+    ) -> StatementValues[ValuedStatement]:
+        return StatementValues.keyed((statement, statement) for statement in statements)
 
     @property
-    def value_source(self) -> str | None:
-        return None
+    def values(self) -> tuple[ast.expr, ...]:
+        return tuple(supplied.value for _, supplied in self.supplied)
