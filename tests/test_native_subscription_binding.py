@@ -135,8 +135,9 @@ def test_supported_classvar_binding_needs_explicit_completion_for_prefix_admissi
     require_endpoint(environment, node, "post_invocation")
 
 
-@pytest.mark.native_proof
-@pytest.mark.parametrize("native_receiver", (list, ClassVar))
+@pytest.mark.parametrize(
+    "native_receiver", (pytest.param(list, marks=pytest.mark.native_proof), ClassVar)
+)
 def test_hostile_argument_hooks_are_not_run_to_manufacture_binding_evidence(
     native_receiver,
 ):

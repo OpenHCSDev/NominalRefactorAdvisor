@@ -138,9 +138,13 @@ def test_duplicate_owner_contexts_remain_ambiguous() -> None:
         execution.context_for_owner(flow.owner)
 
 
-@pytest.mark.native_proof
 @pytest.mark.parametrize(
-    "base, admitted", (("object", True), ("type", False), ("str", False))
+    "base, admitted",
+    (
+        pytest.param("object", True, marks=pytest.mark.native_proof),
+        ("type", False),
+        ("str", False),
+    ),
 )
 def test_body_lookup_requires_native_base_protocol_before_entering_body(
     base, admitted

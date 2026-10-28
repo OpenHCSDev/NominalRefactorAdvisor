@@ -132,8 +132,9 @@ def test_later_source_work_cannot_be_skipped_by_selecting_an_earlier_store():
         _ = entry.native_tail
 
 
-@pytest.mark.native_proof
-@pytest.mark.parametrize("warm", (False, True))
+@pytest.mark.parametrize(
+    "warm", (False, pytest.param(True, marks=pytest.mark.native_proof))
+)
 def test_selection_rechecks_original_body_after_warm_queries(warm):
     entry = body_entry("value = None\npass")
     if warm:

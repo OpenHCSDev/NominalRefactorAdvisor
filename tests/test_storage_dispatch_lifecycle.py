@@ -26,7 +26,6 @@ def execution(source):
     )
 
 
-@pytest.mark.native_proof
 @pytest.mark.parametrize(
     "source, hook",
     (
@@ -35,7 +34,11 @@ def execution(source):
             "import builtins\nbuiltins.NEW_STORAGE_DISPATCH_MEMBER = 1\n",
             "_attribute_mutation_resolution",
         ),
-        ("globals()['new_storage_dispatch_member'] = 1\n", "_item_mutation_resolution"),
+        pytest.param(
+            "globals()['new_storage_dispatch_member'] = 1\n",
+            "_item_mutation_resolution",
+            marks=pytest.mark.native_proof,
+        ),
     ),
 )
 def test_one_cache_lifecycle_dispatches_each_target_once_and_authenticates_hits(

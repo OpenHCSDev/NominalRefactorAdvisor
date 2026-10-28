@@ -162,8 +162,19 @@ def test_manual_registry_component_requires_distinct_mapping_keys(
     assert component.class_names == ("AlphaHandler", "BetaHandler")
 
 
-@pytest.mark.native_proof
-@pytest.mark.parametrize("enum_source,aliases,key_count", _KEY_CASES)
+@pytest.mark.parametrize(
+    "enum_source,aliases,key_count",
+    [
+        # Distinct keys reach the enum execution's own proof refusal; colliding
+        # keys are refused before it.
+        pytest.param(
+            *case.values,
+            marks=pytest.mark.native_proof if case.values[2] == 2 else (),
+            id=case.id,
+        )
+        for case in _KEY_CASES
+    ],
+)
 def test_manual_conversion_does_not_assume_member_spellings_are_unique(
     enum_source: str, aliases: bool, key_count: int
 ) -> None:

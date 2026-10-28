@@ -91,8 +91,9 @@ def test_compiler_generated_overwrite_remains_after_final_source_assignment():
     assert tuple(binding.instruction_offset for binding in tail.bindings) == actual
 
 
-@pytest.mark.native_proof
-@pytest.mark.parametrize("warm", (False, True))
+@pytest.mark.parametrize(
+    "warm", (False, pytest.param(True, marks=pytest.mark.native_proof))
+)
 def test_mutated_original_body_cannot_borrow_warm_native_tail(warm):
     tail = scalar_tail("key = None\npass")
     if warm:

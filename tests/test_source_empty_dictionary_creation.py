@@ -124,8 +124,14 @@ def test_creation_namespace_initial_absence_needs_actual_later_cut():
         result.require_available(environment.kernel, at_creation)
 
 
-@pytest.mark.native_proof
-@pytest.mark.parametrize("defect", ("kernel", "initial", "owner"))
+@pytest.mark.parametrize(
+    "defect",
+    (
+        pytest.param("kernel", marks=pytest.mark.native_proof),
+        pytest.param("initial", marks=pytest.mark.native_proof),
+        "owner",
+    ),
+)
 def test_foreign_execution_or_counterfeit_creation_is_not_admitted(defect):
     environment = execution("original = {}\n")
     other = execution("original = {}\n")

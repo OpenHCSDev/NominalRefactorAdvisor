@@ -223,8 +223,15 @@ def test_proved_dataclass_prefix_preserves_a_later_plain_function_result():
     result.require_definition_identity(binding.target.owner)
 
 
-@pytest.mark.native_proof
-@pytest.mark.parametrize("corruption", ("node", "binding", "execution", "owner"))
+@pytest.mark.parametrize(
+    "corruption",
+    (
+        "node",
+        "binding",
+        "execution",
+        pytest.param("owner", marks=pytest.mark.native_proof),
+    ),
+)
 def test_equal_foreign_receipts_cannot_authenticate_source_function(corruption):
     environment = execution("def chosen(): pass\n")
     node, context, binding = function(environment)

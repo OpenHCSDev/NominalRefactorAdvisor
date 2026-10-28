@@ -11,9 +11,8 @@ from nominal_refactor_advisor.source_execution import SourceCreatedFunctionCaptu
 from test_native_function_creation import _case
 from test_source_function_result import execution, function
 
-pytestmark = pytest.mark.native_proof
 
-
+@pytest.mark.native_proof
 @pytest.mark.parametrize("count", (1, 2, 4))
 @pytest.mark.parametrize("in_class", (False, True))
 def test_implicit_arguments_are_the_original_preceding_native_results(
@@ -50,6 +49,7 @@ def test_implicit_arguments_are_the_original_preceding_native_results(
     assert compilation.execution_for(receipt.source_span) is receipt
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize("damage", ("reorder", "duplicate", "rewind"))
 def test_application_receipt_rejects_a_nonforward_native_chain(monkeypatch, damage):
     def corrupt(inventory):
@@ -68,6 +68,7 @@ def test_application_receipt_rejects_a_nonforward_native_chain(monkeypatch, dama
         _case(monkeypatch, "@first\n@second\ndef chosen(): pass\n", damage=corrupt)
 
 
+@pytest.mark.native_proof
 def test_pickled_application_chain_keeps_original_links_without_recompiling(
     monkeypatch,
 ):
@@ -90,6 +91,7 @@ def test_pickled_application_chain_keeps_original_links_without_recompiling(
         restored.execution_outcome.require_function(copy(actual))
 
 
+@pytest.mark.native_proof
 def test_long_native_argument_chain_reuses_iterative_value_comparison(monkeypatch):
     count = 1200
     compilation, receipt, _, _ = _case(
@@ -111,6 +113,7 @@ def decorated():
     return env, node, result
 
 
+@pytest.mark.native_proof
 def test_source_applications_join_each_original_native_input():
     _, _, result = decorated()
     result.require_closed()
@@ -122,7 +125,9 @@ def test_source_applications_join_each_original_native_input():
     assert applications[1].argument is applications[0]
 
 
-@pytest.mark.parametrize("warm", (False, True))
+@pytest.mark.parametrize(
+    "warm", (False, pytest.param(True, marks=pytest.mark.native_proof))
+)
 @pytest.mark.parametrize("damage", ("reverse", "duplicate", "omit"))
 def test_source_application_order_is_revalidated_after_warming(warm, damage):
     _, node, result = decorated()
@@ -138,6 +143,7 @@ def test_source_application_order_is_revalidated_after_warming(warm, damage):
         result.require_closed()
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize(
     "damage,message",
     (
@@ -154,6 +160,7 @@ def test_source_join_rejects_copied_native_argument_or_frame(damage, message):
         result.require_closed()
 
 
+@pytest.mark.native_proof
 def test_observed_implicit_argument_does_not_admit_unknown_decorator():
     env = execution("@unknown\ndef chosen(): pass\n")
     node, _, _ = function(env)

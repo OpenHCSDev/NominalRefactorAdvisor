@@ -183,8 +183,9 @@ def test_creation_needs_completed_event_even_when_lookup_prefix_is_admitted(
         join.require_join(receipt.value.inputs[0])
 
 
-@pytest.mark.native_proof
-@pytest.mark.parametrize("warm", (False, True))
+@pytest.mark.parametrize(
+    "warm", (False, pytest.param(True, marks=pytest.mark.native_proof))
+)
 @pytest.mark.parametrize("defect", ("reverse", "duplicate", "omit"))
 def test_original_tuple_shape_is_revalidated_after_source_tree_changes(warm, defect):
     env, store = assignment("payload = (object, str)\n")

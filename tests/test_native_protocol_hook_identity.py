@@ -6,10 +6,11 @@ from textwrap import dedent
 
 import pytest
 
-pytestmark = pytest.mark.native_proof
 
-
-@pytest.mark.parametrize("hook", ("__import__", "__build_class__"))
+@pytest.mark.parametrize(
+    "hook",
+    ("__import__", pytest.param("__build_class__", marks=pytest.mark.native_proof)),
+)
 def test_changed_hook_before_entry_is_not_its_own_protocol_authority(hook):
     script = dedent("""
         import ast

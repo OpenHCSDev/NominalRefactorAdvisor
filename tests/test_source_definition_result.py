@@ -50,11 +50,14 @@ def test_actual_plain_definition_result_has_exact_owner():
     result.require_definition_identity(binding.target.owner)
 
 
-@pytest.mark.native_proof
 @pytest.mark.parametrize(
     "kind,rejection",
     (
-        ("decorator", "Class decorator result remains unproved"),
+        pytest.param(
+            "decorator",
+            "Class decorator result remains unproved",
+            marks=pytest.mark.native_proof,
+        ),
         (
             "metaclass",
             "Native object identity remains open: unproved_execution_effects",
@@ -192,10 +195,12 @@ def test_alias_value_capture_keeps_earlier_definition_before_rebinding():
     assert native.returncode == 0, native.stderr
 
 
-@pytest.mark.native_proof
 @pytest.mark.parametrize(
     "previous, admitted",
-    (("Original = 1\n", True), ("class Original: pass\n", False)),
+    (
+        pytest.param("Original = 1\n", True, marks=pytest.mark.native_proof),
+        ("class Original: pass\n", False),
+    ),
 )
 def test_creation_result_requires_final_binding_release_admission(previous, admitted):
     environment = execution(previous + "class Original: pass\n")

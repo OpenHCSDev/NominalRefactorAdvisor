@@ -229,14 +229,16 @@ def test_unproved_membership_never_becomes_a_partial_key_set(prefix):
         )
 
 
-@pytest.mark.native_proof
 @pytest.mark.parametrize(
     "prefix",
     (
         "first = 1\n_private = 2\n",
-        "first = 1\ndel first\n",
-        "globals()['injected'] = 1\n",
-        "namespace = globals()\nnamespace['injected'] = 1\n",
+        pytest.param("first = 1\ndel first\n", marks=pytest.mark.native_proof),
+        pytest.param("globals()['injected'] = 1\n", marks=pytest.mark.native_proof),
+        pytest.param(
+            "namespace = globals()\nnamespace['injected'] = 1\n",
+            marks=pytest.mark.native_proof,
+        ),
     ),
 )
 def test_membership_matches_native_module_execution(tmp_path, prefix):

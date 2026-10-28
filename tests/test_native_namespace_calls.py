@@ -301,8 +301,9 @@ assert copied["selected"] is retained
     assert completed.returncode == 0, completed.stderr
 
 
-@pytest.mark.native_proof
-@pytest.mark.parametrize("qualified", (False, True))
+@pytest.mark.parametrize(
+    "qualified", (False, pytest.param(True, marks=pytest.mark.native_proof))
+)
 def test_copied_builtin_frame_preserves_qualified_native_decorator_only(qualified):
     decorator = "builtins.property" if qualified else "property"
     source = f"""import builtins

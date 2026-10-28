@@ -64,8 +64,9 @@ def test_multiple_inheritance_selects_scope_behavior_through_mro():
     )
 
 
-@pytest.mark.native_proof
-@pytest.mark.parametrize("warm", (False, True))
+@pytest.mark.parametrize(
+    "warm", (False, pytest.param(True, marks=pytest.mark.native_proof))
+)
 def test_class_frame_rejects_another_original_definitions_cached_association(warm):
     environment = execution("class First: pass\nclass Second: pass\n")
     first, second = (

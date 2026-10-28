@@ -158,7 +158,6 @@ def test_nondefinition_mutation_is_not_a_creation_result():
         environment.capture_definition(node)
 
 
-@pytest.mark.native_proof
 @pytest.mark.parametrize(
     "source,definition_index,reason",
     (
@@ -167,7 +166,12 @@ def test_nondefinition_mutation_is_not_a_creation_result():
             0,
             "Captured object is not the required native declaration",
         ),
-        ("missing()\nclass Original: pass\n", 1, "unproved_execution_effects"),
+        pytest.param(
+            "missing()\nclass Original: pass\n",
+            1,
+            "unproved_execution_effects",
+            marks=pytest.mark.native_proof,
+        ),
         ("def Original(value=missing): pass\n", 0, "unproved"),
         ("def Original(*, value=missing): pass\n", 0, "unproved"),
         ("class Original:\n    def method(self, value=missing): pass\n", 0, "unproved"),

@@ -73,8 +73,9 @@ def test_equal_but_nonoriginal_source_read_context_cannot_acquire_creation():
         environment.kernel._read_use(read.use, replace(read.context), frozenset())
 
 
-@pytest.mark.native_proof
-@pytest.mark.parametrize("warm", (False, True))
+@pytest.mark.parametrize(
+    "warm", (False, pytest.param(True, marks=pytest.mark.native_proof))
+)
 def test_equal_compiler_receipt_is_not_the_original_creation(monkeypatch, warm):
     environment = execution("value = lambda: None\n")
     node = expression(environment)

@@ -165,7 +165,6 @@ def test_duplicate_class_value_replaced_by_literal_still_requires_release_proof(
         _require_original_class(execution, dictionary.values[2])
 
 
-@pytest.mark.native_proof
 @pytest.mark.parametrize(
     "expression,prefix,first_operand_precedes_construction",
     (
@@ -176,7 +175,12 @@ def test_duplicate_class_value_replaced_by_literal_still_requires_release_proof(
             False,
         ),
         ("{**other, 'beta': Beta}", "other = {}\n", False),
-        ("{'alpha': Alpha, **other}", "other = {}\n", True),
+        pytest.param(
+            "{'alpha': Alpha, **other}",
+            "other = {}\n",
+            True,
+            marks=pytest.mark.native_proof,
+        ),
     ),
 )
 def test_unknown_keys_and_unpacking_remain_unproved(

@@ -72,8 +72,9 @@ def test_bound_native_default_operand_is_captured_before_creation(scope, keyword
     assert default is object
 
 
-@pytest.mark.native_proof
-@pytest.mark.parametrize("prior_binding", (False, True))
+@pytest.mark.parametrize(
+    "prior_binding", (False, pytest.param(True, marks=pytest.mark.native_proof))
+)
 def test_same_function_name_default_reads_the_prior_binding_only(prior_binding):
     source = "chosen = object\n" if prior_binding else ""
     source += "def chosen(value=chosen):\n    return value\n"
@@ -94,9 +95,10 @@ def test_same_function_name_default_reads_the_prior_binding_only(prior_binding):
     assert namespace["chosen"] is not object
 
 
-@pytest.mark.native_proof
 @pytest.mark.parametrize("scope", ("module", "class"))
-@pytest.mark.parametrize("future", (False, True))
+@pytest.mark.parametrize(
+    "future", (False, pytest.param(True, marks=pytest.mark.native_proof))
+)
 def test_annotation_operand_follows_actual_eager_future_or_lazy_phase(scope, future):
     source = _source(
         scope,

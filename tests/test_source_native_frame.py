@@ -23,9 +23,13 @@ def resolver_for(env, node):
     return env.capture_value(node.value)
 
 
-@pytest.mark.native_proof
 @pytest.mark.parametrize(
-    "statement", ('"documentation"', "def chosen(): pass", "class Chosen: pass")
+    "statement",
+    (
+        pytest.param('"documentation"', marks=pytest.mark.native_proof),
+        "def chosen(): pass",
+        "class Chosen: pass",
+    ),
 )
 def test_module_origin_requires_original_compilation_for_each_consumer(statement):
     env = execution(statement + "\n")

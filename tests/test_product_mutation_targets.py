@@ -71,12 +71,14 @@ def test_confirmed_class_write_is_distinct_from_unresolved_receiver_identity() -
     )
 
 
-@pytest.mark.native_proof
 @pytest.mark.parametrize(
     "tail",
     (
-        "Other.extra = replacement\n",
-        "def callback():\n    pass\ncallback.extra = replacement\n",
+        pytest.param("Other.extra = replacement\n", marks=pytest.mark.native_proof),
+        pytest.param(
+            "def callback():\n    pass\ncallback.extra = replacement\n",
+            marks=pytest.mark.native_proof,
+        ),
         "def local():\n    Product = replacement\n",
     ),
     ids=("other-class", "known-function", "local-rebinding"),

@@ -116,8 +116,9 @@ def test_final_method_tail_preserves_prepared_registry_values_without_constructi
         entry.result()
 
 
-@pytest.mark.native_proof
-@pytest.mark.parametrize("warm", (False, True))
+@pytest.mark.parametrize(
+    "warm", (False, pytest.param(True, marks=pytest.mark.native_proof))
+)
 def test_final_value_queries_do_not_hide_mutated_source_after_cache_warmup(warm):
     tail = scalar_tail("key = None\npass")
     if warm:

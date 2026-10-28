@@ -68,10 +68,12 @@ def test_branch_membership_is_not_definite_execution():
         prefix.require_event(context, event, environment.entry.frame)
 
 
-@pytest.mark.native_proof
 @pytest.mark.parametrize(
     "source",
-    ("created = {}\n", "import builtins\ncreated = dict(vars(builtins))\n"),
+    (
+        pytest.param("created = {}\n", marks=pytest.mark.native_proof),
+        "import builtins\ncreated = dict(vars(builtins))\n",
+    ),
 )
 def test_native_creation_consumers_use_the_prefix_owned_query(source, monkeypatch):
     environment = execution(source)

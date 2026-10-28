@@ -23,18 +23,35 @@ SHAPES = (
 )
 
 
-@pytest.mark.native_proof
+def _accepted(constructor, arguments):
+    """Whether the real builtin constructor accepts these arguments."""
+    try:
+        eval(
+            f"{constructor}({arguments})", {constructor: getattr(builtins, constructor)}
+        )
+    except TypeError:
+        return False
+    return True
+
+
 @pytest.mark.parametrize(
     "constructor,arguments",
-    tuple(product(("property", "classmethod", "staticmethod"), SHAPES)),
+    [
+        # An accepted construction must be proved natively; a rejected one is
+        # refused before any native proof.
+        pytest.param(
+            constructor,
+            arguments,
+            marks=pytest.mark.native_proof if _accepted(constructor, arguments) else (),
+        )
+        for constructor, arguments in product(
+            ("property", "classmethod", "staticmethod"), SHAPES
+        )
+    ],
 )
 def test_binding_acceptance_matches_actual_native_constructor(constructor, arguments):
     expression = f"{constructor}({arguments})"
-    try:
-        eval(expression, {constructor: getattr(builtins, constructor)})
-        valid = True
-    except TypeError:
-        valid = False
+    valid = _accepted(constructor, arguments)
     environment = execution(f"result = {expression}\n")
     node = environment.module.module.body[-1].value
     if valid:
@@ -58,8 +75,10 @@ def test_expansion_does_not_turn_into_a_guessed_argument_count(arguments):
         ).require_closed()
 
 
-@pytest.mark.native_proof
-@pytest.mark.parametrize("arguments,valid", (("", False), ("None", True)))
+@pytest.mark.parametrize(
+    "arguments,valid",
+    (("", False), pytest.param("None", True, marks=pytest.mark.native_proof)),
+)
 def test_qualified_import_alias_retains_actual_constructor_binding(arguments, valid):
     environment = execution(
         "from builtins import staticmethod as declared\n"

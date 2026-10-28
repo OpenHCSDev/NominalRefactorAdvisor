@@ -55,8 +55,9 @@ def test_original_scalar_store_joins_original_completed_activation(literal, in_c
     assert not env._pending
 
 
-@pytest.mark.native_proof
-@pytest.mark.parametrize("in_class", (False, True))
+@pytest.mark.parametrize(
+    "in_class", (False, pytest.param(True, marks=pytest.mark.native_proof))
+)
 def test_uncompleted_store_cannot_borrow_native_transfer(in_class):
     env, store = scalar_store(
         ("class Family:\n    " if in_class else "") + "key = None\n"

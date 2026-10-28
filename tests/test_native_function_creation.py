@@ -126,8 +126,9 @@ def test_decorated_result_can_replace_original_created_function(monkeypatch):
     assert emission.code is raw[0].__code__
 
 
-@pytest.mark.native_proof
-@pytest.mark.parametrize("damage", ("missing", "range"))
+@pytest.mark.parametrize(
+    "damage", ("missing", pytest.param("range", marks=pytest.mark.native_proof))
+)
 def test_exact_flags_do_not_fill_missing_creation_evidence(monkeypatch, damage):
     def remove_evidence(inventory):
         for emission in inventory.emissions:

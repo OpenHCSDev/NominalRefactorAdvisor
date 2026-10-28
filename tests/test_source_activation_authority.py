@@ -129,8 +129,9 @@ def test_root_and_implicit_leaf_reuse_one_condition_at_their_actual_definition()
     assert not environment._pending
 
 
-@pytest.mark.native_proof
-@pytest.mark.parametrize("missing", ("Root", "Leaf"))
+@pytest.mark.parametrize(
+    "missing", ("Root", pytest.param("Leaf", marks=pytest.mark.native_proof))
+)
 def test_each_definition_requires_its_own_condition(missing):
     environment, entries = conditioned_execution(omitted=(missing,))
     selected = next(entry for entry in entries if entry.node.name == missing)

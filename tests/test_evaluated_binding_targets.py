@@ -35,12 +35,15 @@ def execution(source: str) -> SourceModuleExecution:
     )
 
 
-@pytest.mark.native_proof
 @pytest.mark.parametrize(
     "assignment, complete_expression",
     (
         ("copied = dict(vars(builtins))", True),
-        ("copied: object = dict(vars(builtins))", True),
+        pytest.param(
+            "copied: object = dict(vars(builtins))",
+            True,
+            marks=pytest.mark.native_proof,
+        ),
         ("(copied := dict(vars(builtins)))", False),
     ),
 )

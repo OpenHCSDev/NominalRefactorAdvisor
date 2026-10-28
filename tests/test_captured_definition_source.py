@@ -79,14 +79,17 @@ def test_open_capture_preserves_its_original_refusal_in_source_projection():
     assert caught.value.__cause__ is cause
 
 
-@pytest.mark.native_proof
 @pytest.mark.parametrize(
     "source",
     (
-        "class Original(Unknown): pass\n",
+        pytest.param("class Original(Unknown): pass\n", marks=pytest.mark.native_proof),
         "class Original(metaclass=Unknown): pass\n",
-        "@unknown\nclass Original: pass\n",
-        "class Original:\n    x = unknown()\n",
+        pytest.param(
+            "@unknown\nclass Original: pass\n", marks=pytest.mark.native_proof
+        ),
+        pytest.param(
+            "class Original:\n    x = unknown()\n", marks=pytest.mark.native_proof
+        ),
     ),
 )
 def test_unproved_class_creation_yields_no_source_definition(source):

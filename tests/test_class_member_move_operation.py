@@ -110,9 +110,12 @@ def test_promotes_selected_members_to_existing_ancestor_as_one_operation(
     assert json.loads(_runtime_output(tmp_path)) == ["shared", 3, 3]
 
 
-@pytest.mark.native_proof
 @pytest.mark.parametrize(
-    "bases,safe", (("Other, Authority", False), ("Authority, Other", True))
+    "bases,safe",
+    (
+        ("Other, Authority", False),
+        pytest.param("Authority, Other", True, marks=pytest.mark.native_proof),
+    ),
 )
 def test_promotion_preserves_native_member_owner_across_branches(
     tmp_path: Path, bases: str, safe: bool

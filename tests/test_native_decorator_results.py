@@ -111,8 +111,9 @@ def test_unknown_application_cannot_inherit_native_result_proof(decorators):
         environment.definition_result(context, binding)
 
 
-@pytest.mark.native_proof
-@pytest.mark.parametrize("future", (False, True))
+@pytest.mark.parametrize(
+    "future", (False, pytest.param(True, marks=pytest.mark.native_proof))
+)
 @pytest.mark.parametrize("decorator", ("property", "classmethod", "staticmethod"))
 def test_wrapping_does_not_invent_eager_annotation_execution(future, decorator):
     source = (

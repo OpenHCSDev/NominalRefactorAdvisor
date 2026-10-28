@@ -131,9 +131,14 @@ def test_body_creation_does_not_weaken_the_initial_helper_boundary():
         context.require_creation(emission.creation)
 
 
-@pytest.mark.native_proof
 @pytest.mark.parametrize(
-    "damage", ("copied_instruction", "foreign_frame", "copied_load", "missing_current")
+    "damage",
+    (
+        pytest.param("copied_instruction", marks=pytest.mark.native_proof),
+        "foreign_frame",
+        "copied_load",
+        "missing_current",
+    ),
 )
 def test_body_operand_requires_original_instructions_and_frame(damage):
     _, context, emission = original_creation()

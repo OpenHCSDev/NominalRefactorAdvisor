@@ -21582,12 +21582,16 @@ def test_module_cli_class_plan_simulates_projected_finding_class_delta(
     )
 
 
-@pytest.mark.native_proof
 @pytest.mark.parametrize(
     ("execution_flag", "result_field", "expected_returncode"),
     (
         ("--codemod-preflight", "preflight_report", 0),
-        ("--codemod-apply", "application_blocked", 1),
+        pytest.param(
+            "--codemod-apply",
+            "application_blocked",
+            1,
+            marks=pytest.mark.native_proof,
+        ),
     ),
 )
 def test_module_cli_class_plan_uses_shared_typed_execution_lifecycle(

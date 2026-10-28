@@ -158,7 +158,6 @@ def test_reinstall_after_delete_proves_the_new_binding_without_old_value_release
     )
 
 
-@pytest.mark.native_proof
 @pytest.mark.parametrize(
     "hook,completion",
     (
@@ -167,7 +166,9 @@ def test_reinstall_after_delete_proves_the_new_binding_without_old_value_release
         ("__new__", "result = Owner()\n"),
     ),
 )
-@pytest.mark.parametrize("deleted", (False, True))
+@pytest.mark.parametrize(
+    "deleted", (False, pytest.param(True, marks=pytest.mark.native_proof))
+)
 def test_native_protocol_uses_final_namespace_not_deleted_hook(
     hook, completion, deleted
 ):

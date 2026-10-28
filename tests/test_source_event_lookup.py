@@ -22,7 +22,6 @@ from test_source_definition_result import execution
 from test_source_mutation_operations import project
 
 
-@pytest.mark.native_proof
 @pytest.mark.parametrize(
     "text,event_type",
     (
@@ -31,7 +30,11 @@ from test_source_mutation_operations import project
         ("value = object\n", CompactValueUse),
         ("value = object\n", CompactEvaluatedResult),
         ("value = object\n", CompactMutation),
-        ("class Original: pass\n", CompactNativeCapture),
+        pytest.param(
+            "class Original: pass\n",
+            CompactNativeCapture,
+            marks=pytest.mark.native_proof,
+        ),
     ),
 )
 def test_event_lookup_returns_actual_operations_for_each_observed_event_family(

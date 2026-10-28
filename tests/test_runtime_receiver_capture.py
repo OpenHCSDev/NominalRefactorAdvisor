@@ -140,18 +140,20 @@ def test_duplicate_module_names_do_not_select_a_runtime_activation():
         repository.captured_value(value)
 
 
-@pytest.mark.native_proof
 @pytest.mark.parametrize(
     "source,compact_excludes_receiver",
     (
-        ("data = {}\ndata['item'] = 1\n", False),
+        pytest.param(
+            "data = {}\ndata['item'] = 1\n", False, marks=pytest.mark.native_proof
+        ),
         (
             "import builtins\ndata = dict(vars(builtins))\ndata['item'] = 1\n",
             False,
         ),
-        (
+        pytest.param(
             "from __future__ import annotations\nclass Owner:\n    item: object = None\n",
             True,
+            marks=pytest.mark.native_proof,
         ),
     ),
 )

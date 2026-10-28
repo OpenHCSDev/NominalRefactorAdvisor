@@ -245,13 +245,13 @@ def test_function_decorator_refusal_reaches_actual_creation(decorator, alias):
     )
 
 
-@pytest.mark.native_proof
 @pytest.mark.parametrize(
     "body, cause",
     (
-        (
+        pytest.param(
             "import builtins\nbuiltins.__build_class__ = lambda *args, **kwargs: None\nclass callback: pass\ncallback.changed = 1\n",
             "Native instance lifetime remains unproved",
+            marks=pytest.mark.native_proof,
         ),
         (
             "def outer():\n    def callback(): pass\n    callback.changed = 1\nouter()\n",

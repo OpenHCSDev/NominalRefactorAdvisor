@@ -93,8 +93,14 @@ def require_write(kernel, context, write):
     )
 
 
-@pytest.mark.native_proof
-@pytest.mark.parametrize("entries", ({}, {"member": property}, {"member": type}))
+@pytest.mark.parametrize(
+    "entries",
+    (
+        {},
+        pytest.param({"member": property}, marks=pytest.mark.native_proof),
+        pytest.param({"member": type}, marks=pytest.mark.native_proof),
+    ),
+)
 def test_missing_or_static_type_slot_has_closed_release(entries):
     module, kernel, context, (write,) = fixture(entries)
     before = vars(module).copy()

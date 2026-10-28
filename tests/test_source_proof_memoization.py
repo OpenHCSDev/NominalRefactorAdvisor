@@ -168,8 +168,9 @@ def test_open_value_request_does_not_poison_later_complete_query(monkeypatch):
     environment.kernel.read(read).require_native_identity(NativeDeclaration(property))
 
 
-@pytest.mark.native_proof
-@pytest.mark.parametrize("warm", (False, True))
+@pytest.mark.parametrize(
+    "warm", (False, pytest.param(True, marks=pytest.mark.native_proof))
+)
 def test_forged_context_owner_index_cannot_authenticate_read_or_storage(warm):
     environment = execution("registry={}\nregistry['key']='value'\nanswer=property\n")
     read = environment.source.value_reads_by_node[

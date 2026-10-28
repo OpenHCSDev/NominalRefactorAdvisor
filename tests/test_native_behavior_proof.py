@@ -207,8 +207,9 @@ def test_current_source_proof_is_not_a_function_identity_whitelist(
     assert not requirement.inspect().provenance.is_admitted
 
 
-@pytest.mark.native_proof
-@pytest.mark.parametrize("before_entry", (False, True))
+@pytest.mark.parametrize(
+    "before_entry", (pytest.param(False, marks=pytest.mark.native_proof), True)
+)
 def test_rebound_helper_next_global_is_rejected_at_the_original_cut(
     tmp_path, monkeypatch, before_entry
 ):

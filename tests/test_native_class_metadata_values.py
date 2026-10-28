@@ -68,8 +68,9 @@ def test_valid_class_metadata_and_unrelated_strings_stay_supported(member):
     environment.require_class_creation(environment.module.module.body[0])
 
 
-@pytest.mark.native_proof
-@pytest.mark.parametrize("text", ("valid", "\ud800"))
+@pytest.mark.parametrize(
+    "text", (pytest.param("valid", marks=pytest.mark.native_proof), "\ud800")
+)
 def test_admitted_initial_value_uses_its_actual_text(text):
     source = "class Owner:\n    __doc__ = provided\n"
     environment = bound_execution(source, provided=text)
