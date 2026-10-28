@@ -5365,7 +5365,10 @@ class ExistingMethodOwner(OwnerCandidate):
     declaration: IndexedClass = json_report_field(included=False)
     method: ast.FunctionDef = json_report_field(included=False)
     constructor: NominalConstructorCall = json_report_field(included=False)
-    KIND: ClassVar[str] = "existing_method"
+
+    @property
+    def subject(self) -> tuple[str, ...]:
+        return (self.symbol,)
 
     def describe(self) -> str:
         return f"existing method `{self.symbol}`"
@@ -5464,7 +5467,6 @@ class ExistingMethodOwner(OwnerCandidate):
         ):
             return None
         return cls(
-            candidate_id=f"existing_method:{declaration.symbol}.{method.name}",
             module_name=declaration.module_name,
             receipts=(),
             cost=OwnerCost(statements_rewritten=0, imports_added=0, cycles_created=0),

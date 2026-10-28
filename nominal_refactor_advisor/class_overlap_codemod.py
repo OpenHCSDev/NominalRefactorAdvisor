@@ -89,7 +89,7 @@ from .native_class_mro import NativeClassMroDeclaration
 from .models import RefactorFinding
 from .owner_candidates import (
     ExistingClassOwner,
-    ExistingClassesOwner,
+    ComposeExistingOwner,
     NewMixinOwner,
     OwnerCandidate,
     SharedBaseOwner,
@@ -1059,7 +1059,8 @@ class CoveringComposition:
         require_owner_candidate(
             snapshot,
             composers[0].symbol,
-            "compose_existing:" + "+".join(owner.symbol for owner in owners),
+            ComposeExistingOwner,
+            tuple(owner.symbol for owner in owners),
             block,
         )
         restated = tuple(
@@ -2100,18 +2101,24 @@ class FoldSharedDeclarationsIntoBaseOperation(RepositorySourceReprovedOperation)
 def require_owner_candidate(
     snapshot: CodemodSourceSnapshot,
     anchor_symbol: str,
-    candidate_id: str,
+    owner_kind: type[OwnerCandidate],
+    subject: tuple[str, ...],
     member_names: Iterable[str],
 ) -> tuple[ClassOverlapCandidate, OwnerCandidate]:
     """An extract-mixin verdict over the anchor whose block holds these names and
-    that offers this owner, with no guard fired on the verdict or the owner."""
+    that offers an owner of this kind about this subject, with no guard fired on
+    the verdict or the owner."""
 
     wanted = frozenset(member_names)
     for verdict in snapshot.class_overlap_verdicts.candidates:
         if verdict.move is not ExtractMixin or not wanted <= frozenset(verdict.shared_names):
             continue
         for owner in verdict.owner_candidates:
-            if owner.candidate_id == candidate_id and anchor_symbol in owner.composers:
+            if (
+                type(owner) is owner_kind
+                and owner.subject == subject
+                and anchor_symbol in owner.composers
+            ):
                 if not verdict.permitted:
                     raise ValueError(
                         "The verdict refuses the move: "
@@ -2119,12 +2126,13 @@ def require_owner_candidate(
                     )
                 if not owner.permitted:
                     raise ValueError(
-                        f"`{candidate_id}` is refused: "
+                        f"`{owner.candidate_id}` is refused: "
                         + "; ".join(receipt.detail for receipt in owner.refusals)
                     )
                 return verdict, owner
     raise ValueError(
-        f"The current source offers no extract-mixin owner `{candidate_id}` for "
+        f"The current source offers no extract-mixin {owner_kind.__name__} "
+        f"`{'+'.join(subject)}` for "
         f"`{anchor_symbol}` over {sorted(wanted)}"
     )
 
@@ -2189,7 +2197,7 @@ class MixinCreation:
             raise ValueError("A mixin needs a one-line docstring without quotes")
         module_name = snapshot.parsed_module_for_source_path(anchor.file_path).module_name
         _, owner = require_owner_candidate(
-            snapshot, anchor.symbol, f"new_mixin:{module_name}", member_names
+            snapshot, anchor.symbol, NewMixinOwner, (module_name,), member_names
         )
         if not name.isidentifier() or keyword_module.iskeyword(name):
             raise ValueError(f"`{name}` is no class name")
@@ -2292,7 +2300,7 @@ class OwnerExtension:
         owner = OverlapClass.require(snapshot, owner_reference)
         anchor = OverlapClass.require(snapshot, anchor_reference)
         require_owner_candidate(
-            snapshot, anchor.symbol, f"existing_class:{owner.symbol}", member_names
+            snapshot, anchor.symbol, ExistingClassOwner, (owner.symbol,), member_names
         )
         if frozenset(member_names) & owner.target.bound_names:
             raise ValueError(f"`{owner.qualname}` already binds an added name")
@@ -2565,12 +2573,7 @@ class ClassOverlapFindingRecipeSynthesizer(
             return "an extract-mixin move needs an owner pick (--codemod-owner-picks)"
         if pick.finding != finding.stable_id:
             return f"covered by the owner pick on {pick.finding}"
-        owner = next(
-            (candidate for candidate in metrics.owner_candidates if candidate.candidate_id == pick.owner),
-            None,
-        )
-        if owner is None or not owner.permitted:
-            return f"`{pick.owner}` is not a permitted candidate of this finding"
+        owner = pick.candidate
         composers = tuple(
             indexed_class
             for symbol in owner.composers
@@ -2616,7 +2619,7 @@ class ClassOverlapFindingRecipeSynthesizer(
                         member_names=missing,
                     ),
                 )
-            case ExistingClassesOwner():
+            case ComposeExistingOwner():
                 owners = tuple(
                     indexed_class
                     for symbol in owner.symbols

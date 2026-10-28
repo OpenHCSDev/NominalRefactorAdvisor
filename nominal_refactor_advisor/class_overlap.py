@@ -69,7 +69,7 @@ from .owner_candidates import (
     BlockOwnerQuestion,
     ModuleImportGraph,
     OwnerCandidate,
-    OwnerPick,
+    PickedOwner,
 )
 from .models import FindingMetrics, ImpactDelta, SourceLocation
 
@@ -413,7 +413,7 @@ class ClassOverlapMetrics(FindingMetrics):
     move_permitted: bool
     receipts: tuple[Receipt, ...]
     owner_candidates: tuple[OwnerCandidate, ...] = ()
-    owner_pick: OwnerPick | None = None
+    owner_pick: PickedOwner | None = None
     """The picker's choice among `owner_candidates`, from a picks file (#67)."""
 
     @classmethod

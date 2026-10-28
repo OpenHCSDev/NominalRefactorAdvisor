@@ -32,14 +32,15 @@ close. Closing a cycle is a guard.
 from __future__ import annotations
 
 import math
+import re
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from itertools import combinations
-from typing import ClassVar
+from typing import ClassVar, TypeVar
 
 from .class_index import CompactIndexedClass
-from .json_reports import SemanticRecord
+from .json_reports import SemanticRecord, json_report_field, json_report_property
 from .receipts import Receipt, ReceiptKind, ScoredByReceipts
 from .models import SourceLocation
 
@@ -91,17 +92,43 @@ class OwnerCost(SemanticRecord):
 class OwnerCandidate(ScoredByReceipts, SemanticRecord, ABC):
     """One place the block could live, the facts for and against it, and its cost."""
 
-    candidate_id: str
     module_name: str
     receipts: tuple[Receipt, ...]
     cost: OwnerCost
     confidence: float = 0.0
-    kind: str = field(init=False, default="")
 
-    KIND: ClassVar[str]
+    @property
+    @abstractmethod
+    def subject(self) -> tuple[str, ...]:
+        """What this candidate is about, within its kind: a symbol, a module, or
+        the symbols of a set of owners."""
 
-    def __post_init__(self) -> None:
-        object.__setattr__(self, "kind", type(self).KIND)
+    @json_report_property()
+    def kind(self) -> str:
+        """The candidate's class is its kind; this is its one spelling, from the
+        class name without the family's `Owner` suffix."""
+
+        name = type(self).__name__.removesuffix("Owner")
+        return re.sub(r"(?<!^)(?=[A-Z])", "_", name).lower()
+
+    @json_report_property()
+    def candidate_id(self) -> str:
+        """The id a picks file names this candidate by."""
+
+        return f"{self.kind}:{'+'.join(self.subject)}"
+
+    def pick_refusals(self, pick: OwnerPick) -> Iterator[str]:
+        """Why ``pick`` cannot choose this candidate; nothing when it can."""
+
+        if not self.permitted:
+            yield f"`{pick.owner}` is refused: " + "; ".join(
+                receipt.detail for receipt in self.refusals
+            )
+        if pick.because not in {receipt.kind.value for receipt in self.receipts}:
+            yield (
+                f"the pick cites `{pick.because or '(nothing)'}`, which `{pick.owner}` "
+                "carries no receipt of"
+            )
 
     @abstractmethod
     def describe(self) -> str:
@@ -141,7 +168,10 @@ class SharedBaseOwner(BlockOwnerCandidate):
     """A scanned base both classes already descend from."""
 
     symbol: str = ""
-    KIND: ClassVar[str] = "shared_base"
+
+    @property
+    def subject(self) -> tuple[str, ...]:
+        return (self.symbol,)
 
     def describe(self) -> str:
         return f"shared base `{self.symbol}`"
@@ -154,14 +184,17 @@ class ExistingClassOwner(BlockOwnerCandidate):
     symbol: str = ""
     held: tuple[str, ...] = ()
     """The block names it already declares identically."""
-    KIND: ClassVar[str] = "existing_class"
+
+    @property
+    def subject(self) -> tuple[str, ...]:
+        return (self.symbol,)
 
     def describe(self) -> str:
         return f"existing class `{self.symbol}`"
 
 
 @dataclass(frozen=True, kw_only=True)
-class ExistingClassesOwner(BlockOwnerCandidate):
+class ComposeExistingOwner(BlockOwnerCandidate):
     """Scanned classes, each composed by others, whose own declarations cover the block.
 
     Both classes compose all of them and delete their copies; nothing is added
@@ -170,21 +203,28 @@ class ExistingClassesOwner(BlockOwnerCandidate):
 
     symbols: tuple[str, ...] = ()
     """The owners in base order: the composers' leading fields come from the last."""
-    KIND: ClassVar[str] = "compose_existing"
+
+    @property
+    def subject(self) -> tuple[str, ...]:
+        return self.symbols
 
     def describe(self) -> str:
         return "existing classes " + " + ".join(f"`{symbol}`" for symbol in self.symbols)
 
 
 @dataclass(frozen=True, kw_only=True)
-class RedirectToSourceOwner(BlockOwnerCandidate):
+class DeleteAndRedirectOwner(BlockOwnerCandidate):
     """The copying class is deleted and its uses read the class it copies from:
     its declarations are a subset of the source's, so every read finds a field."""
 
     symbol: str = ""
     """The class whose values the deleted class copied."""
     keeps_both_copies: ClassVar[bool] = False
-    KIND: ClassVar[str] = "delete_and_redirect"
+
+    @property
+    def subject(self) -> tuple[str, ...]:
+        """The copying class."""
+        return self.composers
 
     def describe(self) -> str:
         return f"delete the copy and use `{self.symbol}`"
@@ -198,7 +238,11 @@ class HoldSourceOwner(BlockOwnerCandidate):
     symbol: str = ""
     """The class whose instance the copying class would hold."""
     keeps_both_copies: ClassVar[bool] = False
-    KIND: ClassVar[str] = "hold_source"
+
+    @property
+    def subject(self) -> tuple[str, ...]:
+        """The copying class."""
+        return self.composers
 
     def describe(self) -> str:
         return f"hold a `{self.symbol}` instead of the copy"
@@ -208,10 +252,31 @@ class HoldSourceOwner(BlockOwnerCandidate):
 class NewMixinOwner(BlockOwnerCandidate):
     """A mixin NRA would create in `module_name`, composed by both classes."""
 
-    KIND: ClassVar[str] = "new_mixin"
+    @property
+    def subject(self) -> tuple[str, ...]:
+        return (self.module_name,)
+
+    def pick_refusals(self, pick: OwnerPick) -> Iterator[str]:
+        yield from super().pick_refusals(pick)
+        if not (pick.name or "").isidentifier():
+            yield "a new mixin needs a class `name`"
+        if not (pick.judgement or "").strip():
+            yield (
+                "a new mixin needs a `judgement`: what the class is, for its "
+                "docstring"
+            )
 
     def describe(self) -> str:
         return f"new mixin in `{self.module_name}`"
+
+
+@dataclass(frozen=True)
+class OwnerPickOutcome(SemanticRecord):
+    """What became of one extract-mixin finding under the picks."""
+
+    finding: str
+    outcome: str
+    detail: str
 
 
 @dataclass(frozen=True)
@@ -226,6 +291,76 @@ class OwnerPick(SemanticRecord):
     name: str | None = None
     judgement: str | None = None
     """What the owner is, in one sentence: a new mixin's docstring."""
+
+    def resolved(self, candidates: Sequence[OwnerCandidate]) -> OwnerPickResolution:
+        """This pick against one finding's candidates: the one place a picks
+        file's `owner` string is matched; everything after holds the object."""
+
+        if self.owner is None:
+            return DeclinedPick(self.because)
+        candidate = next(
+            (owner for owner in candidates if owner.candidate_id == self.owner), None
+        )
+        if candidate is None:
+            return RejectedPick(f"`{self.owner}` is not a candidate of this finding")
+        for refusal in candidate.pick_refusals(self):
+            return RejectedPick(refusal)
+        return PickedOwner(
+            finding=self.finding,
+            owner=self.owner,
+            because=self.because,
+            name=self.name,
+            judgement=self.judgement,
+            candidate=candidate,
+        )
+
+
+class OwnerPickResolution(ABC):
+    """What one pick comes to against one finding's candidates."""
+
+    @abstractmethod
+    def outcome(self, finding: str) -> OwnerPickOutcome:
+        """What this resolution reports for ``finding``."""
+
+    def picked(self) -> tuple[PickedOwner, ...]:
+        """The owner this resolution chooses, if it chooses one."""
+
+        return ()
+
+
+@dataclass(frozen=True)
+class DeclinedPick(OwnerPickResolution):
+    """A pick with no owner: the picker declines the finding."""
+
+    because: str
+
+    def outcome(self, finding: str) -> OwnerPickOutcome:
+        return OwnerPickOutcome(finding, "declined", self.because)
+
+
+@dataclass(frozen=True)
+class RejectedPick(OwnerPickResolution):
+    """A pick naming no candidate, a refused one, or one it cannot cite."""
+
+    reason: str
+
+    def outcome(self, finding: str) -> OwnerPickOutcome:
+        return OwnerPickOutcome(finding, "rejected", self.reason)
+
+
+@dataclass(frozen=True, kw_only=True)
+class PickedOwner(OwnerPick, OwnerPickResolution):
+    """A valid pick, holding the candidate it chose."""
+
+    candidate: OwnerCandidate = json_report_field(included=False)
+
+    def outcome(self, finding: str) -> OwnerPickOutcome:
+        return OwnerPickOutcome(
+            finding, "picked", f"{self.owner} because {self.because}"
+        )
+
+    def picked(self) -> tuple[PickedOwner, ...]:
+        return (self,)
 
 
 @dataclass(frozen=True)
@@ -389,8 +524,7 @@ class BlockOwnerQuestion:
             cycles_created=0,
         )
         if self.declared_names(copier.symbol) <= self.declared_names(source.symbol):
-            return RedirectToSourceOwner(
-                candidate_id=f"delete_and_redirect:{copier.symbol}",
+            return DeleteAndRedirectOwner(
                 module_name=source.module_name,
                 receipts=(receipt,),
                 cost=cost,
@@ -399,7 +533,6 @@ class BlockOwnerQuestion:
                 symbol=source.symbol,
             )
         return HoldSourceOwner(
-            candidate_id=f"hold_source:{copier.symbol}",
             module_name=copier.module_name,
             receipts=(receipt,),
             cost=cost,
@@ -482,7 +615,6 @@ class BlockOwnerQuestion:
                     )
                 )
             yield SharedBaseOwner(
-                candidate_id=f"shared_base:{symbol}",
                 module_name=base.module_name,
                 receipts=tuple(receipts),
                 cost=OwnerCost(
@@ -563,7 +695,6 @@ class BlockOwnerQuestion:
                 owner.module_name, (owner,)
             )
             yield ExistingClassOwner(
-                candidate_id=f"existing_class:{symbol}",
                 module_name=owner.module_name,
                 receipts=(*receipts, *import_receipts),
                 cost=OwnerCost(
@@ -654,7 +785,7 @@ class BlockOwnerQuestion:
 
     def _covering_candidate(
         self, owners: tuple[CompactIndexedClass, ...]
-    ) -> ExistingClassesOwner:
+    ) -> ComposeExistingOwner:
         receipts: list[Receipt] = []
         imports_added = cycles_created = 0
         for owner in owners:
@@ -696,9 +827,7 @@ class BlockOwnerQuestion:
                 keyword_only_route=False,
             )
         )
-        return ExistingClassesOwner(
-            candidate_id="compose_existing:"
-            + "+".join(owner.symbol for owner in owners),
+        return ComposeExistingOwner(
             module_name=owners[0].module_name,
             receipts=tuple(receipts),
             cost=OwnerCost(
@@ -749,7 +878,6 @@ class BlockOwnerQuestion:
                 keyword_only_route=True,
             )
             yield NewMixinOwner(
-                candidate_id=f"new_mixin:{module_name}",
                 module_name=module_name,
                 receipts=(
                     Receipt(
@@ -1093,7 +1221,10 @@ class BlockOwnerQuestion:
         return len(needed), len(cycles), tuple(receipts)
 
 
-def ranked(candidates: Iterable[OwnerCandidate]) -> tuple[OwnerCandidate, ...]:
+CandidateT = TypeVar("CandidateT", bound=OwnerCandidate)
+
+
+def ranked(candidates: Iterable[CandidateT]) -> tuple[CandidateT, ...]:
     """The candidates with confidence scores: a softmax over the permitted ones' log-odds, uncalibrated."""
 
     candidates = tuple(candidates)
@@ -1125,11 +1256,11 @@ __all__ = (
     "BlockOwnerCandidate",
     "BlockOwnerQuestion",
     "ExistingClassOwner",
-    "ExistingClassesOwner",
+    "ComposeExistingOwner",
     "ModuleImportGraph",
     "HoldSourceOwner",
     "NewMixinOwner",
-    "RedirectToSourceOwner",
+    "DeleteAndRedirectOwner",
     "OwnerCandidate",
     "OwnerCost",
     "Receipt",
