@@ -186,6 +186,7 @@ from .structural_overlap import (
 )
 from .amortization import IntrospectionSource
 from .member_census import MemberAwarenessCensus, build_member_awareness_census
+from .refactor_search import ScoredMove, SearchBudget, SearchTurn, build_refactor_search
 from .refactor_concepts import RefactorConcept
 
 MEMBER_AWARENESS_LISTING_LIMIT = 20
@@ -420,6 +421,33 @@ _CLI_ARGUMENT_SPECS = (
                 "`pytest -p nra_introspection_trace`, "
                 "for the field uses generic introspection derives."
             ),
+        ),
+        CliArgumentSpec(
+            flags=("--search-refactors",),
+            action="store_true",
+            help=(
+                "Play every refactor concept's goal search in memory, score each "
+                "end state on slop removed and members made derived, and keep the "
+                "moves no other move beats, looking --search-depth moves ahead."
+            ),
+        ),
+        CliArgumentSpec(
+            flags=("--search-depth",),
+            value_type=int,
+            default=SearchBudget.depth,
+            help="With --search-refactors: how many moves ahead to look.",
+        ),
+        CliArgumentSpec(
+            flags=("--search-width",),
+            value_type=int,
+            default=SearchBudget.width,
+            help="With --search-refactors: how many best moves to look past.",
+        ),
+        CliArgumentSpec(
+            flags=("--search-max-targets",),
+            value_type=int,
+            default=SearchBudget.max_targets,
+            help="With --search-refactors: skip a concept with more targets than this.",
         ),
         CliArgumentSpec(
             flags=("--detector-capabilities",),
@@ -2034,6 +2062,36 @@ class MarkdownReportRenderer(ABC):
             )
         return "\n".join(lines)
 
+    def refactor_search(self, turn: SearchTurn) -> str:
+        lines = [
+            "Refactor search:",
+            f"   - Start: {turn.start.findings} finding(s), "
+            f"{turn.start.derived} derived, {turn.start.add_member_edits} add-member edit(s)",
+        ]
+        lines.extend(self.search_moves(turn.front, "   "))
+        lines.extend(
+            f"   - dominated {move.concept}: -{move.findings_removed} finding(s), "
+            f"+{move.derived_gained} derived"
+            for move in turn.scored
+            if move not in turn.front
+        )
+        lines.extend(
+            f"   - not played {move.concept}: {move.reason}" for move in turn.unscored
+        )
+        return "\n".join(lines)
+
+    def search_moves(self, moves: tuple[ScoredMove, ...], indent: str) -> list[str]:
+        lines: list[str] = []
+        for move in moves:
+            lines.append(
+                f"{indent}- {move.concept} ({move.stages} stage(s)): "
+                f"-{move.findings_removed} finding(s), +{move.derived_gained} derived, "
+                f"-{move.add_member_edits_removed} add-member edit(s); line "
+                f"-{move.line_findings_removed} / +{move.line_derived_gained}"
+            )
+            lines.extend(self.search_moves(move.following, indent + "   "))
+        return lines
+
     def member_awareness(self, report: MemberAwarenessCensus) -> str:
         lines = [
             "Member awareness census:",
@@ -2485,6 +2543,34 @@ class MemberAwarenessCliCommand(SingleRootReportCliCommand):
     @property
     def markdown(self) -> str:
         return MARKDOWN_RENDERER.member_awareness(self.report)
+
+
+class RefactorSearchCliCommand(SingleRootReportCliCommand):
+    command_id = "search_refactors"
+
+    @classmethod
+    def requested(cls, args: argparse.Namespace) -> bool:
+        return args.search_refactors
+
+    @cached_property
+    def report(self) -> SearchTurn:
+        return build_refactor_search(
+            self.root,
+            config=self.detector_config,
+            cache_dir=self.configured_parse_cache_dir,
+            use_parse_cache=self.args.use_parse_cache,
+            parse_workers=self.args.parse_workers,
+            budget=SearchBudget(
+                depth=self.args.search_depth,
+                width=self.args.search_width,
+                max_targets=self.args.search_max_targets,
+            ),
+            introspection=IntrospectionSource.from_argument(self.args.introspection_trace),
+        )
+
+    @property
+    def markdown(self) -> str:
+        return MARKDOWN_RENDERER.refactor_search(self.report)
 
 
 class EconomicsProofCliCommand(SingleRootReportCliCommand):

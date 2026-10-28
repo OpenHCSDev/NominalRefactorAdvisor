@@ -38,6 +38,7 @@ from nominal_refactor_advisor.parameter_conveyor import (
 )
 from nominal_refactor_advisor.patterns import PatternId
 from nominal_refactor_advisor.product_flow import CompactItemTarget
+from nominal_refactor_advisor.refactor_search import RefactorSearch, SearchBudget
 from nominal_refactor_advisor.product_flow_authority import (
     CompactProductRuntimeViolation,
 )
@@ -80,6 +81,37 @@ def _write_source(root: Path, relative_path: str, source: str) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(source, encoding="utf-8", newline="")
     return path
+
+
+def test_refactor_search_scores_the_conveyor_collapse_and_looks_past_it(
+    tmp_path: Path,
+) -> None:
+    _write_source(tmp_path, "pkg/complete.py", _base_source())
+    search = RefactorSearch((tmp_path,), DetectorConfig(), SearchBudget(depth=2, width=1))
+    scan = CodemodWorkflowScan.parsed(
+        (tmp_path,),
+        DetectorConfig(),
+        cache_dir=None,
+        use_parse_cache=False,
+        parse_workers=1,
+    )
+
+    turn = search.turn(scan, depth=2)
+
+    (carrier,) = (
+        move
+        for move in turn.scored
+        if move.concept == SemanticCarrierConcept.concept_key()
+    )
+    assert carrier.stages == 1
+    assert carrier.findings_removed >= 1
+    assert carrier.before == turn.start
+    assert carrier in turn.front
+    assert all(
+        move.concept != SemanticCarrierConcept.concept_key() for move in turn.unscored
+    )
+    assert carrier.line_findings_removed >= carrier.findings_removed
+    assert len(json_report_object(turn)["scored"]) == len(turn.scored)
 
 
 def test_rejected_conveyor_boolean_preserves_on_demand_diagnostics() -> None:

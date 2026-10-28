@@ -27,7 +27,10 @@ from .probe_owner import FailedReceiverType, InferredReceiverType, ReceiverSpan,
 
 if TYPE_CHECKING:
     from mypy.build import BuildResult
+    from mypy.modulefinder import BuildSource
     from mypy.options import Options
+
+    from .ast_tools import ParsedModule
     from mypy.types import Type
 
 TYPES_EXTRA = "pip install 'nominal-refactor-advisor[types]'"
@@ -78,6 +81,41 @@ TypeCheckerTimingLedger._active = ContextVar(
 )
 
 
+class TypeCheckerSources(ABC):
+    """What one build reads: files on disk, or parsed modules' own text."""
+
+    @abstractmethod
+    def build_sources(self, options: Options) -> list[BuildSource]:
+        raise NotImplementedError
+
+
+@dataclass(frozen=True)
+class SourceFiles(TypeCheckerSources):
+    """Files as they are on disk; mypy names their modules from the package layout."""
+
+    paths: frozenset[str]
+
+    def build_sources(self, options: Options) -> list[BuildSource]:
+        return importlib.import_module("mypy.find_sources").create_source_list(
+            sorted(self.paths), options
+        )
+
+
+@dataclass(frozen=True)
+class SourceTexts(TypeCheckerSources):
+    """Parsed modules' own text under their own names: a search state that exists
+    only in memory types the same as one written to disk."""
+
+    modules: tuple[ParsedModule, ...]
+
+    def build_sources(self, options: Options) -> list[BuildSource]:
+        build_source = importlib.import_module("mypy.modulefinder").BuildSource
+        return [
+            build_source(module.file_path, module.module_name, text=module.source)
+            for module in self.modules
+        ]
+
+
 class TypeCheckerSession(ABC):
     """The scan's type checker: one finished build, or the reason there is none."""
 
@@ -98,8 +136,8 @@ class TypeCheckerSession(ABC):
         raise NotImplementedError
 
     @staticmethod
-    def started(files: Iterable[str]) -> TypeCheckerSession:
-        """Build these files once with exported types, or name why that failed."""
+    def started(sources: TypeCheckerSources) -> TypeCheckerSession:
+        """Build these sources once with exported types, or name why that failed."""
 
         if importlib.util.find_spec("mypy") is None:
             return UnavailableTypeChecker(f"mypy is not installed ({TYPES_EXTRA})")
@@ -117,9 +155,7 @@ class TypeCheckerSession(ABC):
         options.ignore_missing_imports = True
         options.python_version = sys.version_info[:2]
         sources_by_module = defaultdict(list)
-        for source in importlib.import_module("mypy.find_sources").create_source_list(
-            sorted(set(files)), options
-        ):
+        for source in sources.build_sources(options):
             sources_by_module[source.module].append(source)
         # mypy refuses the whole build when two files claim one module name.
         shared = {
@@ -128,18 +164,16 @@ class TypeCheckerSession(ABC):
             if len(sources) > 1
             for source in sources
         }
-        sources = [
-            found for found, *rest in sources_by_module.values() if not rest
-        ]
+        built = [found for found, *rest in sources_by_module.values() if not rest]
         started = perf_counter()
         try:
-            result = build.build(sources, options)
+            result = build.build(built, options)
         except errors.CompileError as error:
             return UnavailableTypeChecker(
                 "the mypy build failed: " + "\n".join(error.messages)[-500:]
             )
         session = BuiltTypeChecker.of(
-            result, options, frozenset(source.path for source in sources), shared
+            result, options, frozenset(source.path for source in built), shared
         )
         TypeCheckerTimingLedger.active().record(
             TypeCheckerTiming(build_seconds=perf_counter() - started)
@@ -148,8 +182,8 @@ class TypeCheckerSession(ABC):
 
     @staticmethod
     @contextmanager
-    def session(files: Iterable[str]) -> Iterator[TypeCheckerSession]:
-        session = TypeCheckerSession.started(files)
+    def session(sources: TypeCheckerSources) -> Iterator[TypeCheckerSession]:
+        session = TypeCheckerSession.started(sources)
         try:
             yield session
         finally:
@@ -267,7 +301,10 @@ class BuiltTypeChecker(TypeCheckerSession):
 
 __all__ = (
     "BuiltTypeChecker",
+    "SourceFiles",
+    "SourceTexts",
     "TypeCheckerSession",
+    "TypeCheckerSources",
     "TypeCheckerTiming",
     "TypeCheckerTimingLedger",
     "UnavailableTypeChecker",

@@ -26,7 +26,7 @@ from ..class_index import (
     CompactModuleClassProjectionFamily,
 )
 from ..probe_owner import ProbeOwnerContext, ScannedClasses
-from ..type_checker_session import TypeCheckerSession
+from ..type_checker_session import SourceFiles, TypeCheckerSession
 from ..codemod_legacy_path_recipe import LegacyPathErasureFindingRecipeSynthesizer
 from ..codemod_optional_ast_field import (
     OptionalAstFieldDecoderFindingRecipeSynthesizer,
@@ -431,8 +431,12 @@ def _probe_owner_context(
         return ProbeOwnerContext(classes, {})
     # An owner resolves only to a scanned class, so its declaring file is a source too.
     with TypeCheckerSession.session(
-        {span.file_path for span in spans}
-        | {indexed_class.file_path for indexed_class in classes.by_symbol.values()}
+        SourceFiles(
+            frozenset(span.file_path for span in spans)
+            | frozenset(
+                indexed_class.file_path for indexed_class in classes.by_symbol.values()
+            )
+        )
     ) as session:
         answers = session.receiver_types(spans)
     return ProbeOwnerContext(
