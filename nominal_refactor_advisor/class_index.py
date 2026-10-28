@@ -74,6 +74,7 @@ from .collection_algebra import (
     sorted_tuple,
 )
 from .class_mro import ClassMroAuthority
+from .overlap_receipts import OverlapReceiptKind
 from .foreign_family import (
     AssignmentStatement,
     FunctionDefinition,
@@ -4256,12 +4257,28 @@ class ModuleNominalBindingWitness:
 
 
 class ClassBodyDeclarationKind(StrEnum):
-    """What one direct class-body statement declares."""
+    """What one direct class-body statement declares, the receipt two classes
+    sharing it earn, and whether it is a field.
 
-    FIELD = "field"
-    DEFAULTED_FIELD = "defaulted_field"
-    VALUE = "value"
-    METHOD = "method"
+    A supplied value weighs as a value whether or not it is a field's default.
+    """
+
+    shared_receipt: OverlapReceiptKind
+    is_field: bool
+
+    def __new__(
+        cls, value: str, shared_receipt: OverlapReceiptKind, is_field: bool
+    ) -> Self:
+        member = str.__new__(cls, value)
+        member._value_ = value
+        member.shared_receipt = shared_receipt
+        member.is_field = is_field
+        return member
+
+    FIELD = "field", OverlapReceiptKind.SHARED_FIELD, True
+    DEFAULTED_FIELD = "defaulted_field", OverlapReceiptKind.SHARED_VALUE, True
+    VALUE = "value", OverlapReceiptKind.SHARED_VALUE, False
+    METHOD = "method", OverlapReceiptKind.SHARED_METHOD, False
 
 
 class AnnotatedDeclarationKind(StatementValueQuestion[ClassBodyDeclarationKind]):

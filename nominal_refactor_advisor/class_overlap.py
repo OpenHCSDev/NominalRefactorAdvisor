@@ -62,7 +62,8 @@ from .class_index import (
     CompactIndexedClass,
     CompactModuleClassProjection,
 )
-from .receipts import Receipt, ReceiptKind, ScoredByReceipts
+from .overlap_receipts import OverlapReceiptKind
+from .receipts import Receipt, ScoredByReceipts
 from .owner_candidates import (
     BlockOwnerQuestion,
     ModuleImportGraph,
@@ -184,44 +185,6 @@ class ExtractMixin(ClassOverlapMove):
     ) -> tuple[CompactIndexedClass, ...]:
         return ()
 
-
-class OverlapReceiptKind(ReceiptKind):
-    """One kind of evidence: a concept receipt with its fixed log-odds weight, or a
-    move guard that refuses the move and weighs nothing in the concept score."""
-
-    SHARED_METHOD = "shared_method", 1.5, False
-    SHARED_VALUE = "shared_value", 1.0, False
-    SHARED_FIELD = "shared_field", 0.5, False
-    EXISTING_OWNER = "existing_owner", 1.0, False
-    FAMILY_AXIS_VALUE = "family_axis_value", 0.0, False
-    FEW_DECLARATIONS = "few_declarations", -1.5, False
-    KEPT_DIFFERENCE = "kept_difference", 0.0, False
-    SHARED_CONSUMER = "shared_consumer", 1.0, False
-    NO_SHARED_CONSUMER = "no_shared_consumer", 0.0, False
-    SAME_FAMILY = "same_family", 0.5, False
-    SEPARATE_FAMILIES = "separate_families", 0.0, False
-    SAME_CONSTRUCTION = "same_construction", 0.0, False
-    DIFFERENT_CONSTRUCTION = "different_construction", 0.0, True
-    IDENTITY_USED = "identity_used", 0.0, True
-    IDENTITY_DECLARED = "identity_declared", 0.0, True
-    POSITIONAL_CONSTRUCTION = "positional_construction", 0.0, True
-
-
-_SHARED_RECEIPT_KINDS: Mapping[ClassBodyDeclarationKind, OverlapReceiptKind] = {
-    ClassBodyDeclarationKind.METHOD: OverlapReceiptKind.SHARED_METHOD,
-    ClassBodyDeclarationKind.VALUE: OverlapReceiptKind.SHARED_VALUE,
-    ClassBodyDeclarationKind.DEFAULTED_FIELD: OverlapReceiptKind.SHARED_VALUE,
-    ClassBodyDeclarationKind.FIELD: OverlapReceiptKind.SHARED_FIELD,
-}
-"""A shared declaration's receipt: a supplied value, default or not, weighs as a value."""
-
-_FIELD_KINDS = frozenset(
-    (ClassBodyDeclarationKind.FIELD, ClassBodyDeclarationKind.DEFAULTED_FIELD)
-)
-
-
-def _shared_receipt_kind(declaration: ClassBodyDeclaration) -> OverlapReceiptKind:
-    return _SHARED_RECEIPT_KINDS[declaration.kind]
 
 FEW_SHARED_DECLARATIONS = 3
 """Below this many shared declarations the overlap is weak evidence of one concept."""
@@ -549,9 +512,7 @@ class ClassOverlapVerdicts:
         )
         shared_receipts = tuple(
             Receipt(
-                _shared_receipt_kind(
-                    self.bodies.declarations_of(first.symbol)[shared.name]
-                ),
+                self.bodies.declarations_of(first.symbol)[shared.name].kind.shared_receipt,
                 f"`{shared.name}` is declared identically",
                 (
                     _location(first, shared.first_line, shared.name),
@@ -747,7 +708,7 @@ class ClassOverlapVerdicts:
             block_fields=frozenset(
                 name
                 for name in block
-                if first_declarations[name].kind in _FIELD_KINDS
+                if first_declarations[name].kind.is_field
             ),
             constructions_of=constructions_of,
             positional_constructions_of=lambda symbol: constructions_of(
