@@ -125,7 +125,13 @@ class DeleteAndRedirect(ClassOverlapMove):
 
 
 class ComposeExisting(ClassOverlapMove):
-    """The restating class inherits the owner: the owner gains a descendant."""
+    """The restating class inherits the owner: the owner gains a descendant.
+
+    Only a type test on the owner can answer differently afterwards, since the
+    restating class's instances become owner instances. The restating class
+    keeps its own type, so `isinstance(x, Restating)`, `type(x) is Restating`
+    and a dispatch keyed by it answer as before.
+    """
 
     value = "compose_existing"
     reorders_fields = False
@@ -134,7 +140,7 @@ class ComposeExisting(ClassOverlapMove):
     def guarded_classes(
         cls, owner: CompactIndexedClass, restating: CompactIndexedClass
     ) -> tuple[CompactIndexedClass, ...]:
-        return (restating, owner)
+        return (owner,)
 
 
 class PromoteToSharedBase(ClassOverlapMove):

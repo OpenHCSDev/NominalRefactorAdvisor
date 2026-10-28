@@ -115,7 +115,7 @@ def test_a_class_restating_another_with_an_extra_base_composes_it():
     assert candidate.confidence > 0.5
 
 
-def test_a_type_test_on_either_class_refuses_the_move_and_says_where():
+def test_a_type_test_on_the_owner_refuses_the_move_and_says_where():
     (plain,) = _verdicts(("pkg.surface", SURFACE))
     (tested,) = _verdicts(
         (
@@ -130,6 +130,19 @@ def test_a_type_test_on_either_class_refuses_the_move_and_says_where():
     assert refusal.kind is OverlapReceiptKind.IDENTITY_USED
     assert refusal.evidence[0].symbol == "is_family"
     assert tested.confidence == plain.confidence
+
+
+def test_a_type_test_on_the_composing_class_leaves_the_composition_permitted():
+    (tested,) = _verdicts(
+        (
+            "pkg.surface",
+            SURFACE
+            + "\n\ndef is_candidate(value):\n"
+            + "    return isinstance(value, FunctionEvidenceLocationsCandidate)\n",
+        )
+    )
+    assert tested.move is ComposeExisting
+    assert tested.permitted
 
 
 def test_identical_bodies_bases_and_construction_delete_the_restating_class():
