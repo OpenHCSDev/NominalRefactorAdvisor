@@ -16,6 +16,12 @@ from enum import StrEnum
 from functools import cached_property
 from typing import Callable, TypeAlias
 
+from .ast_projection import (
+    NoStatementValue,
+    StatementValue,
+    StatementValueQuestion,
+    SuppliedValue,
+)
 from .annotation_semantics import (
     ModuleNameReferenceScope,
     StringizedAnnotationSurface,
@@ -84,14 +90,14 @@ class ClassScopeDependency(StrEnum):
         cls,
         value: str,
         predicate: Callable[[tuple[ast.AST, ...]], bool],
-    ) -> "ClassScopeDependency":
+    ) -> ClassScopeDependency:
         member = str.__new__(cls, value)
         member._value_ = value
         member.predicate = predicate
         return member
 
     @classmethod
-    def from_node(cls, node: ast.AST) -> tuple["ClassScopeDependency", ...]:
+    def from_node(cls, node: ast.AST) -> tuple[ClassScopeDependency, ...]:
         nodes = tuple(ast.walk(node))
         return tuple(dependency for dependency in cls if dependency.predicate(nodes))
 
@@ -108,7 +114,7 @@ class ModuleBindingResolutionPhase(StrEnum):
         cls,
         value: str,
         snapshot_line_resolver: Callable[[int], int | None],
-    ) -> "ModuleBindingResolutionPhase":
+    ) -> ModuleBindingResolutionPhase:
         member = str.__new__(cls, value)
         member._value_ = value
         member.snapshot_line_resolver = snapshot_line_resolver
@@ -150,7 +156,7 @@ class DeclarationDependencyUse(StrEnum):
         phase_resolver: Callable[
             [ModuleBindingResolutionPhase, bool], ModuleBindingResolutionPhase
         ],
-    ) -> "DeclarationDependencyUse":
+    ) -> DeclarationDependencyUse:
         member = str.__new__(cls, value)
         member._value_ = value
         member.is_direct_source = is_direct_source
@@ -199,7 +205,7 @@ class DeclarationDependencyProjection:
     def from_declarations(
         cls,
         declarations: tuple[MovableDeclaration, ...],
-    ) -> "DeclarationDependencyProjection":
+    ) -> DeclarationDependencyProjection:
         projection = ModuleLexicalDependencyProjection.from_module(
             ast.Module(body=list(declarations), type_ignores=[])
         )
@@ -285,7 +291,7 @@ class ModuleLexicalDependencyProjection:
     def from_module(
         cls,
         module: ast.Module,
-    ) -> "ModuleLexicalDependencyProjection":
+    ) -> ModuleLexicalDependencyProjection:
         collector = _DeclarationDependencyCollector()
         collector.visit(module)
         return cls(
@@ -452,6 +458,21 @@ class FunctionLocalBinding(FunctionBindingABC):
         return references
 
 
+@dataclass(frozen=True)
+class _AnnotatedAssignmentReads(StatementValueQuestion[None]):
+    """A valued annotation reads its value, then its target; a bare one reads neither."""
+
+    collector: ast.NodeVisitor
+    target: ast.expr
+
+    def supplied(self, value: SuppliedValue) -> None:
+        self.collector.visit(value.value)
+        self.collector.visit(self.target)
+
+    def bare(self, value: NoStatementValue) -> None:
+        """A bare annotation reads no value and binds no target."""
+
+
 class _DeclarationDependencyCollector(
     FunctionAnnotationVisitor,
     LexicalScopeContext,
@@ -525,9 +546,7 @@ class _DeclarationDependencyCollector(
         self._visit_class(node)
 
     def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
-        if node.value is not None:
-            self.visit(node.value)
-            self.visit(node.target)
+        StatementValue.of(node).answer(_AnnotatedAssignmentReads(self, node.target))
         self._visit_annotation(
             node.annotation,
             evaluation_sensitive=(self.scopes[-1].records_variable_annotations),

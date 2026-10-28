@@ -22,7 +22,15 @@ from dataclasses import dataclass, field
 from functools import cached_property
 from pathlib import Path
 
-from .ast_tools import AstParentIndex, ParsedModule, PythonSourcePathPolicy
+from .ast_field_decoders import declared_annotations
+from .ast_projection import StatementValue
+from .value_expression import CompactValueExpression
+from .ast_tools import (
+    AstParentIndex,
+    BuiltinCallName,
+    ParsedModule,
+    PythonSourcePathPolicy,
+)
 from .class_index import CompactModuleClassProjectionFamily
 from .codemod_architecture_guards import (
     ArchitectureGuardRule,
@@ -45,7 +53,12 @@ from .enum_keyed_query import (
     EnumKeyedDerivedMapFacadeComponent,
     EnumKeyedDerivedMapFacadeComponentBuilder,
 )
-from .lexical_bindings import LEXICAL_SCOPE_BINDING_AUTHORITY, ImportFromModuleName
+from .foreign_family import FunctionDefinition
+from .lexical_bindings import (
+    LEXICAL_SCOPE_BINDING_AUTHORITY,
+    ImportBoundNameProjection,
+    ImportFromModuleName,
+)
 from .semantic_descent import AuthorityClaim, SemanticAuthorityKind
 
 
@@ -240,6 +253,19 @@ class EnumDeclaration:
     def data_fields(self) -> frozenset[str]:
         return frozenset(name for name, _expression in self.members[0].fields)
 
+    def member_refs(self, node: ast.AST) -> frozenset[str] | None:
+        elements = (
+            node.elts if isinstance(node, ast.Tuple | ast.List | ast.Set) else [node]
+        )
+        names = [
+            element.attr
+            for element in elements
+            if isinstance(element, ast.Attribute)
+            and _is_name(element.value, self.name)
+            and element.attr in self.members_by_name
+        ]
+        return frozenset(names) if len(names) == len(elements) else None
+
 
 class FamilyClass:
     """A class of the family being placed: declared in source, or created by the fold."""
@@ -358,6 +384,41 @@ class Family:
         return None
 
 
+class CaseAxis(ABC):
+    """The cases a fold decides between, and how a branch test names them."""
+
+    def case_guard(self, test: ast.expr, subject: str) -> Guard | None:
+        """The guard this axis recognises in ``test``; an axis adds none by default."""
+
+        return None
+
+
+@dataclass(frozen=True)
+class HeldEnumAxis(CaseAxis):
+    """An enum read through one field of the subject."""
+
+    enum: EnumDeclaration
+    field_name: str
+
+    def case_guard(self, test: ast.expr, subject: str) -> Guard | None:
+        if (
+            isinstance(test, ast.Attribute)
+            and _is_field_read(test.value, subject, self.field_name)
+            and test.attr in self.enum.data_fields
+        ):
+            return MemberData(test.attr)
+        if isinstance(test, ast.Compare) and len(test.ops) == 1:
+            left, operator, right = test.left, test.ops[0], test.comparators[0]
+            if _is_field_read(left, subject, self.field_name):
+                members = self.enum.member_refs(right)
+                if members is not None:
+                    return MemberIn(
+                        members,
+                        isinstance(operator, ast.IsNot | ast.NotEq | ast.NotIn),
+                    )
+        return None
+
+
 class Guard(ABC):
     """A branch test decided once per family class."""
 
@@ -366,48 +427,35 @@ class Guard(ABC):
         raise NotImplementedError
 
     @classmethod
-    def decoded(
-        cls, test: ast.expr, subject: str, field_name: str, enum: EnumDeclaration
-    ) -> Guard:
+    def decoded(cls, test: ast.expr, subject: str, axis: CaseAxis) -> Guard:
         """The boundary: the only place this module tests ast node types of a guard."""
 
         if isinstance(test, ast.BoolOp):
-            parts = tuple(
-                cls.decoded(value, subject, field_name, enum) for value in test.values
-            )
+            parts = tuple(cls.decoded(value, subject, axis) for value in test.values)
             return AllOf(parts) if isinstance(test.op, ast.And) else AnyOf(parts)
         if isinstance(test, ast.UnaryOp) and isinstance(test.op, ast.Not):
-            return Negated(cls.decoded(test.operand, subject, field_name, enum))
+            return Negated(cls.decoded(test.operand, subject, axis))
         if (
             isinstance(test, ast.Call)
-            and isinstance(test.func, ast.Name)
-            and test.func.id == "isinstance"
+            and BuiltinCallName.is_isinstance_callee(test.func)
             and len(test.args) == 2
             and _is_name(test.args[0], subject)
             and isinstance(test.args[1], ast.Name)
         ):
             return InstanceOf(test.args[1].id)
-        if (
-            isinstance(test, ast.Attribute)
-            and _is_field_read(test.value, subject, field_name)
-            and test.attr in enum.data_fields
-        ):
-            return MemberData(test.attr)
         if isinstance(test, ast.Compare) and len(test.ops) == 1:
             left, operator, right = test.left, test.ops[0], test.comparators[0]
             negated = isinstance(operator, ast.IsNot | ast.NotEq | ast.NotIn)
             if (
                 isinstance(left, ast.Attribute)
                 and _is_name(left.value, subject)
-                and isinstance(right, ast.Constant)
-                and right.value is None
+                and CompactValueExpression.project(right).value_is_none_literal
                 and isinstance(operator, ast.Is | ast.IsNot)
             ):
                 return PropertyIsNone(left.attr, negated)
-            if _is_field_read(left, subject, field_name):
-                members = _member_refs(right, enum)
-                if members is not None:
-                    return MemberIn(members, negated)
+        guard = axis.case_guard(test, subject)
+        if guard is not None:
+            return guard
         raise ValueError(
             f"guard {ast.unparse(test)!r} is not decidable per family class"
         )
@@ -423,18 +471,6 @@ def _is_field_read(node: ast.AST, subject: str, field_name: str) -> bool:
         and node.attr == field_name
         and _is_name(node.value, subject)
     )
-
-
-def _member_refs(node: ast.AST, enum: EnumDeclaration) -> frozenset[str] | None:
-    elements = node.elts if isinstance(node, ast.Tuple | ast.List | ast.Set) else [node]
-    names = [
-        element.attr
-        for element in elements
-        if isinstance(element, ast.Attribute)
-        and _is_name(element.value, enum.name)
-        and element.attr in enum.members_by_name
-    ]
-    return frozenset(names) if len(names) == len(elements) else None
 
 
 @dataclass(frozen=True)
@@ -486,8 +522,7 @@ class PropertyIsNone(Guard):
         if (
             len(body) == 1
             and isinstance(body[0], ast.Return)
-            and isinstance(body[0].value, ast.Constant)
-            and body[0].value.value is None
+            and StatementValue.of(body[0]).compact_value().value_is_none_literal
         ):
             return not self.negated
         if found.returns is not None and "None" not in ast.unparse(found.returns):
@@ -585,7 +620,7 @@ class Rewrite:
             alias.name
             for statement in statements
             for alias in statement.names
-            if alias.asname is None
+            if ImportBoundNameProjection(statement).alias_bound_name(alias) == alias.name
         }
         missing = sorted(set(names) - bound, key=alias_order)
         if not missing:
@@ -733,10 +768,10 @@ class Rewrite:
                 for source, name in self.imports.get(module.file_path, ())
                 if source == ImportFromModuleName.from_node(statement).source
                 and name
-                not in {alias.asname or alias.name for alias in statement.names}
+                not in ImportBoundNameProjection(statement).names()
             )
             for alias in statement.names:
-                local = alias.asname or alias.name
+                local = ImportBoundNameProjection(statement).alias_bound_name(alias)
                 if local in replaced:
                     # The local itself keeps its authored alias (``X as X`` re-exports).
                     aliases.extend(
@@ -768,7 +803,7 @@ class Rewrite:
             present = {
                 (
                     ImportFromModuleName.from_node(statement).source,
-                    alias.asname or alias.name,
+                    ImportBoundNameProjection(statement).alias_bound_name(alias),
                 )
                 for statement in module.module.body
                 if isinstance(statement, ast.ImportFrom)
@@ -1001,9 +1036,7 @@ class Enumerated(Rewritten, ABC):
         """An import of the enum inside a function binds a name no rewrite sees."""
 
         for module in snapshot.parsed_modules:
-            for scope in ast.walk(module.module):
-                if not isinstance(scope, ast.FunctionDef | ast.AsyncFunctionDef):
-                    continue
+            for scope in FunctionDefinition.within(ast.walk(module.module)):
                 for node in ast.walk(scope):
                     if not isinstance(node, ast.ImportFrom):
                         continue
@@ -1523,9 +1556,8 @@ class Fold(Cases, ABC):
                 raise ValueError(
                     f"handback: {site}: arm at line {node.lineno} does not return"
                 )
-            arms.append(
-                Arm(node, Guard.decoded(node.test, subject, holder.field_name, enum))
-            )
+            axis = HeldEnumAxis(enum, holder.field_name)
+            arms.append(Arm(node, Guard.decoded(node.test, subject, axis)))
         if not arms or not body or not isinstance(body[-1], ast.Return):
             raise ValueError(
                 f"handback: {site}: branch is not arms then a returning tail"
@@ -1773,7 +1805,7 @@ class Fold(Cases, ABC):
                     isinstance(left, ast.Attribute)
                     and left.attr == holder.field_name
                     and (
-                        _member_refs(right, enum) is not None
+                        enum.member_refs(right) is not None
                         or _is_any_name(right, enum_typed)
                     )
                 ):
@@ -1863,7 +1895,7 @@ class Fold(Cases, ABC):
         test = node.test
         if not (
             isinstance(test, ast.Call)
-            and _is_name(test.func, "isinstance")
+            and BuiltinCallName.is_isinstance_callee(test.func)
             and len(test.args) == 2
             and isinstance(test.args[0], ast.Name)
             and _is_any_name(test.args[1], holder_names)
@@ -1908,11 +1940,11 @@ def _is_any_name(node: ast.AST, names: Iterable[str]) -> bool:
 
 def _annotations(node: ast.AST) -> tuple[ast.expr, ...]:
     if isinstance(node, ast.arg):
-        return () if node.annotation is None else (node.annotation,)
+        return declared_annotations(node)
     if isinstance(node, ast.AnnAssign):
         return (node.annotation,)
     if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
-        return () if node.returns is None else (node.returns,)
+        return declared_annotations(node)
     return ()
 
 
@@ -2040,7 +2072,7 @@ class Keyed(Enumerated, ABC):
             raise ValueError(f"{site}: map is not one returned dict literal")
         values: dict[str, str] = {}
         for key, value in zip(literal.keys, literal.values, strict=True):
-            members = _member_refs(key, enum)
+            members = enum.member_refs(key)
             if members is None or len(members) != 1 or not isinstance(value, ast.Name):
                 raise ValueError(
                     f"{site}: map entry {ast.unparse(key)!r} is not member: class"

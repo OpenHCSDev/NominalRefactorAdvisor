@@ -81,7 +81,7 @@ class _ImplementationDependencyTraversal:
     def for_values(
         cls,
         values: tuple[object, ...],
-    ) -> "_ImplementationDependencyTraversal":
+    ) -> _ImplementationDependencyTraversal:
         return cls(
             frozenset(
                 module_name.partition(".")[0]

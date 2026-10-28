@@ -22,9 +22,20 @@ from typing import (
     cast,
 )
 
+from ..ast_field_decoders import (
+    ParameterAnnotations,
+    variadic_parameters,
+)
+from ..value_expression import CompactValueExpression
 from ..annotation_semantics import CLASSVAR_ANNOTATION_AUTHORITY
+from ..ast_projection import ExpressionReference
+from ..ast_projection import (
+    CallKeywords,
+    StatementValue,
+    StatementValues,
+    single_name_targets,
+)
 from ..ast_tools import (
-    AstExpressionProjection,
     BuiltinCallName,
     SourceModule,
     walk_function_body_nodes,
@@ -59,8 +70,99 @@ from ..semantic_description_length import (
     CompressionCertificate,
 )
 from ..semantic_identity import InheritanceIdentityAttributeProjection
-from ._base import *
-from ._substrate_support import *
+import ast
+from collections import Counter
+from typing import Iterable
+from ..ast_tools import (
+    _walk_nodes,
+    is_docstring_statement,
+    ParsedModule,
+    ScopedAstObservation,
+    statements_without_docstring,
+)
+from ..class_index import ClassFamilyIndex, IndexedClass
+from ..collection_algebra import sorted_tuple
+from ..models import SourceLocation
+from ..name_algebra import CLASS_NAME_ALGEBRA
+from ..observation_shapes import BuilderCallShape, RegistrationShape
+from ..semantic_match import (
+    as_ast,
+    attribute_call_match,
+    constant_value,
+    Maybe,
+    name_id,
+    named_call_assignment,
+    named_value_binding,
+    NamedCallAssignment,
+    return_call,
+    single_assign_target,
+    single_item,
+    single_named_call_argument,
+    single_return_call,
+    single_return_value,
+)
+from ._base import (
+    _GETATTR_BUILTIN,
+    _HASATTR_BUILTIN,
+    _is_classmethod,
+    _module_builder_call_shapes,
+    _PIPELINE_ASSIGN_STAGE,
+    _PIPELINE_RETURN_STAGE,
+    _REFLECTIVE_SELF_BUILTINS,
+    _self_attr_name,
+    _string_constant_expression,
+    CANDIDATE_COLLECTION_AUTHORITY,
+    ClassFamilyWitnessCarrier,
+    ClassMethodLineWitnessCandidate,
+    ConcreteCandidateDetectorShape,
+    ConcreteConfigFieldProbeCandidate,
+    ConcreteTypeUnionContractCandidate,
+    DerivedQueryIndexCandidate,
+    DetectorConfig,
+    DISPATCH_ALGEBRA_AUTHORITY,
+    DynamicSelfFieldSelectionCandidate,
+    EnumMetadataTableCandidate,
+    FieldOnlyFrozenDataclassCandidate,
+    FindingAssemblyPipelineCandidate,
+    FragmentedFamilyAuthorityCandidate,
+    GuardedDelegatorCandidate,
+    GuardedWrapperSpecPair,
+    IssueDetector,
+    NamedFunctionNode,
+    NominalAuthorityShape,
+    OverlappingInheritanceFamiliesCandidate,
+    PipelineAssemblyStage,
+    PropertyAliasHookGroup,
+    ReflectiveSelfAttributeCandidate,
+    RegisteredUnionSurfaceCandidate,
+    RepeatedBaseBundleCandidate,
+    RepeatedResultAssemblyPipelineCandidate,
+    ResultAssemblyPipelineFunction,
+    SchemaAccessorFamilyCandidate,
+    SemanticOverlapMethodCandidate,
+    SemanticOverlapMethodFamilyCandidate,
+    SemanticOverlapResidueAxisCandidate,
+    StaticModulePatternDetector,
+    StaticTypedObservationDetectorCandidate,
+    StringBackedReflectiveNominalLookupCandidate,
+    StructuralObservationPropertyCandidate,
+    SUPPORT_PROJECTION_AUTHORITY,
+    SYNTAX_PROJECTION_AUTHORITY,
+    TupleIndexSemanticOpacityCandidate,
+    TypedCandidateCastBoilerplateCandidate,
+)
+from ._substrate_support import (
+    _annotation_type_names,
+    _constant_string,
+    _IGNORED_ANCESTOR_NAMES,
+    _IGNORED_BASE_NAMES,
+    _is_abstract_method,
+    _is_private_symbol_name,
+    _module_class_defs_by_name,
+    _selector_attribute_name,
+    CLASS_INDEX_PROJECTION,
+    CLASS_NODE_AUTHORITY,
+)
 from ._substrate_support import _class_ancestor_name_map
 
 BaseBundleClassGroups: TypeAlias = dict[tuple[str, ...], list[ast.ClassDef]]
@@ -84,28 +186,6 @@ _SEQUENCE_WRAPPER_CALL_NAMES = BuiltinCallName.sequence_wrapper_names()
 
 
 class HelperSupportProjectionAuthority:
-    def declares_autoregister_meta(self, node: ast.ClassDef) -> bool:
-        return any(
-            (
-                (
-                    metaclass_name
-                    := AstExpressionProjection.terminal_name(keyword.value)
-                )
-                is not None
-                and (
-                    metaclass_name == "AutoRegisterMeta"
-                    or metaclass_name.endswith("AutoRegisterMeta")
-                    or self.registration_authority_base_name(metaclass_name)
-                    or (
-                        "Registered" in metaclass_name
-                        and metaclass_name.endswith("Meta")
-                    )
-                )
-                for keyword in node.keywords
-                if keyword.arg == "metaclass"
-            )
-        )
-
     @staticmethod
     def registration_authority_base_name(base_name: str) -> bool:
         tokens = frozenset(
@@ -134,7 +214,7 @@ class HelperSupportProjectionAuthority:
     def inherits_named_registration_authority(self, node: ast.ClassDef) -> bool:
         return any(
             (
-                (base_name := AstExpressionProjection.terminal_name(base)) is not None
+                (base_name := ExpressionReference.decoded(base).terminal_name) is not None
                 and self.registration_authority_base_name(base_name)
                 for base in node.bases
             )
@@ -162,7 +242,7 @@ class HelperSupportProjectionAuthority:
             (
                 ancestor is not None
                 and (
-                    self.declares_autoregister_meta(ancestor.node)
+                    ancestor.declares_autoregister_meta
                     or self.declares_named_registration_authority(ancestor.node)
                     or self.inherits_named_registration_authority(ancestor.node)
                     or self.declares_registry_protocol_authority(ancestor.node)
@@ -210,21 +290,6 @@ class HelperSupportProjectionAuthority:
             (root_name for root_name, count in root_counts.items() if count >= 3)
         )
 
-    def constructor_return_call(self, node: ast.FunctionDef) -> ast.Call | None:
-        body = statements_without_docstring(node.body)
-        if (
-            len(body) != 1
-            or not isinstance(body[0], ast.Return)
-            or body[0].value is None
-        ):
-            return None
-        returned = body[0].value
-        if not isinstance(returned, ast.Call):
-            return None
-        if not isinstance(returned.func, ast.Name) or returned.func.id != "cls":
-            return None
-        return returned
-
     def expression_root_names(self, node: ast.AST) -> set[str]:
         roots: set[str] = set()
 
@@ -247,8 +312,7 @@ class HelperSupportProjectionAuthority:
         return bool(
             len(node.body) == 1
             and isinstance(node.body[0], ast.Return)
-            and isinstance(node.body[0].value, ast.Constant)
-            and (node.body[0].value.value is None)
+            and StatementValue.of(node.body[0]).compact_value().value_is_none_literal
             and (not node.orelse)
         )
 
@@ -365,12 +429,12 @@ def _function_parameter_annotation_map(
 ) -> dict[str, str]:
     annotations: dict[str, str] = {}
     for arg in (
-        tuple(node.args.posonlyargs)
-        + tuple(node.args.args)
-        + tuple(node.args.kwonlyargs)
+        ParameterAnnotations.of(
+            tuple(node.args.posonlyargs)
+            + tuple(node.args.args)
+            + tuple(node.args.kwonlyargs)
+        ).annotated
     ):
-        if arg.annotation is None:
-            continue
         annotations[arg.arg] = ast.unparse(arg.annotation)
     return annotations
 
@@ -380,7 +444,7 @@ def _nominal_authority_shapes_without_ancestors(
 ) -> tuple[NominalAuthorityShape, ...]:
     shapes_without_ancestors: list[NominalAuthorityShape] = []
     for module in modules:
-        for node in _walk_nodes(module.module):
+        for node in module.syntax_index.breadth_first_nodes:
             if not isinstance(node, ast.ClassDef):
                 continue
             field_type_map = HELPER_SYNTAX_PROJECTION_AUTHORITY.typed_field_map(node)
@@ -448,7 +512,7 @@ class NominalAuthorityIndex:
         shapes: Sequence[NominalAuthorityShape],
         *,
         base_lookup: dict[str, set[str]] | None = None,
-    ) -> "NominalAuthorityIndex":
+    ) -> NominalAuthorityIndex:
         active_base_lookup: dict[str, set[str]] = defaultdict(set)
         if base_lookup is None:
             for shape in shapes:
@@ -578,7 +642,7 @@ def _build_call_keyword_helper_name(
     build_call: ast.Call, keyword_name: str
 ) -> str | None:
     for keyword in build_call.keywords:
-        if keyword.arg != keyword_name or keyword.value is None:
+        if keyword.arg != keyword_name:
             continue
         if isinstance(keyword.value, ast.Call):
             return _call_display_name(keyword.value)
@@ -653,7 +717,6 @@ def _finding_assembly_pipeline_candidates(
 ) -> tuple[FindingAssemblyPipelineCandidate, ...]:
     return CANDIDATE_COLLECTION_AUTHORITY.ast_node_candidates(
         module,
-        module.module,
         ast.ClassDef,
         _finding_assembly_pipeline_candidates_for_class,
     )
@@ -697,6 +760,7 @@ def _guarded_delegator_candidates_for_class(
 ) -> Iterable[GuardedDelegatorCandidate]:
     if not _is_observation_spec_class(node) or CLASS_NODE_AUTHORITY.is_abstract(node):
         return
+    guarded_returns: list[tuple[tuple[ast.FunctionDef | ast.AsyncFunctionDef, ast.If], ast.Return]] = []
     for statement in node.body:
         if not isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef)):
             continue
@@ -717,9 +781,12 @@ def _guarded_delegator_candidates_for_class(
             guard, ast.If
         ) or not HELPER_SUPPORT_PROJECTION_AUTHORITY.if_returns_none_only(guard):
             continue
-        if not isinstance(return_stmt, ast.Return) or return_stmt.value is None:
+        if not isinstance(return_stmt, ast.Return):
             continue
-        delegate_name = _delegate_name_from_return(return_stmt.value)
+        guarded_returns.append(((statement, guard), return_stmt))
+    # A bare return delegates to nothing.
+    for (statement, guard), returned in StatementValues.keyed(guarded_returns).supplied:
+        delegate_name = _delegate_name_from_return(returned.value)
         if delegate_name is None:
             continue
         yield GuardedDelegatorCandidate(
@@ -743,7 +810,6 @@ def _guarded_delegator_candidates(
 ) -> tuple[GuardedDelegatorCandidate, ...]:
     return CANDIDATE_COLLECTION_AUTHORITY.ast_node_candidates(
         module,
-        module.module,
         ast.ClassDef,
         _guarded_delegator_candidates_for_class,
     )
@@ -765,7 +831,7 @@ def _raised_exception_name(
         return None
     exc = statement.exc
     if isinstance(exc, ast.Call):
-        exc_name = AstExpressionProjection.terminal_name(exc.func)
+        exc_name = ExpressionReference.decoded(exc.func).terminal_name
         referenced_names = sorted_tuple(
             {
                 current.id
@@ -775,7 +841,7 @@ def _raised_exception_name(
         )
         if exc_name is not None:
             return (exc_name, referenced_names)
-    exc_name = AstExpressionProjection.terminal_name(exc)
+    exc_name = ExpressionReference.decoded(exc).terminal_name
     if exc_name is not None:
         return (exc_name, ())
     return None
@@ -828,11 +894,9 @@ def _linear_query_loop(body: list[ast.stmt]) -> ast.For | None:
 
 
 def _linear_query_return_expr(loop: ast.For, result_name: str) -> ast.AST | None:
-    return_exprs = [
-        current.value
-        for current in _walk_nodes(loop)
-        if isinstance(current, ast.Return) and current.value is not None
-    ]
+    return_exprs = StatementValues.of(
+        current for current in _walk_nodes(loop) if isinstance(current, ast.Return)
+    ).values
     if len(return_exprs) != 1 or not _name_mentions(return_exprs[0], result_name):
         return None
     return return_exprs[0]
@@ -907,7 +971,7 @@ def _derived_query_index_candidates(
     module: ParsedModule,
 ) -> tuple[DerivedQueryIndexCandidate, ...]:
     grouped: DerivedQuerySpecsBySignature = defaultdict(list)
-    for qualname, function in _iter_named_functions(module):
+    for qualname, function in module.syntax_index.named_functions:
         signature = _linear_query_signature(function)
         if signature is None:
             continue
@@ -963,7 +1027,7 @@ def _structural_observation_property_candidates_for_class(
         if not isinstance(statement, ast.FunctionDef):
             continue
         if not any(
-            AstExpressionProjection.terminal_name(decorator) == "property"
+            ExpressionReference.decoded(decorator).terminal_name == "property"
             for decorator in statement.decorator_list
         ):
             continue
@@ -973,12 +1037,10 @@ def _structural_observation_property_candidates_for_class(
         returned = body[0].value
         if not isinstance(returned, ast.Call):
             continue
-        constructor_name = AstExpressionProjection.terminal_name(returned.func)
+        constructor_name = ExpressionReference.decoded(returned.func).terminal_name
         if constructor_name is None:
             continue
-        keyword_names = sorted_tuple(
-            keyword.arg for keyword in returned.keywords if keyword.arg is not None
-        )
+        keyword_names = sorted_tuple(CallKeywords.of(returned.keywords).names)
         if len(keyword_names) < 6:
             continue
         yield StructuralObservationPropertyCandidate(
@@ -996,7 +1058,6 @@ def _structural_observation_property_candidates(
 ) -> tuple[StructuralObservationPropertyCandidate, ...]:
     return CANDIDATE_COLLECTION_AUTHORITY.ast_node_candidates(
         module,
-        module.module,
         ast.ClassDef,
         _structural_observation_property_candidates_for_class,
     )
@@ -1074,7 +1135,7 @@ def _property_alias_hook_groups(
     module: ParsedModule,
 ) -> tuple[PropertyAliasHookGroup, ...]:
     grouped: dict[tuple[str, str, str], list[tuple[str, int]]] = defaultdict(list)
-    for node in _walk_nodes(module.module):
+    for node in module.syntax_index.breadth_first_nodes:
         if not isinstance(node, ast.ClassDef):
             continue
         base_names = tuple(
@@ -1091,7 +1152,7 @@ def _property_alias_hook_groups(
                 continue
             if not any(
                 (
-                    AstExpressionProjection.terminal_name(decorator) == "property"
+                    ExpressionReference.decoded(decorator).terminal_name == "property"
                     for decorator in statement.decorator_list
                 )
             ):
@@ -1140,7 +1201,7 @@ def _reflective_self_attribute_candidates_for_class(
         for subnode in _walk_nodes(statement):
             if not isinstance(subnode, ast.Call):
                 continue
-            builtin_name = AstExpressionProjection.terminal_name(subnode.func)
+            builtin_name = ExpressionReference.decoded(subnode.func).terminal_name
             if builtin_name != _GETATTR_BUILTIN or len(subnode.args) != 2:
                 continue
             receiver, attribute_name_node = subnode.args[0], subnode.args[1]
@@ -1167,7 +1228,6 @@ def _reflective_self_attribute_candidates(
 ) -> tuple[ReflectiveSelfAttributeCandidate, ...]:
     return CANDIDATE_COLLECTION_AUTHORITY.ast_node_candidates(
         module,
-        module.module,
         ast.ClassDef,
         _reflective_self_attribute_candidates_for_class,
     )
@@ -1177,14 +1237,10 @@ def _guarded_wrapper_node_types(node: ast.If) -> tuple[str, ...] | None:
     test = node.test
     if not isinstance(test, ast.UnaryOp) or not isinstance(test.op, ast.Not):
         return None
-    operand = test.operand
-    if (
-        not isinstance(operand, ast.Call)
-        or AstExpressionProjection.terminal_name(operand.func) != "isinstance"
-        or len(operand.args) != 2
-    ):
+    isinstance_arguments = BuiltinCallName.isinstance_arguments(test.operand)
+    if isinstance_arguments is None:
         return None
-    type_node = operand.args[1]
+    _subject, type_node = isinstance_arguments
     if isinstance(type_node, ast.Tuple):
         node_types = tuple(ast.unparse(item) for item in type_node.elts)
     else:
@@ -1196,6 +1252,7 @@ def _guarded_wrapper_function_candidates(
     module: ParsedModule,
 ) -> NamedStringSequenceSpecs:
     candidates: MutableNamedStringSequenceSpecs = []
+    guarded_returns: list[tuple[tuple[ast.FunctionDef, ast.If], ast.Return]] = []
     for statement in module.module.body:
         if not isinstance(statement, ast.FunctionDef):
             continue
@@ -1214,8 +1271,11 @@ def _guarded_wrapper_function_candidates(
             guard, ast.If
         ) or not HELPER_SUPPORT_PROJECTION_AUTHORITY.if_returns_none_only(guard):
             continue
-        if not isinstance(return_stmt, ast.Return) or return_stmt.value is None:
+        if not isinstance(return_stmt, ast.Return):
             continue
+        guarded_returns.append(((statement, guard), return_stmt))
+    # A wrapper whose return is bare wraps nothing.
+    for (statement, guard), _returned in StatementValues.keyed(guarded_returns).supplied:
         node_types = _guarded_wrapper_node_types(guard)
         if not node_types:
             continue
@@ -1246,14 +1306,13 @@ def _guarded_wrapper_spec_pairs(
             continue
         if not isinstance(target, ast.Name) or not isinstance(value, ast.Call):
             continue
-        constructor_name = AstExpressionProjection.terminal_name(value.func)
+        constructor_name = ExpressionReference.decoded(value.func).terminal_name
         if constructor_name is None:
             continue
         referenced_functions = [
             keyword.value.id
-            for keyword in value.keywords
-            if keyword.arg is not None
-            and isinstance(keyword.value, ast.Name)
+            for keyword in CallKeywords.of(value.keywords).named
+            if isinstance(keyword.value, ast.Name)
             and keyword.value.id in wrapper_functions
         ]
         if len(referenced_functions) != 1:
@@ -1296,10 +1355,10 @@ def _dynamic_self_field_selection_candidates_for_class(
     for statement in node.body:
         if not isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef)):
             continue
-        for subnode in _walk_nodes(statement):
+        for subnode in module.syntax_index.function_walks[statement]:
             if not isinstance(subnode, ast.Call):
                 continue
-            builtin_name = AstExpressionProjection.terminal_name(subnode.func)
+            builtin_name = ExpressionReference.decoded(subnode.func).terminal_name
             if builtin_name not in _REFLECTIVE_SELF_BUILTINS:
                 continue
             if len(subnode.args) < 2:
@@ -1331,7 +1390,6 @@ def _dynamic_self_field_selection_candidates(
 ) -> tuple[DynamicSelfFieldSelectionCandidate, ...]:
     return CANDIDATE_COLLECTION_AUTHORITY.ast_node_candidates(
         module,
-        module.module,
         ast.ClassDef,
         _dynamic_self_field_selection_candidates_for_class,
     )
@@ -1351,7 +1409,7 @@ def _reflective_lookup_shape(
     node: ast.AST,
 ) -> tuple[str, str, ast.AST] | None:
     if isinstance(node, ast.Call):
-        builtin_name = AstExpressionProjection.terminal_name(node.func)
+        builtin_name = ExpressionReference.decoded(node.func).terminal_name
         if builtin_name == _GETATTR_BUILTIN and len(node.args) >= 2:
             selector_node = node.args[1]
             if _constant_string(selector_node) is None:
@@ -1477,13 +1535,14 @@ def _class_init_concrete_param_backed_attrs(node: ast.ClassDef) -> dict[str, str
     if init_method is None:
         return {}
     parameter_type_names = {
-        argument.arg: _annotation_type_names(argument.annotation)
-        for argument in (
+        argument.arg: _annotation_type_names(
+            argument.annotation
+        )
+        for argument in ParameterAnnotations.of(
             tuple(init_method.args.posonlyargs)
             + tuple(init_method.args.args)
             + tuple(init_method.args.kwonlyargs)
-        )
-        if argument.annotation is not None
+        ).annotated
     }
     parameter_names = set(parameter_type_names)
     attr_type_names: dict[str, str] = {}
@@ -1543,7 +1602,7 @@ def _concrete_config_field_probe_candidates(
             for subnode in _walk_nodes(method):
                 if not isinstance(subnode, ast.Call):
                     continue
-                builtin_name = AstExpressionProjection.terminal_name(subnode.func)
+                builtin_name = ExpressionReference.decoded(subnode.func).terminal_name
                 if (
                     builtin_name not in {_GETATTR_BUILTIN, _HASATTR_BUILTIN}
                     or len(subnode.args) < 2
@@ -1628,10 +1687,10 @@ def _is_declarative_class_value(node: ast.AST) -> bool:
         return (
             _is_declarative_class_value(node.func)
             and all((_is_declarative_class_value(item) for item in node.args))
+            and not CallKeywords.of(node.keywords).splats
             and all(
                 (
-                    keyword.arg is not None
-                    and _is_declarative_class_value(keyword.value)
+                    _is_declarative_class_value(keyword.value)
                     for keyword in node.keywords
                 )
             )
@@ -1667,7 +1726,7 @@ def _declared_base_name_sequence(node: ast.ClassDef) -> tuple[str, ...]:
         (
             base_name
             for base_name in (
-                AstExpressionProjection.terminal_name(base) for base in node.bases
+                ExpressionReference.decoded(base).terminal_name for base in node.bases
             )
             if base_name is not None
         )
@@ -1807,7 +1866,7 @@ class _RegisteredUnionSurfaceSource:
     line: int
 
     @classmethod
-    def from_node(cls, node: ast.AST) -> "_RegisteredUnionSurfaceSource | None":
+    def from_node(cls, node: ast.AST) -> _RegisteredUnionSurfaceSource | None:
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             for statement in statements_without_docstring(node.body):
                 if isinstance(statement, ast.For):
@@ -1869,8 +1928,8 @@ def _registered_union_surface_candidates(
         node.name: node for node in module.module.body if isinstance(node, ast.ClassDef)
     }
     source_nodes: tuple[ast.AST, ...] = (
-        *(function for _, function in _iter_named_functions(module)),
-        *_typed_ast_nodes(module.module, ast.Assign),
+        *(function for _, function in module.syntax_index.named_functions),
+        *module.syntax_index.instances_of(ast.Assign),
     )
     return tuple(
         candidate
@@ -2200,7 +2259,7 @@ class _MethodFamilyMethodGroupProfile(ResidueHookNamesCarrier):
         cls,
         method_name: str,
         class_methods: tuple[tuple[CompactIndexedClass, CompactClassMethod], ...],
-    ) -> "_MethodFamilyMethodGroupProfile | None":
+    ) -> _MethodFamilyMethodGroupProfile | None:
         if len(class_methods) < 2:
             return None
         methods = tuple(method for _, method in class_methods)
@@ -2259,7 +2318,7 @@ class _MethodFamilyMethodPlan(ClassFamilyWitnessCarrier):
         base_name: str,
         method_name: str,
         class_methods: tuple[tuple[CompactIndexedClass, CompactClassMethod], ...],
-    ) -> "_MethodFamilyMethodPlan | None":
+    ) -> _MethodFamilyMethodPlan | None:
         profile = _MethodFamilyMethodGroupProfile.from_class_methods(
             method_name,
             class_methods,
@@ -2284,7 +2343,7 @@ class _MethodFamilyMethodPlan(ClassFamilyWitnessCarrier):
 
     def is_more_specific_than(
         self,
-        incumbent: "_MethodFamilyMethodPlan",
+        incumbent: _MethodFamilyMethodPlan,
         class_index: CompactClassFamilyIndex,
     ) -> bool:
         return incumbent.base_symbol in class_index.ancestor_symbols(self.base_symbol)
@@ -2292,9 +2351,9 @@ class _MethodFamilyMethodPlan(ClassFamilyWitnessCarrier):
     @classmethod
     def most_specific(
         cls,
-        method_plans: Iterable["_MethodFamilyMethodPlan"],
+        method_plans: Iterable[_MethodFamilyMethodPlan],
         class_index: CompactClassFamilyIndex,
-    ) -> tuple["_MethodFamilyMethodPlan", ...]:
+    ) -> tuple[_MethodFamilyMethodPlan, ...]:
         plans_by_key: dict[
             _MethodFamilyMethodPlanKey,
             list[_MethodFamilyMethodPlan],
@@ -2366,7 +2425,7 @@ class _MethodFamilyMethodPlan(ClassFamilyWitnessCarrier):
         cls,
         projections: Sequence[CompactModuleClassProjection],
         class_index: CompactClassFamilyIndex,
-    ) -> tuple["_MethodFamilyMethodPlan", ...]:
+    ) -> tuple[_MethodFamilyMethodPlan, ...]:
         methods_by_class: dict[str, dict[str, CompactClassMethod]] = defaultdict(dict)
         for projection in projections:
             for method in projection.class_methods:
@@ -2417,7 +2476,7 @@ class _MethodFamilyMethodPlan(ClassFamilyWitnessCarrier):
 
     def semantic_overlap_candidate(
         self,
-        family: "_MethodFamilyEvidence",
+        family: _MethodFamilyEvidence,
     ) -> SemanticOverlapMethodCandidate:
         return SemanticOverlapMethodCandidate(
             file_path=self.file_paths[0],
@@ -2691,7 +2750,7 @@ class _MethodFamilyEvidence(_MethodPlanEvidenceABC):
     def from_method_plans(
         cls,
         method_plans: tuple[_MethodFamilyMethodPlan, ...],
-    ) -> tuple["_MethodFamilyEvidence", ...]:
+    ) -> tuple[_MethodFamilyEvidence, ...]:
         exact_groups: dict[
             _MethodFamilyKey,
             list[_MethodFamilyMethodPlan],
@@ -2810,7 +2869,7 @@ class _MethodFamilyBaseEvidence(_MethodPlanEvidenceABC):
     def from_families(
         cls,
         families: tuple[_MethodFamilyEvidence, ...],
-    ) -> tuple["_MethodFamilyBaseEvidence", ...]:
+    ) -> tuple[_MethodFamilyBaseEvidence, ...]:
         families_by_base: dict[str, list[_MethodFamilyEvidence]] = defaultdict(list)
         for family in families:
             families_by_base[family.base_symbol].append(family)
@@ -3006,7 +3065,7 @@ class CompactMethodFamilyContext:
         projections: Sequence[CompactModuleClassProjection],
         *,
         class_index: CompactClassFamilyIndex | None = None,
-    ) -> "CompactMethodFamilyContext":
+    ) -> CompactMethodFamilyContext:
         if class_index is None:
             class_index = build_compact_class_family_index(projections)
         method_plans = _MethodFamilyMethodPlan.from_projections(
@@ -3172,12 +3231,6 @@ def _autoregister_patch(
     )
 
 
-def _iter_functions(module: ast.Module) -> list[ast.FunctionDef | ast.AsyncFunctionDef]:
-    return [
-        node
-        for node in _walk_nodes(module)
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-    ]
 
 
 @dataclass(frozen=True)
@@ -3251,7 +3304,7 @@ class TransportProjectionAuthority:
         if symbol is None:
             symbol = ast.unparse(inner.func)
         for call in reversed(chain[:-1]):
-            method_name = AstExpressionProjection.terminal_name(call.func)
+            method_name = ExpressionReference.decoded(call.func).terminal_name
             if method_name is None:
                 method_name = ast.unparse(call.func)
             symbol = f"{symbol}.{method_name}"
@@ -3381,15 +3434,13 @@ def _pipeline_stage_source(statement: ast.stmt) -> _PipelineStageSource | None:
 def _pipeline_stage(statement: ast.stmt) -> PipelineAssemblyStage | None:
     source = _pipeline_stage_source(statement)
     callee_name = (
-        AstExpressionProjection.terminal_name(source.call.func)
+        ExpressionReference.decoded(source.call.func).terminal_name
         if source is not None
         else None
     )
     if source is None or callee_name is None:
         return None
-    keyword_names = tuple(
-        (keyword.arg for keyword in source.call.keywords if keyword.arg is not None)
-    )
+    keyword_names = CallKeywords.of(source.call.keywords).names
     return PipelineAssemblyStage(
         kind=source.kind,
         callee_name=callee_name,
@@ -3399,7 +3450,7 @@ def _pipeline_stage(statement: ast.stmt) -> PipelineAssemblyStage | None:
     )
 
 
-_STATIC_OBSERVATION_DETECTOR_BASE_NAMES = frozenset({"StaticModulePatternDetector"})
+_STATIC_OBSERVATION_DETECTOR_BASE_NAMES = frozenset({StaticModulePatternDetector.__name__})
 _STATIC_OBSERVATION_CONTROL_FLOW_NODES = (
     ast.If,
     ast.For,
@@ -3438,7 +3489,7 @@ def _typed_observation_collection_call(
 def _source_location_from_line_symbol_call(
     node: ast.AST,
 ) -> bool:
-    if not isinstance(node, ast.Call) or name_id(node.func) != "SourceLocation":
+    if not isinstance(node, ast.Call) or name_id(node.func) != SourceLocation.__name__:
         return False
     if len(node.args) < 3:
         return False
@@ -3531,7 +3582,7 @@ def _single_payload_parameter_name(method: ast.FunctionDef) -> str | None:
     payload_names = tuple(
         (argument.arg for argument in positional if argument.arg not in {"self", "cls"})
     )
-    if method.args.vararg is not None or method.args.kwarg is not None:
+    if variadic_parameters(method.args):
         return None
     return single_item(payload_names) if len(payload_names) == 1 else None
 
@@ -3558,7 +3609,7 @@ def _first_named_call_assignment(
 
 def _call_is_cast_of_parameter(call: ast.Call, parameter_name: str) -> bool:
     return (
-        AstExpressionProjection.terminal_name(call.func) == "cast"
+        ExpressionReference.decoded(call.func).terminal_name == "cast"
         and len(call.args) == 2
         and (name_id(call.args[1]) == parameter_name)
     )
@@ -3683,7 +3734,6 @@ def _finding_spec_build_boilerplate_candidates(
 ) -> tuple[ClassMethodLineWitnessCandidate, ...]:
     return CANDIDATE_COLLECTION_AUTHORITY.ast_node_candidates(
         module,
-        module.module,
         ast.ClassDef,
         _finding_spec_build_boilerplate_class_candidates,
     )
@@ -3702,18 +3752,6 @@ ClassShapeCandidateFactory = Callable[
 
 
 class HelperSyntaxProjectionAuthority:
-    def assignment_target_value(
-        self, statement: ast.stmt
-    ) -> tuple[ast.AST, ast.AST] | None:
-        assignment = as_ast(statement, ast.Assign)
-        if assignment is not None:
-            target = single_assign_target(assignment)
-            return None if target is None else (target, assignment.value)
-        annotated_assignment = as_ast(statement, ast.AnnAssign)
-        if annotated_assignment is None or annotated_assignment.value is None:
-            return None
-        return annotated_assignment.target, annotated_assignment.value
-
     def abstract_method_names(self, node: ast.ClassDef) -> tuple[str, ...]:
         return sorted_tuple(
             (
@@ -3762,7 +3800,7 @@ class HelperSyntaxProjectionAuthority:
         candidate_factory: ClassShapeCandidateFactory[ClassShapeT, BuiltCandidateT],
     ) -> tuple[BuiltCandidateT, ...]:
         candidates: list[BuiltCandidateT] = []
-        for node in _walk_nodes(module.module):
+        for node in module.syntax_index.breadth_first_nodes:
             if not isinstance(node, ast.ClassDef):
                 continue
             shape = shape_projector(node)
@@ -3789,7 +3827,7 @@ class HelperSyntaxProjectionAuthority:
             (
                 base_name
                 for base in node.bases
-                if (base_name := AstExpressionProjection.terminal_name(base))
+                if (base_name := ExpressionReference.decoded(base).terminal_name)
                 is not None
             )
         )
@@ -3943,9 +3981,10 @@ class HelperSyntaxProjectionAuthority:
                     forwarded.append(argument.id)
                 continue
             return None
-        for keyword in call.keywords:
-            if keyword.arg is None:
-                return None
+        keywords = CallKeywords.of(call.keywords)
+        if keywords.splats:
+            return None
+        for keyword in keywords.named:
             if (
                 isinstance(keyword.value, ast.Name)
                 and keyword.value.id in parameter_names
@@ -3966,7 +4005,7 @@ def _field_only_frozen_dataclass_candidates(
 ) -> tuple[FieldOnlyFrozenDataclassCandidate, ...]:
     return tuple(
         candidate
-        for node in _walk_nodes(module.module)
+        for node in module.syntax_index.breadth_first_nodes
         if isinstance(node, ast.ClassDef)
         for candidate in (FieldOnlyFrozenDataclassCandidate.from_class(module, node),)
         if candidate is not None
@@ -3975,9 +4014,6 @@ def _field_only_frozen_dataclass_candidates(
 
 
 
-def _method_body_fingerprint(method: ast.FunctionDef | ast.AsyncFunctionDef) -> str:
-    body = statements_without_docstring(method.body)
-    return ast.dump(ast.Module(body=body, type_ignores=[]), include_attributes=False)
 
 
 
@@ -4089,13 +4125,13 @@ class TupleIndexSemanticOpacityCandidateCollector:
         qualname: str,
         function: NamedFunctionNode,
     ) -> tuple[TupleIndexSemanticOpacityCandidate, ...]:
-        body_nodes = walk_function_body_nodes(function)
+        body_nodes = walk_function_body_nodes(function.body)
         carrier_call_names = sorted_tuple(
             {
                 call_name
                 for node in body_nodes
                 if isinstance(node, ast.Call)
-                for call_name in (AstExpressionProjection.terminal_name(node.func),)
+                for call_name in (ExpressionReference.decoded(node.func).terminal_name,)
                 if call_name in cls.carrier_calls
             }
         )
@@ -4176,13 +4212,7 @@ def _from_namespace_keyword_names(
             continue
         for call in _walk_nodes(statement):
             if isinstance(call, ast.Call) and name_id(call.func) == "cls":
-                keyword_names = tuple(
-                    (
-                        keyword.arg
-                        for keyword in call.keywords
-                        if keyword.arg is not None
-                    )
-                )
+                keyword_names = CallKeywords.of(call.keywords).names
                 if keyword_names:
                     return (statement.lineno, keyword_names)
     return None
@@ -4253,7 +4283,7 @@ def _result_assembly_pipeline_functions(
     module: ParsedModule,
 ) -> tuple[ResultAssemblyPipelineFunction, ...]:
     functions: list[ResultAssemblyPipelineFunction] = []
-    for qualname, function in _iter_named_functions(module):
+    for qualname, function in module.syntax_index.named_functions:
         stages = _pipeline_body_stages(function)
         if stages is None:
             continue
@@ -4356,7 +4386,6 @@ def _repeated_result_assembly_pipeline_candidates(
 
 
 _SCHEMA_ACCESSOR_FETCH_METHOD_NAMES = frozenset({"required", "optional"})
-_SCHEMA_ACCESSOR_RUNTIME_GUARD_CALL_NAMES = frozenset({"isinstance"})
 _SCHEMA_ACCESSOR_MIN_METHODS = 4
 _SCHEMA_ACCESSOR_COPY_CALL_NAMES = BuiltinCallName.schema_accessor_copy_call_names()
 _SCHEMA_ACCESSOR_SELF_NAME = "self"
@@ -4385,9 +4414,9 @@ def _schema_accessor_fetch_call(value: ast.AST) -> tuple[str, str, str] | None:
         )
         .filter(lambda context: context[1].attr in _SCHEMA_ACCESSOR_FETCH_METHOD_NAMES)
         .combine(
-            lambda context: AstExpressionProjection.attribute_chain(
+            lambda context: ExpressionReference.decoded(
                 context[0].args[0]
-            ),
+            ).attribute_chain,
             lambda context, field_chain: (context[1], field_chain),
         )
         .filter(lambda context: len(context[1]) >= 2)
@@ -4402,31 +4431,6 @@ def _schema_accessor_fetch_call(value: ast.AST) -> tuple[str, str, str] | None:
     )
 
 
-def _schema_accessor_fetch_assignment(
-    statement: ast.stmt,
-) -> tuple[str, str, str, str] | None:
-    if isinstance(statement, ast.Assign):
-        if len(statement.targets) != 1 or not isinstance(
-            statement.targets[0], ast.Name
-        ):
-            return None
-        target_name = statement.targets[0].id
-        fetch = _schema_accessor_fetch_call(statement.value)
-    elif isinstance(statement, ast.AnnAssign) and isinstance(
-        statement.target, ast.Name
-    ):
-        if statement.value is None:
-            return None
-        target_name = statement.target.id
-        fetch = _schema_accessor_fetch_call(statement.value)
-    else:
-        return None
-    if fetch is None:
-        return None
-    fetch_mode, enum_name, field_name = fetch
-    return target_name, fetch_mode, enum_name, field_name
-
-
 def _node_mentions_name(node: ast.AST, local_name: str) -> bool:
     return any(
         isinstance(item, ast.Name) and item.id == local_name
@@ -4437,7 +4441,7 @@ def _node_mentions_name(node: ast.AST, local_name: str) -> bool:
 def _compare_mentions_none(node: ast.Compare, local_name: str) -> bool:
     operands = (node.left, *node.comparators)
     return _node_mentions_name(node, local_name) and any(
-        isinstance(operand, ast.Constant) and operand.value is None
+        CompactValueExpression.project(operand).value_is_none_literal
         for operand in operands
     )
 
@@ -4451,9 +4455,9 @@ def _schema_accessor_coercion_kinds(
             kinds.add("none_guard")
         if not isinstance(node, ast.Call):
             continue
-        call_name = AstExpressionProjection.terminal_name(node.func)
+        call_name = ExpressionReference.decoded(node.func).terminal_name
         if (
-            call_name in _SCHEMA_ACCESSOR_RUNTIME_GUARD_CALL_NAMES
+            BuiltinCallName.is_isinstance_name(call_name)
             and node.args
             and _node_mentions_name(node.args[0], local_name)
         ):
@@ -4475,10 +4479,10 @@ def _schema_accessor_returns_local(
     function: ast.FunctionDef | ast.AsyncFunctionDef, local_name: str
 ) -> bool:
     return any(
-        isinstance(node, ast.Return)
-        and node.value is not None
-        and _node_mentions_name(node.value, local_name)
-        for node in _walk_nodes(function)
+        _node_mentions_name(returned, local_name)
+        for returned in StatementValues.of(
+            node for node in _walk_nodes(function) if isinstance(node, ast.Return)
+        ).values
     )
 
 
@@ -4491,9 +4495,14 @@ def _schema_accessor_method_row(
         return None
     body = statements_without_docstring(list(method.body))
     fetches = tuple(
-        fetch
-        for statement in body
-        if (fetch := _schema_accessor_fetch_assignment(statement)) is not None
+        (target.id, *fetch)
+        for target, assigned in StatementValues.keyed(
+            (target, statement)
+            for statement in body
+            if isinstance(statement, ast.Assign | ast.AnnAssign)
+            for target in single_name_targets(statement)
+        ).supplied
+        if (fetch := _schema_accessor_fetch_call(assigned.value)) is not None
     )
     if len(fetches) != 1:
         return None
@@ -4563,7 +4572,7 @@ def _schema_accessor_family_candidates(
     module: ParsedModule,
 ) -> tuple[SchemaAccessorFamilyCandidate, ...]:
     candidates: list[SchemaAccessorFamilyCandidate] = []
-    for class_node in _typed_ast_nodes(module.module, ast.ClassDef):
+    for class_node in module.syntax_index.instances_of(ast.ClassDef):
         grouped_rows: dict[str, list[tuple[str, str, str, str, str, int, int]]] = (
             defaultdict(list)
         )

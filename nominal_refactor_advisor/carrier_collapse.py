@@ -18,9 +18,10 @@ from .product_flow import (
     CompactProductFlowModuleProjection,
 )
 from .product_flow_authority import (
+    CompactCallableComponentAuthorityProof,
     CompactFunctionCallIdentity,
-    CompactResolvedFunctionCall,
     CompactProductFlowRepository,
+    CompactResolvedFunctionCall,
     ProductFlowRepository,
     SourceProductFlowRepository,
 )
@@ -94,8 +95,19 @@ class CarrierCollapseParticipant:
         return self.declaration.identity.symbol
 
 
+@dataclass(frozen=True, kw_only=True)
 class CarrierCollapseAuthorityProof(ABC):
     """Proof predicate shared by carrier-collapse component families."""
+
+    projected_field_names_by_edge: tuple[tuple[str, ...], ...]
+    incompletely_consuming_participant_symbols: tuple[str, ...]
+    conflicting_mapping_symbols: tuple[str, ...]
+    callable_component: CompactCallableComponentAuthorityProof
+    batch_compression_delta: int
+
+    @property
+    def rejection_reason(self) -> str:
+        return "; ".join(violation.explanation for violation in self.violations)
 
     @property
     @abstractmethod

@@ -51,6 +51,7 @@ from .codemod_imports import (
 )
 from .codemod_source_edits import (
     Include,
+    SourceLineSpan,
     SourceNodeSpan,
     SourceSpanDeletion,
     SourceTextGeometry,
@@ -63,7 +64,7 @@ from .declaration_dependencies import (
     MovableDeclaration,
 )
 from .lexical_bindings import (
-    ImportAliasRequirement as ImportAliasRequirement,
+    ImportAlias as ImportAlias,
     ImportBoundNameProjection,
     LEXICAL_SCOPE_BINDING_AUTHORITY,
 )
@@ -98,21 +99,21 @@ class _ModuleImportDependencyResolution:
         candidates: Iterable[
             tuple[ModuleImportBinding, ModuleImportBindingIdentity]
         ] = (),
-    ) -> "_ModuleImportDependencyResolution":
+    ) -> _ModuleImportDependencyResolution:
         return cls(tuple(candidates))
 
     @classmethod
     def unresolved_star(
         cls,
         module_name: str | None,
-    ) -> "_ModuleImportDependencyResolution":
+    ) -> _ModuleImportDependencyResolution:
         return cls(unresolved_star_module_names=(module_name,))
 
     @classmethod
     def combine(
         cls,
-        resolutions: Iterable["_ModuleImportDependencyResolution"],
-    ) -> "_ModuleImportDependencyResolution":
+        resolutions: Iterable[_ModuleImportDependencyResolution],
+    ) -> _ModuleImportDependencyResolution:
         resolution_tuple = tuple(resolutions)
         return cls(
             candidates=tuple(
@@ -182,7 +183,7 @@ class _ModuleExportBindingAuthority:
         )
 
     @cached_property
-    def symbol_table(self) -> "ModuleSymbolTable":
+    def symbol_table(self) -> ModuleSymbolTable:
         return ModuleSymbolTable(
             file_path=self.source_file.file_path,
             source="",
@@ -192,7 +193,7 @@ class _ModuleExportBindingAuthority:
     def dependency_resolution(
         self,
         name: str,
-        binding: "_StarProjectedModuleImportBinding",
+        binding: _StarProjectedModuleImportBinding,
         import_graph: SourceModuleImportGraph,
     ) -> _ModuleImportDependencyResolution:
         exposure = module_public_export_contract(self.parsed_module).exposure_for(name)
@@ -264,7 +265,7 @@ class _ModuleStarImportProjection:
     def from_module(
         cls,
         module: ast.Module,
-    ) -> tuple["_ModuleStarImportProjection", ...]:
+    ) -> tuple[_ModuleStarImportProjection, ...]:
         return tuple(
             cls(statement, scope)
             for scope in ModuleImportScope
@@ -388,7 +389,7 @@ class ModuleSymbolTable:
                 request=RequestedImportStatement(
                     statement,
                     scope=scope,
-                ).with_aliases((ImportAliasRequirement.from_alias(alias),)),
+                ).with_aliases((ImportAlias.from_alias(alias),)),
             )
             for scope in ModuleImportScope
             for statement in scope.import_statements(self.module)
@@ -575,11 +576,11 @@ class ModuleSymbolTable:
         """Return bindings whose same-name alias declares a public re-export."""
 
         return frozenset(
-            alias.asname
+            alias.name
             for statement in self.module.body
             if isinstance(statement, (ast.Import, ast.ImportFrom))
             for alias in statement.names
-            if alias.asname is not None and alias.asname == alias.name
+            if ImportAlias.from_alias(alias).declares_reexport
         )
 
     def referenced_names_excluding(
@@ -887,7 +888,7 @@ class SourceTopLevelSymbolMoveSelection:
         source_path: str,
         module: ast.Module,
         symbol_qualnames: Iterable[str],
-    ) -> "SourceTopLevelSymbolMoveSelection":
+    ) -> SourceTopLevelSymbolMoveSelection:
         declaration_index = SourceTopLevelDeclarationIndex(
             source_path=source_path,
             module=module,
@@ -905,7 +906,7 @@ class SourceTopLevelSymbolMoveSelection:
         source_path: str,
         module: ast.Module,
         root_symbol_qualnames: Iterable[str],
-    ) -> "SourceTopLevelSymbolMoveSelection":
+    ) -> SourceTopLevelSymbolMoveSelection:
         """Derive movable transitive source dependencies from semantic roots."""
 
         declaration_index = SourceTopLevelDeclarationIndex(
@@ -1005,7 +1006,6 @@ class MovedTopLevelDeclarationSource(SourceTextGeometry):
             deletion_end_line += 1
         return SourceSpanDeletion(
             file_path=self.declaration.source_path,
-            start_line=deletion_start_line,
-            end_line=deletion_end_line,
+            span=SourceLineSpan(deletion_start_line, deletion_end_line),
             rationale=rationale or f"Remove moved declaration {self.name!r}.",
         )

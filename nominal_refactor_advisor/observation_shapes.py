@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import ast
 from abc import ABC, abstractmethod
+from collections.abc import Iterable
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import TYPE_CHECKING, Any, ClassVar, cast
@@ -43,7 +44,7 @@ class LiteralKind(StrEnum):
         cls,
         value: str,
         literal_type: type[str] | type[int],
-    ) -> "LiteralKind":
+    ) -> LiteralKind:
         member = str.__new__(cls, value)
         member._value_ = value
         member.literal_type = literal_type
@@ -60,6 +61,15 @@ class FieldOriginKind(StrEnum):
     CLASS_ANNOTATION = "class_annotation"
     DATACLASS_FIELD = "dataclass_field"
     INIT_ASSIGNMENT = "init_assignment"
+
+    @property
+    def declares_record_field(self) -> bool:
+        """Whether this origin declares a field of a record class (not an assignment or init)."""
+
+        return self in (
+            FieldOriginKind.DATACLASS_FIELD,
+            FieldOriginKind.CLASS_ANNOTATION,
+        )
 
 
 @dataclass(frozen=True)
@@ -370,6 +380,68 @@ class ModuleExpressionShape:
     symbol: str
     expression_key: str
     expression_text: str
+
+
+@dataclass(frozen=True)
+class ForeignTypeTestShape:
+    """One `isinstance`/`issubclass` site whose type argument resolved to classes.
+
+    `type_names` are qualified class names, each reached through an import or a
+    builtin; `subject` is the dump of the tested expression, so sites testing
+    the same value can be told from sites testing a part of it; `owner` is the
+    one module they all come from. Whether that module
+    is declared in the scanned repository is decided against the whole scan.
+    """
+
+    file_path: str
+    lineno: int
+    symbol: str
+    owner: str
+    type_names: tuple[str, ...]
+    subject: str
+
+    def is_foreign_to(self, scanned_module_names: Iterable[str]) -> bool:
+        """Whether no scanned module is, contains, or sits inside the owner."""
+
+        return not any(
+            self.owner == scanned_name
+            or self.owner.startswith(f"{scanned_name}.")
+            or scanned_name.startswith(f"{self.owner}.")
+            for scanned_name in scanned_module_names
+        )
+
+
+@dataclass(frozen=True)
+class ForeignTypeTestModule:
+    """One module's type tests, kept even when empty so a scan knows its modules."""
+
+    module_name: str
+    sites: tuple[ForeignTypeTestShape, ...]
+
+
+@dataclass(frozen=True)
+class ForeignFamilySiteShape:
+    """One site whose tested classes are exactly one declared family's members."""
+
+    file_path: str
+    lineno: int
+    symbol: str
+    family: str
+
+
+@dataclass(frozen=True)
+class StaticProjectionSiteShape(ForeignFamilySiteShape):
+    """A call of a static projection class that its adapter family answers."""
+
+    projector: str
+
+
+@dataclass(frozen=True)
+class ForeignFamilySiteModule:
+    """One module's sites of one family-routing shape, kept even when empty."""
+
+    module_name: str
+    sites: tuple[ForeignFamilySiteShape, ...]
 
 
 @dataclass(frozen=True)

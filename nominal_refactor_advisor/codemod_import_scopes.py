@@ -7,6 +7,8 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import TYPE_CHECKING, TypeAlias
+from .lexical_bindings import ImportBoundNameProjection
+
 
 if TYPE_CHECKING:
     from .codemod_import_graph import SourceModuleImportGraph
@@ -35,7 +37,7 @@ def _type_checking_import_statements(
 
 
 def _runtime_module_reference(
-    import_graph: "SourceModuleImportGraph",
+    import_graph: SourceModuleImportGraph,
     importing_file_path: str,
     imported_file_path: str,
     imported_name: str,
@@ -48,7 +50,7 @@ def _runtime_module_reference(
 
 
 def _guarded_module_reference(
-    import_graph: "SourceModuleImportGraph",
+    import_graph: SourceModuleImportGraph,
     importing_file_path: str,
     imported_file_path: str,
     imported_name: str,
@@ -91,10 +93,10 @@ class ModuleImportScope(StrEnum):
         is_guarded: bool,
         statement_projection: Callable[[ast.Module], tuple[ImportStatement, ...]],
         module_reference_resolver: Callable[
-            ["SourceModuleImportGraph", str, str, str],
+            [SourceModuleImportGraph, str, str, str],
             str,
         ],
-    ) -> "ModuleImportScope":
+    ) -> ModuleImportScope:
         member = str.__new__(cls, value)
         member._value_ = value
         member._canonical_rank = canonical_rank
@@ -122,7 +124,7 @@ class ModuleImportScope(StrEnum):
 
     def required_module_reference(
         self,
-        import_graph: "SourceModuleImportGraph",
+        import_graph: SourceModuleImportGraph,
         *,
         importing_file_path: str,
         imported_file_path: str,
@@ -137,7 +139,7 @@ class ModuleImportScope(StrEnum):
             imported_name,
         )
 
-    def is_satisfied_by(self, available_scope: "ModuleImportScope") -> bool:
+    def is_satisfied_by(self, available_scope: ModuleImportScope) -> bool:
         """Return whether an existing import is visible wherever this scope is."""
 
         return self.is_guarded or not available_scope.is_guarded
@@ -168,7 +170,7 @@ class TypeCheckingGuardProjection:
     guards: tuple[ast.If, ...]
 
     @classmethod
-    def from_module(cls, module: ast.Module) -> "TypeCheckingGuardProjection":
+    def from_module(cls, module: ast.Module) -> TypeCheckingGuardProjection:
         references = cls._references(module)
         return cls(
             references=references,
@@ -203,7 +205,7 @@ class TypeCheckingGuardProjection:
         ):
             return tuple(
                 TypeCheckingGuardReference(
-                    ast.Name(id=alias.asname or alias.name, ctx=ast.Load())
+                    ast.Name(id=ImportBoundNameProjection(statement).alias_bound_name(alias), ctx=ast.Load())
                 )
                 for alias in statement.names
                 if alias.name == "TYPE_CHECKING"
@@ -213,7 +215,7 @@ class TypeCheckingGuardProjection:
                 TypeCheckingGuardReference(
                     ast.Attribute(
                         value=ast.Name(
-                            id=alias.asname or "typing",
+                            id=ImportBoundNameProjection(statement).alias_bound_name(alias),
                             ctx=ast.Load(),
                         ),
                         attr="TYPE_CHECKING",

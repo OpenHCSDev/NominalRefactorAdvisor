@@ -14,10 +14,11 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Generic, TypeVar
 
+from ..ast_projection import ExpressionReference
 from ..semantic_algebra import ObjectFamilyShape
 from ..semantic_description_length import CompressionCertificate
 from ..ast_tools import (
-    AstExpressionProjection,
+    BuiltinCallName,
     CompactModuleIdentity,
     PythonSourcePathPolicy,
     SourceModule,
@@ -44,9 +45,127 @@ from ..registry_identity import (
 )
 from ..taxonomy import CapabilityTag, ObservationTag
 
-from ._base import *
+from typing import cast
+from ..ast_tools import (
+    _walk_nodes,
+    CollectedFamily,
+    ParsedModule,
+    statements_without_docstring,
+)
+from ..class_index import (
+    build_compact_class_family_index,
+    CompactModuleClassProjection,
+    CompactModuleClassProjectionFamily,
+)
+from ..collection_algebra import sorted_tuple
+from ..models import (
+    DispatchCountMetrics,
+    HierarchyCandidateMetrics,
+    MappingMetrics,
+    OrchestrationMetrics,
+    RefactorFinding,
+    RegistrationMetrics,
+    RepeatedMethodMetrics,
+    SourceLocation,
+    WitnessCarrierMetrics,
+)
+from ..name_algebra import CLASS_NAME_ALGEBRA
+from ..patterns import PatternId
+from ..semantic_match import as_ast, Maybe, name_id
+from ..semantic_shape_algebra import InjectiveTypeRegistryProof
+from ._base import (
+    _attribute_family_subject_expression,
+    _compact_keyed_family_axis_specs_from_index,
+    _compact_keyed_table_axis_specs,
+    _compact_manual_selector_axis_specs,
+    _cross_module_axis_shadow_family_candidates_from_specs,
+    _derived_wrapper_spec_shadow_candidates,
+    _implicit_self_contract_mixin_candidates,
+    _keyed_record_infrastructure_candidates,
+    _KeyedFamilyAxisSpec,
+    _manual_fiber_tag_candidates,
+    _manual_structural_record_mechanics_group_candidates,
+    _module_union_type_aliases,
+    _parallel_keyed_axis_family_candidates_from_specs,
+    _parallel_keyed_table_and_family_candidates_from_specs,
+    _registry_maturity_missing_signals,
+    _REGISTRY_PROJECTION_SURFACE_ANALYZER,
+    _repeated_concrete_type_case_analysis_candidates,
+    _residual_closed_axis_branching_candidates_from_compact_specs,
+    _residual_closed_axis_indirection_candidates,
+    _self_cast_alias_names,
+    _structural_confusability_candidates,
+    _top_level_attribute_aliases,
+    _witness_carrier_family_candidates,
+    CandidateCollectorBoilerplateCandidate,
+    ClassLineWitnessCandidate,
+    ClassMethodLineWitnessCandidate,
+    CollectionProjectionPropertyFamilyCandidate,
+    CompactClassIndexMultiProjectionDetector,
+    CompactClassRepositoryCandidateDetector,
+    CompactClassRepositoryContext,
+    CompactModuleProjectionDetectorMixin,
+    CompactProjectionCandidateDetector,
+    CompactProjectionGroups,
+    ConcreteTypeCaseFunctionCandidate,
+    ConfiguredCrossModuleCollectorCandidateDetector,
+    ConfiguredModuleCollectorCandidateDetector,
+    CrossModuleAxisShadowFamilyCandidate,
+    DataclassNamespaceCliMirrorCandidate,
+    DeclarativeDetectorClassCandidate,
+    declare_candidate_rule_detector,
+    DerivedWrapperSpecShadowCandidate,
+    DetectorConfig,
+    DirectBuildFindingRendererCandidate,
+    DISPATCH_ALGEBRA_AUTHORITY,
+    EnumMetadataTableCandidate,
+    FindingSpecConstructionCandidate,
+    high_confidence_certified_spec,
+    high_confidence_spec,
+    ImplicitSelfContractMixinCandidate,
+    InjectiveTypeRegistryCandidate,
+    IssueDetector,
+    KeyedRecordInfrastructureCandidate,
+    KeyedRegistryAxisFact,
+    ManualFiberTagCandidate,
+    ManualStructuralRecordMechanicsGroupCandidate,
+    ModuleCollectorCandidateDetector,
+    NonInjectiveTypeRegistryCandidate,
+    ParallelKeyedAxisFamilyCandidate,
+    ParallelKeyedTableAndFamilyCandidate,
+    RegistryProjectionPolicyAuthorityCandidate,
+    RegistryProjectionSurfaceCandidate,
+    RegistryProjectionSurfaceEvidence,
+    RegistryProjectionSurfaceKind,
+    RepeatedConcreteTypeCaseAnalysisCandidate,
+    RepeatedKeyedFamilyCandidate,
+    RepeatedResultAssemblyPipelineCandidate,
+    ResidualClosedAxisBranchingCandidate,
+    ResidualClosedAxisIndirectionCandidate,
+    SchemaAccessorFamilyCandidate,
+    SemanticMirrorIssueDetector,
+    SourceModuleCollectorCandidateDetector,
+    StaticTypedObservationDetectorCandidate,
+    StructuralConfusabilityCandidate,
+    SYNTAX_PROJECTION_AUTHORITY,
+    TupleIndexSemanticOpacityCandidate,
+    TypedCandidateCastBoilerplateCandidate,
+    WitnessCarrierFamilyCandidate,
+)
+from ._helpers import (
+    _cli_argument_spec_fields,
+    _dataclass_config_field_names,
+    _enum_metadata_table_candidates,
+    _finding_spec_build_boilerplate_candidates,
+    _from_namespace_keyword_names,
+    _repeated_result_assembly_pipeline_candidates,
+    _schema_accessor_family_candidates,
+    _static_typed_observation_detector_candidates,
+    _typed_candidate_cast_boilerplate_candidates,
+    TupleIndexSemanticOpacityCandidateCollector,
+)
+from ._substrate_support import _camel_case, _is_abstract_method, CLASS_NODE_AUTHORITY
 from ._finding_spec_defaults import FindingSpecConstructionCandidateCollector
-from ._helpers import *
 
 
 @dataclass(frozen=True)
@@ -81,23 +200,19 @@ def _compact_concrete_type_case_function_facts(
 ) -> tuple[CompactConcreteTypeCaseFunctionFact, ...]:
     union_aliases = tuple(sorted(_module_union_type_aliases(module).items()))
     facts: list[CompactConcreteTypeCaseFunctionFact] = []
-    for qualname, function in _iter_named_functions(module):
+    for qualname, function in module.syntax_index.named_functions:
         alias_sources = _top_level_attribute_aliases(function)
         grouped_checks: dict[str, list[tuple[str, ...]]] = defaultdict(list)
-        for subnode in _walk_nodes(function):
-            if not (
-                isinstance(subnode, ast.Call)
-                and len(subnode.args) == 2
-                and not subnode.keywords
-                and AstExpressionProjection.terminal_name(subnode.func) == "isinstance"
-            ):
+        for subnode in module.syntax_index.function_walks[function]:
+            isinstance_arguments = BuiltinCallName.isinstance_arguments(subnode)
+            if isinstance_arguments is None:
                 continue
+            subject, type_node = isinstance_arguments
             subject_expression = _attribute_family_subject_expression(
-                subnode.args[0], alias_sources=alias_sources
+                subject, alias_sources=alias_sources
             )
             if subject_expression is None:
                 continue
-            type_node = subnode.args[1]
             type_items = (
                 type_node.elts if isinstance(type_node, ast.Tuple) else (type_node,)
             )
@@ -105,7 +220,7 @@ def _compact_concrete_type_case_function_facts(
                 {
                     type_name
                     for item in type_items
-                    if (type_name := AstExpressionProjection.terminal_name(item))
+                    if (type_name := ExpressionReference.decoded(item).terminal_name)
                     not in {None, "None", "NoneType"}
                 }
             )
@@ -721,7 +836,7 @@ def _projection_property_family_candidates(
 ) -> tuple[ProjectionPropertyFamilyCandidate, ...]:
     candidates: list[ProjectionPropertyFamilyCandidate] = []
     for class_node in (
-        node for node in _walk_nodes(module.module) if isinstance(node, ast.ClassDef)
+        node for node in module.syntax_index.breadth_first_nodes if isinstance(node, ast.ClassDef)
     ):
         properties: list[tuple[ast.FunctionDef | ast.AsyncFunctionDef, str]] = []
         for statement in class_node.body:
@@ -729,7 +844,7 @@ def _projection_property_family_candidates(
                 continue
             if not any(
                 (
-                    AstExpressionProjection.terminal_name(decorator) == "property"
+                    ExpressionReference.decoded(decorator).terminal_name == "property"
                     for decorator in statement.decorator_list
                 )
             ):
@@ -838,7 +953,7 @@ def _is_property_method(
 ) -> bool:
     return any(
         (
-            AstExpressionProjection.terminal_name(decorator) == "property"
+            ExpressionReference.decoded(decorator).terminal_name == "property"
             for decorator in method.decorator_list
         )
     )
@@ -849,7 +964,7 @@ def _collection_projection_property_family_candidates(
 ) -> tuple[CollectionProjectionPropertyFamilyCandidate, ...]:
     candidates: list[CollectionProjectionPropertyFamilyCandidate] = []
     for class_node in (
-        node for node in _walk_nodes(module.module) if isinstance(node, ast.ClassDef)
+        node for node in module.syntax_index.breadth_first_nodes if isinstance(node, ast.ClassDef)
     ):
         properties: list[tuple[ast.FunctionDef | ast.AsyncFunctionDef, str, str]] = []
         for statement in CLASS_NODE_AUTHORITY.methods(class_node):
@@ -1274,7 +1389,7 @@ class ExternalEnumCaseRecoveryCandidate:
         )
 
 
-def _unique_direct_enum_classes(
+def unique_direct_enum_classes(
     class_index: CompactClassFamilyIndex,
 ) -> dict[str, CompactIndexedClass]:
     return {
@@ -1287,7 +1402,7 @@ def _unique_direct_enum_classes(
     }
 
 
-def _declared_cases(enum_class: CompactIndexedClass) -> set[str]:
+def declared_cases(enum_class: CompactIndexedClass) -> set[str]:
     return {
         f"{enum_class.simple_name}.{member_name}"
         for member_name in enum_class.direct_enum_member_names
@@ -1324,7 +1439,7 @@ def _receiver_field_enum(
     return enum_classes.get(next(iter(annotated)))
 
 
-def _recovered_enum_sites(
+def recovered_enum_sites(
     class_index: CompactClassFamilyIndex,
     enum_classes: dict[str, CompactIndexedClass],
     function: CompactClosedAxisBranchFunction,
@@ -1345,7 +1460,7 @@ def _recovered_enum_sites(
                 function
             ).with_branches(
                 axis.branch_site_count,
-                set(axis.case_names) & _declared_cases(compared),
+                set(axis.case_names) & declared_cases(compared),
             )
     for read in function.receiver_field_reads:
         held = _receiver_field_enum(
@@ -1357,7 +1472,7 @@ def _recovered_enum_sites(
             continue
         sites[held.simple_name] = sites.get(
             held.simple_name, ExternalEnumCaseRecoverySite(function)
-        ).with_branches(read.branch_site_count, _declared_cases(held))
+        ).with_branches(read.branch_site_count, declared_cases(held))
     return sites
 
 
@@ -1365,7 +1480,7 @@ def _external_enum_case_recovery_candidates(
     context: CompactClassRepositoryContext,
     config: DetectorConfig,
 ) -> tuple[ExternalEnumCaseRecoveryCandidate, ...]:
-    enum_classes = _unique_direct_enum_classes(context.class_index)
+    enum_classes = unique_direct_enum_classes(context.class_index)
     keyed_axis_names = {
         spec.key_type_name
         for spec in _compact_keyed_family_axis_specs_from_context(context)
@@ -1377,7 +1492,7 @@ def _external_enum_case_recovery_candidates(
         for function in projection.closed_axis_branch_functions:
             if PythonSourcePathPolicy.is_test_path(Path(function.file_path)):
                 continue
-            for enum_name, site in _recovered_enum_sites(
+            for enum_name, site in recovered_enum_sites(
                 context.class_index, enum_classes, function
             ).items():
                 enum_class = enum_classes[enum_name]
@@ -2245,7 +2360,7 @@ def _compact_keyed_registry_axis_facts(
                     continue
                 key_entries.append(
                     (
-                        member.resolve_mapping_key(
+                        member.value.resolve_mapping_key(
                             mapping_key_authority,
                             descendant,
                         ),
@@ -2911,7 +3026,7 @@ class RepeatedConcreteTypeCaseAnalysisDetector(
         RepeatedConcreteTypeCaseAnalysisCandidate
     ],
 ):
-    candidate_collector = staticmethod(_repeated_concrete_type_case_analysis_candidates)
+    candidate_collector = _repeated_concrete_type_case_analysis_candidates
     module_projection_families = (
         CompactRemainingSystemicModuleProjectionFamily,
         CompactModuleClassProjectionFamily,
@@ -2941,14 +3056,8 @@ class RepeatedConcreteTypeCaseAnalysisDetector(
         config: DetectorConfig,
     ) -> list[RefactorFinding]:
         candidates = _compact_repeated_concrete_type_case_candidates(
-            cast(
-                Sequence[CompactRemainingSystemicModuleProjection],
-                projections_by_family[CompactRemainingSystemicModuleProjectionFamily],
-            ),
-            cast(
-                Sequence[CompactModuleClassProjection],
-                projections_by_family[CompactModuleClassProjectionFamily],
-            ),
+            CompactRemainingSystemicModuleProjectionFamily.modules_in(projections_by_family),
+            CompactModuleClassProjectionFamily.modules_in(projections_by_family),
             config,
             class_index=CompactClassFamilyIndex.require(context),
         )
@@ -3000,7 +3109,7 @@ class ImplicitSelfContractMixinDetector(
     CompactClassIndexMultiProjectionDetector,
     ConfiguredCrossModuleCollectorCandidateDetector[ImplicitSelfContractMixinCandidate],
 ):
-    candidate_collector = staticmethod(_implicit_self_contract_mixin_candidates)
+    candidate_collector = _implicit_self_contract_mixin_candidates
     module_projection_families = (
         CompactRemainingSystemicModuleProjectionFamily,
         CompactModuleClassProjectionFamily,
@@ -3030,14 +3139,8 @@ class ImplicitSelfContractMixinDetector(
         config: DetectorConfig,
     ) -> list[RefactorFinding]:
         candidates = _compact_implicit_self_contract_mixin_candidates(
-            cast(
-                Sequence[CompactRemainingSystemicModuleProjection],
-                projections_by_family[CompactRemainingSystemicModuleProjectionFamily],
-            ),
-            cast(
-                Sequence[CompactModuleClassProjection],
-                projections_by_family[CompactModuleClassProjectionFamily],
-            ),
+            CompactRemainingSystemicModuleProjectionFamily.modules_in(projections_by_family),
+            CompactModuleClassProjectionFamily.modules_in(projections_by_family),
             config,
             class_index=CompactClassFamilyIndex.require(context),
         )
@@ -3191,7 +3294,7 @@ class DeclarativeDetectorClassDetectorBase(
     """Compose declarative-shell detection with its executable replacement."""
 
 
-declare_candidate_rule_detector(
+DeclarativeDetectorClassDetector = declare_candidate_rule_detector(
     DeclarativeDetectorClassCandidate,
     high_confidence_certified_spec(
         PatternId.AUTHORITATIVE_SCHEMA,
@@ -3426,7 +3529,7 @@ class DirectBuildFindingRendererDetectorBase(
     """Compose direct-renderer detection with its executable replacement."""
 
 
-declare_candidate_rule_detector(
+DirectBuildFindingRendererDetector = declare_candidate_rule_detector(
     DirectBuildFindingRendererCandidate,
     high_confidence_spec(
         PatternId.SHARED_ALGORITHM_AUTHORITY,

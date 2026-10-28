@@ -14,7 +14,7 @@ from time import monotonic
 class ScanDeadlineExceeded(TimeoutError):
     """Raised when a scan crosses its declared absolute wall-clock budget."""
 
-    def __init__(self, deadline: "ScanDeadline") -> None:
+    def __init__(self, deadline: ScanDeadline) -> None:
         self.budget_seconds = deadline.budget_seconds
         self.elapsed_seconds = deadline.elapsed_seconds
         self.stage = deadline.stage
@@ -33,7 +33,7 @@ class ScanDeadline:
     stage: str = "startup"
 
     @classmethod
-    def start(cls, budget_seconds: float) -> "ScanDeadline":
+    def start(cls, budget_seconds: float) -> ScanDeadline:
         return cls(budget_seconds=max(0.0, budget_seconds), started_at=monotonic())
 
     @property

@@ -5,7 +5,8 @@ from __future__ import annotations
 import ast
 from dataclasses import dataclass, replace
 
-from ..ast_tools import AstExpressionProjection, ParsedModule
+from ..ast_projection import ExpressionReference
+from ..ast_tools import ParsedModule
 from ._base import (
     FindingSpecConstructionCandidate,
     FindingSpecFactory,
@@ -15,7 +16,7 @@ from ._base import (
     finding_spec_factory_for_constructor_name,
     finding_spec_factory_for_defaults,
 )
-from ._helpers import HELPER_SYNTAX_PROJECTION_AUTHORITY
+from ..ast_projection import StatementValues, single_name_targets
 
 
 @dataclass(frozen=True)
@@ -30,11 +31,11 @@ class FindingSpecSemanticKeyword:
     def from_keyword(
         cls,
         keyword: ast.keyword,
-    ) -> "FindingSpecSemanticKeyword | None":
+    ) -> FindingSpecSemanticKeyword | None:
         field = FindingSpecSemanticField.from_keyword_name(keyword.arg)
         if field is None:
             return None
-        value_name = AstExpressionProjection.terminal_name(keyword.value)
+        value_name = ExpressionReference.decoded(keyword.value).terminal_name
         return cls(
             field=field,
             value_name=value_name,
@@ -59,7 +60,7 @@ class FindingSpecSemanticKeywords:
     def from_keywords(
         cls,
         keywords: tuple[ast.keyword, ...] | list[ast.keyword],
-    ) -> "FindingSpecSemanticKeywords":
+    ) -> FindingSpecSemanticKeywords:
         return cls(
             tuple(
                 semantic_keyword
@@ -100,8 +101,8 @@ class FindingSpecCallSemantics:
     keywords: FindingSpecSemanticKeywords
 
     @classmethod
-    def from_call(cls, node: ast.Call) -> "FindingSpecCallSemantics | None":
-        constructor_name = AstExpressionProjection.terminal_name(node.func)
+    def from_call(cls, node: ast.Call) -> FindingSpecCallSemantics | None:
+        constructor_name = ExpressionReference.decoded(node.func).terminal_name
         factory = (
             None
             if constructor_name is None
@@ -168,13 +169,13 @@ class FindingSpecConstructionCandidateCollector:
             candidate
             for node in module.module.body
             if isinstance(node, ast.ClassDef)
-            for statement in node.body
-            for target_value in (
-                HELPER_SYNTAX_PROJECTION_AUTHORITY.assignment_target_value(statement),
-            )
-            if target_value is not None
-            for target, value in (target_value,)
-            if isinstance(target, ast.Name) and target.id == "finding_spec"
-            if isinstance(value, ast.Call)
-            for candidate in cls.candidate(module, value)
+            for _target, assigned in StatementValues.keyed(
+                (target, statement)
+                for statement in node.body
+                if isinstance(statement, ast.Assign | ast.AnnAssign)
+                for target in single_name_targets(statement)
+                if target.id == "finding_spec"
+            ).supplied
+            if isinstance(assigned.value, ast.Call)
+            for candidate in cls.candidate(module, assigned.value)
         )

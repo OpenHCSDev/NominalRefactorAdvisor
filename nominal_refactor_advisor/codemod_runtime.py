@@ -26,7 +26,7 @@ from dataclasses import (
 )
 from enum import StrEnum
 from functools import cached_property
-from itertools import combinations
+from itertools import combinations, product
 from pathlib import Path
 from typing import (
     ClassVar,
@@ -41,9 +41,12 @@ from .ast_tools import (
 )
 from .class_index import (
     ClassFamilyIndex,
+    CompactModuleClassProjectionFamily,
     RepositoryModuleBindingProof,
-    build_class_family_index,
+    build_compact_class_family_index,
 )
+from .ast_tools import ParsedModuleSet
+from .class_overlap import ClassOverlapVerdicts
 from .codemod_architecture_guards import (
     ArchitectureGuardReport,
     ArchitectureGuardRule,
@@ -199,6 +202,17 @@ class CodemodSourceSnapshot(CodemodSelectorContext):
         )
 
     @cached_property
+    def class_overlap_verdicts(self) -> ClassOverlapVerdicts:
+        """The scan's class-overlap verdicts, re-derived from this source state."""
+
+        projections = CompactModuleClassProjectionFamily.collect_modules(
+            self.parsed_modules
+        )
+        return ClassOverlapVerdicts(
+            projections, build_compact_class_family_index(projections)
+        )
+
+    @cached_property
     def exact_leaf_method_component_builder(
         self,
     ) -> ExactLeafMethodAncestorPromotionComponentBuilder:
@@ -244,7 +258,7 @@ class CodemodSourceSnapshot(CodemodSelectorContext):
             digest_size=16,
         ).hexdigest()
 
-    def execution_snapshot(self) -> "CodemodSourceSnapshot":
+    def execution_snapshot(self) -> CodemodSourceSnapshot:
         return self
 
     @classmethod
@@ -253,13 +267,13 @@ class CodemodSourceSnapshot(CodemodSelectorContext):
         source_by_path: Mapping[str, str],
         *,
         analysis_roots: Iterable[Path] = (),
-    ) -> "CodemodSourceSnapshot":
+    ) -> CodemodSourceSnapshot:
         canonical_sources = canonical_source_mapping(source_by_path)
         modules = _parsed_modules_from_source_mapping(
             canonical_sources,
             analysis_roots=analysis_roots,
         )
-        return cls.from_modules(modules)
+        return cls.from_modules(ParsedModuleSet(tuple(modules)))
 
     @classmethod
     def from_indexed_sources(
@@ -282,7 +296,7 @@ class CodemodSourceSnapshot(CodemodSelectorContext):
         return cls._from_modules_with_indexes(
             modules,
             (
-                build_class_family_index(modules)
+                ParsedModuleSet(modules).fact(ClassFamilyIndex)
                 if class_family_index is None
                 else class_family_index
             ),
@@ -299,15 +313,15 @@ class CodemodSourceSnapshot(CodemodSelectorContext):
     @classmethod
     def from_modules(
         cls,
-        modules: Iterable[ParsedModule],
+        modules: ParsedModuleSet,
         findings: Iterable[RefactorFinding] = (),
-    ) -> "CodemodSourceSnapshot":
-        module_tuple = tuple(modules)
-        finding_tuple = tuple(findings)
+    ) -> CodemodSourceSnapshot:
+        """A snapshot of one module set; the set owns its class-family index."""
+
         return cls._from_modules_with_indexes(
-            module_tuple,
-            build_class_family_index(module_tuple),
-            build_source_index_artifacts(module_tuple, finding_tuple),
+            modules.modules,
+            modules.fact(ClassFamilyIndex),
+            build_source_index_artifacts(modules.modules, tuple(findings)),
         )
 
     @classmethod
@@ -317,7 +331,7 @@ class CodemodSourceSnapshot(CodemodSelectorContext):
         class_family_index: ClassFamilyIndex,
         source_index_artifacts: SourceIndexBuildArtifacts,
         retained_product_flow_repository: SourceProductFlowRepository | None = None,
-    ) -> "CodemodSourceSnapshot":
+    ) -> CodemodSourceSnapshot:
         """Build from source and semantic indexes proved for that exact source."""
 
         module_node_cache = {module.file_path: module.module for module in modules}
@@ -343,7 +357,7 @@ class CodemodSourceSnapshot(CodemodSelectorContext):
     def with_virtual_sources(
         self,
         source_overlay: Mapping[str, str],
-    ) -> "CodemodSourceSnapshot":
+    ) -> CodemodSourceSnapshot:
         if not source_overlay:
             return self
         projection = self.source_projection(source_overlay)
@@ -377,8 +391,8 @@ class CodemodSourceSnapshot(CodemodSelectorContext):
 
     def with_source_file_creations(
         self,
-        creations: Iterable["SourceFileCreation"],
-    ) -> "CodemodSourceSnapshot":
+        creations: Iterable[SourceFileCreation],
+    ) -> CodemodSourceSnapshot:
         creation_tuple = tuple(creations)
         path_tuple = tuple(creation.file_path for creation in creation_tuple)
         duplicate_paths = tuple(
@@ -433,10 +447,10 @@ class CodemodSourceSnapshot(CodemodSelectorContext):
 
     def simulate_rewrites(
         self,
-        rewrites: Iterable["PlannedSourceRewrite"],
+        rewrites: Iterable[PlannedSourceRewrite],
         *,
-        backend: "CodemodBackend" | None = None,
-    ) -> "CodemodSimulationReport":
+        backend: CodemodBackend | None = None,
+    ) -> CodemodSimulationReport:
         return simulate_planned_rewrites(
             self.source_index,
             rewrites,
@@ -446,14 +460,14 @@ class CodemodSourceSnapshot(CodemodSelectorContext):
 
     def preflight_document(
         self,
-        document: "CodemodPlanDocument",
+        document: CodemodPlanDocument,
     ) -> CodemodPlanPreflightReport:
         return document.preflight_snapshot(self)
 
     def evaluate_guard_suite(
         self,
-        guard_suite: "ArchitectureGuardSuite",
-    ) -> "ArchitectureGuardReport":
+        guard_suite: ArchitectureGuardSuite,
+    ) -> ArchitectureGuardReport:
         return guard_suite.evaluate(self.source_index, self.sources_by_file_path)
 
     def plan_from_findings(
@@ -461,8 +475,8 @@ class CodemodSourceSnapshot(CodemodSelectorContext):
         findings: Iterable[RefactorFinding],
         *,
         detector_ids: Iterable[str] = (),
-        frontier_budget: "FindingRecipeFrontierBudget | None" = None,
-    ) -> "FindingRecipePlan":
+        frontier_budget: FindingRecipeFrontierBudget | None = None,
+    ) -> FindingRecipePlan:
         return codemod_plan_from_findings(
             findings,
             detector_ids=detector_ids,
@@ -470,30 +484,30 @@ class CodemodSourceSnapshot(CodemodSelectorContext):
             selector_context=self,
         )
 
-    def source_index_report(self) -> "CodemodSourceIndexReport":
+    def source_index_report(self) -> CodemodSourceIndexReport:
         return CodemodSourceIndexReport(self.source_index)
 
     def resolve_selector(
         self,
-        selector: "CodemodTargetSelector",
-    ) -> "CodemodSelectorResolutionReport":
+        selector: CodemodTargetSelector,
+    ) -> CodemodSelectorResolutionReport:
         return CodemodSelectorResolutionReport.from_selector_context(selector, self)
 
     def target_source_report(
         self,
-        selector: "CodemodTargetSelector",
-    ) -> "CodemodTargetSourceReport":
+        selector: CodemodTargetSelector,
+    ) -> CodemodTargetSourceReport:
         return CodemodTargetSourceReport.from_selector_context(selector, self)
 
     def with_simulation(
         self,
-        simulation: "CodemodSimulationReport",
-    ) -> "CodemodSourceSnapshot":
+        simulation: CodemodSimulationReport,
+    ) -> CodemodSourceSnapshot:
         return self.with_virtual_sources(simulation.rewritten_sources)
 
     def unified_diff(
         self,
-        simulation: "CodemodSimulationReport",
+        simulation: CodemodSimulationReport,
         *,
         fromfile_prefix: str = "a/",
         tofile_prefix: str = "b/",
@@ -597,7 +611,7 @@ class RefactorRecipeOperationCompiler(CodemodSourceSnapshot):
 
     def planned_rewrites_for_recipes(
         self,
-        recipes: Iterable["RefactorRecipe"],
+        recipes: Iterable[RefactorRecipe],
     ) -> tuple[PlannedSourceRewrite, ...]:
         return self.edit_batch_for_recipes(recipes).planned_rewrites
 
@@ -610,7 +624,7 @@ class RefactorRecipeOperationCompiler(CodemodSourceSnapshot):
 
     def physical_edits_for_recipes(
         self,
-        recipes: Iterable["RefactorRecipe"],
+        recipes: Iterable[RefactorRecipe],
     ) -> tuple[PhysicalSourceEdit, ...]:
         return self.edit_batch_for_recipes(recipes).physical_edits
 
@@ -758,10 +772,10 @@ class RefactorRecipe(SourceRewriteReferences):
     def with_architecture_guard(
         self,
         rule: ArchitectureGuardRule,
-    ) -> "RefactorRecipe":
+    ) -> RefactorRecipe:
         return replace(self, guard_suite=self.guard_suite.with_rule(rule))
 
-    def with_authority_claim(self, claim: AuthorityClaim) -> "RefactorRecipe":
+    def with_authority_claim(self, claim: AuthorityClaim) -> RefactorRecipe:
         return replace(self, authority_claims=(*self.authority_claims, claim))
 
     def active_guard_suite(
@@ -775,7 +789,7 @@ class RefactorRecipe(SourceRewriteReferences):
     def with_operation(
         self,
         operation: RefactorRecipeOperation,
-    ) -> "RefactorRecipe":
+    ) -> RefactorRecipe:
         """Append one exact operation under the recipe rationale policy."""
 
         resolved_operation = replace(
@@ -812,6 +826,17 @@ class RefactorRecipe(SourceRewriteReferences):
             for operation in self.operations
             for creation in operation.source_file_creations(context)
         )
+
+    def rewrite_context(
+        self,
+        context: CodemodSelectorContext,
+    ) -> CodemodSelectorContext:
+        """Current source plus the files this recipe creates, as its edits see it."""
+
+        creations = self.source_file_creations(context)
+        if not creations:
+            return context
+        return context.execution_snapshot().with_source_file_creations(creations)
 
     def preflight_reports(
         self,
@@ -920,7 +945,7 @@ class RefactorRecipe(SourceRewriteReferences):
     def with_declared_architecture_guards(
         self,
         context: CodemodSelectorContext,
-    ) -> "RefactorRecipe":
+    ) -> RefactorRecipe:
         return replace(
             self,
             guard_suite=self.guard_suite.merge(
@@ -943,7 +968,7 @@ class RefactorRecipe(SourceRewriteReferences):
         *,
         backend: CodemodBackend | None = None,
         guard_suite: ArchitectureGuardSuite | None = None,
-    ) -> "RefactorRecipeSimulation":
+    ) -> RefactorRecipeSimulation:
         document_simulation = CodemodPlanDocument(
             recipes=(self,),
             guard_suite=self.active_guard_suite(guard_suite),
@@ -963,7 +988,7 @@ class CodemodPlanRoot(JsonReport, ABC):
     """Declared sum boundary for one plan document or staged plan sequence."""
 
     @classmethod
-    def from_json_value(cls, value: JsonValue) -> "CodemodPlanRoot":
+    def from_json_value(cls, value: JsonValue) -> CodemodPlanRoot:
         if isinstance(value, Mapping) and (
             CodemodPlanSequence.payload_bindings().has_field_in(value)
         ):
@@ -971,7 +996,7 @@ class CodemodPlanRoot(JsonReport, ABC):
         return CodemodPlanDocument.from_json_value(value)
 
     @abstractmethod
-    def as_sequence(self) -> "CodemodPlanSequence":
+    def as_sequence(self) -> CodemodPlanSequence:
         """Return the execution-sequence projection of this exact root variant."""
 
         raise NotImplementedError
@@ -982,7 +1007,7 @@ class CodemodPlanRoot(JsonReport, ABC):
         snapshot: CodemodSourceSnapshot,
         *,
         backend: CodemodBackend | None = None,
-    ) -> "CodemodPlanDocumentSimulation | CodemodPlanSequenceSimulation":
+    ) -> CodemodPlanDocumentSimulation | CodemodPlanSequenceSimulation:
         """Simulate this plan against one complete source-state authority."""
 
         raise NotImplementedError
@@ -1005,8 +1030,8 @@ class CodemodPlanDocument(SourceRewriteReferences, CodemodPlanRoot):
     @classmethod
     def compose(
         cls,
-        documents: Iterable["CodemodPlanDocument"],
-    ) -> "CodemodPlanDocument":
+        documents: Iterable[CodemodPlanDocument],
+    ) -> CodemodPlanDocument:
         """Compose normalized plan documents in caller-provided order."""
 
         document_tuple = tuple(documents)
@@ -1027,7 +1052,7 @@ class CodemodPlanDocument(SourceRewriteReferences, CodemodPlanRoot):
     def has_architecture_guards(self) -> bool:
         return not self.combined_guard_suite.is_empty
 
-    def as_sequence(self) -> "CodemodPlanSequence":
+    def as_sequence(self) -> CodemodPlanSequence:
         return CodemodPlanSequence.from_document(self)
 
     @property
@@ -1037,7 +1062,7 @@ class CodemodPlanDocument(SourceRewriteReferences, CodemodPlanRoot):
     def with_declared_architecture_guards(
         self,
         context: CodemodSelectorContext,
-    ) -> "CodemodPlanDocument":
+    ) -> CodemodPlanDocument:
         return replace(
             self,
             recipes=tuple(
@@ -1063,7 +1088,7 @@ class CodemodPlanDocument(SourceRewriteReferences, CodemodPlanRoot):
     def preflight(
         self,
         snapshot: CodemodSourceSnapshot,
-    ) -> "CodemodPlanDocumentPreflight":
+    ) -> CodemodPlanDocumentPreflight:
         return CodemodPlanDocumentPreflight.from_snapshot(self, snapshot)
 
     def preflight_rewrite_snapshot(
@@ -1093,7 +1118,7 @@ class CodemodPlanDocument(SourceRewriteReferences, CodemodPlanRoot):
         snapshot: CodemodSourceSnapshot,
         *,
         backend: CodemodBackend | None = None,
-    ) -> "CodemodPlanDocumentSimulation":
+    ) -> CodemodPlanDocumentSimulation:
         return self.preflight(snapshot).simulate(backend=backend)
 
 
@@ -1125,7 +1150,7 @@ class CodemodPlanDocumentPreflight:
         cls,
         document: CodemodPlanDocument,
         snapshot: CodemodSourceSnapshot,
-    ) -> "CodemodPlanDocumentPreflight":
+    ) -> CodemodPlanDocumentPreflight:
         rewrite_snapshot = RefactorRecipeOperationCompiler.from_context(
             document.rewrite_snapshot(snapshot)
         )
@@ -1152,7 +1177,7 @@ class CodemodPlanDocumentPreflight:
         self,
         *,
         backend: CodemodBackend | None = None,
-    ) -> "CodemodPlanDocumentSimulation":
+    ) -> CodemodPlanDocumentSimulation:
         edit_batch = self.required_edit_batch
         simulation = edit_batch.compiler.simulate_rewrites(
             edit_batch.planned_rewrites,
@@ -1206,7 +1231,7 @@ class CodemodPlanSequence(SourceRewriteReferences, CodemodPlanRoot):
     @classmethod
     def from_operations(
         cls, operations: Iterable[RefactorRecipeOperation],
-    ) -> "CodemodPlanSequence":
+    ) -> CodemodPlanSequence:
         """Re-prove each operation against the preceding operation's output."""
 
         return cls(documents=tuple(
@@ -1221,7 +1246,7 @@ class CodemodPlanSequence(SourceRewriteReferences, CodemodPlanRoot):
     def compose(
         cls,
         sequences: Iterable[CodemodPlanRoot],
-    ) -> "CodemodPlanSequence":
+    ) -> CodemodPlanSequence:
         """Compose plan documents or existing sequences as ordered replay stages."""
 
         sequence_tuple = tuple(sequences)
@@ -1234,10 +1259,10 @@ class CodemodPlanSequence(SourceRewriteReferences, CodemodPlanRoot):
         )
 
     @classmethod
-    def from_document(cls, document: CodemodPlanDocument) -> "CodemodPlanSequence":
+    def from_document(cls, document: CodemodPlanDocument) -> CodemodPlanSequence:
         return cls(documents=(document,))
 
-    def as_sequence(self) -> "CodemodPlanSequence":
+    def as_sequence(self) -> CodemodPlanSequence:
         return self
 
     @property
@@ -1347,7 +1372,7 @@ class CodemodPlanSequence(SourceRewriteReferences, CodemodPlanRoot):
         snapshot: CodemodSourceSnapshot,
         *,
         backend: CodemodBackend | None = None,
-    ) -> "CodemodPlanSequenceSimulation":
+    ) -> CodemodPlanSequenceSimulation:
         active_snapshot = snapshot
         stage_reports: list[CodemodPlanSequenceStageReport] = []
         for document in self.documents:
@@ -1420,8 +1445,8 @@ class CodemodSimulationReport(DataclassJsonReport):
     @classmethod
     def from_sequential_reports(
         cls,
-        reports: Iterable["CodemodSimulationReport"],
-    ) -> "CodemodSimulationReport":
+        reports: Iterable[CodemodSimulationReport],
+    ) -> CodemodSimulationReport:
         """Compose reports only when every source revision proves the sequence."""
 
         report_tuple = tuple(reports)
@@ -1480,7 +1505,7 @@ class CodemodSimulationReport(DataclassJsonReport):
     def with_base_snapshot(
         self,
         snapshot: CodemodSourceSnapshot,
-    ) -> "CodemodSimulationReport":
+    ) -> CodemodSimulationReport:
         return replace(
             self,
             base_revisions=CodemodSourceRevision.capture(
@@ -1620,7 +1645,7 @@ class CodemodPlanDocumentSimulation(SourceRewriteSimulationResult):
     def with_additional_clean_guard_report(
         self,
         additional_report: ArchitectureGuardReport,
-    ) -> "CodemodPlanDocumentSimulation":
+    ) -> CodemodPlanDocumentSimulation:
         """Compose already-proved clean guards without replaying source edits."""
 
         if not self.is_clean or not additional_report.is_clean:
@@ -1693,7 +1718,7 @@ class CodemodPlanSequenceSimulation(SourceRewriteSimulationResult):
         findings: Iterable[RefactorFinding],
         *,
         detector_ids: Iterable[str] = (),
-    ) -> "CodemodPlanSequenceContinuationReport":
+    ) -> CodemodPlanSequenceContinuationReport:
         finding_tuple = tuple(findings)
         detector_id_tuple = tuple(detector_ids)
         return CodemodPlanSequenceContinuationReport(
@@ -1726,7 +1751,7 @@ class CodemodPlanSequenceContinuationReport(DataclassJsonReport):
     sequence: CodemodPlanSequence
     source_index: SourceIndex = json_report_field(included=False)
     findings: tuple[RefactorFinding, ...]
-    plan: "FindingRecipePlan" = json_report_field(
+    plan: FindingRecipePlan = json_report_field(
         field_name="finding_recipe_plan"
     )
 
@@ -1830,7 +1855,7 @@ class FindingRecipeSetAssessment(DataclassJsonReport):
         cls,
         candidate_indices: tuple[int, ...],
         document_simulation: CodemodPlanDocumentSimulation,
-    ) -> "FindingRecipeSetAssessment":
+    ) -> FindingRecipeSetAssessment:
         """Project public proof evidence from one clean document simulation."""
 
         if not document_simulation.is_clean:
@@ -1931,7 +1956,7 @@ class FindingRecipeSynthesisRecord(DataclassJsonReport):
     """Recipe-synthesis outcome for one finding."""
 
     finding: RefactorFinding = json_report_field(included=False)
-    evaluation: "FindingRecipeEvaluation" = json_report_field(included=False)
+    evaluation: FindingRecipeEvaluation = json_report_field(included=False)
     action_keys: tuple[FindingRecipeActionKey, ...] = ()
 
     @json_report_property()
@@ -1996,7 +2021,7 @@ class FindingRecipeSynthesisRecord(DataclassJsonReport):
         return self.evaluation.evaluation_declaration_name
 
     @json_report_property()
-    def conflict_evidence(self) -> "CurrentSnapshotRecipeConflictEvidence | None":
+    def conflict_evidence(self) -> CurrentSnapshotRecipeConflictEvidence | None:
         return self.evaluation.conflict_evidence
 
     @json_report_property()
@@ -2207,7 +2232,7 @@ class FindingRecipeEvaluation(ABC):
     def gated_by_action_keys(
         self,
         action_keys: tuple[FindingRecipeActionKey, ...],
-    ) -> "FindingRecipeEvaluation":
+    ) -> FindingRecipeEvaluation:
         del action_keys
         return self
 
@@ -2215,14 +2240,14 @@ class FindingRecipeEvaluation(ABC):
         self,
         context: CodemodSelectorContext | None,
         finding: RefactorFinding,
-    ) -> "FindingRecipeEvaluation":
+    ) -> FindingRecipeEvaluation:
         del context, finding
         return self
 
     def terminal_evaluation(
         self,
         context: CodemodSelectorContext | None,
-    ) -> "FindingRecipeEvaluation":
+    ) -> FindingRecipeEvaluation:
         del context
         return self
 
@@ -2580,7 +2605,7 @@ class FindingRecipePlan(FindingRecipeSynthesisBoundary):
         snapshot: CodemodSourceSnapshot,
         *,
         backend: CodemodBackend | None = None,
-    ) -> "FindingRecipePlanSimulation":
+    ) -> FindingRecipePlanSimulation:
         return FindingRecipePlanSimulation(
             plan=self,
             document_simulation=self.document.simulate(
@@ -2592,7 +2617,7 @@ class FindingRecipePlan(FindingRecipeSynthesisBoundary):
     def preflight_snapshot(
         self,
         snapshot: CodemodSourceSnapshot,
-    ) -> "FindingRecipePlanPreflight":
+    ) -> FindingRecipePlanPreflight:
         return FindingRecipePlanPreflight(
             plan=self,
             preflight_report=self.document.preflight_snapshot(snapshot),
@@ -2640,7 +2665,7 @@ class FindingRecipePlanSimulation(
         cls,
         plan: FindingRecipePlan,
         sequence_simulation: CodemodPlanSequenceSimulation,
-    ) -> "FindingRecipePlanSimulation":
+    ) -> FindingRecipePlanSimulation:
         """Recover one finding plan result from its canonical one-stage sequence."""
 
         expected_sequence = CodemodPlanSequence.from_document(plan.document)
@@ -2712,6 +2737,21 @@ class FindingRecipeEvaluator(ABC):
         context: CodemodSelectorContext | None = None,
     ) -> FindingRecipeEvaluation:
         raise NotImplementedError
+
+    def evaluation_declaration_for_finding(
+        self,
+        finding: RefactorFinding,
+        context: CodemodSelectorContext,
+    ) -> type[object]:
+        """The declaration that owns this finding's evaluation.
+
+        An evaluator that hands a finding to one of several derivations only
+        knows which by evaluating it.
+        """
+
+        return self.evaluate_recipe_for_finding(
+            finding, context
+        ).required_evaluation_declaration_type
 
     def rejected_evaluation(self, reason: str) -> RejectedRecipeEvaluation:
         return RejectedRecipeEvaluation(
@@ -2798,7 +2838,7 @@ class FindingRecipePlanBuilder:
         if cached_edits is not None:
             return cached_edits
         physical_edits = RefactorRecipeOperationCompiler.from_context(
-            selector_context
+            recipe.rewrite_context(selector_context)
         ).physical_edits_for_recipes((recipe,))
         self.physical_edit_cache[recipe] = physical_edits
         return physical_edits
@@ -3136,6 +3176,82 @@ class CurrentSnapshotRecipeBatchEvaluation:
         )
 
     @cached_property
+    def maximal_batch_enumeration(self) -> FindingRecipeCandidateBatchEnumeration:
+        """Batches that take a maximal compatible choice from every conflict component.
+
+        Candidates in different components of the incompatibility graph are
+        pairwise compatible, so applying them together commutes with applying
+        any subset first and the rest later: a subset batch reaches no terminal
+        that a maximal batch's trajectory does not. Enumerating every subset of
+        independent candidates is therefore exponential work for one result
+        (2^n states for n independent rewrites, each holding a projected scan).
+        The frontier uses these batches when every one of them simulates
+        cleanly, and falls back to the full enumeration when one does not.
+        """
+
+        choices = tuple(
+            self.maximal_compatible_sets(component)
+            for component in self.components_for(
+                self.stable_participating_candidate_indices
+            )
+        )
+        batches: list[tuple[int, ...]] = []
+        for combination in product(*choices):
+            if len(batches) == self.frontier_budget.max_candidate_batches:
+                return FindingRecipeCandidateBatchEnumeration(
+                    candidate_index_batches=tuple(batches), truncated=True
+                )
+            batches.append(
+                tuple(
+                    sorted(
+                        (index for chosen in combination for index in chosen),
+                        key=lambda index: self.candidates[index].stable_identity_key,
+                    )
+                )
+            )
+        return FindingRecipeCandidateBatchEnumeration(
+            candidate_index_batches=tuple(batch for batch in batches if batch),
+            truncated=False,
+        )
+
+    def maximal_compatible_sets(
+        self, component: tuple[int, ...]
+    ) -> tuple[tuple[int, ...], ...]:
+        """The maximal pairwise-compatible subsets of one conflict component."""
+
+        incompatible = {
+            assessment.edge
+            for assessment in self.pair_assessments
+            if not assessment.disposition.compatible
+        }
+
+        def fits(chosen: tuple[int, ...], index: int) -> bool:
+            return all(
+                tuple(sorted((selected, index))) not in incompatible
+                for selected in chosen
+            )
+
+        sets: list[tuple[int, ...]] = [()]
+        for index in component:
+            sets = [
+                *sets,
+                *(
+                    (*chosen, index)
+                    for chosen in sets
+                    if fits(chosen, index)
+                ),
+            ]
+        maximal = [
+            chosen
+            for chosen in sets
+            if chosen
+            and not any(
+                set(chosen) < set(other) for other in sets if len(other) > len(chosen)
+            )
+        ]
+        return tuple(maximal)
+
+    @cached_property
     def trajectory_frontier(self) -> FindingRecipeTrajectoryFrontier:
         obstacles = [
             FindingRecipeTrajectoryObstacle(
@@ -3159,10 +3275,18 @@ class CurrentSnapshotRecipeBatchEvaluation:
             for assessment in self.pair_assessments
             if assessment.disposition.unproved
         )
+        maximal = self.maximal_batch_enumeration
+        enumeration = (
+            maximal
+            if not maximal.truncated
+            and all(
+                self.simulate_recipe_set(candidate_indices).assessment.disposition.clean
+                for candidate_indices in maximal.candidate_index_batches
+            )
+            else self.trajectory_batch_enumeration
+        )
         branches: list[FindingRecipeTrajectoryBranch] = []
-        for (
-            candidate_indices
-        ) in self.trajectory_batch_enumeration.candidate_index_batches:
+        for candidate_indices in enumeration.candidate_index_batches:
             simulation = self.simulate_recipe_set(candidate_indices)
             if simulation.assessment.disposition.clean:
                 branches.append(
@@ -3187,7 +3311,7 @@ class CurrentSnapshotRecipeBatchEvaluation:
                         reason=simulation.assessment.reason,
                     )
                 )
-        if self.trajectory_batch_enumeration.truncated:
+        if enumeration.truncated:
             obstacles.append(
                 FindingRecipeTrajectoryObstacle(
                     kind=FindingRecipeTrajectoryObstacleKind.ENUMERATION_BUDGET,

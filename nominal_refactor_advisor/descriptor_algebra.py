@@ -24,7 +24,7 @@ class AliasProperty(Generic[ValueT]):
     @overload
     def __get__(
         self, instance: None, owner: type[object] | None = None
-    ) -> "AliasProperty[ValueT]": ...
+    ) -> AliasProperty[ValueT]: ...
 
     @overload
     def __get__(
@@ -35,7 +35,7 @@ class AliasProperty(Generic[ValueT]):
         self,
         instance: object | None,
         owner: type[object] | None = None,
-    ) -> ValueT | "AliasProperty[ValueT]":
+    ) -> ValueT | AliasProperty[ValueT]:
         del owner
         if instance is None:
             return self
@@ -66,7 +66,7 @@ class ConstantProperty(Generic[ValueT]):
     @overload
     def __get__(
         self, instance: None, owner: type[object] | None = None
-    ) -> "ConstantProperty[ValueT]": ...
+    ) -> ConstantProperty[ValueT]: ...
 
     @overload
     def __get__(
@@ -77,7 +77,7 @@ class ConstantProperty(Generic[ValueT]):
         self,
         instance: object | None,
         owner: type[object] | None = None,
-    ) -> ValueT | "ConstantProperty[ValueT]":
+    ) -> ValueT | ConstantProperty[ValueT]:
         del owner
         if instance is None:
             return self
@@ -94,7 +94,7 @@ class CollectionAttributeProjection(Generic[MemberValueT]):
     @overload
     def __get__(
         self, instance: None, owner: type[object] | None = None
-    ) -> "CollectionAttributeProjection[MemberValueT]": ...
+    ) -> CollectionAttributeProjection[MemberValueT]: ...
 
     @overload
     def __get__(
@@ -105,7 +105,7 @@ class CollectionAttributeProjection(Generic[MemberValueT]):
         self,
         instance: object | None,
         owner: type[object] | None = None,
-    ) -> tuple[MemberValueT, ...] | "CollectionAttributeProjection[MemberValueT]":
+    ) -> tuple[MemberValueT, ...] | CollectionAttributeProjection[MemberValueT]:
         del owner
         if instance is None:
             return self

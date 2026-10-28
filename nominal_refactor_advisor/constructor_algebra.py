@@ -26,7 +26,7 @@ class ConstructorParameterField:
         field_name: str,
         parameter_names: Sequence[str],
         value_references: frozenset[str],
-    ) -> "ConstructorParameterField | None":
+    ) -> ConstructorParameterField | None:
         if field_name in parameter_names:
             return cls(field_name)
         for parameter_name in parameter_names:

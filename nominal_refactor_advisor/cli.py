@@ -23,6 +23,8 @@ from typing import ClassVar, Self, TypeAlias, cast
 
 from metaclass_registry import AutoRegisterMeta
 
+from .type_checker_session import TypeCheckerTimingLedger
+from .ast_tools import ParsedModuleSet
 from .scan_cache import ScanCache
 
 from .source_geometry import read_source_text
@@ -46,7 +48,6 @@ from .analysis import (
     default_detector_types_for_analysis,
     plan_path,  # noqa: F401 - re-exported by nominal_refactor_advisor.__init__
     plan_paths,  # noqa: F401 - re-exported by nominal_refactor_advisor.__init__
-    release_module_analysis_memory,
 )
 from .analysis_cache import (
     AnalysisCacheIdentity,
@@ -107,6 +108,7 @@ from .codemod_source_cache import (
     CodemodSourceContextCache,
 )
 from .codemod_target_selectors import CodemodTargetSelector
+from .owner_picks import OwnerPicks
 from .codemod_workflow import (
     CodemodProjectedFindingReport,
     CodemodRefactorGoalReport,
@@ -138,7 +140,6 @@ from .json_reports import (
 )
 from .lean_export import LeanExportError
 from .models import RefactorFinding, RefactorPlan
-from .observation_graph import build_observation_graph
 from .patterns import PatternId
 from .planner import (
     RefactorExecutionPlanReport,
@@ -165,8 +166,11 @@ from .structural_overlap import (
     StructuralOverlapReportLimits,
     build_structural_overlap_report,
 )
+from .member_census import MemberAwarenessCensus, build_member_awareness_census
 from .refactor_concepts import RefactorConcept
 
+MEMBER_AWARENESS_LISTING_LIMIT = 20
+MEMBER_AWARENESS_BYPASS_LIMIT = 3
 _VALUELESS_ARGUMENT_ACTIONS = frozenset(
     {
         "store_true",
@@ -381,6 +385,15 @@ _CLI_ARGUMENT_SPECS = (
             help="Predict scan impact from Python files changed relative to --compare-ref.",
         ),
         CliArgumentSpec(
+            flags=("--count-member-awareness",),
+            action="store_true",
+            help=(
+                "Count which consumer functions name the members of a foreign "
+                "module, declared family or enum, grouped by exact member set, "
+                "and which of them also call an owner of that set."
+            ),
+        ),
+        CliArgumentSpec(
             flags=("--detector-capabilities",),
             action="store_true",
             help=(
@@ -592,6 +605,15 @@ _CLI_ARGUMENT_SPECS = (
             ),
         ),
         CliArgumentSpec(
+            flags=("--codemod-owner-picks",),
+            value_type=Path,
+            help=(
+                "A picks file choosing, for --codemod-refactor-goal, the owner of "
+                "each extract-mixin finding among its ranked owner candidates; "
+                "each pick cites the receipt it rests on (#67)."
+            ),
+        ),
+        CliArgumentSpec(
             flags=("--codemod-goal-max-stages",),
             value_type=int,
             default=8,
@@ -706,7 +728,7 @@ class JsonExecutionPlanPayloadMode(Enum):
         cls,
         value: str,
         payload_builder: Callable[[RefactorExecutionPlanReport], JsonObject],
-    ) -> "JsonExecutionPlanPayloadMode":
+    ) -> JsonExecutionPlanPayloadMode:
         member = object.__new__(cls)
         member._value_ = value
         member._payload_builder = payload_builder
@@ -811,7 +833,7 @@ class JsonPayloadProfile(Enum):
     )
 
     @classmethod
-    def from_cli_value(cls, raw_value: str) -> "JsonPayloadProfile":
+    def from_cli_value(cls, raw_value: str) -> JsonPayloadProfile:
         try:
             return cls[raw_value]
         except KeyError as error:
@@ -877,7 +899,7 @@ class JsonPreparseCachePayloadMode(Enum):
         value: str,
         evidence_local_partial: bool,
         focused_evidence_local_partial: bool,
-    ) -> "JsonPreparseCachePayloadMode":
+    ) -> JsonPreparseCachePayloadMode:
         member = object.__new__(cls)
         member._value_ = value
         return member
@@ -1077,7 +1099,7 @@ class JsonScanMode(StrEnum):
         "validated_cache_covers_the_complete_requested_detector_roster",
     )
 
-    def __new__(cls, value: str, complete: bool, reason: str) -> "JsonScanMode":
+    def __new__(cls, value: str, complete: bool, reason: str) -> JsonScanMode:
         member = str.__new__(cls, value)
         member._value_ = value
         member._complete = complete
@@ -1118,7 +1140,7 @@ class JsonScanStatus(DataclassJsonReport):
     omitted_detector_count: int
 
     @classmethod
-    def exact_cache(cls, identity: AnalysisCacheIdentity) -> "JsonScanStatus":
+    def exact_cache(cls, identity: AnalysisCacheIdentity) -> JsonScanStatus:
         """Derive coverage from the roster authenticated by the cache lookup."""
         return cls(
             mode=JsonScanMode.exact_cache,
@@ -1135,7 +1157,7 @@ class JsonScanStatus(DataclassJsonReport):
         return self.mode.reason
 
     @classmethod
-    def exact_compact_global(cls, detector_count: int) -> "JsonScanStatus":
+    def exact_compact_global(cls, detector_count: int) -> JsonScanStatus:
         """Build the complete compact-scan contract for one detector roster."""
 
         return cls(
@@ -1178,7 +1200,7 @@ class JsonLoopCachePayloadBuilder:
 class JsonSemanticDescentPayloadSource:
     """Repository graph source for the semantic-descent JSON section."""
 
-    modules: list[ParsedModule]
+    modules: ParsedModuleSet
     graph_source: SemanticDescentGraphAnalysisSource = field(
         default_factory=SemanticDescentGraphAnalysisSource
     )
@@ -1200,7 +1222,7 @@ class JsonPayloadBuilder:
 
     findings: list[RefactorFinding]
     plans: list[RefactorPlan]
-    modules: list[ParsedModule]
+    modules: ParsedModuleSet
     economics: RefactorEvidenceEconomics | None = None
     change_budget: RepositoryChangeBudget | None = None
     timing: ScanTiming | None = None
@@ -1234,7 +1256,7 @@ class JsonPayloadBuilder:
         observation_graph_seconds = 0.0
         if sections.needs_observation_graph:
             started = perf_counter()
-            graph = build_observation_graph(self.modules)
+            graph = self.modules.observation_graph
             observation_graph_seconds = round(perf_counter() - started, 3)
             if sections.observation_graph:
                 payload["observations"] = [
@@ -1285,6 +1307,7 @@ class JsonPayloadBuilder:
                 planning_seconds=timing.planning_seconds,
                 source_index_seconds=built_source_index_seconds,
                 analysis_cache_status=timing.analysis_cache_status,
+                type_checker=timing.type_checker,
             )
         if timing is not None:
             payload["timing"] = json_report_object(timing)
@@ -1395,7 +1418,7 @@ class JsonDocumentInputSet:
     def from_option_paths(
         cls,
         option_paths: tuple[tuple[str, tuple[Path | None, ...]], ...],
-    ) -> "JsonDocumentInputSet":
+    ) -> JsonDocumentInputSet:
         return cls(
             tuple(
                 JsonDocumentInput(option_name, path)
@@ -1925,6 +1948,33 @@ class MarkdownReportRenderer(ABC):
             )
         return "\n".join(lines)
 
+    def member_awareness(self, report: MemberAwarenessCensus) -> str:
+        lines = [
+            "Member awareness census:",
+            f"   - Modules scanned: {report.scanned_module_count}",
+            f"   - Consumers naming two or more members: {report.branching_consumers}",
+            f"   - Consumers naming one member: {report.single_member_consumers}",
+            f"   - Distinct member sets: {report.distinct_member_sets}",
+        ]
+        for group in report.groups[:MEMBER_AWARENESS_LISTING_LIMIT]:
+            owners = ", ".join(group.covering_owners) or "none declared"
+            lines.append(
+                f"   - [{group.kind.value}] {group.family}: "
+                f"{' | '.join(group.members)}: {group.consumer_count} consumer(s), "
+                f"{group.owner_using_count} using an owner, "
+                f"{group.bypassing_count} bypassing (owners: {owners})"
+            )
+            lines.extend(
+                f"       bypass: {consumer.file_path}::{consumer.qualname}"
+                for consumer in group.bypassing[:MEMBER_AWARENESS_BYPASS_LIMIT]
+            )
+        lines.extend(
+            f"   - owner {item.owner}: {item.consumers} consumer(s) name its "
+            f"members, {item.owner_using} use it"
+            for item in report.owners[:MEMBER_AWARENESS_LISTING_LIMIT]
+        )
+        return "\n".join(lines)
+
     def scan_proof(self, scan: ScanEconomicsProof) -> list[str]:
         lines = [
             f"   - {scan.label}: {scan.finding_count} finding(s), "
@@ -2286,6 +2336,28 @@ class ScanPredictionCliCommand(SingleRootReportCliCommand):
         return MARKDOWN_RENDERER.scan_prediction(self.report)
 
 
+class MemberAwarenessCliCommand(SingleRootReportCliCommand):
+    command_id = "count_member_awareness"
+
+    @classmethod
+    def requested(cls, args: argparse.Namespace) -> bool:
+        return args.count_member_awareness
+
+    @cached_property
+    def report(self) -> MemberAwarenessCensus:
+        return build_member_awareness_census(
+            self.root,
+            config=self.detector_config,
+            cache_dir=self.configured_parse_cache_dir,
+            use_parse_cache=self.args.use_parse_cache,
+            parse_workers=self.args.parse_workers,
+        )
+
+    @property
+    def markdown(self) -> str:
+        return MARKDOWN_RENDERER.member_awareness(self.report)
+
+
 class EconomicsProofCliCommand(SingleRootReportCliCommand):
     command_id = "prove_economics"
 
@@ -2359,13 +2431,13 @@ class CodemodScanCliCommand(CliCommand, ABC):
 
     source_snapshot: CodemodSourceSnapshot | None
     findings: list[RefactorFinding]
-    modules: list[ParsedModule]
+    modules: ParsedModuleSet
     config: DetectorConfig
     roots: tuple[Path, ...]
     report_roots: tuple[Path, ...]
     parse_cache_dir: Path | None
     semantic_descent_source: SemanticDescentGraphAnalysisSource
-    execution_request: "CodemodPlanExecutionRequest"
+    execution_request: CodemodPlanExecutionRequest
 
 
 class CodemodValidatePlanCliCommand(
@@ -2481,7 +2553,7 @@ class ParseCacheDirAuthority(ParseCachePolicy):
 class ArchitectureGuardSourceEvaluator:
     """Evaluate architecture guards against an in-memory source projection."""
 
-    modules: list[ParsedModule]
+    modules: ParsedModuleSet
     rules: tuple[ArchitectureGuardRule, ...]
 
     def report_for_sources(
@@ -2713,7 +2785,7 @@ class CodemodCliExecution(
     parser: argparse.ArgumentParser
     args: argparse.Namespace
     source_snapshot: CodemodSourceSnapshot | None
-    execution_request: "CodemodPlanExecutionRequest"
+    execution_request: CodemodPlanExecutionRequest
     workflow_scan: CodemodWorkflowScan | None = None
 
     def run(self) -> int | None:
@@ -2902,7 +2974,7 @@ class CodemodExecutionMode(Enum):
         cls,
         args: argparse.Namespace,
         parser: argparse.ArgumentParser,
-    ) -> "CodemodExecutionMode":
+    ) -> CodemodExecutionMode:
         selected = tuple(
             mode
             for mode, supplied in (
@@ -2973,7 +3045,7 @@ class CodemodPlanExecutionRequest:
     def for_sequence(
         self,
         sequence: CodemodPlanSequence,
-    ) -> "CodemodPlanExecutionRequest":
+    ) -> CodemodPlanExecutionRequest:
         return replace(self, sequence=sequence)
 
     def json_report_requested(self, json_flag: bool) -> bool:
@@ -3020,7 +3092,7 @@ class CodemodRecipePlanSourceFile(SourcePathCandidateAuthority):
         requested_path: str,
         roots: tuple[Path, ...],
         cwd: Path,
-    ) -> "CodemodRecipePlanSourceFile":
+    ) -> CodemodRecipePlanSourceFile:
         return cls(
             requested_path=requested_path,
             candidate_set=SourcePathCandidateSet.from_paths(
@@ -3141,7 +3213,7 @@ class CodemodSynthesisExecutionCliCommand(
     def synthesis_execution(
         self,
         snapshot: CodemodSourceSnapshot,
-    ) -> "CodemodSynthesisExecution":
+    ) -> CodemodSynthesisExecution:
         raise NotImplementedError
 
 
@@ -3157,7 +3229,7 @@ class CodemodSynthesizePlanCliCommand(CodemodSynthesisExecutionCliCommand):
     def synthesis_execution(
         self,
         snapshot: CodemodSourceSnapshot,
-    ) -> "FindingRecipePlanSynthesisExecution":
+    ) -> FindingRecipePlanSynthesisExecution:
         plan = snapshot.plan_from_findings(
             self.findings,
             detector_ids=tuple(self.args.codemod_goal_detectors),
@@ -3168,7 +3240,7 @@ class CodemodSynthesizePlanCliCommand(CodemodSynthesisExecutionCliCommand):
                 CodemodPlanSequence.from_document(plan.document)
             ),
             plan_out=self.args.codemod_plan_out,
-            workflow_scan=CodemodWorkflowScan(self.modules, self.findings),
+            workflow_scan=CodemodWorkflowScan(modules=self.modules, findings=self.findings),
             plan=plan,
         )
 
@@ -3185,7 +3257,7 @@ class CodemodSynthesizeClassPlanCliCommand(CodemodSynthesisExecutionCliCommand):
     def synthesis_execution(
         self,
         snapshot: CodemodSourceSnapshot,
-    ) -> "FindingRecipeClassPlanSynthesisExecution":
+    ) -> FindingRecipeClassPlanSynthesisExecution:
         report = codemod_class_plan_from_findings(
             self.findings,
             root=self.roots[0],
@@ -3198,7 +3270,7 @@ class CodemodSynthesizeClassPlanCliCommand(CodemodSynthesisExecutionCliCommand):
                 CodemodPlanSequence.from_document(report.finding_plan.document)
             ),
             plan_out=self.args.codemod_plan_out,
-            workflow_scan=CodemodWorkflowScan(self.modules, self.findings),
+            workflow_scan=CodemodWorkflowScan(modules=self.modules, findings=self.findings),
             report=report,
         )
 
@@ -3558,6 +3630,11 @@ class CodemodRefactorGoalCliCommand(
                     max_candidate_batches=self.args.codemod_goal_max_branches,
                 ),
             ),
+            owner_picks=(
+                None
+                if self.args.codemod_owner_picks is None
+                else OwnerPicks.read(self.args.codemod_owner_picks)
+            ),
         ).run()
         replay_plan_payload = json_report_object(report.replay_sequence)
         if report.stop_reason.completed:
@@ -3569,6 +3646,7 @@ class CodemodRefactorGoalCliCommand(
         return 0 if report.stop_reason.completed else 1
 
 
+@TypeCheckerTimingLedger.scope()
 def _main_without_deadline(invocation: CliArguments) -> int:
     """Run the command-line interface and return a process status code."""
     parser, args = invocation.parser, invocation.args
@@ -3834,7 +3912,7 @@ def _main_without_deadline(invocation: CliArguments) -> int:
                     fast_cache_result = None
             fast_cache_seconds = round(perf_counter() - started, 3)
         if fast_cache_result is not None:
-            modules = []
+            modules = ParsedModuleSet(())
             parse_seconds = 0.0
             analysis_cache_status = fast_cache_result.cache_status
             analysis_cache_identity = fast_cache_result.cache_identity
@@ -3894,10 +3972,9 @@ def _main_without_deadline(invocation: CliArguments) -> int:
                     )
                     findings.extend(module_result.findings)
                     module_cache_statuses.append(module_result.cache_status)
-                release_module_analysis_memory()
                 analysis_elapsed += perf_counter() - started
                 del local_modules
-            modules = []
+            modules = ParsedModuleSet(())
             findings = SortedFindingsAuthority.sort(findings)
             parse_seconds = round(parse_elapsed, 3)
             analysis_seconds = round(analysis_elapsed, 3)
@@ -3940,7 +4017,7 @@ def _main_without_deadline(invocation: CliArguments) -> int:
                     and cached_semantic_descent_graph is None
                 ),
             )
-            modules = []
+            modules = ParsedModuleSet(())
             findings = compact_result.findings
             built_semantic_descent_graph = compact_result.semantic_descent_graph
             if built_semantic_descent_graph is not None:
@@ -3988,7 +4065,7 @@ def _main_without_deadline(invocation: CliArguments) -> int:
                 findings = path_scope.filter_findings(unfiltered_findings)
                 analysis_seconds = round(perf_counter() - started, 3)
     else:
-        modules = []
+        modules = ParsedModuleSet(())
         try:
             findings = analyze_lean_export(args.import_lean_export)
         except (OSError, json.JSONDecodeError, LeanExportError) as error:
@@ -4116,6 +4193,7 @@ def _main_without_deadline(invocation: CliArguments) -> int:
         planning_seconds=planning_seconds,
         source_index_seconds=source_index_seconds,
         analysis_cache_status=analysis_cache_status,
+        type_checker=TypeCheckerTimingLedger.active().timing,
     )
 
     codemod_execution_result = CodemodCliExecution(
@@ -4123,7 +4201,7 @@ def _main_without_deadline(invocation: CliArguments) -> int:
         args=args,
         source_snapshot=source_snapshot,
         execution_request=codemod_execution_request,
-        workflow_scan=CodemodWorkflowScan(modules, findings),
+        workflow_scan=CodemodWorkflowScan(modules=modules, findings=findings),
     ).run()
     if codemod_execution_result is not None:
         return codemod_execution_result

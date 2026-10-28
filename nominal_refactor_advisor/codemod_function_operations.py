@@ -6,6 +6,7 @@ from abc import (
     abstractmethod,
 )
 from dataclasses import dataclass
+from pathlib import Path
 from typing import ClassVar
 
 
@@ -29,7 +30,17 @@ from .codemod_declaration_source import (
     FunctionRegionSourceAuthority,
     FunctionSignatureSourceAuthority,
 )
+from .codemod_foreign_adapter_source import AdapterBindChainAuthority
+from .codemod_foreign_family_source import (
+    ForeignFamilyFilterAuthority,
+    ForeignFamilyReference,
+)
+from .codemod_static_projection_source import (
+    StaticProjection,
+    StaticProjectionAuthority,
+)
 from .codemod_payload import (
+    BooleanPayloadValueCodec,
     EmptyDefaultStringPayloadValueCodec,
     OptionalStringArrayPayloadValueCodec,
     PayloadRecordValueCodec,
@@ -42,17 +53,23 @@ from .codemod_reproof import (
 )
 from .codemod_runtime import CodemodSourceSnapshot
 from .codemod_selector_models import (
-    SelectionCountExpectation,
-    SelectionCountPayloadValueCodec,
+    DeclaredCallSelection,
     SourceRewriteTarget,
 )
-from .codemod_source_edits import PhysicalSourceEdit
+from .codemod_imports import ModuleImportMutation
+from .codemod_source_edits import (
+    NominalSourceEdit,
+    PhysicalSourceEdit,
+    SourceTextGeometry,
+)
 from .declaration_dependencies import (
     FunctionBindingABC,
     FunctionLocalBinding,
     FunctionParameterBinding,
 )
+from .declared_root import DeclaredRoot
 from .descriptor_algebra import AliasProperty
+from .source_index import AstTargetNodeKind
 from .product_flow import BareCallTargetReference
 from .value_expression import LexicalValueReference
 
@@ -105,16 +122,11 @@ class AliasFunctionOperation(RepositorySourceReprovedOperation):
         )
         if len(target_mutations) != 1:
             raise ValueError("Function alias target has no unique definition binding")
-        declaration = repository.resolve_function_target(
+        if not repository.resolve_function_target(
             context,
             BareCallTargetReference(implementation_node.name),
             target_mutations[0].position,
-        ).declaration
-        if (
-            declaration is None
-            or declaration.identity.symbol
-            != snapshot.source_index.symbol_for_target(implementation)
-        ):
+        ).declares_symbol(snapshot.source_index.symbol_for_target(implementation)):
             raise ValueError(
                 "Alias implementation is not the selected preceding definition"
             )
@@ -172,16 +184,10 @@ class PrependFunctionBodyOperation(
 
 
 @dataclass(frozen=True, kw_only=True)
-class DeclaredCallMutationOperationABC(RepositorySourceReprovedOperation, ABC):
+class DeclaredCallMutationOperationABC(
+    DeclaredCallSelection, RepositorySourceReprovedOperation, ABC
+):
     """Re-prove declaration-selected calls before deriving one authored mutation."""
-
-    callee: SourceRewriteTarget = codemod_payload_field(
-        PayloadRecordValueCodec(SourceRewriteTarget)
-    )
-    selection_count: SelectionCountExpectation = codemod_payload_field(
-        SelectionCountPayloadValueCodec(),
-        default_factory=SelectionCountExpectation,
-    )
 
     source_authority: ClassVar[type[DeclaredCallRewriteABC]]
 
@@ -307,3 +313,173 @@ class ProjectFunctionLocalOperation(FunctionBindingProjectionOperationABC):
     local_name: str = codemod_payload_field(RequiredStringPayloadValueCodec())
     binding_type = FunctionLocalBinding
     binding_name = AliasProperty[str]("local_name")
+
+
+@dataclass(frozen=True, kw_only=True)
+class RouteForeignFamilyFilterOperation(SourceReprovedOperation):
+    """Route foreign-class filters in one function through a declared family.
+
+    Rewrites `for V in ITER if isinstance(V, T)` comprehension clauses and
+    `if not isinstance(V, T): continue` loop guards to `Family.within(ITER)`.
+    A filter testing only part of the family would widen; that needs
+    `accept_widening`.
+    """
+
+    family: str = codemod_payload_field(RequiredStringPayloadValueCodec())
+    accept_widening: bool = codemod_payload_field(
+        BooleanPayloadValueCodec(), default=False
+    )
+
+    def source_edits_from_snapshot(
+        self, snapshot: CodemodSourceSnapshot
+    ) -> tuple[NominalSourceEdit, ...]:
+        _, target, node = self.target_node_from_context(snapshot)
+        parsed_module = snapshot.parsed_module_for_source_path(target.file_path)
+        reference = ForeignFamilyReference(self.family)
+        authority = ForeignFamilyFilterAuthority(
+            parsed_module=parsed_module,
+            geometry=SourceTextGeometry(
+                snapshot.sources_by_file_path[target.file_path]
+            ),
+            line_length=DeclaredRoot.line_length_for(Path(target.file_path)),
+            declaration=node,
+            reference=reference,
+            accept_widening=self.accept_widening,
+        )
+        return (
+            *authority.geometry.physical_edits(
+                file_path=target.file_path,
+                replacements=authority.replacements(),
+                rationale=self.rationale
+                or f"Route foreign-class filters in {target.qualname!r} through "
+                f"{reference.class_name}.",
+            ),
+            *self.required_import_mutations(
+                target.file_path,
+                import_source=reference.import_source_for(snapshot, parsed_module),
+                default_rationale=f"Import {reference.class_name}.",
+            ),
+        )
+
+
+@dataclass(frozen=True, kw_only=True)
+class FoldAdapterBindChainOperation(SourceReprovedOperation):
+    """Fold bind chains in one function into reads of a declared adapter family.
+
+    A chain of `isinstance` arms that each bind the same locals becomes
+    `fresh = Family.decoded(subject)` followed by one property read per local,
+    when the arms test exactly the family's adapted classes and every arm
+    expression is that property's body for the arm's class.
+    """
+
+    family: str = codemod_payload_field(RequiredStringPayloadValueCodec())
+
+    def source_edits_from_snapshot(
+        self, snapshot: CodemodSourceSnapshot
+    ) -> tuple[NominalSourceEdit, ...]:
+        _, target, node = self.target_node_from_context(snapshot)
+        parsed_module = snapshot.parsed_module_for_source_path(target.file_path)
+        reference = ForeignFamilyReference(self.family)
+        authority = AdapterBindChainAuthority(
+            parsed_module=parsed_module,
+            geometry=SourceTextGeometry(
+                snapshot.sources_by_file_path[target.file_path]
+            ),
+            line_length=DeclaredRoot.line_length_for(Path(target.file_path)),
+            declaration=node,
+            reference=reference,
+        )
+        return (
+            *authority.geometry.physical_edits(
+                file_path=target.file_path,
+                replacements=authority.replacements(),
+                rationale=self.rationale
+                or f"Fold bind chains in {target.qualname!r} into "
+                f"{reference.class_name} property reads.",
+            ),
+            *self.required_import_mutations(
+                target.file_path,
+                import_source=reference.import_source_for(snapshot, parsed_module),
+                default_rationale=f"Import {reference.class_name}.",
+            ),
+        )
+
+
+@dataclass(frozen=True, kw_only=True)
+class ProjectStaticCallsToAdapterOperation(SourceReprovedOperation):
+    """Rewrite a module's static projection calls into reads of an adapter family.
+
+    `Projector.question(argument)` becomes `Family.decoded(argument).question`
+    for every question the projector's public callables share by name with the
+    family's properties. The family must be the unique one whose properties
+    cover all of the projector's public callables. Bindings of the projector
+    that no read keeps alive are removed from the module's imports.
+    """
+
+    projector: str = codemod_payload_field(RequiredStringPayloadValueCodec())
+    family: str = codemod_payload_field(RequiredStringPayloadValueCodec())
+
+    def source_edits_from_snapshot(
+        self, snapshot: CodemodSourceSnapshot
+    ) -> tuple[NominalSourceEdit, ...]:
+        _, target = self.target_digest(snapshot)
+        target.require_kind(
+            AstTargetNodeKind.MODULE,
+            "Static projection rewriting requires a module target",
+        )
+        projection = StaticProjection.declared_for(self.projector)
+        reference = ForeignFamilyReference(self.family)
+        if projection is None or projection.family is not reference.family:
+            raise ValueError(
+                f"{self.projector} is not a loaded static projection of {self.family}"
+            )
+        parsed_module = snapshot.parsed_module_for_source_path(target.file_path)
+        authority = StaticProjectionAuthority(
+            parsed_module=parsed_module,
+            geometry=SourceTextGeometry(
+                snapshot.sources_by_file_path[target.file_path]
+            ),
+            line_length=DeclaredRoot.line_length_for(Path(target.file_path)),
+            projection=projection,
+            family=reference,
+            other_modules=tuple(
+                snapshot.parsed_module_for_source_path(file_path)
+                for file_path in sorted(snapshot.sources_by_file_path)
+                if file_path != target.file_path
+            ),
+        )
+        replacements = authority.replacements()
+        if not replacements and not authority.retired_names:
+            raise ValueError(
+                f"No use of {self.projector} in {target.file_path!r} can move to "
+                f"{self.family}"
+            )
+        imports = (
+            ()
+            if not replacements or parsed_module.module_name == reference.module_name
+            else self.required_import_mutations(
+                target.file_path,
+                import_source=reference.import_source_for(snapshot, parsed_module),
+                default_rationale=f"Import {reference.class_name}.",
+            )
+        )
+        retired = (
+            ModuleImportMutation.remove_bound_names(
+                file_path=target.file_path,
+                names=authority.retired_names,
+                rationale=self.rationale_text(
+                    f"Drop the unused {self.projector} import."
+                ),
+            ),
+        )
+        return (
+            *authority.geometry.physical_edits(
+                file_path=target.file_path,
+                replacements=replacements,
+                rationale=self.rationale
+                or f"Read {reference.class_name} properties in place of "
+                f"{self.projector} calls.",
+            ),
+            *imports,
+            *(retired if authority.retired_names else ()),
+        )

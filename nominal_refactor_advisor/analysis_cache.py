@@ -17,6 +17,7 @@ from typing import BinaryIO, Generic, TypeAlias, TypeVar
 from .interpreter import PythonVersion
 from .ast_tools import (
     CollectedFamily,
+    FileStat,
     ParsedModule,
     PythonSourcePathPolicy,
     python_source_paths_for_roots,
@@ -46,6 +47,7 @@ from .implementation_identity import (
 from .models import RefactorFinding, SourceLocation
 from .planner import RefactorExecutionPlanReport
 from .scan_cache import ScanCache
+from .semantic_descent import SemanticDescentModuleFamilySignature
 from .source_geometry import read_source_text
 from .source_identity import python_source_cache_signature
 
@@ -139,7 +141,7 @@ class AnalysisCacheStatus(Case):
     def from_reused_item_count(
         cls,
         reused_item_count: int,
-    ) -> "type[AnalysisCacheStatus]":
+    ) -> type[AnalysisCacheStatus]:
         """Classify an analysis that reused zero or more cache shards."""
         return Partial if reused_item_count else Miss
 
@@ -148,7 +150,7 @@ class AnalysisCacheStatus(Case):
         cls,
         reused_item_count: int,
         requested_item_count: int,
-    ) -> "type[AnalysisCacheStatus]":
+    ) -> type[AnalysisCacheStatus]:
         """Classify cache coverage over a bounded request."""
         if reused_item_count == requested_item_count:
             return Hit
@@ -157,8 +159,8 @@ class AnalysisCacheStatus(Case):
     @classmethod
     def combine(
         cls,
-        statuses: Iterable["type[AnalysisCacheStatus]"],
-    ) -> "type[AnalysisCacheStatus]":
+        statuses: Iterable[type[AnalysisCacheStatus]],
+    ) -> type[AnalysisCacheStatus]:
         """Combine independently resolved cache results into one status."""
         statuses = tuple(statuses)
         if statuses and all(status.is_hit for status in statuses):
@@ -170,7 +172,7 @@ class AnalysisCacheStatus(Case):
         return Miss
 
     @classmethod
-    def after_analysis(cls, reused_item_count: int) -> "type[AnalysisCacheStatus]":
+    def after_analysis(cls, reused_item_count: int) -> type[AnalysisCacheStatus]:
         """Resolve the final status after missing work has been analysed."""
         return cls
 
@@ -258,7 +260,7 @@ class Miss(AnalysisCacheStatus):
     can_reuse_findings = True
 
     @classmethod
-    def after_analysis(cls, reused_item_count: int) -> "type[AnalysisCacheStatus]":
+    def after_analysis(cls, reused_item_count: int) -> type[AnalysisCacheStatus]:
         return cls.from_reused_item_count(reused_item_count)
 
 
@@ -378,10 +380,10 @@ class AnalysisExecutionPlanCacheIdentity(ReprCacheTokenMixin):
     @classmethod
     def from_analysis_identity(
         cls,
-        identity: "AnalysisCacheIdentity",
+        identity: AnalysisCacheIdentity,
         root: Path,
         report_roots: tuple[Path, ...] = (),
-    ) -> "AnalysisExecutionPlanCacheIdentity":
+    ) -> AnalysisExecutionPlanCacheIdentity:
         return cls(
             analysis_cache_token=identity.cache_token,
             root=str(root.resolve()),
@@ -443,7 +445,7 @@ class AnalysisCacheRebuildLease:
     release_lock: Callable[[Path], None] | None = None
     cached_lookup: AnalysisCacheLookup | None = None
 
-    def __enter__(self) -> "AnalysisCacheRebuildLease":
+    def __enter__(self) -> AnalysisCacheRebuildLease:
         return self
 
     def __exit__(
@@ -469,7 +471,7 @@ class SourceFileSignature:
     source_hash: str
 
     @classmethod
-    def from_path(cls, path: Path) -> "SourceFileSignature":
+    def from_path(cls, path: Path) -> SourceFileSignature:
         return cls(
             path=str(lexical_absolute_path(path)),
             source_hash=hashlib.blake2s(
@@ -483,7 +485,7 @@ class SourceFileSignature:
         cls,
         path: Path,
         roots: tuple[Path | str, ...],
-    ) -> "SourceFileSignature":
+    ) -> SourceFileSignature:
         return cls(
             path=checkout_relative_path(path, roots),
             source_hash=hashlib.blake2s(
@@ -501,7 +503,7 @@ class AnalysisEngineSignature:
 
     @classmethod
     @ScanCache.cached
-    def current(cls) -> "AnalysisEngineSignature":
+    def current(cls) -> AnalysisEngineSignature:
         return cls(
             tuple(
                 sorted(
@@ -557,13 +559,10 @@ class DetectorSemanticEngineSignature(AnalysisEngineSignature):
         )
 
 
-@dataclass(frozen=True)
-class CachedSourceFileSignature:
+@dataclass(frozen=True, kw_only=True)
+class CachedSourceFileSignature(FileStat):
     """Content hash cached under a stable filesystem stat identity."""
 
-    path: str
-    mtime_ns: int
-    size: int
     source_hash: str
     semantic_hash: str | None = None
 
@@ -573,7 +572,7 @@ class CachedSourceFileSignature:
         path: Path,
         path_stat: os.stat_result,
         source_hash: str,
-    ) -> "CachedSourceFileSignature":
+    ) -> CachedSourceFileSignature:
         return cls(
             path=str(lexical_absolute_path(path)),
             mtime_ns=path_stat.st_mtime_ns,
@@ -583,7 +582,7 @@ class CachedSourceFileSignature:
 
     def with_semantic_hash(
         self, source: str | None = None,
-    ) -> "CachedSourceFileSignature":
+    ) -> CachedSourceFileSignature:
         """Derive lexical identity from the exact source this record identifies."""
         if source is None:
             source = read_source_text(Path(self.path))
@@ -656,12 +655,9 @@ def semantic_module_hash(module: ParsedModule) -> str:
 
 
 @dataclass(frozen=True)
-class ModuleSourceSignature:
+class ModuleSourceSignature(SemanticDescentModuleFamilySignature):
     """Parsed-module identity used for per-module detector-output shards."""
 
-    path: str
-    parsed_import_name: str
-    is_package_init: bool
     source_hash: str
 
     @classmethod
@@ -669,7 +665,7 @@ class ModuleSourceSignature:
         cls,
         module: ParsedModule,
         roots: tuple[Path | str, ...] | None = None,
-    ) -> "ModuleSourceSignature":
+    ) -> ModuleSourceSignature:
         effective_roots = (
             inferred_checkout_roots((module.path,)) if roots is None else roots
         )
@@ -692,7 +688,7 @@ class GlobalModuleContextSignature(ReprCacheTokenMixin):
         cls,
         modules: tuple[ParsedModule, ...],
         roots: tuple[Path | str, ...] | None = None,
-    ) -> "GlobalModuleContextSignature":
+    ) -> GlobalModuleContextSignature:
         effective_roots = (
             inferred_checkout_roots(tuple(module.path for module in modules))
             if roots is None
@@ -726,7 +722,7 @@ class DetectorRegistrySignature:
     @classmethod
     def current(
         cls, *, detector_types: tuple[type[IssueDetector], ...] | None = None
-    ) -> "DetectorRegistrySignature":
+    ) -> DetectorRegistrySignature:
         """Resolve omitted/full and explicit rosters before caching their signatures."""
         if detector_types is None:
             detector_types = IssueDetector.registered_detector_types()
@@ -737,7 +733,7 @@ class DetectorRegistrySignature:
     def from_detector_types(
         cls,
         detector_types: tuple[type[IssueDetector], ...],
-    ) -> "DetectorRegistrySignature":
+    ) -> DetectorRegistrySignature:
         registered_key_by_type = {
             registered_type: str(registered_key)
             for registered_key, registered_type in IssueDetector.__registry__.items()
@@ -819,10 +815,10 @@ class AnalysisCacheIdentity(AnalysisCacheEntryContext):
         config: DetectorConfig,
         *,
         source_policy: PythonSourcePathPolicy | None = None,
-        source_signature_cache: "SourceFileSignatureCache | None" = None,
+        source_signature_cache: SourceFileSignatureCache | None = None,
         report_roots: tuple[Path, ...] = (),
         detector_types: tuple[type[IssueDetector], ...] | None = None,
-    ) -> "AnalysisCacheIdentity":
+    ) -> AnalysisCacheIdentity:
         source_paths = python_source_paths_for_roots(
             roots,
             source_policy=source_policy,
@@ -843,10 +839,10 @@ class AnalysisCacheIdentity(AnalysisCacheEntryContext):
         source_paths: tuple[Path, ...],
         config: DetectorConfig,
         *,
-        source_signature_cache: "SourceFileSignatureCache | None" = None,
+        source_signature_cache: SourceFileSignatureCache | None = None,
         report_roots: tuple[Path, ...] = (),
         detector_types: tuple[type[IssueDetector], ...] | None = None,
-    ) -> "AnalysisCacheIdentity":
+    ) -> AnalysisCacheIdentity:
         """Build an exact cache identity from an already discovered source set."""
 
         absolute_source_files = (
@@ -885,7 +881,7 @@ class AnalysisCacheIdentity(AnalysisCacheEntryContext):
         *,
         report_roots: tuple[Path, ...] = (),
         detector_types: tuple[type[IssueDetector], ...] | None = None,
-    ) -> "AnalysisCacheIdentity":
+    ) -> AnalysisCacheIdentity:
         return cls(
             config=config,
             detector_registry=DetectorRegistrySignature.current(
@@ -938,7 +934,7 @@ class AnalysisCacheFamilyIdentity(AnalysisCacheEntryContext):
         *,
         source_policy: PythonSourcePathPolicy | None = None,
         report_roots: tuple[Path, ...] = (),
-    ) -> "AnalysisCacheFamilyIdentity":
+    ) -> AnalysisCacheFamilyIdentity:
         source_paths = python_source_paths_for_roots(
             roots,
             source_policy=source_policy,
@@ -958,7 +954,7 @@ class AnalysisCacheFamilyIdentity(AnalysisCacheEntryContext):
         config: DetectorConfig,
         *,
         report_roots: tuple[Path, ...] = (),
-    ) -> "AnalysisCacheFamilyIdentity":
+    ) -> AnalysisCacheFamilyIdentity:
         """Build the stable cache family from known source file paths."""
 
         return cls(
@@ -979,7 +975,7 @@ class AnalysisCacheFamilyIdentity(AnalysisCacheEntryContext):
     @classmethod
     def from_analysis_identity(
         cls, identity: AnalysisCacheIdentity
-    ) -> "AnalysisCacheFamilyIdentity":
+    ) -> AnalysisCacheFamilyIdentity:
         return cls(
             config=identity.config,
             detector_registry=identity.detector_registry,
@@ -1023,7 +1019,7 @@ class PerModuleAnalysisCacheFamilyIdentity(ReprCacheTokenMixin):
         module: ParsedModule,
         config: DetectorConfig,
         presentation_roots: tuple[Path | str, ...] = (),
-    ) -> "PerModuleAnalysisCacheFamilyIdentity":
+    ) -> PerModuleAnalysisCacheFamilyIdentity:
         effective_roots = (
             presentation_roots
             if presentation_roots
@@ -1046,7 +1042,7 @@ class PerModuleAnalysisCacheFamilyIdentity(ReprCacheTokenMixin):
         semantic_hash: str,
         config: DetectorConfig,
         presentation_roots: tuple[Path | str, ...] = (),
-    ) -> "PerModuleAnalysisCacheFamilyIdentity":
+    ) -> PerModuleAnalysisCacheFamilyIdentity:
         effective_roots = (
             presentation_roots
             if presentation_roots
@@ -1086,7 +1082,7 @@ class ContextualModuleAnalysisCacheIdentity(
         detector_type: type[IssueDetector],
         context_signature: str,
         presentation_roots: tuple[Path | str, ...] = (),
-    ) -> "ContextualModuleAnalysisCacheIdentity":
+    ) -> ContextualModuleAnalysisCacheIdentity:
         effective_roots = (
             presentation_roots
             if presentation_roots
@@ -1123,7 +1119,7 @@ class GlobalDetectorAnalysisCacheIdentity(
         detector_type: type[IssueDetector],
         context_signature: str,
         presentation_roots: tuple[Path | str, ...] = (),
-    ) -> "GlobalDetectorAnalysisCacheIdentity":
+    ) -> GlobalDetectorAnalysisCacheIdentity:
         return cls(
             config=config,
             detector_registry=DetectorRegistrySignature.from_detector_types(
@@ -1154,7 +1150,7 @@ class GlobalDetectorFamilyAnalysisCacheIdentity(
         detector_types: tuple[type[IssueDetector], ...],
         context_signature: str,
         presentation_roots: tuple[Path | str, ...] = (),
-    ) -> "GlobalDetectorFamilyAnalysisCacheIdentity":
+    ) -> GlobalDetectorFamilyAnalysisCacheIdentity:
         return cls(
             config=config,
             detector_registry=DetectorRegistrySignature.from_detector_types(
@@ -1248,7 +1244,7 @@ class AnalysisFindingCacheEntryPayload(FindingCachePayloadValidationMixin):
         cls,
         identity: AnalysisCacheEntryIdentity,
         findings: list[RefactorFinding],
-    ) -> "AnalysisFindingCacheEntryPayload":
+    ) -> AnalysisFindingCacheEntryPayload:
         return cls(
             identity=identity,
             findings=CachedFindingPayloadShape.require_findings(
@@ -1344,7 +1340,7 @@ class AnalysisPartialFindingCachePayload(FindingCachePayloadValidationMixin):
         identity: AnalysisCacheIdentity,
         previous_identity: AnalysisCacheIdentity,
         findings: list[RefactorFinding],
-    ) -> "AnalysisPartialFindingCachePayload":
+    ) -> AnalysisPartialFindingCachePayload:
         return cls(
             identity=identity,
             previous_identity=previous_identity,
@@ -1381,7 +1377,7 @@ class AnalysisLatestFindingCachePayload(FindingCachePayloadValidationMixin):
         cls,
         identity: AnalysisCacheIdentity,
         findings: list[RefactorFinding],
-    ) -> "AnalysisLatestFindingCachePayload":
+    ) -> AnalysisLatestFindingCachePayload:
         finding_tuple = CachedFindingPayloadShape.require_findings(
             findings,
             cache_surface=cls.__name__,

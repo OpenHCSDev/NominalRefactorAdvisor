@@ -4,6 +4,7 @@ import ast
 import inspect
 from pathlib import Path
 
+from nominal_refactor_advisor.ast_tools import ParsedModuleSet
 from nominal_refactor_advisor.ast_tools import parse_python_modules
 from nominal_refactor_advisor.detectors import (
     DetectorConfig,
@@ -94,7 +95,7 @@ def owner():
         "swapped_positional",
         "Record.decode",
     }
-    findings = SemanticMirrorWithoutDescentDetector().detect(parsed, DetectorConfig())
+    findings = SemanticMirrorWithoutDescentDetector().detect(ParsedModuleSet.of(parsed), DetectorConfig())
     read_findings = [f for f in findings if "mapping read" in f.why]
     assert {f.evidence[0].symbol for f in read_findings} == {
         "raw:row",
@@ -104,7 +105,7 @@ def owner():
         "shadowed_constructor:row",
         "swapped_positional:row",
     }
-    assert not UnmodeledRecordShapeDetector().detect(parsed, DetectorConfig())
+    assert not UnmodeledRecordShapeDetector().detect(ParsedModuleSet.of(parsed), DetectorConfig())
 
 
 def test_unmodeled_shapes_aggregate_same_keys_and_ignore_small_dynamic_reads(tmp_path):
@@ -123,11 +124,11 @@ def separate(left, right):
     return left['alpha'], right['beta'], right['gamma']
 """,
     )
-    findings = UnmodeledRecordShapeDetector().detect(parsed, DetectorConfig())
+    findings = UnmodeledRecordShapeDetector().detect(ParsedModuleSet.of(parsed), DetectorConfig())
     assert len(findings) == 1
     assert findings[0].metrics.field_names == ("alpha", "beta", "gamma")
     assert len(findings[0].evidence) == 2
-    assert not SemanticMirrorWithoutDescentDetector().detect(parsed, DetectorConfig())
+    assert not SemanticMirrorWithoutDescentDetector().detect(ParsedModuleSet.of(parsed), DetectorConfig())
 
 
 def test_redundant_checks_resolve_declared_self_parameters_and_keep_unknowns(tmp_path):
@@ -172,7 +173,7 @@ def nested(row: Record):
     return inner
 """,
     )
-    findings = RedundantTypeCheckDetector().detect(parsed, DetectorConfig())
+    findings = RedundantTypeCheckDetector().detect(ParsedModuleSet.of(parsed), DetectorConfig())
     assert len(findings) == 5
     assert {f.evidence[0].symbol for f in findings} == {
         "Record.check",

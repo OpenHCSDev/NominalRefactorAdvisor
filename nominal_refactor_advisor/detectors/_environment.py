@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+from functools import cached_property
 from abc import ABC, abstractmethod
 from collections import defaultdict
 from collections.abc import Callable, Iterable, Sequence
@@ -12,8 +13,11 @@ from typing import ClassVar
 
 from metaclass_registry import AutoRegisterMeta
 
+from ..value_expression import CompactValueExpression
+from ..lexical_bindings import ImportBoundNameProjection
+from ..ast_projection import ExpressionReference
+from ..ast_projection import CallKeywords, StatementValues
 from ..ast_tools import (
-    AstExpressionProjection,
     BuiltinCallName,
     CollectedFamily,
     ParsedModule,
@@ -119,7 +123,7 @@ class MissingValueMode(Enum):
         carries_literal: bool,
         decision_selector: AbsentDecisionSelector,
         source_selector: AbsentSourceSelector,
-    ) -> "MissingValueMode":
+    ) -> MissingValueMode:
         member = object.__new__(cls)
         member._value_ = label
         member._accepts_boolean_or_fallback = accepts_boolean_or_fallback
@@ -136,7 +140,7 @@ class MissingValueMode(Enum):
     def carries_literal(self) -> bool:
         return self._carries_literal
 
-    def with_resolved_literal(self, literal: str | None) -> "MissingValueMode":
+    def with_resolved_literal(self, literal: str | None) -> MissingValueMode:
         return type(self).LITERAL if literal is not None else self
 
     def select_absent_decision(
@@ -188,18 +192,18 @@ class _EnvironmentImportAliases:
         return self.imported_member_names.get(read_kind.os_member_name, frozenset())
 
     @classmethod
-    def from_module(cls, module: ast.Module) -> "_EnvironmentImportAliases":
+    def from_module(cls, module: ast.Module) -> _EnvironmentImportAliases:
         os_modules: set[str] = set()
         imported_members: dict[str, set[str]] = {}
         for statement in module.body:
             if isinstance(statement, ast.Import):
                 for alias in statement.names:
                     if alias.name == "os":
-                        os_modules.add(alias.asname or alias.name)
+                        os_modules.add(ImportBoundNameProjection(statement).alias_bound_name(alias))
             elif isinstance(statement, ast.ImportFrom) and statement.module == "os":
                 for alias in statement.names:
                     imported_members.setdefault(alias.name, set()).add(
-                        alias.asname or alias.name
+                        ImportBoundNameProjection(statement).alias_bound_name(alias)
                     )
         return cls(
             os_modules=frozenset(os_modules),
@@ -239,12 +243,15 @@ class _FunctionScope:
             )
         )
 
+    @cached_property
     def nodes(self) -> tuple[ast.AST, ...]:
-        return walk_function_body_nodes(self.node)
+        """This function's body, walked once and held by the scope."""
+
+        return walk_function_body_nodes(self.node.body)
 
     def references_any_name(self, names: frozenset[str]) -> bool:
         return any(
-            isinstance(node, ast.Name) and node.id in names for node in self.nodes()
+            isinstance(node, ast.Name) and node.id in names for node in self.nodes
         )
 
     @staticmethod
@@ -253,8 +260,11 @@ class _FunctionScope:
     ) -> tuple[ast.Assign | ast.AnnAssign, ...]:
         return tuple(
             node
-            for node in nodes
-            if isinstance(node, (ast.Assign, ast.AnnAssign)) and node.value is not None
+            for node, _supplied in StatementValues.keyed(
+                (node, node)
+                for node in nodes
+                if isinstance(node, ast.Assign | ast.AnnAssign)
+            ).supplied
         )
 
 
@@ -309,13 +319,13 @@ class _LiteralResolver:
     values_by_name: dict[str, ast.AST]
 
     @classmethod
-    def for_scope(cls, scope: _FunctionScope) -> "_LiteralResolver":
+    def for_scope(cls, scope: _FunctionScope) -> _LiteralResolver:
         assignments: list[ast.Assign | ast.AnnAssign] = list(
             scope.assignment_nodes(scope.module.module.body)
         )
         if scope.class_node is not None:
             assignments.extend(scope.assignment_nodes(scope.class_node.body))
-        assignments.extend(scope.assignment_nodes(scope.nodes()))
+        assignments.extend(scope.assignment_nodes(scope.nodes))
         values_by_name: dict[str, ast.AST] = {}
         for assignment in assignments:
             value = assignment.value
@@ -328,7 +338,7 @@ class _LiteralResolver:
     def string(self, node: ast.AST, seen: frozenset[str] = frozenset()) -> str | None:
         if isinstance(node, ast.Constant) and isinstance(node.value, str):
             return node.value
-        name = AstExpressionProjection.terminal_name(node)
+        name = ExpressionReference.decoded(node).terminal_name
         if name is None or name in seen or name not in self.values_by_name:
             return None
         return self.string(self.values_by_name[name], seen | {name})
@@ -343,7 +353,7 @@ class _LiteralResolver:
             elements = node.elts
         elif (
             isinstance(node, ast.Call)
-            and AstExpressionProjection.terminal_name(node.func)
+            and ExpressionReference.decoded(node.func).terminal_name
             in BuiltinCallName.collection_factory_names()
             and len(node.args) == 1
             and not node.keywords
@@ -360,7 +370,7 @@ class _LiteralResolver:
             ):
                 return raw_values
             return None
-        name = AstExpressionProjection.terminal_name(node)
+        name = ExpressionReference.decoded(node).terminal_name
         if name is None or name in seen or name not in self.values_by_name:
             return None
         return self.boolean_tokens(self.values_by_name[name], seen | {name})
@@ -383,7 +393,7 @@ class _EnvironmentRead(_MissingValueSemantics):
     def identity(self) -> tuple[int, int, EnvironmentReadKind]:
         return (self.line, self.column, self.kind)
 
-    def with_missing_literal(self, literal: str) -> "_EnvironmentRead":
+    def with_missing_literal(self, literal: str) -> _EnvironmentRead:
         return type(self)(
             line=self.line,
             column=self.column,
@@ -406,12 +416,8 @@ class _EnvironmentReadSyntax(_MissingValueSemantics):
         cls,
         kind: EnvironmentReadKind,
         node: ast.Call,
-    ) -> "_EnvironmentReadSyntax | None":
-        keyword_values = {
-            keyword.arg: keyword.value
-            for keyword in node.keywords
-            if keyword.arg is not None
-        }
+    ) -> _EnvironmentReadSyntax | None:
+        keyword_values = dict(CallKeywords.of(node.keywords).by_name)
         key_node = (
             node.args[0]
             if node.args
@@ -461,7 +467,7 @@ class _EnvironmentReadSyntax(_MissingValueSemantics):
 
 class _EnvironmentReadRecognizer(ABC, metaclass=AutoRegisterMeta):
     __registry__: ClassVar[
-        dict[EnvironmentReadKind, type["_EnvironmentReadRecognizer"]]
+        dict[EnvironmentReadKind, type[_EnvironmentReadRecognizer]]
     ] = {}
     __registry_key__ = "kind"
     __skip_if_no_key__ = True
@@ -469,7 +475,7 @@ class _EnvironmentReadRecognizer(ABC, metaclass=AutoRegisterMeta):
     kind: ClassVar[EnvironmentReadKind | None] = None
 
     @classmethod
-    def recognizer_types(cls) -> tuple[type["_EnvironmentReadRecognizer"], ...]:
+    def recognizer_types(cls) -> tuple[type[_EnvironmentReadRecognizer], ...]:
         return tuple(cls.__registry__.values())
 
     @classmethod
@@ -493,7 +499,7 @@ class _GetenvReadRecognizer(_EnvironmentReadRecognizer):
     ) -> _EnvironmentReadSyntax | None:
         if not isinstance(node, ast.Call):
             return None
-        chain = AstExpressionProjection.attribute_chain(node.func)
+        chain = ExpressionReference.decoded(node.func).attribute_chain
         module_call = (
             chain is not None
             and len(chain) == 2
@@ -519,7 +525,7 @@ class _EnvironGetReadRecognizer(_EnvironmentReadRecognizer):
     ) -> _EnvironmentReadSyntax | None:
         if not isinstance(node, ast.Call):
             return None
-        chain = AstExpressionProjection.attribute_chain(node.func)
+        chain = ExpressionReference.decoded(node.func).attribute_chain
         if chain is None or chain[-1] != cls.kind.method_name:
             return None
         owner = chain[:-1]
@@ -545,7 +551,7 @@ class _EnvironSubscriptReadRecognizer(_EnvironmentReadRecognizer):
     ) -> _EnvironmentReadSyntax | None:
         if not isinstance(node, ast.Subscript):
             return None
-        chain = AstExpressionProjection.attribute_chain(node.value)
+        chain = ExpressionReference.decoded(node.value).attribute_chain
         module_owner = (
             chain is not None
             and len(chain) == 2
@@ -593,7 +599,7 @@ def _none_checked_names(node: ast.AST) -> tuple[str, ...]:
         return ()
     operands = (node.left, node.comparators[0])
     if not any(
-        isinstance(operand, ast.Constant) and operand.value is None
+        CompactValueExpression.project(operand).value_is_none_literal
         for operand in operands
     ):
         return ()
@@ -611,7 +617,7 @@ def _missing_overrides(
     resolver: _LiteralResolver,
 ) -> dict[str, _MissingOverride]:
     overrides: dict[str, _MissingOverride] = {}
-    for node in scope.nodes():
+    for node in scope.nodes:
         if not isinstance(node, ast.If):
             continue
         checked_names = _none_checked_names(node.test)
@@ -701,7 +707,7 @@ class _EnvironmentReadAuthority:
     def lineage(self, scope: _FunctionScope) -> dict[str, _EnvironmentRead]:
         lineage: dict[str, _EnvironmentRead] = {}
         assignments = sorted(
-            scope.assignment_nodes(scope.nodes()),
+            scope.assignment_nodes(scope.nodes),
             key=lambda node: (node.lineno, node.col_offset),
         )
         for assignment in assignments:
@@ -777,7 +783,7 @@ class EnvironmentValueNormalizer(Enum):
         cls,
         method_name: str,
         normalizer: Callable[[str], str],
-    ) -> "EnvironmentValueNormalizer":
+    ) -> EnvironmentValueNormalizer:
         member = object.__new__(cls)
         member._value_ = method_name
         member.normalizer: Callable[[str], str] = normalizer
@@ -791,7 +797,7 @@ class EnvironmentValueNormalizer(Enum):
         return self.normalizer(value)
 
     @classmethod
-    def from_method_name(cls, method_name: str) -> "EnvironmentValueNormalizer | None":
+    def from_method_name(cls, method_name: str) -> EnvironmentValueNormalizer | None:
         return next(
             (normalizer for normalizer in cls if normalizer.method_name == method_name),
             None,
@@ -879,7 +885,7 @@ class _EnvironmentAbsentSemantics:
         overrides: dict[str, _MissingOverride],
         token_values: tuple[str, ...],
         matched_decision: bool,
-    ) -> "_EnvironmentAbsentSemantics":
+    ) -> _EnvironmentAbsentSemantics:
         method_chain = EnvironmentValueNormalizationAuthority.method_chain(
             value_expression,
             frozenset(source_names),
@@ -951,7 +957,7 @@ def _environment_boolean_parser_sites(
     overrides = _missing_overrides(scope, resolver)
     sites: list[_EnvironmentBooleanParserSite] = []
     seen: set[tuple[int, int]] = set()
-    for node in scope.nodes():
+    for node in scope.nodes:
         if not isinstance(node, ast.Compare) or len(node.ops) != 1:
             continue
         operator = node.ops[0]
@@ -1009,7 +1015,7 @@ class EnvironmentSemanticNameAuthority:
 def _annotation_is_bool(node: ast.AST | None) -> bool:
     return (
         node is not None
-        and AstExpressionProjection.terminal_name(node) == "bool"
+        and ExpressionReference.decoded(node).terminal_name == "bool"
     )
 
 
@@ -1032,7 +1038,7 @@ def _scope_has_declared_authority_shape(scope: _FunctionScope) -> bool:
         semantic_tokens & frozenset(("decision", "enabled"))
     ):
         return False
-    nodes = scope.nodes()
+    nodes = scope.nodes
     return any(isinstance(node, ast.Raise) for node in nodes) or any(
         not EnvironmentSemanticNameAuthority.tokens(ast.unparse(call.func)).isdisjoint(
             _DECLARED_AUTHORITY_CALL_TOKENS
@@ -1158,15 +1164,14 @@ def _fixed_key_authority_wrapper_facts(
         call = _returned_call(scope)
         if call is None:
             continue
-        selector_chain = AstExpressionProjection.attribute_chain(call.func)
+        selector_chain = ExpressionReference.decoded(call.func).attribute_chain
         if selector_chain is None:
             continue
         key_expression = next(
             (
                 keyword.value
-                for keyword in call.keywords
-                if keyword.arg is not None
-                and EnvironmentSemanticNameAuthority.tokens(keyword.arg)
+                for keyword in CallKeywords.of(call.keywords).named
+                if EnvironmentSemanticNameAuthority.tokens(keyword.name)
                 & _ENVIRONMENT_KEY_PARAMETER_TOKENS
             ),
             None,
@@ -1289,7 +1294,7 @@ class _EnvironmentBooleanModuleProjection:
         cls,
         scopes: tuple[_FunctionScope, ...],
         aliases: _EnvironmentImportAliases,
-    ) -> "_EnvironmentBooleanModuleProjection":
+    ) -> _EnvironmentBooleanModuleProjection:
         environment_read_names = aliases.environment_read_names
         return cls(
             parser_sites=(

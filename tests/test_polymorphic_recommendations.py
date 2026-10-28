@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 
+from nominal_refactor_advisor.ast_tools import ParsedModuleSet
 from nominal_refactor_advisor.ast_tools import SourceModule
 from nominal_refactor_advisor.detectors import (
     DetectorConfig,
@@ -15,7 +16,7 @@ from nominal_refactor_advisor.taxonomy import CertificationLevel
 
 def findings(detector, source: str):
     parsed = SourceModule(Path("package/example.py"), "package.example", source).parse()
-    return detector.detect([parsed], DetectorConfig())
+    return detector.detect(ParsedModuleSet.of([parsed]), DetectorConfig())
 
 
 def test_behavior_table_and_branch_prefers_case_owned_abc_without_mandatory_enum_registry():
@@ -70,6 +71,32 @@ def incomplete(status):
     assert "shared Enum method" in finding.why
     assert "required hierarchy" in finding.why
     assert finding.certification is CertificationLevel.STRONG_HEURISTIC
+
+
+
+def test_member_as_call_receiver_is_a_query_not_a_recovered_case():
+    rows = findings(ExternalEnumCaseRecoveryDetector(), '''
+from enum import Enum
+class Builtin(Enum):
+    TYPE = "type"
+    LEN = "len"
+    ABS = "abs"
+    def names(self, node):
+        return getattr(node, "id", None) == self.value
+def reads_type(node):
+    if Builtin.TYPE.names(node):
+        return True
+    return False
+def reads_len(node):
+    if Builtin.LEN.names(node):
+        return True
+    return False
+def reads_abs(node):
+    if Builtin.ABS.names(node):
+        return True
+    return False
+''')
+    assert rows == []
 
 
 _HELD_RULE = '''

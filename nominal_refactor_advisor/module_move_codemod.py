@@ -94,8 +94,8 @@ class SourceTopLevelSymbolClosureMovePlan(SourceTopLevelSymbolClosureMoveCarrier
         cls,
         request: SourceTopLevelSymbolClosureMoveRequest,
         context: CodemodSelectorContext,
-        operation: "ModuleSymbolMoveOperation",
-    ) -> "SourceTopLevelSymbolClosureMovePlan":
+        operation: ModuleSymbolMoveOperation,
+    ) -> SourceTopLevelSymbolClosureMovePlan:
         source_table = ModuleSymbolTable(
             file_path=request.source_path,
             source=context.sources_by_file_path[request.source_path],
@@ -243,7 +243,7 @@ class SourceTopLevelSymbolClosureMovePlan(SourceTopLevelSymbolClosureMoveCarrier
         source_table: ModuleSymbolTable,
         destination_table: ModuleSymbolTable,
         request: SourceTopLevelSymbolClosureMoveRequest,
-        operation: "ModuleSymbolMoveOperation",
+        operation: ModuleSymbolMoveOperation,
     ) -> ModuleMoveDependencyReport:
         selection = request.selection
         declarations = selection.declarations

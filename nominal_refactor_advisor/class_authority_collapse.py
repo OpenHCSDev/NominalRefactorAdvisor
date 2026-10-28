@@ -4,25 +4,23 @@ from __future__ import annotations
 
 import ast
 import builtins
-import copy
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
-from .ast_tools import (
-    AstExpressionProjection,
-    ParsedModule,
-)
+from .ast_projection import ExpressionReference
+from .ast_tools import ParsedModule
 from .class_index import (
+    ClassBodyModuleScope,
+    ClassBodyNormalForm,
     ClassMethodPromotionSafetyProfile,
     ClassFamilyIndex,
     ClassSymbolResolutionAuthority,
     IndexedClass,
     ModuleClassReferenceResolver,
-    ModuleNominalBindingAuthority,
     ModuleNominalBindingSnapshot,
-    ModuleNominalBindingWitness,
     module_star_import_origins,
 )
-from .lexical_bindings import LEXICAL_SCOPE_BINDING_AUTHORITY
+from .foreign_family import FunctionDefinition
+from .lexical_bindings import LEXICAL_SCOPE_BINDING_AUTHORITY, ImportBoundNameProjection
 
 _NESTED_METHOD_SCOPES = (
     ast.AsyncFunctionDef,
@@ -36,21 +34,6 @@ _NESTED_METHOD_SCOPES = (
 )
 
 
-class _ReceiverAliasSubstitution(ast.NodeTransformer):
-    """Substitute one proven local receiver alias in a copied method tree."""
-
-    def __init__(self, alias_name: str, receiver_name: str) -> None:
-        self.alias_name = alias_name
-        self.receiver_name = receiver_name
-
-    def visit_Name(self, node: ast.Name) -> ast.AST:
-        if node.id != self.alias_name:
-            return node
-        if not isinstance(node.ctx, ast.Load):
-            raise ValueError("Receiver alias is rebound after its declaration")
-        return ast.copy_location(ast.Name(id=self.receiver_name, ctx=node.ctx), node)
-
-
 @dataclass(frozen=True)
 class ClassBehaviorProofContext:
     """Class-local proof inputs derived once for all behavior comparisons."""
@@ -59,14 +42,18 @@ class ClassBehaviorProofContext:
     module_bound_names: frozenset[str]
     class_bound_names: frozenset[str]
     source_lines: tuple[str, ...]
-    binding_snapshot: ModuleNominalBindingSnapshot
+    scope: ClassBodyModuleScope
+
+    @property
+    def binding_snapshot(self) -> ModuleNominalBindingSnapshot:
+        return self.scope.declaration
 
     @classmethod
     def from_declaration(
         cls,
         parsed_module: ParsedModule,
         owner: IndexedClass,
-    ) -> "ClassBehaviorProofContext":
+    ) -> ClassBehaviorProofContext:
         return cls(
             owner=owner,
             module_bound_names=LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(
@@ -76,25 +63,26 @@ class ClassBehaviorProofContext:
                 owner.node.body
             ),
             source_lines=tuple(parsed_module.source.splitlines(keepends=True)),
-            binding_snapshot=ModuleNominalBindingAuthority(
-                parsed_module
-            ).snapshot_before(owner.line),
+            scope=ClassBodyModuleScope.for_lines(parsed_module, (owner.line,))[
+                owner.line
+            ],
         )
 
 
 @dataclass(frozen=True)
 class ClassMethodBehaviorAuthority:
-    """Normalized method syntax together with its exact global bindings."""
+    """One method's class-body normal form, admitted only when it is fully bound
+    and its behavior does not depend on which class owns it."""
 
-    syntax: str
-    global_bindings: tuple[ModuleNominalBindingWitness, ...]
+    digest: str
+    normal_form: ClassBodyNormalForm = field(compare=False)
 
     @classmethod
     def from_declaration(
         cls,
         context: ClassBehaviorProofContext,
         method: ast.FunctionDef | ast.AsyncFunctionDef,
-    ) -> "ClassMethodBehaviorAuthority":
+    ) -> ClassMethodBehaviorAuthority:
         safety_profile = ClassMethodPromotionSafetyProfile.from_method(
             method,
             context.module_bound_names,
@@ -107,81 +95,20 @@ class ClassMethodBehaviorAuthority:
                 "ownership-sensitive "
                 f"behavior: {tuple(hazard.value for hazard in safety_profile.hazards)!r}"
             )
-        normalized = cls._normalized_method(method)
-        cls._require_flat_lexical_scope(normalized)
-        local_names = cls._local_names(normalized)
-        global_bindings: list[ModuleNominalBindingWitness] = []
-        for name in sorted(
-            {
-                node.id
-                for node in ast.walk(normalized)
-                if isinstance(node, ast.Name)
-                and isinstance(node.ctx, ast.Load)
-                and node.id not in local_names
-            }
-        ):
-            binding = context.binding_snapshot.binding_for(name)
-            if binding is not None:
-                global_bindings.append(
-                    ModuleNominalBindingWitness(binding.qualified_name, name)
-                )
-                continue
-            if context.binding_snapshot.resolves_unshadowed_builtin(name):
-                global_bindings.append(
-                    ModuleNominalBindingWitness(f"{builtins.__name__}.{name}", name)
-                )
-                continue
+        cls._require_flat_lexical_scope(method)
+        normal_form = ClassBodyNormalForm.of_method(
+            method, context.scope, context.class_bound_names
+        )
+        unbound = (
+            *normal_form.unresolved_names,
+            *(deferred.name for deferred in normal_form.deferred_names),
+        )
+        if unbound:
             raise ValueError(
                 f"Method {context.owner.qualname}.{method.name} has unresolved global "
-                f"binding {name!r}"
+                f"binding {unbound[0]!r}"
             )
-        return cls(
-            syntax=ast.dump(normalized, include_attributes=False),
-            global_bindings=tuple(global_bindings),
-        )
-
-    @classmethod
-    def _normalized_method(
-        cls,
-        method: ast.FunctionDef | ast.AsyncFunctionDef,
-    ) -> ast.FunctionDef | ast.AsyncFunctionDef:
-        normalized = copy.deepcopy(method)
-        receiver_name = cls._receiver_name(normalized)
-        if receiver_name is None or len(normalized.body) != 2:
-            return normalized
-        alias_declaration, remaining_statement = normalized.body
-        if not (
-            isinstance(alias_declaration, ast.AnnAssign)
-            and alias_declaration.simple == 1
-            and isinstance(alias_declaration.target, ast.Name)
-            and isinstance(alias_declaration.value, ast.Name)
-            and alias_declaration.value.id == receiver_name
-            and alias_declaration.target.id != receiver_name
-        ):
-            return normalized
-        alias_name = alias_declaration.target.id
-        alias_references = tuple(
-            node
-            for node in ast.walk(remaining_statement)
-            if isinstance(node, ast.Name) and node.id == alias_name
-        )
-        if not alias_references or any(
-            not isinstance(reference.ctx, ast.Load) for reference in alias_references
-        ):
-            return normalized
-        normalized.body = [
-            _ReceiverAliasSubstitution(alias_name, receiver_name).visit(
-                remaining_statement
-            )
-        ]
-        return ast.fix_missing_locations(normalized)
-
-    @staticmethod
-    def _receiver_name(
-        method: ast.FunctionDef | ast.AsyncFunctionDef,
-    ) -> str | None:
-        positional = (*method.args.posonlyargs, *method.args.args)
-        return positional[0].arg if positional else None
+        return cls(normal_form.digest, normal_form)
 
     @staticmethod
     def _require_flat_lexical_scope(
@@ -196,29 +123,6 @@ class ClassMethodBehaviorAuthority:
                 raise ValueError(
                     f"Method {method.name!r} mutates its lexical binding surface"
                 )
-
-    @staticmethod
-    def _local_names(
-        method: ast.FunctionDef | ast.AsyncFunctionDef,
-    ) -> frozenset[str]:
-        arguments = (
-            *method.args.posonlyargs,
-            *method.args.args,
-            *method.args.kwonlyargs,
-            *((method.args.vararg,) if method.args.vararg is not None else ()),
-            *((method.args.kwarg,) if method.args.kwarg is not None else ()),
-        )
-        return frozenset(
-            (
-                *(argument.arg for argument in arguments),
-                *(
-                    node.id
-                    for node in ast.walk(method)
-                    if isinstance(node, ast.Name)
-                    and isinstance(node.ctx, (ast.Store, ast.Del))
-                ),
-            )
-        )
 
 
 @dataclass(frozen=True)
@@ -240,10 +144,10 @@ class ClassBaseBehaviorAuthority:
     def from_declaration(
         cls,
         context: ClassBehaviorProofContext,
-    ) -> tuple["ClassBaseBehaviorAuthority", ...]:
+    ) -> tuple[ClassBaseBehaviorAuthority, ...]:
         authorities: list[ClassBaseBehaviorAuthority] = []
         for base in context.owner.node.bases:
-            parts = AstExpressionProjection.attribute_chain(base)
+            parts = ExpressionReference.decoded(base).attribute_chain
             if parts is None:
                 raise ValueError(
                     f"Class authority {context.owner.qualname!r} has parameterized or "
@@ -288,7 +192,7 @@ class ClassAuthorityCollapseProofContext:
         *,
         displaced_symbol: str,
         replacement_symbol: str,
-    ) -> "ClassAuthorityCollapseProofContext":
+    ) -> ClassAuthorityCollapseProofContext:
         displaced = cls.required_class(class_index, displaced_symbol)
         replacement = cls.required_class(class_index, replacement_symbol)
         if displaced_symbol == replacement_symbol:
@@ -433,10 +337,7 @@ class ClassAuthorityCollapseProofContext:
         local_names_by_import: dict[tuple[str, str], list[str]] = {}
         for statement in parsed_module.module.body:
             if isinstance(statement, ast.Import):
-                bound_names = {
-                    alias.asname or alias.name.split(".", 1)[0]
-                    for alias in statement.names
-                }
+                bound_names = set(ImportBoundNameProjection(statement).names())
                 if bound_names & deleted_only_names:
                     raise ValueError(
                         "Class-authority collapse cannot clean an obsolete module "
@@ -450,7 +351,7 @@ class ClassAuthorityCollapseProofContext:
                 if alias.name == "*":
                     continue
                 local_names_by_import.setdefault((module_name, alias.name), []).append(
-                    alias.asname or alias.name
+                    ImportBoundNameProjection(statement).alias_bound_name(alias)
                 )
         obsolete: list[ObsoleteClassAuthorityImport] = []
         for (module_name, imported_name), local_names in local_names_by_import.items():
@@ -480,7 +381,7 @@ class RedundantClassAuthorityCollapseProof:
         *,
         displaced_symbol: str,
         replacement_symbol: str,
-    ) -> "RedundantClassAuthorityCollapseProof":
+    ) -> RedundantClassAuthorityCollapseProof:
         context = ClassAuthorityCollapseProofContext.require(
             parsed_modules,
             class_index,
@@ -588,8 +489,7 @@ class RedundantClassAuthorityCollapseProof:
     ) -> dict[str, ast.FunctionDef | ast.AsyncFunctionDef]:
         methods = tuple(
             statement
-            for statement in indexed_class.node.body
-            if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef))
+            for statement in FunctionDefinition.within(indexed_class.node.body)
         )
         methods_by_name = {method.name: method for method in methods}
         if len(methods_by_name) != len(methods):
@@ -613,7 +513,7 @@ class IntermediateClassAuthorityCollapseProof:
         *,
         displaced_symbol: str,
         replacement_symbol: str,
-    ) -> "IntermediateClassAuthorityCollapseProof":
+    ) -> IntermediateClassAuthorityCollapseProof:
         context = ClassAuthorityCollapseProofContext.require(
             parsed_modules,
             class_index,

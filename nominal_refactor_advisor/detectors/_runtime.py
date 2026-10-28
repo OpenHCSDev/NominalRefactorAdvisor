@@ -16,19 +16,20 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 from functools import lru_cache
-from typing import Generic, TypeAlias, TypeVar, cast
+from typing import Generic, TypeAlias, TypeVar
 
 from tree_sitter import Node
 
 from ._regex_bundle import RepeatedLocalRegexBundleDetector
 
+from ..lexical_bindings import ImportBoundNameProjection
 from ..ast_tools import (
     CollectedFamily,
     LITERAL_DISPATCH_CASE_MATCHER,
     ParsedModule,
+    ParsedModuleSet,
     SourceModule,
     collect_family_items,
-    module_syntax_index,
     walk_function_body_nodes,
 )
 from ..native_syntax import NativePythonSyntaxIndex
@@ -54,6 +55,15 @@ from ..enum_keyed_query import (
     EnumKeyedDerivedMapFacadeModuleProjection,
     EnumKeyedDerivedMapFacadeModuleProjectionFamily,
 )
+from ..codemod_foreign_adapter_source import ForeignAdapterBindChainModuleFamily
+from ..codemod_static_projection_source import StaticProjectionCallModuleFamily
+from ..codemod_foreign_family_recipe import (
+    ForeignAdapterBindChainFindingRecipeSynthesizer,
+    StaticProjectionAdapterFindingRecipeSynthesizer,
+    ForeignFamilyRoutableFilterFindingRecipeSynthesizer,
+    ForeignFamilySiteFindingRecipeSynthesizer,
+)
+from ..codemod_foreign_family_source import ForeignFamilyFilterModuleFamily
 from ..codemod import (
     KeyedMirrorFindingRecipeSynthesizer,
     ManualClassRegistrationFindingRecipeSynthesizer,
@@ -70,6 +80,10 @@ from ..models import (
     RefactorFinding,
     SourceLocation,
 )
+from ..observation_shapes import (
+    ForeignFamilySiteModule,
+    ForeignFamilySiteShape,
+)
 from ..patterns import PatternId
 from ..semantic_identity import (
     InheritanceIdentityAttributeProjection,
@@ -81,9 +95,54 @@ from ..type_keyed_behavior import (
     TypeKeyedBehaviorProjectionComponent,
     TypeKeyedBehaviorProjectionComponentBuilder,
 )
-from ._base import *
+from abc import ABC
+from pathlib import Path
+from typing import ClassVar
+from ..ast_tools import _builder_call_shape, statements_without_docstring
+from ..models import DispatchCountMetrics, MappingMetrics, RegistrationMetrics
+from ..observation_families import (
+    NumericLiteralDispatchObservationFamily,
+    RegistrationShapeFamily,
+)
+from ..observation_shapes import (
+    BuilderCallShape,
+    LiteralDispatchObservation,
+    RegistrationShape,
+)
+from ._base import (
+    ModuleBuilderCallShapes,
+    _module_builder_call_shapes,
+    CANDIDATE_COLLECTION_AUTHORITY,
+    certified_spec,
+    CompactClassRepositoryCandidateDetector,
+    CompactClassRepositoryContext,
+    CompactContextCandidateDetector,
+    CompactGroupedShapeIssueDetector,
+    CompactModuleProjectionDetectorMixin,
+    CompactMultiProjectionCandidateDetector,
+    CompactProjectionGroups,
+    ConcreteConfigFieldProbeCandidate,
+    ConfiguredModuleCollectorCandidateDetector,
+    DetectorConfig,
+    finding_spec_template,
+    FlattenedModuleCollectorCandidateDetector,
+    high_confidence_spec,
+    IssueDetector,
+    LatentImplementationRosterCandidate,
+    LineWitnessCandidate,
+    ManualConcreteSubclassRosterCandidate,
+    ModuleCollectorCandidateDetector,
+    PerModuleIssueDetector,
+    PredicateSelectedConcreteFamilyCandidate,
+    SemanticMirrorIssueDetector,
+    SsotAuthorityBoundaryDetector,
+)
+from ._helpers import (
+    _concrete_config_field_probe_candidates,
+    _guarded_wrapper_spec_pairs,
+)
+from ._substrate_support import _constant_string
 from ._base import high_confidence_certified_spec
-from ._helpers import *
 
 
 def _literal_dispatch_authority_patch(
@@ -469,7 +528,7 @@ FormalBoundaryExternalSitesByValue: TypeAlias = dict[
 
 
 def _module_formal_boundary_string_constants(
-    modules: list[ParsedModule],
+    modules: ParsedModuleSet,
 ) -> FormalBoundaryStringConstantRecords:
     return tuple(
         constant
@@ -617,7 +676,7 @@ class FormalBoundaryExternalStringRegistryMirrorAuthority:
     def findings(
         cls,
         detector: IssueDetector,
-        modules: list[ParsedModule],
+        modules: ParsedModuleSet,
     ) -> list[RefactorFinding]:
         constants = _module_formal_boundary_string_constants(modules)
         return cls.findings_from_constants(detector, constants)
@@ -808,7 +867,7 @@ class GeneratedBoundarySemanticConstantAuthority:
     def findings(
         cls,
         detector: IssueDetector,
-        modules: list[ParsedModule],
+        modules: ParsedModuleSet,
     ) -> list[RefactorFinding]:
         sites = tuple(
             site
@@ -1135,7 +1194,7 @@ class RuntimeNamespaceBridgeDetector(PerModuleIssueDetector):
                         sites.append(
                             RuntimeNamespaceBridgeSite(
                                 line=int(node.lineno),
-                                symbol=alias.asname or alias.name,
+                                symbol=ImportBoundNameProjection(node).alias_bound_name(alias),
                                 bridge_kind=(
                                     RuntimeNamespaceBridgeKind.RUNTIME_BRIDGE_IMPORT
                                 ),
@@ -1331,7 +1390,7 @@ class RepeatedBuilderCallProjectionDemand:
     def from_report_targets(
         cls,
         target_items: tuple[object, ...],
-    ) -> "RepeatedBuilderCallProjectionDemand":
+    ) -> RepeatedBuilderCallProjectionDemand:
         """Derive exact repository mapping keys from report-target shapes."""
 
         return cls(
@@ -1378,7 +1437,7 @@ def _collect_repeated_builder_call_ast_demand(
         for _file_path, callee_name, *_remainder in demand.exact_mapping_keys
     )
     return list(
-        demand.project(tuple(_module_builder_call_shapes(module, callee_names)))
+        demand.project(module.fact(ModuleBuilderCallShapes).calling(callee_names))
     )
 
 
@@ -1463,7 +1522,7 @@ class RepeatedBuilderCallDetector(
         ),
     )
 
-    candidate_collector = staticmethod(_module_builder_call_shapes)
+    candidate_collector = _module_builder_call_shapes
     candidate_sort_key = staticmethod(
         lambda item: (item.file_path, item.lineno, item.symbol)
     )
@@ -1564,7 +1623,7 @@ class ManualClassRegistrationDetector(
     )
 
     def _collect_shapes(
-        self, modules: list[ParsedModule], config: DetectorConfig
+        self, modules: ParsedModuleSet, config: DetectorConfig
     ) -> list[RegistrationShape]:
         return [
             shape
@@ -2129,14 +2188,8 @@ def _type_keyed_behavior_projection_components(
 def _enum_keyed_derived_map_facade_components(
     projections_by_family: dict[type[CollectedFamily], Sequence[object]],
 ) -> tuple[EnumKeyedDerivedMapFacadeComponent, ...]:
-    facade_projections = cast(
-        Sequence[EnumKeyedDerivedMapFacadeModuleProjection],
-        projections_by_family[EnumKeyedDerivedMapFacadeModuleProjectionFamily],
-    )
-    class_projections = cast(
-        Sequence[CompactModuleClassProjection],
-        projections_by_family[CompactModuleClassProjectionFamily],
-    )
+    facade_projections = EnumKeyedDerivedMapFacadeModuleProjectionFamily.modules_in(projections_by_family)
+    class_projections = CompactModuleClassProjectionFamily.modules_in(projections_by_family)
     exposure_authority = CompactRepositoryPublicExposureIndex(class_projections)
     return sorted_tuple(
         (
@@ -2603,7 +2656,7 @@ class StringLiteralDispatchOwnershipLeadDetector(PerModuleIssueDetector):
     def _findings_for_module(
         self, module: ParsedModule, config: DetectorConfig
     ) -> list[RefactorFinding]:
-        index = module_syntax_index(module.module)
+        index = module.syntax_index
         lines = module.source.splitlines()
         findings: list[RefactorFinding] = []
         for node_index, root in index.indexed_nodes_of_type(ast.If):
@@ -2629,18 +2682,18 @@ class StringLiteralDispatchOwnershipLeadDetector(PerModuleIssueDetector):
             axis_expression: str | None = None
             literal_cases: list[str] = []
             unresolved: list[str] = []
-            for item in chain:
+            for branch, item in enumerate(chain, start=1):
                 matched = LITERAL_DISPATCH_CASE_MATCHER.match(item.test, str)
                 if matched is None:
                     original_test = ast.get_source_segment(module.source, item.test)
-                    unresolved.append(f"line {item.lineno}: {original_test or ast.unparse(item.test)}")
+                    unresolved.append(f"branch {branch}: {original_test or ast.unparse(item.test)}")
                     continue
                 fingerprint, expression, literal_case = matched
                 if axis_fingerprint is None:
                     axis_fingerprint, axis_expression = fingerprint, expression
                 if fingerprint != axis_fingerprint:
                     original_test = ast.get_source_segment(module.source, item.test)
-                    unresolved.append(f"line {item.lineno}: {original_test or ast.unparse(item.test)}")
+                    unresolved.append(f"branch {branch}: {original_test or ast.unparse(item.test)}")
                     continue
                 literal_cases.append(literal_case)
             if len(literal_cases) < max(2, config.min_string_cases):
@@ -2655,11 +2708,11 @@ class StringLiteralDispatchOwnershipLeadDetector(PerModuleIssueDetector):
             )
             findings.append(
                 self.build_finding(
-                    f"{module.path} has source-ordered string cases {tuple(literal_cases)} on `{axis_expression}` in {symbol}; "
+                    f"source-ordered string cases {tuple(literal_cases)} on `{axis_expression}` in {symbol}; "
                     f"unmatched original guards (including root) {tuple(unresolved)}; "
-                    f"chain-local else rows {tuple(item.lineno for item in chain_else)}, "
+                    f"chain-local else rows {len(chain_else)}, "
                     f"else_nested_if {any(isinstance(item, ast.If) for item in chain_else)} OPEN, "
-                    f"trailing sibling rows {tuple(item.lineno for item in trailing)} OPEN; "
+                    f"trailing sibling rows {len(trailing)} OPEN; "
                     "binding, effects and domain relation OPEN.",
                     evidence,
                     metrics=DispatchCountMetrics.from_literal_family(
@@ -2681,9 +2734,6 @@ class _OriginalGuardedStringCase:
 
     def location(self, module: ParsedModule, symbol: str) -> SourceLocation:
         return SourceLocation(module.file_path, self.line, symbol)
-
-    def test_label(self) -> str:
-        return f"line {self.line}: {self.source_test}"
 
 
 class GuardedStringCaseOwnershipLeadDetector(PerModuleIssueDetector):
@@ -2708,7 +2758,7 @@ class GuardedStringCaseOwnershipLeadDetector(PerModuleIssueDetector):
     def _findings_for_module(
         self, module: ParsedModule, config: DetectorConfig
     ) -> list[RefactorFinding]:
-        index = module_syntax_index(module.module)
+        index = module.syntax_index
         lines = module.source.splitlines()
         # Preserve original whole tests and roots even though only selected
         # direct conjuncts are recognized; this is not an exhaustive inventory.
@@ -2774,15 +2824,23 @@ class GuardedStringCaseOwnershipLeadDetector(PerModuleIssueDetector):
             ordered = sorted(entries, key=lambda entry: entry.line)
             evidence = tuple(entry.location(module, symbol) for entry in ordered)
             cases = tuple(entry.literal_case for entry in ordered)
-            roots = tuple(entry.root_line for entry in ordered)
+            root_ordinals = {
+                root_line: ordinal
+                for ordinal, root_line in enumerate(
+                    sorted({entry.root_line for entry in ordered}), start=1
+                )
+            }
+            roots = tuple(root_ordinals[entry.root_line] for entry in ordered)
             guarded_tests = tuple(
-                entry.line for entry in ordered if entry.is_guarded
+                position
+                for position, entry in enumerate(ordered, start=1)
+                if entry.is_guarded
             )
-            original_tests = tuple(entry.test_label() for entry in ordered)
+            original_tests = tuple(entry.source_test for entry in ordered)
             findings.append(
                 self.build_finding(
-                    f"{module.path} has selected string cases {cases} on `{ordered[0].axis}` in {symbol}; "
-                    f"original decision roots {roots}, conjunctive guard lines {guarded_tests}, "
+                    f"selected string cases {cases} on `{ordered[0].axis}` in {symbol}; "
+                    f"decision root of each test {roots}, conjunctive guards at tests {guarded_tests}, "
                     f"original whole tests {original_tests}; "
                     "unselected source tests, short-circuit reachability, effects, "
                     "priority, binding and domain relation OPEN.",
@@ -3005,3 +3063,110 @@ class ScopedShapeWrapperDetector(PerModuleIssueDetector):
                 evidence,
             )
         ]
+
+
+class ForeignFamilySiteDetector(
+    CompactModuleProjectionDetectorMixin[ForeignFamilySiteModule],
+    ForeignFamilySiteFindingRecipeSynthesizer,
+    IssueDetector,
+    ABC,
+):
+    """Report, per declared family, the sites its recipe can move onto it."""
+
+    finding_message: ClassVar[str]
+
+    def _findings_from_compact_projections(
+        self,
+        projections: Sequence[ForeignFamilySiteModule],
+        config: DetectorConfig,
+    ) -> list[RefactorFinding]:
+        del config
+        sites_by_family: dict[str, list[ForeignFamilySiteShape]] = defaultdict(list)
+        for projection in projections:
+            for site in projection.sites:
+                sites_by_family[site.family].append(site)
+        return [
+            self.build_finding(
+                self.finding_message.format(
+                    count=len(sites),
+                    modules=len({site.file_path for site in sites}),
+                    family=family,
+                ),
+                tuple(
+                    SourceLocation(site.file_path, site.lineno, site.symbol)
+                    for site in sorted(
+                        sites, key=lambda site: (site.file_path, site.lineno)
+                    )
+                ),
+            )
+            for family, sites in sorted(sites_by_family.items())
+        ]
+
+
+class ForeignFamilyRoutableFilterDetector(
+    ForeignFamilySiteDetector, ForeignFamilyRoutableFilterFindingRecipeSynthesizer
+):
+    """Find filters that restate the classes a declared foreign family owns."""
+
+    module_projection_family = ForeignFamilyFilterModuleFamily
+    finding_message = (
+        "{count} filter site(s) in {modules} module(s) test exactly the classes "
+        "of `{family}`; each can iterate `.within(...)` on it instead of "
+        "restating the type test."
+    )
+
+    finding_spec = certified_spec(
+        PatternId.FOREIGN_FAMILY_ROUTABLE_FILTER,
+        "Filters restate a declared foreign family's classes",
+        "A declared foreign family owns its members and the one type test on them. A filter that tests exactly those classes again restates the family instead of iterating it.",
+        "filters routed through the declared family that owns their tested classes",
+        "loop or comprehension filters whose tested class set equals one declared concrete family's members",
+        (CapabilityTag.PROVENANCE,),
+        (ObservationTag.PARTIAL_VIEW,),
+    )
+
+
+class ForeignAdapterBindChainDetector(
+    ForeignFamilySiteDetector, ForeignAdapterBindChainFindingRecipeSynthesizer
+):
+    """Find bind chains that restate what a declared adapter family computes."""
+
+    module_projection_family = ForeignAdapterBindChainModuleFamily
+    finding_message = (
+        "{count} bind chain(s) in {modules} module(s) read, class by class, "
+        "what the properties of `{family}` already compute; each can decode "
+        "once with `.decoded(...)` and read those properties."
+    )
+
+    finding_spec = certified_spec(
+        PatternId.FOREIGN_ADAPTER_BIND_CHAIN,
+        "Bind chains restate a declared adapter family's properties",
+        "A declared adapter family answers one question about every class it adapts. An isinstance chain that binds the same locals from each class re-derives those answers arm by arm instead of asking the adapter.",
+        "bind chains folded into one decode and the adapter properties that already compute their values",
+        "isinstance chains over exactly one adapter family's classes whose arms bind names to the adapter properties' bodies",
+        (CapabilityTag.PROVENANCE,),
+        (ObservationTag.PARTIAL_VIEW,),
+    )
+
+
+class StaticProjectionAdapterCallDetector(
+    ForeignFamilySiteDetector, StaticProjectionAdapterFindingRecipeSynthesizer
+):
+    """Find static projection calls that a declared adapter family answers."""
+
+    module_projection_family = StaticProjectionCallModuleFamily
+    finding_message = (
+        "{count} static projection call(s) in {modules} module(s) ask what the "
+        "properties of `{family}` already answer; each can decode once with "
+        "`.decoded(...)` and read the property of the same name."
+    )
+
+    finding_spec = certified_spec(
+        PatternId.STATIC_PROJECTION_ADAPTER_CALL,
+        "Static projection calls restate a declared adapter family's properties",
+        "A static projection class re-matches the node kinds in every method. A declared adapter family answers each of those questions as a property per kind, so the call can ask the adapter instead.",
+        "static projection calls rewritten to property reads of the adapter family that answers the same question",
+        "calls of a loaded class whose public callables are all properties of one adapter family, with one positional argument",
+        (CapabilityTag.PROVENANCE,),
+        (ObservationTag.PARTIAL_VIEW,),
+    )

@@ -16,7 +16,8 @@ from enum import StrEnum
 from functools import reduce
 from typing import ClassVar
 
-from .ast_tools import AstExpressionProjection, FunctionDefinitionNode
+from .ast_projection import ExpressionReference
+from .ast_tools import FunctionDefinitionNode
 from .collection_algebra import sorted_tuple
 from .semantic_match import Maybe
 from .source_index import (
@@ -47,7 +48,7 @@ class _ProductForward(ProductForwardIdentity):
         carrier_name: str,
         source_name: str,
         field_names: tuple[str, ...],
-    ) -> "_ProductForward | None":
+    ) -> _ProductForward | None:
         """Construct one meaningful product projection from unique fields."""
 
         return (
@@ -66,9 +67,9 @@ class _ProductForward(ProductForwardIdentity):
     @classmethod
     def from_intersection(
         cls,
-        packed: "_ProductForward",
-        unpacked: "ProductForwardFieldProjection",
-    ) -> "_ProductForward | None":
+        packed: _ProductForward,
+        unpacked: ProductForwardFieldProjection,
+    ) -> _ProductForward | None:
         """Retain only fields preserved by both sides of a composition."""
 
         return cls.from_fields(
@@ -161,7 +162,7 @@ class CancelableCompositionKind(StrEnum):
         cls,
         value: str,
         projection: _CancelableCompositionProjectionABC,
-    ) -> "CancelableCompositionKind":
+    ) -> CancelableCompositionKind:
         member = str.__new__(cls, value)
         member._value_ = value
         member._projection = projection
@@ -175,8 +176,8 @@ class CancelableCompositionKind(StrEnum):
 
     def signal_for(
         self,
-        authority: "CancelableCompositionSignalTargetAuthority",
-    ) -> "CancelableCompositionSignal | None":
+        authority: CancelableCompositionSignalTargetAuthority,
+    ) -> CancelableCompositionSignal | None:
         """Execute this member's projection for one indexed function target."""
 
         return (
@@ -299,7 +300,7 @@ class ProductForwardFieldProjection:
         keywords: Sequence[ast.keyword] = (),
         *,
         source_name: str | None = None,
-    ) -> "ProductForwardFieldProjection | None":
+    ) -> ProductForwardFieldProjection | None:
         """Project one argument list through the shared optional-effect algebra."""
 
         positional_projection = reduce(
@@ -322,7 +323,7 @@ class ProductForwardFieldProjection:
         cls,
         value: ast.AST,
         carrier_variable_name: str,
-    ) -> "ProductForwardFieldProjection | None":
+    ) -> ProductForwardFieldProjection | None:
         """Project supported unpack-return syntax from one product carrier."""
 
         match value:
@@ -347,9 +348,9 @@ class ProductForwardFieldProjection:
     def with_positional_argument(
         self,
         argument: ast.expr,
-    ) -> "ProductForwardFieldProjection | None":
+    ) -> ProductForwardFieldProjection | None:
         return (
-            Maybe.of(AstExpressionProjection.attribute_projection(argument))
+            Maybe.of(ExpressionReference.decoded(argument).attribute_projection)
             .project(lambda projected: self.with_projected_field(*projected))
             .unwrap_or_none()
         )
@@ -357,13 +358,13 @@ class ProductForwardFieldProjection:
     def with_keyword(
         self,
         keyword: ast.keyword,
-    ) -> "ProductForwardFieldProjection | None":
+    ) -> ProductForwardFieldProjection | None:
         return (
             Maybe.of(keyword.arg)
             .combine(
-                lambda _keyword_name: AstExpressionProjection.attribute_projection(
+                lambda _keyword_name: ExpressionReference.decoded(
                     keyword.value
-                ),
+                ).attribute_projection,
                 lambda keyword_name, projected: (keyword_name, *projected),
             )
             .filter(
@@ -382,7 +383,7 @@ class ProductForwardFieldProjection:
         self,
         candidate_source_name: str,
         field_name: str,
-    ) -> "ProductForwardFieldProjection | None":
+    ) -> ProductForwardFieldProjection | None:
         return (
             Maybe.of(candidate_source_name)
             .filter(
@@ -419,7 +420,7 @@ class ProductForwardCallAuthority:
 
     def product_forward(self) -> _ProductForward | None:
         return (
-            Maybe.of(AstExpressionProjection.qualified_name(self.call.func))
+            Maybe.of(ExpressionReference.decoded(self.call.func).qualified_name)
             .combine(
                 lambda carrier_name: self.field_projection(),
                 lambda carrier_name, projection: projection.product_forward(

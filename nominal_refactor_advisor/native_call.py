@@ -17,6 +17,7 @@ from typing import (
     cast,
 )
 
+from .value_expression import CompactValueExpression
 from .ast_tools import SourceModule
 from .captured_reference import (
     AdmittedExecutionPrefixABC,
@@ -416,8 +417,7 @@ class NativeMroRegistryLookupCall(NativeCallAuthority):
             or not isinstance(invocation.func, ast.Name)
             or invocation.keywords
             or len(invocation.args) != 2
-            or not isinstance(invocation.args[1], ast.Constant)
-            or invocation.args[1].value is not None
+            or not CompactValueExpression.project(invocation.args[1]).value_is_none_literal
             or not isinstance(invocation.args[0], ast.GeneratorExp)
         ):
             raise ValueError("MRO registry lookup has an unproved next-result contract")
@@ -610,8 +610,7 @@ class NativeReturnedClosureFactorySource:
             or len(branch.test.ops) != 1
             or not isinstance(branch.test.ops[0], ast.Is)
             or len(branch.test.comparators) != 1
-            or not isinstance(branch.test.comparators[0], ast.Constant)
-            or branch.test.comparators[0].value is not None
+            or not CompactValueExpression.project(branch.test.comparators[0]).value_is_none_literal
         ):
             raise ValueError("Native factory has no inert None-selected return branch")
         return branch.test.left.id

@@ -130,7 +130,7 @@ class DetectorExpectation(SemanticRecord):
     max_count: int | None = None
 
     @classmethod
-    def from_manifest(cls, value: object) -> "DetectorExpectation":
+    def from_manifest(cls, value: object) -> DetectorExpectation:
         if isinstance(value, str):
             return cls(detector_id=value)
         row = MANIFEST_MAPPING(value, "detector expectation")
@@ -179,7 +179,7 @@ class CalibrationTarget(SemanticRecord):
         value: object,
         *,
         manifest_dir: Path,
-    ) -> "CalibrationTarget":
+    ) -> CalibrationTarget:
         row = MANIFEST_MAPPING(value, "calibration target")
         name = MANIFEST_STRING(row.get("name"), "target.name")
         raw_path = MANIFEST_STRING(row.get("path"), "target.path")
@@ -238,7 +238,7 @@ class CalibrationManifest(SemanticRecord):
     targets: tuple[CalibrationTarget, ...]
 
     @classmethod
-    def from_file(cls, manifest_path: Path) -> "CalibrationManifest":
+    def from_file(cls, manifest_path: Path) -> CalibrationManifest:
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
         row = MANIFEST_MAPPING(manifest, "calibration manifest")
         targets = tuple(

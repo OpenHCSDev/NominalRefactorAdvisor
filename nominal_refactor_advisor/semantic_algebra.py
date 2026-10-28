@@ -69,7 +69,7 @@ class FiniteProjectionModel(ABC, Generic[ObjectT, ValueT]):
         raise NotImplementedError
 
     @property
-    def fiber_geometry(self) -> "FiberGeometry[ObjectT, ValueT]":
+    def fiber_geometry(self) -> FiberGeometry[ObjectT, ValueT]:
         return FiberGeometry.from_projection(self.semantic_objects, self.project)
 
 
@@ -224,7 +224,7 @@ class AxisPoint(Generic[ObjectT, AxisT]):
         cls,
         semantic_object: ObjectT,
         axis_values: Mapping[AxisT, object],
-    ) -> "AxisPoint[ObjectT, AxisT]":
+    ) -> AxisPoint[ObjectT, AxisT]:
         return cls(
             semantic_object,
             sorted_tuple(
@@ -253,7 +253,7 @@ class VertexIndexEdge:
     right: int
 
     @classmethod
-    def from_indices(cls, first_index: int, second_index: int) -> "VertexIndexEdge":
+    def from_indices(cls, first_index: int, second_index: int) -> VertexIndexEdge:
         return (
             cls(first_index, second_index)
             if first_index < second_index
@@ -263,7 +263,7 @@ class VertexIndexEdge:
     @classmethod
     def from_distinct_indices(
         cls, first_index: int, second_index: int
-    ) -> "VertexIndexEdge | None":
+    ) -> VertexIndexEdge | None:
         if first_index == second_index:
             return None
         return cls.from_indices(first_index, second_index)
@@ -423,7 +423,7 @@ class FiniteAxisSystem(Generic[ObjectT, AxisT]):
     def from_rows(
         cls,
         rows: Iterable[tuple[ObjectT, Mapping[AxisT, object]]],
-    ) -> "FiniteAxisSystem[ObjectT, AxisT]":
+    ) -> FiniteAxisSystem[ObjectT, AxisT]:
         return cls(
             tuple((AxisPoint.from_mapping(item, values) for item, values in rows))
         )
@@ -606,7 +606,7 @@ class ObjectFamilyShape:
         *,
         axis: tuple[str, ...] = (),
         source: tuple[str, ...] = (),
-    ) -> "ObjectFamilyShape":
+    ) -> ObjectFamilyShape:
         return cls(
             shared_objects=shared,
             per_axis_objects=axis,
@@ -646,7 +646,7 @@ class AlgebraicRentProfile:
         axes: Iterable[object],
         independent_source_count: int = 1,
         max_collision_fiber_size: int = 1,
-    ) -> "AlgebraicRentProfile":
+    ) -> AlgebraicRentProfile:
         return cls(
             manual_object_count=manual_object_count,
             replacement_shape=replacement_shape,

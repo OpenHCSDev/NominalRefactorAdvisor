@@ -40,6 +40,8 @@ from typing import (
 
 from metaclass_registry import AutoRegisterMeta
 
+from ..ast_field_decoders import ParameterAnnotations
+from ..ast_projection import ExpressionReference
 from ..constructor_algebra import (
     ConstructorConstant,
     ConstructorDerivedField,
@@ -83,7 +85,7 @@ from ..semantic_match import (
     single_return_value,
 )
 from ..semantic_description_length import CompressionCertificate
-from ..semantic_algebra import ObjectFamilyShape, DispatchAxisExpression
+from ..semantic_algebra import DispatchAxisExpression
 from ..factorization import ResidueHookNamesCarrier
 from ..semantic_shape_algebra import (
     InjectiveTypeRegistryProof,
@@ -92,8 +94,10 @@ from ..semantic_shape_algebra import (
 if TYPE_CHECKING:
     from ..semantic_descent import SemanticDescentGraph
 
+from ..ast_projection import CallKeywords
 from ..ast_tools import (
-    AstExpressionProjection,
+    ParsedModuleFact,
+    BuiltinCallName,
     AstParentIndex,
     BuilderCallShape,
     BuilderCallShapeFamily,
@@ -114,12 +118,10 @@ from ..ast_tools import (
     LiteralDispatchObservation,
     NumericLiteralDispatchObservationFamily,
     collect_family_items,
-    named_function_nodes,
     structural_ast_hash,
     walk_function_body_nodes,
     _walk_nodes,
     _builder_call_shape,
-    _module_class_names,
 )
 from ..native_syntax import NativePythonSyntaxIndex
 from ..positional_forwarding import PositionalForwardingCall
@@ -140,10 +142,12 @@ from ..class_index import (
     ModuleNominalBindingAuthority,
     RegistryLookupShape,
     RegistryLookupStyle,
-    _module_import_aliases,
+    module_import_aliases,
     build_class_family_index,
     build_compact_class_family_index,
+    star_resolved_projections,
 )
+from ..ast_tools import ParsedModuleSet
 from ..collection_algebra import UniqueIdentityIndexAuthority, sorted_tuple
 from ..models import (
     CERTIFIED,
@@ -195,7 +199,17 @@ from ..taxonomy import (
     ObservationTag,
     SPECULATIVE,
 )
-from ._substrate_support import *
+from ..ast_tools import statements_without_docstring
+from ..name_algebra import CLASS_NAME_ALGEBRA
+from ._substrate_support import (
+    _annotation_type_names,
+    _constant_string,
+    _IGNORED_ANCESTOR_NAMES,
+    _is_abstract_method,
+    _is_dataclass_class,
+    CLASS_INDEX_PROJECTION,
+    CLASS_NODE_AUTHORITY,
+)
 
 _GETATTR_BUILTIN = "getattr"
 _HASATTR_BUILTIN = "hasattr"
@@ -242,7 +256,7 @@ class FindingSpecSemanticField(StrEnum):
         value: str,
         semantic_value_type: type[ConfidenceLevel] | type[CertificationLevel],
         import_name_suffix: str,
-    ) -> "FindingSpecSemanticField":
+    ) -> FindingSpecSemanticField:
         member = str.__new__(cls, value)
         member._value_ = value
         member._semantic_value_type = semantic_value_type
@@ -280,7 +294,7 @@ class FindingSpecSemanticField(StrEnum):
 
     def default_value(
         self,
-        defaults: "FindingSpecSemanticDefaults",
+        defaults: FindingSpecSemanticDefaults,
     ) -> FindingSpecSemanticValue:
         return attrgetter(self.value)(defaults)
 
@@ -427,6 +441,10 @@ class DetectorConfig:
         3,
         "Minimum sites of one pure module-attribute expression before surfacing a value-owner lead.",
     )
+    min_foreign_type_switch_sites: int = detector_config_option(
+        3,
+        "Minimum isinstance/issubclass sites on one foreign module's classes before surfacing a type-switch lead.",
+    )
     min_repeated_local_regex_literals: int = detector_config_option(
         3,
         "Minimum shared substantial regex literals before surfacing a local syntax-authority finding.",
@@ -434,7 +452,7 @@ class DetectorConfig:
     excluded_pattern_ids: tuple = ()
 
     @classmethod
-    def from_namespace(cls, namespace: argparse.Namespace) -> "DetectorConfig":
+    def from_namespace(cls, namespace: argparse.Namespace) -> DetectorConfig:
         namespace_values = vars(namespace)
         config_values: dict[str, object] = {}
         for config_field in fields(cls):
@@ -473,8 +491,8 @@ class DetectorCacheGranularity(StrEnum):
 
     def select_detector_types(
         self,
-        detector_types: Iterable[type["IssueDetector"]],
-    ) -> tuple[type["IssueDetector"], ...]:
+        detector_types: Iterable[type[IssueDetector]],
+    ) -> tuple[type[IssueDetector], ...]:
         """Project declarations that selected this cache contract."""
 
         return tuple(
@@ -492,21 +510,21 @@ class IssueDetector(RequiredRelationDeclaration, metaclass=AutoRegisterMeta):
     __skip_if_no_key__ = True
     detector_id: ClassVar[str | None] = None
     finding_spec: ClassVar[FindingSpec]
-    detector_declaration: ClassVar["DetectorDeclaration[object] | None"] = None
+    detector_declaration: ClassVar[DetectorDeclaration[object] | None] = None
     cache_granularity: ClassVar[DetectorCacheGranularity] = (
         DetectorCacheGranularity.GLOBAL
     )
 
     @classmethod
-    def registered_detector_types(cls) -> tuple[type["IssueDetector"], ...]:
+    def registered_detector_types(cls) -> tuple[type[IssueDetector], ...]:
         detector_registry = cast("dict[str, type[IssueDetector]]", cls.__registry__)
         return cls._ordered_registered_detector_types(tuple(detector_registry.values()))
 
     @staticmethod
     @lru_cache(maxsize=None)
     def _ordered_registered_detector_types(
-        detector_types: tuple[type["IssueDetector"], ...],
-    ) -> tuple[type["IssueDetector"], ...]:
+        detector_types: tuple[type[IssueDetector], ...],
+    ) -> tuple[type[IssueDetector], ...]:
         """Sort one immutable registry roster once per process."""
 
         return sorted_tuple(
@@ -522,7 +540,7 @@ class IssueDetector(RequiredRelationDeclaration, metaclass=AutoRegisterMeta):
     def registered_detector_type_for_id(
         cls,
         detector_id: str,
-    ) -> type["IssueDetector"] | None:
+    ) -> type[IssueDetector] | None:
         detector_registry = cast("dict[str, type[IssueDetector]]", cls.__registry__)
         return detector_registry.get(detector_id)
 
@@ -547,7 +565,7 @@ class IssueDetector(RequiredRelationDeclaration, metaclass=AutoRegisterMeta):
         raise TypeError(f"{cls.__name__} has no finding_spec declaration")
 
     @classmethod
-    def resolved_detector_declaration(cls) -> "DetectorDeclaration[object] | None":
+    def resolved_detector_declaration(cls) -> DetectorDeclaration[object] | None:
         """Return the generated detector's retained nominal authority, if any."""
 
         for declaration_type in cls.__mro__:
@@ -637,8 +655,8 @@ class IssueDetector(RequiredRelationDeclaration, metaclass=AutoRegisterMeta):
     @staticmethod
     @lru_cache(maxsize=None)
     def _detector_ids_for_nominal_relation(
-        detector_types: tuple[type["IssueDetector"], ...],
-        relation_type: type["IssueDetector"],
+        detector_types: tuple[type[IssueDetector], ...],
+        relation_type: type[IssueDetector],
     ) -> frozenset[str]:
         return frozenset(
             detector_id
@@ -654,7 +672,7 @@ class IssueDetector(RequiredRelationDeclaration, metaclass=AutoRegisterMeta):
         return _detector_id_from_class_name(cls.__name__, cls)
 
     def detect(
-        self, modules: list[ParsedModule], config: DetectorConfig
+        self, modules: ParsedModuleSet, config: DetectorConfig
     ) -> list[RefactorFinding]:
         return self._normalize_findings(self._collect_findings(modules, config), config)
 
@@ -678,7 +696,7 @@ class IssueDetector(RequiredRelationDeclaration, metaclass=AutoRegisterMeta):
         summary: str,
         evidence: tuple[SourceLocation, ...],
         /,
-        context: "FindingBuildContext | None" = None,
+        context: FindingBuildContext | None = None,
         **overrides: Unpack[FindingBuildContextKwargs],
     ) -> RefactorFinding:
         detector_id = type(self).effective_detector_id()
@@ -698,7 +716,7 @@ class IssueDetector(RequiredRelationDeclaration, metaclass=AutoRegisterMeta):
 
     @abstractmethod
     def _collect_findings(
-        self, modules: list[ParsedModule], config: DetectorConfig
+        self, modules: ParsedModuleSet, config: DetectorConfig
     ) -> list[RefactorFinding]:
         raise NotImplementedError
 
@@ -729,7 +747,7 @@ class PerModuleIssueDetector(IssueDetector):
     )
 
     def _collect_findings(
-        self, modules: list[ParsedModule], config: DetectorConfig
+        self, modules: ParsedModuleSet, config: DetectorConfig
     ) -> list[RefactorFinding]:
         findings: list[RefactorFinding] = []
         for module in modules:
@@ -813,27 +831,24 @@ class ContextualModuleIssueDetector(IssueDetector):
     )
 
     def _collect_findings(
-        self, modules: list[ParsedModule], config: DetectorConfig
+        self, modules: ParsedModuleSet, config: DetectorConfig
     ) -> list[RefactorFinding]:
-        module_context = tuple(modules)
         findings: list[RefactorFinding] = []
         for module in modules:
-            findings.extend(
-                self.findings_for_module_context(module, module_context, config)
-            )
+            findings.extend(self.findings_for_module_context(module, modules, config))
         return findings
 
     @classmethod
     @abstractmethod
     def context_signature(
-        cls, modules: tuple[ParsedModule, ...], config: DetectorConfig
+        cls, modules: ParsedModuleSet, config: DetectorConfig
     ) -> str:
         raise NotImplementedError
 
     def findings_for_module_context(
         self,
         module: ParsedModule,
-        modules: tuple[ParsedModule, ...],
+        modules: ParsedModuleSet,
         config: DetectorConfig,
     ) -> list[RefactorFinding]:
         return self._findings_for_module_context(module, modules, config)
@@ -842,7 +857,7 @@ class ContextualModuleIssueDetector(IssueDetector):
     def _findings_for_module_context(
         self,
         module: ParsedModule,
-        modules: tuple[ParsedModule, ...],
+        modules: ParsedModuleSet,
         config: DetectorConfig,
     ) -> list[RefactorFinding]:
         raise NotImplementedError
@@ -863,12 +878,12 @@ class DeferredContextualGlobalAnalysis(PreparedContextualGlobalAnalysis):
     """Default preparation for detectors without a reusable semantic projection."""
 
     detector: IssueDetector
-    modules: tuple[ParsedModule, ...]
+    modules: ParsedModuleSet
     config: DetectorConfig
     context_signature: str
 
     def findings(self) -> list[RefactorFinding]:
-        return self.detector.detect(list(self.modules), self.config)
+        return self.detector.detect(self.modules, self.config)
 
 
 class ContextualGlobalCacheContract(ABC):
@@ -881,13 +896,13 @@ class ContextualGlobalCacheContract(ABC):
     @classmethod
     @abstractmethod
     def context_signature(
-        cls, modules: tuple[ParsedModule, ...], config: DetectorConfig
+        cls, modules: ParsedModuleSet, config: DetectorConfig
     ) -> str:
         raise NotImplementedError
 
     def prepare_analysis(
         self,
-        modules: tuple[ParsedModule, ...],
+        modules: ParsedModuleSet,
         config: DetectorConfig,
     ) -> PreparedContextualGlobalAnalysis:
         """Project cache identity once and retain any reusable detector state."""
@@ -939,15 +954,16 @@ class CompactClassRepositoryContext:
         cls,
         projections: Sequence[CompactModuleClassProjection],
         config: DetectorConfig,
-    ) -> "CompactClassRepositoryContext":
+    ) -> CompactClassRepositoryContext:
+        resolved = star_resolved_projections(tuple(projections))
         return cls(
-            projections=projections,
+            projections=resolved,
             config=config,
-            class_index=build_compact_class_family_index(projections),
+            class_index=build_compact_class_family_index(resolved),
         )
 
     @classmethod
-    def require(cls, context: object | None) -> "CompactClassRepositoryContext":
+    def require(cls, context: object | None) -> CompactClassRepositoryContext:
         if not isinstance(context, cls):
             raise TypeError("compact class repository context is unavailable")
         return context
@@ -1049,7 +1065,7 @@ class CompactModuleProjectionDetectorMixin(Generic[CompactProjectionItemT]):
 
     def _collect_findings(
         self,
-        modules: list[ParsedModule],
+        modules: ParsedModuleSet,
         config: DetectorConfig,
     ) -> list[RefactorFinding]:
         return self._findings_from_compact_projection_groups(
@@ -1068,9 +1084,7 @@ class CompactModuleProjectionDetectorMixin(Generic[CompactProjectionItemT]):
                 f"{type(self).__name__} must implement its multi-family compact join"
             )
         return self._findings_from_compact_projections(
-            cast(
-                Sequence[CompactProjectionItemT], projections_by_family[families[0]]
-            ),
+            families[0].modules_in(projections_by_family),
             config,
         )
 
@@ -1100,7 +1114,7 @@ class CompactMultiModuleProjectionDetectorMixin(
 
     module_projection_families: ClassVar[tuple[type[CollectedFamily], ...]]
     compact_shared_group_context_builder: ClassVar[
-        CompactProjectionGroupContextBuilder | None
+        staticmethod[[CompactProjectionGroups], object] | None
     ] = None
 
     @classmethod
@@ -1167,7 +1181,7 @@ class CompactMultiModuleProjectionDetectorMixin(
         projections_by_family: CompactProjectionGroups,
         context: object | None,
         config: DetectorConfig,
-    ) -> "CompactFindingStream | None":
+    ) -> CompactFindingStream | None:
         del projections_by_family, context, config
         return None
 
@@ -1205,16 +1219,16 @@ class SemanticDescentGraphIssueDetector(ContextualGlobalCacheContract):
     @abstractmethod
     def _collect_findings_from_graph(
         self,
-        graph: "SemanticDescentGraph",
-        modules: list[ParsedModule],
+        graph: SemanticDescentGraph,
+        modules: ParsedModuleSet,
         config: DetectorConfig,
     ) -> list[RefactorFinding]:
         raise NotImplementedError
 
     def _collect_focused_findings_from_graph(
         self,
-        graph: "SemanticDescentGraph",
-        modules: list[ParsedModule],
+        graph: SemanticDescentGraph,
+        modules: ParsedModuleSet,
         config: DetectorConfig,
         *,
         includes_path: Callable[[Path], bool],
@@ -1600,10 +1614,10 @@ SourceModuleCandidateCollector = Callable[
     Sequence[CandidateItemT] | None,
 ]
 CrossModuleCandidateCollector = Callable[
-    [Sequence[ParsedModule]], Sequence[CandidateItemT]
+    [ParsedModuleSet], Sequence[CandidateItemT]
 ]
 ConfiguredCrossModuleCandidateCollector = Callable[
-    [Sequence[ParsedModule], DetectorConfig], Sequence[CandidateItemT]
+    [ParsedModuleSet, DetectorConfig], Sequence[CandidateItemT]
 ]
 CandidateSortKeyValue: TypeAlias = str | int | float
 CandidateSortKey: TypeAlias = tuple[CandidateSortKeyValue, ...]
@@ -1643,7 +1657,7 @@ class CandidateCollectorScope(StrEnum):
     def for_forwarding_base_name(
         cls,
         base_name: str,
-    ) -> tuple["CandidateCollectorScope", ...]:
+    ) -> tuple[CandidateCollectorScope, ...]:
         return tuple(
             scope
             for scope in cls
@@ -1665,7 +1679,7 @@ class ParameterizedBaseSource:
     parameter_source: str
 
     @classmethod
-    def from_node(cls, node: ast.AST) -> "ParameterizedBaseSource | None":
+    def from_node(cls, node: ast.AST) -> ParameterizedBaseSource | None:
         if not isinstance(node, ast.Subscript):
             return None
         base_name = ClassSymbolResolutionAuthority.declared_base_name(node.value)
@@ -1688,7 +1702,7 @@ class CandidateCollectorBaseReference:
         node: ast.expr,
         *,
         line: int,
-    ) -> "CandidateCollectorBaseReference | None":
+    ) -> CandidateCollectorBaseReference | None:
         source_name = ClassSymbolResolutionAuthority.declared_base_name(node)
         if source_name is None:
             return None
@@ -1759,7 +1773,7 @@ class DerivedCandidateCollectorMixin(Generic[CandidateItemT]):
     @classmethod
     def registered_collector_base_types(
         cls,
-    ) -> tuple[type["DerivedCandidateCollectorMixin"], ...]:
+    ) -> tuple[type[DerivedCandidateCollectorMixin], ...]:
         return sorted_tuple(
             (
                 collector_base
@@ -1774,7 +1788,7 @@ class DerivedCandidateCollectorMixin(Generic[CandidateItemT]):
         cls,
     ) -> dict[
         CandidateCollectorBaseShape,
-        type["DerivedCandidateCollectorMixin"],
+        type[DerivedCandidateCollectorMixin],
     ]:
         return UniqueIdentityIndexAuthority.declarations_by_handle(
             cls.registered_collector_base_types(),
@@ -1904,15 +1918,15 @@ class CrossModuleCandidateDetector(
 
     @classmethod
     def context_signature(
-        cls, modules: tuple[ParsedModule, ...], config: DetectorConfig
+        cls, modules: ParsedModuleSet, config: DetectorConfig
     ) -> str:
         return _contextual_global_candidate_signature(
             cls,
-            cls()._candidate_items(list(modules), config),
+            cls()._candidate_items(modules, config),
         )
 
     def _collect_findings(
-        self, modules: list[ParsedModule], config: DetectorConfig
+        self, modules: ParsedModuleSet, config: DetectorConfig
     ) -> list[RefactorFinding]:
         return self._findings_for_candidates(
             self._candidate_items(modules, config),
@@ -1929,7 +1943,7 @@ class CrossModuleCandidateDetector(
 
     def prepare_analysis(
         self,
-        modules: tuple[ParsedModule, ...],
+        modules: ParsedModuleSet,
         config: DetectorConfig,
     ) -> PreparedContextualGlobalAnalysis:
         if (
@@ -1937,7 +1951,7 @@ class CrossModuleCandidateDetector(
             is not CrossModuleCandidateDetector._collect_findings
         ):
             return super().prepare_analysis(modules, config)
-        candidates = tuple(self._candidate_items(list(modules), config))
+        candidates = tuple(self._candidate_items(modules, config))
         return PreparedCrossModuleCandidateAnalysis(
             detector=self,
             candidates=candidates,
@@ -1950,7 +1964,7 @@ class CrossModuleCandidateDetector(
 
     @abstractmethod
     def _candidate_items(
-        self, modules: list[ParsedModule], config: DetectorConfig
+        self, modules: ParsedModuleSet, config: DetectorConfig
     ) -> Sequence[CandidateItemT]:
         raise NotImplementedError
 
@@ -1988,7 +2002,7 @@ class CrossModuleCollectorCandidateDetector(
     candidate_collector: ClassVar[CrossModuleCandidateCollector[CandidateItemT]]
 
     def _candidate_items(
-        self, modules: list[ParsedModule], config: DetectorConfig
+        self, modules: ParsedModuleSet, config: DetectorConfig
     ) -> Sequence[CandidateItemT]:
         del config
         return type(self).candidate_collector(modules)
@@ -2011,7 +2025,7 @@ class ConfiguredCrossModuleCollectorCandidateDetector(
     ]
 
     def _candidate_items(
-        self, modules: list[ParsedModule], config: DetectorConfig
+        self, modules: ParsedModuleSet, config: DetectorConfig
     ) -> Sequence[CandidateItemT]:
         return type(self).candidate_collector(modules, config)
 
@@ -2020,8 +2034,8 @@ CompactCandidateContextT = TypeVar("CompactCandidateContextT")
 
 
 class CompactProjectionCandidateDetector(
-    CompactModuleProjectionDetectorMixin[CompactProjectionItemT],
     CrossModuleCandidateDetector[CandidateItemT],
+    CompactModuleProjectionDetectorMixin[CompactProjectionItemT],
     Generic[CompactProjectionItemT, CandidateItemT],
     ABC,
 ):
@@ -2029,7 +2043,7 @@ class CompactProjectionCandidateDetector(
 
     def _candidate_items(
         self,
-        modules: list[ParsedModule],
+        modules: ParsedModuleSet,
         config: DetectorConfig,
     ) -> Sequence[CandidateItemT]:
         return self._candidates_from_compact_projections(
@@ -2057,8 +2071,8 @@ class CompactProjectionCandidateDetector(
 
 
 class CompactMultiProjectionCandidateDetector(
-    CompactMultiModuleProjectionDetectorMixin,
     CrossModuleCandidateDetector[CandidateItemT],
+    CompactMultiModuleProjectionDetectorMixin,
     Generic[CandidateItemT],
     ABC,
 ):
@@ -2066,7 +2080,7 @@ class CompactMultiProjectionCandidateDetector(
 
     def _candidate_items(
         self,
-        modules: list[ParsedModule],
+        modules: ParsedModuleSet,
         config: DetectorConfig,
     ) -> Sequence[CandidateItemT]:
         projections_by_family = type(self).compact_module_projection_groups(modules)
@@ -2221,7 +2235,7 @@ class FlattenedModuleCollectorCandidateDetector(
     candidate_collector: ClassVar[ModuleCandidateCollector[CandidateItemT]]
 
     def _candidate_items(
-        self, modules: list[ParsedModule], config: DetectorConfig
+        self, modules: ParsedModuleSet, config: DetectorConfig
     ) -> Sequence[CandidateItemT]:
         del config
         return type(self)._sorted_candidate_items(
@@ -2249,7 +2263,7 @@ class ConfiguredFlattenedModuleCollectorCandidateDetector(
     candidate_collector: ClassVar[ConfiguredModuleCandidateCollector[CandidateItemT]]
 
     def _candidate_items(
-        self, modules: list[ParsedModule], config: DetectorConfig
+        self, modules: ParsedModuleSet, config: DetectorConfig
     ) -> Sequence[CandidateItemT]:
         return type(self)._sorted_candidate_items(
             tuple(
@@ -2282,7 +2296,7 @@ class DetectorDeclarationOptions(Generic[CandidateItemT]):
 
     @classmethod
     def from_kwargs(
-        cls, options: "DetectorDeclarationOptionKwargs[CandidateItemT]"
+        cls, options: DetectorDeclarationOptionKwargs[CandidateItemT]
     ) -> DetectorDeclarationOptions[CandidateItemT]:
         unknown_names = set(options) - cls.field_names()
         if unknown_names:
@@ -2573,18 +2587,18 @@ class GroupedShapeIssueDetector(
 ):
     @classmethod
     def context_signature(
-        cls, modules: tuple[ParsedModule, ...], config: DetectorConfig
+        cls, modules: ParsedModuleSet, config: DetectorConfig
     ) -> str:
         detector = cls()
         return cls._context_signature_for_shapes(
             detector,
-            detector._collect_shapes(list(modules), config),
+            detector._collect_shapes(modules, config),
         )
 
     @classmethod
     def _context_signature_for_shapes(
         cls,
-        detector: "GroupedShapeIssueDetector[ShapeT, GroupKeyT]",
+        detector: GroupedShapeIssueDetector[ShapeT, GroupKeyT],
         shapes: Sequence[ShapeT],
     ) -> str:
         return _contextual_global_rows_digest(
@@ -2602,7 +2616,7 @@ class GroupedShapeIssueDetector(
         )
 
     def _collect_findings(
-        self, modules: list[ParsedModule], config: DetectorConfig
+        self, modules: ParsedModuleSet, config: DetectorConfig
     ) -> list[RefactorFinding]:
         return self._findings_for_shapes(
             self._collect_shapes(modules, config),
@@ -2627,7 +2641,7 @@ class GroupedShapeIssueDetector(
 
     def prepare_analysis(
         self,
-        modules: tuple[ParsedModule, ...],
+        modules: ParsedModuleSet,
         config: DetectorConfig,
     ) -> PreparedContextualGlobalAnalysis:
         if (
@@ -2635,7 +2649,7 @@ class GroupedShapeIssueDetector(
             is not GroupedShapeIssueDetector.context_signature.__func__
         ):
             return super().prepare_analysis(modules, config)
-        shapes = tuple(self._collect_shapes(list(modules), config))
+        shapes = tuple(self._collect_shapes(modules, config))
         return PreparedGroupedShapeAnalysis(
             detector=self,
             shapes=shapes,
@@ -2648,7 +2662,7 @@ class GroupedShapeIssueDetector(
 
     @abstractmethod
     def _collect_shapes(
-        self, modules: list[ParsedModule], config: DetectorConfig
+        self, modules: ParsedModuleSet, config: DetectorConfig
     ) -> list[ShapeT]:
         raise NotImplementedError
 
@@ -2700,7 +2714,7 @@ class FiberCollectedShapeIssueDetector(
     execution_level: StructuralExecutionLevel = StructuralExecutionLevel.FUNCTION_BODY
 
     def _collect_shapes(
-        self, modules: list[ParsedModule], config: DetectorConfig
+        self, modules: ParsedModuleSet, config: DetectorConfig
     ) -> list[ShapeT]:
         shapes = tuple(
             (
@@ -2711,7 +2725,7 @@ class FiberCollectedShapeIssueDetector(
             )
         )
         groups = SUPPORT_PROJECTION_AUTHORITY.fiber_grouped_shapes(
-            modules, shapes, self.observation_kind, self.execution_level
+            shapes, self.observation_kind, self.execution_level
         )
         return [shape for group in groups for shape in group]
 
@@ -2739,7 +2753,6 @@ class CompactFiberCollectedShapeIssueDetector(
             shape for shape in projections if self._include_shape(shape, config)
         )
         grouped_shapes = SUPPORT_PROJECTION_AUTHORITY.fiber_grouped_shapes(
-            [],
             cast(tuple[object, ...], included_shapes),
             self.observation_kind,
             self.execution_level,
@@ -2776,7 +2789,7 @@ class ContextualGlobalFiberCollectedShapeIssueDetector(
 
     @classmethod
     def context_signature(
-        cls, modules: tuple[ParsedModule, ...], config: DetectorConfig
+        cls, modules: ParsedModuleSet, config: DetectorConfig
     ) -> str:
         detector = cls()
         rows: list[ContextualGlobalShapeSignatureRow] = []
@@ -2850,7 +2863,7 @@ def _dict_expr_from_table_value(value: ast.AST | None) -> ast.Dict | None:
         return value
     if (
         isinstance(value, ast.Call)
-        and AstExpressionProjection.terminal_name(value.func)
+        and ExpressionReference.decoded(value.func).terminal_name
         in {"MappingProxyType", "dict"}
         and (len(value.args) == 1)
         and isinstance(value.args[0], ast.Dict)
@@ -2902,7 +2915,7 @@ def _enum_projection_tables(
         for key, item_value in zip(dict_value.keys, dict_value.values, strict=False):
             if key is None or item_value is None:
                 break
-            key_chain = AstExpressionProjection.attribute_chain(key)
+            key_chain = ExpressionReference.decoded(key).attribute_chain
             if key_chain is None or len(key_chain) != 2:
                 break
             summary = _enum_projection_table_value_summary(item_value)
@@ -3025,13 +3038,6 @@ def _residual_closed_axis_indirection_candidates(
     )
 
 
-@lru_cache(maxsize=None)
-def _iter_named_functions(
-    module: ParsedModule,
-) -> tuple[tuple[str, ast.FunctionDef | ast.AsyncFunctionDef], ...]:
-    return named_function_nodes(module.module)
-
-
 NamedFunctionCandidateT = TypeVar("NamedFunctionCandidateT")
 NamedFunctionProjectorP = ParamSpec("NamedFunctionProjectorP")
 NamedFunctionNode = ast.FunctionDef | ast.AsyncFunctionDef
@@ -3046,23 +3052,36 @@ NamedFunctionProjector: TypeAlias = Callable[
 ]
 
 
-@lru_cache(maxsize=None)
-def _module_builder_call_shapes(
-    module: ParsedModule,
-    callee_names: frozenset[str] | None = None,
-) -> tuple[BuilderCallShape, ...]:
-    shapes: list[BuilderCallShape] = []
-    module_class_names = _module_class_names(module)
+@dataclass(frozen=True)
+class ModuleBuilderCallShapes(ParsedModuleFact):
+    """Every builder call shape in one module's named functions."""
 
-    for qualname, function in _iter_named_functions(module):
+    shapes: tuple[BuilderCallShape, ...]
+
+    @classmethod
+    def derive(cls, parsed_module: ParsedModule) -> Self:
+        return cls(_derive_builder_call_shapes(parsed_module))
+
+    def calling(self, callee_names: frozenset[str]) -> tuple[BuilderCallShape, ...]:
+        """The shapes whose callee is one of ``callee_names``."""
+
+        return tuple(
+            shape for shape in self.shapes if shape.callee_name in callee_names
+        )
+
+
+def _module_builder_call_shapes(module: ParsedModule) -> tuple[BuilderCallShape, ...]:
+    return module.fact(ModuleBuilderCallShapes).shapes
+
+
+def _derive_builder_call_shapes(module: ParsedModule) -> tuple[BuilderCallShape, ...]:
+    shapes: list[BuilderCallShape] = []
+    module_class_names = module.class_names
+
+    for qualname, function in module.syntax_index.named_functions:
         owner_name = qualname.rsplit(".", 1)[0] if "." in qualname else None
-        for node in walk_function_body_nodes(function):
+        for node in walk_function_body_nodes(function.body):
             if not isinstance(node, ast.Call):
-                continue
-            if (
-                callee_names is not None
-                and AstExpressionProjection.terminal_name(node.func) not in callee_names
-            ):
                 continue
             shape = _builder_call_shape(
                 module,
@@ -3079,19 +3098,7 @@ def _module_builder_call_shapes(
 AstNodeCandidateT = TypeVar("AstNodeCandidateT")
 AstNodeProjectorP = ParamSpec("AstNodeProjectorP")
 AstNodeT = TypeVar("AstNodeT", bound=ast.AST)
-AstTraversal = Callable[[ast.AST], Iterable[ast.AST]]
 CandidateStreamItemT = TypeVar("CandidateStreamItemT")
-
-
-@lru_cache(maxsize=None)
-def _typed_ast_nodes(root: ast.AST, node_type: type[AstNodeT]) -> tuple[AstNodeT, ...]:
-    return tuple(
-        (
-            cast(AstNodeT, node)
-            for node in _walk_nodes(root)
-            if isinstance(node, node_type)
-        )
-    )
 
 
 @dataclass(frozen=True)
@@ -3131,7 +3138,7 @@ class CandidateCollectionAuthority:
     ) -> tuple[NamedFunctionCandidateT, ...]:
         projected = (
             candidate
-            for qualname, function in _iter_named_functions(module)
+            for qualname, function in module.syntax_index.named_functions
             for candidate in projector(
                 module, qualname, function, *projector_args, **projector_kwargs
             )
@@ -3141,28 +3148,15 @@ class CandidateCollectionAuthority:
     def ast_node_candidates(
         self,
         module: ParsedModule,
-        root: ast.AST,
         node_type: type[AstNodeT],
         projector: Callable[
             Concatenate[ParsedModule, AstNodeT, AstNodeProjectorP],
             Iterable[AstNodeCandidateT],
         ],
         *projector_args: AstNodeProjectorP.args,
-        traversal: AstTraversal = _walk_nodes,
-        sort_key: Callable[[AstNodeCandidateT], CandidateSortKey] | None = None,
         **projector_kwargs: AstNodeProjectorP.kwargs,
     ) -> tuple[AstNodeCandidateT, ...]:
-        nodes = (
-            _typed_ast_nodes(root, node_type)
-            if traversal is _walk_nodes
-            else tuple(
-                (
-                    cast(AstNodeT, node)
-                    for node in traversal(root)
-                    if isinstance(node, node_type)
-                )
-            )
-        )
+        nodes = module.syntax_index.instances_of(node_type)
         projected = (
             candidate
             for node in nodes
@@ -3170,7 +3164,7 @@ class CandidateCollectionAuthority:
                 module, node, *projector_args, **projector_kwargs
             )
         )
-        return CandidateStream(projected, sort_key).materialized()
+        return tuple(projected)
 
     def witness_carrier_class_candidates(
         self, module: ParsedModule
@@ -3305,7 +3299,7 @@ class SyntaxProjectionAuthority:
             if not isinstance(base, ast.Subscript):
                 continue
             if (
-                AstExpressionProjection.terminal_name(base.value)
+                ExpressionReference.decoded(base.value).terminal_name
                 != "KeyedNominalFamily"
             ):
                 continue
@@ -3319,7 +3313,7 @@ class SyntaxProjectionAuthority:
     ) -> dict[str, tuple[str, ...]]:
         refs: dict[str, set[str]] = defaultdict(set)
         for subnode in _walk_nodes(node):
-            parts = AstExpressionProjection.attribute_chain(subnode)
+            parts = ExpressionReference.decoded(subnode).attribute_chain
             if parts is None or len(parts) < 2:
                 continue
             key_type_name = parts[-2]
@@ -3564,7 +3558,7 @@ def _comprehension_builder_names(
     family_name: str,
 ) -> tuple[str, ...]:
     builder_names: set[str] = set()
-    for subnode in _walk_nodes(module.module):
+    for subnode in module.syntax_index.breadth_first_nodes:
         if not isinstance(
             subnode, (ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)
         ):
@@ -3593,7 +3587,7 @@ def _comprehension_builder_names(
                 ):
                     candidate_calls.append(nested)
         for call in candidate_calls:
-            call_name = AstExpressionProjection.terminal_name(call.func)
+            call_name = ExpressionReference.decoded(call.func).terminal_name
             if call_name is not None:
                 builder_names.add(call_name)
     return sorted_tuple(builder_names)
@@ -3628,18 +3622,14 @@ def _derived_wrapper_spec_shadow_candidates(
             continue
         entry_calls = cast(tuple[ast.Call, ...], elements)
         constructor_names = {
-            AstExpressionProjection.terminal_name(element.func)
+            ExpressionReference.decoded(element.func).terminal_name
             for element in entry_calls
         }
         if len(constructor_names) != 1 or None in constructor_names:
             continue
         keyword_maps: list[dict[str, ast.AST]] = []
         for element in entry_calls:
-            keyword_map = {
-                keyword.arg: keyword.value
-                for keyword in element.keywords
-                if keyword.arg is not None and keyword.value is not None
-            }
+            keyword_map = dict(CallKeywords.of(element.keywords).by_name)
             if not keyword_map:
                 keyword_maps = []
                 break
@@ -3715,222 +3705,6 @@ def _derived_wrapper_spec_shadow_candidates(
 
 def _dataclass_field_names(node: ast.ClassDef) -> tuple[str, ...]:
     return SYNTAX_PROJECTION_AUTHORITY.class_annassign_target_names(node)
-
-
-@lru_cache(maxsize=None)
-def _dataclass_field_signature_items(
-    node: ast.ClassDef,
-) -> tuple[tuple[str, str], ...]:
-    signatures: dict[str, str] = {}
-    for statement in node.body:
-        if not isinstance(statement, ast.AnnAssign) or not isinstance(
-            statement.target, ast.Name
-        ):
-            continue
-        annotation_text = ast.unparse(statement.annotation)
-        if annotation_text.startswith("ClassVar") or annotation_text.startswith(
-            "typing.ClassVar"
-        ):
-            continue
-        value_fingerprint = ""
-        if statement.value is not None:
-            value_fingerprint = ast.dump(statement.value, include_attributes=False)
-        signatures[statement.target.id] = f"{annotation_text}={value_fingerprint}"
-    return tuple(signatures.items())
-
-
-def _dataclass_field_signature_map(node: ast.ClassDef) -> dict[str, str]:
-    return dict(_dataclass_field_signature_items(node))
-
-
-@lru_cache(maxsize=4096)
-def _dataclass_name_tokens(class_name: str) -> frozenset[str]:
-    return frozenset(CLASS_NAME_ALGEBRA.ordered_tokens(class_name))
-
-
-def _dataclass_companion_surface_role(
-    authority_name: str, companion_name: str
-) -> str | None:
-    authority_tokens = _dataclass_name_tokens(authority_name)
-    companion_tokens = _dataclass_name_tokens(companion_name)
-    return (
-        Maybe.of((authority_tokens, companion_tokens))
-        .filter(lambda token_sets: bool(token_sets[0]) and bool(token_sets[1]))
-        .filter(lambda token_sets: token_sets[0] < token_sets[1])
-        .map(lambda token_sets: sorted_tuple(token_sets[1] - token_sets[0]))
-        .filter(bool)
-        .map(lambda role_tokens: "_".join(role_tokens))
-        .unwrap_or_none()
-    )
-
-
-_GENERATED_COMPANION_SURFACE_ROLE_NAMES = frozenset({"lazy"})
-
-
-def _is_generated_companion_surface_role(
-    surface_role_name: str, companion_fields: dict[str, str]
-) -> bool:
-    return (
-        surface_role_name in _GENERATED_COMPANION_SURFACE_ROLE_NAMES
-        or "inherited_fields" in companion_fields
-    )
-
-
-def _may_be_generated_companion_dataclass(node: ast.ClassDef) -> bool:
-    return bool(
-        _GENERATED_COMPANION_SURFACE_ROLE_NAMES & _dataclass_name_tokens(node.name)
-        or "inherited_fields" in _dataclass_field_names(node)
-    )
-
-
-def _manual_companion_dataclass_surface_certificate(
-    *,
-    authority_fields: dict[str, str],
-    companion_fields: dict[str, str],
-    shared_field_names: tuple[str, ...],
-) -> CompressionCertificate:
-    companion_residue = frozenset(companion_fields) - frozenset(shared_field_names)
-    authority_residue = frozenset(authority_fields) - frozenset(shared_field_names)
-    return CompressionCertificate.from_object_family(
-        manual_object_count=len(authority_fields) + len(companion_fields),
-        replacement_shape=ObjectFamilyShape(
-            shared_objects=("schema_authority", "companion_surface_generator")
-        ),
-        semantic_axes=(
-            (field_name, authority_fields[field_name])
-            for field_name in shared_field_names
-        ),
-        residual_object_count=len(companion_residue | authority_residue),
-        independent_source_count=2,
-    )
-
-
-CompanionDataclassSurfaceProjection: TypeAlias = tuple[
-    str,
-    dict[str, str],
-    dict[str, str],
-    tuple[str, ...],
-]
-
-
-def _companion_surface_role_unless_inherited(
-    authority_node: ast.ClassDef, companion_node: ast.ClassDef
-) -> str | None:
-    surface_role_name = _dataclass_companion_surface_role(
-        authority_node.name, companion_node.name
-    )
-    if surface_role_name is None:
-        return None
-    if authority_node.name in CLASS_NODE_AUTHORITY.declared_base_names(companion_node):
-        return None
-    return surface_role_name
-
-
-def _companion_dataclass_field_projection(
-    authority_node: ast.ClassDef, companion_node: ast.ClassDef
-) -> tuple[dict[str, str], dict[str, str], tuple[str, ...]] | None:
-    authority_fields = _dataclass_field_signature_map(authority_node)
-    companion_fields = _dataclass_field_signature_map(companion_node)
-    if not authority_fields or not companion_fields:
-        return None
-    shared_field_names = tuple(
-        (
-            field_name
-            for field_name, annotation_text in authority_fields.items()
-            if companion_fields.get(field_name) == annotation_text
-        )
-    )
-    if frozenset(shared_field_names) != frozenset(authority_fields):
-        return None
-    return authority_fields, companion_fields, shared_field_names
-
-
-def _companion_dataclass_surface_projection(
-    authority_node: ast.ClassDef, companion_node: ast.ClassDef
-) -> CompanionDataclassSurfaceProjection | None:
-    surface_role_name = _companion_surface_role_unless_inherited(
-        authority_node, companion_node
-    )
-    if surface_role_name is None:
-        return None
-    field_projection = _companion_dataclass_field_projection(
-        authority_node, companion_node
-    )
-    if field_projection is None:
-        return None
-    authority_fields, companion_fields, shared_field_names = field_projection
-    if not _is_generated_companion_surface_role(surface_role_name, companion_fields):
-        return None
-    return surface_role_name, authority_fields, companion_fields, shared_field_names
-
-
-def _manual_companion_dataclass_surface_candidate_for_pair(
-    module: ParsedModule, authority_node: ast.ClassDef, companion_node: ast.ClassDef
-) -> "ManualCompanionDataclassSurfaceCandidate | None":
-    projection = _companion_dataclass_surface_projection(authority_node, companion_node)
-    if projection is None:
-        return None
-    surface_role_name, authority_fields, companion_fields, shared_field_names = (
-        projection
-    )
-    certificate = _manual_companion_dataclass_surface_certificate(
-        authority_fields=authority_fields,
-        companion_fields=companion_fields,
-        shared_field_names=shared_field_names,
-    )
-    if not certificate.pays_rent:
-        return None
-    return ManualCompanionDataclassSurfaceCandidate(
-        file_path=module.file_path,
-        line=companion_node.lineno,
-        authority_class_name=authority_node.name,
-        companion_class_name=companion_node.name,
-        surface_role_name=surface_role_name,
-        shared_field_names=shared_field_names,
-        companion_only_field_names=sorted_tuple(
-            frozenset(companion_fields) - frozenset(shared_field_names)
-        ),
-        authority_only_field_names=sorted_tuple(
-            frozenset(authority_fields) - frozenset(shared_field_names)
-        ),
-        compression_certificate=certificate,
-        evidence_locations=(
-            SourceLocation(
-                module.file_path, authority_node.lineno, authority_node.name
-            ),
-            SourceLocation(
-                module.file_path, companion_node.lineno, companion_node.name
-            ),
-        ),
-    )
-
-
-def _manual_companion_dataclass_surface_candidates(
-    module: ParsedModule,
-) -> tuple["ManualCompanionDataclassSurfaceCandidate", ...]:
-    dataclass_nodes = tuple(
-        (
-            node
-            for node in module.module.body
-            if isinstance(node, ast.ClassDef) and _is_dataclass_class(node)
-        )
-    )
-    candidates: list[ManualCompanionDataclassSurfaceCandidate] = []
-    for companion_node in dataclass_nodes:
-        if not _may_be_generated_companion_dataclass(companion_node):
-            continue
-        for authority_node in dataclass_nodes:
-            if authority_node is companion_node:
-                continue
-            candidate = _manual_companion_dataclass_surface_candidate_for_pair(
-                module, authority_node, companion_node
-            )
-            if candidate is not None:
-                candidates.append(candidate)
-    return sorted_tuple(
-        candidates,
-        key=lambda item: (item.file_path, item.line, item.companion_class_name),
-    )
 
 
 def _selection_helper_shape(
@@ -4031,7 +3805,7 @@ def _module_keyed_selection_helper_candidates(
     helper_shapes = tuple(
         (
             helper
-            for _, function in _iter_named_functions(module)
+            for _, function in module.syntax_index.named_functions
             if "." not in _
             and (helper := _selection_helper_shape(function)) is not None
         )
@@ -4039,7 +3813,7 @@ def _module_keyed_selection_helper_candidates(
     lookup_shapes = tuple(
         (
             lookup
-            for _, function in _iter_named_functions(module)
+            for _, function in module.syntax_index.named_functions
             if "." not in _
             and (lookup := _selection_lookup_shape(function)) is not None
         )
@@ -4076,17 +3850,15 @@ def _module_keyed_selection_helper_candidates(
             if not all(
                 (
                     isinstance(element, ast.Call)
-                    and AstExpressionProjection.terminal_name(element.func) == node.name
+                    and ExpressionReference.decoded(
+                        element.func
+                    ).terminal_name == node.name
                     for element in elements
                 )
             ):
                 continue
             keyword_maps = [
-                {
-                    keyword.arg: keyword.value
-                    for keyword in element.keywords
-                    if keyword.arg is not None and keyword.value is not None
-                }
+                dict(CallKeywords.of(element.keywords).by_name)
                 for element in cast(tuple[ast.Call, ...], elements)
             ]
             if not all(
@@ -4103,7 +3875,7 @@ def _module_keyed_selection_helper_candidates(
         helper_names = {helper.function_name for helper in matching_helpers}
         for call_name, (line, call) in sorted(named_calls.items()):
             if (
-                AstExpressionProjection.terminal_name(call.func) not in helper_names
+                ExpressionReference.decoded(call.func).terminal_name not in helper_names
                 or not call.args
             ):
                 continue
@@ -4515,7 +4287,7 @@ def _residual_closed_axis_branching_candidates_from_compact_specs(
 def _is_classmethod(node: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
     return any(
         (
-            AstExpressionProjection.terminal_name(decorator) == "classmethod"
+            ExpressionReference.decoded(decorator).terminal_name == "classmethod"
             for decorator in node.decorator_list
         )
     )
@@ -4972,21 +4744,17 @@ def _manual_record_registration_constructor(
     assignment_call = as_ast(assignment.value if assignment else None, ast.Call)
     if assignment_call is None:
         return None
-    if AstExpressionProjection.terminal_name(assignment_call.func) != "cls":
+    if ExpressionReference.decoded(assignment_call.func).terminal_name != "cls":
         return None
     return (
         tuple(
-            (
-                keyword.arg
-                for keyword in assignment_call.keywords
-                if keyword.arg is not None
-            )
+            CallKeywords.of(assignment_call.keywords).names
         ),
         tuple(
             (
-                keyword.arg
-                for keyword in assignment_call.keywords
-                if keyword.arg is not None and ast.unparse(keyword.value) == key_expr
+                keyword.name
+                for keyword in CallKeywords.of(assignment_call.keywords).named
+                if ast.unparse(keyword.value) == key_expr
             )
         ),
     )
@@ -5097,7 +4865,7 @@ def _returns_constructor_call(
     return_value, _ = returned
     if not isinstance(return_value, ast.Call):
         return False
-    call_name = AstExpressionProjection.terminal_name(return_value.func)
+    call_name = ExpressionReference.decoded(return_value.func).terminal_name
     return call_name in accepted_names
 
 
@@ -5142,7 +4910,7 @@ def _same_type_constructor_method_names(
 
 
 def _shared_record_mechanics_method_names(
-    candidates: Sequence["ManualStructuralRecordMechanicsClassCandidate"],
+    candidates: Sequence[ManualStructuralRecordMechanicsClassCandidate],
 ) -> tuple[str, ...]:
     shared_projection_method_names = set.intersection(
         *(set(candidate.projection_method_names) for candidate in candidates)
@@ -5295,7 +5063,7 @@ def _flatten_union_member_type_names(node: ast.AST) -> tuple[str, ...]:
         return _flatten_union_member_type_names(
             node.left
         ) + _flatten_union_member_type_names(node.right)
-    type_name = AstExpressionProjection.terminal_name(node)
+    type_name = ExpressionReference.decoded(node).terminal_name
     if type_name in {None, "None", "NoneType"}:
         return ()
     return (type_name,)
@@ -5334,7 +5102,7 @@ def _resolved_isinstance_type_names(
     concrete_names: list[str] = []
     abstract_names: list[str] = []
     for item in items:
-        type_name = AstExpressionProjection.terminal_name(item)
+        type_name = ExpressionReference.decoded(item).terminal_name
         if type_name in {None, "None", "NoneType"}:
             continue
         indexed_class = SYNTAX_PROJECTION_AUTHORITY.indexed_class_for_simple_name(
@@ -5421,21 +5189,18 @@ def _concrete_type_case_function_candidates_for_function(
 ) -> Iterable[ConcreteTypeCaseFunctionCandidate]:
     alias_sources = _top_level_attribute_aliases(function)
     grouped_checks: dict[str, list[ResolvedTypeNamePartition]] = defaultdict(list)
-    for subnode in _walk_nodes(function):
-        if not (
-            isinstance(subnode, ast.Call)
-            and len(subnode.args) == 2
-            and (not subnode.keywords)
-            and (AstExpressionProjection.terminal_name(subnode.func) == "isinstance")
-        ):
+    for subnode in module.syntax_index.function_walks[function]:
+        isinstance_arguments = BuiltinCallName.isinstance_arguments(subnode)
+        if isinstance_arguments is None:
             continue
+        subject, type_argument = isinstance_arguments
         subject_expression = _attribute_family_subject_expression(
-            subnode.args[0], alias_sources=alias_sources
+            subject, alias_sources=alias_sources
         )
         if subject_expression is None:
             continue
         concrete_names, abstract_names = _resolved_isinstance_type_names(
-            subnode.args[1], module=module, class_index=class_index
+            type_argument, module=module, class_index=class_index
         )
         if not concrete_names:
             continue
@@ -5483,10 +5248,10 @@ def _concrete_type_case_function_candidates(
 
 
 def _repeated_concrete_type_case_analysis_candidates(
-    modules: list[ParsedModule],
+    modules: ParsedModuleSet,
     config: DetectorConfig,
 ) -> tuple[RepeatedConcreteTypeCaseAnalysisCandidate, ...]:
-    class_index = build_class_family_index(modules)
+    class_index = modules.fact(ClassFamilyIndex)
     min_function_count = max(3, config.min_registration_sites)
     min_class_count = max(2, config.min_reflective_selector_values)
     candidates: list[RepeatedConcreteTypeCaseAnalysisCandidate] = []
@@ -5545,7 +5310,7 @@ def _repeated_concrete_type_case_analysis_candidates(
 def _self_cast_type_name(node: ast.AST) -> str | None:
     if not (
         isinstance(node, ast.Call)
-        and AstExpressionProjection.terminal_name(node.func) == "cast"
+        and ExpressionReference.decoded(node.func).terminal_name == "cast"
         and (len(node.args) == 2)
         and (not node.keywords)
         and isinstance(node.args[1], ast.Name)
@@ -5579,10 +5344,10 @@ def _self_cast_alias_names(
 
 
 def _implicit_self_contract_mixin_candidates(
-    modules: list[ParsedModule],
+    modules: ParsedModuleSet,
     config: DetectorConfig,
 ) -> tuple[ImplicitSelfContractMixinCandidate, ...]:
-    class_index = build_class_family_index(modules)
+    class_index = modules.fact(ClassFamilyIndex)
     min_consumer_count = max(2, config.min_registration_sites)
     candidates: list[ImplicitSelfContractMixinCandidate] = []
     for indexed_class in sorted(
@@ -6070,12 +5835,14 @@ class SupportProjectionAuthority:
     ) -> frozenset[str]:
         return frozenset(
             parameter.arg
-            for parameter in (
-                *node.args.posonlyargs,
-                *node.args.args,
-                *node.args.kwonlyargs,
-            )
-            if parameter.arg not in {"self", "cls"} and parameter.annotation is not None
+            for parameter in ParameterAnnotations.of(
+                (
+                    *node.args.posonlyargs,
+                    *node.args.args,
+                    *node.args.kwonlyargs,
+                )
+            ).annotated
+            if parameter.arg not in {"self", "cls"}
         )
 
     def shared_reversed_token_suffix(
@@ -6266,12 +6033,10 @@ class SupportProjectionAuthority:
 
     def fiber_grouped_shapes(
         self,
-        modules: list[ParsedModule],
         shapes: tuple[object, ...],
         observation_kind: ObservationKind,
         execution_level: StructuralExecutionLevel,
     ) -> list[tuple[object, ...]]:
-        del modules
         lookup = _carrier_lookup(shapes)
         groups: list[tuple[object, ...]] = []
         graph = ObservationGraph(
@@ -6348,12 +6113,20 @@ class EvidenceLocationsWitnessCandidate(LineWitnessCandidate):
 
 
 @dataclass(frozen=True)
-class FunctionEvidenceLocationsCandidate(LineWitnessCandidate):
+class FunctionFamilyEvidenceSurface:
     function_names: tuple[str, ...]
     line_numbers: tuple[int, ...]
     evidence_locations: ClassVar[ZippedSourceLocationEvidenceProperty] = (
         ZippedSourceLocationEvidenceProperty("line_numbers", "function_names")
     )
+
+
+@dataclass(frozen=True)
+class FunctionEvidenceLocationsCandidate(
+    FunctionFamilyEvidenceSurface,
+    LineWitnessCandidate,
+):
+    pass
 
 
 @dataclass(frozen=True)
@@ -6724,18 +6497,6 @@ class DerivedWrapperSpecShadowCandidate(EvidenceLocationsWitnessCandidate):
     extra_field_names: tuple[str, ...]
     builder_names: tuple[str, ...]
     witness_name = AliasProperty[str]("derived_family_name")
-
-
-@dataclass(frozen=True)
-class ManualCompanionDataclassSurfaceCandidate(EvidenceLocationsWitnessCandidate):
-    authority_class_name: str
-    companion_class_name: str
-    surface_role_name: str
-    shared_field_names: tuple[str, ...]
-    companion_only_field_names: tuple[str, ...]
-    authority_only_field_names: tuple[str, ...]
-    compression_certificate: CompressionCertificate
-    witness_name = AliasProperty[str]("companion_class_name")
 
 
 class KeyedRecordInfrastructureCandidate(ABC):
@@ -7352,7 +7113,7 @@ class CandidateCollectorBoilerplateCandidate(
     def from_module(
         cls,
         module: ParsedModule,
-    ) -> tuple["CandidateCollectorBoilerplateCandidate", ...]:
+    ) -> tuple[CandidateCollectorBoilerplateCandidate, ...]:
         return tuple(
             candidate
             for node in module.module.body
@@ -7365,7 +7126,7 @@ class CandidateCollectorBoilerplateCandidate(
         cls,
         module: ParsedModule,
         node: ast.ClassDef,
-    ) -> tuple["CandidateCollectorBoilerplateCandidate", ...]:
+    ) -> tuple[CandidateCollectorBoilerplateCandidate, ...]:
         detector_shape = cls.detector_shape(node)
         if detector_shape is None:
             return ()
@@ -7486,7 +7247,7 @@ class ConcreteCandidateDetectorShape:
         cls,
         module: ParsedModule,
         node: ast.ClassDef,
-    ) -> "ConcreteCandidateDetectorShape | None":
+    ) -> ConcreteCandidateDetectorShape | None:
         declares_detector_id = any(
             binding is not None
             and binding.name == DetectorDeclaration.detector_id_field_name
@@ -7549,7 +7310,7 @@ class DirectBuildFindingRendererCandidate(
         cls,
         module: ParsedModule,
         node: ast.ClassDef,
-    ) -> tuple["DirectBuildFindingRendererCandidate", ...]:
+    ) -> tuple[DirectBuildFindingRendererCandidate, ...]:
         shape = ConcreteCandidateDetectorShape.from_class(module, node)
         if shape is None:
             return ()
@@ -7562,9 +7323,7 @@ class DirectBuildFindingRendererCandidate(
                 base_name=shape.base_name,
                 parameter_name=method.args.args[1].arg,
                 positional_arg_count=len(call.args),
-                keyword_names=tuple(
-                    keyword.arg for keyword in call.keywords if keyword.arg is not None
-                ),
+                keyword_names=CallKeywords.of(call.keywords).names,
             )
             for method in node.body
             if isinstance(method, ast.FunctionDef)
@@ -7577,7 +7336,7 @@ class DirectBuildFindingRendererCandidate(
     def from_module(
         cls,
         module: ParsedModule,
-    ) -> tuple["DirectBuildFindingRendererCandidate", ...]:
+    ) -> tuple[DirectBuildFindingRendererCandidate, ...]:
         return tuple(
             candidate
             for node in module.module.body
@@ -7631,7 +7390,7 @@ class DeclarativeDetectorClassCandidate(
         cls,
         module: ParsedModule,
         node: ast.ClassDef,
-    ) -> "DeclarativeDetectorClassCandidate | None":
+    ) -> DeclarativeDetectorClassCandidate | None:
         if node.end_lineno is None or len(node.bases) != 1:
             return None
         base = ParameterizedBaseSource.from_node(node.bases[0])
@@ -7663,7 +7422,7 @@ class DeclarativeDetectorClassCandidate(
     def from_module(
         cls,
         module: ParsedModule,
-    ) -> tuple["DeclarativeDetectorClassCandidate", ...]:
+    ) -> tuple[DeclarativeDetectorClassCandidate, ...]:
         return tuple(
             candidate
             for node in module.module.body
@@ -7723,7 +7482,7 @@ class FieldOnlyFrozenDataclassCandidate(ClassLineWitnessCandidate):
         cls,
         module: ParsedModule,
         node: ast.ClassDef,
-    ) -> "FieldOnlyFrozenDataclassCandidate | None":
+    ) -> FieldOnlyFrozenDataclassCandidate | None:
         if not _is_frozen_dataclass(node):
             return None
         product_fields: list[tuple[str, str, str | None]] = []
@@ -7791,15 +7550,6 @@ class DataclassNamespaceCliMirrorCandidate(ClassLineWitnessCandidate):
     from_namespace_line: int
     argument_spec_file_path: str
     argument_spec_line: int
-
-
-@dataclass(frozen=True)
-class FunctionFamilyEvidenceSurface:
-    function_names: tuple[str, ...]
-    line_numbers: tuple[int, ...]
-    evidence_locations: ClassVar[ZippedSourceLocationEvidenceProperty] = (
-        ZippedSourceLocationEvidenceProperty("line_numbers", "function_names")
-    )
 
 
 @dataclass(frozen=True)

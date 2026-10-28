@@ -7,8 +7,38 @@ surface.
 from __future__ import annotations
 
 from ..taxonomy import CapabilityTag, ObservationTag
-from ._base import *
-from ._helpers import *
+from collections import defaultdict
+from dataclasses import dataclass
+from typing import Sequence
+from ..ast_tools import ParsedModule
+from ..collection_algebra import sorted_tuple
+from ..models import (
+    FindingBuildContext,
+    MappingMetrics,
+    RefactorFinding,
+    RepeatedMethodMetrics,
+    SourceLocation,
+)
+from ..patterns import PatternId
+from ._base import (
+    CandidateFindingDetector,
+    declare_candidate_rule_detector,
+    DerivedQueryIndexCandidate,
+    DetectorConfig,
+    FragmentedFamilyAuthorityCandidate,
+    high_confidence_spec,
+    IssueDetector,
+    ModuleCollectorCandidateDetector,
+    PerModuleIssueDetector,
+    StructuralObservationPropertyCandidate,
+)
+from ._helpers import (
+    _finding_assembly_pipeline_candidates,
+    _fragmented_family_authority_candidates,
+    _guarded_delegator_candidates,
+    _projection_builder_groups,
+    _structural_observation_property_candidates,
+)
 from ._helpers import (
     _derived_query_index_candidates,
 )
@@ -85,44 +115,6 @@ declare_candidate_rule_detector(
     ),
     detector_name="DerivedQueryIndexSurfaceDetector",
     candidate_collector=_derived_query_index_candidates,
-)
-
-
-declare_candidate_rule_detector(
-    ManualCompanionDataclassSurfaceCandidate,
-    high_confidence_certified_spec(
-        PatternId.AUTHORITATIVE_SCHEMA,
-        "Companion dataclass surface should be generated from the schema authority",
-        "A dataclass whose name is a role refinement of another dataclass and whose fields restate that authority's typed field surface is a manually maintained companion projection. The OpenHCS lazy-config pattern treats the eager schema as the authority and derives the companion surface by inspecting dataclass fields.",
-        "schema-owned companion generator/metaclass that derives fields, defaults, preservation, and materialization from the authoritative dataclass",
-        "companion dataclass manually repeats the authoritative dataclass field surface",
-        (
-            CapabilityTag.AUTHORITATIVE_MAPPING,
-            CapabilityTag.NOMINAL_IDENTITY,
-            CapabilityTag.PROVENANCE,
-        ),
-        (
-            ObservationTag.CLASS_FAMILY,
-            ObservationTag.NORMALIZED_AST,
-            ObservationTag.MANUAL_SYNCHRONIZATION,
-        ),
-    ),
-    summary=lambda candidate: (
-        f"`{candidate.companion_class_name}` is a `{candidate.surface_role_name}` companion of "
-        f"`{candidate.authority_class_name}` and repeats typed fields {candidate.shared_field_names}; "
-        "derive the companion surface from the schema authority instead of redeclaring it."
-    ),
-    evidence=lambda candidate: candidate.evidence_locations,
-    compression_certificate=lambda candidate: candidate.compression_certificate,
-    metrics=lambda candidate: MappingMetrics.from_field_names(
-        mapping_site_count=2,
-        mapping_name=candidate.companion_class_name,
-        field_names=candidate.shared_field_names,
-        source_name=candidate.authority_class_name,
-        identity_field_names=candidate.shared_field_names,
-    ),
-    detector_name="ManualCompanionDataclassSurfaceDetector",
-    candidate_collector=_manual_companion_dataclass_surface_candidates,
 )
 
 

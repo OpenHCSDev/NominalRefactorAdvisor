@@ -27,7 +27,7 @@ class ClassHeaderSourceSpan:
     source_lines: tuple[str, ...]
 
     @classmethod
-    def from_source(cls, node: ast.ClassDef, source: str) -> "ClassHeaderSourceSpan":
+    def from_source(cls, node: ast.ClassDef, source: str) -> ClassHeaderSourceSpan:
         return cls(node=node, source_lines=tuple(source.splitlines(keepends=True)))
 
     @property
@@ -319,7 +319,7 @@ class SourceCommentLineIndex:
     is_complete: bool
 
     @classmethod
-    def from_source(cls, source: str) -> "SourceCommentLineIndex":
+    def from_source(cls, source: str) -> SourceCommentLineIndex:
         try:
             return cls(
                 comment_lines=frozenset(

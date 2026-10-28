@@ -2,14 +2,17 @@
 
 from __future__ import annotations
 
-from ._carrier_collapse import *
-from ._environment import *
-from ._heuristic_leads import *
-from ._semantic_descent import *
-from ._record_checks import *
-from ._systemic import *
-from ._structural import *
-from ._runtime import *
-from ._surface import *
-
-__all__ = tuple(name for name in globals() if not name.startswith("_"))
+from . import (  # noqa: F401 - importing a detector module registers it
+    _carrier_collapse,
+    _class_overlap,
+    _environment,
+    _heuristic_leads,
+    _semantic_descent,
+    _record_checks,
+    _restated_facts,
+    _restated_identity,
+    _systemic,
+    _structural,
+    _runtime,
+    _surface,
+)

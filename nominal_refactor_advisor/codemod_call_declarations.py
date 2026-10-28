@@ -6,7 +6,7 @@ import ast
 from dataclasses import dataclass
 from typing import cast
 
-from .ast_projection import AstExpressionProjection
+from .ast_projection import ExpressionReference
 from .codemod_operations import RefactorRecipeOperation
 from .codemod_payload import (
     CodemodPayloadRecord,
@@ -35,7 +35,7 @@ class ModuleCallDeclaration:
             raise TypeError("Module call declaration requires a call statement")
 
     @classmethod
-    def from_statement(cls, statement: ast.stmt) -> "ModuleCallDeclaration | None":
+    def from_statement(cls, statement: ast.stmt) -> ModuleCallDeclaration | None:
         if not isinstance(statement, ast.Expr) or not isinstance(
             statement.value,
             ast.Call,
@@ -51,12 +51,12 @@ class ModuleCallDeclaration:
 
     @property
     def callee_qualname(self) -> str | None:
-        return AstExpressionProjection.qualified_name(self.call.func)
+        return ExpressionReference.decoded(self.call.func).qualified_name
 
     @property
     def positional_argument_qualnames(self) -> tuple[str | None, ...]:
         return tuple(
-            AstExpressionProjection.qualified_name(argument)
+            ExpressionReference.decoded(argument).qualified_name
             for argument in self.call.args
         )
 

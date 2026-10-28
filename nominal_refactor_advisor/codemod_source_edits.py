@@ -27,7 +27,7 @@ from dataclasses import (
     replace,
 )
 from functools import cached_property
-from itertools import pairwise
+from itertools import groupby, pairwise
 from pathlib import Path
 from typing import (
     ClassVar,
@@ -142,9 +142,9 @@ class SourceEditOrigin(DataclassPayloadProjection):
 
     def contributor_for(
         self,
-        source_edit: "PhysicalSourceEdit",
+        source_edit: PhysicalSourceEdit,
         sources_by_file_path: Mapping[str, str],
-    ) -> "SourceRewriteContributor":
+    ) -> SourceRewriteContributor:
         return SourceRewriteContributor.from_source_edit(
             recipe_id=self.recipe_id,
             plan_item_declaration=self.plan_item_declaration,
@@ -184,7 +184,7 @@ class SourceRewriteContributor(SourceEditOrigin, CodemodPayloadRecord):
         plan_item_index: int,
         target: AstTargetDigest,
         sources_by_file_path: Mapping[str, str],
-    ) -> "SourceRewriteContributor":
+    ) -> SourceRewriteContributor:
         return cls.from_source_span(
             recipe_id=recipe_id,
             plan_item_declaration=plan_item_declaration,
@@ -202,9 +202,9 @@ class SourceRewriteContributor(SourceEditOrigin, CodemodPayloadRecord):
         recipe_id: str,
         plan_item_declaration: str,
         plan_item_index: int,
-        source_edit: "PhysicalSourceEdit",
+        source_edit: PhysicalSourceEdit,
         sources_by_file_path: Mapping[str, str],
-    ) -> "SourceRewriteContributor":
+    ) -> SourceRewriteContributor:
         return cls.from_source_span(
             recipe_id=recipe_id,
             plan_item_declaration=plan_item_declaration,
@@ -226,7 +226,7 @@ class SourceRewriteContributor(SourceEditOrigin, CodemodPayloadRecord):
         line: int,
         end_line: int,
         sources_by_file_path: Mapping[str, str],
-    ) -> "SourceRewriteContributor":
+    ) -> SourceRewriteContributor:
         source = sources_by_file_path[file_path]
         return cls(
             recipe_id=recipe_id,
@@ -244,7 +244,7 @@ class SourceRewriteContributor(SourceEditOrigin, CodemodPayloadRecord):
         self,
         target: AstTargetDigest,
         sources_by_file_path: Mapping[str, str],
-    ) -> "SourceRewriteContributor":
+    ) -> SourceRewriteContributor:
         return type(self).from_target(
             recipe_id=self.recipe_id,
             plan_item_declaration=self.plan_item_declaration,
@@ -339,7 +339,7 @@ class NominalSourceEdit(ABC):
             origins=self.merged_origins(peers),
         )
 
-    def with_origin(self, origin: SourceEditOrigin) -> "NominalSourceEdit":
+    def with_origin(self, origin: SourceEditOrigin) -> NominalSourceEdit:
         return replace(
             self,
             origins=SourceEditOrigin.merge(self.origins, (origin,)),
@@ -348,24 +348,24 @@ class NominalSourceEdit(ABC):
     @abstractmethod
     def coalesced_with_peers(
         self,
-        peers: tuple["NominalSourceEdit", ...],
-        context: "CodemodSelectorContext",
-    ) -> tuple["NominalSourceEdit", ...]:
+        peers: tuple[NominalSourceEdit, ...],
+        context: CodemodSelectorContext,
+    ) -> tuple[NominalSourceEdit, ...]:
         """Coalesce edits owned by this exact nominal declaration."""
 
     def resolved_edits(
         self,
-        context: "CodemodSelectorContext",
-    ) -> tuple["PhysicalSourceEdit", ...]:
+        context: CodemodSelectorContext,
+    ) -> tuple[PhysicalSourceEdit, ...]:
         """Derive physical output from this declaration's authoritative source windows."""
         return tuple(window.physical_edit for window in self.resolved_windows(context))
 
     @classmethod
     def coalesced_by_declaration(
         cls,
-        edits: Iterable["NominalSourceEdit"],
-        context: "CodemodSelectorContext",
-    ) -> tuple["NominalSourceEdit", ...]:
+        edits: Iterable[NominalSourceEdit],
+        context: CodemodSelectorContext,
+    ) -> tuple[NominalSourceEdit, ...]:
         return tuple(
             coalesced
             for group in cls.declaration_groups(edits, lambda edit: edit)
@@ -374,13 +374,13 @@ class NominalSourceEdit(ABC):
 
     @staticmethod
     def merged_origins(
-        edits: Iterable["NominalSourceEdit"],
+        edits: Iterable[NominalSourceEdit],
     ) -> tuple[SourceEditOrigin, ...]:
         return SourceEditOrigin.merge(*(edit.origins for edit in edits))
 
     @staticmethod
     def merged_contributors(
-        edits: Iterable["NominalSourceEdit"],
+        edits: Iterable[NominalSourceEdit],
     ) -> tuple[SourceRewriteContributor, ...]:
         return SourceRewriteContributor.merge(*(edit.contributors for edit in edits))
 
@@ -440,6 +440,16 @@ class PhysicalSourceEdit(SourceEditWindowABC, NominalSourceEdit, ABC):
 
     file_path: str
 
+    @property
+    @abstractmethod
+    def start_line(self) -> int:
+        """First original line the edit owns."""
+
+    @property
+    @abstractmethod
+    def end_line(self) -> int:
+        """Last original line the edit owns; an insertion owns none (start - 1)."""
+
     def resolved_peer_windows(
         self, peers: tuple[NominalSourceEdit, ...], context: CodemodSelectorContext
     ) -> tuple[SourceEditWindowABC, ...]:
@@ -484,13 +494,13 @@ class PhysicalSourceEdit(SourceEditWindowABC, NominalSourceEdit, ABC):
 
     def resolved_windows(
         self,
-        context: "CodemodSelectorContext",
-    ) -> tuple["PhysicalSourceEdit", ...]:
+        context: CodemodSelectorContext,
+    ) -> tuple[PhysicalSourceEdit, ...]:
         del context
         return (self,)
 
     @abstractmethod
-    def conflicts_with(self, other: "PhysicalSourceEdit") -> bool:
+    def conflicts_with(self, other: PhysicalSourceEdit) -> bool:
         """Return whether two physical edits cannot be applied as one rewrite."""
 
     @abstractmethod
@@ -504,8 +514,8 @@ class PhysicalSourceEdit(SourceEditWindowABC, NominalSourceEdit, ABC):
     @classmethod
     def require_compatible(
         cls,
-        edits: tuple["PhysicalSourceEdit", ...],
-    ) -> tuple["PhysicalSourceEdit", ...]:
+        edits: tuple[PhysicalSourceEdit, ...],
+    ) -> tuple[PhysicalSourceEdit, ...]:
         for index, first in enumerate(edits):
             for second in edits[index + 1 :]:
                 if first.file_path == second.file_path and first.conflicts_with(second):
@@ -554,8 +564,15 @@ class CoalescedSourceWindow(SourceEditWindowABC):
 class SourceSpanEdit(PhysicalSourceEdit, ABC):
     """Physical edit over one non-empty absolute line span."""
 
-    start_line: int
-    end_line: int
+    span: SourceLineSpan
+
+    @property
+    def start_line(self) -> int:
+        return self.span.start_line
+
+    @property
+    def end_line(self) -> int:
+        return self.span.end_line
 
     def original_span(self, geometry: SourceTextGeometry) -> SourceTextSpan:
         return SourceTextSpan(
@@ -577,22 +594,20 @@ class SourceSpanEdit(PhysicalSourceEdit, ABC):
         rationale: str = "",
         contributors: tuple[SourceRewriteContributor, ...] = (),
         origins: tuple[SourceEditOrigin, ...] = (),
-    ) -> "SourceSpanEdit":
+    ) -> SourceSpanEdit:
         """Classify replacement output once at the physical-edit boundary."""
 
         if not replacement_lines:
             return SourceSpanDeletion(
                 file_path=file_path,
-                start_line=start_line,
-                end_line=end_line,
+                span=SourceLineSpan(start_line, end_line),
                 rationale=rationale,
                 contributors=contributors,
                 origins=origins,
             )
         return SourceSpanReplacement(
             file_path=file_path,
-            start_line=start_line,
-            end_line=end_line,
+            span=SourceLineSpan(start_line, end_line),
             replacement_lines=replacement_lines,
             rationale=rationale,
             contributors=contributors,
@@ -657,7 +672,7 @@ class KeyedSourceEditCoalescence(KeyedSourceEdit, ABC):
         return cls._coalesced_owned_group(groups[0])
 
     def coalesced_with_peers(
-        self, peers: tuple[NominalSourceEdit, ...], context: "CodemodSelectorContext"
+        self, peers: tuple[NominalSourceEdit, ...], context: CodemodSelectorContext
     ) -> tuple[NominalSourceEdit, ...]:
         del context
         return tuple(
@@ -686,8 +701,8 @@ class SourceSpanReplacement(KeyedSourceEditCoalescence, SourceSpanEdit):
 
     @staticmethod
     def _coalesced_group(
-        replacements: tuple["SourceSpanReplacement", ...],
-    ) -> "SourceSpanReplacement":
+        replacements: tuple[SourceSpanReplacement, ...],
+    ) -> SourceSpanReplacement:
         first = replacements[0]
         if any(
             replacement.replacement_lines != first.replacement_lines
@@ -712,7 +727,10 @@ class SourceSpanDeletion(SourceSpanEdit):
         merged = groups[0][0]
         for peer in groups[0][1:]:
             merged = replace(
-                merged, end_line=max(merged.end_line, peer.end_line)
+                merged,
+                span=SourceLineSpan(
+                    merged.start_line, max(merged.end_line, peer.end_line)
+                ),
             ).with_evidence_from((merged, peer))
         return merged
 
@@ -746,7 +764,7 @@ class SourceSpanDeletion(SourceSpanEdit):
     @classmethod
     def target_span(
         cls,
-        context: "CodemodSelectorContext",
+        context: CodemodSelectorContext,
         target_digest: AstTargetDigest,
     ) -> SourceLineSpan:
         """Derive the complete decorated span owned by one AST target."""
@@ -771,7 +789,7 @@ class SourceSpanDeletion(SourceSpanEdit):
     @classmethod
     def for_target(
         cls,
-        context: "CodemodSelectorContext",
+        context: CodemodSelectorContext,
         target_digest: AstTargetDigest,
         *,
         rationale: str = "",
@@ -781,15 +799,14 @@ class SourceSpanDeletion(SourceSpanEdit):
         target_span = cls.target_span(context, target_digest)
         return cls(
             file_path=target_digest.file_path,
-            start_line=target_span.start_line,
-            end_line=target_span.end_line,
+            span=target_span,
             rationale=rationale or f"Delete target {target_digest.qualname!r}.",
         )
 
     @classmethod
     def for_statement(
         cls,
-        context: "CodemodSelectorContext",
+        context: CodemodSelectorContext,
         target_digest: AstTargetDigest,
         *,
         rationale: str = "",
@@ -842,15 +859,14 @@ class SourceSpanDeletion(SourceSpanEdit):
         )
         return cls(
             file_path=file_path,
-            start_line=deletion_span.start_line,
-            end_line=deletion_span.end_line,
+            span=deletion_span,
             rationale=rationale,
         )
 
     def coalesced_with_peers(
         self,
         peers: tuple[NominalSourceEdit, ...],
-        context: "CodemodSelectorContext",
+        context: CodemodSelectorContext,
     ) -> tuple[NominalSourceEdit, ...]:
         return tuple(
             window.physical_edit
@@ -898,8 +914,8 @@ class SourceInsertion(KeyedSourceEditCoalescence, PhysicalSourceEdit):
 
     @staticmethod
     def _coalesced_group(
-        insertions: tuple["SourceInsertion", ...],
-    ) -> "SourceInsertion":
+        insertions: tuple[SourceInsertion, ...],
+    ) -> SourceInsertion:
         first = insertions[0]
         unique_insertions: list[SourceInsertion] = []
         seen_sources: set[tuple[str, ...]] = set()
@@ -920,19 +936,19 @@ class SourceInsertion(KeyedSourceEditCoalescence, PhysicalSourceEdit):
 class SourceFileCreation(NominalSourceEdit):
     """Create one source path with an explicit initial source."""
 
-    operation_type: type["RefactorRecipeOperation"]
+    operation_type: type[RefactorRecipeOperation]
     file_path: str
     source: str = ""
 
     @classmethod
     def from_operation(
         cls,
-        operation: "RefactorRecipeOperation",
+        operation: RefactorRecipeOperation,
         *,
         requested_path: str,
         source_index: SourceIndex,
         source: str,
-    ) -> "SourceFileCreation":
+    ) -> SourceFileCreation:
         file_path = SourceCreationPathAuthority.from_source_index(
             requested_path,
             source_index,
@@ -953,7 +969,7 @@ class SourceFileCreation(NominalSourceEdit):
     def coalesced_with_peers(
         self,
         peers: tuple[NominalSourceEdit, ...],
-        context: "CodemodSelectorContext",
+        context: CodemodSelectorContext,
     ) -> tuple[NominalSourceEdit, ...]:
         del context
         creations_by_path: dict[str, list[SourceFileCreation]] = defaultdict(list)
@@ -975,7 +991,7 @@ class SourceFileCreation(NominalSourceEdit):
 
     def resolved_windows(
         self,
-        context: "CodemodSelectorContext",
+        context: CodemodSelectorContext,
     ) -> tuple[PhysicalSourceEdit, ...]:
         virtual_source = context.sources_by_file_path[self.file_path]
         if virtual_source != self.source:
@@ -1022,7 +1038,7 @@ class SourceTextSpan(SourceOffsetSpan):
     """Character-offset span over one source string."""
 
     @classmethod
-    def from_offsets(cls, offsets: tuple[int, int]) -> "SourceTextSpan":
+    def from_offsets(cls, offsets: tuple[int, int]) -> SourceTextSpan:
         start_offset, end_offset = offsets
         return cls(start_offset=start_offset, end_offset=end_offset)
 
@@ -1040,7 +1056,7 @@ class SourceTextSpan(SourceOffsetSpan):
         except (IndentationError, tokenize.TokenError):
             return True
 
-    def replacement(self, source: str, new_source: str) -> "SourceTextReplacement":
+    def replacement(self, source: str, new_source: str) -> SourceTextReplacement:
         return SourceTextReplacement(
             old_source=self.source_text(source),
             new_source=new_source,
@@ -1068,7 +1084,7 @@ class SourceTextSpanReplacement(
         start_offset: int,
         end_offset: int,
         replacement_source: str,
-    ) -> "SourceTextSpanReplacement":
+    ) -> SourceTextSpanReplacement:
         return cls(
             start_offset=start_offset,
             end_offset=end_offset,
@@ -1338,7 +1354,7 @@ class SourceNodeSpan:
         return self.node.end_lineno or self.node.lineno
 
     @property
-    def line_span(self) -> "SourceLineSpan":
+    def line_span(self) -> SourceLineSpan:
         return SourceLineSpan(start_line=self.start_line, end_line=self.end_line)
 
 
@@ -1623,6 +1639,53 @@ class SourceTextGeometry(SourceLineSegmentAuthority):
             token.type == tokenize.COMMENT for token in self.tokens_in_span(span)
         )
 
+    def remove_separated_elements(
+        self,
+        elements: tuple[ast.AST, ...],
+        selected: tuple[ast.AST, ...],
+        body_span: SourceTextSpan,
+    ) -> tuple[SourceTextSpanReplacement, ...]:
+        """Delete comma-separated elements while retaining every surviving source span."""
+        ordered = tuple(sorted(elements, key=self.required_node_offsets))
+        chosen = frozenset(selected)
+        if not chosen or len(chosen) != len(selected) or not chosen.issubset(ordered):
+            raise ValueError(
+                "Element deletion requires unique selected original elements"
+            )
+        spans = tuple(
+            SourceTextSpan(*self.required_node_offsets(node)) for node in ordered
+        )
+        if any(not span.is_within(body_span) for span in spans):
+            raise ValueError("Separated element is outside its source body")
+        replacements = []
+        for removed, group in groupby(
+            enumerate(ordered), key=lambda item: item[1] in chosen
+        ):
+            if not removed:
+                continue
+            run = tuple(group)
+            first, last = run[0][0], run[-1][0]
+            if len(chosen) == len(ordered):
+                span = body_span
+            elif last + 1 < len(ordered):
+                span = SourceTextSpan(
+                    spans[first].start_offset, spans[last + 1].start_offset
+                )
+            else:
+                span = SourceTextSpan(
+                    spans[first - 1].end_offset, spans[last].end_offset
+                )
+            if self.span_contains_comment(span):
+                raise ValueError("Element deletion would remove a comment")
+            replacements.append(
+                SourceTextSpanReplacement.from_offsets(
+                    start_offset=span.start_offset,
+                    end_offset=span.end_offset,
+                    replacement_source="",
+                )
+            )
+        return tuple(replacements)
+
     def literal_continuation_lines(self, root: ast.AST) -> frozenset[int]:
         """Lines whose source belongs to literals and must retain its indentation."""
 
@@ -1754,7 +1817,7 @@ class SourceTextGeometry(SourceLineSegmentAuthority):
     def node_line_span(self, span: SourceNodeSpan) -> SourceLineSpan:
         return SourceLineSpan(self.node_start_line(span), span.end_line)
 
-    def statement_deletion_span(self, span: "SourceLineSpan") -> "SourceLineSpan":
+    def statement_deletion_span(self, span: SourceLineSpan) -> SourceLineSpan:
         """Include the separator owned by one deleted statement."""
 
         if not 1 <= span.start_line <= span.end_line <= len(self.lines):
@@ -2133,10 +2196,10 @@ class SourceLineSpan:
             line_number = index + 1
         return line_number
 
-    def overlaps(self, other: "SourceLineSpan") -> bool:
+    def overlaps(self, other: SourceLineSpan) -> bool:
         return self.start_line <= other.end_line and other.start_line <= self.end_line
 
-    def overlaps_any(self, spans: Iterable["SourceLineSpan"]) -> bool:
+    def overlaps_any(self, spans: Iterable[SourceLineSpan]) -> bool:
         return any(self.overlaps(span) for span in spans)
 
     def source_from(self, source: str) -> str:
@@ -2173,8 +2236,7 @@ class SourceLineSpan:
     ) -> SourceSpanDeletion:
         return SourceSpanDeletion(
             file_path=file_path,
-            start_line=self.start_line,
-            end_line=self.end_line,
+            span=self,
             rationale=rationale,
         )
 
@@ -2342,7 +2404,7 @@ class CodemodSourceRevision(CodemodPayloadRecord):
         sources_by_file_path: Mapping[str, str],
         *,
         required_paths: Iterable[str] = (),
-    ) -> tuple["CodemodSourceRevision", ...]:
+    ) -> tuple[CodemodSourceRevision, ...]:
         """Capture the supplied source context, including absent creation targets."""
 
         return tuple(
@@ -2355,7 +2417,7 @@ class CodemodSourceRevision(CodemodPayloadRecord):
         cls,
         file_path: str,
         sources_by_file_path: Mapping[str, str],
-    ) -> "CodemodSourceRevision":
+    ) -> CodemodSourceRevision:
         source = sources_by_file_path.get(file_path)
         return cls(
             file_path=file_path,

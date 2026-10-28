@@ -14,6 +14,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterable
 
+from .ast_tools import ParsedModuleSet
 from .analysis import analyze_modules
 from .ast_tools import parse_python_modules
 from .collection_algebra import sorted_tuple
@@ -126,7 +127,7 @@ class RefactorEvidenceEconomics(DataclassJsonReport):
         cls,
         findings: Iterable[RefactorFinding],
         plans: Iterable[RefactorPlan] = (),
-    ) -> "RefactorEvidenceEconomics":
+    ) -> RefactorEvidenceEconomics:
         finding_tuple = tuple(findings)
         plan_tuple = tuple(plans)
         certificates = tuple(
@@ -219,15 +220,21 @@ class RefactorEvidenceEconomics(DataclassJsonReport):
         )
 
 
-@dataclass(frozen=True)
-class ScanEconomicsProof(DataclassJsonReport):
-    """One timed scan summarized as an economics gate."""
+@dataclass(frozen=True, kw_only=True)
+class TimedScan:
+    """One labeled scan's elapsed time and finding count."""
 
     label: str
-    path: str
     elapsed_seconds: float
-    scan_budget_seconds: float
     finding_count: int
+
+
+@dataclass(frozen=True, kw_only=True)
+class ScanEconomicsProof(TimedScan, DataclassJsonReport):
+    """One timed scan summarized as an economics gate."""
+
+    path: str
+    scan_budget_seconds: float
     production_finding_count: int
     test_only_finding_count: int
     plan_count: int
@@ -245,7 +252,7 @@ class ScanEconomicsProof(DataclassJsonReport):
         scan_budget_seconds: float,
         findings: Iterable[RefactorFinding],
         plans: Iterable[RefactorPlan],
-    ) -> "ScanEconomicsProof":
+    ) -> ScanEconomicsProof:
         finding_tuple = tuple(findings)
         plan_tuple = tuple(plans)
         production_findings = tuple(
@@ -311,7 +318,7 @@ class EconomicsProofReport(DataclassJsonReport):
 
     package_scan: ScanEconomicsProof
     repository_scan: ScanEconomicsProof
-    change_budget: "RepositoryChangeBudget"
+    change_budget: RepositoryChangeBudget
 
     @json_report_property()
     def proof_passes(self) -> bool:
@@ -359,7 +366,7 @@ class RepositoryChangeBudget(DataclassJsonReport):
     @classmethod
     def unavailable(
         cls, reason: str, *, compare_ref: str = "HEAD"
-    ) -> "RepositoryChangeBudget":
+    ) -> RepositoryChangeBudget:
         return cls(compare_ref=compare_ref, unavailable_reason=reason)
 
     @classmethod
@@ -368,7 +375,7 @@ class RepositoryChangeBudget(DataclassJsonReport):
         rows: Iterable[str],
         *,
         compare_ref: str = "HEAD",
-    ) -> "RepositoryChangeBudget":
+    ) -> RepositoryChangeBudget:
         budgets = {
             "advisor_backend": LineChangeBudget(),
             "detectors": LineChangeBudget(),
@@ -398,7 +405,7 @@ class RepositoryChangeBudget(DataclassJsonReport):
         start_path: Path,
         *,
         compare_ref: str = "HEAD",
-    ) -> "RepositoryChangeBudget":
+    ) -> RepositoryChangeBudget:
         repo_result = _run_git_command(
             start_path,
             "rev-parse",
@@ -447,7 +454,7 @@ class RepositoryChangeBudget(DataclassJsonReport):
 def _scan_modules_for_proof(
     label: str,
     path: Path,
-    modules: list,
+    modules: ParsedModuleSet,
     config: DetectorConfig,
     scan_budget_seconds: float,
 ) -> ScanEconomicsProof:
@@ -496,11 +503,11 @@ def build_economics_proof_report(
             parse_workers=parse_workers,
         )
     package_root = package_path.resolve()
-    package_modules = [
+    package_modules = ParsedModuleSet.of(
         module
         for module in parsed_modules
         if module.path.resolve().is_relative_to(package_root)
-    ]
+    )
     package_scan = _scan_modules_for_proof(
         "package",
         package_path,

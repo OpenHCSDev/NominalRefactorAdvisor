@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from nominal_refactor_advisor.ast_tools import ParsedModuleSet
 from nominal_refactor_advisor.ast_tools import ParsedModule
 from nominal_refactor_advisor.carrier_expansion import (
     DeclaredCarrierExpansionAuthorityViolation,
@@ -89,7 +90,7 @@ def test_conditional_carrier_rebinding_does_not_supply_a_refactor_proof() -> Non
     assert builder.expansions == ()
     assert builder.assessed_components() == ()
     assert (
-        DeclaredCarrierExpansionDetector().detect(list(modules), DetectorConfig()) == []
+        DeclaredCarrierExpansionDetector().detect(ParsedModuleSet.of(list(modules)), DetectorConfig()) == []
     )
 
 
@@ -357,7 +358,7 @@ def test_builder_rejects_mutated_projected_parameters() -> None:
 
 def test_declared_carrier_operation_rewrites_the_complete_forwarding_graph() -> None:
     module = _module("pkg.rewrite", _closed_expansion_source())
-    snapshot = CodemodSourceSnapshot.from_modules((module,), ())
+    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of((module,)), ())
     authority_target = next(
         target
         for target in snapshot.source_index.ast_targets
@@ -378,14 +379,10 @@ def test_declared_carrier_operation_rewrites_the_complete_forwarding_graph() -> 
 
     assert simulation.parse_validation.parse_valid
     rewritten_source = simulation.rewritten_sources[module.file_path]
-    assert (
-        "def _leaf(*, context: '_Context'):\n"
-        "    return context.first, context.second\n"
-    ) in rewritten_source
-    assert (
-        "def _middle(*, context: '_Context'):\n"
-        "    return _leaf(context=context)\n"
-    ) in rewritten_source
+    assert _carrier_parameter(rewritten_source, "_leaf") == ("context", "_Context")
+    assert _returned(rewritten_source, "_leaf") == "(context.first, context.second)"
+    assert _carrier_parameter(rewritten_source, "_middle") == ("context", "_Context")
+    assert _returned(rewritten_source, "_middle") == "_leaf(context=context)"
     assert "return _middle(context=context)" in rewritten_source
     original_namespace = {"__name__": "pkg.rewrite_original"}
     rewritten_namespace = {"__name__": "pkg.rewrite_rewritten"}
@@ -408,7 +405,7 @@ def test_declared_carrier_detector_synthesizes_the_atomic_operation() -> None:
     module = _module("pkg.detected", _closed_expansion_source())
 
     findings = DeclaredCarrierExpansionDetector().detect(
-        [module],
+        ParsedModuleSet.of([module]),
         DetectorConfig(),
     )
 
@@ -427,7 +424,7 @@ def test_declared_carrier_detector_synthesizes_the_atomic_operation() -> None:
         shared_parameter_count=2,
         shared_parameter_names=("first", "second"),
     )
-    snapshot = CodemodSourceSnapshot.from_modules((module,), findings)
+    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of((module,)), findings)
     plan = codemod_plan_from_findings(findings, selector_context=snapshot)
 
     assert len(plan.records) == 1
@@ -437,8 +434,30 @@ def test_declared_carrier_detector_synthesizes_the_atomic_operation() -> None:
     simulation = plan.document.simulate(snapshot)
     assert simulation.is_clean
     rewritten_source = simulation.simulation.rewritten_sources[module.file_path]
-    assert "def _middle(*, context: '_Context'):" in rewritten_source
+    assert _carrier_parameter(rewritten_source, "_middle") == ("context", "_Context")
     assert "return _middle(context=context)" in rewritten_source
+
+
+def _function(source: str, name: str) -> ast.FunctionDef:
+    return next(
+        node
+        for node in ast.walk(ast.parse(source))
+        if isinstance(node, ast.FunctionDef) and node.name == name
+    )
+
+
+def _carrier_parameter(source: str, name: str) -> tuple[str, str]:
+    """The function's one keyword-only parameter and the class its annotation names."""
+
+    (parameter,) = _function(source, name).args.kwonlyargs
+    assert isinstance(parameter.annotation, ast.Name)
+    return parameter.arg, parameter.annotation.id
+
+
+def _returned(source: str, name: str) -> str:
+    (statement,) = _function(source, name).body
+    assert isinstance(statement, ast.Return) and statement.value is not None
+    return ast.unparse(statement.value)
 
 
 def test_declared_carrier_operation_imports_cross_module_authority() -> None:
@@ -470,7 +489,7 @@ def test_declared_carrier_operation_imports_cross_module_authority() -> None:
         "    return _consume(context.first, context.second)\n",
     )
     snapshot = CodemodSourceSnapshot.from_modules(
-        (models_module, worker_module, entry_module),
+        ParsedModuleSet.of((models_module, worker_module, entry_module)),
         (),
     )
     authority_target = next(
@@ -522,7 +541,7 @@ def test_declared_carrier_operation_rejects_an_open_current_call_family() -> Non
         "def outside(first, second):\n"
         "    return _consume(first, second)\n",
     )
-    snapshot = CodemodSourceSnapshot.from_modules((module,), ())
+    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of((module,)), ())
     authority_target = next(
         target
         for target in snapshot.source_index.ast_targets

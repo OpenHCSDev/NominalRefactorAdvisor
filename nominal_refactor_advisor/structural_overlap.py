@@ -62,7 +62,7 @@ class MetricStructuralOverlapAxis(StrEnum):
         cls,
         value: str,
         coordinate_projection: MetricCoordinateProjection,
-    ) -> "MetricStructuralOverlapAxis":
+    ) -> MetricStructuralOverlapAxis:
         member = str.__new__(cls, value)
         member._value_ = value
         member._coordinate_projection = coordinate_projection

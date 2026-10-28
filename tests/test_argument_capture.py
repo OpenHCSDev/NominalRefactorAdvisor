@@ -1,5 +1,6 @@
 """Runtime values retain the identities loaded before later arguments run."""
 
+from nominal_refactor_advisor.product_flow_authority import ResolvedCompactFunctionTarget
 import ast
 from pathlib import Path
 
@@ -88,7 +89,7 @@ def test_rebinding_a_parameter_can_select_a_known_callable() -> None:
     repository = repository_for(source)
     context = repository.flow_contexts_by_owner_symbol["arguments.run"]
     resolution = repository.resolve_function_call(context, context.flow.calls[-1])
-    assert resolution.target_resolution.declaration is not None
+    assert isinstance(resolution.target_resolution, ResolvedCompactFunctionTarget)
     assert (
         resolution.target_resolution.declaration.identity.symbol
         == "arguments.replacement"
@@ -112,7 +113,7 @@ def test_deferred_parameter_lookup_keeps_entry_and_assignment_alternatives_open(
     repository = repository_for(source)
     context = repository.flow_contexts_by_owner_symbol["arguments.run.invoke"]
     resolution = repository.resolve_function_call(context, context.flow.calls[0])
-    assert resolution.target_resolution.declaration is None
+    assert not isinstance(resolution.target_resolution, ResolvedCompactFunctionTarget)
     assert "arguments.replacement" in resolution.target_resolution.possible_symbols
 
 

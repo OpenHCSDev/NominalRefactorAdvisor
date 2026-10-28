@@ -20,24 +20,29 @@ from .carrier_collapse import (
 from .class_index import CompactProductAuthority
 from .product_flow import CompactFlowPosition
 from .product_flow_authority import (
-    CompactCallableComponentAuthorityProof,
     CompactFunctionCallIdentity,
     CompactResolvedFunctionCall,
 )
 from .value_expression import LexicalValueReference
 
-@dataclass(frozen=True)
-class DeclaredCarrierExpansion(CarrierCollapseCallEdge):
-    """One call that expands fields from a declaration-typed carrier value."""
+@dataclass(frozen=True, kw_only=True)
+class ResolvedFieldBindingCall:
+    """A resolved call and the field bindings it passes to its callee."""
 
-    carrier_class_symbol: str
-    carrier_reference: LexicalValueReference
     resolved_call: CompactResolvedFunctionCall
     field_bindings: tuple[CarrierCollapseFieldBinding, ...]
 
     @property
     def carrier_source_participant_symbols(self) -> tuple[str, ...]:
         return ()
+
+
+@dataclass(frozen=True, kw_only=True)
+class DeclaredCarrierExpansion(ResolvedFieldBindingCall, CarrierCollapseCallEdge):
+    """One call that expands fields from a declaration-typed carrier value."""
+
+    carrier_class_symbol: str
+    carrier_reference: LexicalValueReference
 
     def carrier_value_reference(
         self,
@@ -228,7 +233,7 @@ class DeclaredCarrierExpansionAuthorityViolation(StrEnum):
     def explanation(self) -> str:
         return self._explanation
 
-    def is_violated_by(self, proof: "DeclaredCarrierExpansionAuthorityProof") -> bool:
+    def is_violated_by(self, proof: DeclaredCarrierExpansionAuthorityProof) -> bool:
         return self._predicate(proof)
 
 
@@ -237,14 +242,9 @@ class DeclaredCarrierExpansionAuthorityProof(CarrierCollapseAuthorityProof):
     """Fail-closed authority proof for one maximal carrier expansion graph."""
 
     carrier_authority: CompactProductAuthority | None
-    projected_field_names_by_edge: tuple[tuple[str, ...], ...]
     ambiguous_root_call_identities: tuple[CompactFunctionCallIdentity, ...]
-    incompletely_consuming_participant_symbols: tuple[str, ...]
-    conflicting_mapping_symbols: tuple[str, ...]
     competing_carrier_participant_symbols: tuple[str, ...]
     mutated_parameter_symbols: tuple[str, ...]
-    callable_component: CompactCallableComponentAuthorityProof
-    batch_compression_delta: int
 
     @cached_property
     def violations(self) -> tuple[DeclaredCarrierExpansionAuthorityViolation, ...]:
@@ -259,10 +259,6 @@ class DeclaredCarrierExpansionAuthorityProof(CarrierCollapseAuthorityProof):
         return not any(
             violation.is_violated_by(self) for violation in DeclaredCarrierExpansionAuthorityViolation
         )
-
-    @property
-    def rejection_reason(self) -> str:
-        return "; ".join(violation.explanation for violation in self.violations)
 
 
 @dataclass(frozen=True)

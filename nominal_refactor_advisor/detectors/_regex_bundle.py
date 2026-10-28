@@ -3,17 +3,19 @@
 from __future__ import annotations
 
 import ast
+from typing import Self
 from collections import defaultdict
 from collections.abc import Callable
 from dataclasses import dataclass
 from enum import StrEnum
-from functools import cached_property, lru_cache
+from functools import cached_property
 from inspect import Signature, signature
 from itertools import combinations
 import re
 
-from ..ast_projection import AstExpressionProjection
-from ..ast_tools import ParsedModule, named_function_nodes, walk_function_body_nodes
+from ..ast_projection import ExpressionReference
+from ..ast_projection import CallKeywords
+from ..ast_tools import ParsedModule, ParsedModuleFact, walk_function_body_nodes
 from ..class_index import (
     ModuleNominalBindingAuthority,
     ModuleNominalBindingSnapshot,
@@ -67,7 +69,7 @@ class RegexPatternOperation(StrEnum):
     def pattern_literal(self, call: ast.Call) -> str | None:
         if (
             any(isinstance(argument, ast.Starred) for argument in call.args)
-            or any(keyword.arg is None for keyword in call.keywords)
+            or CallKeywords.of(call.keywords).splats
             or len({keyword.arg for keyword in call.keywords}) != len(call.keywords)
         ):
             return None
@@ -108,14 +110,14 @@ class RepeatedLocalRegexBundleCandidate(FunctionEvidenceLocationsCandidate):
 
 
 @dataclass(frozen=True)
-class RegexBundleModuleProjection:
+class RegexBundleModuleProjection(ParsedModuleFact):
+    """One module's regex-bundle source facts, held by its parse."""
+
     module: ParsedModule
 
     @classmethod
-    @lru_cache(maxsize=32768)
-    def from_module(cls, module: ParsedModule) -> RegexBundleModuleProjection:
-        """Share source facts across scans; analysis memory release clears this cache."""
-        return cls(module)
+    def derive(cls, parsed_module: ParsedModule) -> Self:
+        return cls(parsed_module)
 
     @cached_property
     def external_reference_ids(self) -> frozenset[int]:
@@ -164,7 +166,7 @@ class RegexBundleModuleProjection:
             or id(root) not in self.external_reference_ids
         ):
             return None
-        parts = AstExpressionProjection.attribute_chain(call.func)
+        parts = ExpressionReference.decoded(call.func).attribute_chain
         if parts is None:
             return None
         operation = RegexPatternOperation.for_qualified_name(
@@ -176,7 +178,7 @@ class RegexBundleModuleProjection:
         self, function: ast.FunctionDef | ast.AsyncFunctionDef
     ) -> dict[str, int]:
         literals: dict[str, int] = {}
-        for node in walk_function_body_nodes(function):
+        for node in walk_function_body_nodes(function.body):
             if not isinstance(node, ast.Call):
                 continue
             literal = self.pattern_literal(node)
@@ -188,11 +190,11 @@ class RegexBundleModuleProjection:
     def collect(
         cls, module: ParsedModule, config: DetectorConfig
     ) -> tuple[RepeatedLocalRegexBundleCandidate, ...]:
-        projection = cls.from_module(module)
+        projection = module.fact(cls)
         if not projection.regex_binding_names:
             return ()
         grouped: dict[str, list[FunctionRegexBundle]] = defaultdict(list)
-        for qualname, function in named_function_nodes(module.module):
+        for qualname, function in module.syntax_index.named_functions:
             literals = projection.literals_for(function)
             if literals:
                 bundle = FunctionRegexBundle(qualname, literals)

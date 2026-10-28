@@ -28,20 +28,29 @@ from enum import Flag, StrEnum, auto
 from functools import cached_property, lru_cache
 from itertools import groupby
 from pathlib import Path
-from typing import ClassVar, Generic, TypeAlias, TypeVar, cast
+from typing import ClassVar, Generic, TypeAlias, TypeVar
 
 from metaclass_registry import AutoRegisterMeta
 
+from .ast_field_decoders import variadic_parameters
+from .ast_projection import ExpressionReference
+from .foreign_family import FunctionDefinition
 from .interpreter import PythonVersion
 from .assignment_projection import SingleAssignmentAndValueNameProjection
+from .ast_projection import (
+    CallKeywords,
+    NoStatementValue,
+    StatementValue,
+    StatementValueQuestion,
+    SuppliedValue,
+)
 from .ast_tools import (
-    AstExpressionProjection,
     ClassFunctionStackNodeVisitor,
     CollectedFamily,
     CompactModuleIdentity,
     ParsedModule,
+    ParsedModuleSet,
     PythonSourcePathPolicy,
-    module_syntax_index,
     python_module_path_identities_for_roots,
 )
 from .cache_checkout import (
@@ -54,6 +63,7 @@ from .cache_checkout import (
 from .cache_paths import default_semantic_descent_cache_dir
 from .case_root import Case
 from .class_index import (
+    NotStandardDataclass,
     ClassDeclaration,
     ClassFamilyIndex,
     CompactClassFamilyIndex,
@@ -63,7 +73,6 @@ from .class_index import (
     CompactModuleClassProjectionFamily,
     IndexedClass,
     ModuleClassReferenceResolver,
-    build_class_family_index,
     build_compact_class_family_index,
     iter_class_definitions,
     overlay_class_family_index,
@@ -80,6 +89,7 @@ from .deadline import scan_deadline_checkpoint
 from .enum_semantics import PYTHON_ENUM_BASE_AUTHORITY
 from .export_tools import PYTHON_PUBLIC_EXPORT_ASSIGNMENT
 from .implementation_identity import ImplementationSource, implementation_module_names
+from .scan_cache import ScanCache
 from .lexical_bindings import LEXICAL_SCOPE_BINDING_AUTHORITY
 from .json_reports import (
     DataclassJsonReport,
@@ -175,7 +185,7 @@ class SemanticAuthorityKind(StrEnum):
         reporting_capability_gap: str,
         mirrored_fact_label: str,
         missing_derivation_instruction: str,
-    ) -> "SemanticAuthorityKind":
+    ) -> SemanticAuthorityKind:
         member = str.__new__(cls, value)
         member._value_ = value
         member._is_class_family_like = is_class_family_like
@@ -226,7 +236,7 @@ class AuthorityClaimStatus(Case):
         )
 
     @classmethod
-    def from_authority_count(cls, authority_count: int) -> "type[AuthorityClaimStatus]":
+    def from_authority_count(cls, authority_count: int) -> type[AuthorityClaimStatus]:
         if authority_count < 1:
             raise ValueError("proved authority resolution requires a proof edge")
         if authority_count == 1:
@@ -280,7 +290,7 @@ class AuthorityClaimProvenance(StrEnum):
         cls,
         value: str,
         proves_claim: bool,
-    ) -> "AuthorityClaimProvenance":
+    ) -> AuthorityClaimProvenance:
         member = str.__new__(cls, value)
         member._value_ = value
         member._proves_claim = proves_claim
@@ -364,7 +374,7 @@ class PresentationProjectionKind(StrEnum):
         value: str,
         surface_label: str,
         policy: PresentationProjectionPolicy,
-    ) -> "PresentationProjectionKind":
+    ) -> PresentationProjectionKind:
         member = str.__new__(cls, value)
         member._value_ = value
         member._surface_label = surface_label
@@ -433,7 +443,7 @@ class PresentationTokenKind(StrEnum):
         value: str,
         is_string_literal: bool,
         is_qualified_attribute: bool,
-    ) -> "PresentationTokenKind":
+    ) -> PresentationTokenKind:
         member = str.__new__(cls, value)
         member._value_ = value
         member._is_string_literal = is_string_literal
@@ -488,7 +498,7 @@ class SemanticDescentImplementationSignature:
     source_hashes: tuple[tuple[str, str], ...]
 
     @classmethod
-    def current(cls) -> "SemanticDescentImplementationSignature":
+    def current(cls) -> SemanticDescentImplementationSignature:
         return cls(
             source_hashes=tuple(
                 (
@@ -503,7 +513,7 @@ class SemanticDescentImplementationSignature:
         )
 
     @staticmethod
-    @lru_cache(maxsize=None)
+    @ScanCache.cached
     def module_names() -> tuple[str, ...]:
         """Derive every persisted graph producer from executable declarations."""
 
@@ -534,7 +544,7 @@ class SemanticDescentModuleSignature(SemanticDescentModuleFamilySignature):
     source_hash: str
 
     @property
-    def family_signature(self) -> "SemanticDescentModuleFamilySignature":
+    def family_signature(self) -> SemanticDescentModuleFamilySignature:
         """Project this content identity to its hash-independent source family."""
 
         return SemanticDescentModuleFamilySignature(
@@ -548,7 +558,7 @@ class SemanticDescentModuleSignature(SemanticDescentModuleFamilySignature):
         cls,
         module: ParsedModule,
         roots: tuple[Path | str, ...],
-    ) -> "SemanticDescentModuleSignature":
+    ) -> SemanticDescentModuleSignature:
         return cls(
             path=checkout_relative_path(module.path, roots),
             parsed_import_name=module.module_name,
@@ -561,7 +571,7 @@ class SemanticDescentModuleSignature(SemanticDescentModuleFamilySignature):
         cls,
         identity: PythonModulePathIdentity,
         roots: tuple[Path | str, ...],
-    ) -> "SemanticDescentModuleSignature":
+    ) -> SemanticDescentModuleSignature:
         return cls(
             path=checkout_relative_path(identity.path, roots),
             parsed_import_name=identity.import_name,
@@ -587,10 +597,10 @@ class SemanticDescentGraphCacheIdentity:
     @classmethod
     def from_modules(
         cls,
-        modules: tuple[ParsedModule, ...],
+        modules: ParsedModuleSet,
         *,
         roots: tuple[Path | str, ...] | None = None,
-    ) -> "SemanticDescentGraphCacheIdentity":
+    ) -> SemanticDescentGraphCacheIdentity:
         effective_roots = (
             inferred_checkout_roots(tuple(module.path for module in modules))
             if roots is None
@@ -621,7 +631,7 @@ class SemanticDescentGraphCacheIdentity:
         identities: tuple[PythonModulePathIdentity, ...],
         *,
         roots: tuple[Path | str, ...] | None = None,
-    ) -> "SemanticDescentGraphCacheIdentity":
+    ) -> SemanticDescentGraphCacheIdentity:
         effective_roots = (
             inferred_checkout_roots(tuple(identity.path for identity in identities))
             if roots is None
@@ -652,7 +662,7 @@ class SemanticDescentGraphCacheIdentity:
         roots: tuple[Path, ...],
         *,
         source_policy: PythonSourcePathPolicy | None = None,
-    ) -> "SemanticDescentGraphCacheIdentity":
+    ) -> SemanticDescentGraphCacheIdentity:
         return cls.from_path_identities(
             python_module_path_identities_for_roots(
                 roots,
@@ -664,7 +674,7 @@ class SemanticDescentGraphCacheIdentity:
     def relocated_to(
         self,
         roots: tuple[Path | str, ...],
-    ) -> "SemanticDescentGraphCacheIdentity":
+    ) -> SemanticDescentGraphCacheIdentity:
         """Bind checkout-independent semantics to a current presentation root."""
 
         return replace(self, presentation_roots=presentation_root_texts(roots))
@@ -714,7 +724,7 @@ class SemanticDescentGraphCacheFamilyIdentity:
     def from_identity(
         cls,
         identity: SemanticDescentGraphCacheIdentity,
-    ) -> "SemanticDescentGraphCacheFamilyIdentity":
+    ) -> SemanticDescentGraphCacheFamilyIdentity:
         return cls(
             schema=identity.schema,
             implementation=identity.implementation,
@@ -729,7 +739,7 @@ class SemanticDescentGraphCacheFamilyIdentity:
         identities: tuple[PythonModulePathIdentity, ...],
         *,
         roots: tuple[Path | str, ...] | None = None,
-    ) -> "SemanticDescentGraphCacheFamilyIdentity":
+    ) -> SemanticDescentGraphCacheFamilyIdentity:
         return cls.from_identity(
             SemanticDescentGraphCacheIdentity.from_path_identities(
                 identities,
@@ -799,7 +809,7 @@ class SemanticFact(SemanticFactReference):
         authority_symbol: str,
         indexed_class: ClassDeclaration,
         aliases: Iterable[str],
-    ) -> "SemanticFact":
+    ) -> SemanticFact:
         return cls(
             fact_id=f"{authority_symbol}:{indexed_class.symbol}",
             authority_id=authority_symbol,
@@ -819,7 +829,7 @@ class SemanticFact(SemanticFactReference):
         indexed_class: ClassDeclaration,
         name: str,
         line: int,
-    ) -> "SemanticFact":
+    ) -> SemanticFact:
         return cls(
             fact_id=f"{indexed_class.symbol}:{name}",
             authority_id=indexed_class.symbol,
@@ -840,7 +850,7 @@ class SemanticFact(SemanticFactReference):
         name: str,
         line: int,
         string_value: str | None,
-    ) -> "SemanticFact":
+    ) -> SemanticFact:
         return cls(
             fact_id=f"{indexed_class.symbol}:{name}",
             authority_id=indexed_class.symbol,
@@ -900,7 +910,7 @@ class AuthorityClaim(CodemodPayloadRecord):
             raise TypeError("authority_kind must be a SemanticAuthorityKind")
 
     @classmethod
-    def from_authority(cls, authority: SemanticAuthority) -> "AuthorityClaim":
+    def from_authority(cls, authority: SemanticAuthority) -> AuthorityClaim:
         return cls(
             claimed_symbol=authority.name,
             authority_kind=authority.kind,
@@ -923,7 +933,7 @@ class AuthorityClaim(CodemodPayloadRecord):
             )
         )
 
-    def matches_declared_claim(self, declared_claim: "AuthorityClaim") -> bool:
+    def matches_declared_claim(self, declared_claim: AuthorityClaim) -> bool:
         return self.matches_source_identity(
             authority_id=declared_claim.authority_id,
             name=declared_claim.claimed_symbol,
@@ -942,7 +952,7 @@ class AuthorityClaim(CodemodPayloadRecord):
     def matches_authority_kind(self, authority: SemanticAuthority) -> bool:
         return self.authority_kind is None or authority.kind is self.authority_kind
 
-    def compatible_authority_kind(self, declared_claim: "AuthorityClaim") -> bool:
+    def compatible_authority_kind(self, declared_claim: AuthorityClaim) -> bool:
         return (
             self.authority_kind is None
             or declared_claim.authority_kind is self.authority_kind
@@ -1000,7 +1010,7 @@ class AuthorityProofEdge(SemanticRecord):
         edge_kind: AuthorityProofEdgeKind,
         *,
         detail: str = "",
-    ) -> "AuthorityProofEdge":
+    ) -> AuthorityProofEdge:
         return cls.from_location(
             authority,
             authority.location,
@@ -1016,7 +1026,7 @@ class AuthorityProofEdge(SemanticRecord):
         edge_kind: AuthorityProofEdgeKind,
         *,
         detail: str,
-    ) -> "AuthorityProofEdge":
+    ) -> AuthorityProofEdge:
         return cls(
             edge_kind=edge_kind,
             authority_id=authority.authority_id,
@@ -1069,7 +1079,7 @@ class AuthorityClaimResolution(DataclassJsonReport):
         *,
         searched_symbols: tuple[str, ...],
         ambiguity_reason: str,
-    ) -> "AuthorityClaimResolution":
+    ) -> AuthorityClaimResolution:
         authority_count = len(frozenset(edge.authority_id for edge in proof_edges))
         status = AuthorityClaimStatus.from_authority_count(authority_count)
         discovery_required = (
@@ -1095,7 +1105,7 @@ class AuthorityClaimResolution(DataclassJsonReport):
         claim: AuthorityClaim,
         *,
         detail: str = "recipe declares this authority boundary",
-    ) -> "AuthorityClaimResolution":
+    ) -> AuthorityClaimResolution:
         proof = AuthorityProofEdge(
             edge_kind=AuthorityProofEdgeKind.EXPLICIT_DECLARATION,
             authority_id=claim.authority_id or claim.claimed_symbol,
@@ -1119,7 +1129,7 @@ class AuthorityClaimResolution(DataclassJsonReport):
         searched_symbols: tuple[str, ...],
         candidate_count: int = 0,
         reason: str = "no source-backed authority matched the claim",
-    ) -> "AuthorityClaimResolution":
+    ) -> AuthorityClaimResolution:
         return cls(
             claim=claim,
             status=Unresolved,
@@ -1135,7 +1145,7 @@ class AuthorityClaimResolution(DataclassJsonReport):
 class AuthorityClaimResolver:
     """Resolve authority claims against a semantic-descent graph catalog."""
 
-    graph: "SemanticDescentGraph"
+    graph: SemanticDescentGraph
 
     def resolve(self, claim: AuthorityClaim) -> AuthorityClaimResolution:
         candidates = self._candidate_authorities(claim)
@@ -1272,7 +1282,7 @@ class PresentationKeyValuePair:
         key: ast.AST,
         value: ast.AST,
         class_reference_resolver: ModuleClassReferenceResolver,
-    ) -> "PresentationKeyValuePair":
+    ) -> PresentationKeyValuePair:
         value_class_symbols = class_reference_resolver.symbols_for_node(value)
         return cls(
             key_source=ast.unparse(key),
@@ -1334,8 +1344,13 @@ class MappingReadConstructor:
     ) -> str | None:
         symbol = resolve_class(self.reference_parts)
         owner = None if symbol is None else class_index.class_for(symbol)
-        declaration = None if owner is None else owner.dataclass_declaration
-        if declaration is None or not declaration.is_standard_dataclass:
+        if owner is None:
+            return None
+        try:
+            declaration = owner.dataclass_declaration.require_standard(
+                "a mapping schema is a standard dataclass"
+            )
+        except NotStandardDataclass:
             return None
         fields = tuple(
             field.name
@@ -1424,7 +1439,7 @@ class SemanticClassSupplement:
         node: ast.ClassDef,
         *,
         constructed_type_names: Iterable[str] | None = None,
-    ) -> "SemanticClassSupplement | None":
+    ) -> SemanticClassSupplement | None:
         """Project one class declaration into its compact semantic facts."""
 
         authority = AutoRegisterClassAuthority(node)
@@ -1443,7 +1458,7 @@ class SemanticClassSupplement:
                 for _, value in authority.assignment_pairs
                 if (
                     terminal_name
-                    := AstExpressionProjection.terminal_name(value)
+                    := ExpressionReference.decoded(value).terminal_name
                 )
             }
             | {
@@ -1457,12 +1472,7 @@ class SemanticClassSupplement:
         )
         if constructed_type_names is None:
             collected_constructed_type_names: set[str] = set()
-            for statement in node.body:
-                if not isinstance(
-                    statement,
-                    (ast.FunctionDef, ast.AsyncFunctionDef),
-                ):
-                    continue
+            for statement in FunctionDefinition.within(node.body):
                 for child in ast.walk(statement):
                     if isinstance(child, ast.Call):
                         collected_constructed_type_names.update(
@@ -1611,13 +1621,19 @@ class ProjectionSuppressionPolicy:
         )
 
 
-@dataclass(frozen=True)
-class SemanticAuthorityAffinityPolicy:
-    """Compare authority/projection names without generic role-token affinity."""
+@dataclass(frozen=True, kw_only=True)
+class AuthorityProjectionNames:
+    """The affinity policy compares exactly the names a certificate summary reports."""
 
     authority_name: str
     projection_label: str
     projection_owner_symbol: str
+
+
+@dataclass(frozen=True, kw_only=True)
+class SemanticAuthorityAffinityPolicy(AuthorityProjectionNames):
+    """Compare authority/projection names without generic role-token affinity."""
+
     projection_location_symbol: str
 
     @cached_property
@@ -1658,7 +1674,7 @@ class SemanticAuthorityMatch(DataclassJsonReport):
     coverage_ratio: float
 
     @classmethod
-    def from_facts(cls, facts: tuple[SemanticFact, ...]) -> "SemanticAuthorityMatch":
+    def from_facts(cls, facts: tuple[SemanticFact, ...]) -> SemanticAuthorityMatch:
         return cls(
             fact_refs=tuple(
                 SemanticFactReference(fact.authority_id, fact.fact_id) for fact in facts
@@ -1679,7 +1695,7 @@ class SemanticAuthorityMatch(DataclassJsonReport):
         facts: tuple[SemanticFact, ...],
         matches_by_fact_id: dict[str, set[str]],
         fact_references_by_id: dict[str, SemanticFactReference] | None = None,
-    ) -> "SemanticAuthorityMatch | None":
+    ) -> SemanticAuthorityMatch | None:
         if len(facts) < 2:
             return None
         active_fact_references = (
@@ -1730,12 +1746,12 @@ class SemanticAuthorityProjectionRelation(
     @abstractmethod
     def certificate(
         self,
-        graph_space: "SemanticDescentGraphSpace",
-    ) -> "SemanticDescentCertificate":
+        graph_space: SemanticDescentGraphSpace,
+    ) -> SemanticDescentCertificate:
         """Build the certificate owned by this relation leaf."""
 
     @abstractmethod
-    def missing_descent_relations(self) -> tuple["MirrorEdge", ...]:
+    def missing_descent_relations(self) -> tuple[MirrorEdge, ...]:
         """Project this relation into the detector's failure-only view."""
 
     @abstractmethod
@@ -1743,7 +1759,7 @@ class SemanticAuthorityProjectionRelation(
         self,
         source_roots: tuple[str, ...],
         target_roots: tuple[str, ...],
-    ) -> "SemanticAuthorityProjectionRelation":
+    ) -> SemanticAuthorityProjectionRelation:
         """Rebase source-bearing proof paths owned by this relation."""
 
     @abstractmethod
@@ -1759,8 +1775,8 @@ class MirrorEdge(SemanticAuthorityProjectionRelation):
 
     def certificate(
         self,
-        graph_space: "SemanticDescentGraphSpace",
-    ) -> "DescentCertificate":
+        graph_space: SemanticDescentGraphSpace,
+    ) -> DescentCertificate:
         if self.missing_derivation_path:
             return DescentCertificate.mirrored_without_descent(
                 self,
@@ -1778,14 +1794,14 @@ class MirrorEdge(SemanticAuthorityProjectionRelation):
             ),
         )
 
-    def missing_descent_relations(self) -> tuple["MirrorEdge", ...]:
+    def missing_descent_relations(self) -> tuple[MirrorEdge, ...]:
         return (self,)
 
     def rebase_proof_paths(
         self,
         source_roots: tuple[str, ...],
         target_roots: tuple[str, ...],
-    ) -> "MirrorEdge":
+    ) -> MirrorEdge:
         del source_roots, target_roots
         return self
 
@@ -1801,8 +1817,8 @@ class SemanticDerivationEdge(SemanticAuthorityProjectionRelation):
 
     def certificate(
         self,
-        graph_space: "SemanticDescentGraphSpace",
-    ) -> "SemanticDerivationCertificate":
+        graph_space: SemanticDescentGraphSpace,
+    ) -> SemanticDerivationCertificate:
         del graph_space
         return SemanticDerivationCertificate(self)
 
@@ -1813,7 +1829,7 @@ class SemanticDerivationEdge(SemanticAuthorityProjectionRelation):
         self,
         source_roots: tuple[str, ...],
         target_roots: tuple[str, ...],
-    ) -> "SemanticDerivationEdge":
+    ) -> SemanticDerivationEdge:
         return replace(
             self,
             proof_edges=tuple(
@@ -1840,14 +1856,14 @@ class SemanticAuthorityProjectionResolution:
     relations: tuple[SemanticAuthorityProjectionRelation, ...] = ()
 
     @classmethod
-    def suppressed(cls) -> "SemanticAuthorityProjectionResolution":
+    def suppressed(cls) -> SemanticAuthorityProjectionResolution:
         return cls()
 
     @classmethod
     def mirrored(
         cls,
-        candidate: "SemanticMirrorEdgeCandidate",
-    ) -> "SemanticAuthorityProjectionResolution":
+        candidate: SemanticMirrorEdgeCandidate,
+    ) -> SemanticAuthorityProjectionResolution:
         return cls(
             relations=(
                 MirrorEdge(
@@ -1861,9 +1877,9 @@ class SemanticAuthorityProjectionResolution:
     @classmethod
     def derived(
         cls,
-        candidate: "SemanticMirrorEdgeCandidate",
+        candidate: SemanticMirrorEdgeCandidate,
         proof_edges: tuple[AuthorityProofEdge, ...],
-    ) -> "SemanticAuthorityProjectionResolution":
+    ) -> SemanticAuthorityProjectionResolution:
         if not proof_edges:
             raise ValueError("semantic derivation requires at least one proof edge")
         return cls(
@@ -1880,8 +1896,8 @@ class SemanticAuthorityProjectionResolution:
     @classmethod
     def combine(
         cls,
-        resolutions: Iterable["SemanticAuthorityProjectionResolution"],
-    ) -> "SemanticAuthorityProjectionResolution":
+        resolutions: Iterable[SemanticAuthorityProjectionResolution],
+    ) -> SemanticAuthorityProjectionResolution:
         relation_index = UniqueIdentityIndexAuthority[
             tuple[str, str],
             SemanticAuthorityProjectionRelation,
@@ -1943,7 +1959,7 @@ class SemanticAuthorityMirrorPolicy(ABC, metaclass=AutoRegisterMeta):
     """Authority-kind-specific mirror admissibility and descent rules."""
 
     __registry__: ClassVar[
-        dict[SemanticAuthorityKind, type["SemanticAuthorityMirrorPolicy"]]
+        dict[SemanticAuthorityKind, type[SemanticAuthorityMirrorPolicy]]
     ] = {}
     __registry_key__ = "authority_kind"
     __skip_if_no_key__ = True
@@ -1957,7 +1973,7 @@ class SemanticAuthorityMirrorPolicy(ABC, metaclass=AutoRegisterMeta):
     def for_authority(
         cls,
         authority: SemanticAuthority,
-    ) -> "SemanticAuthorityMirrorPolicy":
+    ) -> SemanticAuthorityMirrorPolicy:
         return cls.for_authority_kind(authority.kind)
 
     @classmethod
@@ -1965,7 +1981,7 @@ class SemanticAuthorityMirrorPolicy(ABC, metaclass=AutoRegisterMeta):
     def for_authority_kind(
         cls,
         authority_kind: SemanticAuthorityKind,
-    ) -> "SemanticAuthorityMirrorPolicy":
+    ) -> SemanticAuthorityMirrorPolicy:
         return cls.__registry__[authority_kind]()
 
     @classmethod
@@ -1981,7 +1997,7 @@ class SemanticAuthorityMirrorPolicy(ABC, metaclass=AutoRegisterMeta):
 
     def edge_is_admissible(
         self,
-        context: "SemanticAuthorityProjectionResolutionContext",
+        context: SemanticAuthorityProjectionResolutionContext,
         candidate: SemanticMirrorEdgeCandidate,
     ) -> bool:
         del context, candidate
@@ -1989,7 +2005,7 @@ class SemanticAuthorityMirrorPolicy(ABC, metaclass=AutoRegisterMeta):
 
     def classify(
         self,
-        context: "SemanticAuthorityProjectionResolutionContext",
+        context: SemanticAuthorityProjectionResolutionContext,
         candidate: SemanticMirrorEdgeCandidate,
     ) -> SemanticAuthorityProjectionResolution:
         if not self.edge_is_admissible(context, candidate):
@@ -1998,7 +2014,7 @@ class SemanticAuthorityMirrorPolicy(ABC, metaclass=AutoRegisterMeta):
 
     def classify_admissible(
         self,
-        context: "SemanticAuthorityProjectionResolutionContext",
+        context: SemanticAuthorityProjectionResolutionContext,
         candidate: SemanticMirrorEdgeCandidate,
     ) -> SemanticAuthorityProjectionResolution:
         del context
@@ -2023,7 +2039,7 @@ class ClassFamilyLikeMirrorPolicy(SemanticAuthorityMirrorPolicy):
 
     @staticmethod
     def call_projection_is_inadmissible(
-        context: "SemanticAuthorityProjectionResolutionContext",
+        context: SemanticAuthorityProjectionResolutionContext,
         candidate: SemanticMirrorEdgeCandidate,
     ) -> bool:
         matched_tokens = frozenset(candidate.match.tokens)
@@ -2055,7 +2071,7 @@ class ClassFamilyLikeMirrorPolicy(SemanticAuthorityMirrorPolicy):
 
     def edge_is_admissible(
         self,
-        context: "SemanticAuthorityProjectionResolutionContext",
+        context: SemanticAuthorityProjectionResolutionContext,
         candidate: SemanticMirrorEdgeCandidate,
     ) -> bool:
         if candidate.projection.kind is PresentationProjectionKind.MAPPING_READ:
@@ -2089,7 +2105,7 @@ class ClassFamilyLikeMirrorPolicy(SemanticAuthorityMirrorPolicy):
 
     def classify_admissible(
         self,
-        context: "SemanticAuthorityProjectionResolutionContext",
+        context: SemanticAuthorityProjectionResolutionContext,
         candidate: SemanticMirrorEdgeCandidate,
     ) -> SemanticAuthorityProjectionResolution:
         proof_edges = context.construction_resolver.family_member_proof_edges(
@@ -2141,7 +2157,7 @@ class DataclassSchemaMirrorPolicy(MappingSemanticAuthorityMirrorPolicy):
 
     def edge_is_admissible(
         self,
-        context: "SemanticAuthorityProjectionResolutionContext",
+        context: SemanticAuthorityProjectionResolutionContext,
         candidate: SemanticMirrorEdgeCandidate,
     ) -> bool:
         if candidate.projection.kind is PresentationProjectionKind.MAPPING_READ:
@@ -2220,7 +2236,7 @@ class DataclassSchemaMirrorPolicy(MappingSemanticAuthorityMirrorPolicy):
 
     def classify_admissible(
         self,
-        context: "SemanticAuthorityProjectionResolutionContext",
+        context: SemanticAuthorityProjectionResolutionContext,
         candidate: SemanticMirrorEdgeCandidate,
     ) -> SemanticAuthorityProjectionResolution:
         if candidate.projection.kind is PresentationProjectionKind.MAPPING_READ:
@@ -2264,7 +2280,7 @@ class EnumMirrorPolicy(MappingSemanticAuthorityMirrorPolicy):
 
     def edge_is_admissible(
         self,
-        context: "SemanticAuthorityProjectionResolutionContext",
+        context: SemanticAuthorityProjectionResolutionContext,
         candidate: SemanticMirrorEdgeCandidate,
     ) -> bool:
         if not context.projection_semantics.has_typed_authority_axis(
@@ -2584,7 +2600,7 @@ class DescentCertificate(SemanticDescentCertificate):
         cls,
         edge: MirrorEdge,
         path_description: str,
-    ) -> "DescentCertificate":
+    ) -> DescentCertificate:
         return cls(edge, path_description)
 
     @classmethod
@@ -2592,7 +2608,7 @@ class DescentCertificate(SemanticDescentCertificate):
         cls,
         edge: MirrorEdge,
         candidate: SemanticMirrorEdgeCandidate,
-    ) -> "DescentCertificate":
+    ) -> DescentCertificate:
         return cls.mirrored_without_descent(edge, candidate.missing_derivation_path)
 
 
@@ -2666,7 +2682,7 @@ class ResolvedDescentCertificate:
         cls,
         graph: SemanticDescentGraphSpace,
         certificate: DescentCertificate,
-    ) -> "ResolvedDescentCertificate":
+    ) -> ResolvedDescentCertificate:
         edge = certificate.edge
         return cls(
             certificate=certificate,
@@ -2696,7 +2712,7 @@ class ResolvedDescentCertificate:
 class ResolvedDescentCertificateSelection:
     """One exact finding selection projected from resolved graph certificates."""
 
-    graph: "SemanticDescentGraph"
+    graph: SemanticDescentGraph
     certificates: tuple[ResolvedDescentCertificate, ...]
 
     @cached_property
@@ -2744,7 +2760,7 @@ class ResolvedDescentCertificateSelection:
 class FindingDescentCertificateAuthority:
     """Resolve finding identities to exact graph-owned descent certificates."""
 
-    graph: "SemanticDescentGraph"
+    graph: SemanticDescentGraph
 
     @cached_property
     def certificates_by_projection_id(
@@ -2838,7 +2854,7 @@ class SemanticDescentGraph(SemanticDescentGraphSpace):
         resolution: SemanticAuthorityProjectionResolution,
         *,
         class_index: ClassFamilyIndex | None = None,
-    ) -> "SemanticDescentGraph":
+    ) -> SemanticDescentGraph:
         return cls(
             authorities=graph_space.authorities,
             facts=graph_space.facts,
@@ -2850,7 +2866,7 @@ class SemanticDescentGraph(SemanticDescentGraphSpace):
     def overlay_modules(
         self,
         changed_modules: tuple[ParsedModule, ...],
-    ) -> "SemanticDescentGraph":
+    ) -> SemanticDescentGraph:
         if not changed_modules or self.class_index is None:
             return self
         return SemanticDescentGraphModuleOverlay(
@@ -2945,15 +2961,12 @@ class SemanticDescentProjectionKindCount(SemanticRecord):
     count: int
 
 
-@dataclass(frozen=True)
-class SemanticDescentCertificateSummary(SemanticRecord):
+@dataclass(frozen=True, kw_only=True)
+class SemanticDescentCertificateSummary(AuthorityProjectionNames, SemanticRecord):
     """Compact report row for one missing semantic-descent certificate."""
 
-    authority_name: str
     authority_kind: SemanticAuthorityKind
-    projection_label: str
     projection_kind: PresentationProjectionKind
-    projection_owner_symbol: str
     file_path: str
     line: int
     matched_fact_count: int
@@ -2965,7 +2978,7 @@ class SemanticDescentCertificateSummary(SemanticRecord):
     def from_resolved_certificate(
         cls,
         resolved: ResolvedDescentCertificate,
-    ) -> "SemanticDescentCertificateSummary":
+    ) -> SemanticDescentCertificateSummary:
         certificate = resolved.certificate
         edge = certificate.edge
         authority = resolved.authority
@@ -3004,7 +3017,7 @@ class SemanticDescentGraphReport(SemanticRecord):
         graph: SemanticDescentGraph,
         *,
         certificate_limit: int = 10,
-    ) -> "SemanticDescentGraphReport":
+    ) -> SemanticDescentGraphReport:
         resolved_certificates = sorted_tuple(
             (
                 ResolvedDescentCertificate.from_graph(graph, certificate)
@@ -3056,7 +3069,7 @@ class SemanticDescentGraphPayloadReport(SemanticRecord):
         *,
         finding_backed_graph: SemanticDescentGraph | None = None,
         certificate_limit: int = 10,
-    ) -> "SemanticDescentGraphPayloadReport":
+    ) -> SemanticDescentGraphPayloadReport:
         repository_report = SemanticDescentGraphReport.from_graph(
             repository_graph,
             certificate_limit=certificate_limit,
@@ -3097,9 +3110,9 @@ class FindingBackedSemanticDescentGraphRequest:
 
     findings: tuple[RefactorFinding, ...]
 
-    @lru_cache(maxsize=16)
+    @cached_property
     def graph(self) -> SemanticDescentGraph:
-        """Derive and cache the graph owned by this immutable request."""
+        """The graph this immutable request derives, held by the request."""
 
         authorities: list[SemanticAuthority] = []
         facts: list[SemanticFact] = []
@@ -3326,7 +3339,7 @@ def build_finding_backed_semantic_descent_graph(
 ) -> SemanticDescentGraph:
     """Project semantic-mirror detector findings into descent graph certificates."""
 
-    return FindingBackedSemanticDescentGraphRequest(findings).graph()
+    return FindingBackedSemanticDescentGraphRequest(findings).graph
 
 
 class FindingAuthorityNamePolicy:
@@ -3824,14 +3837,14 @@ class SemanticDescentGraphCache:
 class SemanticDescentGraphBuildRequest:
     """Immutable authority for deriving one repository semantic-descent graph."""
 
-    modules: tuple[ParsedModule, ...]
+    modules: ParsedModuleSet
 
-    @lru_cache(maxsize=None)
+    @cached_property
     def graph(self) -> SemanticDescentGraph:
-        """Build this request's graph once across equal source snapshots."""
+        """This request's graph, built once and held by the request."""
 
         scan_deadline_checkpoint("semantic_descent_class_index")
-        class_index = build_class_family_index(list(self.modules))
+        class_index = self.modules.fact(ClassFamilyIndex)
         scan_deadline_checkpoint("semantic_descent_authorities")
         authority_catalog = SemanticAuthorityBuilder.from_class_index(
             class_index
@@ -3862,14 +3875,14 @@ class SemanticDescentGraphBuildRequest:
 
 
 def build_semantic_descent_graph(
-    modules: list[ParsedModule],
+    modules: ParsedModuleSet,
     *,
     cache_dir: Path | None = None,
     use_cache: bool = True,
 ) -> SemanticDescentGraph:
     """Build the cached semantic-descent graph for parsed modules."""
 
-    request = SemanticDescentGraphBuildRequest(tuple(modules))
+    request = SemanticDescentGraphBuildRequest(modules)
     resolved_cache_dir = (
         cache_dir
         if cache_dir is not None
@@ -3881,10 +3894,10 @@ def build_semantic_descent_graph(
         cache_lookup = cache.load(identity)
         if cache_lookup.graph is not None:
             return cache_lookup.graph
-        graph = request.graph()
+        graph = request.graph
         cache.store(identity, graph)
         return graph
-    return request.graph()
+    return request.graph
 
 
 def load_cached_semantic_descent_graph_for_roots(
@@ -3929,7 +3942,7 @@ def load_latest_semantic_descent_graph_for_roots(
 class SemanticDescentGraphCacheDirAuthority:
     """Resolve the default persistent graph-cache directory for parsed modules."""
 
-    modules: tuple[ParsedModule, ...]
+    modules: ParsedModuleSet
 
     def cache_dir(self) -> Path | None:
         if not self.modules:
@@ -3946,13 +3959,13 @@ class SemanticDescentGraphCacheDirAuthority:
 class SemanticAuthorityBuilder:
     """Build authorities once from source-form-independent declarations."""
 
-    declarations: tuple["SemanticAuthorityDeclaration", ...]
+    declarations: tuple[SemanticAuthorityDeclaration, ...]
 
     @classmethod
     def from_class_index(
         cls,
         class_index: ClassFamilyIndex,
-    ) -> "SemanticAuthorityBuilder":
+    ) -> SemanticAuthorityBuilder:
         context = AstSemanticAuthorityBuildContext(class_index)
         return cls(
             tuple(
@@ -3969,7 +3982,7 @@ class SemanticAuthorityBuilder:
         cls,
         class_index: CompactClassFamilyIndex,
         supplements_by_symbol: Mapping[str, SemanticClassSupplement],
-    ) -> "SemanticAuthorityBuilder":
+    ) -> SemanticAuthorityBuilder:
         context = CompactSemanticAuthorityBuildContext(
             class_index,
             supplements_by_symbol,
@@ -4031,7 +4044,7 @@ class SemanticAuthorityBuildContext(ABC, Generic[IndexedClassDeclarationT]):
     def declaration_for(
         self,
         indexed_class: IndexedClassDeclarationT,
-    ) -> "SemanticAuthorityDeclaration":
+    ) -> SemanticAuthorityDeclaration:
         return SemanticAuthorityDeclaration(
             indexed_class=indexed_class,
             supplement=self.supplement_for(indexed_class),
@@ -4172,21 +4185,22 @@ class DataclassSemanticAuthorityProvider(ClassFamilySemanticAuthorityProvider):
         declaration: SemanticAuthorityDeclaration,
     ) -> SemanticAuthorityProviderResult | None:
         indexed_class = declaration.indexed_class
-        dataclass_declaration = indexed_class.dataclass_declaration
-        if (
-            dataclass_declaration is not None
-            and dataclass_declaration.is_standard_dataclass
-        ):
-            facts = tuple(
-                SemanticFact.dataclass_field(indexed_class, field.name, field.line)
-                for field in dataclass_declaration.fields
-                if field.role.contributes_semantic_field
+        try:
+            dataclass_declaration = indexed_class.dataclass_declaration.require_standard(
+                "a dataclass schema is a standard dataclass"
             )
-            if len(facts) >= 2:
-                return SemanticAuthorityProviderResult(
-                    SemanticAuthorityKind.DATACLASS_SCHEMA,
-                    facts,
-                )
+        except NotStandardDataclass:
+            return super().provide(declaration)
+        facts = tuple(
+            SemanticFact.dataclass_field(indexed_class, field.name, field.line)
+            for field in dataclass_declaration.fields
+            if field.role.contributes_semantic_field
+        )
+        if len(facts) >= 2:
+            return SemanticAuthorityProviderResult(
+                SemanticAuthorityKind.DATACLASS_SCHEMA,
+                facts,
+            )
         return super().provide(declaration)
 
 
@@ -4221,7 +4235,7 @@ class SemanticAuthorityProvider(DataclassSemanticAuthorityProvider):
 class SemanticProjectionCollector:
     """Collect presentation-level projections from parsed modules."""
 
-    modules: tuple[ParsedModule, ...]
+    modules: Sequence[ParsedModule]
     class_index: ClassFamilyIndex
 
     def collect(self) -> tuple[PresentationProjection, ...]:
@@ -4258,19 +4272,14 @@ class CompactSemanticModuleProjectionFamily(
             return ()
         class_ids_by_direct_method_id: dict[int, tuple[int, ...]] = {}
         for _qualname, class_node in indexed_class_nodes:
-            for statement in class_node.body:
-                if not isinstance(
-                    statement,
-                    (ast.FunctionDef, ast.AsyncFunctionDef),
-                ):
-                    continue
+            for statement in FunctionDefinition.within(class_node.body):
                 class_ids_by_direct_method_id[id(statement)] = (
                     *class_ids_by_direct_method_id.get(id(statement), ()),
                     id(class_node),
                 )
 
         constructed_type_names_by_class_id: dict[int, set[str]] = {}
-        syntax_index = module_syntax_index(parsed_module.module)
+        syntax_index = parsed_module.syntax_index
         for node_index, call in syntax_index.indexed_nodes_of_type(ast.Call):
             type_names = (
                 PresentationAuthorityConstructionCollector.construction_type_names(
@@ -4424,18 +4433,12 @@ class CompactSemanticDescentRepository:
         ],
         *,
         class_index: CompactClassFamilyIndex,
-    ) -> "CompactSemanticDescentRepository":
+    ) -> CompactSemanticDescentRepository:
         """Recover the typed semantic join declared by its fact families."""
 
         return cls.from_projections(
-            cast(
-                Sequence[CompactSemanticModuleProjection],
-                projections_by_family[CompactSemanticModuleProjectionFamily],
-            ),
-            cast(
-                Sequence[CompactModuleClassProjection],
-                projections_by_family[CompactModuleClassProjectionFamily],
-            ),
+            CompactSemanticModuleProjectionFamily.modules_in(projections_by_family),
+            CompactModuleClassProjectionFamily.modules_in(projections_by_family),
             class_index=class_index,
         )
 
@@ -4446,7 +4449,7 @@ class CompactSemanticDescentRepository:
         class_projections: Sequence[CompactModuleClassProjection],
         *,
         class_index: CompactClassFamilyIndex | None = None,
-    ) -> "CompactSemanticDescentRepository":
+    ) -> CompactSemanticDescentRepository:
         return cls(
             semantic_projections=semantic_projections,
             class_projections=class_projections,
@@ -4668,7 +4671,7 @@ class MappingReadProjectionCollector(ast.NodeVisitor):
         if (
             not isinstance(key_node, ast.Constant)
             or not isinstance(key_node.value, str)
-            or AstExpressionProjection.attribute_chain(subject) is None
+            or ExpressionReference.decoded(subject).attribute_chain is None
         ):
             return
         key = key_node.value
@@ -4676,12 +4679,15 @@ class MappingReadProjectionCollector(ast.NodeVisitor):
         for index, ancestor in enumerate(self.parents[:-1]):
             if not isinstance(ancestor, ast.Call):
                 continue
-            parts = AstExpressionProjection.attribute_chain(ancestor.func)
+            parts = ExpressionReference.decoded(ancestor.func).attribute_chain
             if not parts:
                 continue
             child = self.parents[index + 1]
-            if isinstance(child, ast.keyword) and child.arg is not None:
-                constructions.add(KeywordMappingReadArgument(parts, key, child.arg))
+            if isinstance(child, ast.keyword):
+                for keyword in CallKeywords.of((child,)).named:
+                    constructions.add(
+                        KeywordMappingReadArgument(parts, key, keyword.name)
+                    )
             for position, argument in enumerate(ancestor.args):
                 if argument is child:
                     constructions.add(
@@ -4711,8 +4717,8 @@ class ProjectionTypeScope:
     def from_function(
         cls,
         node: ast.FunctionDef | ast.AsyncFunctionDef,
-        parent: "ProjectionTypeScope | None",
-    ) -> "ProjectionTypeScope":
+        parent: ProjectionTypeScope | None,
+    ) -> ProjectionTypeScope:
         type_names_by_value = dict(
             parent.type_names_by_value if parent is not None else {}
         )
@@ -4720,8 +4726,7 @@ class ProjectionTypeScope:
             *node.args.posonlyargs,
             *node.args.args,
             *node.args.kwonlyargs,
-            *((node.args.vararg,) if node.args.vararg is not None else ()),
-            *((node.args.kwarg,) if node.args.kwarg is not None else ()),
+            *variadic_parameters(node.args),
         )
         for argument in arguments:
             if argument.annotation is None:
@@ -4788,6 +4793,42 @@ class CompactSemanticClassSupplementFrame:
     constructed_type_names: set[str] = field(default_factory=set)
 
 
+@dataclass(frozen=True)
+class _AnnotatedPresentation(StatementValueQuestion[None]):
+    """A valued annotation may present a projection; anything else is descended."""
+
+    visitor: _ProjectionVisitor
+    statement: ast.AnnAssign
+
+    def supplied(self, value: SuppliedValue) -> None:
+        if not self.visitor._collect_assignment_projection(
+            self.statement,
+            value.value,
+            axis_type_names=ProjectionTypeScope.annotation_type_names(
+                self.statement.annotation
+            ),
+        ):
+            self.visitor.generic_visit(self.statement)
+
+    def bare(self, value: NoStatementValue) -> None:
+        self.visitor.generic_visit(self.statement)
+
+
+@dataclass(frozen=True)
+class _ReturnedPresentation(StatementValueQuestion[None]):
+    """A valued return may present a projection; anything else is descended."""
+
+    visitor: _ProjectionVisitor
+    statement: ast.Return
+
+    def supplied(self, value: SuppliedValue) -> None:
+        if not self.visitor._collect_return_projection(self.statement, value.value):
+            self.visitor.generic_visit(self.statement)
+
+    def bare(self, value: NoStatementValue) -> None:
+        self.visitor.generic_visit(self.statement)
+
+
 class _ProjectionVisitor(ClassFunctionStackNodeVisitor):
     def __init__(
         self,
@@ -4832,11 +4873,7 @@ class _ProjectionVisitor(ClassFunctionStackNodeVisitor):
                 qualname=".".join((*self.class_stack, node.name)),
                 direct_method_ids=frozenset(
                     id(statement)
-                    for statement in node.body
-                    if isinstance(
-                        statement,
-                        (ast.FunctionDef, ast.AsyncFunctionDef),
-                    )
+                    for statement in FunctionDefinition.within(node.body)
                 ),
                 supplement_index=len(self._class_supplements),
             )
@@ -5043,21 +5080,13 @@ class _ProjectionVisitor(ClassFunctionStackNodeVisitor):
         if not self.include_presentations:
             self.generic_visit(node)
             return
-        if node.value is not None and self._collect_assignment_projection(
-            node,
-            node.value,
-            axis_type_names=ProjectionTypeScope.annotation_type_names(node.annotation),
-        ):
-            return
-        self.generic_visit(node)
+        StatementValue.of(node).answer(_AnnotatedPresentation(self, node))
 
     def visit_Return(self, node: ast.Return) -> None:
         if not self.include_presentations:
             self.generic_visit(node)
             return
-        if node.value is not None and self._collect_return_projection(node, node.value):
-            return
-        self.generic_visit(node)
+        StatementValue.of(node).answer(_ReturnedPresentation(self, node))
 
     def visit_If(self, node: ast.If) -> None:
         if not self.include_presentations:
@@ -5733,7 +5762,7 @@ class ConstructionAuthorityResolver:
                 ).assignment_pairs
                 if (
                     terminal_name
-                    := AstExpressionProjection.terminal_name(value)
+                    := ExpressionReference.decoded(value).terminal_name
                 )
                 is not None
             }
@@ -5747,9 +5776,7 @@ class ConstructionAuthorityResolver:
             }
         )
         constructed_type_names: set[str] = set()
-        for statement in indexed_class.node.body:
-            if not isinstance(statement, ast.FunctionDef | ast.AsyncFunctionDef):
-                continue
+        for statement in FunctionDefinition.within(indexed_class.node.body):
             for child in ast.walk(statement):
                 if isinstance(child, ast.Call):
                     constructed_type_names.update(
@@ -6529,7 +6556,7 @@ class PresentationTokenNodeProjector(ABC, metaclass=AutoRegisterMeta):
     @classmethod
     def registered_projector_types(
         cls,
-    ) -> tuple[type["PresentationTokenNodeProjector"], ...]:
+    ) -> tuple[type[PresentationTokenNodeProjector], ...]:
         return sorted_tuple(
             cls.__registry__.values(),
             key=lambda projector_type: projector_type.__name__,
@@ -6539,7 +6566,7 @@ class PresentationTokenNodeProjector(ABC, metaclass=AutoRegisterMeta):
     def projector_for_node(
         cls,
         node: ast.AST,
-    ) -> type["PresentationTokenNodeProjector"] | None:
+    ) -> type[PresentationTokenNodeProjector] | None:
         return cls.projector_for_node_type(type(node))
 
     @classmethod
@@ -6547,7 +6574,7 @@ class PresentationTokenNodeProjector(ABC, metaclass=AutoRegisterMeta):
     def projector_for_node_type(
         cls,
         node_type: type[ast.AST],
-    ) -> type["PresentationTokenNodeProjector"] | None:
+    ) -> type[PresentationTokenNodeProjector] | None:
         for projector_type in cls.registered_projector_types():
             if issubclass(node_type, projector_type.node_type):
                 return projector_type
@@ -6661,7 +6688,7 @@ class AttributePresentationTokenProjector(PresentationTokenNodeProjector):
         del cls
         if not isinstance(node, ast.Attribute):
             raise TypeError(f"Expected ast.Attribute, got {type(node)!r}")
-        chain = AstExpressionProjection.attribute_chain(node) or ()
+        chain = ExpressionReference.decoded(node).attribute_chain or ()
         if len(chain) >= 2:
             qualifier = chain[-2]
             return tuple(
@@ -6773,15 +6800,15 @@ class CallPresentationTokenProjector(PresentationTokenNodeProjector):
                     arg, PresentationTokenRole.CALL_ARGUMENT
                 )
             )
-        for keyword in node.keywords:
-            if keyword.arg is not None:
+        for keyword in CallKeywords.of(node.keywords).entries:
+            for name in keyword.names:
                 tokens.extend(
                     PresentationToken(
                         value,
                         PresentationTokenKind.STRING_LITERAL,
                         PresentationTokenRole.CALL_KEYWORD_NAME,
                     )
-                    for value in normalized_name_variants(keyword.arg)
+                    for value in normalized_name_variants(name)
                 )
             tokens.extend(
                 PresentationTokenProjection.tokens_for_node(
@@ -6913,7 +6940,7 @@ class PresentationAuthorityConstructionCollector:
                 type_name=type_name,
                 field_tokens=field_tokens,
                 call_target_parts=(
-                    AstExpressionProjection.attribute_chain(node.func) or ()
+                    ExpressionReference.decoded(node.func).attribute_chain or ()
                 ),
             )
             for type_name in type_names
@@ -6921,7 +6948,7 @@ class PresentationAuthorityConstructionCollector:
 
     @classmethod
     def construction_type_names(cls, node: ast.Call) -> tuple[str, ...]:
-        chain = AstExpressionProjection.attribute_chain(node.func)
+        chain = ExpressionReference.decoded(node.func).attribute_chain
         if not chain:
             return ()
         type_names = {chain[-1]}
@@ -6931,9 +6958,7 @@ class PresentationAuthorityConstructionCollector:
 
     @classmethod
     def constructor_field_tokens(cls, node: ast.Call) -> tuple[str, ...]:
-        field_names = [
-            keyword.arg for keyword in node.keywords if keyword.arg is not None
-        ]
+        field_names = list(CallKeywords.of(node.keywords).names)
         field_names.extend(cls.argument_field_name(argument) for argument in node.args)
         return sorted_tuple(
             variant

@@ -34,6 +34,64 @@ migration's binding, MRO, effects and behavioral obligations.
 Do not turn an unresolved proof into a reason to praise the existing mirror:
 record the blocker and work toward proving or refining the nominal design.
 
+## The front door: count, declare the family, let NRA fold it
+
+The rule this whole skill serves: **a consumer that knows which subclass it has
+is under-abstracting.** Every `isinstance`, `match` class pattern or member
+comparison outside the family's own decoder restates a case decision the family
+should answer once. m consumers × n cases of restated decisions become m + n.
+
+1. **Count first.** `python -m nominal_refactor_advisor PKG --count-member-awareness
+   --scan-budget-seconds 600 [--json]` lists, per family (foreign modules such as
+   `ast`, declared `ForeignFamily`/`ForeignAdapter` families, enums), every consumer
+   that tests two or more members **on the same subject**, grouped by member set,
+   and which of them bypass an owner that already exists. Largest bypassing group
+   first. Tests on `x` and `x.value` are a structural path, not a case branch,
+   and do not count. Then run the full scan (`--json`, budget 600, `complete`, zero
+   omitted): its restated-fact detectors (string dispatch on a kind, attribute by
+   name, exact key sets, foreign absence probes, forwarding facades, legacy paths,
+   dead modules) each report the fact restated, the owner that should hold it and the
+   factoring; a finding whose recipe names an operation is fixable now, the rest are
+   the codemod backlog. They are findings, never "leads": a restated fact is slop by
+   definition, and only its fix can be unproved.
+2. **Pick the owner shape** for the top group:
+   - consumers only ask *which nodes are in the set* → a `ForeignFamily`
+     (`foreign_family.py`, e.g. `FunctionDefinition`): `within(nodes)` is the
+     one type test;
+   - consumers ask the members *different questions* → a `ForeignAdapter` family
+     (e.g. `AssignmentStatement`): one adapter per foreign class keyed on
+     `adapts`, `decoded(node)` is the one type test, siblings keep only
+     irreducible differences. A null member (`adapts = object`) replaces
+     `None` checks at call sites. When the old owner is a bag of static
+     projection methods (e.g. the deleted `AstExpressionProjection`), name the
+     family's properties after its methods: concept `static_projection_adapter`
+     then rewrites every `Projector.question(x)` to `Family.decoded(x).question`
+     and the bag is deleted;
+   - our own enum read as cases outside the enum → a class family on the enum's
+     owner.
+   Never a one-element `within((x,))` or one-member set: that is a disguised
+   predicate.
+3. **Fold through the goal search, never by hand.** Each fold ships as detector
+   + operation + recipe + concept. Dry run, then apply:
+   `python -m nominal_refactor_advisor PKG --codemod-refactor-goal CONCEPT
+   --codemod-goal-detector DETECTOR --codemod-apply --scan-budget-seconds 600 --json`.
+   `CONCEPT` is the concept key (class name minus `Concept`, snake case: e.g.
+   `foreign_family_routing`, `foreign_adapter_bind_chain`). The fold must prove
+   each site (e.g. AST-equality of each arm's expression to the adapter
+   property's body) and refuse anything it cannot prove; refusals are the next
+   widening, not a reason to hand-edit.
+4. **CI is the behaviour proof.** Commit the applied diff alone, with the command,
+   wall time and stop reason in the message. Re-run the census: the group must
+   shrink.
+5. **Every refactor also improves NRA.** A script you needed becomes an NRA
+   command, a dodge an agent used becomes a detector, a refusal that blocked a
+   real site becomes a proved widening, two near-copies you touched collapse
+   into a shared base. A refactor that leaves the tool unchanged left the next
+   one just as expensive.
+
+Verify subagent work from the diff and by re-running the command yourself; a
+report is a claim.
+
 ## Start with worked transformations
 
 Read [theory → evidence → migration](references/theory-to-workflow.md) for the
@@ -98,6 +156,16 @@ ordered guards, final fallback and alternate callers. A literal or substring mat
 callee is a useful lead, not live binding, domain identity or behavioral proof.
 The agent—not the user—clusters source-backed leads into candidate maintenance
 questions, keeping nonmatches and unsupported sites visible.
+
+Look inside otherwise different methods and classes for substantial shared
+sub-behavior entangled with their independent responsibilities. Whole-method
+names, text or body identity are insufficient: trace every occurrence of the
+same behavior, its inputs, effects, ordering, role and determining declaration.
+Factor the admitted shared algorithm onto its meaningful parent; use MI for
+overlapping capabilities while retaining each class's irreducible behavior.
+Performance changes must preserve the global source and role evidence needed
+for this trace. A demand-driven view may defer work, but it must still answer
+complete later queries and preserve ambiguous, unmatched and OPEN cases.
 
 Start with the bounded class-first corpus; expand to a complete scan of the
 relevant package and dependency context **when a proposed ownership claim
@@ -188,12 +256,39 @@ class/aggregate for independent domain, UI, transport and setup roles.
 
 ## Compose a trajectory, not isolated edits
 
+Use the recursive improvement loop: start from real consumer friction; trace
+the entangled shared behavior and admit its owner/consumer relation under the
+binding rules; fix the existing owner and delete the replaced paths; mechanize
+the supported work in NRA; replay the original case and its counterexamples;
+then measure the actual work removed. Apply this to NRA's own implementation
+too. Check admitted relations mechanically with existing guards where supported;
+neither cleaner output nor a faster local helper establishes end-to-end success.
+
+Retain a complete scan's findings, source manifest and available proof objects.
+Use that landscape to assemble the largest supported ordered codemod batch;
+simulate dependent stages on projected source, apply with revision checks, and
+validate the real consumer. Keep remaining unsupported or unproved obligations
+as an explicit OPEN worklist. Reuse valid evidence before requesting another
+full scan; changed dependencies still require reproof, and serialized reports
+do not preserve native execution proofs. Measure verified structural obligations
+discharged, rather than commits, test counts or scans performed.
+
 Read [references/batching.md](references/batching.md) and
 [ownership-to-DSL gates](references/ownership-to-dsl.md) when authoring or
 extending an ordered plan. Prefer declaration-selected movement, promotion, projection,
 rename and call-migration operations over copying implementations into authored
 replacement bodies. Use exact target patches when needed, but label the semantic
 decision and unsupported DSL gap honestly.
+
+For selected class-field metadata keyword removal, use the existing declaration
+selectors with `remove_field_metadata_keywords`; it preserves surviving source
+and supports calls inside generated-field initializers. The explicit
+`prune_field_metadata_keywords` variant also elides an emptied constructor from
+direct `typing.Annotated` metadata. Admit that extra semantic decision first:
+Core's plain `Column()` can be redundant while `FrozenColumn()` still owns
+immutability. Neither operation infers that a SQL check is redundant; trace its
+representation owner before selecting it. See the generated operation catalogue
+and getting-started example for the current payloads and refusal boundaries.
 
 Simulate dependent stages against projected source, inspect projected findings
 and selectors, then extend the same trajectory. NRA's global ownership analysis
@@ -217,6 +312,10 @@ Report separately:
 
 `is_clean` means the configured operation preflights and guards passed. Inspect
 which guards were present; an empty suite does not certify global architecture.
+For a refused operation, inspect the complete causal chain. A class-creation
+refusal names the original class and line; that class may precede the selected
+target in its module. Do not report the target itself as having an unproved hook
+when the named earlier declaration is what opened its binding evidence.
 Valid Python, resolved callees or signature binding do not prove an authored
 body/expression equivalent. Class simulation does not execute metaclasses or
 class bodies. Preserve fail-closed unsupported native behavior; do not fabricate

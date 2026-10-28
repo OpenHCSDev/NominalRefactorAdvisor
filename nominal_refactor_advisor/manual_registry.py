@@ -13,14 +13,15 @@ from typing import (
     TypeAlias,
 )
 
+from .ast_projection import StatementValue
+from .ast_projection import ExpressionReference
 from .ast_tools import (
-    AstExpressionProjection,
     EagerNameLoadCollector,
     ParsedModule,
     REGISTRATION_CALL_FAMILY,
     REGISTRATION_DECORATOR_FAMILY,
 )
-from .class_index import ModuleNominalBindingAuthority
+from .class_index import ModuleNominalBindingAuthority, NominalReferences
 from .collection_algebra import UniqueIdentityIndexAuthority
 from .descriptor_algebra import CollectionAttributeProjection
 from .lexical_bindings import LEXICAL_SCOPE_BINDING_AUTHORITY
@@ -139,11 +140,14 @@ class SourceModuleMappingKeyAuthority(MappingKeyResolverABC[ast.Module]):
                 reference: ast.expr,
                 shadowed_names: frozenset[str],
             ) -> str | None:
-                parts = AstExpressionProjection.attribute_chain(reference)
+                parts = ExpressionReference.decoded(reference).attribute_chain
                 if not parts or parts[0] in shadowed_names:
                     return None
-                nominal = snapshot.reference_for(parts)
-                return None if nominal.root_binding is None else nominal.qualified_name
+                # QualifiedReferenceResolver's str | None protocol.
+                return next(
+                    iter(NominalReferences.of((snapshot.reference_for(parts),)).bound_names),
+                    None,
+                )
 
             try:
                 declarations[name] = PYTHON_ENUM_BASE_AUTHORITY.declaration_from_node(
@@ -379,7 +383,7 @@ class DirectManualRegistryComponent(RegistryEntries):
         cls,
         module: ast.Module,
         anchor_class_name: str,
-    ) -> "DirectManualRegistryComponent":
+    ) -> DirectManualRegistryComponent:
         class_nodes = DirectModuleClassGraph(module).classes_by_name
         entries = cls.direct_entries(module, class_nodes)
         registry_names = frozenset(
@@ -431,9 +435,9 @@ class DirectManualRegistryComponent(RegistryEntries):
         if not isinstance(statement, RegistryAssignment):
             return ()
         try:
-            registry_name = AstExpressionProjection.identifier(
+            registry_name = ExpressionReference.decoded(
                 _assignment_target(statement)
-            )
+            ).identifier
         except ValueError:
             return ()
         value = _assignment_value(statement)
@@ -441,7 +445,9 @@ class DirectManualRegistryComponent(RegistryEntries):
             return ()
         entries = []
         for key_node, value_node in zip(value.keys, value.values, strict=True):
-            class_node = class_nodes.get(AstExpressionProjection.identifier(value_node))
+            class_node = class_nodes.get(
+                ExpressionReference.decoded(value_node).identifier
+            )
             if class_node is None or key_node is None:
                 return ()
             entries.append(
@@ -463,10 +469,10 @@ class DirectManualRegistryComponent(RegistryEntries):
         if not isinstance(statement, ast.Assign) or len(statement.targets) != 1:
             return None
         target = statement.targets[0]
-        class_name = AstExpressionProjection.identifier(statement.value)
+        class_name = ExpressionReference.decoded(statement.value).identifier
         if not isinstance(target, ast.Subscript) or class_name not in class_nodes:
             return None
-        registry_name = AstExpressionProjection.identifier(target.value)
+        registry_name = ExpressionReference.decoded(target.value).identifier
         if registry_name is None:
             return None
         return DirectManualRegistryEntry(
@@ -487,9 +493,9 @@ class DirectManualRegistryComponent(RegistryEntries):
             if not isinstance(statement, RegistryAssignment):
                 continue
             try:
-                target_name = AstExpressionProjection.identifier(
+                target_name = ExpressionReference.decoded(
                     _assignment_target(statement)
-                )
+                ).identifier
             except ValueError:
                 continue
             if target_name == registry_name:
@@ -498,9 +504,9 @@ class DirectManualRegistryComponent(RegistryEntries):
 
     @property
     def registry_name(self) -> str:
-        registry_name = AstExpressionProjection.identifier(
+        registry_name = ExpressionReference.decoded(
             _assignment_target(self.registry_assignment)
-        )
+        ).identifier
         if registry_name is None:
             raise ValueError("Registry assignment target is not a name")
         return registry_name
@@ -659,7 +665,7 @@ class DirectManualRegistryComponent(RegistryEntries):
                 and isinstance(statement.value, ast.Call)
                 and isinstance(statement.value.func, ast.Attribute)
                 and statement.value.func.attr in REGISTRATION_CALL_FAMILY.names
-                and AstExpressionProjection.identifier(statement.value.func.value)
+                and ExpressionReference.decoded(statement.value.func.value).identifier
                 == self.registry_name
             ):
                 nodes.append(statement)
@@ -668,10 +674,10 @@ class DirectManualRegistryComponent(RegistryEntries):
             for decorator in statement.decorator_list:
                 if (
                     isinstance(decorator, ast.Call)
-                    and AstExpressionProjection.terminal_name(decorator.func)
+                    and ExpressionReference.decoded(decorator.func).terminal_name
                     in REGISTRATION_DECORATOR_FAMILY.names
                     and decorator.args
-                    and AstExpressionProjection.identifier(decorator.args[0])
+                    and ExpressionReference.decoded(decorator.args[0]).identifier
                     == self.registry_name
                 ):
                     nodes.append(decorator)
@@ -720,7 +726,7 @@ class AutoRegisterInstanceViewComponent(RegistryEntries):
         cls,
         module: ast.Module,
         authority_name: str,
-    ) -> "AutoRegisterInstanceViewComponent":
+    ) -> AutoRegisterInstanceViewComponent:
         class_graph = DirectModuleClassGraph(module)
         authority_node = class_graph.classes_by_name.get(authority_name)
         if authority_node is None:
@@ -756,13 +762,13 @@ class AutoRegisterInstanceViewComponent(RegistryEntries):
         authority_node: ast.ClassDef,
         statement: ast.stmt,
         class_graph: DirectModuleClassGraph,
-    ) -> "AutoRegisterInstanceViewComponent | None":
+    ) -> AutoRegisterInstanceViewComponent | None:
         if not isinstance(statement, RegistryAssignment):
             return None
         try:
-            assignment_name = AstExpressionProjection.identifier(
+            assignment_name = ExpressionReference.decoded(
                 _assignment_target(statement)
-            )
+            ).identifier
         except ValueError:
             return None
         value = _assignment_value(statement)
@@ -807,9 +813,9 @@ class AutoRegisterInstanceViewComponent(RegistryEntries):
 
     @property
     def assignment_name(self) -> str:
-        assignment_name = AstExpressionProjection.identifier(
+        assignment_name = ExpressionReference.decoded(
             _assignment_target(self.assignment)
-        )
+        ).identifier
         if assignment_name is None:
             raise ValueError("Instance-view assignment target is not a name")
         return assignment_name
@@ -902,17 +908,15 @@ def _class_declares_non_null_name(node: ast.ClassDef, name: str) -> bool:
     for statement in node.body:
         if isinstance(statement, ast.Assign):
             if not any(
-                AstExpressionProjection.identifier(target) == name
+                ExpressionReference.decoded(target).identifier == name
                 for target in statement.targets
             ):
                 continue
-            value = statement.value
-        elif (
+        elif not (
             isinstance(statement, ast.AnnAssign)
-            and AstExpressionProjection.identifier(statement.target) == name
+            and ExpressionReference.decoded(statement.target).identifier == name
         ):
-            value = statement.value
-        else:
             continue
-        return not (isinstance(value, ast.Constant) and value.value is None)
+        # A bare annotation assigns nothing, so it is not the None literal either.
+        return not StatementValue.of(statement).compact_value().value_is_none_literal
     return False

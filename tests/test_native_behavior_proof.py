@@ -11,6 +11,7 @@ from types import ModuleType
 import pytest
 import metaclass_registry
 
+from nominal_refactor_advisor.ast_tools import ParsedModuleSet
 import nominal_refactor_advisor.registry_identity as registry_identity
 from nominal_refactor_advisor.captured_reference import InitialNativeIsland
 from nominal_refactor_advisor.codemod import (
@@ -268,7 +269,7 @@ def test_dsl_dependency_edit_invalidates_reused_local_native_execution(
         provider_source,
     )
     modules = (*initial.parsed_modules, provider)
-    snapshot = CodemodSourceSnapshot.from_modules(modules)
+    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(modules))
     repository = ExplicitEnvironmentRepository.from_modules(snapshot.parsed_modules)
     snapshot = snapshot._from_modules_with_indexes(
         snapshot.parsed_modules,

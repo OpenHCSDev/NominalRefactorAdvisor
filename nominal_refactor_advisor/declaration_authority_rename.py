@@ -10,6 +10,7 @@ from collections import defaultdict, deque
 from dataclasses import dataclass
 from functools import cached_property
 
+from .lexical_bindings import ImportAlias, ImportBoundNameProjection
 from .annotation_semantics import StringizedAnnotationSurface
 from .ast_tools import ModuleAnnotationEvaluationMode, ParsedModule
 from .class_index import (
@@ -49,7 +50,7 @@ class TopLevelBindingRenameTarget:
         node: ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef,
         *,
         new_name: str,
-    ) -> "TopLevelBindingRenameTarget":
+    ) -> TopLevelBindingRenameTarget:
         if target.qualname != target.name:
             raise ValueError("Declaration rename requires a top-level target")
         rename_target = cls.require_binding(
@@ -70,7 +71,7 @@ class TopLevelBindingRenameTarget:
         source_path: str,
         binding_name: str,
         new_name: str,
-    ) -> "TopLevelBindingRenameTarget":
+    ) -> TopLevelBindingRenameTarget:
         modules_by_path = {module.file_path: module for module in parsed_modules}
         if len(modules_by_path) != len(parsed_modules):
             raise ValueError("Declaration rename requires unique source modules")
@@ -133,7 +134,7 @@ class DeclarationAuthorityImportReference:
         cls,
         module: ParsedModule,
         imported_name: str,
-    ) -> tuple["DeclarationAuthorityImportReference", ...]:
+    ) -> tuple[DeclarationAuthorityImportReference, ...]:
         return tuple(
             cls(module, imported_module_name, statement, alias)
             for statement in module.module.body
@@ -151,15 +152,14 @@ class DeclarationAuthorityImportReference:
 
     @property
     def local_name(self) -> str:
-        return self.alias.asname or self.alias.name
+        return ImportBoundNameProjection(self.statement).alias_bound_name(self.alias)
 
     @property
     def changes_local_binding(self) -> bool:
         return self.local_name == self.alias.name
 
     def renamed_source(self, new_name: str) -> str:
-        alias_name = new_name if self.changes_local_binding else self.local_name
-        return new_name if self.alias.asname is None else f"{new_name} as {alias_name}"
+        return ImportAlias.from_alias(self.alias).renamed(new_name).source
 
 
 @dataclass(frozen=True)
@@ -175,7 +175,7 @@ class DeclarationAuthorityRenameBindingClosure:
         cls,
         parsed_modules: tuple[ParsedModule, ...],
         target: TopLevelBindingRenameTarget,
-    ) -> "DeclarationAuthorityRenameBindingClosure":
+    ) -> DeclarationAuthorityRenameBindingClosure:
         import_references = tuple(
             reference
             for module in parsed_modules
@@ -351,7 +351,7 @@ class DeclarationAuthorityModuleRenameProof:
         new_name: str,
         binding_closure: DeclarationAuthorityRenameBindingClosure,
         repository_bindings: RepositoryModuleBindingProof,
-    ) -> "DeclarationAuthorityModuleRenameProof":
+    ) -> DeclarationAuthorityModuleRenameProof:
         target = binding_closure.target
         imports = binding_closure.imports_for(module)
         cls._require_supported_import_surfaces(
@@ -493,10 +493,10 @@ class DeclarationAuthorityModuleRenameProof:
         repository_bindings: RepositoryModuleBindingProof,
     ) -> None:
         for origin in module_star_import_origins(module):
-            if origin.module_name not in binding_closure.renamed_module_names:
+            if not origin.within(binding_closure.renamed_module_names):
                 continue
             exposures = tuple(
-                repository_bindings.exposure_for(origin.module_name, name)
+                origin.exposure_in(repository_bindings, name)
                 for name in (target.name, new_name)
             )
             if any(exposure.introduces_uncertainty for exposure in exposures):
@@ -719,7 +719,7 @@ class DeclarationAuthorityRenameProof:
         node: ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef,
         *,
         new_name: str,
-    ) -> "DeclarationAuthorityRenameProof":
+    ) -> DeclarationAuthorityRenameProof:
         rename_target = TopLevelBindingRenameTarget.require(
             parsed_modules,
             target,
@@ -736,7 +736,7 @@ class DeclarationAuthorityRenameProof:
         source_path: str,
         binding_name: str,
         new_name: str,
-    ) -> "DeclarationAuthorityRenameProof":
+    ) -> DeclarationAuthorityRenameProof:
         rename_target = TopLevelBindingRenameTarget.require_binding(
             parsed_modules,
             source_path=source_path,
@@ -752,7 +752,7 @@ class DeclarationAuthorityRenameProof:
         rename_target: TopLevelBindingRenameTarget,
         *,
         new_name: str,
-    ) -> "DeclarationAuthorityRenameProof":
+    ) -> DeclarationAuthorityRenameProof:
         binding_closure = DeclarationAuthorityRenameBindingClosure.from_modules(
             parsed_modules,
             rename_target,

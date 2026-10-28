@@ -5,7 +5,7 @@ from copy import deepcopy
 
 import pytest
 
-from nominal_refactor_advisor.ast_tools import ModuleSyntaxIndex, module_syntax_index
+from nominal_refactor_advisor.ast_tools import ModuleSyntaxIndex
 from nominal_refactor_advisor.codemod import (
     CodemodPlanDocument,
     CodemodSourceSnapshot,
@@ -210,11 +210,9 @@ def test_same_tree_reparenting_cannot_redefine_class_suite_ownership(
         originals if side == "original" else (candidates["Alpha"], candidates["Beta"])
     )
     moved = other.body[0]
-    syntax = module_syntax_index(
-        relation.before.module.module
-        if side == "original"
-        else relation.after.module.module
-    )
+    syntax = (
+        relation.before.module if side == "original" else relation.after.module
+    ).syntax_index
     assert moved in syntax.node_membership
     assert syntax.parent_by_node[moved] is other
     if placement == "body":
@@ -232,8 +230,8 @@ def test_class_suite_queries_reuse_syntax_index_without_tree_walks(
     tmp_path, monkeypatch
 ):
     relation, originals, candidates = conversion(tmp_path)
-    before_syntax = module_syntax_index(relation.before.module.module)
-    after_syntax = module_syntax_index(relation.after.module.module)
+    before_syntax = relation.before.module.syntax_index
+    after_syntax = relation.after.module.syntax_index
 
     def forbidden(*args, **kwargs):
         raise AssertionError(
@@ -242,7 +240,6 @@ def test_class_suite_queries_reuse_syntax_index_without_tree_walks(
 
     monkeypatch.setattr(ast, "walk", forbidden)
     monkeypatch.setattr(ast, "iter_child_nodes", forbidden)
-    monkeypatch.setattr(ModuleSyntaxIndex, "build", forbidden)
     for _ in range(3):
         for original in originals:
             candidate = candidates[original.name]
@@ -253,6 +250,7 @@ def test_class_suite_queries_reuse_syntax_index_without_tree_walks(
                 is candidate
             )
     assert relation.after_syntax is after_syntax
+    assert relation.before.module.syntax_index is before_syntax
     assert relation.after_syntax.parent_by_node is after_syntax.parent_by_node
     assert before_syntax.parent_by_node[originals[0].body[0]] is originals[0]
 
@@ -262,7 +260,7 @@ def test_syntax_parent_projection_is_derived_and_refuses_ambiguous_nodes(monkeyp
     first, second = module.body
     shared = first.body[0]
     second.body[0] = shared
-    syntax = module_syntax_index(module)
+    syntax = ModuleSyntaxIndex.build(module)
 
     def forbidden(*args, **kwargs):
         raise AssertionError("Parent projection must consume the indexed arrays")

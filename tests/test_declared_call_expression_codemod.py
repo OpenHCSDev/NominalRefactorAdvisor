@@ -9,6 +9,7 @@ import sys
 
 import pytest
 
+from nominal_refactor_advisor.ast_tools import ParsedModuleSet
 from nominal_refactor_advisor.ast_tools import parse_python_modules
 from nominal_refactor_advisor.codemod import (
     CodemodPlanSequence,
@@ -377,10 +378,10 @@ def test_historical_member_insertion_wrapper_collapses_as_one_dsl_batch(
         )
     )
     snapshot = CodemodSourceSnapshot.from_modules(
-        (
+        ParsedModuleSet.of((
             *parse_python_modules(root / "nominal_refactor_advisor"),
             *parse_python_modules(tmp_path),
-        )
+        ))
     )
     simulation = sequence.simulate(snapshot)
     assert simulation.is_clean

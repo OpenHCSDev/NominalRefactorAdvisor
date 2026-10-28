@@ -98,7 +98,7 @@ _LEAN_REPEATED_STRUCTURAL_SIGNATURE_SPEC = high_confidence_spec(
 class LeanFindingAdapter(ABC, metaclass=AutoRegisterMeta):
     """Nominal adapter root for one Lean detector family."""
 
-    __registry__: ClassVar[dict[str, type["LeanFindingAdapter"]]] = {}
+    __registry__: ClassVar[dict[str, type[LeanFindingAdapter]]] = {}
     __registry_key__ = "detector_id"
     __skip_if_no_key__ = True
 

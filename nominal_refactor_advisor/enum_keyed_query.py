@@ -24,6 +24,7 @@ from .class_index import (
 )
 from .collection_algebra import sorted_tuple
 from .enum_semantics import PYTHON_ENUM_BASE_AUTHORITY
+from .foreign_family import FunctionDefinition
 from .lexical_bindings import LEXICAL_SCOPE_BINDING_AUTHORITY
 from .models import SourceLocation
 
@@ -510,8 +511,9 @@ class EnumKeyedDerivedMapFacadeComponentBuilder:
             enclosing = next(
                 (
                     ancestor
-                    for ancestor in parent_index.ancestors(node)
-                    if isinstance(ancestor, ast.FunctionDef | ast.AsyncFunctionDef)
+                    for ancestor in FunctionDefinition.within(
+                        parent_index.ancestors(node)
+                    )
                 ),
                 None,
             )
@@ -582,8 +584,7 @@ class EnumKeyedDerivedMapFacadeComponentBuilder:
         first_method = next(
             (
                 statement
-                for statement in enum_class.node.body
-                if isinstance(statement, ast.FunctionDef | ast.AsyncFunctionDef)
+                for statement in FunctionDefinition.within(enum_class.node.body)
             ),
             None,
         )

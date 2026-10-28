@@ -27,6 +27,7 @@ from nominal_refactor_advisor.codemod_source_edits import (
     SourceEditOrigin,
     SourceEditWindowABC,
     SourceInsertion,
+    SourceLineSpan,
     SourceSpanDeletion,
     SourceSpanReplacement,
     SourceTextGeometry,
@@ -238,12 +239,11 @@ def test_physical_declarations_own_original_source_intervals(source):
         for end in range(start, len(lines) + 1):
             replacement = SourceSpanReplacement(
                 file_path=PATH,
-                start_line=start,
-                end_line=end,
+                span=SourceLineSpan(start, end),
                 replacement_lines=("new = 1\n",),
             )
             deletion = SourceSpanDeletion(
-                file_path=PATH, start_line=start, end_line=end
+                file_path=PATH, span=SourceLineSpan(start, end), 
             )
             span = replacement.original_span(geometry)
             assert span == deletion.original_span(geometry)
@@ -255,7 +255,7 @@ def test_physical_declarations_own_original_source_intervals(source):
             SourceInsertion(file_path=PATH, insertion_line=line).original_span(geometry)
     with pytest.raises(ValueError, match="outside source geometry"):
         SourceSpanDeletion(
-            file_path=PATH, start_line=1, end_line=len(geometry.line_offsets) + 1
+            file_path=PATH, span=SourceLineSpan(1, len(geometry.line_offsets) + 1), 
         ).original_span(geometry)
     with pytest.raises(ValueError, match="must be nonempty"):
         geometry.line_span_offsets(1, 0)
@@ -310,8 +310,7 @@ def test_empty_module_sentinel_span_is_used_by_the_actual_batch_renderer():
     assert (target.line, target.end_line) == (1, 1)
     edit = SourceSpanReplacement(
         file_path=PATH,
-        start_line=1,
-        end_line=1,
+        span=SourceLineSpan(1, 1),
         replacement_lines=("written = object\n",),
     )
     batch = NominalEditBatch(compiler, (edit,))

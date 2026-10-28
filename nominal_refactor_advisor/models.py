@@ -103,7 +103,7 @@ class SemanticFieldRole(StrEnum):
         mixin_name: str | None = None,
         required_carrier_coordinate: bool = False,
         carrier_naming_role: bool = False,
-    ) -> "SemanticFieldRole":
+    ) -> SemanticFieldRole:
         member = str.__new__(cls, value)
         member._value_ = value
         member.exact_field_names = frozenset(exact_field_names)
@@ -163,21 +163,21 @@ class SemanticFieldRole(StrEnum):
         )
 
     @classmethod
-    def for_field_name(cls, field_name: str) -> tuple["SemanticFieldRole", ...]:
+    def for_field_name(cls, field_name: str) -> tuple[SemanticFieldRole, ...]:
         """Derive every overlapping semantic role for one source field."""
 
         return tuple(role for role in cls if role.matches_field_name(field_name))
 
     @classmethod
-    def required_carrier_coordinates(cls) -> frozenset["SemanticFieldRole"]:
+    def required_carrier_coordinates(cls) -> frozenset[SemanticFieldRole]:
         return frozenset(role for role in cls if role.required_carrier_coordinate)
 
     @classmethod
-    def carrier_naming_roles(cls) -> frozenset["SemanticFieldRole"]:
+    def carrier_naming_roles(cls) -> frozenset[SemanticFieldRole]:
         return frozenset(role for role in cls if role.carrier_naming_role)
 
     @classmethod
-    def mixin_roles(cls) -> tuple["SemanticFieldRole", ...]:
+    def mixin_roles(cls) -> tuple[SemanticFieldRole, ...]:
         """Return roles whose reusable nominal mixin is declaration-owned."""
 
         return tuple(role for role in cls if role.mixin_name is not None)
@@ -239,6 +239,12 @@ class SourceLocation(SourceLineReference, SemanticRecord):
     def subject_symbol(self) -> str:
         return EvidenceSymbol(self.symbol).subject
 
+    @property
+    def subject_key(self) -> str:
+        """The file and symbol this evidence sits in, without its line."""
+
+        return f"{self.file_path}::{self.symbol}"
+
 @dataclass(frozen=True)
 class SourceLocationZipDescriptorShape(SemanticRecord):
     """Shared schema for zipped source-location descriptor declarations."""
@@ -273,7 +279,7 @@ class ImpactDelta(SemanticRecord):
     description_length_after: int = 0
     description_length_savings: int = 0
 
-    def __add__(self, other: "ImpactDelta") -> "ImpactDelta":
+    def __add__(self, other: ImpactDelta) -> ImpactDelta:
         return ImpactDelta(
             lower_bound_removable_loc=self.lower_bound_removable_loc
             + other.lower_bound_removable_loc,
@@ -301,7 +307,7 @@ class ImpactDelta(SemanticRecord):
     @classmethod
     def from_repeated_mapping_family(
         cls, owner_count: int, repeated_component_count: int
-    ) -> "ImpactDelta":
+    ) -> ImpactDelta:
         removable = max((owner_count - 1) * repeated_component_count, 0)
         return cls(
             lower_bound_removable_loc=removable,
@@ -352,6 +358,23 @@ class FindingMetrics(SemanticRecord, ABC):
 
         return ()
 
+    def finding_identity(
+        self, summary: str, evidence: tuple[SourceLocation, ...]
+    ) -> tuple[str, ...]:
+        """What makes a finding the same finding across scans and edits.
+
+        By default that is its rendered summary and the symbols its evidence
+        sits in. Line numbers are evidence, not identity: an edit that only
+        moves a finding keeps its id. Metrics whose summary carries derived
+        scores override this with the obligation itself, so rescoring does not
+        re-key the finding.
+        """
+
+        return (
+            summary,
+            "|".join(sorted(item.subject_key for item in evidence)),
+        )
+
 
 @dataclass(frozen=True)
 class SemanticMirrorMetricRelation:
@@ -387,6 +410,30 @@ DispatchFindingMetrics = CompositeClassSpec(
 @dataclass(frozen=True)
 class EmptyFindingMetrics(FindingMetrics):
     pass
+
+
+@dataclass(frozen=True)
+class DeclarationReferenceMetrics(FindingMetrics):
+    """The scan-wide reference rewrites this finding carries as their one candidate, each with its files."""
+
+    carried_rewrites: tuple[tuple[str, tuple[str, ...]], ...]
+
+
+@dataclass(frozen=True)
+class ForwardingFacadeMetrics(FindingMetrics):
+    """Forwarding members of one facade; every one is deletable once consumers go direct."""
+
+    forwarded_member_count: int
+
+    @property
+    def impact_delta(self) -> ImpactDelta:
+        count = self.forwarded_member_count
+        return ImpactDelta(
+            lower_bound_removable_loc=count,
+            upper_bound_removable_loc=2 * count,
+            loci_of_change_before=count,
+            loci_of_change_after=0,
+        )
 
 
 @dataclass(frozen=True)
@@ -746,7 +793,7 @@ class DispatchCountMetrics(CountedDispatchMetrics):
     @classmethod
     def from_literal_family(
         cls, dispatch_axis: str | None, literal_cases: tuple[str, ...]
-    ) -> "DispatchCountMetrics":
+    ) -> DispatchCountMetrics:
         return cls(
             dispatch_site_count=len(literal_cases),
             dispatch_axis=dispatch_axis,
@@ -868,20 +915,20 @@ class FindingBuildContext:
     @classmethod
     def merge(
         cls,
-        base: "FindingBuildContext | None" = None,
+        base: FindingBuildContext | None = None,
         **overrides: Unpack[FindingBuildContextKwargs],
-    ) -> "FindingBuildContext":
+    ) -> FindingBuildContext:
         context = cls() if base is None else base
         return context if not overrides else replace(context, **overrides)
 
     def finding(
         self,
-        spec: "FindingSpec",
+        spec: FindingSpec,
         detector_id: str,
         summary: str,
         evidence: tuple[SourceLocation, ...],
         /,
-    ) -> "RefactorFinding":
+    ) -> RefactorFinding:
         """Apply this context once while constructing a concrete finding."""
 
         return RefactorFinding(
@@ -916,7 +963,7 @@ class FindingObligationClass(SemanticRecord):
         semantics: FindingSemantics,
         *,
         declaration: type[RequiredRelationDeclaration],
-    ) -> "FindingObligationClass":
+    ) -> FindingObligationClass:
         pattern_id = declaration.required_relation_pattern_id()
         if semantics.pattern_id is not pattern_id:
             raise ValueError(
@@ -1046,17 +1093,13 @@ class RefactorFinding(FindingSemantics):
 
     @json_report_cached_property()
     def stable_id(self) -> str:
-        """Source-derived finding id for compact, repeatable agent targeting."""
+        """The finding's subject as a compact id; line moves keep it."""
 
-        evidence_key = "|".join(
-            stable_source_location_id(item) for item in self.evidence
-        )
         payload = "|".join(
             (
                 self.detector_id,
                 str(self.pattern_id.value),
-                self.summary,
-                evidence_key,
+                *self.metrics.finding_identity(self.summary, self.evidence),
             )
         )
         return hashlib.blake2s(payload.encode("utf-8"), digest_size=5).hexdigest()

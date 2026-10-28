@@ -17,6 +17,9 @@ from typing import cast
 from unittest.mock import Mock
 
 import pytest
+
+from nominal_refactor_advisor.ast_tools import ParsedModuleSet
+from nominal_refactor_advisor.ast_projection import CallKeyword
 from metaclass_registry import DuplicateRegistryKeyError
 
 from registry_test_sources import _type_keyed_behavior_projection_source
@@ -65,9 +68,8 @@ from nominal_refactor_advisor.analysis import (
     analyze_paths,
     default_detector_types_for_analysis,
 )
+from nominal_refactor_advisor.ast_projection import ExpressionReference
 from nominal_refactor_advisor.ast_tools import (
-    AstExpressionProjection,
-    AstKeywordSourceProjection,
     AstNameFamily,
     BuiltinCallName,
     DynamicMethodInjectionObservationFamily,
@@ -106,6 +108,8 @@ from nominal_refactor_advisor.calibration import (
 )
 from nominal_refactor_advisor.cache_paths import default_parse_cache_dir
 from nominal_refactor_advisor.class_index import (
+    ClassFamilyIndex,
+    ModuleClassSyntaxFacets,
     RegistryLookupShape,
     RegistryLookupStyle,
     SelectionGuardKind,
@@ -307,7 +311,6 @@ from nominal_refactor_advisor.observation_graph import (
     ObservationKind,
     StructuralObservation,
     StructuralExecutionLevel,
-    build_observation_graph,
     collect_structural_observations,
 )
 from nominal_refactor_advisor.patterns import PatternId
@@ -2095,11 +2098,9 @@ def test_finding_recipe_batch_combines_composable_disjoint_edits(
         frozenset(branch.candidate_indices): branch
         for branch in batch_evaluation.trajectory_frontier.branches
     }
-    assert set(branches_by_candidate_indices) == {
-        frozenset((0,)),
-        frozenset((1,)),
-        frozenset((0, 1)),
-    }
+    # Disjoint edits commute, so the subsets {0} and {1} reach nothing {0, 1}
+    # does not; the frontier holds only the maximal batch.
+    assert set(branches_by_candidate_indices) == {frozenset((0, 1))}
     for candidate_indices, branch in branches_by_candidate_indices.items():
         cached_result = batch_evaluation.simulate_recipe_set(
             tuple(sorted(candidate_indices))
@@ -2115,25 +2116,19 @@ def test_finding_recipe_trajectory_frontier_fails_closed_at_enumeration_budget(
 ) -> None:
     module_path = tmp_path / "pkg/mod.py"
     _write_module(tmp_path, "pkg/mod.py", "a = 1\nb = 1\n")
-    candidates = (
+    # Two conflicts of two alternatives each: four maximal batches, over a budget of two.
+    candidates = tuple(
         _direct_recipe_candidate(
-            detector_id="budget_a",
+            detector_id=f"budget_{name}_{value}",
             file_path=module_path.as_posix(),
-            subject_name="Alpha",
-            old_source="a = 1",
-            new_source="a = 2",
+            subject_name=f"{name}{value}",
+            old_source=f"{name} = 1",
+            new_source=f"{name} = {value}",
             before=5,
             after=1,
-        ),
-        _direct_recipe_candidate(
-            detector_id="budget_b",
-            file_path=module_path.as_posix(),
-            subject_name="Beta",
-            old_source="b = 1",
-            new_source="b = 2",
-            before=5,
-            after=1,
-        ),
+        )
+        for name in ("a", "b")
+        for value in (2, 3)
     )
     snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path), ())
     batch_result = CurrentSnapshotRecipeBatchEvaluation(
@@ -4249,7 +4244,7 @@ def _exact_tiny_method_role_findings(
 ) -> tuple[RefactorFinding, ...]:
     return tuple(
         finding
-        for finding in analyze_modules(modules)
+        for finding in analyze_modules(ParsedModuleSet.of(modules))
         if finding.detector_id == _EXACT_TINY_METHOD_ROLE_DETECTOR_ID
     )
 
@@ -4259,7 +4254,7 @@ def _exact_leaf_method_ancestor_promotion_findings(
 ) -> tuple[RefactorFinding, ...]:
     return tuple(
         finding
-        for finding in analyze_modules(modules)
+        for finding in analyze_modules(ParsedModuleSet.of(modules))
         if finding.detector_id == _EXACT_LEAF_METHOD_ANCESTOR_PROMOTION_DETECTOR_ID
     )
 
@@ -5703,7 +5698,7 @@ def test_codemod_snapshot_reparsing_preserves_indexed_module_identity() -> None:
         module=ast.parse(source),
         source=source,
     )
-    snapshot = CodemodSourceSnapshot.from_modules((module,))
+    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of((module,)))
 
     reparsed = snapshot.parsed_modules[0]
     rewritten = snapshot.modules_with_source_overlay({module.file_path: "VALUE = 2\n"})[
@@ -5714,7 +5709,7 @@ def test_codemod_snapshot_reparsing_preserves_indexed_module_identity() -> None:
     assert rewritten.module_name == "declared.package.module"
     assert rewritten.source == "VALUE = 2\n"
     other_identity_snapshot = CodemodSourceSnapshot.from_modules(
-        (
+        ParsedModuleSet.of((
             ParsedModule(
                 path=module.path,
                 module_name="other.package.module",
@@ -5722,19 +5717,20 @@ def test_codemod_snapshot_reparsing_preserves_indexed_module_identity() -> None:
                 module=ast.parse(source),
                 source=source,
             ),
-        )
+        ))
     )
     assert snapshot.source_state_id != other_identity_snapshot.source_state_id
 
 
 def test_virtual_source_overlay_reuses_unchanged_ast_and_class_records(
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     alpha_path = tmp_path / "pkg/alpha.py"
     beta_path = tmp_path / "pkg/beta.py"
     _write_module(tmp_path, "pkg/__init__.py", "")
     _write_module(tmp_path, "pkg/alpha.py", "class Base:\n    pass\n")
+    util_path = tmp_path / "pkg/util.py"
+    _write_module(tmp_path, "pkg/util.py", "def helper():\n    return 1\n")
     _write_module(
         tmp_path,
         "pkg/beta.py",
@@ -5744,23 +5740,8 @@ def test_virtual_source_overlay_reuses_unchanged_ast_and_class_records(
     beta_source = snapshot.sources_by_file_path[beta_path.as_posix()]
     source_overlay = {beta_path.as_posix(): beta_source.replace("Beta(Base)", "Beta")}
     rebuilt = CodemodSourceSnapshot.from_modules(
-        snapshot.modules_with_source_overlay(source_overlay)
+        ParsedModuleSet.of(snapshot.modules_with_source_overlay(source_overlay))
     )
-    monkeypatch.setattr(
-        codemod_runtime_module,
-        "build_class_family_index",
-        lambda _modules: pytest.fail(
-            "projected snapshots must overlay the class index"
-        ),
-    )
-    monkeypatch.setattr(
-        codemod_runtime_module,
-        "build_source_index_artifacts",
-        lambda _modules, _findings: pytest.fail(
-            "projected snapshots must overlay the source index"
-        ),
-    )
-
     projected = snapshot.with_virtual_sources(source_overlay)
 
     assert projected.source_index == rebuilt.source_index
@@ -5771,6 +5752,28 @@ def test_virtual_source_overlay_reuses_unchanged_ast_and_class_records(
     assert (
         projected.module_nodes_by_file_path[alpha_path.as_posix()]
         is snapshot.module_nodes_by_file_path[alpha_path.as_posix()]
+    )
+    assert (
+        projected.required_class_family_index.classes_by_symbol["pkg.alpha.Base"].node
+        is snapshot.required_class_family_index.classes_by_symbol["pkg.alpha.Base"].node
+    )
+    projected_alpha = next(
+        module for module in projected.parsed_modules if module.path == alpha_path
+    )
+    snapshot_alpha = next(
+        module for module in snapshot.parsed_modules if module.path == alpha_path
+    )
+    assert projected_alpha is snapshot_alpha
+    assert projected_alpha.fact(ModuleClassSyntaxFacets) is snapshot_alpha.fact(
+        ModuleClassSyntaxFacets
+    )
+    util_source = snapshot.sources_by_file_path[util_path.as_posix()]
+    classless_overlay = snapshot.with_virtual_sources(
+        {util_path.as_posix(): util_source.replace("return 1", "return 2")}
+    )
+    assert (
+        classless_overlay.required_class_family_index
+        is snapshot.required_class_family_index
     )
     assert (
         projected.required_class_family_index.classes_by_symbol[
@@ -5859,7 +5862,7 @@ def test_virtual_source_overlay_rebuilds_changed_global_class_symbol_space(
 
     source_overlay = {competing_alpha_path.as_posix(): "class Shared:\n    pass\n"}
     rebuilt = CodemodSourceSnapshot.from_modules(
-        snapshot.modules_with_source_overlay(source_overlay)
+        ParsedModuleSet.of(snapshot.modules_with_source_overlay(source_overlay))
     )
     projected = snapshot.with_virtual_sources(source_overlay)
 
@@ -10237,7 +10240,7 @@ def test_ast_expression_projection_owns_qualified_name_semantics(
 ) -> None:
     expression = ast.parse(source, mode="eval").body
 
-    assert AstExpressionProjection.qualified_name(expression) == expected_name
+    assert ExpressionReference.decoded(expression).qualified_name == expected_name
 
 
 @pytest.mark.parametrize(
@@ -10257,9 +10260,9 @@ def test_ast_expression_projection_owns_name_and_chain_semantics(
 ) -> None:
     expression = ast.parse(source, mode="eval").body
 
-    assert AstExpressionProjection.identifier(expression) == expected_identifier
-    assert AstExpressionProjection.terminal_name(expression) == expected_terminal
-    assert AstExpressionProjection.attribute_chain(expression) == expected_chain
+    assert ExpressionReference.decoded(expression).identifier == expected_identifier
+    assert ExpressionReference.decoded(expression).terminal_name == expected_terminal
+    assert ExpressionReference.decoded(expression).attribute_chain == expected_chain
 
 
 def test_ast_name_family_unwraps_call_and_subscript_at_its_declaration() -> None:
@@ -10287,7 +10290,7 @@ def test_ast_keyword_source_projection_owns_keyword_rendering(
     expression = ast.parse(source, mode="eval").body
     assert isinstance(expression, ast.Call)
 
-    assert AstKeywordSourceProjection(expression.keywords[0]).source() == (
+    assert CallKeyword.decoded(expression.keywords[0]).source() == (
         expected_source
     )
 
@@ -10880,7 +10883,7 @@ def test_finding_build_context_remains_nominal_through_spec_construction() -> No
     )
 
 
-def test_finding_stable_id_is_derived_from_source_coordinates() -> None:
+def test_finding_stable_id_is_derived_from_subject_not_lines(no_modules: ParsedModuleSet) -> None:
     spec = _finding_spec(
         PatternId.SHARED_ALGORITHM_AUTHORITY,
         "Collapse repeated class family",
@@ -10908,11 +10911,19 @@ def test_finding_stable_id_is_derived_from_source_coordinates() -> None:
             (SourceLocation("pkg/mod.py", 12, "Alpha.run"),),
         ).stable_id
     )
-    assert finding.stable_id != moved.stable_id
+    assert finding.stable_id == moved.stable_id
+    assert (
+        finding.stable_id
+        != spec.build(
+            "orbit_detector",
+            "manual family compresses through one ABC",
+            (SourceLocation("pkg/mod.py", 12, "Beta.run"),),
+        ).stable_id
+    )
     assert f"Stable id: {finding.stable_id}" in MARKDOWN_RENDERER.report([finding])
     assert json_report_object(finding)["stable_id"] == finding.stable_id
     assert (
-        JsonPayloadBuilder(findings=[finding], plans=[], modules=[]).build()[
+        JsonPayloadBuilder(findings=[finding], plans=[], modules=no_modules).build()[
             "findings"
         ][0]["stable_id"]
         == finding.stable_id
@@ -11521,7 +11532,7 @@ def test_repository_change_budget_separates_backend_detector_and_tests() -> None
     assert budget.generated.net_added == 15
 
 
-def test_economics_markdown_and_json_expose_evidence_proof() -> None:
+def test_economics_markdown_and_json_expose_evidence_proof(no_modules: ParsedModuleSet) -> None:
     certificate = _object_family_certificate(
         8,
         ("abc",),
@@ -11549,7 +11560,7 @@ def test_economics_markdown_and_json_expose_evidence_proof() -> None:
     payload = JsonPayloadBuilder(
         findings=[finding],
         plans=[],
-        modules=[],
+        modules=no_modules,
         economics=economics,
     ).build()
 
@@ -13384,160 +13395,6 @@ def test_detects_derived_wrapper_spec_shadow(tmp_path: Path) -> None:
     assert "build_wrapper" in finding.summary
 
 
-def test_detects_manual_companion_dataclass_surface(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        "\nfrom dataclasses import dataclass\n\n\n@dataclass(frozen=True)\nclass PipelineConfig:\n    batch_size: int\n    output_dir: str\n    retries: int = 0\n\n\n@dataclass(frozen=True)\nclass LazyPipelineConfig:\n    batch_size: int\n    output_dir: str\n    retries: int = 0\n    inherited_fields: frozenset[str] = frozenset()\n",
-    )
-    findings = analyze_path(tmp_path)
-    finding = next(
-        (
-            finding
-            for finding in findings
-            if finding.detector_id == "manual_companion_dataclass_surface"
-        )
-    )
-    assert "LazyPipelineConfig" in finding.summary
-    assert "PipelineConfig" in finding.summary
-    assert "batch_size" in finding.summary
-    assert finding.compression_certificate is not None
-    assert finding.compression_certificate.pays_rent
-
-
-def test_dataclass_signature_projection_reuses_cached_items(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        "\nfrom dataclasses import dataclass\n\n\n@dataclass(frozen=True)\nclass PipelineConfig:\n    batch_size: int\n    output_dir: str\n    retries: int = 0\n\n\n@dataclass(frozen=True)\nclass LazyPipelineConfig:\n    batch_size: int\n    output_dir: str\n    retries: int = 0\n    inherited_fields: frozenset[str] = frozenset()\n",
-    )
-    module = parse_python_modules(tmp_path)[0]
-    classes = {
-        node.name: node for node in module.module.body if isinstance(node, ast.ClassDef)
-    }
-    unparse_calls = 0
-    real_unparse = base_detectors.ast.unparse
-
-    def counted_unparse(node: ast.AST) -> str:
-        nonlocal unparse_calls
-        unparse_calls += 1
-        return real_unparse(node)
-
-    monkeypatch.setattr(base_detectors.ast, "unparse", counted_unparse)
-
-    first_candidate = (
-        base_detectors._manual_companion_dataclass_surface_candidate_for_pair(
-            module,
-            classes["PipelineConfig"],
-            classes["LazyPipelineConfig"],
-        )
-    )
-    second_candidate = (
-        base_detectors._manual_companion_dataclass_surface_candidate_for_pair(
-            module,
-            classes["PipelineConfig"],
-            classes["LazyPipelineConfig"],
-        )
-    )
-
-    assert first_candidate is not None
-    assert second_candidate is not None
-    assert first_candidate.shared_field_names == second_candidate.shared_field_names
-    assert unparse_calls == 7
-
-
-def test_companion_dataclass_surface_skips_field_projection_for_unrelated_names(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        "from dataclasses import dataclass\n\n\n"
-        "@dataclass\n"
-        "class AlphaRecord:\n"
-        "    value: int\n\n\n"
-        "@dataclass\n"
-        "class BetaReceipt:\n"
-        "    value: int\n",
-    )
-    module = parse_python_modules(tmp_path)[0]
-    classes = tuple(
-        node for node in module.module.body if isinstance(node, ast.ClassDef)
-    )
-
-    def fail_field_projection(*args: object) -> object:
-        raise AssertionError("unrelated class names should reject before field work")
-
-    monkeypatch.setattr(
-        base_detectors,
-        "_companion_dataclass_field_projection",
-        fail_field_projection,
-    )
-
-    assert base_detectors._companion_dataclass_surface_projection(*classes) is None
-
-
-def test_companion_dataclass_surface_skips_unmarked_companion_roster(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        "from dataclasses import dataclass\n\n\n"
-        "@dataclass\n"
-        "class AlphaRecord:\n"
-        "    value: int\n\n\n"
-        "@dataclass\n"
-        "class AlphaSnapshot:\n"
-        "    value: int\n",
-    )
-    module = parse_python_modules(tmp_path)[0]
-
-    def unexpected_pair_projection(*args: object) -> object:
-        raise AssertionError("unmarked dataclasses cannot be companion candidates")
-
-    monkeypatch.setattr(
-        base_detectors,
-        "_manual_companion_dataclass_surface_candidate_for_pair",
-        unexpected_pair_projection,
-    )
-
-    assert base_detectors._manual_companion_dataclass_surface_candidates(module) == ()
-
-
-def test_companion_dataclass_surface_requires_matching_defaults(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        "\nfrom dataclasses import dataclass\n\n\n@dataclass(frozen=True)\nclass PipelineConfig:\n    batch_size: int = 16\n    output_dir: str = 'out'\n\n\n@dataclass(frozen=True)\nclass LazyPipelineConfig:\n    batch_size: int = 32\n    output_dir: str = 'out'\n    inherited_fields: frozenset[str] = frozenset()\n",
-    )
-    findings = analyze_path(tmp_path)
-    assert not any(
-        finding.detector_id == "manual_companion_dataclass_surface"
-        for finding in findings
-    )
-
-
-def test_ignores_explicit_public_measurement_companion_dataclass(
-    tmp_path: Path,
-) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        "\nfrom dataclasses import dataclass\n\n\n@dataclass\nclass TextureMeasurement:\n    scale: int\n    direction: int\n    contrast: float\n    entropy: float\n\n\n@dataclass\nclass ObjectTextureMeasurement:\n    object_label: int\n    scale: int\n    direction: int\n    contrast: float\n    entropy: float\n",
-    )
-    findings = analyze_path(tmp_path)
-    assert not any(
-        finding.detector_id == "manual_companion_dataclass_surface"
-        for finding in findings
-    )
-
-
 def test_keyed_record_infrastructure_detects_module_selection_helper(
     tmp_path: Path,
 ) -> None:
@@ -13911,7 +13768,8 @@ def test_preserves_runtime_materialization_boundary(tmp_path: Path) -> None:
         "\nfrom dataclasses import dataclass\nfrom enum import Enum, auto\n\n\nclass StrategyId(Enum):\n    ALPHA = auto()\n\n\nclass ActionId(Enum):\n    DEFAULT = auto()\n\n\nclass AlphaStrategy:\n    pass\n\n\nclass DefaultAction:\n    pass\n\n\n@dataclass(frozen=True)\nclass BaseSpec:\n    priority: int\n    dependencies: tuple[str, ...] = ()\n    strategy_id: StrategyId | None = None\n    action_id: ActionId | None = None\n\n\n@dataclass(frozen=True)\nclass RuntimeSpec:\n    priority: int = 0\n    dependencies: tuple[str, ...] = ()\n    strategy: object | None = None\n    action: object | None = None\n\n\nSTRATEGY_BY_ID = {StrategyId.ALPHA: AlphaStrategy()}\nACTION_BY_ID = {ActionId.DEFAULT: DefaultAction()}\n\n\ndef runtime_spec_for(spec: BaseSpec | None) -> RuntimeSpec:\n    if spec is None:\n        return RuntimeSpec()\n    return RuntimeSpec(\n        priority=spec.priority,\n        dependencies=spec.dependencies,\n        strategy=STRATEGY_BY_ID.get(spec.strategy_id)\n        if spec.strategy_id is not None\n        else None,\n        action=ACTION_BY_ID.get(spec.action_id) if spec.action_id is not None else None,\n    )\n",
     )
     findings = analyze_path(tmp_path)
-    assert findings == []
+    # No mapping mirror here, but `spec.strategy_id is not None` and `spec.action_id is not None` probe BaseSpec's optional state from outside BaseSpec: a restated fact, which is not what this fixture preserves.
+    assert [finding.detector_id for finding in findings] == ["foreign_absence_probe"]
 
 
 def test_preserves_external_kwargs_projection_boundary(tmp_path: Path) -> None:
@@ -13921,7 +13779,8 @@ def test_preserves_external_kwargs_projection_boundary(tmp_path: Path) -> None:
         '\nfrom dataclasses import dataclass\n\n\n@dataclass(frozen=True)\nclass OptionSpec:\n    help: str\n    action: str | None = None\n    default: object | None = None\n    dest: str | None = None\n\n\ndef option_kwargs(spec: OptionSpec) -> dict[str, object]:\n    kwargs = {"help": spec.help}\n    if spec.action is not None:\n        kwargs["action"] = spec.action\n    if spec.default is not None:\n        kwargs["default"] = spec.default\n    if spec.dest is not None:\n        kwargs["dest"] = spec.dest\n    return kwargs\n\n\ndef add_option(parser, name: str, spec: OptionSpec):\n    parser.add_argument(name, **option_kwargs(spec))\n',
     )
     findings = analyze_path(tmp_path)
-    assert findings == []
+    # The external kwargs boundary is preserved, but option_kwargs probes four optional fields of OptionSpec one by one from outside OptionSpec: the restated fact is which of its fields are set.
+    assert [finding.detector_id for finding in findings] == ["foreign_absence_probe"]
 
 
 def test_detects_manual_structural_record_mechanics(tmp_path: Path) -> None:
@@ -14092,7 +13951,7 @@ def test_registry_lookup_shape_has_no_parallel_detector_authority() -> None:
         "_registry_lookup_shape",
     )
 
-    assert base_detectors.RegistryLookupShape is RegistryLookupShape
+    assert RegistryLookupShape.__module__ == class_index_module.__name__
     assert all(
         not hasattr(base_detectors, name)
         for name in removed_base_names
@@ -14425,7 +14284,7 @@ def test_detects_candidate_collector_boilerplate(
         )
     )
     modules = (*parse_python_modules(tmp_path), native_collector_module)
-    snapshot = CodemodSourceSnapshot.from_modules(modules, findings)
+    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(modules), findings)
     plan = snapshot.plan_from_findings(
         findings,
         detector_ids=("candidate_collector_boilerplate",),
@@ -15156,7 +15015,6 @@ def test_collects_sentinel_type_observations_via_spec_family(tmp_path: Path) -> 
 
 def test_sentinel_usage_projection_stops_without_a_declaration(
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _write_module(
         tmp_path,
@@ -15164,11 +15022,6 @@ def test_sentinel_usage_projection_stops_without_a_declaration(
         "\ndef ordinary(value):\n    return value is None\n",
     )
     module = parse_python_modules(tmp_path)[0]
-
-    def unexpected_walk(_node: ast.AST) -> object:
-        raise AssertionError("modules without sentinels need no usage traversal")
-
-    monkeypatch.setattr(ast_tools_module, "_walk_nodes", unexpected_walk)
 
     assert ast_tools_module._sentinel_type_usage_observations(module) == ()
 
@@ -15421,7 +15274,7 @@ def test_module_syntax_index_projects_literal_dispatch_parentage(
         "    return 0\n",
     )
     module = parse_python_modules(tmp_path)[0]
-    syntax_index = ast_tools_module.module_syntax_index(module.module)
+    syntax_index = module.syntax_index
     indexed_ifs = syntax_index.indexed_nodes_of_type(ast.If)
 
     outer_index, outer_if = indexed_ifs[0]
@@ -15445,7 +15298,7 @@ def test_module_syntax_index_keeps_nested_class_bodies_outside_outer_execution()
         "            if ready:\n"
         "                return 'method'\n"
     )
-    syntax_index = ast_tools_module.module_syntax_index(module)
+    syntax_index = ast_tools_module.ModuleSyntaxIndex.build(module)
     indexed_ifs = syntax_index.indexed_nodes_of_type(ast.If)
 
     assert tuple(
@@ -16058,9 +15911,10 @@ def test_repeated_builder_rejects_ambiguous_consumer_family_authorities(
 
     assert len(findings) == 1
     assert plan.records[0].status.value == "rejected_by_safety_check"
-    assert "multiple executable consumer-family constructor authorities" in (
-        plan.records[0].reason
-    )
+    reason = plan.records[0].reason
+    assert "several executable consumer-family constructor authorities" in reason
+    assert reason.count("existing method `") == 2
+    assert "serves_call_sites" in reason
 
 
 @pytest.mark.parametrize("annotation_source", ("", ": object", ": Any"))
@@ -17564,36 +17418,18 @@ def test_codemod_sequence_preflight_reuses_each_document_proof(
 
 def test_codemod_workflow_scan_reuses_source_snapshot(
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from nominal_refactor_advisor.codemod_workflow import CodemodWorkflowScan
 
     _write_module(tmp_path, "pkg/mod.py", "\nclass Alpha:\n    pass\n")
     modules = parse_python_modules(tmp_path)
-    rebuild_count = 0
-    real_from_modules = CodemodSourceSnapshot.from_modules.__func__
-
-    def counted_from_modules(
-        cls: type[CodemodSourceSnapshot],
-        modules: list[object],
-        findings: tuple[RefactorFinding, ...] = (),
-    ) -> CodemodSourceSnapshot:
-        nonlocal rebuild_count
-        rebuild_count += 1
-        return real_from_modules(cls, modules, findings)
-
-    monkeypatch.setattr(
-        CodemodSourceSnapshot,
-        "from_modules",
-        classmethod(counted_from_modules),
-    )
     scan = CodemodWorkflowScan(modules=modules, findings=[])
 
     first_snapshot = scan.source_snapshot
     second_snapshot = scan.source_snapshot
 
     assert first_snapshot is second_snapshot
-    assert rebuild_count == 1
+    assert first_snapshot.class_family_index is modules.fact(ClassFamilyIndex)
 
 
 def test_codemod_source_snapshot_reuses_source_index_target_nodes(
@@ -17727,7 +17563,7 @@ def test_codemod_plan_sequence_synthesizes_continuation_from_final_snapshot(
     simulation = sequence.simulate(snapshot)
     findings = tuple(
         finding
-        for finding in analyze_modules(simulation.final_snapshot.parsed_modules)
+        for finding in analyze_modules(ParsedModuleSet.of(simulation.final_snapshot.parsed_modules))
         if finding.detector_id == "manual_class_registration"
     )
     continuation_report = simulation.continuation_report_from_findings(findings)
@@ -19482,7 +19318,7 @@ def test_codemod_refactor_goal_runner_derives_zero_stage_achievement(
         dry_run=True,
         migration_type=SemanticCarrierConcept,
         guard_suite=ArchitectureGuardSuite(),
-        initial_scan=CodemodWorkflowScan(modules=[], findings=[]),
+        initial_scan=CodemodWorkflowScan(modules=ParsedModuleSet.of([]), findings=[]),
     ).run()
 
     assert report.stop_reason is CodemodWorkflowStopReason.ACHIEVED
@@ -19638,7 +19474,7 @@ def test_trajectory_status_members_own_proof_classification() -> None:
     )
 
     state = CodemodRefactorTrajectoryState(
-        scan=CodemodWorkflowScan(modules=[], findings=[])
+        scan=CodemodWorkflowScan(modules=ParsedModuleSet.of([]), findings=[])
     )
     terminal = CodemodRefactorTrajectoryTerminal(
         state=state,
@@ -20237,7 +20073,7 @@ def test_goal_runner_analyzes_equivalent_branch_state_once(
             roots=self.roots,
         ).modules_after_projection()
         return CodemodWorkflowScan(
-            modules=list(projected_modules),
+            modules=ParsedModuleSet.of(list(projected_modules)),
             findings=[],
             scan_mode=CodemodProjectedScanMode.EXACT,
         )
@@ -20444,7 +20280,7 @@ def test_goal_runner_crosses_local_worsening_move_to_unique_terminal(
         ).modules_after_projection()
         rewritten_source = simulation.rewritten_sources[module_path.as_posix()]
         return CodemodWorkflowScan(
-            modules=list(modules),
+            modules=ParsedModuleSet.of(list(modules)),
             findings=list(findings_by_source[rewritten_source]),
             scan_mode=CodemodProjectedScanMode.TARGET_DETECTOR_PARTIAL,
         )
@@ -20989,6 +20825,7 @@ def test_codemod_refactor_goal_reports_terminal_synthesis_failures(
         == "rejected_by_safety_check"
     )
     assert "synthesis_records" not in terminal_class_plan["classes"][0]
+    assert payload["trajectory_proof"]["dead_ends"][0]["reaching_stages"] == ()
 
 
 def test_semantic_carrier_goal_policy_derives_targets_from_concept_mro(
@@ -21216,7 +21053,7 @@ def test_module_cli_simulates_projected_findings_for_created_files(
     )
 
 
-def test_codemod_finding_class_delta_distinguishes_moved_from_eliminated(
+def test_codemod_finding_class_delta_distinguishes_replaced_from_eliminated(
     tmp_path: Path,
 ) -> None:
     from nominal_refactor_advisor.codemod_workflow import CodemodFindingClassDelta
@@ -21265,13 +21102,13 @@ def test_codemod_finding_class_delta_distinguishes_moved_from_eliminated(
         for change in delta.changes
     }
 
-    assert payload["moved_class_count"] == 1
+    assert payload["replaced_class_count"] == 1
     assert payload["eliminated_class_count"] == 1
     assert (
         statuses_by_declaration[
             SemanticMirrorWithoutDescentDetector.required_relation_identity()
         ]
-        == "moved"
+        == "replaced"
     )
     assert (
         statuses_by_declaration[
@@ -21314,8 +21151,11 @@ def test_codemod_finding_class_delta_ignores_presentation_and_coordinate_changes
 
     delta = CodemodFindingClassDelta.from_findings((before,), (after,))
 
-    assert before.stable_id != after.stable_id
+    assert before.stable_id == after.stable_id
     assert delta.moved_class_count == 1
+    assert delta.moved_finding_ids == (before.stable_id,)
+    (change,) = delta.changes
+    assert change.removed_ids == () and change.added_ids == ()
     assert json_report_object(delta)["status_counts"] == {"moved": 1}
 
 
@@ -21483,7 +21323,7 @@ def test_finding_class_status_members_own_transition_classification(
 
     assert status((), (first,)) is CodemodFindingClassStatus.INTRODUCED
     assert status((first,), ()) is CodemodFindingClassStatus.ELIMINATED
-    assert status((first,), (second,)) is CodemodFindingClassStatus.MOVED
+    assert status((first,), (second,)) is CodemodFindingClassStatus.REPLACED
     assert status((first,), (first, second)) is CodemodFindingClassStatus.EXPANDED
     assert status((first, second), (first,)) is (
         CodemodFindingClassStatus.PARTIALLY_ELIMINATED
@@ -21497,6 +21337,17 @@ def test_finding_class_status_members_own_transition_classification(
         is CodemodFindingClassStatus.PERSISTED
     )
     assert status((first,), (first,)) is CodemodFindingClassStatus.UNCHANGED
+    moved_first = spec.build(
+        "semantic_mirror_without_descent",
+        "Alpha mirrors Authority.",
+        (SourceLocation(source_path.as_posix(), 30, "Alpha.run"),),
+    )
+    assert moved_first.stable_id == first.stable_id
+    assert status((first,), (moved_first,)) is CodemodFindingClassStatus.MOVED
+    assert (
+        status((first,), (moved_first,), (first.stable_id,))
+        is CodemodFindingClassStatus.PERSISTED
+    )
 
 
 def test_codemod_class_plan_groups_typed_synthesis_records(
@@ -23726,26 +23577,9 @@ def test_json_payload_reuses_supplied_source_index(
 
 def test_json_payload_summary_skips_source_backed_sections(
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _write_module(tmp_path, "pkg/mod.py", "\nclass Alpha:\n    pass\n")
     modules = parse_python_modules(tmp_path)
-
-    def fail_observation_graph(*args: object, **kwargs: object) -> object:
-        raise AssertionError("summary payload should not build observation graph")
-
-    def fail_source_snapshot(*args: object, **kwargs: object) -> CodemodSourceSnapshot:
-        raise AssertionError("summary payload should not build source snapshot")
-
-    monkeypatch.setattr(
-        "nominal_refactor_advisor.cli.build_observation_graph",
-        fail_observation_graph,
-    )
-    monkeypatch.setattr(
-        CodemodSourceSnapshot,
-        "from_modules",
-        classmethod(fail_source_snapshot),
-    )
 
     payload = JsonPayloadBuilder(
         findings=[],
@@ -23754,6 +23588,8 @@ def test_json_payload_summary_skips_source_backed_sections(
         payload_sections=JsonPayloadProfile.summary.sections,
     ).build()
 
+    assert "observation_graph" not in vars(modules)
+    assert ClassFamilyIndex not in vars(modules).get("_facts", {})
     assert "findings" in payload
     assert "observations" not in payload
     assert "fibers" not in payload
@@ -24090,18 +23926,9 @@ def test_module_cli_loop_summary_cache_hit_retains_scan_contract(
 
 def test_json_payload_agent_skips_heavy_graph_and_recipe_sections(
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _write_module(tmp_path, "pkg/mod.py", "\nclass Alpha:\n    pass\n")
     modules = parse_python_modules(tmp_path)
-
-    def fail_observation_graph(*args: object, **kwargs: object) -> object:
-        raise AssertionError("agent payload should not build observation graph")
-
-    monkeypatch.setattr(
-        "nominal_refactor_advisor.cli.build_observation_graph",
-        fail_observation_graph,
-    )
 
     payload = JsonPayloadBuilder(
         findings=[],
@@ -24110,6 +23937,7 @@ def test_json_payload_agent_skips_heavy_graph_and_recipe_sections(
         payload_sections=JsonPayloadProfile.agent.sections,
     ).build()
 
+    assert "observation_graph" not in vars(modules)
     assert "observations" not in payload
     assert "fibers" not in payload
     assert "source_index" not in payload
@@ -24672,7 +24500,7 @@ def test_structural_overlap_does_not_project_codemod_candidates(
     )
 
 
-def test_semantic_gate_orders_boundary_evidence_by_stable_authority_identity() -> None:
+def test_semantic_gate_orders_boundary_evidence_by_stable_authority_identity(no_modules: ParsedModuleSet) -> None:
     spec = _finding_spec(
         PatternId.AUTHORITATIVE_SCHEMA,
         "Authority boundary",
@@ -24705,7 +24533,7 @@ def test_semantic_gate_orders_boundary_evidence_by_stable_authority_identity() -
     payload = JsonPayloadBuilder(
         findings=[small, large_one, large_two],
         plans=[],
-        modules=[],
+        modules=no_modules,
         payload_sections=JsonPayloadProfile.agent.sections,
     ).build()
     boundary_evidence = cast(list[dict[str, object]], payload["findings"])
@@ -24718,7 +24546,7 @@ def test_semantic_gate_orders_boundary_evidence_by_stable_authority_identity() -
     assert boundary_evidence[1]["authority_candidate"] == "SmallAuthority"
 
 
-def test_semantic_gate_does_not_rank_boundary_evidence_by_certificate_breadth() -> None:
+def test_semantic_gate_does_not_rank_boundary_evidence_by_certificate_breadth(no_modules: ParsedModuleSet) -> None:
     spec = _finding_spec(
         PatternId.AUTHORITATIVE_SCHEMA,
         "Authority boundary",
@@ -24769,7 +24597,7 @@ def test_semantic_gate_does_not_rank_boundary_evidence_by_certificate_breadth() 
     payload = JsonPayloadBuilder(
         findings=[narrow_one, narrow_two, broad],
         plans=[],
-        modules=[],
+        modules=no_modules,
         payload_sections=JsonPayloadProfile.agent.sections,
     ).build()
     boundary_evidence = cast(list[dict[str, object]], payload["findings"])
@@ -24784,7 +24612,7 @@ def test_semantic_gate_does_not_rank_boundary_evidence_by_certificate_breadth() 
     assert boundary_evidence[1]["covered_finding_count"] == 2
 
 
-def test_json_payload_uses_semantic_boundary_evidence_when_gate_is_active() -> None:
+def test_json_payload_uses_semantic_boundary_evidence_when_gate_is_active(no_modules: ParsedModuleSet) -> None:
     spec = _finding_spec(
         PatternId.AUTHORITATIVE_SCHEMA,
         "Authority boundary",
@@ -24812,13 +24640,13 @@ def test_json_payload_uses_semantic_boundary_evidence_when_gate_is_active() -> N
     payload = JsonPayloadBuilder(
         findings=[critical],
         plans=[],
-        modules=[],
+        modules=no_modules,
         payload_sections=JsonPayloadProfile.agent.sections,
     ).build()
     raw_payload = JsonPayloadBuilder(
         findings=[critical],
         plans=[],
-        modules=[],
+        modules=no_modules,
         payload_sections=JsonPayloadProfile.agent.sections,
         raw_findings=True,
     ).build()
@@ -25015,7 +24843,7 @@ def resolve(obj):
     )
     modules = parse_python_modules(tmp_path)
     projected_observations = modules[0].structural_observations
-    graph = build_observation_graph(modules)
+    graph = modules.observation_graph
 
     assert collect_structural_observations(modules[0]) is projected_observations
     kinds = {item.observation_kind for item in graph.observations}
@@ -25394,7 +25222,7 @@ def test_markdown_output_can_include_subsystem_plans(tmp_path: Path) -> None:
     assert "Plan step:" not in output
 
 
-def test_markdown_and_json_can_include_execution_plan(tmp_path: Path) -> None:
+def test_markdown_and_json_can_include_execution_plan(tmp_path: Path, no_modules: ParsedModuleSet) -> None:
     spec = _finding_spec(
         PatternId.AUTHORITATIVE_CONTEXT,
         "Collapse execution batch",
@@ -25416,7 +25244,7 @@ def test_markdown_and_json_can_include_execution_plan(tmp_path: Path) -> None:
     payload = JsonPayloadBuilder(
         findings=[finding],
         plans=[],
-        modules=[],
+        modules=no_modules,
         execution_plan=execution_plan,
     ).build()
 
@@ -25474,7 +25302,8 @@ def test_preserves_nominal_identity_of_forwarding_wrapper(tmp_path: Path) -> Non
         "\nfrom abc import ABC, abstractmethod\nfrom dataclasses import dataclass\n\n\nclass ProbeRoute(ABC):\n    @abstractmethod\n    def generate(self, request):\n        raise NotImplementedError\n\n    @abstractmethod\n    def score(self, request, batch):\n        raise NotImplementedError\n\n\n@dataclass(frozen=True)\nclass ProbeRouteWitness:\n    route: ProbeRoute\n\n    def generate(self, request):\n        return self.route.generate(request)\n\n    def score(self, request, batch):\n        return self.route.score(request, batch)\n\n\ndef execute_witness(witness: ProbeRouteWitness, request, batch):\n    generated = witness.generate(request)\n    return generated, witness.score(request, batch)\n",
     )
     findings = analyze_path(tmp_path)
-    assert findings == []
+    # No nominal identity is lost, but ProbeRouteWitness forwards generate and score unchanged to the route it holds: a facade that restates ProbeRoute's members.
+    assert [finding.detector_id for finding in findings] == ["forwarding_facade"]
 
 
 def test_detects_repeated_finding_assembly_pipeline(tmp_path: Path) -> None:

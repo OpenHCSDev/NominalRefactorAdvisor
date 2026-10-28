@@ -13,8 +13,9 @@ from collections import defaultdict
 from dataclasses import dataclass
 from typing import Generic, TypeVar
 
+from ..value_expression import CompactValueExpression
+from ..ast_projection import ExpressionReference
 from ..ast_tools import (
-    AstExpressionProjection,
     ParsedModule,
     is_docstring_statement,
     statements_without_docstring,
@@ -22,6 +23,7 @@ from ..ast_tools import (
 )
 from ..class_index import ClassFamilyIndex, IndexedClass
 from ..collection_algebra import sorted_tuple
+from ..foreign_family import FunctionDefinition
 from ..name_algebra import CLASS_NAME_ALGEBRA, ClassNameAlgebra
 
 _TYPE_NAME_LITERAL = "type"
@@ -66,7 +68,7 @@ class _AnnotationTypeNamesProjection(_AstNodeProjection[tuple[str, ...]]):
     def __call__(self, node: ast.AST | None) -> tuple[str, ...]:
         if node is None:
             return ()
-        if isinstance(node, ast.Constant) and node.value is None:
+        if CompactValueExpression.project(node).value_is_none_literal:
             return ()
         if isinstance(node, ast.Name):
             return () if node.id == "None" else (node.id,)
@@ -78,7 +80,7 @@ class _AnnotationTypeNamesProjection(_AstNodeProjection[tuple[str, ...]]):
         if isinstance(node, ast.BinOp) and isinstance(node.op, ast.BitOr):
             return sorted_tuple({*self(node.left), *self(node.right)})
         if isinstance(node, ast.Subscript):
-            base_name = AstExpressionProjection.terminal_name(node.value)
+            base_name = ExpressionReference.decoded(node.value).terminal_name
             if base_name in {
                 "Optional",
                 "Required",
@@ -124,7 +126,7 @@ class ClassNodeAuthority:
             {
                 base_name
                 for base_name in (
-                    AstExpressionProjection.terminal_name(base) for base in node.bases
+                    ExpressionReference.decoded(base).terminal_name for base in node.bases
                 )
                 if base_name is not None
             }
@@ -150,8 +152,7 @@ class ClassNodeAuthority:
         return tuple(
             (
                 statement
-                for statement in node.body
-                if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef))
+                for statement in FunctionDefinition.within(node.body)
             )
         )
 
@@ -168,7 +169,7 @@ class ClassNodeAuthority:
             return True
         for statement in self.methods(node):
             for decorator in statement.decorator_list:
-                if AstExpressionProjection.terminal_name(decorator) == "abstractmethod":
+                if ExpressionReference.decoded(decorator).terminal_name == "abstractmethod":
                     return True
         return False
 
@@ -179,7 +180,7 @@ CLASS_NODE_AUTHORITY = ClassNodeAuthority()
 def _is_abstract_method(node: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
     return any(
         (
-            AstExpressionProjection.terminal_name(decorator) == "abstractmethod"
+            ExpressionReference.decoded(decorator).terminal_name == "abstractmethod"
             for decorator in node.decorator_list
         )
     )
@@ -231,7 +232,7 @@ def _class_ancestor_name_map(
 def _module_class_defs_by_name(module: ParsedModule) -> dict[str, ast.ClassDef]:
     return {
         node.name: node
-        for node in _walk_nodes(module.module)
+        for node in module.syntax_index.breadth_first_nodes
         if isinstance(node, ast.ClassDef)
     }
 

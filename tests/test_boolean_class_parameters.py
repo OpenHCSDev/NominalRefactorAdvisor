@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from nominal_refactor_advisor.ast_tools import SourceModule, module_syntax_index
+from nominal_refactor_advisor.ast_tools import SourceModule
 from nominal_refactor_advisor.product_flow_authority import SourceProductFlowRepository
 
 

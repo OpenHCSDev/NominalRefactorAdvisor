@@ -11,7 +11,7 @@ from collections.abc import Iterator
 
 import pytest
 
-from nominal_refactor_advisor.ast_tools import ParsedModule
+from nominal_refactor_advisor.ast_tools import ParsedModule, ParsedModuleSet
 from nominal_refactor_advisor.detectors import _base as collector_runtime
 from nominal_refactor_advisor.source_geometry import read_source_text
 
@@ -57,6 +57,13 @@ def native_collector_module() -> ParsedModule:
     )
 
 
+@pytest.fixture(scope="session")
+def no_modules() -> ParsedModuleSet:
+    """The module set of a run that parsed nothing."""
+
+    return ParsedModuleSet(())
+
+
 @pytest.fixture(scope="session", autouse=True)
 def _isolated_default_advisor_cache() -> Iterator[None]:
     """Keep test-created persistent caches inside one disposable session root."""
@@ -72,3 +79,12 @@ def _isolated_default_advisor_cache() -> Iterator[None]:
                 os.environ.pop(environment_name, None)
             else:
                 os.environ[environment_name] = previous_cache_home
+
+
+def pytest_xdist_auto_num_workers(config: pytest.Config) -> int:
+    """`-n auto` takes the cores nobody else is using.
+
+    The suite shares its machine with other agents' runs. One-minute load average counts
+    the runnable processes already competing, so the free cores are the CPUs minus that
+    load, never fewer than one worker; `--maxprocesses` still caps the result."""
+    return max(1, (os.cpu_count() or 1) - round(os.getloadavg()[0]))

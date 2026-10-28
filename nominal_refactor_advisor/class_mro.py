@@ -219,11 +219,9 @@ class ClassMroAuthority:
             not declaration.base_references_are_complete
             or len(declaration.resolved_base_symbols)
             != sum(base is None for base in native_bases)
-            or any(
-                reference.root_binding is None
-                for reference in declaration.base_references
-            )
         ):
+            return UnresolvedBases(symbol)
+        if declaration.base_bindings.unbound:
             return UnresolvedBases(symbol)
         source_bases = iter(declaration.resolved_base_symbols)
         bases = []

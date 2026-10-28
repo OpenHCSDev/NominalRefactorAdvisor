@@ -47,7 +47,7 @@ class _FindingCluster:
     @classmethod
     def from_findings(
         cls, findings: tuple[RefactorFinding, ...], root: Path
-    ) -> "_FindingCluster":
+    ) -> _FindingCluster:
         return cls(
             subsystem=SubsystemNameProjection(findings, root).name(),
             findings=findings,
@@ -419,7 +419,7 @@ def _cluster_findings(
 class _FindingRelation:
     weight: int
     reasons: tuple[str, ...]
-    authority: "_FindingRelationAuthority"
+    authority: _FindingRelationAuthority
 
     @property
     def is_execution_edge(self) -> bool:
@@ -440,9 +440,9 @@ class _FindingRelationAuthority:
     @classmethod
     def between(
         cls,
-        left: "_FindingRelationFacts",
-        right: "_FindingRelationFacts",
-    ) -> "_FindingRelationAuthority":
+        left: _FindingRelationFacts,
+        right: _FindingRelationFacts,
+    ) -> _FindingRelationAuthority:
         return cls(
             shared_paths=left.paths & right.paths,
             shared_symbol_roots=left.symbol_roots & right.symbol_roots,
@@ -473,7 +473,7 @@ class _FindingRelationFacts:
     @classmethod
     def from_finding(
         cls, finding: RefactorFinding, root: Path
-    ) -> "_FindingRelationFacts":
+    ) -> _FindingRelationFacts:
         paths = frozenset(_evidence_paths(finding))
         relative_parent_parts = tuple(
             _safe_relative(path, root).parent.parts for path in sorted(paths)
@@ -488,7 +488,7 @@ class _FindingRelationFacts:
             symbol_roots=frozenset(_symbol_roots(finding)),
         )
 
-    def relation_to(self, right: "_FindingRelationFacts") -> _FindingRelation:
+    def relation_to(self, right: _FindingRelationFacts) -> _FindingRelation:
         score = 0
         reasons: list[str] = []
         authority = _FindingRelationAuthority.between(self, right)
@@ -538,7 +538,7 @@ class _FindingRelationFacts:
             ),
         )
 
-    def common_dir_depth(self, right: "_FindingRelationFacts") -> int:
+    def common_dir_depth(self, right: _FindingRelationFacts) -> int:
         shared_prefixes = self.relative_parent_prefixes & right.relative_parent_prefixes
         if not shared_prefixes:
             return 0
@@ -559,7 +559,7 @@ class _FindingRelationCandidateIndex:
     def from_facts(
         cls,
         facts: tuple[_FindingRelationFacts, ...],
-    ) -> "_FindingRelationCandidateIndex":
+    ) -> _FindingRelationCandidateIndex:
         mutable_index: dict[_FindingRelationAuthorityKey, list[int]] = defaultdict(list)
         for fact_index, fact in enumerate(facts):
             for authority_key in fact.authority_keys():
@@ -592,7 +592,7 @@ class _FindingRelationGraph:
     @classmethod
     def from_findings(
         cls, findings: tuple[RefactorFinding, ...], root: Path
-    ) -> "_FindingRelationGraph":
+    ) -> _FindingRelationGraph:
         scan_deadline_checkpoint("refactor_execution_relation_facts")
         facts = tuple(
             _FindingRelationFacts.from_finding(finding, root) for finding in findings

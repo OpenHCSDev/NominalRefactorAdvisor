@@ -28,11 +28,57 @@ from ..semantic_match import (
     attribute_call_match,
 )
 from ..taxonomy import CapabilityTag, ObservationTag
-from ._base import *
-from ._helpers import *
+from dataclasses import dataclass
+from typing import Generic, TypeVar
+from ..ast_tools import _walk_nodes, ParsedModule, statements_without_docstring
+from ..collection_algebra import sorted_tuple
+from ..models import (
+    MappingMetrics,
+    RefactorFinding,
+    RegistrationMetrics,
+    RepeatedMethodMetrics,
+    SentinelSimulationMetrics,
+    SourceLocation,
+)
+from ..patterns import PatternId
+from ..semantic_match import as_ast, ast_sequence, name_id
+from ._base import (
+    ClassLineNumbersGroup,
+    CompactClassRepositoryContext,
+    CompactContextCandidateDetector,
+    ConcreteTypeUnionContractCandidate,
+    ConfiguredModuleCollectorCandidateDetector,
+    declare_candidate_rule_detector,
+    DetectorConfig,
+    DynamicSelfFieldSelectionCandidate,
+    high_confidence_certified_spec,
+    high_confidence_spec,
+    ModuleCollectorCandidateDetector,
+    OverlappingInheritanceFamiliesCandidate,
+    PropertyAliasHookGroup,
+    ReflectiveSelfAttributeCandidate,
+    RegisteredUnionSurfaceCandidate,
+    RepeatedBaseBundleCandidate,
+    SemanticOverlapMethodCandidate,
+    SemanticOverlapMethodFamilyCandidate,
+    StringBackedReflectiveNominalLookupCandidate,
+)
+from ._helpers import (
+    _concrete_type_union_contract_candidates,
+    _dynamic_self_field_selection_candidates,
+    _reflective_self_attribute_candidates,
+    _registered_union_surface_candidates,
+    _repeated_base_bundle_candidates,
+    _string_backed_reflective_nominal_lookup_candidates,
+    CompactMethodFamilyContext,
+)
+from ._structural_step_regex_extractor import (
+    _accumulator_fold_family_candidates,
+    _regex_group_extractor_family_candidates,
+    AccumulatorFoldFamilyCandidate,
+    RegexGroupExtractorFamilyCandidate,
+)
 from ._helpers import _property_alias_hook_groups
-from ._structural_step_regex_extractor import *
-from ._substrate_support import *
 
 _REFLECTIVE_ATTRIBUTE_CONTRACT_REPLACEMENT_SHAPE = ObjectFamilyShape(
     shared_objects=("nominal_attribute_contract",)
@@ -197,7 +243,7 @@ declare_candidate_rule_detector(
 )
 
 
-declare_candidate_rule_detector(
+ExactLeafMethodAncestorPromotionDetector = declare_candidate_rule_detector(
     ExactLeafMethodAncestorPromotionComponent,
     high_confidence_certified_spec(
         PatternId.SHARED_ALGORITHM_AUTHORITY,
@@ -524,7 +570,7 @@ class _CatalogInstallingMixinShape:
     def from_method(
         cls,
         method: ast.FunctionDef,
-    ) -> "_CatalogInstallingMixinShape | None":
+    ) -> _CatalogInstallingMixinShape | None:
         return (
             Maybe.of(method)
             .filter(lambda function: function.name == "__init_subclass__")
@@ -573,7 +619,7 @@ def _catalog_installing_mixin_family_candidates(
 ) -> tuple[CatalogInstallingMixinFamilyCandidate, ...]:
     items: list[tuple[str, str, int]] = []
     for class_node in (
-        node for node in _walk_nodes(module.module) if isinstance(node, ast.ClassDef)
+        node for node in module.syntax_index.breadth_first_nodes if isinstance(node, ast.ClassDef)
     ):
         for statement in class_node.body:
             if not isinstance(statement, ast.FunctionDef):

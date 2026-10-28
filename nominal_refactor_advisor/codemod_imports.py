@@ -33,7 +33,7 @@ from .codemod_source_edits import (
 from .codemod_spacing import DestinationInsertionSpacing
 from .collection_algebra import sorted_tuple
 from .lexical_bindings import (
-    ImportAliasRequirement as ImportAliasRequirement,
+    ImportAlias as ImportAlias,
     ImportBoundNameProjection,
     ImportDeclarationABC,
     ImportFromModuleName as ImportFromModuleName,
@@ -77,7 +77,7 @@ class ImportBlockInsertionPointABC(ABC):
             return (final_import.end_lineno or final_import.lineno) + 1
         return self.initial_line_number
 
-    def insertion_index_for(self, addition: "RequestedImportStatement") -> int:
+    def insertion_index_for(self, addition: RequestedImportStatement) -> int:
         """Locate the addition among existing canonical import families."""
 
         return next(
@@ -104,8 +104,8 @@ class ImportBlockInsertionPointABC(ABC):
         self,
         *,
         source: str,
-        slot: "ImportInsertionSlot",
-        additions: tuple["RequestedImportStatement", ...],
+        slot: ImportInsertionSlot,
+        additions: tuple[RequestedImportStatement, ...],
     ) -> str:
         """Render additions with any required following group boundary."""
 
@@ -131,9 +131,9 @@ class ImportBlockInsertionPointABC(ABC):
 
     def grouped_additions(
         self,
-        additions: tuple["RequestedImportStatement", ...],
+        additions: tuple[RequestedImportStatement, ...],
     ) -> tuple[
-        tuple["ImportInsertionSlot", tuple["RequestedImportStatement", ...]], ...
+        tuple[ImportInsertionSlot, tuple[RequestedImportStatement, ...]], ...
     ]:
         """Group additions by the slot each lands in, in source order."""
 
@@ -166,8 +166,8 @@ class ImportInsertionSlot(ABC):
     def of(
         point: ImportBlockInsertionPointABC,
         index: int,
-        addition: "RequestedImportStatement",
-    ) -> "ImportInsertionSlot":
+        addition: RequestedImportStatement,
+    ) -> ImportInsertionSlot:
         imports = point.leading_import_statements
         if (
             index < len(imports)
@@ -388,7 +388,7 @@ class ModuleImportMutation(KeyedSourceEditCoalescence):
         import_source: str,
         scope: ModuleImportScope = ModuleImportScope.RUNTIME,
         rationale: str = "",
-    ) -> "ModuleImportMutation":
+    ) -> ModuleImportMutation:
         requested = RequestedImportStatement.from_source(import_source, scope=scope)
         if not requested:
             raise ValueError("Module import mutations require import statements")
@@ -407,7 +407,7 @@ class ModuleImportMutation(KeyedSourceEditCoalescence):
         names: Iterable[str],
         scope: ModuleImportScope = ModuleImportScope.RUNTIME,
         rationale: str = "",
-    ) -> "ModuleImportMutation":
+    ) -> ModuleImportMutation:
         return cls(
             file_path=file_path,
             removals=(
@@ -428,7 +428,7 @@ class ModuleImportMutation(KeyedSourceEditCoalescence):
         names: Iterable[str],
         scope: ModuleImportScope = ModuleImportScope.RUNTIME,
         rationale: str = "",
-    ) -> "ModuleImportMutation":
+    ) -> ModuleImportMutation:
         """Remove exact import bindings after current-source resolution."""
 
         return cls(
@@ -443,8 +443,8 @@ class ModuleImportMutation(KeyedSourceEditCoalescence):
     @classmethod
     def _coalesced_group(
         cls,
-        mutations: tuple["ModuleImportMutation", ...],
-    ) -> "ModuleImportMutation":
+        mutations: tuple[ModuleImportMutation, ...],
+    ) -> ModuleImportMutation:
         first = mutations[0]
         additions = cls._coalesced_additions(
             addition for mutation in mutations for addition in mutation.additions
@@ -512,7 +512,7 @@ class ModuleImportMutation(KeyedSourceEditCoalescence):
                 int,
                 str | None,
             ],
-            list[ImportAliasRequirement],
+            list[ImportAlias],
         ] = {}
         statement_by_family: dict[
             tuple[
@@ -577,7 +577,7 @@ class ModuleImportMutation(KeyedSourceEditCoalescence):
 
     def resolved_windows(
         self,
-        context: "CodemodSelectorContext",
+        context: CodemodSelectorContext,
     ) -> tuple[PhysicalSourceEdit, ...]:
         source = context.sources_by_file_path[self.file_path]
         module = context.module_nodes_by_file_path.get(self.file_path)
@@ -621,7 +621,7 @@ class ModuleImportMutation(KeyedSourceEditCoalescence):
         )
         aliases_by_statement = {
             id(statement): [
-                ImportAliasRequirement.from_alias(alias) for alias in statement.names
+                ImportAlias.from_alias(alias) for alias in statement.names
             ]
             for statement in import_statements
         }
@@ -647,16 +647,16 @@ class ModuleImportMutation(KeyedSourceEditCoalescence):
         for statement in import_statements:
             scope = scope_by_statement_id[id(statement)]
             requested_statement = RequestedImportStatement(statement, scope=scope)
-            retained_aliases: list[ImportAliasRequirement] = []
+            retained_aliases: list[ImportAlias] = []
             for alias in aliases_by_statement[id(statement)]:
-                bound_name = requested_statement.bound_name(alias)
-                removal = (
+                removals = requested_bound_name_removals.intersection(
                     ImportBoundNameRemoval(name=bound_name, scope=scope)
-                    if bound_name is not None
-                    else None
+                    for bound_name in alias.bound_names_in(
+                        requested_statement.declaration
+                    )
                 )
-                if removal is not None and removal in requested_bound_name_removals:
-                    matched_bound_name_removals.add(removal)
+                if removals:
+                    matched_bound_name_removals |= removals
                 else:
                     retained_aliases.append(alias)
             aliases_by_statement[id(statement)] = retained_aliases
@@ -760,8 +760,7 @@ class ModuleImportMutation(KeyedSourceEditCoalescence):
         replacements.extend(
             SourceSpanDeletion(
                 file_path=self.file_path,
-                start_line=guard.lineno,
-                end_line=guard.end_lineno or guard.lineno,
+                span=SourceLineSpan(guard.lineno, guard.end_lineno or guard.lineno),
                 rationale=self.rationale
                 or f"Remove empty type-checking import guard in {self.file_path!r}.",
                 contributors=self.contributors,
@@ -775,7 +774,7 @@ class ModuleImportMutation(KeyedSourceEditCoalescence):
             if guard is not None and id(guard) in deletable_guards:
                 continue
             original_aliases = tuple(
-                ImportAliasRequirement.from_alias(alias) for alias in statement.names
+                ImportAlias.from_alias(alias) for alias in statement.names
             )
             aliases = tuple(aliases_by_statement[id(statement)])
             if aliases == original_aliases:
@@ -790,8 +789,7 @@ class ModuleImportMutation(KeyedSourceEditCoalescence):
                 replacements.append(
                     SourceSpanDeletion(
                         file_path=self.file_path,
-                        start_line=statement.lineno,
-                        end_line=statement.end_lineno or statement.lineno,
+                        span=SourceLineSpan(statement.lineno, statement.end_lineno or statement.lineno),
                         rationale=self.rationale
                         or f"Remove import bindings in {self.file_path!r}.",
                         contributors=self.contributors,
@@ -815,8 +813,7 @@ class ModuleImportMutation(KeyedSourceEditCoalescence):
             replacements.append(
                 SourceSpanReplacement(
                     file_path=self.file_path,
-                    start_line=statement.lineno,
-                    end_line=statement.end_lineno or statement.lineno,
+                    span=SourceLineSpan(statement.lineno, statement.end_lineno or statement.lineno),
                     replacement_lines=SourceTextGeometry(source).generated_lines(
                         replacement_source
                     ),
@@ -1067,7 +1064,7 @@ class ImportSourceGroup(StrEnum):
         value: str,
         canonical_rank: int,
         reference_matcher: Callable[[ImportFromModuleName], bool],
-    ) -> "ImportSourceGroup":
+    ) -> ImportSourceGroup:
         member = str.__new__(cls, value)
         member._value_ = value
         member._canonical_rank = canonical_rank
@@ -1083,7 +1080,7 @@ class ImportSourceGroup(StrEnum):
     @classmethod
     def from_declaration(
         cls, declaration: ImportDeclarationABC
-    ) -> tuple["ImportSourceGroup", ...]:
+    ) -> tuple[ImportSourceGroup, ...]:
         if declaration.is_future_import:
             return (cls.FUTURE,)
         return tuple(
@@ -1096,7 +1093,7 @@ class ImportSourceGroup(StrEnum):
     @classmethod
     def from_module_reference(
         cls, reference: ImportFromModuleName
-    ) -> "ImportSourceGroup":
+    ) -> ImportSourceGroup:
         """Require one declaration-owned match, independent of source-order rank."""
         matches = tuple(group for group in cls if group._reference_matcher(reference))
         if len(matches) != 1:
@@ -1123,7 +1120,7 @@ class RequestedImportStatement:
         source: str,
         *,
         scope: ModuleImportScope = ModuleImportScope.RUNTIME,
-    ) -> tuple["RequestedImportStatement", ...]:
+    ) -> tuple[RequestedImportStatement, ...]:
         module = ast.parse(source, filename="<requested-import>")
         if not all(
             isinstance(statement, (ast.Import, ast.ImportFrom))
@@ -1142,7 +1139,7 @@ class RequestedImportStatement:
         statement: ImportStatement,
         *,
         scope: ModuleImportScope = ModuleImportScope.RUNTIME,
-    ) -> tuple["RequestedImportStatement", ...]:
+    ) -> tuple[RequestedImportStatement, ...]:
         """Normalize a direct import to one source group per requirement."""
 
         if isinstance(statement, ast.ImportFrom):
@@ -1152,11 +1149,11 @@ class RequestedImportStatement:
         )
 
     @property
-    def aliases(self) -> tuple[ImportAliasRequirement, ...]:
+    def aliases(self) -> tuple[ImportAlias, ...]:
         return self.declaration.aliases
 
     @property
-    def module_name(self) -> "ImportFromModuleName | None":
+    def module_name(self) -> ImportFromModuleName | None:
         if not isinstance(self.statement, ast.ImportFrom):
             return None
         return ImportFromModuleName.from_node(self.statement)
@@ -1233,9 +1230,6 @@ class RequestedImportStatement:
     def bound_names(self) -> tuple[str, ...]:
         return self.declaration.names()
 
-    def bound_name(self, alias: ImportAliasRequirement) -> str | None:
-        return self.declaration.bound_name(alias)
-
     @property
     def source(self) -> str:
         if isinstance(self.statement, ast.Import):
@@ -1250,10 +1244,10 @@ class RequestedImportStatement:
 
     def with_aliases(
         self,
-        aliases: Iterable[ImportAliasRequirement],
-    ) -> "RequestedImportStatement":
+        aliases: Iterable[ImportAlias],
+    ) -> RequestedImportStatement:
         alias_nodes = [
-            ast.alias(name=alias.name, asname=alias.asname) for alias in aliases
+            alias.ast_alias for alias in aliases
         ]
         if isinstance(self.statement, ast.Import):
             return RequestedImportStatement(
@@ -1321,4 +1315,4 @@ class ImportFromSource:
 
     @staticmethod
     def alias_source(alias: ast.alias) -> str:
-        return ImportAliasRequirement.from_alias(alias).source
+        return ImportAlias.from_alias(alias).source

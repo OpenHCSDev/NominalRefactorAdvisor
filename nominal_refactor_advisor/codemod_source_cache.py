@@ -23,8 +23,8 @@ from .ast_tools import (
 )
 from .class_index import (
     ClassFamilyIndex,
-    build_class_family_index,
 )
+from .ast_tools import ParsedModuleSet
 from .codemod_import_graph import SourceModuleImportGraph
 from .codemod_runtime import CodemodSourceSnapshot
 from .models import RefactorFinding
@@ -45,10 +45,10 @@ class CodemodSourceContext(IndexedSourceAuthority):
     @classmethod
     def from_modules(
         cls,
-        modules: Iterable[ParsedModule],
+        modules: ParsedModuleSet,
         findings: Iterable[RefactorFinding] = (),
-    ) -> "CodemodSourceContext":
-        module_tuple = tuple(modules)
+    ) -> CodemodSourceContext:
+        module_tuple = modules.modules
         source_index_artifacts = build_source_index_artifacts(
             module_tuple,
             tuple(findings),
@@ -65,7 +65,7 @@ class CodemodSourceContext(IndexedSourceAuthority):
             sources_by_file_path={
                 module.file_path: module.source for module in module_tuple
             },
-            class_family_index=build_class_family_index(module_tuple),
+            class_family_index=modules.fact(ClassFamilyIndex),
             imported_modules_by_module=import_graph.import_edges_by_module,
         )
 
@@ -81,7 +81,7 @@ class CodemodSourceContext(IndexedSourceAuthority):
         findings: Iterable[RefactorFinding],
         *,
         parse_workers: int = 1,
-    ) -> "CodemodSourceSnapshot":
+    ) -> CodemodSourceSnapshot:
         module_tuple = self.parsed_modules_for_findings(
             tuple(findings),
             parse_workers=parse_workers,

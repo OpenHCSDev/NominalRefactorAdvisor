@@ -23,7 +23,9 @@ from nominal_refactor_advisor.declaration_binding_transfer import (
     DeclarationModuleBindingTransfer,
 )
 
+from .value_expression import CompactValueExpression
 from .ast_tools import (
+    BuiltinCallName,
     ParsedModule,
     statements_without_docstring,
 )
@@ -64,7 +66,9 @@ from .codemod_source_edits import (
     SourceTextSpanReplacement,
 )
 from .collection_algebra import sorted_tuple
+from .foreign_family import FunctionDefinition
 from .lexical_bindings import (
+    ImportBoundNameProjection,
     ImportFromModuleName,
     LEXICAL_SCOPE_BINDING_AUTHORITY,
 )
@@ -196,10 +200,11 @@ class _TypeKeyedBehaviorMethodDescent:
         )
         if guarded_type is None:
             return body, None
-        if (
-            not ModuleNominalBindingAuthority(self.source_module)
-            .snapshot_before(self.projection_method.lineno)
-            .resolves_unshadowed_builtin("isinstance")
+        snapshot = ModuleNominalBindingAuthority(self.source_module).snapshot_before(
+            self.projection_method.lineno
+        )
+        if not BuiltinCallName.ISINSTANCE.is_unshadowed(
+            snapshot.resolves_unshadowed_builtin
         ):
             raise ValueError(
                 f"projected method {self.projection_method.name!r} uses a shadowed "
@@ -235,11 +240,8 @@ class _TypeKeyedBehaviorMethodDescent:
             return None
         call = test.operand
         if not (
-            isinstance(call, ast.Call)
-            and isinstance(call.func, ast.Name)
-            and call.func.id == "isinstance"
-            and len(call.args) == 2
-            and not call.keywords
+            BuiltinCallName.isinstance_arguments(call) is not None
+            and BuiltinCallName.is_isinstance_callee(call.func)
             and isinstance(call.args[0], ast.Name)
             and call.args[0].id == subject_name
         ):
@@ -354,7 +356,7 @@ class _ProjectionLookupSequence:
         lookup_method_name: str,
         lookup_receiver_matches: Callable[[ast.expr], bool],
         behavior_method_names: frozenset[str],
-    ) -> "_ProjectionLookupSequence | None":
+    ) -> _ProjectionLookupSequence | None:
         statement_tuple = tuple(statements)
         if len(statement_tuple) != 3:
             return None
@@ -423,8 +425,7 @@ class _ProjectionLookupSequence:
             and len(statement.test.ops) == 1
             and isinstance(statement.test.ops[0], ast.Is)
             and len(statement.test.comparators) == 1
-            and isinstance(statement.test.comparators[0], ast.Constant)
-            and statement.test.comparators[0].value is None
+            and CompactValueExpression.project(statement.test.comparators[0]).value_is_none_literal
         )
 
     @staticmethod
@@ -531,7 +532,7 @@ class _TypeKeyedBehaviorSourceDerivation:
         projection_root_symbol: str,
         *,
         operation: TypedMirror,
-    ) -> "_TypeKeyedBehaviorSourceDerivation":
+    ) -> _TypeKeyedBehaviorSourceDerivation:
         projections = CompactModuleClassProjectionFamily.collect_modules(
             snapshot.parsed_modules
         )
@@ -693,15 +694,13 @@ class _TypeKeyedBehaviorSourceDerivation:
             and len(value.test.ops) == 1
             and isinstance(value.test.ops[0], ast.IsNot)
             and len(value.test.comparators) == 1
-            and isinstance(value.test.comparators[0], ast.Constant)
-            and value.test.comparators[0].value is None
+            and CompactValueExpression.project(value.test.comparators[0]).value_is_none_literal
             and isinstance(value.body, ast.Call)
             and isinstance(value.body.func, ast.Name)
             and value.body.func.id == result_name
             and not value.body.args
             and not value.body.keywords
-            and isinstance(value.orelse, ast.Constant)
-            and value.orelse.value is None
+            and CompactValueExpression.project(value.orelse).value_is_none_literal
         )
 
     @staticmethod
@@ -863,8 +862,7 @@ class _TypeKeyedBehaviorSourceDerivation:
             }
             target_method_names = frozenset(
                 statement.name
-                for statement in target_class.node.body
-                if isinstance(statement, ast.FunctionDef | ast.AsyncFunctionDef)
+                for statement in FunctionDefinition.within(target_class.node.body)
             )
             collisions = sorted_tuple(
                 target_method_names.intersection(self.component.behavior_method_names)
@@ -984,9 +982,7 @@ class _TypeKeyedBehaviorSourceDerivation:
         replacements: list[SourceTextSpanReplacement],
         spans: list[SourceTextSpan],
     ) -> None:
-        for function in ast.walk(module.module):
-            if not isinstance(function, ast.FunctionDef | ast.AsyncFunctionDef):
-                continue
+        for function in FunctionDefinition.within(ast.walk(module.module)):
             function_offsets = geometry.required_node_offsets(function)
             if self._offsets_within_any(function_offsets, deleted_spans):
                 continue
@@ -1145,7 +1141,7 @@ class _TypeKeyedBehaviorSourceDerivation:
                 remaining_aliases = tuple(
                     alias
                     for alias in statement.names
-                    if (alias.asname or alias.name) not in removable_names
+                    if ImportBoundNameProjection(statement).alias_bound_name(alias) not in removable_names
                 )
                 if len(remaining_aliases) == len(statement.names):
                     continue

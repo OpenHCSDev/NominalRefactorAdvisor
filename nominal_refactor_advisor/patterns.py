@@ -355,6 +355,159 @@ class PatternId(IntEnum):
         ),
         witness_capabilities=(CapabilityTag.PROVENANCE,),
     )
+    FOREIGN_TYPE_SWITCH_LEAD = _pattern(
+        stable_id=26,
+        display_name="Foreign Type Switch Lead (Closed Set OPEN)",
+        required_relation=(
+            "Several sites test instances against classes declared outside the "
+            "scanned repository, all from one owner module. Whether the tested "
+            "set is closed, and which site owns it, remains OPEN."
+        ),
+        witness_capabilities=(CapabilityTag.PROVENANCE,),
+    )
+    FOREIGN_FAMILY_ROUTABLE_FILTER = _pattern(
+        stable_id=27,
+        display_name="Foreign Family Routable Filter",
+        required_relation=(
+            "A filter tests exactly the classes a declared foreign family owns, "
+            "so the family's own membership test can replace the restated one."
+        ),
+        witness_capabilities=(CapabilityTag.PROVENANCE,),
+    )
+    FOREIGN_ADAPTER_BIND_CHAIN = _pattern(
+        stable_id=28,
+        display_name="Foreign Adapter Bind Chain",
+        required_relation=(
+            "An isinstance chain binds the same locals from each class of a "
+            "declared adapter family, and every arm expression is the property "
+            "the adapter already implements for that class."
+        ),
+        witness_capabilities=(CapabilityTag.PROVENANCE,),
+    )
+    STATIC_PROJECTION_ADAPTER_CALL = _pattern(
+        stable_id=29,
+        display_name="Static Projection Adapter Call",
+        required_relation=(
+            "A call of a static projection class asks a question that a "
+            "declared adapter family already answers as a property of the same "
+            "name, so the call can decode once and read that property."
+        ),
+        witness_capabilities=(CapabilityTag.PROVENANCE,),
+    )
+
+    STRING_KIND_DISPATCH = _pattern(
+        stable_id=30,
+        display_name="String Dispatch On A Kind",
+        required_relation=(
+            "One subject is compared against three or more string literals in one "
+            "function, so the function restates the membership of a family that "
+            "has no declaration."
+        ),
+        witness_capabilities=(
+            CapabilityTag.CLOSED_FAMILY_DISPATCH,
+            CapabilityTag.PROVENANCE,
+        ),
+    )
+    ATTRIBUTE_ACCESS_BY_NAME = _pattern(
+        stable_id=31,
+        display_name="Attribute Access By Name",
+        required_relation=(
+            "A getattr, hasattr, setattr or delattr call names an attribute with "
+            "a string literal, or getattr supplies a default, so the call "
+            "restates which attributes the receiver's type declares."
+        ),
+        witness_capabilities=(CapabilityTag.PROVENANCE,),
+    )
+    EXACT_KEY_SET = _pattern(
+        stable_id=32,
+        display_name="Exact Key Set",
+        required_relation=(
+            "A literal collection of string keys is compared with a mapping's "
+            "keys, so the site restates the field list of a record that has no "
+            "declaration or whose declaration it does not use."
+        ),
+        witness_capabilities=(CapabilityTag.PROVENANCE,),
+    )
+    FOREIGN_ABSENCE_PROBE = _pattern(
+        stable_id=33,
+        display_name="Foreign Absence Probe",
+        required_relation=(
+            "An attribute of another object is compared with None, so the site "
+            "restates a state of the other object's type that the type does not "
+            "declare as a variant."
+        ),
+        witness_capabilities=(CapabilityTag.PROVENANCE,),
+    )
+    LEGACY_PATH_MARKER = _pattern(
+        stable_id=34,
+        display_name="Legacy Path Kept Beside Its Replacement",
+        required_relation=(
+            "A declaration, parameter or warning names itself legacy, "
+            "compatibility or deprecated, so the old path is kept alive beside "
+            "its replacement."
+        ),
+        witness_capabilities=(CapabilityTag.PROVENANCE,),
+    )
+    DEAD_MODULE = _pattern(
+        stable_id=35,
+        display_name="Module Nothing Imports",
+        required_relation=(
+            "No scanned module imports or names this module, and it is not an "
+            "entry point declared by the project or by its own main guard."
+        ),
+        witness_capabilities=(CapabilityTag.PROVENANCE,),
+    )
+    FORWARDING_FACADE = _pattern(
+        stable_id=36,
+        display_name="Forwarding Facade",
+        required_relation=(
+            "A class holds an object in an attribute and two or more of its "
+            "members only forward to that object, so the facade restates the "
+            "held class's members and goes stale when the held class changes."
+        ),
+        witness_capabilities=(CapabilityTag.PROVENANCE,),
+    )
+    RESTATED_IDENTITY = _pattern(
+        stable_id=37,
+        display_name="Restated Identity",
+        required_relation=(
+            "A string literal equals the name of a declared class, the dotted name "
+            "of a scanned module, or a family member's distinct spelling, in a "
+            "position that types, compares, passes, returns or imports by it, so "
+            "the site holds a second copy of that declaration's identity."
+        ),
+        witness_capabilities=(
+            CapabilityTag.NOMINAL_IDENTITY,
+            CapabilityTag.PROVENANCE,
+        ),
+    )
+    DUPLICATE_CLASS = _pattern(
+        stable_id=38,
+        display_name="Duplicate Class",
+        required_relation=(
+            "Every declaration of one class is a declaration another class "
+            "already makes, with the same syntax and the same bindings, so the "
+            "class restates a body that exists and is either that class or "
+            "should compose it."
+        ),
+        witness_capabilities=(
+            CapabilityTag.NOMINAL_IDENTITY,
+            CapabilityTag.SHARED_ALGORITHM_AUTHORITY,
+        ),
+    )
+    MISSING_MIXIN = _pattern(
+        stable_id=39,
+        display_name="Missing Mixin",
+        required_relation=(
+            "Two classes make the same block of declarations and each keeps "
+            "declarations of its own, so the block is one capability declared "
+            "twice and belongs in one mixin or shared base both compose."
+        ),
+        witness_capabilities=(
+            CapabilityTag.SHARED_ALGORITHM_AUTHORITY,
+            CapabilityTag.MRO_ORDERING,
+        ),
+    )
 
     def __new__(
         cls,
@@ -362,7 +515,7 @@ class PatternId(IntEnum):
         display_name: str,
         required_relation: str,
         witness_capabilities: tuple[CapabilityTag, ...],
-    ) -> "PatternId":
+    ) -> PatternId:
         member = int.__new__(cls, stable_id)
         member._value_ = stable_id
         member.display_name = display_name

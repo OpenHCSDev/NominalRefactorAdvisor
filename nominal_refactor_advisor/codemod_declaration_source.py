@@ -21,8 +21,9 @@ from typing import (
     cast,
 )
 
+from .assignment_projection import NamedAssignmentSelection
+from .ast_projection import CallKeyword
 from .ast_tools import (
-    AstKeywordSourceProjection,
     AstParentIndex,
     FunctionDefinitionNode,
     is_docstring_statement,
@@ -49,6 +50,7 @@ from .declaration_dependencies import (
     FunctionParameterBinding,
 )
 from .descriptor_algebra import AliasProperty
+from .foreign_family import FunctionDefinition
 from .lexical_bindings import LEXICAL_SCOPE_BINDING_AUTHORITY
 from .source_geometry import (
     ClassHeaderSourceSpan,
@@ -67,6 +69,15 @@ class DirectClassDeclarationAuthority:
 
     source_segments: SourceLineSegmentAuthority
     node: ast.ClassDef
+
+    def annotated_field(self, name: str) -> ast.AnnAssign:
+        """Select one original direct field, rejecting missing or rebound declarations."""
+        (statement,) = NamedAssignmentSelection((name,)).statements(self.node.body)
+        if not isinstance(statement, ast.AnnAssign) or not isinstance(
+            statement.target, ast.Name
+        ):
+            raise ValueError(f"Class member {name!r} is not one direct annotated field")
+        return statement
 
     def declarations_by_name(self) -> dict[str, str]:
         declaration_by_name: dict[str, str] = {}
@@ -188,9 +199,7 @@ class NamedDeclarationSourceAuthority:
     def declaration_line_span(self) -> SourceLineSpan:
         """Own the complete declaration, including every decorator marker."""
 
-        return self.geometry.node_line_span(
-            SourceNodeSpan(self.node, Include)
-        )
+        return self.geometry.node_line_span(SourceNodeSpan(self.node, Include))
 
     @cached_property
     def name_span(self) -> SourceTextSpan:
@@ -312,7 +321,7 @@ class ClassHeaderSpanSourceAuthority(ClassSourceAuthority):
     @property
     def keyword_items(self) -> tuple[str, ...]:
         return tuple(
-            AstKeywordSourceProjection(keyword).source()
+            CallKeyword.decoded(keyword).source()
             for keyword in self.node.keywords
         )
 
@@ -470,11 +479,7 @@ class ClassBodySourceAuthority(ClassSourceAuthority):
         """Return the insertion offset without stealing attached comments."""
 
         first_method = next(
-            (
-                statement
-                for statement in self.node.body
-                if isinstance(statement, ast.FunctionDef | ast.AsyncFunctionDef)
-            ),
+            (statement for statement in FunctionDefinition.within(self.node.body)),
             None,
         )
         if first_method is None:
@@ -549,6 +554,39 @@ class ClassBodySourceAuthority(ClassSourceAuthority):
         )
 
 
+    def declaration_block_replacement(
+        self, members: tuple[tuple[str, bool], ...]
+    ) -> SourceTextSpanReplacement:
+        """Insert members as a written block: fields and values contiguous, a
+        blank line on each side of a method. Each member is `(source, is_method)`.
+        """
+
+        if self.has_inline_suite:
+            return self.member_insertion_replacement(
+                tuple(source for source, _is_method in members)
+            )
+        rendered: list[str] = []
+        previous_is_method: bool | None = None
+        for source, is_method in members:
+            if previous_is_method is not None and (previous_is_method or is_method):
+                rendered.append("\n")
+            rendered.append(source.rstrip("\r\n") + "\n")
+            previous_is_method = is_method
+        offset = self.member_insertion_offset
+        prefix, suffix = self.source[:offset], self.source[offset:]
+        leading = "" if prefix.endswith((":\n", "\n\n")) else "\n"
+        trailing = (
+            "\n"
+            if offset < self.body_end_offset and not suffix.startswith("\n")
+            else ""
+        )
+        return SourceTextSpanReplacement.from_offsets(
+            start_offset=offset,
+            end_offset=offset,
+            replacement_source=leading + "".join(rendered) + trailing,
+        )
+
+
 class ClassBodyTailSourceAuthority(ClassBodySourceAuthority):
     """Append declarations after existing body execution, reusing suite geometry."""
 
@@ -563,7 +601,7 @@ class ClassMemberSource:
     source: str
 
     @classmethod
-    def from_source(cls, source: str, *, indentation: str) -> "ClassMemberSource":
+    def from_source(cls, source: str, *, indentation: str) -> ClassMemberSource:
         """Derive the member identity and indented text from one authored declaration."""
         try:
             block = PythonBlockSource(source)
@@ -608,7 +646,7 @@ class ClassMemberInsertion(NominalSourceEdit):
     def coalesced_with_peers(
         self,
         peers: tuple[NominalSourceEdit, ...],
-        context: "CodemodSelectorContext",
+        context: CodemodSelectorContext,
     ) -> tuple[NominalSourceEdit, ...]:
         del context
         insertions_by_target: dict[str, list[ClassMemberInsertion]] = defaultdict(list)
@@ -623,8 +661,8 @@ class ClassMemberInsertion(NominalSourceEdit):
     @classmethod
     def _coalesced_same_target(
         cls,
-        insertions: tuple["ClassMemberInsertion", ...],
-    ) -> "ClassMemberInsertion":
+        insertions: tuple[ClassMemberInsertion, ...],
+    ) -> ClassMemberInsertion:
         first = insertions[0]
         members_by_name: dict[str, ClassMemberSource] = {}
         for insertion in insertions:
@@ -647,7 +685,7 @@ class ClassMemberInsertion(NominalSourceEdit):
 
     def source_mutation(
         self,
-        context: "CodemodSelectorContext",
+        context: CodemodSelectorContext,
     ) -> SourceTextMutation:
         target = context.source_index.target_by_id.get(self.target_id)
         node = context.ast_target_nodes_by_id.get(self.target_id)
@@ -690,7 +728,7 @@ class _SingleLogicalLineSource:
     newline: str
 
     @classmethod
-    def parse(cls, original_line: str, role: str) -> "_SingleLogicalLineSource":
+    def parse(cls, original_line: str, role: str) -> _SingleLogicalLineSource:
         body = original_line.rstrip("\r\n")
         newline = original_line[len(body) :]
         stripped_body = body.lstrip()
@@ -767,9 +805,7 @@ class DeclarationDecoratorsSourceAuthority(DeclarationRegionSourceAuthority):
     """Own only the decorator block preceding an unchanged declaration header."""
 
     def replacement(self, decorators_source: str, /) -> SourceTextSpanReplacement:
-        first_line = self.geometry.node_start_line(
-            SourceNodeSpan(self.node, Include)
-        )
+        first_line = self.geometry.node_start_line(SourceNodeSpan(self.node, Include))
         span = SourceTextSpan(
             self.geometry.line_offsets[first_line - 1],
             self.geometry.line_offsets[self.node.lineno - 1],

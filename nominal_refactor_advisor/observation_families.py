@@ -4,11 +4,21 @@ from __future__ import annotations
 
 import ast
 from abc import ABC, abstractmethod
-from collections.abc import Sequence
+from collections.abc import Iterator, Mapping, Sequence
+from collections import Counter
 from dataclasses import dataclass
+from functools import cached_property
 from typing import Callable, ClassVar, Generic, TypeVar
 
-from .class_index import module_import_names
+from .ast_projection import ExpressionReference
+from .class_index import (
+    ModuleNominalBindingAuthority,
+    NominalReferences,
+    ModuleNominalBindingSnapshot,
+    module_import_names,
+)
+from .foreign_family import FunctionDefinition
+from .lexical_bindings import LEXICAL_SCOPE_BINDING_AUTHORITY
 from .export_tools import PublicExportPolicy, derive_public_exports
 from .registry_identity import DEFAULT_REGISTRY_KEY_ATTRIBUTE, class_name_registry_key
 from .native_syntax import NativePythonSyntaxIndex
@@ -17,6 +27,8 @@ from .observation_shapes import (
     BuilderCallShape,
     DynamicMethodInjectionObservation,
     FieldObservation,
+    ForeignTypeTestModule,
+    ForeignTypeTestShape,
     LiteralDispatchObservation,
     LiteralKind,
     ModuleExpressionShape,
@@ -25,7 +37,7 @@ from .observation_shapes import (
 )
 
 from .ast_tools import (
-    AstExpressionProjection,
+    BuiltinCallName,
     AstNameFamily,
     AssignObservationSpec,
     AutoRegisterMeta,
@@ -42,7 +54,6 @@ from .ast_tools import (
     ShapeEmission,
     SingleSpecCollectedFamily,
     SourceModule,
-    module_syntax_index,
     REGISTRATION_CALL_FAMILY,
     REGISTRATION_DECORATOR_FAMILY,
     _builder_call_shape,
@@ -448,7 +459,7 @@ def _native_registration_shapes(
             if statement.value.id not in class_names:
                 continue
             for target in statement.targets:
-                registry_name = AstExpressionProjection.terminal_name(target)
+                registry_name = ExpressionReference.decoded(target).terminal_name
                 key_fingerprint = _registration_key_fingerprint(target)
                 if registry_name is None or key_fingerprint is None:
                     continue
@@ -475,7 +486,7 @@ def _native_registration_shapes(
             ):
                 return None
             class_name = _class_name_from_expr(node.args[0], known_class_family)
-            registry_name = AstExpressionProjection.terminal_name(node.func.value)
+            registry_name = ExpressionReference.decoded(node.func.value).terminal_name
             if class_name is None or registry_name is None:
                 continue
             key_source = node.args[1] if len(node.args) >= 2 else node.args[0]
@@ -504,12 +515,14 @@ def _native_registration_shapes(
             for decorator in statement.decorator_list:
                 if not (
                     isinstance(decorator, ast.Call)
-                    and AstExpressionProjection.terminal_name(decorator.func)
+                    and ExpressionReference.decoded(decorator.func).terminal_name
                     in REGISTRATION_DECORATOR_FAMILY.names
                     and decorator.args
                 ):
                     continue
-                registry_name = AstExpressionProjection.terminal_name(decorator.args[0])
+                registry_name = ExpressionReference.decoded(
+                    decorator.args[0]
+                ).terminal_name
                 if registry_name is None:
                     continue
                 key_expression = (
@@ -587,15 +600,13 @@ class AssignmentRegistrationShapeSpec(KnownClassFamilyShapeSpec):
         known_class_family: AstNameFamily,
     ) -> list[RegistrationShape]:
         shapes: list[RegistrationShape] = []
-        for _node_index, node in module_syntax_index(
-            parsed_module.module
-        ).indexed_nodes_of_type(ast.Assign):
+        for _node_index, node in parsed_module.syntax_index.indexed_nodes_of_type(ast.Assign):
             if not isinstance(node.value, ast.Name):
                 continue
             if known_class_family.matching_name(node.value) is None:
                 continue
             for target in node.targets:
-                registry_name = AstExpressionProjection.terminal_name(target)
+                registry_name = ExpressionReference.decoded(target).terminal_name
                 if registry_name is None:
                     continue
                 key_fingerprint = _registration_key_fingerprint(target)
@@ -621,7 +632,7 @@ class CallRegistrationShapeSpec(KnownClassFamilyShapeSpec):
         ):
             node = observation.call
             assert isinstance(node.func, ast.Attribute)
-            registry_name = AstExpressionProjection.terminal_name(node.func.value)
+            registry_name = ExpressionReference.decoded(node.func.value).terminal_name
             if registry_name is None:
                 continue
             if not node.args:
@@ -647,7 +658,7 @@ class DecoratorRegistrationShapeSpec(RegistrationShapeSpec):
         ):
             if not decorator.args:
                 continue
-            registry_name = AstExpressionProjection.terminal_name(decorator.args[0])
+            registry_name = ExpressionReference.decoded(decorator.args[0]).terminal_name
             if registry_name is None:
                 continue
             key_expr = (
@@ -680,7 +691,7 @@ class RegistryMutatingDecoratorFactory:
         cls,
         function: ast.FunctionDef,
         registry_names: frozenset[str],
-    ) -> "RegistryMutatingDecoratorFactory | None":
+    ) -> RegistryMutatingDecoratorFactory | None:
         parameters = (*function.args.posonlyargs, *function.args.args)
         parameter_names = tuple(parameter.arg for parameter in parameters)
         nested_functions = tuple(
@@ -750,7 +761,7 @@ class RegistryMutatingDecoratorFactory:
                 decorator
                 for decorator in node.decorator_list
                 if isinstance(decorator, ast.Call)
-                and AstExpressionProjection.terminal_name(decorator.func)
+                and ExpressionReference.decoded(decorator.func).terminal_name
                 == self.function_name
                 and len(decorator.args) > self.key_parameter_index
             ),
@@ -977,7 +988,7 @@ def _module_expression_shapes(
     module_names = module_import_names(parsed_module)
     if not module_names:
         return []
-    index = module_syntax_index(parsed_module.module)
+    index = parsed_module.syntax_index
     shapes: list[ModuleExpressionShape] = []
     for node_index, node in sorted(
         (
@@ -1022,6 +1033,175 @@ class ModuleExpressionShapeFamily(ShapeFamily[ModuleExpressionShape]):
         return _module_expression_shapes(parsed_module)
 
 
+@dataclass(frozen=True)
+class TypeArgumentResolver:
+    """Resolve an `isinstance` type argument to qualified class names, fail closed.
+
+    Names resolve through the module's final import and builtin bindings; a
+    tuple, a `|` union, or a once-assigned module-level alias of either expands
+    to its members. Anything unresolved or shadowed in an enclosing function
+    makes the whole site unresolved.
+    """
+
+    parsed_module: ParsedModule
+
+    @cached_property
+    def snapshot(self) -> ModuleNominalBindingSnapshot:
+        return ModuleNominalBindingAuthority(self.parsed_module).snapshot_before(None)
+
+    @cached_property
+    def aliases(self) -> dict[str, ast.expr]:
+        assignments = [
+            (statement.targets[0].id, statement.value)
+            for statement in self.parsed_module.module.body
+            if isinstance(statement, ast.Assign)
+            and len(statement.targets) == 1
+            and isinstance(statement.targets[0], ast.Name)
+        ]
+        counts = Counter(name for name, _value in assignments)
+        return {
+            name: value
+            for name, value in assignments
+            if counts[name] == 1 and self._is_member_collection(value)
+        }
+
+    @staticmethod
+    def _is_member_collection(node: ast.AST) -> bool:
+        match node:
+            case ast.Tuple() | ast.BinOp(op=ast.BitOr()):
+                return True
+        return False
+
+    def members(
+        self,
+        node: ast.expr,
+        shadowed: frozenset[str],
+        expanding: frozenset[str] = frozenset(),
+    ) -> tuple[ast.expr, ...]:
+        match node:
+            case ast.Tuple(elts=elements):
+                return tuple(
+                    member
+                    for element in elements
+                    for member in self.members(element, shadowed, expanding)
+                )
+            case ast.BinOp(left=left, op=ast.BitOr(), right=right):
+                return (
+                    *self.members(left, shadowed, expanding),
+                    *self.members(right, shadowed, expanding),
+                )
+            case ast.Name(id=name) if (
+                name in self.aliases and name not in shadowed | expanding
+            ):
+                return self.members(self.aliases[name], shadowed, expanding | {name})
+        return (node,)
+
+    def qualified_name(self, member: ast.expr, shadowed: frozenset[str]) -> str | None:
+        if ExpressionReference.decoded(member).qualified_name is None:
+            return None
+        parts = ExpressionReference.decoded(member).attribute_chain
+        if parts is None or parts[0] in shadowed:
+            return None
+        # The str | None resolver protocol: unbound joins its ast-shaped absences.
+        return next(
+            iter(NominalReferences.of((self.snapshot.reference_for(parts),)).bound_names),
+            None,
+        )
+
+    def qualified_class_at(
+        self, member: ast.expr, ancestors: Sequence[ast.AST]
+    ) -> str | None:
+        """Qualified class a name expression denotes beneath these ancestors."""
+
+        return self.qualified_name(member, _enclosing_function_names(ancestors))
+
+    def qualified_names(
+        self, type_argument: ast.expr, shadowed: frozenset[str]
+    ) -> tuple[str, ...] | None:
+        members = self.members(type_argument, shadowed)
+        names = tuple(self.qualified_name(member, shadowed) for member in members)
+        if not names or None in names:
+            return None
+        return tuple(sorted(set(names)))
+
+    def qualified_names_of_test(self, call: ast.Call) -> tuple[str, ...] | None:
+        """Qualified classes one `isinstance` call of this module tests, if resolved."""
+
+        arguments = BuiltinCallName.isinstance_arguments(call)
+        if arguments is None:
+            return None
+        parents = self.parsed_module.syntax_index.parent_by_node
+        ancestors = tuple(self._ancestors(parents, call))
+        return self.qualified_names(arguments[1], _enclosing_function_names(ancestors))
+
+    @staticmethod
+    def _ancestors(
+        parents: Mapping[ast.AST, ast.AST], node: ast.AST
+    ) -> Iterator[ast.AST]:
+        parent = parents.get(node)
+        if parent is not None:
+            yield parent
+            yield from TypeArgumentResolver._ancestors(parents, parent)
+
+
+def _enclosing_function_names(ancestors: Sequence[ast.AST]) -> frozenset[str]:
+    """Names rebound by any enclosing function, which hide module bindings."""
+
+    return frozenset().union(
+        *(
+            LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(ancestor.body)
+            | LEXICAL_SCOPE_BINDING_AUTHORITY.argument_names(ancestor)
+            for ancestor in FunctionDefinition.within(ancestors)
+        )
+    )
+
+
+def _foreign_type_test_shapes(
+    parsed_module: ParsedModule,
+) -> list[ForeignTypeTestShape]:
+    """Collect type tests whose classes all come from one imported owner module."""
+
+    index = parsed_module.syntax_index
+    resolver = TypeArgumentResolver(parsed_module)
+    shapes: list[ForeignTypeTestShape] = []
+    for node_index, node in index.indexed_nodes_of_type(ast.Call):
+        arguments = BuiltinCallName.type_test_arguments(node)
+        if arguments is None:
+            continue
+        names = resolver.qualified_names(
+            arguments[1], _enclosing_function_names(index.ancestor_nodes(node_index))
+        )
+        if names is None:
+            continue
+        owners = {name.rpartition(".")[0] for name in names}
+        if len(owners) != 1 or "" in owners:
+            continue
+        shapes.append(
+            ForeignTypeTestShape(
+                file_path=parsed_module.file_path,
+                lineno=node.lineno,
+                symbol=index.lexical_symbol(node_index),
+                owner=owners.pop(),
+                type_names=names,
+                subject=ast.dump(arguments[0]),
+            )
+        )
+    return shapes
+
+
+class ForeignTypeTestModuleFamily(ShapeFamily[ForeignTypeTestModule]):
+    item_type = ForeignTypeTestModule
+
+    @classmethod
+    def collect(cls, parsed_module: ParsedModule) -> list[ForeignTypeTestModule]:
+        return [
+            ForeignTypeTestModule(
+                module_name=parsed_module.module_name,
+                sites=tuple(_foreign_type_test_shapes(parsed_module)),
+            )
+        ]
+
+
 class RegistrationShapeFamily(
     RegisteredSpecCollectedFamily[RegistrationShape], ShapeFamily[RegistrationShape]
 ):
@@ -1048,7 +1228,7 @@ class FieldObservationFamily(
 _PUBLIC_EXPORT_POLICY = PublicExportPolicy(
     module_name=__name__,
     root_types=tuple(SharedRegistryRootBase.__subclasses__()),
-    explicit_names=frozenset({"AutoRegisteredModuleShapeSpec"}),
+    explicit_names=frozenset({AutoRegisteredModuleShapeSpec.__name__}),
 )
 
 

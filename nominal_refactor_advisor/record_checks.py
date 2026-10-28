@@ -6,7 +6,8 @@ import ast
 from dataclasses import dataclass
 
 from .annotation_semantics import NOMINAL_ANNOTATION_SOURCE_AUTHORITY
-from .ast_tools import ClassFunctionStackNodeVisitor, ParsedModule
+from .ast_field_decoders import declared_annotations
+from .ast_tools import BuiltinCallName, ClassFunctionStackNodeVisitor, ParsedModule
 from .class_index import (
     CompactClassFamilyIndex,
     CompactClassReferenceResolver,
@@ -64,12 +65,13 @@ class DeclaredAttributeCheckCollector(ClassFunctionStackNodeVisitor):
         parameters = (*node.args.posonlyargs, *node.args.args, *node.args.kwonlyargs)
         subjects = {}
         for parameter in parameters:
-            if parameter.arg not in assigned and parameter.annotation is not None:
-                parts = NOMINAL_ANNOTATION_SOURCE_AUTHORITY.reference_parts_or_none(
-                    parameter.annotation
-                )
-                if parts is not None:
-                    subjects[parameter.arg] = parts
+            if parameter.arg not in assigned:
+                for declared_annotation in declared_annotations(parameter):
+                    parts = NOMINAL_ANNOTATION_SOURCE_AUTHORITY.reference_parts_or_none(
+                        declared_annotation
+                    )
+                    if parts is not None:
+                        subjects[parameter.arg] = parts
         if (
             self.class_stack
             and not self.function_stack
@@ -97,21 +99,15 @@ class DeclaredAttributeCheckCollector(ClassFunctionStackNodeVisitor):
     def visit_Lambda(self, node: ast.Lambda) -> None:
         pass
 
-    def _builtin(self, node: ast.AST, name: str) -> bool:
-        return (
-            isinstance(node, ast.Name)
-            and node.id == name
-            and not any(name in scope for scope in self.locals)
-            and self.module_bindings.resolves_unshadowed_builtin(name)
-        )
-
     def visit_Call(self, node: ast.Call) -> None:
+        arguments = BuiltinCallName.isinstance_arguments(node)
         if (
-            self._builtin(node.func, "isinstance")
-            and len(node.args) == 2
-            and not node.keywords
+            arguments is not None
+            and BuiltinCallName.ISINSTANCE.resolves_unshadowed(
+                node.func, self.module_bindings.resolves_unshadowed_builtin, self.locals
+            )
         ):
-            self._record(node, node.args[0], node.args[1])
+            self._record(node, *arguments)
         self.generic_visit(node)
 
     def visit_Compare(self, node: ast.Compare) -> None:
@@ -124,7 +120,11 @@ class DeclaredAttributeCheckCollector(ClassFunctionStackNodeVisitor):
             ):
                 if (
                     isinstance(call, ast.Call)
-                    and self._builtin(call.func, "type")
+                    and BuiltinCallName.TYPE.resolves_unshadowed(
+                        call.func,
+                        self.module_bindings.resolves_unshadowed_builtin,
+                        self.locals,
+                    )
                     and len(call.args) == 1
                     and not call.keywords
                 ):
@@ -218,9 +218,7 @@ class DeclaredAttributeContractResolver:
         matches = (
             declared_symbol == expected_symbol
             if declared_symbol is not None
-            else declared.root_binding is not None
-            and declared.resolved_parts[0] == "builtins"
-            and declared.resolved_parts == check.expected_type.resolved_parts
+            else declared.names_builtin(check.expected_type.resolved_parts)
         )
         if not matches:
             return None

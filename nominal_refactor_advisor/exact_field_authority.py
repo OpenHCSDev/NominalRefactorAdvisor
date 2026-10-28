@@ -3,26 +3,33 @@
 from __future__ import annotations
 
 import ast
-import builtins
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import cached_property
 from itertools import combinations
 
+from .ast_projection import ExpressionReference
+from .ast_projection import (
+    CallKeywords,
+    NoStatementValue,
+    StatementValue,
+    StatementValueQuestion,
+    SuppliedValue,
+)
 from .ast_tools import (
-    AstExpressionProjection,
     ModuleAnnotationEvaluationMode,
     ParsedModule,
 )
 from .class_index import (
+    ClassBodyModuleScope,
+    ClassBodyNormalForm,
     ClassFamilyIndex,
     CompactDataclassFieldRole,
     IndexedClass,
-    ModuleNominalBindingAuthority,
     ModuleNominalBindingSnapshot,
-    ModuleNominalBindingWitness,
     build_class_family_index,
 )
 from .collection_algebra import sorted_tuple
+from .foreign_family import FunctionDefinition
 from .lexical_bindings import LEXICAL_SCOPE_BINDING_AUTHORITY
 from .native_declarations import DataclassRuntimeDeclaration
 from .source_geometry import (
@@ -46,7 +53,7 @@ class ExactDataclassDecorator:
         binding_snapshot: ModuleNominalBindingSnapshot,
         source_segments: SourceLineSegmentAuthority,
         comment_lines: SourceCommentLineIndex,
-    ) -> "ExactDataclassDecorator":
+    ) -> ExactDataclassDecorator:
         decorators = indexed_class.node.decorator_list
         if len(decorators) != 1:
             raise ValueError(
@@ -54,7 +61,7 @@ class ExactDataclassDecorator:
             )
         decorator = decorators[0]
         target = decorator.func if isinstance(decorator, ast.Call) else decorator
-        parts = AstExpressionProjection.attribute_chain(target)
+        parts = ExpressionReference.decoded(target).attribute_chain
         if parts is None:
             raise ValueError("Dataclass decorator has no nominal reference")
         binding = binding_snapshot.binding_for(parts[0])
@@ -69,9 +76,7 @@ class ExactDataclassDecorator:
 
         frozen = False
         if isinstance(decorator, ast.Call):
-            if decorator.args or any(
-                keyword.arg is None for keyword in decorator.keywords
-            ):
+            if decorator.args or CallKeywords.of(decorator.keywords).splats:
                 raise ValueError(
                     "Dataclass decorator options must be explicit keywords"
                 )
@@ -104,25 +109,39 @@ class ExactDataclassDecorator:
         return cls(frozen, source)
 
 
+class DefaultFreeField(StatementValueQuestion[None]):
+    """A promoted field moves without a default: one with a value stays put."""
+
+    def supplied(self, value: SuppliedValue) -> None:
+        raise ValueError("Promoted dataclass fields must be default-free names")
+
+    def bare(self, value: NoStatementValue) -> None:
+        """A bare annotation is the default-free field the promotion moves."""
+
+
+DEFAULT_FREE_FIELD = DefaultFreeField()
+
+
 @dataclass(frozen=True)
 class ExactDataclassFieldSemantics:
-    """Exact field syntax plus the nominal bindings it evaluates against."""
+    """One default-free field's class-body normal form, bound only outside the class."""
 
     name: str
-    syntax: str
-    global_bindings: tuple[ModuleNominalBindingWitness, ...]
+    digest: str
+    normal_form: ClassBodyNormalForm = field(compare=False)
 
     @classmethod
     def from_statement(
         cls,
         statement: ast.AnnAssign,
-        binding_snapshot: ModuleNominalBindingSnapshot,
+        scope: ClassBodyModuleScope,
         class_bound_names: frozenset[str],
         comment_lines: SourceCommentLineIndex,
         annotation_mode: type[ModuleAnnotationEvaluationMode],
-    ) -> "ExactDataclassFieldSemantics":
-        if not isinstance(statement.target, ast.Name) or statement.value is not None:
+    ) -> ExactDataclassFieldSemantics:
+        if not isinstance(statement.target, ast.Name):
             raise ValueError("Promoted dataclass fields must be default-free names")
+        StatementValue.of(statement).answer(DEFAULT_FREE_FIELD)
         if comment_lines.intersects(statement) or (
             statement.lineno > 1 and statement.lineno - 1 in comment_lines.comment_lines
         ):
@@ -131,41 +150,24 @@ class ExactDataclassFieldSemantics:
             raise ValueError(
                 "Field authority factoring requires postponed annotation evaluation"
             )
-
-        global_bindings: list[ModuleNominalBindingWitness] = []
-        loaded_names = sorted(
-            {
-                node.id
-                for node in ast.walk(statement.annotation)
-                if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load)
-            }
+        (normal_form,) = ClassBodyNormalForm.of_assignment(
+            statement, scope, class_bound_names
         )
-        for name in loaded_names:
-            if name in class_bound_names:
-                raise ValueError(
-                    f"Field {statement.target.id!r} depends on class-local binding "
-                    f"{name!r}"
-                )
-            binding = binding_snapshot.binding_for(name)
-            if binding is not None:
-                global_bindings.append(
-                    ModuleNominalBindingWitness(binding.qualified_name, name)
-                )
-            elif binding_snapshot.resolves_unshadowed_builtin(name):
-                global_bindings.append(
-                    ModuleNominalBindingWitness(f"{builtins.__name__}.{name}", name)
-                )
-            else:
-                raise ValueError(
-                    f"Field {statement.target.id!r} has unresolved annotation "
-                    f"binding {name!r}"
-                )
-
-        return cls(
-            name=statement.target.id,
-            syntax=ast.dump(statement, include_attributes=False),
-            global_bindings=tuple(global_bindings),
+        if normal_form.class_scope_names:
+            raise ValueError(
+                f"Field {statement.target.id!r} depends on class-local binding "
+                f"{normal_form.class_scope_names[0]!r}"
+            )
+        unbound = (
+            *normal_form.unresolved_names,
+            *(deferred.name for deferred in normal_form.deferred_names),
         )
+        if unbound:
+            raise ValueError(
+                f"Field {statement.target.id!r} has unresolved annotation "
+                f"binding {unbound[0]!r}"
+            )
+        return cls(statement.target.id, normal_form.digest, normal_form)
 
 
 @dataclass(frozen=True)
@@ -232,7 +234,7 @@ class ExactDataclassFieldAuthorityComponentBuilder:
         parsed_modules: tuple[ParsedModule, ...],
         *,
         class_index: ClassFamilyIndex | None = None,
-    ) -> "ExactDataclassFieldAuthorityComponentBuilder":
+    ) -> ExactDataclassFieldAuthorityComponentBuilder:
         return cls(
             parsed_modules=parsed_modules,
             class_index=(
@@ -252,9 +254,9 @@ class ExactDataclassFieldAuthorityComponentBuilder:
             )
         for parsed_module in self.parsed_modules:
             indexed_classes = tuple(classes_by_path.get(parsed_module.file_path, ()))
-            binding_snapshots = ModuleNominalBindingAuthority(
-                parsed_module
-            ).snapshots_before(item.line for item in indexed_classes)
+            scopes = ClassBodyModuleScope.for_lines(
+                parsed_module, (item.line for item in indexed_classes)
+            )
             source_segments = SourceLineSegmentAuthority(parsed_module.source)
             comment_lines = SourceCommentLineIndex.from_source(parsed_module.source)
             annotation_mode = ModuleAnnotationEvaluationMode.from_module(
@@ -264,7 +266,7 @@ class ExactDataclassFieldAuthorityComponentBuilder:
                 try:
                     participant = self._participant(
                         indexed_class,
-                        binding_snapshots[indexed_class.line],
+                        scopes[indexed_class.line],
                         source_segments,
                         comment_lines,
                         annotation_mode,
@@ -361,29 +363,27 @@ class ExactDataclassFieldAuthorityComponentBuilder:
     def _participant(
         self,
         indexed_class: IndexedClass,
-        binding_snapshot: ModuleNominalBindingSnapshot,
+        scope: ClassBodyModuleScope,
         source_segments: SourceLineSegmentAuthority,
         comment_lines: SourceCommentLineIndex,
         annotation_mode: type[ModuleAnnotationEvaluationMode],
     ) -> ExactDataclassFieldParticipant:
         node = indexed_class.node
-        declaration = indexed_class.dataclass_declaration
+        refusal = "Dataclass is not a base-free promotion participant"
+        declaration = indexed_class.dataclass_declaration.require_standard(refusal)
         if (
             "." in indexed_class.qualname
             or node.bases
             or node.keywords
-            or declaration is None
-            or not declaration.is_standard_dataclass
             or declaration.failures
             or not ClassHeaderSourceSpan(node, source_segments.lines).is_reconstructible
         ):
-            raise ValueError("Dataclass is not a base-free promotion participant")
+            raise ValueError(refusal)
         if any(
             isinstance(child, ast.Name)
             and isinstance(child.ctx, ast.Load)
             and child.id in {"super", "__class__"}
-            for statement in node.body
-            if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef))
+            for statement in FunctionDefinition.within(node.body)
             for child in ast.walk(statement)
         ):
             raise ValueError("Dataclass methods depend on the current MRO")
@@ -419,7 +419,7 @@ class ExactDataclassFieldAuthorityComponentBuilder:
 
         decorator = ExactDataclassDecorator.from_class(
             indexed_class,
-            binding_snapshot,
+            scope.declaration,
             source_segments,
             comment_lines,
         )
@@ -427,7 +427,7 @@ class ExactDataclassFieldAuthorityComponentBuilder:
         fields = tuple(
             ExactDataclassFieldSemantics.from_statement(
                 statement,
-                binding_snapshot,
+                scope,
                 class_bound_names,
                 comment_lines,
                 annotation_mode,

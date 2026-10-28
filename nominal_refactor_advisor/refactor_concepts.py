@@ -15,7 +15,7 @@ class RefactorConcept(ABC):
         return class_name_registry_key(cls.__name__.removesuffix("Concept"), cls)
 
     @classmethod
-    def declaration_types(cls) -> tuple[type["RefactorConcept"], ...]:
+    def declaration_types(cls) -> tuple[type[RefactorConcept], ...]:
         """Return pure concept declarations without cataloging execution classes."""
 
         descendants = frozenset(loaded_nominal_descendants(cls))
@@ -37,7 +37,7 @@ class RefactorConcept(ABC):
         return tuple(declarations_by_key[key] for key in sorted(declarations_by_key))
 
     @classmethod
-    def declaration_for_key(cls, key: str) -> type["RefactorConcept"]:
+    def declaration_for_key(cls, key: str) -> type[RefactorConcept]:
         """Resolve one exact declaration from the declaration-derived key view."""
 
         declarations_by_key = UniqueIdentityIndexAuthority.declarations_by_handle(
@@ -52,8 +52,8 @@ class RefactorConcept(ABC):
     @classmethod
     def leaf_concept_for_declaration(
         cls,
-        declaration_type: type["RefactorConcept"],
-    ) -> type["RefactorConcept"]:
+        declaration_type: type[RefactorConcept],
+    ) -> type[RefactorConcept]:
         concepts = tuple(
             concept
             for concept in cls.declaration_types()
@@ -128,3 +128,31 @@ class AutoRegisterStrategyFamilyConcept(AutoRegisterConcept):
 
 class AutoRegisterMroOrderingConcept(AutoRegisterConcept):
     """Derive registered-family precedence from a declared MRO composition."""
+
+
+class ClassBodyCompositionConcept(ClassFamilyAuthorityConcept):
+    """Declare a restated class body once, in the class that owns it."""
+
+
+class ForeignFamilyRoutingConcept(ClassFamilyAuthorityConcept):
+    """Route type tests on foreign classes through one declared family."""
+
+
+class OptionalAstFieldDecoderConcept(ClassFamilyAuthorityConcept):
+    """Route absence probes of an optional ast field through its boundary decoder."""
+
+
+class ForeignAdapterBindChainConcept(ClassFamilyAuthorityConcept):
+    """Fold per-class bindings of foreign nodes into one declared adapter family."""
+
+
+class StaticProjectionAdapterConcept(ClassFamilyAuthorityConcept):
+    """Answer a static projection class's questions from one declared adapter family."""
+
+
+class LegacyPathErasureConcept(NominalBoundaryConcept):
+    """Delete an old path once its replacement owns the behavior."""
+
+
+class DeclarationReferenceConcept(NominalBoundaryConcept):
+    """Write a spelled declaration as the reference it spells."""

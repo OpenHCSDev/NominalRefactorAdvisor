@@ -23,7 +23,7 @@ class PythonModulePathIdentity(SourceFileIdentity):
         cls,
         path: Path,
         analysis_root: Path,
-    ) -> "PythonModulePathIdentity":
+    ) -> PythonModulePathIdentity:
         import_root = cls.import_root(path, analysis_root)
         return cls.from_import_root(path, import_root)
 
@@ -32,7 +32,7 @@ class PythonModulePathIdentity(SourceFileIdentity):
         cls,
         path: Path,
         import_root: Path,
-    ) -> "PythonModulePathIdentity":
+    ) -> PythonModulePathIdentity:
         relative = path.resolve().relative_to(import_root.resolve())
         module_parts = list(relative.with_suffix("").parts)
         is_package_init = bool(module_parts and module_parts[-1] == "__init__")
@@ -46,7 +46,7 @@ class PythonModulePathIdentity(SourceFileIdentity):
         )
 
     @classmethod
-    def from_source_path(cls, path: Path) -> "PythonModulePathIdentity":
+    def from_source_path(cls, path: Path) -> PythonModulePathIdentity:
         """Derive context-free identity when no parsed project declarations exist."""
 
         import_root = Path(path.anchor) if path.anchor else Path.cwd()

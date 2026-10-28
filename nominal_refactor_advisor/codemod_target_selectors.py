@@ -57,7 +57,7 @@ class CodemodTargetSelector(
 ):
     """Semantic selector that resolves to source-index target ids."""
 
-    __registry__: ClassVar[dict[str, type["CodemodTargetSelector"]]] = {}
+    __registry__: ClassVar[dict[str, type[CodemodTargetSelector]]] = {}
     __registry_key__ = DEFAULT_REGISTRY_KEY_ATTRIBUTE
     __key_extractor__ = staticmethod(suffix_trimmed_class_name_registry_key)
     __skip_if_no_key__ = True
@@ -96,7 +96,7 @@ class FindingEvidenceTargetSelector(CodemodTargetSelector):
     def from_findings(
         cls,
         findings: Iterable[RefactorFinding],
-    ) -> "FindingEvidenceTargetSelector":
+    ) -> FindingEvidenceTargetSelector:
         return cls(tuple(finding.stable_id for finding in findings))
 
     def target_ids(self, context: CodemodSelectorContext) -> tuple[str, ...]:
@@ -173,7 +173,7 @@ class SourceIndexTargetSelector(CodemodTargetSelector):
         cls,
         file_path: str,
         qualname: str,
-    ) -> "SourceIndexTargetSelector":
+    ) -> SourceIndexTargetSelector:
         return cls(
             node_kinds=(AstTargetNodeKind.FUNCTION, AstTargetNodeKind.METHOD),
             file_paths=(file_path,),
@@ -370,7 +370,7 @@ class CodemodSelectorResolutionReport(DataclassJsonReport):
         cls,
         selector: CodemodTargetSelector,
         context: CodemodSelectorContext,
-    ) -> "CodemodSelectorResolutionReport":
+    ) -> CodemodSelectorResolutionReport:
         selected_target_ids = selector.target_ids(context)
         selected_targets = tuple(
             context.source_index.target_by_id[target_id]
@@ -402,7 +402,7 @@ class CodemodTargetSourceRecord(DataclassJsonReport):
         cls,
         target: AstTargetDigest,
         context: CodemodSelectorContext,
-    ) -> "CodemodTargetSourceRecord":
+    ) -> CodemodTargetSourceRecord:
         return cls(
             target=target,
             source="".join(
@@ -449,7 +449,7 @@ class CodemodTargetSourceReport(DataclassJsonReport):
         cls,
         selector: CodemodTargetSelector,
         context: CodemodSelectorContext,
-    ) -> "CodemodTargetSourceReport":
+    ) -> CodemodTargetSourceReport:
         selector_resolution = CodemodSelectorResolutionReport.from_selector_context(
             selector,
             context,

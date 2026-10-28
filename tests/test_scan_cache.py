@@ -11,20 +11,21 @@ import weakref
 
 import pytest
 
-from nominal_refactor_advisor.analysis import release_module_analysis_memory
 from nominal_refactor_advisor.analysis_cache import (
     AnalysisEngineSignature,
     detector_module_source_hash,
 )
 from nominal_refactor_advisor.ast_tools import (
     BuilderCallShapeFamily,
-    module_syntax_index,
 )
 from nominal_refactor_advisor.implementation_identity import (
     ImplementationSource,
     declaration_implementation_module_names,
 )
 from nominal_refactor_advisor.scan_cache import ScanCache
+from nominal_refactor_advisor.semantic_descent import (
+    SemanticDescentImplementationSignature,
+)
 
 
 def test_no_scope_never_retains_results():
@@ -73,10 +74,7 @@ def test_module_cleanup_keeps_declarations_but_releases_ast():
         original = BuilderCallShapeFamily.implementation_identity()
         tree = ast.parse("def action(): return 1")
         tree_ref = weakref.ref(tree)
-        module_syntax_index(tree)
-        release_module_analysis_memory()
         assert BuilderCallShapeFamily.implementation_identity() is original
-        assert module_syntax_index.cache_info().currsize == 0
         del tree
         gc.collect()
         assert tree_ref() is None
@@ -141,7 +139,6 @@ def test_engine_identity_reused_per_owner_and_refreshed_between_scans(
 
     with ScanCache.scope():
         original = Engine.current()
-        release_module_analysis_memory()
         assert Engine.current() is original
         assert type(OtherEngine.current()) is OtherEngine
     stat = path.stat()
@@ -210,3 +207,11 @@ def test_worker_scope_does_not_reuse_parent_cache(method):
             results = tuple(pool.map(worker_identity, range(4)))
         assert all(cached == actual and actual != parent for cached, actual in results)
         assert cached_pid() == parent
+
+
+def test_descent_graph_identity_lives_only_as_long_as_its_scope():
+    with ScanCache.scope():
+        first = SemanticDescentImplementationSignature.module_names()
+        assert SemanticDescentImplementationSignature.module_names() is first
+    with ScanCache.scope():
+        assert SemanticDescentImplementationSignature.module_names() is not first

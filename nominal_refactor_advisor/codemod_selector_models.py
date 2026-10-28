@@ -252,7 +252,7 @@ class SelectionCountExpectation(CodemodPayloadRecord):
     )
 
     @classmethod
-    def from_json_value(cls, value: JsonValue) -> "SelectionCountExpectation":
+    def from_json_value(cls, value: JsonValue) -> SelectionCountExpectation:
         expectation = super().from_json_value(value)
         expectation.validate_definition()
         return expectation
@@ -313,14 +313,14 @@ class NodeKindArrayPayloadValueCodec(OptionalStringArrayPayloadValueCodec):
 
 
 @dataclass(frozen=True)
-class SelectionCountPayloadValueCodec(PayloadValueCodec["SelectionCountExpectation"]):
+class SelectionCountPayloadValueCodec(PayloadValueCodec[SelectionCountExpectation]):
     """Optional selected-target cardinality contract semantics."""
 
     def read(
         self,
         payload: Mapping[str, JsonValue],
         field_name: str,
-    ) -> "SelectionCountExpectation":
+    ) -> SelectionCountExpectation:
         value = payload.get(field_name)
         if value is None:
             return SelectionCountExpectation()
@@ -336,6 +336,19 @@ class SelectionCountPayloadValueCodec(PayloadValueCodec["SelectionCountExpectati
         return json_report_object(value)
 
 
+@dataclass(frozen=True, kw_only=True)
+class DeclaredCallSelection:
+    """The shared declaration and cardinality inputs of call-edit operations."""
+
+    callee: SourceRewriteTarget = codemod_payload_field(
+        PayloadRecordValueCodec(SourceRewriteTarget)
+    )
+    selection_count: SelectionCountExpectation = codemod_payload_field(
+        SelectionCountPayloadValueCodec(),
+        default_factory=SelectionCountExpectation,
+    )
+
+
 @dataclass(frozen=True)
 class RegexPatternSet:
     """Validated regular-expression filter set for source-index selectors."""
@@ -343,7 +356,7 @@ class RegexPatternSet:
     patterns: tuple[re.Pattern[str], ...] = ()
 
     @classmethod
-    def from_patterns(cls, patterns: Iterable[str]) -> "RegexPatternSet":
+    def from_patterns(cls, patterns: Iterable[str]) -> RegexPatternSet:
         try:
             return cls(tuple(re.compile(pattern) for pattern in patterns))
         except re.error as error:

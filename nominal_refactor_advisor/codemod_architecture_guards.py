@@ -25,7 +25,9 @@ from typing import (
 
 from metaclass_registry import AutoRegisterMeta
 
-from .ast_tools import AstExpressionProjection
+from .value_expression import CompactValueExpression
+from .ast_projection import ExpressionReference
+from .ast_tools import BuiltinCallName
 from .codemod_paths import SourcePathCandidateSet, SourcePathResolutionAuthority
 from .codemod_payload import (
     CodemodPayloadRecord,
@@ -71,7 +73,7 @@ class ArchitectureGuardConstraint(
 ):
     """Registered owner of one architecture invariant and its AST evidence."""
 
-    __registry__: ClassVar[dict[str, type["ArchitectureGuardConstraint"]]] = {}
+    __registry__: ClassVar[dict[str, type[ArchitectureGuardConstraint]]] = {}
     __registry_key__ = "constraint_key_value"
     __skip_if_no_key__ = True
     discriminator_field_name: ClassVar[str] = "constraint"
@@ -137,7 +139,7 @@ class ForbiddenCallArchitectureGuardConstraint(
             )
             for node in ast.walk(module)
             if isinstance(node, ast.Call)
-            for call_name in (AstExpressionProjection.qualified_name(node.func),)
+            for call_name in (ExpressionReference.decoded(node.func).qualified_name,)
             if call_name in self.names
         )
 
@@ -195,7 +197,10 @@ class ArchitectureGuardDispatchSubject:
     @classmethod
     def accepts_value_case(cls, expression: ast.AST) -> bool:
         return (
-            (isinstance(expression, ast.Constant) and expression.value is not None)
+            (
+                isinstance(expression, ast.Constant)
+                and not CompactValueExpression.project(expression).value_is_none_literal
+            )
             or isinstance(expression, ast.Attribute)
             or (
                 isinstance(expression, (ast.Tuple, ast.List, ast.Set))
@@ -245,8 +250,7 @@ class ArchitectureGuardDispatchSubject:
 
     def isinstance_call_matches(self, call: ast.Call) -> bool:
         return (
-            isinstance(call.func, ast.Name)
-            and call.func.id == "isinstance"
+            BuiltinCallName.is_isinstance_callee(call.func)
             and len(call.args) >= 2
             and self.matches(call.args[0])
         )
@@ -478,7 +482,7 @@ class ArchitectureGuardViolationTarget(DataclassJsonReport):
         cls,
         location: SourceLocation,
         target: AstTargetDigest | None,
-    ) -> "ArchitectureGuardViolationTarget":
+    ) -> ArchitectureGuardViolationTarget:
         if target is None:
             return cls(file_path=location.file_path)
         return cls(
@@ -497,7 +501,7 @@ class ArchitectureGuardViolation(DataclassJsonReport):
         included=False
     )
     location: SourceLocation = json_report_field(included=False)
-    target_context: "ArchitectureGuardViolationTarget" = json_report_field(
+    target_context: ArchitectureGuardViolationTarget = json_report_field(
         flattened=True
     )
     detail: str = ""
@@ -538,7 +542,7 @@ class ArchitectureGuardSuite:
     rules: tuple[ArchitectureGuardRule, ...] = ()
 
     @classmethod
-    def from_json_value(cls, value: JsonValue | None) -> "ArchitectureGuardSuite":
+    def from_json_value(cls, value: JsonValue | None) -> ArchitectureGuardSuite:
         if value is None:
             return cls()
         if not isinstance(value, (list, tuple)):
@@ -549,10 +553,10 @@ class ArchitectureGuardSuite:
     def is_empty(self) -> bool:
         return not self.rules
 
-    def with_rule(self, rule: ArchitectureGuardRule) -> "ArchitectureGuardSuite":
+    def with_rule(self, rule: ArchitectureGuardRule) -> ArchitectureGuardSuite:
         return replace(self, rules=(*self.rules, rule))
 
-    def merge(self, *suites: "ArchitectureGuardSuite") -> "ArchitectureGuardSuite":
+    def merge(self, *suites: ArchitectureGuardSuite) -> ArchitectureGuardSuite:
         return replace(
             self,
             rules=tuple(

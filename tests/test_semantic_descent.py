@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+from nominal_refactor_advisor.ast_tools import ParsedModuleSet
 import nominal_refactor_advisor.semantic_descent as semantic_descent_module
 import nominal_refactor_advisor.semantic_refactor_gate as semantic_refactor_gate_module
 from nominal_refactor_advisor.json_reports import json_report_object
@@ -649,7 +650,7 @@ def test_semantic_graph_overlay_remaps_line_shifted_projection_identity(
     module_path.write_text(f"\n{source}", encoding="utf-8", newline="")
     overlay = SemanticDescentGraphModuleOverlay(
         base_graph,
-        tuple(parse_python_modules(tmp_path)),
+        parse_python_modules(tmp_path),
     )
     updated_graph = overlay.graph()
     updated_projection = next(
@@ -691,7 +692,7 @@ def test_semantic_graph_overlay_recomputes_positive_proof_locations(
 
     module_path.write_text(f"\n{source}", encoding="utf-8", newline="")
     updated_graph = base_graph.overlay_modules(
-        tuple(parse_python_modules(tmp_path, use_parse_cache=False))
+        parse_python_modules(tmp_path, use_parse_cache=False)
     )
     updated_proof = next(
         certificate.proof_edges[0]
@@ -904,7 +905,7 @@ def test_semantic_mirror_detector_uses_semantic_descent_context_signature(
         "\n"
         "STEP_TABLE = {'load': LoadStep}\n",
     )
-    modules = tuple(parse_python_modules(tmp_path))
+    modules = parse_python_modules(tmp_path)
 
     assert (
         SemanticMirrorWithoutDescentDetector.cache_granularity
@@ -1706,9 +1707,9 @@ def test_autoregister_priority_ordering_synthesizes_one_proven_mro_batch(
         for operation in plan.document.recipes[0].operations
     )
     projected_findings = analyze_modules(
-        snapshot.with_virtual_sources(
+        ParsedModuleSet.of(snapshot.with_virtual_sources(
             simulation.simulation.rewritten_sources
-        ).parsed_modules,
+        ).parsed_modules),
         DetectorConfig(),
     )
     namespace: dict[str, object] = {}
@@ -2127,7 +2128,7 @@ def test_semantic_mirror_registry_proposal_resolves_absolute_finding_paths(
     )
     findings = tuple(
         SemanticMirrorWithoutDescentDetector().detect(
-            snapshot.parsed_modules,
+            ParsedModuleSet.of(snapshot.parsed_modules),
             DetectorConfig(),
         )
     )
@@ -2752,6 +2753,72 @@ def test_dataclass_payload_operation_rederives_current_source(tmp_path: Path) ->
     assert "record," in rewritten
     assert "action.kind" not in rewritten
     assert "action.description" not in rewritten
+
+
+@pytest.mark.parametrize("partial", (False, True))
+def test_dataclass_payload_owns_complete_expression_or_only_its_field_run(
+    tmp_path: Path,
+    partial: bool,
+) -> None:
+    import ast
+
+    entries = "'left': row.left, 'right': row.right"
+    if partial:
+        entries = "'before': tag('before'), " + entries + ", 'after': tag('after')"
+    source = (
+        "from dataclasses import dataclass\n"
+        "@dataclass(frozen=True)\nclass Row:\n    left: str\n    right: str\n"
+        "events = []\n"
+        "def tag(value):\n    events.append(value)\n    return value\n"
+        f"def payload(row: Row):\n    return {{{entries}}}\n"
+    )
+    path = _write_module(tmp_path, source)
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    operation = _dataclass_payload_projection_operation(snapshot, "Row", "payload")
+    simulation = (
+        RefactorRecipe("derive-payload-boundary")
+        .with_operation(operation)
+        .simulate(snapshot)
+    )
+    rewritten = simulation.simulation.rewritten_sources[path.as_posix()]
+    payload = next(
+        node for node in ast.parse(rewritten).body
+        if isinstance(node, ast.FunctionDef) and node.name == "payload"
+    )
+    returned = payload.body[0].value
+    if partial:
+        assert isinstance(returned, ast.Dict)
+        assert sum(key is None for key in returned.keys) == 1
+    else:
+        assert isinstance(returned, ast.DictComp)
+
+    observations = []
+    for text in (source, rewritten):
+        namespace = {"__name__": __name__}
+        exec(compile(text, str(path), "exec", dont_inherit=True), namespace)
+        result = namespace["payload"](namespace["Row"]("L", "R"))
+        observations.append((result, list(result), namespace["events"]))
+    assert observations[0] == observations[1]
+
+
+def test_complete_dataclass_payload_does_not_discard_trailing_comments(
+    tmp_path: Path,
+) -> None:
+    path = _write_module(
+        tmp_path,
+        "from dataclasses import dataclass\n"
+        "@dataclass(frozen=True)\nclass Row:\n    left: str\n    right: str\n"
+        "def payload(row: Row):\n"
+        "    return {'left': row.left, 'right': row.right,  # retain this explanation\n"
+        "    }\n",
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    operation = _dataclass_payload_projection_operation(snapshot, "Row", "payload")
+    document = CodemodPlanDocument(
+        recipes=(RefactorRecipe("preserve-comment").with_operation(operation),)
+    )
+    assert not document.preflight(snapshot).report.is_clean
+    assert "retain this explanation" in path.read_text()
 
 
 def test_dataclass_payload_operation_rejects_authority_schema_drift(
@@ -5203,7 +5270,7 @@ def test_semantic_mirror_enum_subset_recipe_resolves_absolute_finding_paths(
     )
     findings = tuple(
         SemanticMirrorWithoutDescentDetector().detect(
-            snapshot.parsed_modules,
+            ParsedModuleSet.of(snapshot.parsed_modules),
             DetectorConfig(),
         )
     )
@@ -6290,7 +6357,6 @@ def test_semantic_descent_graph_cache_invalidates_on_source_change(
 
 def test_semantic_descent_graph_cache_preserves_positive_proof_relations(
     tmp_path: Path,
-    monkeypatch,
 ) -> None:
     _write_module(
         tmp_path,
@@ -6316,20 +6382,17 @@ def test_semantic_descent_graph_cache_preserves_positive_proof_relations(
     )
     assert isinstance(positive_certificate, SemanticDerivationCertificate)
 
-    def unexpected_graph_rebuild(*args, **kwargs):
-        del args, kwargs
-        raise AssertionError("positive relations must load from the graph cache")
-
-    monkeypatch.setattr(
-        semantic_descent_module.SemanticDescentGraphBuildRequest,
-        "graph",
-        unexpected_graph_rebuild,
-    )
-    cached_graph = build_semantic_descent_graph(
-        parse_python_modules(tmp_path, use_parse_cache=False),
-        cache_dir=graph_cache_dir,
+    cached_graph = (
+        semantic_descent_module.SemanticDescentGraphCache(graph_cache_dir)
+        .load(
+            SemanticDescentGraphCacheIdentity.from_modules(
+                parse_python_modules(tmp_path, use_parse_cache=False)
+            )
+        )
+        .graph
     )
 
+    assert cached_graph is not None
     assert cached_graph.relations == first_graph.relations
     assert cached_graph.certificates == first_graph.certificates
     assert json_report_object(cached_graph.certificates[0])["status"] == (

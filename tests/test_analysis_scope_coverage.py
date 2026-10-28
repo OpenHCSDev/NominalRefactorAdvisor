@@ -29,7 +29,7 @@ def test_full_coverage_has_no_focused_report_boundary(
     assert explicit == direct == AnalysisPathScope(roots)
     assert not direct.has_report_filter
     assert direct.resolved_report_roots == ()
-    modules = tuple(parse_python_module_roots(roots, use_parse_cache=False))
+    modules = parse_python_module_roots(roots, use_parse_cache=False)
     config = DetectorConfig()
     assert AnalysisCacheIdentity.from_modules(
         roots, modules, config, report_roots=explicit.report_roots
