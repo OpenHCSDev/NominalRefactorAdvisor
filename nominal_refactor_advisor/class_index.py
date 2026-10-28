@@ -5591,8 +5591,7 @@ def _compact_guarded_defined_attr_name(node: ast.AST) -> str | None:
         and len(node.ops) == 1
         and isinstance(node.ops[0], (ast.IsNot, ast.NotEq))
         and len(node.comparators) == 1
-        and isinstance(node.comparators[0], ast.Constant)
-        and node.comparators[0].value is None
+        and CompactValueExpression.project(node.comparators[0]).value_is_none_literal
     ):
         return None
     return _compact_class_dict_get_attr_name(node.left)
@@ -5905,7 +5904,7 @@ def _compact_class_methods(
 def _annotation_type_names(node: ast.AST | None) -> tuple[str, ...]:
     if node is None:
         return ()
-    if isinstance(node, ast.Constant) and node.value is None:
+    if CompactValueExpression.project(cast(ast.expr, node)).value_is_none_literal:
         return ()
     if isinstance(node, ast.Name):
         return () if node.id == "None" else (node.id,)
@@ -7403,7 +7402,7 @@ def _compact_sorted_key_calls(
         )
         key_attribute_names: set[str] = set()
         for keyword in node.keywords:
-            if keyword.arg != "key" or keyword.value is None:
+            if keyword.arg != "key":
                 continue
             key_attribute_names.update(
                 child.attr

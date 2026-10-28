@@ -13,6 +13,7 @@ from typing import (
     TypeAlias,
 )
 
+from .ast_projection import AbsentStatementValue, StatementValue
 from .ast_projection import ExpressionReference
 from .ast_tools import (
     EagerNameLoadCollector,
@@ -917,8 +918,11 @@ def _class_declares_non_null_name(node: ast.ClassDef, name: str) -> bool:
             isinstance(statement, ast.AnnAssign)
             and ExpressionReference.decoded(statement.target).identifier == name
         ):
-            value = statement.value
+            try:
+                value = StatementValue.of(statement).require_value("a bare annotation")
+            except AbsentStatementValue:
+                return True
         else:
             continue
-        return not (isinstance(value, ast.Constant) and value.value is None)
+        return not CompactValueExpression.project(value).value_is_none_literal
     return False

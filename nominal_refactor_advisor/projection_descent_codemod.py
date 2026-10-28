@@ -23,6 +23,7 @@ from nominal_refactor_advisor.declaration_binding_transfer import (
     DeclarationModuleBindingTransfer,
 )
 
+from .value_expression import CompactValueExpression
 from .ast_tools import (
     BuiltinCallName,
     ParsedModule,
@@ -424,8 +425,7 @@ class _ProjectionLookupSequence:
             and len(statement.test.ops) == 1
             and isinstance(statement.test.ops[0], ast.Is)
             and len(statement.test.comparators) == 1
-            and isinstance(statement.test.comparators[0], ast.Constant)
-            and statement.test.comparators[0].value is None
+            and CompactValueExpression.project(statement.test.comparators[0]).value_is_none_literal
         )
 
     @staticmethod
@@ -694,15 +694,13 @@ class _TypeKeyedBehaviorSourceDerivation:
             and len(value.test.ops) == 1
             and isinstance(value.test.ops[0], ast.IsNot)
             and len(value.test.comparators) == 1
-            and isinstance(value.test.comparators[0], ast.Constant)
-            and value.test.comparators[0].value is None
+            and CompactValueExpression.project(value.test.comparators[0]).value_is_none_literal
             and isinstance(value.body, ast.Call)
             and isinstance(value.body.func, ast.Name)
             and value.body.func.id == result_name
             and not value.body.args
             and not value.body.keywords
-            and isinstance(value.orelse, ast.Constant)
-            and value.orelse.value is None
+            and CompactValueExpression.project(value.orelse).value_is_none_literal
         )
 
     @staticmethod

@@ -21,6 +21,7 @@ from typing import (
     cast,
 )
 
+from .value_expression import CompactValueExpression
 from .annotation_semantics import NOMINAL_ANNOTATION_SOURCE_AUTHORITY
 from .ast_tools import (
     CollectedFamily,
@@ -1679,7 +1680,7 @@ class ProductFlowRepository(
 
         classes: list[str] = []
         for part in self._annotation_alternatives(expression):
-            if isinstance(part, ast.Constant) and part.value is None:
+            if CompactValueExpression.project(part).value_is_none_literal:
                 continue
             reference = LexicalValueReference.from_expression(part)
             if reference is None:

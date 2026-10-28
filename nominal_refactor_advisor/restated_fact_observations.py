@@ -18,7 +18,7 @@ from enum import StrEnum
 from pathlib import Path
 
 from .lexical_bindings import ImportAlias, ImportBoundNameProjection
-from .ast_projection import CallKeywords, StatementValue
+from .ast_projection import AbsentStatementValue, CallKeywords, StatementValue
 from .ast_tools import BuiltinCallName, ParsedModule, module_syntax_index
 from .declared_root import DeclaredRoot
 from .models import SourceLocation
@@ -760,21 +760,24 @@ class LegacyMarkerSiteFamily(RestatingSiteFamily):
             *index.indexed_nodes_of_type(ast.AnnAssign),
         ):
             owner = index.parent_node(node_index)
-            if isinstance(owner, (ast.Module, ast.ClassDef)) and (
-                pair := StatementValue.of(node).paired_with(node)
-            ):
-                replacement = cls.aliased(pair[1])
-                for target in cls.assigned_names(node):
-                    if replacement is not None and LegacyWord.in_identifier(target):
-                        yield cls.site(
-                            parsed_module,
-                            node,
-                            cls.declared_symbol(
-                                index.lexical_symbol(node_index), target
-                            ),
-                            target,
-                            ("alias", f"of {replacement}"),
-                        )
+            if not isinstance(owner, (ast.Module, ast.ClassDef)):
+                continue
+            try:
+                value = StatementValue.of(node).require_value("a bare annotation")
+            except AbsentStatementValue:
+                continue
+            replacement = cls.aliased(value)
+            for target in cls.assigned_names(node):
+                if replacement is not None and LegacyWord.in_identifier(target):
+                    yield cls.site(
+                        parsed_module,
+                        node,
+                        cls.declared_symbol(
+                            index.lexical_symbol(node_index), target
+                        ),
+                        target,
+                        ("alias", f"of {replacement}"),
+                    )
         for node_index, node in index.indexed_nodes_of_type(ast.alias):
             # An alias renames the old path; a plain import of a marked name is its consumer.
             if LegacyWord.in_identifier(node.name):

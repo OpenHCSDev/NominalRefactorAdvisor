@@ -22,6 +22,7 @@ from typing import (
     cast,
 )
 
+from ..value_expression import CompactValueExpression
 from ..annotation_semantics import CLASSVAR_ANNOTATION_AUTHORITY
 from ..ast_projection import ExpressionReference
 from ..ast_projection import AbsentStatementValue, CallKeywords, StatementValue
@@ -226,8 +227,7 @@ class HelperSupportProjectionAuthority:
         return bool(
             len(node.body) == 1
             and isinstance(node.body[0], ast.Return)
-            and isinstance(node.body[0].value, ast.Constant)
-            and (node.body[0].value.value is None)
+            and StatementValue.of(node.body[0]).supplies_none_literal
             and (not node.orelse)
         )
 
@@ -557,7 +557,7 @@ def _build_call_keyword_helper_name(
     build_call: ast.Call, keyword_name: str
 ) -> str | None:
     for keyword in build_call.keywords:
-        if keyword.arg != keyword_name or keyword.value is None:
+        if keyword.arg != keyword_name:
             continue
         if isinstance(keyword.value, ast.Call):
             return _call_display_name(keyword.value)
@@ -811,12 +811,16 @@ def _linear_query_loop(body: list[ast.stmt]) -> ast.For | None:
 
 
 def _linear_query_return_expr(loop: ast.For, result_name: str) -> ast.AST | None:
-    return_exprs = [
-        pair[1]
-        for current in _walk_nodes(loop)
-        if isinstance(current, ast.Return)
-        and (pair := StatementValue.of(current).paired_with(current)) is not None
-    ]
+    return_exprs: list[ast.expr] = []
+    for current in _walk_nodes(loop):
+        if not isinstance(current, ast.Return):
+            continue
+        try:
+            return_exprs.append(
+                StatementValue.of(current).require_value("a bare return")
+            )
+        except AbsentStatementValue:
+            continue
     if len(return_exprs) != 1 or not _name_mentions(return_exprs[0], result_name):
         return None
     return return_exprs[0]
@@ -4409,7 +4413,7 @@ def _node_mentions_name(node: ast.AST, local_name: str) -> bool:
 def _compare_mentions_none(node: ast.Compare, local_name: str) -> bool:
     operands = (node.left, *node.comparators)
     return _node_mentions_name(node, local_name) and any(
-        isinstance(operand, ast.Constant) and operand.value is None
+        CompactValueExpression.project(operand).value_is_none_literal
         for operand in operands
     )
 
@@ -4446,12 +4450,16 @@ def _schema_accessor_coercion_kinds(
 def _schema_accessor_returns_local(
     function: ast.FunctionDef | ast.AsyncFunctionDef, local_name: str
 ) -> bool:
-    return any(
-        isinstance(node, ast.Return)
-        and (pair := StatementValue.of(node).paired_with(node)) is not None
-        and _node_mentions_name(pair[1], local_name)
-        for node in _walk_nodes(function)
-    )
+    for node in _walk_nodes(function):
+        if not isinstance(node, ast.Return):
+            continue
+        try:
+            returned = StatementValue.of(node).require_value("a bare return")
+        except AbsentStatementValue:
+            continue
+        if _node_mentions_name(returned, local_name):
+            return True
+    return False
 
 
 def _schema_accessor_method_row(

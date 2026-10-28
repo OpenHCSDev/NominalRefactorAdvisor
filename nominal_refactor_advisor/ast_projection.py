@@ -9,6 +9,7 @@ from dataclasses import dataclass, field
 from typing import Self, TypeVar, cast
 
 from .declared_family import ForeignAdapter
+from .value_expression import CompactValueExpression
 
 TargetT = TypeVar("TargetT")
 
@@ -340,6 +341,12 @@ class StatementValue(ABC):
 
     @property
     @abstractmethod
+    def supplies_none_literal(self) -> bool:
+        """Whether the statement spells the `None` literal (a bare `return` does not)."""
+        raise NotImplementedError
+
+    @property
+    @abstractmethod
     def value_source(self) -> str | None:
         """Unparsed value for record keys, where an absent value is spelled None."""
         raise NotImplementedError
@@ -371,6 +378,10 @@ class SuppliedValue(StatementValue):
         return type(self.value).__name__
 
     @property
+    def supplies_none_literal(self) -> bool:
+        return CompactValueExpression.project(self.value).value_is_none_literal
+
+    @property
     def value_source(self) -> str | None:
         return ast.unparse(self.value)
 
@@ -398,6 +409,10 @@ class NoStatementValue(StatementValue):
     @property
     def value_kind_name(self) -> str:
         return "None"
+
+    @property
+    def supplies_none_literal(self) -> bool:
+        return False
 
     @property
     def value_source(self) -> str | None:

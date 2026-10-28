@@ -31,6 +31,7 @@ from typing import ClassVar
 
 from metaclass_registry import AutoRegisterMeta
 
+from .value_expression import CompactValueExpression
 from .ast_projection import StatementValue
 from .lexical_bindings import ImportBoundNameProjection
 from .ast_tools import (
@@ -2026,7 +2027,7 @@ def held_type(annotation: ast.expr) -> ast.expr:
         sides = [
             side
             for side in (annotation.left, annotation.right)
-            if not (isinstance(side, ast.Constant) and side.value is None)
+            if not CompactValueExpression.project(side).value_is_none_literal
         ]
         if len(sides) == 1:
             return held_type(sides[0])

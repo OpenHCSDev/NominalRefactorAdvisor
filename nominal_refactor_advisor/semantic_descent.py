@@ -36,7 +36,7 @@ from .ast_projection import ExpressionReference
 from .foreign_family import FunctionDefinition
 from .interpreter import PythonVersion
 from .assignment_projection import SingleAssignmentAndValueNameProjection
-from .ast_projection import CallKeywords, StatementValue
+from .ast_projection import AbsentStatementValue, CallKeywords, StatementValue
 from .ast_tools import (
     ClassFunctionStackNodeVisitor,
     CollectedFamily,
@@ -5042,11 +5042,14 @@ class _ProjectionVisitor(ClassFunctionStackNodeVisitor):
         if not self.include_presentations:
             self.generic_visit(node)
             return
-        if (
-            pair := StatementValue.of(node).paired_with(node)
-        ) and self._collect_assignment_projection(
+        try:
+            value = StatementValue.of(node).require_value("a bare annotation")
+        except AbsentStatementValue:
+            self.generic_visit(node)
+            return
+        if self._collect_assignment_projection(
             node,
-            pair[1],
+            value,
             axis_type_names=ProjectionTypeScope.annotation_type_names(node.annotation),
         ):
             return
@@ -5056,9 +5059,12 @@ class _ProjectionVisitor(ClassFunctionStackNodeVisitor):
         if not self.include_presentations:
             self.generic_visit(node)
             return
-        if (
-            pair := StatementValue.of(node).paired_with(node)
-        ) and self._collect_return_projection(node, pair[1]):
+        try:
+            value = StatementValue.of(node).require_value("a bare return")
+        except AbsentStatementValue:
+            self.generic_visit(node)
+            return
+        if self._collect_return_projection(node, value):
             return
         self.generic_visit(node)
 

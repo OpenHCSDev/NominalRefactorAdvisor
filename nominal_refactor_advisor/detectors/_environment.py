@@ -12,6 +12,7 @@ from typing import ClassVar
 
 from metaclass_registry import AutoRegisterMeta
 
+from ..value_expression import CompactValueExpression
 from ..lexical_bindings import ImportBoundNameProjection
 from ..ast_projection import ExpressionReference
 from ..ast_projection import CallKeywords, StatementValue
@@ -592,7 +593,7 @@ def _none_checked_names(node: ast.AST) -> tuple[str, ...]:
         return ()
     operands = (node.left, node.comparators[0])
     if not any(
-        isinstance(operand, ast.Constant) and operand.value is None
+        CompactValueExpression.project(operand).value_is_none_literal
         for operand in operands
     ):
         return ()

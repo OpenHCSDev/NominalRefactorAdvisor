@@ -27,6 +27,7 @@ from typing import ClassVar, Generic, Self, TypeAlias, TypeVar, cast
 
 from metaclass_registry import AutoRegisterMeta
 
+from .value_expression import CompactValueExpression
 from .annotation_semantics import NOMINAL_ANNOTATION_SOURCE_AUTHORITY
 from .ast_projection import ExpressionReference
 from .codemod_native_requirements import (
@@ -7597,9 +7598,7 @@ class AutoRegisterMroOrderingDerivation:
                 target.node,
                 registry_key_name,
             )
-            if registry_key is None or (
-                isinstance(registry_key, ast.Constant) and registry_key.value is None
-            ):
+            if registry_key is None or CompactValueExpression.project(registry_key).value_is_none_literal:
                 continue
             if child_names_by_parent[class_name]:
                 return None

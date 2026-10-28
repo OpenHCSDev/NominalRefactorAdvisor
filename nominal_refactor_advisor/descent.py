@@ -22,6 +22,8 @@ from dataclasses import dataclass, field
 from functools import cached_property
 from pathlib import Path
 
+from .ast_projection import StatementValue
+from .value_expression import CompactValueExpression
 from .ast_tools import (
     AstParentIndex,
     BuiltinCallName,
@@ -446,8 +448,7 @@ class Guard(ABC):
             if (
                 isinstance(left, ast.Attribute)
                 and _is_name(left.value, subject)
-                and isinstance(right, ast.Constant)
-                and right.value is None
+                and CompactValueExpression.project(right).value_is_none_literal
                 and isinstance(operator, ast.Is | ast.IsNot)
             ):
                 return PropertyIsNone(left.attr, negated)
@@ -520,8 +521,7 @@ class PropertyIsNone(Guard):
         if (
             len(body) == 1
             and isinstance(body[0], ast.Return)
-            and isinstance(body[0].value, ast.Constant)
-            and body[0].value.value is None
+            and StatementValue.of(body[0]).supplies_none_literal
         ):
             return not self.negated
         if found.returns is not None and "None" not in ast.unparse(found.returns):
