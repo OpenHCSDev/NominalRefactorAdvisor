@@ -105,7 +105,7 @@ class IntrospectionRecorder(Recording):
     prefixes: tuple[str, ...]
     out: Path
     calls: Counter[tuple[str, str]] = field(default_factory=Counter)
-    field_counts: dict[str, int] = field(default_factory=dict)
+    classes: dict[str, type] = field(default_factory=dict)
     originals: dict[tuple[object, str], Callable[..., object]] = field(default_factory=dict)
 
     def owns(self, module_name: str) -> bool:
@@ -130,8 +130,7 @@ class IntrospectionRecorder(Recording):
             return
         name = f"{introspected.__module__}.{introspected.__qualname__}"
         self.calls[(consumer, name)] += 1
-        if name not in self.field_counts and dataclasses.is_dataclass(introspected):
-            self.field_counts[name] = len(self.originals[(dataclasses, "fields")](introspected))
+        self.classes[name] = introspected
 
     def wrap(self, owner: object, name: str) -> None:
         original = getattr(owner, name)
@@ -165,24 +164,25 @@ class IntrospectionRecorder(Recording):
                 IntrospectionUse(consumer, introspected, calls)
                 for (consumer, introspected), calls in sorted(self.calls.items())
             ),
+            # Counted after finish() restores the stdlib, so this read is not recorded.
             field_counts=tuple(
-                ClassFieldCount(introspected, fields)
-                for introspected, fields in sorted(self.field_counts.items())
+                ClassFieldCount(name, len(dataclasses.fields(introspected)))
+                for name, introspected in sorted(self.classes.items())
+                if dataclasses.is_dataclass(introspected)
             ),
         )
 
 
 def recording_for(out: Path | None, prefixes: tuple[str, ...]) -> Recording:
     """The pytest options decoded once into what this run records."""
-    match out, prefixes:
-        case None, _:
-            return IdleRecording()
-        case Path(), ():
-            import pytest
+    if out is None:
+        return IdleRecording()
+    if not prefixes:
+        import pytest
 
-            raise pytest.UsageError(
-                "--introspection-trace-out needs at least one --introspection-trace-prefix"
-            )
+        raise pytest.UsageError(
+            "--introspection-trace-out needs at least one --introspection-trace-prefix"
+        )
     recorder = IntrospectionRecorder(prefixes, out)
     recorder.install()
     return recorder
