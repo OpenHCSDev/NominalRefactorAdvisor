@@ -71,7 +71,6 @@ def _isolated_cache(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
 def test_an_installed_owner_is_found_by_what_its_source_does(tmp_path: Path) -> None:
     owners = InstalledDistributionOwners.of("metaclass-registry")
 
-    assert owners is not None
     assert [(owner.symbol, owner.role) for owner in owners.owners] == [
         (OWNER, RegistrationRole.METACLASS)
     ]
