@@ -42,6 +42,13 @@ from ._record_checks import (
 from ._registration_owners import (
     HandRolledRegistrationDetector,
 )
+from ._relocations import (
+    ConstantSubtypeAnswerDetector,
+    LambdaFoldDetector,
+    OwnStateBranchAnswerDetector,
+    ThreadedAbsenceDetector,
+    ZeroOneTupleDetector,
+)
 from ._restated_facts import (
     DeadModuleDetector,
     ExactKeySetDetector,
@@ -116,6 +123,11 @@ __all__ = (
     "RedundantTypeCheckDetector",
     "ResidualClosedAxisIndirectionDetector",
     "RestatedIdentityDetector",
+    "ConstantSubtypeAnswerDetector",
+    "LambdaFoldDetector",
+    "OwnStateBranchAnswerDetector",
+    "ThreadedAbsenceDetector",
+    "ZeroOneTupleDetector",
     "SemanticDescentGraphIssueDetector",
     "SemanticMirrorIssueDetector",
     "SemanticMirrorWithoutDescentDetector",

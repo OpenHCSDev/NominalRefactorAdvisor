@@ -508,6 +508,56 @@ class PatternId(IntEnum):
             CapabilityTag.MRO_ORDERING,
         ),
     )
+    CONSTANT_SUBTYPE_ANSWER = _pattern(
+        stable_id=40,
+        display_name="Constant Subtype Answer",
+        required_relation=(
+            "Every member of a class family that declares one zero-argument "
+            "question answers it with a constant, so the answer restates which "
+            "member the object is."
+        ),
+        witness_capabilities=(CapabilityTag.CLOSED_FAMILY_DISPATCH,),
+    )
+    OWN_STATE_BRANCH_ANSWER = _pattern(
+        stable_id=41,
+        display_name="Own-State Branch Answer",
+        required_relation=(
+            "A frozen record derives a bool from its own state and callers "
+            "branch on it, so each branch restates a state of the record that "
+            "its type does not declare as a subtype."
+        ),
+        witness_capabilities=(CapabilityTag.PROVENANCE,),
+    )
+    LAMBDA_FOLD = _pattern(
+        stable_id=42,
+        display_name="Lambda Fold",
+        required_relation=(
+            "Each override of a method calls exactly one of the callables it "
+            "receives and callers pass lambdas, so the family is selected by "
+            "call-site branches instead of named overrides."
+        ),
+        witness_capabilities=(CapabilityTag.CLOSED_FAMILY_DISPATCH,),
+    )
+    ZERO_ONE_TUPLE = _pattern(
+        stable_id=43,
+        display_name="Zero-Or-One Tuple",
+        required_relation=(
+            "Every return of one function is an empty or a one-element tuple, "
+            "with both, so presence and absence are spelled as a collection "
+            "that callers branch on by iterating."
+        ),
+        witness_capabilities=(CapabilityTag.PROVENANCE,),
+    )
+    THREADED_ABSENCE = _pattern(
+        stable_id=44,
+        display_name="Threaded Absence",
+        required_relation=(
+            "A parameter declared `X | None` without a default is compared with "
+            "None in its own body, so absence the caller decided is passed down "
+            "and asked again."
+        ),
+        witness_capabilities=(CapabilityTag.PROVENANCE,),
+    )
 
     def __new__(
         cls,
