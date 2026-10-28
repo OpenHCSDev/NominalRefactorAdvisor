@@ -7,6 +7,7 @@ from types import ModuleType
 import pytest
 
 from registry_test_sources import keyed_registry_source
+from nominal_refactor_advisor.class_index import ParsedModuleSet
 from nominal_refactor_advisor.analysis import analyze_detector_types
 from nominal_refactor_advisor.ast_tools import ParsedModule
 from nominal_refactor_advisor.codemod import (
@@ -130,7 +131,7 @@ def test_injective_finding_requires_distinct_mapping_keys(
     )
     assert len(detectors) == 1
     findings = analyze_detector_types(
-        [_parsed(source)], DetectorConfig(), detector_types=detectors
+        ParsedModuleSet.of([_parsed(source)]), DetectorConfig(), detector_types=detectors
     )
     assert len(findings) == (
         1 if key_count == 2 else 0

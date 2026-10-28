@@ -4,6 +4,7 @@ import sys
 
 import pytest
 
+from nominal_refactor_advisor.class_index import ParsedModuleSet
 from nominal_refactor_advisor import analysis
 from nominal_refactor_advisor.analysis_cache import AnalysisEngineSignature
 from nominal_refactor_advisor.ast_tools import SourceModule
@@ -22,7 +23,7 @@ def test_direct_api_computes_engine_identity_once_per_invocation(tmp_path, api):
         "analyze_path": lambda: analysis.analyze_path(root, cache_dir=tmp_path / "parse"),
         "analyze_paths": lambda: analysis.analyze_paths((root,), cache_dir=tmp_path / "parse"),
         "analyze_modules_with_cache": lambda: analysis.analyze_modules_with_cache(
-            (root,), modules, analysis_cache_dir=tmp_path / "analysis",
+            (root,), ParsedModuleSet.of(modules), analysis_cache_dir=tmp_path / "analysis",
         ),
     }
     code = inspect.unwrap(AnalysisEngineSignature.current).__code__
@@ -57,7 +58,7 @@ def test_direct_detector_analysis_borrows_an_existing_invocation(tmp_path):
     source = SourceModule(path=tmp_path / "source.py", module_name="source", source="VALUE = 1\n").parse()
     with ScanCache.scope():
         owner = ScanCache._active.get()
-        assert analysis.analyze_detector_types([source], DetectorConfig(), detector_types=()) == []
+        assert analysis.analyze_detector_types(ParsedModuleSet.of([source]), DetectorConfig(), detector_types=()) == []
         assert ScanCache._active.get() is owner
     assert ScanCache._active.get() is None
 

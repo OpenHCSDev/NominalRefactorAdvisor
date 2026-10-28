@@ -11,6 +11,7 @@ from typing import ClassVar
 
 import pytest
 
+from nominal_refactor_advisor.class_index import ParsedModuleSet
 from nominal_refactor_advisor.analysis import analyze_path
 from nominal_refactor_advisor.ast_tools import parse_python_modules
 from nominal_refactor_advisor.codemod import (
@@ -127,7 +128,7 @@ def test_renderer_and_detector_collapse_preserve_runtime(
         )
         assert len(findings) == 1
         snapshot = CodemodSourceSnapshot.from_modules(
-            parse_python_modules(tmp_path), findings,
+            ParsedModuleSet.of(parse_python_modules(tmp_path)), findings,
         )
         plan = snapshot.plan_from_findings(findings, detector_ids=(detector_id,))
         assert plan.records[0].status is (
@@ -173,7 +174,7 @@ def test_detector_collapse_keeps_class_dependent_renderers(
         )
         assert len(findings) == 1
         snapshot = CodemodSourceSnapshot.from_modules(
-            parse_python_modules(tmp_path), findings,
+            ParsedModuleSet.of(parse_python_modules(tmp_path)), findings,
         )
         plan = snapshot.plan_from_findings(findings, detector_ids=(detector_id,))
         if detector_id == "declarative_detector_class":
@@ -222,7 +223,7 @@ def test_detector_rewrites_require_nominal_base_identity(
         if finding.detector_id == detector_id
     )
     assert len(findings) == 1
-    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path), findings)
+    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)), findings)
     plan = snapshot.plan_from_findings(findings, detector_ids=(detector_id,))
     assert plan.records[0].status is FindingRecipeSynthesisStatus.REJECTED_BY_SAFETY_CHECK
     assert "nominal collector base" in plan.records[0].reason
@@ -267,7 +268,7 @@ def test_detector_rewrites_follow_nominal_base_aliases(
             if finding.detector_id == detector_id
         )
         assert len(findings) == 1
-        snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path), findings)
+        snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)), findings)
         plan = snapshot.plan_from_findings(findings, detector_ids=(detector_id,))
         assert plan.records[0].status is FindingRecipeSynthesisStatus.EXECUTABLE_CANDIDATE, (
             plan.records[0].reason
@@ -319,7 +320,7 @@ def test_detector_rewrite_retains_unresolved_binding_evidence(
         if finding.detector_id == "declarative_detector_class"
     )
     assert len(findings) == 1
-    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path), findings)
+    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)), findings)
     plan = snapshot.plan_from_findings(findings, detector_ids=("declarative_detector_class",))
     assert plan.records[0].status is FindingRecipeSynthesisStatus.REJECTED_BY_SAFETY_CHECK
     assert "nominal collector base" in plan.records[0].reason
@@ -337,7 +338,7 @@ def test_saved_detector_plan_reproves_imports_on_execution(
             finding for finding in analyze_path(tmp_path)
             if finding.detector_id == current_id
         )
-        snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path), findings)
+        snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)), findings)
         plan = snapshot.plan_from_findings(findings, detector_ids=(current_id,))
         assert plan.records[0].status is FindingRecipeSynthesisStatus.EXECUTABLE_CANDIDATE
         if current_id != detector_id:
@@ -369,7 +370,7 @@ def test_authored_detector_sequence_is_one_runtime_checked_batch(
     expected = _execute(module_path)
     plan_path = Path(__file__).parents[1] / "docs/examples/detector_declaration_sequence.json"
     sequence = CodemodPlanSequence.from_payload_fields(json.loads(plan_path.read_text()))
-    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
     if "__class__" in payload:
         with pytest.raises(ValueError, match="class scope"):
             sequence.simulate(snapshot, backend=CodemodBackend.AST_SPAN)

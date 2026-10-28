@@ -16,6 +16,7 @@ from pathlib import Path
 from time import perf_counter
 from typing import Generic, TypeVar, cast
 
+from .class_index import ParsedModuleSet
 from .analysis import analyze_modules
 from .ast_tools import parse_python_modules
 from .collection_algebra import sorted_tuple
@@ -418,7 +419,7 @@ def run_calibration_target(
         use_parse_cache=use_parse_cache,
         parse_workers=parse_workers,
     )
-    findings = analyze_modules(modules, config)
+    findings = analyze_modules(ParsedModuleSet(tuple(modules)), config)
     plans = build_refactor_plans(findings, path)
     elapsed = perf_counter() - started
     scan = ScanEconomicsProof.from_findings_and_plans(

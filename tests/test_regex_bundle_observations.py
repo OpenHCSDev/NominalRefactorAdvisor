@@ -8,6 +8,7 @@ import weakref
 
 import pytest
 
+from nominal_refactor_advisor.class_index import ParsedModuleSet
 from nominal_refactor_advisor.ast_tools import ParsedModule
 from nominal_refactor_advisor.detectors import DetectorConfig
 from nominal_refactor_advisor.detectors._runtime import RepeatedLocalRegexBundleDetector
@@ -61,7 +62,7 @@ def test_import_aliases_and_keyword_arguments_identify_the_same_patterns(header,
     exec(compile(module.source, str(module.path), "exec"), namespace)
     assert tuple(pattern.pattern for pattern in namespace["first"]()) == PATTERNS
     assert tuple(pattern.pattern for pattern in namespace["second"]()) == PATTERNS
-    findings = RepeatedLocalRegexBundleDetector().detect([module], DetectorConfig())
+    findings = RepeatedLocalRegexBundleDetector().detect(ParsedModuleSet.of([module]), DetectorConfig())
     assert len(findings) == 1
     assert findings[0].authority_evidence is None
 
@@ -85,7 +86,7 @@ def test_spelling_cannot_claim_a_regex_origin(header, parameters, prefix, suffix
         local_prefix=prefix,
         local_suffix=suffix,
     )
-    assert RepeatedLocalRegexBundleDetector().detect([module], DetectorConfig()) == []
+    assert RepeatedLocalRegexBundleDetector().detect(ParsedModuleSet.of([module]), DetectorConfig()) == []
 
 
 @pytest.mark.parametrize(
@@ -98,7 +99,7 @@ def test_spelling_cannot_claim_a_regex_origin(header, parameters, prefix, suffix
 )
 def test_unproved_argument_bindings_do_not_count_as_pattern_uses(call):
     module = _module("import re\n", call)
-    assert RepeatedLocalRegexBundleDetector().detect([module], DetectorConfig()) == []
+    assert RepeatedLocalRegexBundleDetector().detect(ParsedModuleSet.of([module]), DetectorConfig()) == []
 
 
 @pytest.mark.parametrize("operation", tuple(RegexPatternOperation))
@@ -115,7 +116,7 @@ def test_operation_arguments_derive_from_the_native_declaration(operation):
     exec(compile(module.source, str(module.path), "exec"), namespace)
     assert len(namespace["first"]()) == 3
     assert (
-        len(RepeatedLocalRegexBundleDetector().detect([module], DetectorConfig())) == 1
+        len(RepeatedLocalRegexBundleDetector().detect(ParsedModuleSet.of([module]), DetectorConfig())) == 1
     )
 
 

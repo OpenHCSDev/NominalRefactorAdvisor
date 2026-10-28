@@ -77,6 +77,7 @@ from .cache_checkout import (
     lexical_absolute_path,
 )
 from .class_index import (
+    ParsedModuleSet,
     CompactClassFamilyIndex,
     CompactClassProjectionDemand,
     CompactModuleClassProjection,
@@ -326,7 +327,7 @@ class DetectorAnalysisWorkerPlan:
 class DetectorWorkerContext:
     """Immutable parsed source and configuration shared by detector workers."""
 
-    modules: tuple[ParsedModule, ...]
+    modules: ParsedModuleSet
     config: DetectorConfig
 
 
@@ -335,7 +336,7 @@ class DetectorAnalysisWorkerState(DetectorWorkerContext):
     """Process-local parsed source and config for detector worker tasks."""
 
     def detect_with(self, detector_type: type[IssueDetector]) -> list[RefactorFinding]:
-        return detector_type().detect(list(self.modules), self.config)
+        return detector_type().detect(self.modules, self.config)
 
 
 detector_analysis_worker_state: DetectorAnalysisWorkerState | None = None
@@ -391,7 +392,7 @@ class PerModuleDetectorShardWorkerState(DetectorWorkerContext):
     ) -> list[RefactorFinding]:
         module_index, detector_types = task
         return analyze_detector_types(
-            [self.modules[module_index]],
+            ParsedModuleSet((self.modules[module_index],)),
             self.config,
             detector_types=detector_types,
             analysis_workers=1,
@@ -433,7 +434,7 @@ class DetectorTypeShardRunner:
     @classmethod
     def from_modules(
         cls,
-        modules: tuple[ParsedModule, ...],
+        modules: ParsedModuleSet,
         config: DetectorConfig,
         detector_types: tuple[type[IssueDetector], ...],
         *,
@@ -469,7 +470,7 @@ class DetectorTypeShardRunner:
                 )
         return [
             detector_type().detect(
-                list(self.worker_state.modules),
+                self.worker_state.modules,
                 self.worker_state.config,
             )
             for detector_type in self.detector_types
@@ -1184,7 +1185,7 @@ def build_compact_projection_shard(
                 (
                     *local_findings,
                     *analyze_detector_types(
-                        [module],
+                        ParsedModuleSet((module,)),
                         request.config,
                         detector_types=fallback_local_detector_types,
                         analysis_workers=1,
@@ -2584,7 +2585,7 @@ class EvidenceLocalFindingReuseAuthority:
 
 
 def analyze_modules(
-    modules: list,
+    modules: ParsedModuleSet,
     config: DetectorConfig | None = None,
     *,
     analysis_workers: int = 1,
@@ -2605,7 +2606,7 @@ def analyze_modules(
 
 @ScanCache.scope()
 def analyze_detector_types(
-    modules: list[ParsedModule],
+    modules: ParsedModuleSet,
     config: DetectorConfig,
     *,
     detector_types: tuple[type[IssueDetector], ...],
@@ -2629,7 +2630,7 @@ def analyze_detector_types(
     if non_graph_detector_types:
         findings.extend(
             DetectorTypeShardRunner.from_modules(
-                modules=tuple(modules),
+                modules=modules,
                 config=config,
                 detector_types=non_graph_detector_types,
                 analysis_workers=analysis_workers,
@@ -2886,7 +2887,7 @@ class AnalysisCacheResolutionAuthority(
         self,
         *,
         roots: tuple[Path, ...],
-        modules: list,
+        modules: ParsedModuleSet,
         config: DetectorConfig,
         cache_result: CachedAnalysisResult,
         analysis_cache_dir: Path | None,
@@ -3109,7 +3110,7 @@ def analyze_module_detector_types_with_cache(
             Hit,
         )
     new_findings = analyze_detector_types(
-        [module],
+        ParsedModuleSet((module,)),
         config,
         detector_types=detector_bundle_plan.missing_detector_types(
             cache_lookup.findings_by_bundle
@@ -3137,7 +3138,7 @@ class IncrementalAnalysisCacheResolver:
         self,
         *,
         cache_identity: AnalysisCacheIdentity,
-        modules: list[ParsedModule],
+        modules: ParsedModuleSet,
         config: DetectorConfig,
         analysis_cache: AnalysisFindingCache,
         analysis_workers: int,
@@ -3303,7 +3304,7 @@ class IncrementalAnalysisCacheResolver:
         ):
             findings_by_module.append(
                 analyze_detector_types(
-                    [module],
+                    ParsedModuleSet((module,)),
                     self._config,
                     detector_types=detector_types,
                     analysis_workers=1,
@@ -3321,7 +3322,7 @@ class IncrementalAnalysisCacheResolver:
 
         findings: list[RefactorFinding] = []
         hit_count = 0
-        module_context = tuple(self._modules)
+        module_context = self._modules
         for detector_type in detector_types:
             scan_deadline_checkpoint("contextual_module_signature")
             if not issubclass(detector_type, ContextualModuleIssueDetector):
@@ -3414,7 +3415,7 @@ class IncrementalAnalysisCacheResolver:
         missing_detector_types: tuple[type[IssueDetector], ...],
     ) -> list[list[RefactorFinding]]:
         return DetectorTypeShardRunner.from_modules(
-            modules=tuple(self._modules),
+            modules=self._modules,
             config=self._config,
             detector_types=missing_detector_types,
             analysis_workers=self._analysis_workers,
@@ -3429,7 +3430,7 @@ class IncrementalAnalysisCacheResolver:
 
         findings: list[RefactorFinding] = []
         hit_count = 0
-        module_context = tuple(self._modules)
+        module_context = self._modules
         for detector_type in detector_types:
             detector_label = (
                 detector_type.effective_detector_id() or detector_type.__qualname__
@@ -3559,7 +3560,7 @@ class IncrementalAnalysisCacheResolver:
 @ScanCache.scope()
 def analyze_modules_with_cache(
     roots: tuple[Path, ...],
-    modules: list[ParsedModule],
+    modules: ParsedModuleSet,
     config: DetectorConfig | None = None,
     *,
     analysis_cache_dir: Path | None = None,
@@ -3872,7 +3873,7 @@ class FastCachedPathAnalysisAuthority:
         if not changed_modules:
             return []
         findings = analyze_detector_types(
-            changed_modules,
+            ParsedModuleSet(tuple(changed_modules)),
             self._request.config,
             detector_types=detector_types,
             analysis_workers=self._request.analysis_workers,
@@ -3984,7 +3985,7 @@ def analyze_path(
     )
     return analyze_modules_with_cache(
         (root,),
-        modules,
+        ParsedModuleSet(tuple(modules)),
         config,
         analysis_cache_dir=analysis_cache_dir_for_root(
             root,
@@ -4040,7 +4041,7 @@ def analyze_paths(
     root = roots[0]
     return analyze_modules_with_cache(
         roots,
-        modules,
+        ParsedModuleSet(tuple(modules)),
         config,
         analysis_cache_dir=analysis_cache_dir_for_root(
             root,

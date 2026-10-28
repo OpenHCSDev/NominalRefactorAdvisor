@@ -10,6 +10,7 @@ from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Self, TypeVar
 
+from ..class_index import ParsedModuleSet
 from ..ast_tools import ParsedModule
 from ..collection_algebra import sorted_tuple
 from ..models import RefactorFinding, SourceLocation
@@ -164,7 +165,7 @@ class RepeatedModuleExpressionLeadDetector(
     )
 
     def _collect_shapes(
-        self, modules: list[ParsedModule], config: DetectorConfig
+        self, modules: ParsedModuleSet, config: DetectorConfig
     ) -> list[ModuleExpressionShape]:
         return [
             shape

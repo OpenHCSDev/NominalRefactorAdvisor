@@ -7,6 +7,7 @@ import sys
 
 import pytest
 
+from nominal_refactor_advisor.class_index import ParsedModuleSet
 from nominal_refactor_advisor.ast_tools import parse_python_modules
 from nominal_refactor_advisor.codemod import (
     CodemodPlanSequence,
@@ -101,7 +102,7 @@ def test_shared_operation_adds_replaces_and_removes_decorators(
         )
     )
     plan.simulate(
-        CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+        CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
     ).apply()
     assert path.read_bytes().decode("utf-8") == (
         (replacement + "\n" if replacement else "") + declaration
@@ -141,7 +142,7 @@ def test_declaration_decorators_reject_unowned_surfaces(
     )
     with pytest.raises(ValueError):
         plan.simulate(
-            CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+            CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
         )
     assert path.read_bytes() == source.encode("utf-8")
 
@@ -162,5 +163,5 @@ def test_function_operation_remains_a_strict_nominal_refinement(tmp_path: Path) 
     )
     with pytest.raises(ValueError, match="function declaration"):
         CodemodPlanSequence.from_operations((operation,)).simulate(
-            CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+            CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
         )

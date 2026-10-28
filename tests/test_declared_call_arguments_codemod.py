@@ -10,6 +10,7 @@ import sys
 
 import pytest
 
+from nominal_refactor_advisor.class_index import ParsedModuleSet
 from nominal_refactor_advisor.ast_tools import parse_python_modules
 from nominal_refactor_advisor.codemod import CodemodPlanDocument, CodemodSourceSnapshot
 from nominal_refactor_advisor.codemod_source_edits import SourceTextGeometry
@@ -61,7 +62,7 @@ def test_inherited_call_migration_preserves_runtime_and_other_calls(
     )
     path.write_text(source, newline="")
     expected = subprocess.check_output([sys.executable, str(path)], text=True)
-    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
     simulation = _document(path, "4").simulate(snapshot)
     assert simulation.is_clean
     assert path.read_text() == source
@@ -87,7 +88,7 @@ def test_replacement_rejects_unproved_argument_binding(
     path = tmp_path / "probe.py"
     source = "def render(value): return value\ndef run(): return render(1)\n"
     path.write_text(source, newline="")
-    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
     with pytest.raises(ValueError, match=error):
         _document(path, arguments, "render").simulate(snapshot)
     assert path.read_text() == source
@@ -99,7 +100,7 @@ def test_saved_call_edit_rejects_shadowed_authority_and_comment_loss(
     path = tmp_path / "probe.py"
     source = "def render(value): return value\ndef run(): return render(1)\n"
     path.write_text(source, newline="")
-    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
     document = _document(path, "2", "render")
     assert document.simulate(snapshot).is_clean
     for changed, error in (
@@ -126,7 +127,7 @@ def test_import_alias_resolves_declaring_module_and_retains_argument_order(
     )
     path.write_text(source, newline="")
     expected = subprocess.check_output([sys.executable, str(path)], text=True)
-    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
     document = CodemodPlanDocument.from_payload_fields(
         {
             "recipes": [
@@ -184,7 +185,7 @@ def test_argument_replacement_rejects_signature_changing_decorator(
         "def run(): return render(1)\n"
     )
     path.write_text(source, newline="")
-    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
     with pytest.raises(ValueError, match="signature_decorator_hazard"):
         _document(path, "2", "render").simulate(snapshot)
     assert path.read_text() == source

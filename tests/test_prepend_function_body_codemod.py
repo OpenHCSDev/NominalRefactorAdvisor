@@ -10,6 +10,7 @@ import sys
 
 import pytest
 
+from nominal_refactor_advisor.class_index import ParsedModuleSet
 from nominal_refactor_advisor.ast_tools import parse_python_modules
 from nominal_refactor_advisor.codemod import CodemodPlanDocument, CodemodSourceSnapshot
 
@@ -56,7 +57,7 @@ def test_prepend_statements_preserves_existing_runtime(
     ]
     expected = json.loads(subprocess.check_output(command, text=True))
     expected[2].insert(0, "new\ntext")
-    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
     document = CodemodPlanDocument.from_payload_fields({
         "recipes": [{
             "recipe_id": "prepend-body",

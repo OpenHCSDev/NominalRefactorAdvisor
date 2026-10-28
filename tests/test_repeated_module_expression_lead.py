@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 
+from nominal_refactor_advisor.class_index import ParsedModuleSet
 from nominal_refactor_advisor.analysis import analyze_path
 from nominal_refactor_advisor.ast_tools import SourceModule
 from nominal_refactor_advisor.codemod import FindingRecipeEvaluator
@@ -21,7 +22,7 @@ def _findings(*sources: str):
         SourceModule(Path(f"pkg/m{index}.py"), f"pkg.m{index}", source).parse()
         for index, source in enumerate(sources)
     ]
-    return RepeatedModuleExpressionLeadDetector().detect(modules, DetectorConfig())
+    return RepeatedModuleExpressionLeadDetector().detect(ParsedModuleSet.of(modules), DetectorConfig())
 
 
 def test_one_version_pair_written_in_three_modules_is_one_lead():

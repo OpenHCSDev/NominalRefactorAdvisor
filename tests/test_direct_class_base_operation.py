@@ -6,6 +6,7 @@ import sys
 
 import pytest
 
+from nominal_refactor_advisor.class_index import ParsedModuleSet
 from nominal_refactor_advisor.ast_tools import parse_python_modules
 from nominal_refactor_advisor.codemod import (
     CodemodPlanDocument,
@@ -66,7 +67,7 @@ def test_replaces_complete_direct_child_cohort_from_two_class_targets(
         "class Beta(StoredRecord, LocalRole):\n"
         "    pass\n",
     )
-    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
     operation = _operation(tmp_path)
     replayed = RefactorRecipeOperation.from_json_value(json_report_object(operation))
 
@@ -106,7 +107,7 @@ def test_cohort_replacement_preserves_suite_boundaries(
         "pkg/consumers.py",
         "from .legacy import LegacyRecord\nclass Alpha(LegacyRecord):" + suite,
     )
-    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
     result = CodemodPlanSequence.from_operations((_operation(tmp_path),)).simulate(
         snapshot
     )
@@ -146,7 +147,7 @@ def test_rejects_replacement_import_cycle_before_emitting_edits(
         "class Alpha(LegacyRecord):\n"
         "    pass\n",
     )
-    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
 
     with pytest.raises(CodemodOperationPreflightError, match="module cycle"):
         RefactorRecipe(recipe_id="cycle").with_operation(_operation(tmp_path)).simulate(
@@ -173,7 +174,7 @@ def test_rejects_replacement_related_sibling_base(tmp_path: Path) -> None:
         "class Alpha(LegacyRecord, SpecializedRecord):\n"
         "    pass\n",
     )
-    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
 
     with pytest.raises(
         CodemodOperationPreflightError,
@@ -208,7 +209,7 @@ def test_rejects_replacement_descending_from_displaced_authority(
             qualname="SemanticRecord",
         ),
     )
-    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
 
     with pytest.raises(
         CodemodOperationPreflightError,
@@ -235,7 +236,7 @@ def test_rejects_incomplete_nominal_base_graph(tmp_path: Path) -> None:
         "class Alpha(LegacyRecord, ExternalRole):\n"
         "    pass\n",
     )
-    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
 
     with pytest.raises(
         CodemodOperationPreflightError,

@@ -8,6 +8,7 @@ from types import ModuleType
 import pytest
 from registry_test_sources import _type_keyed_behavior_projection_source
 
+from nominal_refactor_advisor.class_index import ParsedModuleSet
 from nominal_refactor_advisor.ast_tools import parse_python_modules
 from nominal_refactor_advisor.codemod import (
     CodemodPlanSequence,
@@ -44,7 +45,7 @@ def _subject(tmp_path, source=None):
     path = tmp_path / "subject.py"
     path.write_text(source or _type_keyed_behavior_projection_source())
     snapshot = CodemodSourceSnapshot.from_modules(
-        parse_python_modules(tmp_path, use_parse_cache=False)
+        ParsedModuleSet.of(parse_python_modules(tmp_path, use_parse_cache=False))
     )
     operation = TypedMirror(
         target=SourceRewriteTarget(file_path=str(path), qualname="EventProjection")

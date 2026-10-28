@@ -8,6 +8,7 @@ import sys
 
 import pytest
 
+from nominal_refactor_advisor.class_index import ParsedModuleSet
 from nominal_refactor_advisor.ast_tools import parse_python_modules
 from nominal_refactor_advisor.codemod import (
     CodemodPlanSequence,
@@ -97,7 +98,7 @@ def test_add_replace_and_remove_decorators_preserve_async_eof(
     suffix = "    async def value(self): return 1"
     path.write_text("class Owner:\n" + prefix + suffix, encoding="utf-8", newline="")
     simulation = _plan(path, replacement).simulate(
-        CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+        CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
     )
     assert simulation.is_clean
     simulation.apply()
@@ -124,7 +125,7 @@ def test_multiline_decorator_preserves_literal_indentation_and_runtime_order(
     path.write_text(source, encoding="utf-8", newline="")
     replacement = "@mark('''a\n  b\n''')\n@mark(\n    'inner'\n)"
     simulation = _plan(path, replacement).simulate(
-        CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+        CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
     )
     simulation.apply()
     assert (
@@ -151,7 +152,7 @@ def test_existing_decorator_comments_are_not_discarded(
     path.write_text(source, encoding="utf-8", newline="")
     with pytest.raises(ValueError, match="discard comments"):
         _plan(path, "@cached_property").simulate(
-            CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+            CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
         )
     assert path.read_bytes() == source.encode()
 
@@ -167,7 +168,7 @@ def test_decorator_payload_rejects_statements_and_invalid_python(
     path.write_text(source, encoding="utf-8", newline="")
     with pytest.raises((ValueError, SyntaxError)):
         _plan(path, replacement).simulate(
-            CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+            CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
         )
     assert path.read_bytes() == source.encode()
 

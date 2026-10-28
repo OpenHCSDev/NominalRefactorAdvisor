@@ -14,6 +14,7 @@ import sys
 import time
 from typing import ClassVar, Generic, Self, TextIO, TypeVar
 
+from .class_index import ParsedModuleSet
 from .analysis import (
     AnalysisPathScope,
     EvidenceLocalFindingReuseAuthority,
@@ -1388,9 +1389,11 @@ class CodemodClassPlanProjectedDeltaReport(DataclassJsonReport):
 
 @dataclass(frozen=True)
 class CodemodWorkflowScan:
-    """Parsed modules and findings for one migration state."""
+    """Parsed modules and findings for one migration state. A later scan of
+    the same parses carries the same module set, so the set's facts are
+    shared."""
 
-    modules: list[ParsedModule]
+    modules: ParsedModuleSet
     findings: list[RefactorFinding]
     scan_mode: CodemodProjectedScanMode = CodemodProjectedScanMode.EXACT
 
@@ -1434,9 +1437,10 @@ class CodemodSimulationFindingProjection:
         ).modules_after_projection()
         if self.report_roots:
             return self.evidence_local_projected_scan(projected_modules)
+        module_set = ParsedModuleSet.of(projected_modules)
         return CodemodWorkflowScan(
-            modules=list(projected_modules),
-            findings=analyze_modules(projected_modules, self.config),
+            modules=module_set,
+            findings=analyze_modules(module_set, self.config),
             scan_mode=CodemodProjectedScanMode.EXACT,
         )
 
@@ -1447,7 +1451,7 @@ class CodemodSimulationFindingProjection:
         changed_paths = self.changed_paths
         if not changed_paths:
             return CodemodWorkflowScan(
-                modules=list(projected_modules),
+                modules=ParsedModuleSet.of(projected_modules),
                 findings=list(self.findings),
                 scan_mode=CodemodProjectedScanMode.EVIDENCE_LOCAL_PARTIAL,
             )
@@ -1481,7 +1485,7 @@ class CodemodSimulationFindingProjection:
             )
         )
         return CodemodWorkflowScan(
-            modules=list(projected_modules),
+            modules=ParsedModuleSet.of(projected_modules),
             findings=findings,
             scan_mode=CodemodProjectedScanMode.EVIDENCE_LOCAL_PARTIAL,
         )
@@ -1626,9 +1630,10 @@ class CodemodRefactorGoalRunner:
             use_parse_cache=self.enabled,
             parse_workers=self.parse_workers,
         )
+        module_set = ParsedModuleSet.of(modules)
         return CodemodWorkflowScan(
-            modules=modules,
-            findings=self.report_scoped_findings(analyze_modules(modules, self.config)),
+            modules=module_set,
+            findings=self.report_scoped_findings(analyze_modules(module_set, self.config)),
         )
 
     def projected_scan(
@@ -1674,11 +1679,12 @@ class CodemodRefactorGoalRunner:
             simulation=simulation,
             roots=self.roots,
         ).modules_after_projection()
+        module_set = ParsedModuleSet.of(projected_modules)
         return CodemodWorkflowScan(
-            modules=list(projected_modules),
+            modules=module_set,
             findings=self.report_scoped_findings(
                 analyze_detector_types(
-                    list(projected_modules),
+                    module_set,
                     self.config,
                     detector_types=detector_types,
                 )

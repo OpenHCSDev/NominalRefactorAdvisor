@@ -9,6 +9,7 @@ import sys
 
 import pytest
 
+from nominal_refactor_advisor.class_index import ParsedModuleSet
 from nominal_refactor_advisor.ast_tools import parse_python_modules
 from nominal_refactor_advisor.codemod import CodemodPlanDocument, CodemodSourceSnapshot
 
@@ -62,7 +63,7 @@ def test_parameter_projection_preserves_runtime_and_shadowed_bindings(
     expected = subprocess.check_output([sys.executable, str(path)], text=True)
     modules = parse_python_modules(tmp_path)
     (module,) = modules
-    snapshot = CodemodSourceSnapshot.from_modules(modules)
+    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(modules))
     original_ast = ast.dump(snapshot.module_nodes_by_file_path[module.file_path], include_attributes=True)
     simulation = _document(path).simulate(snapshot)
     assert simulation.is_clean
@@ -99,7 +100,7 @@ def test_parameter_projection_rejects_capture_rebinding_and_unresolved_roots(
     path = tmp_path / "probe.py"
     source = "def render(candidate, witness):\n" + body
     path.write_text(source, newline="")
-    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
     with pytest.raises(ValueError, match=error):
         _document(path, projection=projection).simulate(snapshot)
     assert path.read_text() == source
@@ -108,7 +109,7 @@ def test_parameter_projection_rejects_capture_rebinding_and_unresolved_roots(
 def test_saved_projection_plan_reproves_lexical_ownership(tmp_path: Path) -> None:
     path = tmp_path / "probe.py"
     path.write_text("def render(candidate, witness):\n    return candidate\n", newline="")
-    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
     document = _document(path)
     assert document.simulate(snapshot).is_clean
     drifted = snapshot.with_virtual_sources({

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from nominal_refactor_advisor.class_index import ParsedModuleSet
 from nominal_refactor_advisor.analysis import analyze_path
 from nominal_refactor_advisor.ast_tools import parse_python_modules
 from nominal_refactor_advisor.codemod import (
@@ -40,7 +41,7 @@ def _replayed(root: Path) -> tuple[list, dict[str, str]]:
     """Synthesize the detector's recipes, simulate them, and return the plan's records and sources."""
 
     findings = _identity_findings(root)
-    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(root), findings)
+    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(root)), findings)
     plan = codemod_plan_from_findings(findings, selector_context=snapshot)
     simulation = snapshot.simulate_rewrites(
         plan.document.source_rewrite_batch(snapshot)

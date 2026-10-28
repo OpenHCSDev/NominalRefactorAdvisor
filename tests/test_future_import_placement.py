@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+from nominal_refactor_advisor.class_index import ParsedModuleSet
 from nominal_refactor_advisor.ast_tools import ParsedModule
 from nominal_refactor_advisor.codemod import (
     CodemodPlanSequence,
@@ -120,7 +121,7 @@ def test_ensure_import_preserves_native_future_placement(
             ),
         )
     )
-    result = plan.simulate(CodemodSourceSnapshot.from_modules((module,)))
+    result = plan.simulate(CodemodSourceSnapshot.from_modules(ParsedModuleSet.of((module,))))
     assert result.is_clean
     updated = result.final_snapshot.sources_by_file_path[module.file_path]
     tree = ast.parse(updated)
@@ -167,7 +168,7 @@ def test_synthesized_imports_use_destination_line_endings(
         module=ast.parse(source),
         source=source,
     )
-    snapshot = CodemodSourceSnapshot.from_modules((module,))
+    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of((module,)))
     mutation = ModuleImportMutation.from_source(
         file_path=module.file_path,
         import_source=requested,

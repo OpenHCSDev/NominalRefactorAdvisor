@@ -7,6 +7,7 @@ from types import ModuleType
 import pytest
 
 from registry_test_sources import keyed_registry_source
+from nominal_refactor_advisor.class_index import ParsedModuleSet
 from nominal_refactor_advisor.analysis import analyze_detector_types
 from nominal_refactor_advisor.ast_tools import ParsedModule
 from nominal_refactor_advisor.detectors import DetectorConfig, IssueDetector
@@ -33,7 +34,7 @@ def test_injective_registry_claim_respects_native_key_identity(alias_keys) -> No
     )
     assert len(detectors) == 1
     findings = analyze_detector_types(
-        [parsed], DetectorConfig(), detector_types=detectors
+        ParsedModuleSet.of([parsed]), DetectorConfig(), detector_types=detectors
     )
     assert (
         bool(findings) is native_injective

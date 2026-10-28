@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+from nominal_refactor_advisor.class_index import ParsedModuleSet
 from nominal_refactor_advisor.ast_tools import ParsedModule
 from nominal_refactor_advisor.codemod import (
     CodemodPlanSequence,
@@ -119,7 +120,7 @@ def test_declared_call_edit_reaches_assignment_target_calls() -> None:
             ),
         )
     )
-    result = plan.simulate(CodemodSourceSnapshot.from_modules((module,)))
+    result = plan.simulate(CodemodSourceSnapshot.from_modules(ParsedModuleSet.of((module,))))
     assert result.is_clean
     before, after = {}, {}
     exec(source, before)

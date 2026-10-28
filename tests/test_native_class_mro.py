@@ -8,6 +8,7 @@ from typing import Generic, TypeVar
 import pytest
 from metaclass_registry import AutoRegisterMeta
 
+from nominal_refactor_advisor.class_index import ParsedModuleSet
 from nominal_refactor_advisor.class_mro import DeclarationMroType
 from nominal_refactor_advisor.detectors._base import (
     CrossModuleCandidateDetector,
@@ -105,7 +106,7 @@ def test_native_generic_origin_requires_native_subscription() -> None:
 def test_native_roots_with_one_name_do_not_overwrite_identity() -> None:
     first = type("Root", (), {"__module__": "same"})
     second = type("Root", (), {"__module__": "same"})
-    context = CodemodSourceSnapshot.from_modules(())
+    context = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(()))
     with pytest.raises(ValueError):
         _ = SourceNativeClassMro(context, (first, second)).native_declarations
     indexed = SourceNativeClassMro(context, (first, first)).native_declarations

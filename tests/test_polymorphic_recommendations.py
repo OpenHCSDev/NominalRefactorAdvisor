@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 
+from nominal_refactor_advisor.class_index import ParsedModuleSet
 from nominal_refactor_advisor.ast_tools import SourceModule
 from nominal_refactor_advisor.detectors import (
     DetectorConfig,
@@ -15,7 +16,7 @@ from nominal_refactor_advisor.taxonomy import CertificationLevel
 
 def findings(detector, source: str):
     parsed = SourceModule(Path("package/example.py"), "package.example", source).parse()
-    return detector.detect([parsed], DetectorConfig())
+    return detector.detect(ParsedModuleSet.of([parsed]), DetectorConfig())
 
 
 def test_behavior_table_and_branch_prefers_case_owned_abc_without_mandatory_enum_registry():

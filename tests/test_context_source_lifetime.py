@@ -5,6 +5,7 @@ import weakref
 
 import pytest
 
+from nominal_refactor_advisor.class_index import ParsedModuleSet
 from nominal_refactor_advisor import analysis
 from nominal_refactor_advisor.analysis_cache import AnalysisCacheIdentity, AnalysisFindingCache
 from nominal_refactor_advisor.ast_tools import ParsedModule
@@ -51,7 +52,7 @@ def test_original_source_facts_reach_late_consumer_and_release_after_result(
     config = DetectorConfig()
     resolver = analysis.IncrementalAnalysisCacheResolver(
         cache_identity=AnalysisCacheIdentity.from_modules((tmp_path,), tuple(modules), config),
-        modules=modules, config=config, analysis_cache=AnalysisFindingCache(None),
+        modules=ParsedModuleSet.of(modules), config=config, analysis_cache=AnalysisFindingCache(None),
         analysis_workers=1,
         semantic_descent_source=analysis.SemanticDescentGraphAnalysisSource(),
     )

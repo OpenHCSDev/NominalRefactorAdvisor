@@ -8,6 +8,7 @@ import sys
 
 import pytest
 
+from nominal_refactor_advisor.class_index import ParsedModuleSet
 from nominal_refactor_advisor.codemod import (
     AddClassBaseOperation,
     CodemodOperationPreflightError,
@@ -130,7 +131,7 @@ def test_parser_cache_and_cli_preserve_exact_source_newlines(tmp_path: Path) -> 
     for _ in range(2):
         modules = parse_python_modules(path, cache_dir=tmp_path / "cache")
         assert modules[0].source == source
-    snapshot = CodemodSourceSnapshot.from_modules(modules)
+    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(modules))
     operation = ReplaceClassBaseOperation(
         target=SourceRewriteTarget(file_path=path.as_posix(), qualname="Worker"),
         base_name="Old",

@@ -11,6 +11,7 @@ import pytest
 
 import static_projection_fixture  # noqa: F401  (the projector must be loaded)
 import static_projection_reexport  # noqa: F401
+from nominal_refactor_advisor.class_index import ParsedModuleSet
 from nominal_refactor_advisor.analysis import analyze_path
 from nominal_refactor_advisor.ast_tools import parse_python_modules
 from nominal_refactor_advisor.codemod import (
@@ -55,7 +56,7 @@ print(names("a.b[c]\\nx\\nf()"), nested(ast.parse("x", mode="eval").body))
 
 
 def _operation(path: Path) -> ProjectStaticCallsToAdapterOperation:
-    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(path.parent))
+    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(path.parent)))
     (target_id,) = SourceIndexTargetSelector(
         node_kinds=(AstTargetNodeKind.MODULE,), file_paths=(path.as_posix(),)
     ).target_ids(snapshot)
@@ -68,7 +69,7 @@ def _operation(path: Path) -> ProjectStaticCallsToAdapterOperation:
 
 def _simulate(tmp_path: Path, operation: ProjectStaticCallsToAdapterOperation):
     return CodemodPlanSequence.from_operations((operation,)).simulate(
-        CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+        CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
     )
 
 
@@ -158,7 +159,7 @@ def test_finding_recipe_rewrites_the_evidenced_module(tmp_path: Path) -> None:
         item for item in analyze_path(tmp_path) if item.detector_id == DETECTOR_ID
     ]
     assert sorted(item.line for item in finding.evidence) == [9, 10, 17]
-    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
     evaluation = StaticProjectionAdapterCallDetector().evaluate_recipe_for_finding(
         finding, snapshot
     )

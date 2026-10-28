@@ -33,6 +33,7 @@ from ..ast_tools import (
 )
 from ..native_syntax import NativePythonSyntaxIndex
 from ..class_index import (
+    ParsedModuleSet,
     CompactClassFamilyIndex,
     CompactClassReferenceResolver,
     CompactExactTypeGuard,
@@ -1577,7 +1578,7 @@ class ManualClassRegistrationDetector(
     )
 
     def _collect_shapes(
-        self, modules: list[ParsedModule], config: DetectorConfig
+        self, modules: ParsedModuleSet, config: DetectorConfig
     ) -> list[RegistrationShape]:
         return [
             shape

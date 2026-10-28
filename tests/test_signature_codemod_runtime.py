@@ -11,6 +11,7 @@ import sys
 
 import pytest
 
+from nominal_refactor_advisor.class_index import ParsedModuleSet
 from nominal_refactor_advisor.ast_tools import parse_python_modules
 from nominal_refactor_advisor.codemod import (
     CodemodPlanDocument,
@@ -54,7 +55,7 @@ def test_historical_renderer_helpers_can_be_extracted_as_one_dsl_batch(
     assert cli_report["plan_sequence_simulation"]["is_clean"]
     assert cli_report["applied"] is False
     assert module_path.read_text() == source
-    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
     simulation = sequence.simulate(snapshot)
     assert simulation.is_clean
     assert simulation.stage_count == (11 if with_witness else 4)
@@ -117,7 +118,7 @@ def test_saved_signature_plan_preserves_runtime_and_untouched_source(
             }],
         }],
     })))
-    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
     simulation = document.simulate(snapshot)
     assert simulation.is_clean
     assert module_path.read_text(encoding="utf-8") == source

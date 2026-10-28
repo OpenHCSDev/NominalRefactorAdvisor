@@ -20,6 +20,7 @@ from ._base import (
 )
 from ..ast_tools import ParsedModule
 from ..class_index import (
+    ParsedModuleSet,
     CompactClassFamilyIndex,
     CompactModuleClassProjectionFamily,
 )
@@ -122,7 +123,7 @@ class SemanticProjectionDetector(
     @classmethod
     def context_signature(
         cls,
-        modules: tuple[ParsedModule, ...],
+        modules: ParsedModuleSet,
         config: DetectorConfig,
     ) -> str:
         del cls, config

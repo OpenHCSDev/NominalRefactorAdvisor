@@ -11,6 +11,7 @@ import typing
 import metaclass_registry
 import pytest
 
+from nominal_refactor_advisor.class_index import ParsedModuleSet
 from nominal_refactor_advisor.ast_tools import ParsedModule
 from nominal_refactor_advisor.captured_reference import (
     CapturedReferenceRejection,
@@ -90,7 +91,7 @@ def test_snapshot_and_multiple_mro_consumers_share_actual_execution(tmp_path):
     module = module_at(
         tmp_path / "shared.py", "class Base: pass\nclass Child(Base): pass\n"
     )
-    snapshot = CodemodSourceSnapshot.from_modules((module,))
+    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of((module,)))
     first = SourceNativeClassMro(snapshot)
     second = SourceNativeClassMro(snapshot)
     bindings = snapshot.product_flow_repository
@@ -128,7 +129,7 @@ def test_substitution_shares_execution_but_not_counterfactual_mro(tmp_path):
         tmp_path / "substitution.py",
         "class Base: pass\nclass Root(Base): pass\nclass Leaf(Root): pass\n",
     )
-    snapshot = CodemodSourceSnapshot.from_modules((module,))
+    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of((module,)))
     classes = snapshot.required_class_family_index.classes_by_symbol
     base, root, leaf = (
         classes[f"substitution.{name}"] for name in ("Base", "Root", "Leaf")
@@ -156,13 +157,13 @@ def test_substitution_shares_execution_but_not_counterfactual_mro(tmp_path):
 @pytest.mark.parametrize("changed", (False, True))
 def test_separate_snapshot_has_its_own_source_entry_kernel_and_frame(tmp_path, changed):
     module = module_at(tmp_path / "revision.py", "class Root: pass\n")
-    original = CodemodSourceSnapshot.from_modules((module,))
+    original = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of((module,)))
     following = (
         original.with_virtual_sources(
             {module.file_path: "class Root:\n    marker = None\n"}
         )
         if changed
-        else CodemodSourceSnapshot.from_modules((module,))
+        else CodemodSourceSnapshot.from_modules(ParsedModuleSet.of((module,)))
     )
     left = SourceNativeClassMro(original)
     right = replace(left, context=following)
@@ -207,7 +208,7 @@ def test_explicit_real_import_premise_is_reused_by_snapshot_and_mro(tmp_path):
         "from nominal_refactor_advisor.detectors._base import CrossModuleCandidateDetector\n"
         "result = CrossModuleCandidateDetector\n",
     )
-    ordinary = CodemodSourceSnapshot.from_modules((module,))
+    ordinary = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of((module,)))
     default_execution = ordinary.module_binding_proof.native_reference_environment(
         module
     )
@@ -215,7 +216,7 @@ def test_explicit_real_import_premise_is_reused_by_snapshot_and_mro(tmp_path):
         default_execution.require_import(module.module.body[0])
     assert raised.value.violation is CapturedReferenceViolation.UNADMITTED_IMPORT
 
-    snapshot = CollectorEntrySnapshot.from_modules((module,))
+    snapshot = CollectorEntrySnapshot.from_modules(ParsedModuleSet.of((module,)))
     hierarchy = SourceNativeClassMro(snapshot)
     assert hierarchy.bindings is snapshot.product_flow_repository
     assert type(hierarchy.bindings) is CollectorEntryRepository
@@ -246,7 +247,7 @@ def test_import_premise_does_not_admit_generic_or_metaclass_activation(tmp_path,
         "class Owner(metaclass=AutoRegisterMeta): pass\n"
     )
     module = module_at(tmp_path / "native_activation.py", source)
-    snapshot = CollectorEntrySnapshot.from_modules((module,))
+    snapshot = CollectorEntrySnapshot.from_modules(ParsedModuleSet.of((module,)))
     hierarchy = SourceNativeClassMro(snapshot)
     execution = hierarchy.bindings.native_reference_environment(module)
     import_node, owner = module.module.body

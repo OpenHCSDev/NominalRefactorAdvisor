@@ -9,6 +9,7 @@ from pathlib import Path
 
 import pytest
 
+from nominal_refactor_advisor.class_index import ParsedModuleSet
 from nominal_refactor_advisor.ast_tools import parse_python_modules
 from nominal_refactor_advisor.codemod import (
     CodemodPlanSequence,
@@ -55,7 +56,7 @@ def _operation(path: Path) -> FoldAdapterBindChainOperation:
 
 def _simulate(tmp_path: Path, operation: FoldAdapterBindChainOperation):
     return CodemodPlanSequence.from_operations((operation,)).simulate(
-        CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+        CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
     )
 
 
@@ -213,7 +214,7 @@ def test_bind_chain_finding_recipe_folds_the_evidenced_function(
         if item.detector_id == "foreign_adapter_bind_chain"
     ]
     assert [item.line for item in finding.evidence] == [5]
-    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
     evaluation = ForeignAdapterBindChainDetector().evaluate_recipe_for_finding(
         finding, snapshot
     )

@@ -8,6 +8,7 @@ from pathlib import Path
 from time import perf_counter
 from typing import Iterable
 
+from .class_index import ParsedModuleSet
 from .analysis import analyze_modules
 from .analysis_cache import AnalysisCacheStatus
 from .ast_tools import ParsedModule, parse_python_modules
@@ -163,7 +164,7 @@ class PredictionBranchAuthority:
     def findings(self) -> list[RefactorFinding]:
         if not self.modules:
             return []
-        return analyze_modules(list(self.modules), self.config)
+        return analyze_modules(ParsedModuleSet(tuple(self.modules)), self.config)
 
 
 def _project_repository_seconds(

@@ -2,6 +2,7 @@
 
 from pathlib import Path
 
+from nominal_refactor_advisor.class_index import ParsedModuleSet
 from nominal_refactor_advisor.analysis import analyze_path
 from nominal_refactor_advisor.ast_tools import SourceModule
 from nominal_refactor_advisor.codemod import FindingRecipeEvaluator
@@ -15,7 +16,7 @@ from nominal_refactor_advisor.patterns import PatternId
 
 def _findings(source: str, detector):
     module = SourceModule(Path("pkg/source.py"), "pkg.source", source).parse()
-    return detector().detect([module], DetectorConfig())
+    return detector().detect(ParsedModuleSet.of([module]), DetectorConfig())
 
 
 def test_long_condition_retains_original_order_and_scope_without_recipe():

@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from nominal_refactor_advisor.class_index import ParsedModuleSet
 from nominal_refactor_advisor.ast_tools import ParsedModule
 from nominal_refactor_advisor.carrier_expansion import (
     DeclaredCarrierExpansionAuthorityViolation,
@@ -89,7 +90,7 @@ def test_conditional_carrier_rebinding_does_not_supply_a_refactor_proof() -> Non
     assert builder.expansions == ()
     assert builder.assessed_components() == ()
     assert (
-        DeclaredCarrierExpansionDetector().detect(list(modules), DetectorConfig()) == []
+        DeclaredCarrierExpansionDetector().detect(ParsedModuleSet.of(list(modules)), DetectorConfig()) == []
     )
 
 
@@ -357,7 +358,7 @@ def test_builder_rejects_mutated_projected_parameters() -> None:
 
 def test_declared_carrier_operation_rewrites_the_complete_forwarding_graph() -> None:
     module = _module("pkg.rewrite", _closed_expansion_source())
-    snapshot = CodemodSourceSnapshot.from_modules((module,), ())
+    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of((module,)), ())
     authority_target = next(
         target
         for target in snapshot.source_index.ast_targets
@@ -404,7 +405,7 @@ def test_declared_carrier_detector_synthesizes_the_atomic_operation() -> None:
     module = _module("pkg.detected", _closed_expansion_source())
 
     findings = DeclaredCarrierExpansionDetector().detect(
-        [module],
+        ParsedModuleSet.of([module]),
         DetectorConfig(),
     )
 
@@ -423,7 +424,7 @@ def test_declared_carrier_detector_synthesizes_the_atomic_operation() -> None:
         shared_parameter_count=2,
         shared_parameter_names=("first", "second"),
     )
-    snapshot = CodemodSourceSnapshot.from_modules((module,), findings)
+    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of((module,)), findings)
     plan = codemod_plan_from_findings(findings, selector_context=snapshot)
 
     assert len(plan.records) == 1
@@ -488,7 +489,7 @@ def test_declared_carrier_operation_imports_cross_module_authority() -> None:
         "    return _consume(context.first, context.second)\n",
     )
     snapshot = CodemodSourceSnapshot.from_modules(
-        (models_module, worker_module, entry_module),
+        ParsedModuleSet.of((models_module, worker_module, entry_module)),
         (),
     )
     authority_target = next(
@@ -540,7 +541,7 @@ def test_declared_carrier_operation_rejects_an_open_current_call_family() -> Non
         "def outside(first, second):\n"
         "    return _consume(first, second)\n",
     )
-    snapshot = CodemodSourceSnapshot.from_modules((module,), ())
+    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of((module,)), ())
     authority_target = next(
         target
         for target in snapshot.source_index.ast_targets

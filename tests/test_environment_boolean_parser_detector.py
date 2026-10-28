@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from nominal_refactor_advisor.class_index import ParsedModuleSet
 from nominal_refactor_advisor.analysis import (
     accumulate_compact_global_projections_for_roots,
 )
@@ -64,7 +65,7 @@ def _write_module(root: Path, relative_path: str, source: str) -> None:
 def _focused_findings(root: Path):
     modules = parse_python_modules(root, use_parse_cache=False)
     return EnvironmentBooleanAuthorityDriftDetector().detect(
-        modules,
+        ParsedModuleSet.of(modules),
         DetectorConfig(),
     )
 
@@ -202,7 +203,7 @@ class FeatureEnvironmentAuthority:
     assert profile_finding.metrics.absent_decision is True
 
     snapshot = CodemodSourceSnapshot.from_modules(
-        parse_python_modules(tmp_path / "pkg", use_parse_cache=False),
+        ParsedModuleSet.of(parse_python_modules(tmp_path / "pkg", use_parse_cache=False)),
         findings,
     )
     plan = snapshot.plan_from_findings(findings)

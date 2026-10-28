@@ -50,6 +50,7 @@ import ast
 from pathlib import Path
 
 from nominal_refactor_advisor.ast_tools import parse_python_modules
+from nominal_refactor_advisor.class_index import ParsedModuleSet
 from nominal_refactor_advisor.codemod import (
     CodemodSourceSnapshot,
     DeclareCandidateFindingRendererOperation,
@@ -77,7 +78,7 @@ class ProbeDetector(ModuleCollectorCandidateDetector[ProbeCandidate]):
 
 def run():
     path = Path(__file__)
-    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(path))
+    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(path)))
     witness = DeclareCandidateFindingRendererOperation(
         target=SourceRewriteTarget(
             file_path=str(path),

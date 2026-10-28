@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+from nominal_refactor_advisor.class_index import ParsedModuleSet
 from nominal_refactor_advisor.ast_tools import parse_python_modules
 from nominal_refactor_advisor.codemod import (
     CodemodPlanDocument,
@@ -84,7 +85,7 @@ def test_promotes_selected_members_to_existing_ancestor_as_one_operation(
     tmp_path: Path,
 ) -> None:
     module_path = _write_fixture(tmp_path)
-    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
     operation = _operation(tmp_path)
     replayed = RefactorRecipeOperation.from_json_value(json_report_object(operation))
 
@@ -131,7 +132,7 @@ def test_promotion_preserves_native_member_owner_across_branches(
         ),
         member_names=("value",),
     )
-    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
     if safe:
         simulation = CodemodPlanSequence.from_operations((operation,)).simulate(
             snapshot
@@ -167,7 +168,7 @@ def test_promotion_preserves_lookup_in_a_descendant_diamond(tmp_path: Path) -> N
     )
     with pytest.raises(ValueError):
         CodemodPlanSequence.from_operations((operation,)).simulate(
-            CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+            CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
         )
     assert path.read_bytes() == source.encode("utf-8")
 
@@ -176,7 +177,7 @@ def test_chains_member_promotion_with_intermediate_authority_collapse(
     tmp_path: Path,
 ) -> None:
     module_path = _write_fixture(tmp_path)
-    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
     promotion = CodemodPlanDocument(
         recipes=(
             RefactorRecipe(recipe_id="promote-intermediate-members").with_operation(
@@ -266,7 +267,7 @@ def test_promotion_preserves_neighbouring_assignment_owner(
         member_names=("moved",),
     )
     result = CodemodPlanSequence.from_operations((operation,)).simulate(
-        CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+        CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
     )
     assert result.is_clean
     result.apply()
@@ -286,7 +287,7 @@ def test_rejects_intermediate_collapse_before_members_are_promoted(
     tmp_path: Path,
 ) -> None:
     _write_fixture(tmp_path)
-    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
 
     with pytest.raises(
         CodemodOperationPreflightError,
@@ -308,7 +309,7 @@ def test_rejects_destination_outside_source_ancestry(tmp_path: Path) -> None:
         encoding="utf-8",
         newline="",
     )
-    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
     operation = PromoteClassMembersToAncestorOperation(
         target=_operation(tmp_path).target,
         destination=SourceRewriteTarget(
@@ -329,7 +330,7 @@ def test_rejects_destination_outside_source_ancestry(tmp_path: Path) -> None:
 
 def test_rejects_owner_sensitive_method_promotion(tmp_path: Path) -> None:
     _write_fixture(tmp_path, method_body="return super().retained(cls())")
-    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
 
     with pytest.raises(
         CodemodOperationPreflightError,
@@ -350,7 +351,7 @@ def test_rejects_class_local_declaration_dependency(tmp_path: Path) -> None:
         encoding="utf-8",
         newline="",
     )
-    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
 
     with pytest.raises(
         CodemodOperationPreflightError,

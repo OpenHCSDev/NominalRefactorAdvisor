@@ -7,6 +7,7 @@ import sys
 
 import pytest
 
+from nominal_refactor_advisor.class_index import ParsedModuleSet
 from nominal_refactor_advisor.ast_tools import parse_python_modules
 from nominal_refactor_advisor.codemod import (
     CodemodPlanSequence,
@@ -31,7 +32,7 @@ def test_apply_rejects_changed_read_only_callee_before_writing(tmp_path: Path) -
         callee=SourceRewriteTarget(file_path=str(library), qualname="render"),
         arguments_source="value=1",
     )
-    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
     simulation = CodemodPlanSequence.from_operations((operation,)).simulate(snapshot)
     assert simulation.is_clean
     library.write_text("def render(other): return other\n", newline="")
@@ -72,7 +73,7 @@ def test_read_only_source_is_validated_but_never_written(tmp_path: Path) -> None
     dependency = tmp_path / "library.py"
     dependency.write_text("value = 1\n", newline="")
     original_stat = dependency.stat()
-    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
     operation = ReplaceFunctionBodyOperation(
         target=SourceRewriteTarget(file_path=str(path), qualname="run"),
         body_source="return 2",
@@ -92,7 +93,7 @@ def test_created_file_can_be_read_and_changed_in_later_stages(tmp_path: Path) ->
     )
     generated = tmp_path / "generated.py"
     generated_target = SourceRewriteTarget(file_path=str(generated), qualname="render")
-    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
     sequence = CodemodPlanSequence.from_operations(
         (
             CreateFileOperation(

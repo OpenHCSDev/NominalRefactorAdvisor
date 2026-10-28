@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+from nominal_refactor_advisor.class_index import ParsedModuleSet
 import nominal_refactor_advisor as advisor
 from nominal_refactor_advisor import codemod
 from nominal_refactor_advisor import codemod_workflow
@@ -344,7 +345,7 @@ def test_nominal_boundary_does_not_select_unexecutable_ssot_detectors() -> None:
         capability_gap="A proof-backed executable declaration.",
         relation_context="An unsupported SSOT detector must not enter the lattice.",
     )
-    snapshot = codemod.CodemodSourceSnapshot.from_modules((), (finding,))
+    snapshot = codemod.CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(()), (finding,))
 
     assert not codemod.FindingRecipeSynthesizer.finding_matches_concept(
         finding,
@@ -900,11 +901,11 @@ def _repeated_builder_evaluation_for_source(
     modules = parse_python_modules(tmp_path)
     findings = tuple(
         finding
-        for finding in analyze_modules(modules)
+        for finding in analyze_modules(ParsedModuleSet.of(modules))
         if finding.detector_id == "repeated_builder_calls"
     )
     assert len(findings) == 1
-    snapshot = codemod.CodemodSourceSnapshot.from_modules(modules, findings)
+    snapshot = codemod.CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(modules), findings)
     synthesizer = codemod.FindingRecipeSynthesizer.for_finding(findings[0])
     assert synthesizer is not None
     return synthesizer.evaluate_recipe_for_finding(findings[0], snapshot)

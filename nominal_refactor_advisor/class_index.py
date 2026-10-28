@@ -45,6 +45,7 @@ from .annotation_semantics import (
 )
 from .ast_projection import ExpressionReference
 from .ast_projection import AbsentStatementValue, CallKeywords, StatementValue
+from .observation_graph import ObservationGraph, collect_structural_observations
 from .ast_tools import (
     CompactModuleIdentity,
     CollectedFamily,
@@ -8156,6 +8157,42 @@ def _single_assignment_target_name(node: ast.Assign | ast.AnnAssign) -> str | No
     if isinstance(target, ast.Name):
         return target.id
     return None
+
+
+@dataclass(frozen=True)
+class ParsedModuleSet(Sequence[ParsedModule]):
+    """The parses one run or scan analyzes, and the facts derived from them as
+    a set. Constructed once per run; a later stage over the same parses is
+    handed this object, so the set's facts are shared by identity."""
+
+    modules: tuple[ParsedModule, ...]
+
+    @classmethod
+    def of(cls, modules: Iterable[ParsedModule]) -> ParsedModuleSet:
+        return cls(tuple(modules))
+
+    def __len__(self) -> int:
+        return len(self.modules)
+
+    def __getitem__(self, index):
+        return self.modules[index]
+
+    def __iter__(self) -> Iterator[ParsedModule]:
+        return iter(self.modules)
+
+    @cached_property
+    def class_family_index(self) -> ClassFamilyIndex:
+        return ClassFamilyIndexBuilder(self.modules).build()
+
+    @cached_property
+    def observation_graph(self) -> ObservationGraph:
+        return ObservationGraph(
+            tuple(
+                observation
+                for module in self.modules
+                for observation in collect_structural_observations(module)
+            )
+        )
 
 
 def build_class_family_index(modules: Sequence[ParsedModule]) -> ClassFamilyIndex:

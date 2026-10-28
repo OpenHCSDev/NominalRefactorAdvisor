@@ -6,6 +6,7 @@ from time import perf_counter
 
 import pytest
 
+from nominal_refactor_advisor.class_index import ParsedModuleSet
 from nominal_refactor_advisor.ast_tools import parse_python_modules
 from nominal_refactor_advisor.class_namespace import ClassNamespaceExecutionEvidence
 from nominal_refactor_advisor.captured_reference import (
@@ -22,7 +23,7 @@ from nominal_refactor_advisor.source_native_mro import (
 
 def _snapshot(path: Path, source: str) -> CodemodSourceSnapshot:
     path.write_text(source, encoding="utf-8", newline="")
-    return CodemodSourceSnapshot.from_modules(parse_python_modules(path))
+    return CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(path)))
 
 
 def test_cohort_closes_each_reachable_namespace_once(

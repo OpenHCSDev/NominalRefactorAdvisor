@@ -7,6 +7,7 @@ import sys
 
 import pytest
 
+from nominal_refactor_advisor.class_index import ParsedModuleSet
 from nominal_refactor_advisor.ast_tools import parse_python_modules
 from nominal_refactor_advisor.codemod import (
     CodemodPlanSequence,
@@ -109,7 +110,7 @@ def test_access_projection_rejects_unproved_edits_without_mutation(
     )
     with pytest.raises(ValueError, match=error):
         plan.simulate(
-            CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+            CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
         )
     assert path.read_bytes() == source.encode("utf-8")
 
@@ -145,7 +146,7 @@ def test_nested_access_projection_preserves_suffixes_and_lexical_scopes(
         )
     )
     simulation = plan.simulate(
-        CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+        CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
     )
     assert simulation.is_clean
     simulation.apply()
@@ -179,7 +180,7 @@ def test_owned_prefix_of_a_deeper_write_is_a_read(tmp_path: Path) -> None:
         )
     )
     simulation = plan.simulate(
-        CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+        CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
     )
     assert simulation.is_clean
     simulation.apply()

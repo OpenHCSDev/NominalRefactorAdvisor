@@ -5,6 +5,7 @@ from dataclasses import fields, replace
 from pathlib import Path
 import runpy
 
+from nominal_refactor_advisor.class_index import ParsedModuleSet
 from nominal_refactor_advisor.ast_tools import ParsedModule, parse_python_modules
 from nominal_refactor_advisor.codemod import CodemodSourceSnapshot
 from nominal_refactor_advisor.product_flow import (
@@ -91,7 +92,7 @@ def test_recorded_memoization_plan_only_changes_decorators(tmp_path: Path) -> No
     )
     path.write_text(source, encoding="utf-8", newline="")
     simulation = plan.simulate(
-        CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+        CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
     )
     assert simulation.is_clean
     simulation.apply()

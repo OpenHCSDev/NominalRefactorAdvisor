@@ -364,14 +364,6 @@ def collect_structural_observations(
     return parsed_module.structural_observations
 
 
-def build_observation_graph(modules: list[ParsedModule]) -> ObservationGraph:
-    """Build one observation graph from a list of parsed modules."""
-    observations: list[StructuralObservation] = []
-    for module in modules:
-        observations.extend(collect_structural_observations(module))
-    return ObservationGraph(tuple(observations))
-
-
 _PUBLIC_EXPORT_POLICY = PublicExportPolicy(
     module_name=__name__, types_only=False, allow_callables=True
 )

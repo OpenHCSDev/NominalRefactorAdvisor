@@ -8,6 +8,7 @@ import runpy
 
 import pytest
 
+from nominal_refactor_advisor.class_index import ParsedModuleSet
 from nominal_refactor_advisor.ast_tools import parse_python_modules
 from nominal_refactor_advisor.codemod import (
     AliasFunctionOperation,
@@ -123,7 +124,7 @@ def test_alias_then_argument_edit_preserves_runtime_descriptor_binding(
         )
     )
     simulation = plan.simulate(
-        CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+        CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
     )
     assert simulation.is_clean
     simulation.apply()
@@ -240,7 +241,7 @@ def test_alias_requires_available_implementation_without_discarding_comments(
     path.write_text(source, newline="", encoding="utf-8")
     with pytest.raises(ValueError, match=error):
         _plan(path, target, implementation).simulate(
-            CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+            CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
         )
     assert path.read_bytes() == source.encode()
 
@@ -251,7 +252,7 @@ def test_alias_at_eof_preserves_absence_of_final_newline(tmp_path: Path) -> None
         "def first(): return 1\ndef second(): return 1", newline="", encoding="utf-8"
     )
     simulation = _plan(path, "second", "first").simulate(
-        CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+        CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
     )
     simulation.apply()
     assert path.read_bytes().endswith(b"second = first")
@@ -272,7 +273,7 @@ def test_alias_owns_parenthesized_multiline_decorator_marker(tmp_path: Path) -> 
     path.write_text(source, encoding="utf-8", newline="")
     before = subprocess.check_output([sys.executable, str(path)], text=True)
     simulation = _plan(path, "Owner.second", "Owner.first").simulate(
-        CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+        CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
     )
     simulation.apply()
     assert "    second = first\n" in path.read_text(encoding="utf-8")
@@ -299,7 +300,7 @@ def test_alias_retains_implementation_descriptor_binding(
     path.write_text(source, newline="", encoding="utf-8")
     before = subprocess.check_output([sys.executable, str(path)], text=True)
     simulation = _plan(path, "Owner.second", "Owner.first").simulate(
-        CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+        CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
     )
     simulation.apply()
     assert subprocess.check_output([sys.executable, str(path)], text=True) == before
@@ -326,7 +327,7 @@ def test_documented_import_visitor_batch_runs_as_a_single_plan(tmp_path: Path) -
     path.write_text(source, newline="", encoding="utf-8")
     before = subprocess.check_output([sys.executable, str(path)], text=True)
     simulation = plan.simulate(
-        CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+        CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
     )
     assert simulation.is_clean
     simulation.apply()

@@ -23,6 +23,7 @@ from typing import ClassVar, Self, TypeAlias, cast
 
 from metaclass_registry import AutoRegisterMeta
 
+from .class_index import ParsedModuleSet
 from .scan_cache import ScanCache
 
 from .source_geometry import read_source_text
@@ -138,7 +139,6 @@ from .json_reports import (
 )
 from .lean_export import LeanExportError
 from .models import RefactorFinding, RefactorPlan
-from .observation_graph import build_observation_graph
 from .patterns import PatternId
 from .planner import (
     RefactorExecutionPlanReport,
@@ -1221,7 +1221,7 @@ class JsonPayloadBuilder:
 
     findings: list[RefactorFinding]
     plans: list[RefactorPlan]
-    modules: list[ParsedModule]
+    modules: ParsedModuleSet
     economics: RefactorEvidenceEconomics | None = None
     change_budget: RepositoryChangeBudget | None = None
     timing: ScanTiming | None = None
@@ -1255,7 +1255,7 @@ class JsonPayloadBuilder:
         observation_graph_seconds = 0.0
         if sections.needs_observation_graph:
             started = perf_counter()
-            graph = build_observation_graph(self.modules)
+            graph = self.modules.observation_graph
             observation_graph_seconds = round(perf_counter() - started, 3)
             if sections.observation_graph:
                 payload["observations"] = [
@@ -2429,7 +2429,7 @@ class CodemodScanCliCommand(CliCommand, ABC):
 
     source_snapshot: CodemodSourceSnapshot | None
     findings: list[RefactorFinding]
-    modules: list[ParsedModule]
+    modules: ParsedModuleSet
     config: DetectorConfig
     roots: tuple[Path, ...]
     report_roots: tuple[Path, ...]
@@ -3238,7 +3238,7 @@ class CodemodSynthesizePlanCliCommand(CodemodSynthesisExecutionCliCommand):
                 CodemodPlanSequence.from_document(plan.document)
             ),
             plan_out=self.args.codemod_plan_out,
-            workflow_scan=CodemodWorkflowScan(self.modules, self.findings),
+            workflow_scan=CodemodWorkflowScan(modules=self.modules, findings=self.findings),
             plan=plan,
         )
 
@@ -3268,7 +3268,7 @@ class CodemodSynthesizeClassPlanCliCommand(CodemodSynthesisExecutionCliCommand):
                 CodemodPlanSequence.from_document(report.finding_plan.document)
             ),
             plan_out=self.args.codemod_plan_out,
-            workflow_scan=CodemodWorkflowScan(self.modules, self.findings),
+            workflow_scan=CodemodWorkflowScan(modules=self.modules, findings=self.findings),
             report=report,
         )
 
@@ -3909,7 +3909,7 @@ def _main_without_deadline(invocation: CliArguments) -> int:
                     fast_cache_result = None
             fast_cache_seconds = round(perf_counter() - started, 3)
         if fast_cache_result is not None:
-            modules = []
+            modules = ParsedModuleSet(())
             parse_seconds = 0.0
             analysis_cache_status = fast_cache_result.cache_status
             analysis_cache_identity = fast_cache_result.cache_identity
@@ -3971,7 +3971,7 @@ def _main_without_deadline(invocation: CliArguments) -> int:
                     module_cache_statuses.append(module_result.cache_status)
                 analysis_elapsed += perf_counter() - started
                 del local_modules
-            modules = []
+            modules = ParsedModuleSet(())
             findings = SortedFindingsAuthority.sort(findings)
             parse_seconds = round(parse_elapsed, 3)
             analysis_seconds = round(analysis_elapsed, 3)
@@ -4014,7 +4014,7 @@ def _main_without_deadline(invocation: CliArguments) -> int:
                     and cached_semantic_descent_graph is None
                 ),
             )
-            modules = []
+            modules = ParsedModuleSet(())
             findings = compact_result.findings
             built_semantic_descent_graph = compact_result.semantic_descent_graph
             if built_semantic_descent_graph is not None:
@@ -4032,12 +4032,14 @@ def _main_without_deadline(invocation: CliArguments) -> int:
             )
         else:
             started = perf_counter()
-            modules = parse_python_module_roots(
-                roots,
-                cache_dir=parse_cache_dir,
-                use_parse_cache=args.use_parse_cache,
-                parse_workers=args.parse_workers,
-                source_policy=source_policy,
+            modules = ParsedModuleSet.of(
+                parse_python_module_roots(
+                    roots,
+                    cache_dir=parse_cache_dir,
+                    use_parse_cache=args.use_parse_cache,
+                    parse_workers=args.parse_workers,
+                    source_policy=source_policy,
+                )
             )
             parse_seconds = round(perf_counter() - started, 3)
             if not scan_analysis_required:
@@ -4062,7 +4064,7 @@ def _main_without_deadline(invocation: CliArguments) -> int:
                 findings = path_scope.filter_findings(unfiltered_findings)
                 analysis_seconds = round(perf_counter() - started, 3)
     else:
-        modules = []
+        modules = ParsedModuleSet(())
         try:
             findings = analyze_lean_export(args.import_lean_export)
         except (OSError, json.JSONDecodeError, LeanExportError) as error:
@@ -4197,7 +4199,7 @@ def _main_without_deadline(invocation: CliArguments) -> int:
         args=args,
         source_snapshot=source_snapshot,
         execution_request=codemod_execution_request,
-        workflow_scan=CodemodWorkflowScan(modules, findings),
+        workflow_scan=CodemodWorkflowScan(modules=modules, findings=findings),
     ).run()
     if codemod_execution_result is not None:
         return codemod_execution_result

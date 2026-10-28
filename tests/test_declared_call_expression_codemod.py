@@ -9,6 +9,7 @@ import sys
 
 import pytest
 
+from nominal_refactor_advisor.class_index import ParsedModuleSet
 from nominal_refactor_advisor.ast_tools import parse_python_modules
 from nominal_refactor_advisor.codemod import (
     CodemodPlanSequence,
@@ -69,7 +70,7 @@ def test_call_replacement_preserves_precedence_and_literal_values(
         json.loads(json.dumps(json_report_object(sequence)))
     )
     simulation = replayed.simulate(
-        CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+        CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
     )
     assert simulation.is_clean
     assert path.read_bytes() == source.encode()
@@ -96,7 +97,7 @@ def test_call_replacement_rejects_unproved_selection_without_writes(
     path.write_text(source, newline="", encoding="utf-8")
     with pytest.raises(ValueError, match=error):
         CodemodPlanSequence.from_operations((_operation(path, "42"),)).simulate(
-            CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+            CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
         )
     assert path.read_text(encoding="utf-8") == source
 
@@ -106,7 +107,7 @@ def test_saved_call_replacement_rejects_shadowed_declaration(tmp_path: Path) -> 
     source = "def render(value): return value\ndef run(): return render(1)\n"
     path.write_text(source, newline="", encoding="utf-8")
     sequence = CodemodPlanSequence.from_operations((_operation(path, "1"),))
-    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
     assert sequence.simulate(snapshot).is_clean
     with pytest.raises(ValueError, match="resolved calls|unresolved"):
         sequence.simulate(
@@ -132,7 +133,7 @@ def test_branch_alias_does_not_hide_an_unresolved_call_to_selected_declaration(
     path.write_text(source, encoding="utf-8", newline="")
     with pytest.raises(ValueError, match="unresolved"):
         CodemodPlanSequence.from_operations((_operation(path, "1"),)).simulate(
-            CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+            CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
         )
     assert path.read_bytes() == source.encode()
 
@@ -144,7 +145,7 @@ def test_replacement_requires_one_expression(tmp_path: Path, expression: str) ->
     path.write_text(source, newline="", encoding="utf-8")
     with pytest.raises(SyntaxError):
         CodemodPlanSequence.from_operations((_operation(path, expression),)).simulate(
-            CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+            CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
         )
     assert path.read_text(encoding="utf-8") == source
 
@@ -225,7 +226,7 @@ def test_nested_selected_calls_require_separate_stages(tmp_path: Path) -> None:
     )
     with pytest.raises(ValueError, match="[Oo]verlap"):
         CodemodPlanSequence.from_operations((operation,)).simulate(
-            CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+            CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
         )
     assert path.read_text(encoding="utf-8") == source
 
@@ -250,7 +251,7 @@ def test_dsl_does_not_replace_shadowed_method_calls(tmp_path: Path, base: str) -
     )
     with pytest.raises(ValueError, match="[Uu]nresolved|No resolved"):
         sequence.simulate(
-            CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+            CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
         )
     assert path.read_bytes() == source.encode()
     assert subprocess.check_output([sys.executable, str(path)], text=True) == before
@@ -273,7 +274,7 @@ def test_dsl_replaces_method_after_earlier_class_assignment(tmp_path: Path) -> N
         (_operation(path, "value + 1", callee="Owner.render"),)
     )
     simulation = sequence.simulate(
-        CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+        CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
     )
     assert simulation.is_clean
     simulation.apply()
@@ -377,10 +378,10 @@ def test_historical_member_insertion_wrapper_collapses_as_one_dsl_batch(
         )
     )
     snapshot = CodemodSourceSnapshot.from_modules(
-        (
+        ParsedModuleSet.of((
             *parse_python_modules(root / "nominal_refactor_advisor"),
             *parse_python_modules(tmp_path),
-        )
+        ))
     )
     simulation = sequence.simulate(snapshot)
     assert simulation.is_clean

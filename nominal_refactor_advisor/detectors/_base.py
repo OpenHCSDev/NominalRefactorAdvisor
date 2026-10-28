@@ -125,6 +125,7 @@ from ..ast_tools import (
 from ..native_syntax import NativePythonSyntaxIndex
 from ..positional_forwarding import PositionalForwardingCall
 from ..class_index import (
+    ParsedModuleSet,
     ClsRegistryMembership,
     ClassFamilyIndex,
     ClassSymbolResolutionAuthority,
@@ -660,7 +661,7 @@ class IssueDetector(RequiredRelationDeclaration, metaclass=AutoRegisterMeta):
         return _detector_id_from_class_name(cls.__name__, cls)
 
     def detect(
-        self, modules: list[ParsedModule], config: DetectorConfig
+        self, modules: ParsedModuleSet, config: DetectorConfig
     ) -> list[RefactorFinding]:
         return self._normalize_findings(self._collect_findings(modules, config), config)
 
@@ -704,7 +705,7 @@ class IssueDetector(RequiredRelationDeclaration, metaclass=AutoRegisterMeta):
 
     @abstractmethod
     def _collect_findings(
-        self, modules: list[ParsedModule], config: DetectorConfig
+        self, modules: ParsedModuleSet, config: DetectorConfig
     ) -> list[RefactorFinding]:
         raise NotImplementedError
 
@@ -735,7 +736,7 @@ class PerModuleIssueDetector(IssueDetector):
     )
 
     def _collect_findings(
-        self, modules: list[ParsedModule], config: DetectorConfig
+        self, modules: ParsedModuleSet, config: DetectorConfig
     ) -> list[RefactorFinding]:
         findings: list[RefactorFinding] = []
         for module in modules:
@@ -819,27 +820,24 @@ class ContextualModuleIssueDetector(IssueDetector):
     )
 
     def _collect_findings(
-        self, modules: list[ParsedModule], config: DetectorConfig
+        self, modules: ParsedModuleSet, config: DetectorConfig
     ) -> list[RefactorFinding]:
-        module_context = tuple(modules)
         findings: list[RefactorFinding] = []
         for module in modules:
-            findings.extend(
-                self.findings_for_module_context(module, module_context, config)
-            )
+            findings.extend(self.findings_for_module_context(module, modules, config))
         return findings
 
     @classmethod
     @abstractmethod
     def context_signature(
-        cls, modules: tuple[ParsedModule, ...], config: DetectorConfig
+        cls, modules: ParsedModuleSet, config: DetectorConfig
     ) -> str:
         raise NotImplementedError
 
     def findings_for_module_context(
         self,
         module: ParsedModule,
-        modules: tuple[ParsedModule, ...],
+        modules: ParsedModuleSet,
         config: DetectorConfig,
     ) -> list[RefactorFinding]:
         return self._findings_for_module_context(module, modules, config)
@@ -848,7 +846,7 @@ class ContextualModuleIssueDetector(IssueDetector):
     def _findings_for_module_context(
         self,
         module: ParsedModule,
-        modules: tuple[ParsedModule, ...],
+        modules: ParsedModuleSet,
         config: DetectorConfig,
     ) -> list[RefactorFinding]:
         raise NotImplementedError
@@ -869,12 +867,12 @@ class DeferredContextualGlobalAnalysis(PreparedContextualGlobalAnalysis):
     """Default preparation for detectors without a reusable semantic projection."""
 
     detector: IssueDetector
-    modules: tuple[ParsedModule, ...]
+    modules: ParsedModuleSet
     config: DetectorConfig
     context_signature: str
 
     def findings(self) -> list[RefactorFinding]:
-        return self.detector.detect(list(self.modules), self.config)
+        return self.detector.detect(self.modules, self.config)
 
 
 class ContextualGlobalCacheContract(ABC):
@@ -887,13 +885,13 @@ class ContextualGlobalCacheContract(ABC):
     @classmethod
     @abstractmethod
     def context_signature(
-        cls, modules: tuple[ParsedModule, ...], config: DetectorConfig
+        cls, modules: ParsedModuleSet, config: DetectorConfig
     ) -> str:
         raise NotImplementedError
 
     def prepare_analysis(
         self,
-        modules: tuple[ParsedModule, ...],
+        modules: ParsedModuleSet,
         config: DetectorConfig,
     ) -> PreparedContextualGlobalAnalysis:
         """Project cache identity once and retain any reusable detector state."""
@@ -1911,15 +1909,15 @@ class CrossModuleCandidateDetector(
 
     @classmethod
     def context_signature(
-        cls, modules: tuple[ParsedModule, ...], config: DetectorConfig
+        cls, modules: ParsedModuleSet, config: DetectorConfig
     ) -> str:
         return _contextual_global_candidate_signature(
             cls,
-            cls()._candidate_items(list(modules), config),
+            cls()._candidate_items(modules, config),
         )
 
     def _collect_findings(
-        self, modules: list[ParsedModule], config: DetectorConfig
+        self, modules: ParsedModuleSet, config: DetectorConfig
     ) -> list[RefactorFinding]:
         return self._findings_for_candidates(
             self._candidate_items(modules, config),
@@ -1936,7 +1934,7 @@ class CrossModuleCandidateDetector(
 
     def prepare_analysis(
         self,
-        modules: tuple[ParsedModule, ...],
+        modules: ParsedModuleSet,
         config: DetectorConfig,
     ) -> PreparedContextualGlobalAnalysis:
         if (
@@ -1944,7 +1942,7 @@ class CrossModuleCandidateDetector(
             is not CrossModuleCandidateDetector._collect_findings
         ):
             return super().prepare_analysis(modules, config)
-        candidates = tuple(self._candidate_items(list(modules), config))
+        candidates = tuple(self._candidate_items(modules, config))
         return PreparedCrossModuleCandidateAnalysis(
             detector=self,
             candidates=candidates,
@@ -1957,7 +1955,7 @@ class CrossModuleCandidateDetector(
 
     @abstractmethod
     def _candidate_items(
-        self, modules: list[ParsedModule], config: DetectorConfig
+        self, modules: ParsedModuleSet, config: DetectorConfig
     ) -> Sequence[CandidateItemT]:
         raise NotImplementedError
 
@@ -1995,7 +1993,7 @@ class CrossModuleCollectorCandidateDetector(
     candidate_collector: ClassVar[CrossModuleCandidateCollector[CandidateItemT]]
 
     def _candidate_items(
-        self, modules: list[ParsedModule], config: DetectorConfig
+        self, modules: ParsedModuleSet, config: DetectorConfig
     ) -> Sequence[CandidateItemT]:
         del config
         return type(self).candidate_collector(modules)
@@ -2018,7 +2016,7 @@ class ConfiguredCrossModuleCollectorCandidateDetector(
     ]
 
     def _candidate_items(
-        self, modules: list[ParsedModule], config: DetectorConfig
+        self, modules: ParsedModuleSet, config: DetectorConfig
     ) -> Sequence[CandidateItemT]:
         return type(self).candidate_collector(modules, config)
 
@@ -2228,7 +2226,7 @@ class FlattenedModuleCollectorCandidateDetector(
     candidate_collector: ClassVar[ModuleCandidateCollector[CandidateItemT]]
 
     def _candidate_items(
-        self, modules: list[ParsedModule], config: DetectorConfig
+        self, modules: ParsedModuleSet, config: DetectorConfig
     ) -> Sequence[CandidateItemT]:
         del config
         return type(self)._sorted_candidate_items(
@@ -2256,7 +2254,7 @@ class ConfiguredFlattenedModuleCollectorCandidateDetector(
     candidate_collector: ClassVar[ConfiguredModuleCandidateCollector[CandidateItemT]]
 
     def _candidate_items(
-        self, modules: list[ParsedModule], config: DetectorConfig
+        self, modules: ParsedModuleSet, config: DetectorConfig
     ) -> Sequence[CandidateItemT]:
         return type(self)._sorted_candidate_items(
             tuple(
@@ -2580,12 +2578,12 @@ class GroupedShapeIssueDetector(
 ):
     @classmethod
     def context_signature(
-        cls, modules: tuple[ParsedModule, ...], config: DetectorConfig
+        cls, modules: ParsedModuleSet, config: DetectorConfig
     ) -> str:
         detector = cls()
         return cls._context_signature_for_shapes(
             detector,
-            detector._collect_shapes(list(modules), config),
+            detector._collect_shapes(modules, config),
         )
 
     @classmethod
@@ -2609,7 +2607,7 @@ class GroupedShapeIssueDetector(
         )
 
     def _collect_findings(
-        self, modules: list[ParsedModule], config: DetectorConfig
+        self, modules: ParsedModuleSet, config: DetectorConfig
     ) -> list[RefactorFinding]:
         return self._findings_for_shapes(
             self._collect_shapes(modules, config),
@@ -2634,7 +2632,7 @@ class GroupedShapeIssueDetector(
 
     def prepare_analysis(
         self,
-        modules: tuple[ParsedModule, ...],
+        modules: ParsedModuleSet,
         config: DetectorConfig,
     ) -> PreparedContextualGlobalAnalysis:
         if (
@@ -2642,7 +2640,7 @@ class GroupedShapeIssueDetector(
             is not GroupedShapeIssueDetector.context_signature.__func__
         ):
             return super().prepare_analysis(modules, config)
-        shapes = tuple(self._collect_shapes(list(modules), config))
+        shapes = tuple(self._collect_shapes(modules, config))
         return PreparedGroupedShapeAnalysis(
             detector=self,
             shapes=shapes,
@@ -2655,7 +2653,7 @@ class GroupedShapeIssueDetector(
 
     @abstractmethod
     def _collect_shapes(
-        self, modules: list[ParsedModule], config: DetectorConfig
+        self, modules: ParsedModuleSet, config: DetectorConfig
     ) -> list[ShapeT]:
         raise NotImplementedError
 
@@ -2707,7 +2705,7 @@ class FiberCollectedShapeIssueDetector(
     execution_level: StructuralExecutionLevel = StructuralExecutionLevel.FUNCTION_BODY
 
     def _collect_shapes(
-        self, modules: list[ParsedModule], config: DetectorConfig
+        self, modules: ParsedModuleSet, config: DetectorConfig
     ) -> list[ShapeT]:
         shapes = tuple(
             (
@@ -2783,7 +2781,7 @@ class ContextualGlobalFiberCollectedShapeIssueDetector(
 
     @classmethod
     def context_signature(
-        cls, modules: tuple[ParsedModule, ...], config: DetectorConfig
+        cls, modules: ParsedModuleSet, config: DetectorConfig
     ) -> str:
         detector = cls()
         rows: list[ContextualGlobalShapeSignatureRow] = []
@@ -5265,10 +5263,10 @@ def _concrete_type_case_function_candidates(
 
 
 def _repeated_concrete_type_case_analysis_candidates(
-    modules: list[ParsedModule],
+    modules: ParsedModuleSet,
     config: DetectorConfig,
 ) -> tuple[RepeatedConcreteTypeCaseAnalysisCandidate, ...]:
-    class_index = build_class_family_index(modules)
+    class_index = modules.class_family_index
     min_function_count = max(3, config.min_registration_sites)
     min_class_count = max(2, config.min_reflective_selector_values)
     candidates: list[RepeatedConcreteTypeCaseAnalysisCandidate] = []
@@ -5361,10 +5359,10 @@ def _self_cast_alias_names(
 
 
 def _implicit_self_contract_mixin_candidates(
-    modules: list[ParsedModule],
+    modules: ParsedModuleSet,
     config: DetectorConfig,
 ) -> tuple[ImplicitSelfContractMixinCandidate, ...]:
-    class_index = build_class_family_index(modules)
+    class_index = modules.class_family_index
     min_consumer_count = max(2, config.min_registration_sites)
     candidates: list[ImplicitSelfContractMixinCandidate] = []
     for indexed_class in sorted(

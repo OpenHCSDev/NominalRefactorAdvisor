@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 
+from nominal_refactor_advisor.class_index import ParsedModuleSet
 from nominal_refactor_advisor.ast_tools import parse_python_modules
 from nominal_refactor_advisor.codemod import (
     CodemodOperationPreflightError,
@@ -27,7 +28,7 @@ def test_body_only_replacement_rejects_decorator_payload_before_writing(
     path = tmp_path / "sample.py"
     source = f"{existing_decorator}{header}\n    pass\n"
     path.write_text(source)
-    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
     operation = ReplaceTargetOperation(
         target=SourceRewriteTarget(file_path=str(path), qualname="Value"),
         replacement_source=f"@decorate\n{header}\n    pass\n",
@@ -46,7 +47,7 @@ def test_body_only_replacement_preserves_the_existing_decorator_once(
     path = tmp_path / "sample.py"
     source = "from dataclasses import dataclass\n@(\n    dataclass(frozen=True)\n)\nclass Value:\n    old: int\n"
     path.write_text(source)
-    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
     operation = ReplaceTargetOperation(
         target=SourceRewriteTarget(file_path=str(path), qualname="Value"),
         replacement_source="class Value:\n    new: int\n",
@@ -89,7 +90,7 @@ def test_nominal_policy_controls_both_payload_and_complete_decorator_geometry(
             "def new(value):\n    calls.append('new')\n    return value\n"
             "@(\n    old\n)\nclass Value:\n    number = 1\n"
         )
-        snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+        snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
         operation = DecoratorInclusiveProbeOperation(
             target=SourceRewriteTarget(file_path=str(path), qualname="Value"),
             replacement_source="@new\nclass Value:\n    number = 2\n",
@@ -118,7 +119,7 @@ def test_body_and_decorator_edits_compose_on_the_same_source_snapshot(
         "from dataclasses import dataclass\n"
         "@(\n    dataclass(frozen=True)\n)\nclass Value:\n    old: int\n"
     )
-    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
     target = SourceRewriteTarget(file_path=str(path), qualname="Value")
     recipe = (
         RefactorRecipe("replace-value")
