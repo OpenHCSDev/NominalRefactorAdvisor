@@ -1,4 +1,4 @@
-"""A class's metaclass registers by what it reads, never by its name (#71)."""
+"""A class's metaclass registers by what it does, never by its name (#71)."""
 
 from __future__ import annotations
 
@@ -25,6 +25,22 @@ SOURCE = (
     "        super().__init__(name, bases, namespace)\n"
     "        cls.__registry__[namespace.get('key')] = cls\n\n\n"
     "class HandRolled(metaclass=HandRolledMeta):\n    pass\n\n\n"
+    "def _store(table, key, value):\n    table[key] = value\n\n\n"
+    "class ThroughHelperMeta(type):\n"
+    "    def __new__(mcs, name, bases, namespace):\n"
+    "        created: type = super().__new__(mcs, name, bases, namespace)\n"
+    "        mcs._register(created, name)\n"
+    "        return created\n\n"
+    "    @staticmethod\n"
+    "    def _register(cls, key):\n"
+    "        _store(TABLE, key, value=cls)\n\n\n"
+    "class ThroughHelper(metaclass=ThroughHelperMeta):\n    pass\n\n\n"
+    "class ReadsConfigMeta(type):\n"
+    "    def __new__(mcs, name, bases, namespace):\n"
+    "        created = super().__new__(mcs, name, bases, namespace)\n"
+    "        TABLE[created.__registry_key__] = name\n"
+    "        return created\n\n\n"
+    "class ReadsConfig(metaclass=ReadsConfigMeta):\n    pass\n\n\n"
     "class NotAutoRegisterMeta(ABCMeta):\n    pass\n\n\n"
     "class NamedLikeIt(metaclass=NotAutoRegisterMeta):\n    pass\n\n\n"
     "class Plain:\n    pass\n"
@@ -34,6 +50,8 @@ EXPECTED = {
     "Aliased": True,
     "Family": True,
     "HandRolled": True,
+    "ThroughHelper": True,
+    "ReadsConfig": False,
     "NamedLikeIt": False,
     "Plain": False,
 }

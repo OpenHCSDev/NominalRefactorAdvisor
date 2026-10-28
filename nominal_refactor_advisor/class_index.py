@@ -98,8 +98,8 @@ from .product_flow import (
     SourceProductFlowProjection,
     source_product_flow_projection,
 )
+from .class_creation_store import CreatedClassStore
 from .installed_source import InstalledModule
-from .registry_identity import AUTOREGISTER_CONFIGURATION_ATTRIBUTE_NAMES
 from .source_execution import SourceModuleExecution
 from .semantic_algebra import DirectedGraph
 from .source_geometry import ClassHeaderSourceSpan as ClassHeaderSourceSpan
@@ -107,26 +107,30 @@ from .source_identity import resolved_source_path_text
 
 
 class ClassRegistryFacts(NamedTuple):
-    """What one class statement says about registration, read from it alone.
+    """What one class statement says about registration, read from it and its module.
 
     `metaclass_references` and `base_references` are the `metaclass=` keyword
     and the bases, each with the binding its root name has where the class
-    is declared. `reads_registry_configuration` is whether the class body
-    reads any registry configuration attribute (`registry_identity`): a
-    metaclass that does registers the classes it creates. No class is
-    recognized by its name.
+    is declared. `stores_created_class` is whether, used as a metaclass, its
+    creation path stores the class it creates into a mapping;
+    `stores_subclass` is whether its `__init_subclass__` stores the subclass
+    (`CreatedClassStore`). No class is recognized by its name, and no
+    library's attribute names are consulted.
     """
 
     metaclass_references: tuple[CompactNominalReference, ...] = ()
     base_references: tuple[CompactNominalReference, ...] = ()
-    reads_registry_configuration: bool = False
+    stores_created_class: bool = False
+    stores_subclass: bool = False
 
     @classmethod
     def of_class(
         cls,
         node: ast.ClassDef,
         module_binding_snapshot: ModuleNominalBindingSnapshot,
+        module: ast.Module,
     ) -> ClassRegistryFacts:
+        creation = CreatedClassStore.of(node, module)
         return cls(
             metaclass_references=tuple(
                 module_binding_snapshot.reference_for(parts)
@@ -140,17 +144,8 @@ class ClassRegistryFacts(NamedTuple):
                 is not None
             ),
             base_references=_compact_base_references(node, module_binding_snapshot),
-            reads_registry_configuration=any(
-                (
-                    isinstance(read, ast.Attribute)
-                    and read.attr in AUTOREGISTER_CONFIGURATION_ATTRIBUTE_NAMES
-                )
-                or (
-                    isinstance(read, ast.Constant)
-                    and read.value in AUTOREGISTER_CONFIGURATION_ATTRIBUTE_NAMES
-                )
-                for read in ast.walk(node)
-            ),
+            stores_created_class=creation.stores_created_class(),
+            stores_subclass=creation.stores_subclass(),
         )
 
 
@@ -236,7 +231,9 @@ class IndexedClass(ClassDeclaration, ClassNamespaceDeclaration):
                 is not None
             ),
             resolved_base_symbols=(),
-            registry_facts=ClassRegistryFacts.of_class(node, module_binding_snapshot),
+            registry_facts=ClassRegistryFacts.of_class(
+                node, module_binding_snapshot, parsed_module.module
+            ),
             dataclass_declaration=_dataclass_declaration(
                 module_binding_snapshot,
                 qualname,
@@ -4597,7 +4594,9 @@ def _compact_indexed_classes(
             is_abstract=_is_abstract_class(node),
             dataclass_declaration=binding_facets.dataclass_declaration,
             enum_declaration=binding_facets.enum_declaration,
-            registry_facts=ClassRegistryFacts.of_class(node, module_binding_snapshot),
+            registry_facts=ClassRegistryFacts.of_class(
+                node, module_binding_snapshot, parsed_module.module
+            ),
             is_registration_authority=_is_registration_authority(node),
             autoregister_registry_key_attr_name=_autoregister_registry_key_attr_name(
                 parsed_module,
@@ -7108,13 +7107,14 @@ class InstalledClassDeclarations:
 
 @dataclass(frozen=True)
 class RegisteringMetaclassAuthority(Generic[ClassDeclarationT]):
-    """Whether a class's metaclass registers the classes it creates, from what it reads.
+    """Whether a class's metaclass registers the classes it creates, from what it does.
 
     The `metaclass=` binding is resolved like a base: to a scanned class, or
     else to an installed module's class read from source, following
     re-exports. The metaclass registers when it, or an ancestor reached the
-    same way, reads a registry configuration attribute. A native root reads
-    none, and an ancestor that cannot be read is not known to register.
+    same way, stores the class it creates into a mapping
+    (`ClassRegistryFacts.stores_created_class`). A native root stores none,
+    and an ancestor that cannot be read is not known to register.
     """
 
     scanned: Mapping[str, ClassDeclarationT]
@@ -7139,7 +7139,7 @@ class RegisteringMetaclassAuthority(Generic[ClassDeclarationT]):
             if found is None or found.symbol in seen:
                 continue
             seen.add(found.symbol)
-            if found.registry_facts.reads_registry_configuration:
+            if found.registry_facts.stores_created_class:
                 return True
             pending.extend(
                 (base, found.module_name)
