@@ -323,7 +323,7 @@ class BlockOwnerQuestion:
         found: tuple[BlockOwnerCandidate, ...] = (
             *self._shared_bases(),
             *self._existing_classes(),
-            *(() if covering is None else (self._covering_candidate(covering),)),
+            *((self._covering_candidate(covering),) if covering else ()),
             *self._new_mixins(covering),
         )
         copy = self._copy()
@@ -578,13 +578,15 @@ class BlockOwnerQuestion:
                 held=held,
             )
 
-    def _covering_owners(self) -> tuple[CompactIndexedClass, ...] | None:
-        """The fewest existing classes whose own declarations cover the block.
+    def _covering_owners(self) -> tuple[CompactIndexedClass, ...]:
+        """The fewest existing classes whose own declarations cover the block,
+        or none.
 
         Each is outside both classes' families, composed by another class, and
         declares at least one block name itself; none covers the block alone
         (that is an existing-class owner). Between sets of one size, the one
-        bringing the fewest other declarations wins, then the symbols.
+        bringing the fewest other declarations wins, then the one more classes
+        already compose, then the symbols.
         """
 
         family = self._family()
@@ -611,6 +613,7 @@ class BlockOwnerQuestion:
                     covers,
                     key=lambda combination: (
                         len(self._brought_names(combination)),
+                        -sum(len(self.descendants_of(symbol)) for symbol in combination),
                         combination,
                     ),
                 )
@@ -619,7 +622,7 @@ class BlockOwnerQuestion:
                     for symbol in self._base_order(best)
                     if (indexed_class := self.class_for(symbol)) is not None
                 )
-        return None
+        return ()
 
     def _brought_names(self, symbols: Iterable[str]) -> frozenset[str]:
         return (
@@ -709,12 +712,10 @@ class BlockOwnerQuestion:
         )
 
     def _new_mixins(
-        self, covering: tuple[CompactIndexedClass, ...] | None
+        self, covering: tuple[CompactIndexedClass, ...]
     ) -> Iterator[NewMixinOwner]:
         owned_elsewhere = (
-            ()
-            if covering is None
-            else (
+            (
                 Receipt(
                     OwnerReceiptKind.OWNED_BY_EXISTING_CLASSES,
                     "the block is already declared by "
@@ -723,6 +724,8 @@ class BlockOwnerQuestion:
                     tuple(_location(owner) for owner in covering),
                 ),
             )
+            if covering
+            else ()
         )
         for module_name in dict.fromkeys(
             indexed_class.module_name for indexed_class in self.pair

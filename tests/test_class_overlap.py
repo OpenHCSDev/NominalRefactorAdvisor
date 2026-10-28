@@ -277,3 +277,58 @@ def test_a_block_an_existing_owner_declares_is_composed_from_that_owner():
         "ProofEdge",
     }
     assert OverlapReceiptKind.EXISTING_OWNER in _kinds(candidate)
+
+
+SPREAD = (
+    "pkg.summaries",
+    "class Scope:\n    file_path: str\n    finding_ids: tuple[str, ...]\n\n\n"
+    "class ModuleSummary(Scope):\n    module_name: str\n\n\n"
+    "class EvidenceSummary:\n"
+    "    file_path: str\n    line: int\n    finding_ids: tuple[str, ...]\n    message: str\n\n\n"
+    "class FunctionSummary(Scope):\n    line: int\n    name: str\n",
+)
+
+
+def test_a_block_restated_through_an_inherited_mixin_is_still_a_verdict():
+    """#96: FunctionSummary inherits file_path and finding_ids from Scope and
+    declares line itself; EvidenceSummary declares all three. Own bodies share
+    one declaration, so only the MRO shows the restatement."""
+
+    verdicts = {
+        frozenset((candidate.owner.symbol, *candidate.restating_symbols)): candidate
+        for candidate in _verdicts(SPREAD)
+    }
+    verdict = verdicts[
+        frozenset(("pkg.summaries.EvidenceSummary", "pkg.summaries.FunctionSummary"))
+    ]
+
+    assert verdict.shape is ClassOverlapShape.MISSING_MIXIN
+    assert set(verdict.shared_names) == {"file_path", "line", "finding_ids"}
+    assert not verdict.permitted
+    assert {
+        receipt.detail
+        for receipt in verdict.refusals
+        if receipt.kind is OverlapReceiptKind.INHERITED_DECLARATION
+    } == {
+        "`FunctionSummary` inherits `file_path` from `Scope`: the move deletes only "
+        "declarations a class makes itself",
+        "`FunctionSummary` inherits `finding_ids` from `Scope`: the move deletes only "
+        "declarations a class makes itself",
+    }
+    inherited_sites = {
+        (location.file_path, location.symbol)
+        for receipt in verdict.receipts
+        if receipt.kind is OverlapReceiptKind.INHERITED_DECLARATION
+        for location in receipt.evidence
+    }
+    assert ("pkg/summaries.py", "Scope.file_path") in inherited_sites
+
+
+def test_classes_inheriting_one_declaration_from_one_ancestor_restate_nothing():
+    verdicts = _verdicts(SPREAD)
+
+    assert not any(
+        {candidate.owner.symbol, *candidate.restating_symbols}
+        == {"pkg.summaries.ModuleSummary", "pkg.summaries.FunctionSummary"}
+        for candidate in verdicts
+    )
