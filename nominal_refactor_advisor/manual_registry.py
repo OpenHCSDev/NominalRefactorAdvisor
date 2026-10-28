@@ -830,9 +830,9 @@ class AutoRegisterInstanceViewComponent(RegistryEntries):
         return registry_key_attribute
 
     def require_complete(self, class_graph: DirectModuleClassGraph) -> None:
-        if not self.authority.runtime_autoregister_family:
+        if not self.authority.keyed_metaclass_family:
             raise ValueError(
-                f"{self.authority_name!r} is not an AutoRegisterMeta family"
+                f"{self.authority_name!r} declares no metaclass and registry key"
             )
         if self.authority.declares_registry:
             registry_value = self.authority.assignment_value(REGISTRY_ATTRIBUTE_NAME)

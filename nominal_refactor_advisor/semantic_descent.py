@@ -1430,7 +1430,7 @@ class SemanticClassSupplement:
     constant_assignments: tuple[tuple[str, int, str | None], ...]
     declared_type_names: tuple[str, ...]
     constructed_type_names: tuple[str, ...]
-    autoregister_authority_shape: bool
+    declares_registry_shape: bool
 
     @classmethod
     def from_class_declaration(
@@ -1486,7 +1486,7 @@ class SemanticClassSupplement:
             constant_assignments
             or declared_type_names
             or collected_constructed_type_names
-            or authority.semantic_authority_shape
+            or authority.declared_registry_shape
         ):
             return None
         return cls(
@@ -1494,7 +1494,7 @@ class SemanticClassSupplement:
             constant_assignments=constant_assignments,
             declared_type_names=declared_type_names,
             constructed_type_names=sorted_tuple(collected_constructed_type_names),
-            autoregister_authority_shape=authority.semantic_authority_shape,
+            declares_registry_shape=authority.declared_registry_shape,
         )
 
 
@@ -4170,7 +4170,8 @@ class ClassFamilySemanticAuthorityProvider:
         return SemanticAuthorityProviderResult(
             (
                 SemanticAuthorityKind.AUTOREGISTER_FAMILY
-                if supplement is not None and supplement.autoregister_authority_shape
+                if declaration.indexed_class.declares_autoregister_meta
+                or (supplement is not None and supplement.declares_registry_shape)
                 else SemanticAuthorityKind.CLASS_FAMILY
             ),
             declaration.class_facts,

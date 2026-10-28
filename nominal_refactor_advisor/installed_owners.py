@@ -73,6 +73,12 @@ class RegistrationRole(StrEnum):
     """Its `__init_subclass__` stores each subclass."""
 
     @classmethod
+    def decoded(cls, value: str) -> RegistrationRole:
+        """The member a cache entry wrote by value."""
+
+        return {role.value: role for role in cls}[value]
+
+    @classmethod
     def played(
         cls, stores_created_class: bool, stores_subclass: bool
     ) -> tuple[RegistrationRole, ...]:
@@ -208,7 +214,7 @@ class InstalledDistributionOwners:
             str(payload["record_digest"]),
             tuple(
                 InstalledRegistrationOwner(
-                    **{**owner, "role": RegistrationRole(owner["role"])}
+                    **{**owner, "role": RegistrationRole.decoded(owner["role"])}
                 )
                 for owner in owners
             ),

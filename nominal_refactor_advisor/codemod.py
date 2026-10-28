@@ -3746,14 +3746,8 @@ class ConvertManualRegistryToAutoregisterOperation(
             if keyword.arg == "metaclass"
         )
         if metaclass_keywords:
-            if len(metaclass_keywords) != 1 or not (
-                isinstance(metaclass_keywords[0].value, ast.Name)
-                and metaclass_keywords[0].value.id == AUTOREGISTER_META_NAME
-            ):
-                raise ValueError(
-                    f"Registry authority {authority_target.qualname!r} has an "
-                    "incompatible metaclass"
-                )
+            # The operand's identity is proved on the result
+            # (NativeDefinitionUseRequirement), not read from its name.
             return ()
         return (
             header.geometry.nominal_edit(

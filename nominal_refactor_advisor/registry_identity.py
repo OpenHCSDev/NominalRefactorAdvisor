@@ -19,10 +19,7 @@ from typing import (
 from metaclass_registry import AutoRegisterMeta, DuplicateRegistryKeyError
 
 from .assignment_projection import SingleAssignmentAndValueNameProjection
-from .ast_projection import (
-    AstClassProjection,
-    ExpressionReference,
-)
+from .ast_projection import AstClassProjection
 from .native_declarations import NativeDeclaration
 from .value_expression import LiteralExpressionEffects
 
@@ -202,22 +199,12 @@ class AutoRegisterClassAuthority:
         } <= assignment_names
 
     @property
-    def uses_autoregister_metaclass(self) -> bool:
-        return any(
-            keyword.arg == "metaclass"
-            and ExpressionReference.decoded(keyword.value).terminal_name
-            == AUTOREGISTER_META_NAME
-            for keyword in self.node.keywords
-        )
+    def keyed_metaclass_family(self) -> bool:
+        """It names a metaclass and a registry key. Which metaclass is not read
+        from its name: `require_native_metaclass` proves the operand."""
 
-    @property
-    def semantic_authority_shape(self) -> bool:
-        return self.declared_registry_shape or self.uses_autoregister_metaclass
-
-    @property
-    def runtime_autoregister_family(self) -> bool:
-        return (
-            self.registry_key_attribute is not None and self.uses_autoregister_metaclass
+        return self.registry_key_attribute is not None and any(
+            keyword.arg == "metaclass" for keyword in self.node.keywords
         )
 
     @property
