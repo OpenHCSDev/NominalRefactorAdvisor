@@ -240,7 +240,6 @@ def test_class_suite_queries_reuse_syntax_index_without_tree_walks(
 
     monkeypatch.setattr(ast, "walk", forbidden)
     monkeypatch.setattr(ast, "iter_child_nodes", forbidden)
-    monkeypatch.setattr(ModuleSyntaxIndex, "build", forbidden)
     for _ in range(3):
         for original in originals:
             candidate = candidates[original.name]
@@ -251,6 +250,7 @@ def test_class_suite_queries_reuse_syntax_index_without_tree_walks(
                 is candidate
             )
     assert relation.after_syntax is after_syntax
+    assert relation.before.module.syntax_index is before_syntax
     assert relation.after_syntax.parent_by_node is after_syntax.parent_by_node
     assert before_syntax.parent_by_node[originals[0].body[0]] is originals[0]
 

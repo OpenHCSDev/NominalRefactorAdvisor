@@ -3093,7 +3093,6 @@ def test_class_candidate_anchor_witnesses_follow_reported_seed_locations() -> No
 
 def test_class_demand_omits_unreportable_autoregister_reference_graph(
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     package_root = tmp_path / "pkg"
     package_root.mkdir()
@@ -3123,30 +3122,13 @@ def test_class_demand_omits_unreportable_autoregister_reference_graph(
     assert isinstance(demand, class_index_module.CompactClassProjectionDemand)
     assert demand.include_autoregister_references is False
 
-    collect_autoregister_values: list[bool] = []
-    original_collector = class_index_module._compact_class_syntax_facets
-
-    def recording_syntax_facets(
-        selected_module,
-        *,
-        collect_autoregister: bool = True,
-    ):
-        collect_autoregister_values.append(collect_autoregister)
-        return original_collector(
-            selected_module,
-            collect_autoregister=collect_autoregister,
-        )
-
-    monkeypatch.setattr(
-        class_index_module,
-        "_compact_class_syntax_facets",
-        recording_syntax_facets,
-    )
     demanded = family.collect_demanded(parsed_module, demand)
+    held_facts = vars(parsed_module).get("_facts", {})
 
     assert demanded is not None
     assert demanded[0].autoregister_reference_index is None
-    assert collect_autoregister_values == [False]
+    assert class_index_module.ModuleClassSyntaxFacetsWithoutAutoregister in held_facts
+    assert class_index_module.ModuleClassSyntaxFacets not in held_facts
 
     target_root = class_index_module.CompactIndexedClass(
         symbol="pkg.target.TargetRegistry",

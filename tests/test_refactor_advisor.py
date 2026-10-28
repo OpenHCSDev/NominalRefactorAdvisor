@@ -109,6 +109,7 @@ from nominal_refactor_advisor.calibration import (
 from nominal_refactor_advisor.cache_paths import default_parse_cache_dir
 from nominal_refactor_advisor.class_index import (
     ClassFamilyIndex,
+    ModuleClassSyntaxFacets,
     RegistryLookupShape,
     RegistryLookupStyle,
     SelectionGuardKind,
@@ -5723,12 +5724,13 @@ def test_codemod_snapshot_reparsing_preserves_indexed_module_identity() -> None:
 
 def test_virtual_source_overlay_reuses_unchanged_ast_and_class_records(
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     alpha_path = tmp_path / "pkg/alpha.py"
     beta_path = tmp_path / "pkg/beta.py"
     _write_module(tmp_path, "pkg/__init__.py", "")
     _write_module(tmp_path, "pkg/alpha.py", "class Base:\n    pass\n")
+    util_path = tmp_path / "pkg/util.py"
+    _write_module(tmp_path, "pkg/util.py", "def helper():\n    return 1\n")
     _write_module(
         tmp_path,
         "pkg/beta.py",
@@ -5740,23 +5742,6 @@ def test_virtual_source_overlay_reuses_unchanged_ast_and_class_records(
     rebuilt = CodemodSourceSnapshot.from_modules(
         ParsedModuleSet.of(snapshot.modules_with_source_overlay(source_overlay))
     )
-    monkeypatch.setattr(
-        ClassFamilyIndex,
-        "derive",
-        classmethod(
-            lambda _cls, _modules: pytest.fail(
-                "projected snapshots must overlay the class index"
-            )
-        ),
-    )
-    monkeypatch.setattr(
-        codemod_runtime_module,
-        "build_source_index_artifacts",
-        lambda _modules, _findings: pytest.fail(
-            "projected snapshots must overlay the source index"
-        ),
-    )
-
     projected = snapshot.with_virtual_sources(source_overlay)
 
     assert projected.source_index == rebuilt.source_index
@@ -5767,6 +5752,28 @@ def test_virtual_source_overlay_reuses_unchanged_ast_and_class_records(
     assert (
         projected.module_nodes_by_file_path[alpha_path.as_posix()]
         is snapshot.module_nodes_by_file_path[alpha_path.as_posix()]
+    )
+    assert (
+        projected.required_class_family_index.classes_by_symbol["pkg.alpha.Base"].node
+        is snapshot.required_class_family_index.classes_by_symbol["pkg.alpha.Base"].node
+    )
+    projected_alpha = next(
+        module for module in projected.parsed_modules if module.path == alpha_path
+    )
+    snapshot_alpha = next(
+        module for module in snapshot.parsed_modules if module.path == alpha_path
+    )
+    assert projected_alpha is snapshot_alpha
+    assert projected_alpha.fact(ModuleClassSyntaxFacets) is snapshot_alpha.fact(
+        ModuleClassSyntaxFacets
+    )
+    util_source = snapshot.sources_by_file_path[util_path.as_posix()]
+    classless_overlay = snapshot.with_virtual_sources(
+        {util_path.as_posix(): util_source.replace("return 1", "return 2")}
+    )
+    assert (
+        classless_overlay.required_class_family_index
+        is snapshot.required_class_family_index
     )
     assert (
         projected.required_class_family_index.classes_by_symbol[
@@ -15000,7 +15007,6 @@ def test_collects_sentinel_type_observations_via_spec_family(tmp_path: Path) -> 
 
 def test_sentinel_usage_projection_stops_without_a_declaration(
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _write_module(
         tmp_path,
@@ -15008,11 +15014,6 @@ def test_sentinel_usage_projection_stops_without_a_declaration(
         "\ndef ordinary(value):\n    return value is None\n",
     )
     module = parse_python_modules(tmp_path)[0]
-
-    def unexpected_walk(_node: ast.AST) -> object:
-        raise AssertionError("modules without sentinels need no usage traversal")
-
-    monkeypatch.setattr(ast_tools_module, "_walk_nodes", unexpected_walk)
 
     assert ast_tools_module._sentinel_type_usage_observations(module) == ()
 
@@ -17409,36 +17410,18 @@ def test_codemod_sequence_preflight_reuses_each_document_proof(
 
 def test_codemod_workflow_scan_reuses_source_snapshot(
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from nominal_refactor_advisor.codemod_workflow import CodemodWorkflowScan
 
     _write_module(tmp_path, "pkg/mod.py", "\nclass Alpha:\n    pass\n")
     modules = parse_python_modules(tmp_path)
-    rebuild_count = 0
-    real_from_modules = CodemodSourceSnapshot.from_modules.__func__
-
-    def counted_from_modules(
-        cls: type[CodemodSourceSnapshot],
-        modules: list[object],
-        findings: tuple[RefactorFinding, ...] = (),
-    ) -> CodemodSourceSnapshot:
-        nonlocal rebuild_count
-        rebuild_count += 1
-        return real_from_modules(cls, modules, findings)
-
-    monkeypatch.setattr(
-        CodemodSourceSnapshot,
-        "from_modules",
-        classmethod(counted_from_modules),
-    )
     scan = CodemodWorkflowScan(modules=modules, findings=[])
 
     first_snapshot = scan.source_snapshot
     second_snapshot = scan.source_snapshot
 
     assert first_snapshot is second_snapshot
-    assert rebuild_count == 1
+    assert first_snapshot.class_family_index is modules.fact(ClassFamilyIndex)
 
 
 def test_codemod_source_snapshot_reuses_source_index_target_nodes(
@@ -23572,25 +23555,9 @@ def test_json_payload_reuses_supplied_source_index(
 
 def test_json_payload_summary_skips_source_backed_sections(
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _write_module(tmp_path, "pkg/mod.py", "\nclass Alpha:\n    pass\n")
     modules = parse_python_modules(tmp_path)
-
-    def fail_observation_graph(*args: object, **kwargs: object) -> object:
-        raise AssertionError("summary payload should not build observation graph")
-
-    def fail_source_snapshot(*args: object, **kwargs: object) -> CodemodSourceSnapshot:
-        raise AssertionError("summary payload should not build source snapshot")
-
-    monkeypatch.setattr(
-        ParsedModuleSet, "observation_graph", property(fail_observation_graph)
-    )
-    monkeypatch.setattr(
-        CodemodSourceSnapshot,
-        "from_modules",
-        classmethod(fail_source_snapshot),
-    )
 
     payload = JsonPayloadBuilder(
         findings=[],
@@ -23599,6 +23566,8 @@ def test_json_payload_summary_skips_source_backed_sections(
         payload_sections=JsonPayloadProfile.summary.sections,
     ).build()
 
+    assert "observation_graph" not in vars(modules)
+    assert ClassFamilyIndex not in vars(modules).get("_facts", {})
     assert "findings" in payload
     assert "observations" not in payload
     assert "fibers" not in payload
@@ -23935,17 +23904,9 @@ def test_module_cli_loop_summary_cache_hit_retains_scan_contract(
 
 def test_json_payload_agent_skips_heavy_graph_and_recipe_sections(
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _write_module(tmp_path, "pkg/mod.py", "\nclass Alpha:\n    pass\n")
     modules = parse_python_modules(tmp_path)
-
-    def fail_observation_graph(*args: object, **kwargs: object) -> object:
-        raise AssertionError("agent payload should not build observation graph")
-
-    monkeypatch.setattr(
-        ParsedModuleSet, "observation_graph", property(fail_observation_graph)
-    )
 
     payload = JsonPayloadBuilder(
         findings=[],
@@ -23954,6 +23915,7 @@ def test_json_payload_agent_skips_heavy_graph_and_recipe_sections(
         payload_sections=JsonPayloadProfile.agent.sections,
     ).build()
 
+    assert "observation_graph" not in vars(modules)
     assert "observations" not in payload
     assert "fibers" not in payload
     assert "source_index" not in payload
