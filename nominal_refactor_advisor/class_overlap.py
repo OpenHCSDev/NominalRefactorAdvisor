@@ -617,9 +617,11 @@ class ClassOverlapVerdicts:
         first_declarations = self.bodies.declarations_of(first.symbol)
         candidates: set[str] | None = None
         for shared in extractable:
-            holders = set(
-                self.bodies.holders.get(first_declarations[shared.name].identity, ())
-            )
+            holders = {
+                holder
+                for identity in first_declarations[shared.name].identities
+                for holder in self.bodies.holders.get(identity, ())
+            }
             having = holders | {
                 descendant
                 for holder in holders
@@ -705,7 +707,7 @@ class ClassOverlapVerdicts:
                     name not in axis
                     and name in first_declarations
                     and any(shared.name == name for shared in overlap.shared)
-                    and declaration.identity != first_declarations[name].identity
+                    and not declaration.same_declaration_as(first_declarations[name])
                 ):
                     axis[name] = sibling.rsplit(".", 1)[-1]
         return axis

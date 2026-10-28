@@ -11,6 +11,7 @@ declare with different answers, and what each keeps alone.
 
 from __future__ import annotations
 
+from abc import ABC, abstractmethod
 from collections import defaultdict
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
@@ -35,11 +36,29 @@ class ClassBodyDeclarationIdentity(NamedTuple):
     star_bindings: tuple[tuple[str, str], ...]
 
 
-class ClassBodyDeclaration(NamedTuple):
-    """One declaration of one class, with its identity when every name is bound."""
+@dataclass(frozen=True)
+class ClassBodyDeclaration(ABC):
+    """One declaration of one class; its subtype says whether its identity is proved."""
 
     declaration: ClassBodyDeclarationDigest
-    identity: ClassBodyDeclarationIdentity | None
+
+    @property
+    @abstractmethod
+    def identities(self) -> tuple[ClassBodyDeclarationIdentity, ...]:
+        """The proved identity, if any, as the declarations that can share it."""
+        raise NotImplementedError
+
+    @abstractmethod
+    def has_identity(self, identity: ClassBodyDeclarationIdentity) -> bool:
+        raise NotImplementedError
+
+    @abstractmethod
+    def same_declaration_as(self, other: ClassBodyDeclaration) -> bool:
+        raise NotImplementedError
+
+    @abstractmethod
+    def require_proved(self, spelling: str) -> ProvedClassBodyDeclaration:
+        raise NotImplementedError
 
     @property
     def name(self) -> str:
@@ -52,6 +71,44 @@ class ClassBodyDeclaration(NamedTuple):
     @property
     def line(self) -> int:
         return self.declaration.line
+
+
+@dataclass(frozen=True)
+class ProvedClassBodyDeclaration(ClassBodyDeclaration):
+    """A declaration every name of which the repository binds."""
+
+    identity: ClassBodyDeclarationIdentity
+
+    @property
+    def identities(self) -> tuple[ClassBodyDeclarationIdentity, ...]:
+        return (self.identity,)
+
+    def has_identity(self, identity: ClassBodyDeclarationIdentity) -> bool:
+        return self.identity == identity
+
+    def same_declaration_as(self, other: ClassBodyDeclaration) -> bool:
+        return other.has_identity(self.identity)
+
+    def require_proved(self, spelling: str) -> ProvedClassBodyDeclaration:
+        return self
+
+
+@dataclass(frozen=True)
+class UnprovedClassBodyDeclaration(ClassBodyDeclaration):
+    """A declaration reading a name nothing provably binds: never the same as another."""
+
+    @property
+    def identities(self) -> tuple[ClassBodyDeclarationIdentity, ...]:
+        return ()
+
+    def has_identity(self, identity: ClassBodyDeclarationIdentity) -> bool:
+        return False
+
+    def same_declaration_as(self, other: ClassBodyDeclaration) -> bool:
+        return False
+
+    def require_proved(self, spelling: str) -> ProvedClassBodyDeclaration:
+        raise ValueError(f"{spelling} reads names nothing binds")
 
 
 class SharedClassBodyDeclaration(NamedTuple):
@@ -96,10 +153,7 @@ class ClassBodyOverlap:
             second_declaration = second_declarations.get(name)
             if second_declaration is None:
                 continue
-            if (
-                first_declaration.identity is not None
-                and first_declaration.identity == second_declaration.identity
-            ):
+            if first_declaration.same_declaration_as(second_declaration):
                 shared.append(
                     SharedClassBodyDeclaration(
                         first_declaration.kind,
@@ -186,9 +240,8 @@ class ClassBodyIndex:
 
         return {
             symbol: {
-                declaration.name: ClassBodyDeclaration(
-                    declaration,
-                    self._identity(indexed_class.module_name, declaration),
+                declaration.name: self._declaration(
+                    indexed_class.module_name, declaration
                 )
                 for declaration in indexed_class.body_declarations
             }
@@ -203,8 +256,8 @@ class ClassBodyIndex:
         holders: dict[ClassBodyDeclarationIdentity, list[str]] = defaultdict(list)
         for symbol, declarations in self.declarations_by_symbol.items():
             for declaration in declarations.values():
-                if declaration.identity is not None:
-                    holders[declaration.identity].append(symbol)
+                for identity in declaration.identities:
+                    holders[identity].append(symbol)
         return {identity: tuple(symbols) for identity, symbols in holders.items()}
 
     @cached_property
@@ -244,20 +297,25 @@ class ClassBodyIndex:
             if overlap.first.symbol in wanted and overlap.second.symbol in wanted
         )
 
-    def _identity(
+    def _declaration(
         self, module_name: str, declaration: ClassBodyDeclarationDigest
-    ) -> ClassBodyDeclarationIdentity | None:
+    ) -> ClassBodyDeclaration:
+        """Pick the proved or unproved declaration once, where the evidence is."""
+
         if declaration.unbound:
-            return None
+            return UnprovedClassBodyDeclaration(declaration)
         star_bindings: list[tuple[str, str]] = []
         for deferred in declaration.deferred:
             qualified_name = self.exposure.star_settled_binding(
                 module_name, deferred.name, deferred.unshadowed
             )
             if qualified_name is None:
-                return None
+                return UnprovedClassBodyDeclaration(declaration)
             star_bindings.append((deferred.name, qualified_name))
-        return ClassBodyDeclarationIdentity(declaration.digest, tuple(star_bindings))
+        return ProvedClassBodyDeclaration(
+            declaration,
+            ClassBodyDeclarationIdentity(declaration.digest, tuple(star_bindings)),
+        )
 
 
 __all__ = (
@@ -265,6 +323,8 @@ __all__ = (
     "ClassBodyDeclarationIdentity",
     "ClassBodyIndex",
     "ClassBodyOverlap",
+    "ProvedClassBodyDeclaration",
+    "UnprovedClassBodyDeclaration",
     "DivergentClassBodyDeclaration",
     "SharedClassBodyDeclaration",
 )

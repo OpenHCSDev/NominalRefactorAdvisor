@@ -33,7 +33,7 @@ from .class_member_authority_codemod import (
     ClassMemberPromotionStatement,
     ModuleDeclarationRelocation,
 )
-from .class_body import ClassBodyDeclaration
+from .class_body import ProvedClassBodyDeclaration
 from .class_mro import ClassMroAuthority, NativeMroBase
 from .class_overlap import (
     ClassOverlapCandidate,
@@ -116,7 +116,9 @@ class OverlapClass:
     def qualname(self) -> str:
         return self.target.qualname
 
-    def declaration(self, snapshot: CodemodSourceSnapshot, name: str) -> ClassBodyDeclaration:
+    def declaration(
+        self, snapshot: CodemodSourceSnapshot, name: str
+    ) -> ProvedClassBodyDeclaration:
         """The class's own declaration of `name`, as the class-body index sees it."""
 
         declaration = snapshot.class_overlap_verdicts.bodies.declarations_of(
@@ -124,9 +126,7 @@ class OverlapClass:
         ).get(name)
         if declaration is None:
             raise ValueError(f"`{self.qualname}` does not declare `{name}` itself")
-        if declaration.identity is None:
-            raise ValueError(f"`{self.qualname}.{name}` reads names nothing binds")
-        return declaration
+        return declaration.require_proved(f"`{self.qualname}.{name}`")
 
     def statements_declaring(self, names: Iterable[str]) -> tuple[ast.stmt, ...]:
         """The body statements that declare exactly these names, each wholly."""
@@ -241,7 +241,7 @@ class RestatedDeclarations:
                 raise ValueError(f"`{name}` is name-mangled by its owner")
             mine = source.declaration(snapshot, name)
             theirs = restating.declaration(snapshot, name)
-            if mine.identity != theirs.identity:
+            if not mine.same_declaration_as(theirs):
                 raise ValueError(
                     f"`{restating.qualname}.{name}` differs from "
                     f"`{source.qualname}.{name}`"
