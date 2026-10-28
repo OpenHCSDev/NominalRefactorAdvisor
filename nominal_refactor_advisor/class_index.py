@@ -952,6 +952,72 @@ class CompactUnresolvedPublicExportContract(CompactModulePublicExportContract):
         return False
 
 
+class StarNameSettlement(ABC):
+    """What the star imports seen so far (latest first) do to one module binding."""
+
+    @abstractmethod
+    def or_settled_by(
+        self,
+        origin: CompactModuleStarImportOrigin,
+        authority: CompactRepositoryPublicExposureIndex,
+        name: str,
+    ) -> StarNameSettlement:
+        """Fold in an earlier star import; only an untouched name lets it decide."""
+        raise NotImplementedError
+
+    @abstractmethod
+    def binding_or(self, unshadowed: str | None) -> str | None:
+        raise NotImplementedError
+
+
+class NameUntouched(StarNameSettlement):
+    """No star import exposes the name: the module's own binding stands."""
+
+    def or_settled_by(
+        self,
+        origin: CompactModuleStarImportOrigin,
+        authority: CompactRepositoryPublicExposureIndex,
+        name: str,
+    ) -> StarNameSettlement:
+        return origin.settlement_in(authority, name)
+
+    def binding_or(self, unshadowed: str | None) -> str | None:
+        return unshadowed
+
+
+class NameUncertain(StarNameSettlement):
+    """A star import whose exports are unknown may rebind the name."""
+
+    def or_settled_by(
+        self,
+        origin: CompactModuleStarImportOrigin,
+        authority: CompactRepositoryPublicExposureIndex,
+        name: str,
+    ) -> StarNameSettlement:
+        return self
+
+    def binding_or(self, unshadowed: str | None) -> str | None:
+        return None
+
+
+@dataclass(frozen=True)
+class NameSettled(StarNameSettlement):
+    """The last star import exposing the name rebinds it to this binding."""
+
+    binding: str
+
+    def or_settled_by(
+        self,
+        origin: CompactModuleStarImportOrigin,
+        authority: CompactRepositoryPublicExposureIndex,
+        name: str,
+    ) -> StarNameSettlement:
+        return self
+
+    def binding_or(self, unshadowed: str | None) -> str | None:
+        return self.binding
+
+
 class CompactModuleStarImportOrigin(ABC):
     """One module-scope star import; its subtype says whether its module resolved."""
 
@@ -970,10 +1036,9 @@ class CompactModuleStarImportOrigin(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def settled_binding_in(
+    def settlement_in(
         self, authority: CompactRepositoryPublicExposureIndex, name: str
-    ) -> tuple[str | None, ...]:
-        """() when this origin leaves the name alone; else the one settled binding."""
+    ) -> StarNameSettlement:
         raise NotImplementedError
 
     @abstractmethod
@@ -995,20 +1060,20 @@ class ResolvedStarImportOrigin(CompactModuleStarImportOrigin):
     ) -> CompactPublicNameExposure:
         return authority.exposure_for(self.module_name, binding_name)
 
-    def settled_binding_in(
+    def settlement_in(
         self, authority: CompactRepositoryPublicExposureIndex, name: str
-    ) -> tuple[str | None, ...]:
+    ) -> StarNameSettlement:
         exposure = self.exposure_in(authority, name)
         if exposure.proves_public_exposure:
             origin_projection = authority.projections_by_module_name[self.module_name]
-            return (
+            return NameSettled(
                 dict(origin_projection.import_aliases).get(
                     name, f"{self.module_name}.{name}"
-                ),
+                )
             )
         if exposure.introduces_uncertainty:
-            return (None,)
-        return ()
+            return NameUncertain()
+        return NameUntouched()
 
     def within(self, module_names: Collection[str]) -> bool:
         return self.module_name in module_names
@@ -1026,10 +1091,10 @@ class UnresolvedStarImportOrigin(CompactModuleStarImportOrigin):
     ) -> CompactPublicNameExposure:
         return CompactPublicNameExposure.UNRESOLVED
 
-    def settled_binding_in(
+    def settlement_in(
         self, authority: CompactRepositoryPublicExposureIndex, name: str
-    ) -> tuple[str | None, ...]:
-        return (None,)
+    ) -> StarNameSettlement:
+        return NameUncertain()
 
     def within(self, module_names: Collection[str]) -> bool:
         return False
@@ -1127,10 +1192,10 @@ class CompactRepositoryPublicExposureIndex(RepositoryPublicExposureAuthority):
             return unshadowed
         if not self.contains_module(module_name):
             return None
+        settlement: StarNameSettlement = NameUntouched()
         for origin in reversed(self.star_import_origins_for(module_name)):
-            for settled in origin.settled_binding_in(self, name):
-                return settled
-        return unshadowed
+            settlement = settlement.or_settled_by(origin, self, name)
+        return settlement.binding_or(unshadowed)
 
     @cached_property
     def module_projection_multiplicity(
