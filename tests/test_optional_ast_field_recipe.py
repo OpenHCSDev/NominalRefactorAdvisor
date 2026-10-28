@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from nominal_refactor_advisor import detectors
+from nominal_refactor_advisor import ast_field_decoders, detectors
 from nominal_refactor_advisor.ast_tools import SourceModule, parse_python_modules
 from nominal_refactor_advisor.codemod_optional_ast_field import (
     KeywordNameDecoder,
@@ -16,7 +16,9 @@ from nominal_refactor_advisor.codemod_optional_ast_field import (
     ProjectDecoderOwners,
     VariadicParameterDecoder,
 )
+from nominal_refactor_advisor.codemod import codemod_plan_from_findings
 from nominal_refactor_advisor.codemod_runtime import CodemodSourceSnapshot
+from nominal_refactor_advisor.codemod_semantics import FindingRecipeSynthesisStatus
 from nominal_refactor_advisor.codemod_source_edits import SourceTextGeometry
 from nominal_refactor_advisor.detectors import DetectorConfig
 
@@ -380,3 +382,58 @@ def test_generated_owners_register_nothing_by_hand(tmp_path: Path) -> None:
         )
         for finding in detector().detect(modules, DetectorConfig())
     ] == []
+
+
+def _capture_name_records(tmp_path: Path, other_source: str = ""):
+    package = tmp_path / "pkg"
+    package.mkdir()
+    (package / "__init__.py").write_text("")
+    (package / "mod.py").write_text(
+        "import ast\n\n\n"
+        "def bound(handler: ast.ExceptHandler, names: list[str]) -> None:\n"
+        "    if handler.name is not None:\n"
+        "        names.append(handler.name)\n"
+    )
+    if other_source:
+        (package / "other.py").write_text(other_source)
+    modules = parse_python_modules(tmp_path)
+    findings = tuple(
+        finding
+        for finding in detectors.ForeignAbsenceProbeDetector().detect(
+            modules, DetectorConfig()
+        )
+        if finding.detector_id == "foreign_absence_probe"
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(modules, findings)
+    return codemod_plan_from_findings(findings, selector_context=snapshot).records
+
+
+def test_an_unrelated_declaration_with_an_owner_name_is_refused(
+    tmp_path: Path,
+) -> None:
+    """An owner is recognised by its declaration, not its name: a different
+    `capture_names` in the package refuses the routing and names both."""
+
+    (record,) = _capture_name_records(
+        tmp_path,
+        "def capture_names(handler):\n    return [handler]\n",
+    )
+
+    assert record.status is FindingRecipeSynthesisStatus.REJECTED_BY_SAFETY_CHECK
+    assert f"`capture_names` at {tmp_path / 'pkg' / 'other.py'}:1 is not" in (
+        record.reason
+    )
+    assert "decoder owner `nominal_refactor_advisor.ast_field_decoders.capture_names` (" in (
+        record.reason
+    )
+    assert f"{Path(ast_field_decoders.__file__)}:" in record.reason
+
+
+def test_without_a_same_name_declaration_the_capture_names_routing_is_executable(
+    tmp_path: Path,
+) -> None:
+    (record,) = _capture_name_records(tmp_path)
+
+    assert record.status is FindingRecipeSynthesisStatus.EXECUTABLE_CANDIDATE, (
+        record.reason
+    )

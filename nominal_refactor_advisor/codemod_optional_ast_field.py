@@ -54,6 +54,7 @@ from .codemod_source_edits import (
 from .codemod_target_selectors import SourceIndexTargetSelector
 from .declared_root import DeclaredRoot
 from .models import RefactorFinding
+from .native_declarations import NativeDeclaration
 from .refactor_concepts import OptionalAstFieldDecoderConcept
 from .registry_identity import DEFAULT_REGISTRY_KEY_ATTRIBUTE
 
@@ -1130,6 +1131,35 @@ class VariadicParameterDecoder(OptionalAstFieldDecoder):
 
 
 @dataclass(frozen=True)
+class NamedOwnerDeclaration:
+    """A top-level declaration carrying a decoder owner's name. It is the owner
+    only when its source is the owner's own (`NativeDeclaration`), not by name."""
+
+    module_name: str
+    file_path: str
+    node: ast.ClassDef | ast.FunctionDef
+    owner: NativeDeclaration
+
+    @property
+    def name(self) -> str:
+        return self.node.name
+
+    @cached_property
+    def is_owner(self) -> bool:
+        return self.owner.source_matches(self.node)
+
+    @property
+    def conflict(self) -> str:
+        return (
+            f"`{self.name}` at {self.file_path}:{self.node.lineno} is not the "
+            f"decoder owner `{self.owner.qualified_name}` "
+            f"({inspect.getsourcefile(self.owner.declaration)}:"
+            f"{inspect.getsourcelines(self.owner.declaration)[1]}); "
+            "the same name with a different declaration leaves the routing ambiguous"
+        )
+
+
+@dataclass(frozen=True)
 class ProjectDecoderOwners:
     """Where one root package declares each decoder owner, and what it lacks.
 
@@ -1153,24 +1183,35 @@ class ProjectDecoderOwners:
         return f"{self.root}.{GENERATED_MODULE}"
 
     @cached_property
-    def top_level_names(self) -> Mapping[str, frozenset[str]]:
-        """Module -> the owner names it declares at top level, in this root package."""
+    def named_declarations(self) -> tuple[NamedOwnerDeclaration, ...]:
+        """Every top-level class or function in this root package that carries an
+        owner's name, whether or not it is that owner."""
 
-        names = {
-            name
+        owners = {
+            owner.__name__: NativeDeclaration(owner)
             for decoder in OptionalAstFieldDecoder.__registry__.values()
-            for name in decoder.owner_names()
+            for owner in decoder.owners
         }
-        return {
-            parsed.module_name: frozenset(
-                statement.name
-                for statement in parsed.module.body
-                if isinstance(statement, ast.ClassDef | ast.FunctionDef)
-                and statement.name in names
-            )
+        return tuple(
+            NamedOwnerDeclaration(parsed.module_name, str(parsed.path), statement, owner)
             for parsed in self.snapshot.parsed_modules
             if parsed.module_name.partition(".")[0] == self.root
-        }
+            for statement in parsed.module.body
+            if isinstance(statement, ast.ClassDef | ast.FunctionDef)
+            and (owner := owners.get(statement.name)) is not None
+        )
+
+    @cached_property
+    def top_level_names(self) -> Mapping[str, frozenset[str]]:
+        """Module -> the owners it declares at top level, by declaration identity."""
+
+        names: dict[str, set[str]] = {}
+        for declaration in self.named_declarations:
+            if declaration.is_owner:
+                names.setdefault(declaration.module_name, set()).add(
+                    declaration.name
+                )
+        return {module: frozenset(found) for module, found in names.items()}
 
     @cached_property
     def declared(self) -> Mapping[str, str]:
@@ -1185,6 +1226,21 @@ class ProjectDecoderOwners:
         return {
             name: modules[0] for name, modules in found.items() if len(modules) == 1
         }
+
+    def require_unshadowed(self, names: Iterable[str]) -> None:
+        """Refuse an owner name the package also gives a different declaration:
+        importing or generating it would leave two meanings under one name."""
+
+        names = frozenset(names)
+        shadows = [
+            declaration
+            for declaration in self.named_declarations
+            if declaration.name in names and not declaration.is_owner
+        ]
+        if shadows:
+            raise ValueError(
+                "; ".join(declaration.conflict for declaration in shadows)
+            )
 
     @cached_property
     def pending(self) -> tuple[type[OptionalAstFieldDecoder], ...]:
@@ -1225,6 +1281,9 @@ class ProjectDecoderOwners:
     def generated_source(self) -> str:
         """The pending decoders, copied from the owners this package declares."""
 
+        self.require_unshadowed(
+            name for decoder in self.pending for name in decoder.owner_names()
+        )
         body = "\n\n".join(
             inspect.getsource(owner)
             for decoder in self.pending
@@ -1258,6 +1317,8 @@ class ProjectDecoderOwners:
         module: routing to an owner nothing declares would import nothing.
         """
 
+        names = tuple(names)
+        self.require_unshadowed(names)
         sources = []
         for name in names:
             module = self.declared.get(name, self.generated_module)

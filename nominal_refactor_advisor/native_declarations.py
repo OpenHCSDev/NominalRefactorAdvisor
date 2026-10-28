@@ -339,10 +339,15 @@ class NativeDeclaration(QualifiedDeclaration):
             raise ValueError("Native source does not identify one declaration")
         return statements[0]
 
-    def require_source_matches(self, node: ast.AST) -> None:
-        if ast.dump(self.node, include_attributes=False) != ast.dump(
+    def source_matches(self, node: ast.AST) -> bool:
+        """Whether ``node`` is this declaration's own source, positions aside."""
+
+        return ast.dump(self.node, include_attributes=False) == ast.dump(
             node, include_attributes=False
-        ):
+        )
+
+    def require_source_matches(self, node: ast.AST) -> None:
+        if not self.source_matches(node):
             raise ValueError(
                 f"Source does not match native declaration {self.qualified_name!r}"
             )
