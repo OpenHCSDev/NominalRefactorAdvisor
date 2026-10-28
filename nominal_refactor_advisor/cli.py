@@ -30,6 +30,7 @@ from .scan_cache import ScanCache
 from .source_geometry import read_source_text
 from .analysis import (
     AnalysisPathScope,
+    AnalysisResultQuestion,
     CachedGraphDemand,
     CachedPathAnalysisRequest,
     CompactPathAnalysisResult,
@@ -43,6 +44,7 @@ from .analysis import (
     NO_GRAPH_DEMAND,
     NO_HELD_GRAPH,
     PartialCacheReuse,
+    PersistedAnalysisResult,
     ReusedCacheResult,
     SemanticDescentGraphAnalysisSource,
     SemanticDescentGraphCacheContext,
@@ -50,6 +52,7 @@ from .analysis import (
     SemanticDescentGraphHolding,
     SemanticDescentGraphQuestion,
     SortedFindingsAuthority,
+    UnpersistedAnalysisResult,
     analysis_cache_dir_for_root,
     analyze_compact_roots_with_cache,
     analyze_lean_export,
@@ -3957,27 +3960,44 @@ class ColdScanAnalysis:
             semantic_descent_source=self.semantic_descent_analysis_source,
             report_scope=self.path_scope,
         )
-        findings = self.path_scope.filter_findings(analysis_result.findings)
-        analysis_seconds = round(perf_counter() - started, 3)
-        # CachedAnalysisResult carries no identity when persistence is disabled;
-        # that absence is decided here, once, instead of at each identity read.
-        if analysis_result.cache_identity is None:
-            return UnpersistedFullScan(
+        return analysis_result.answer(
+            FullScanOutcome(
                 modules=modules,
-                findings=findings,
+                path_scope=self.path_scope,
                 parse_seconds=parse_seconds,
-                analysis_seconds=analysis_seconds,
-                semantic_descent_graph=NO_HELD_GRAPH,
-                analysis_cache_status=analysis_result.cache_status,
+                analysis_seconds=round(perf_counter() - started, 3),
             )
+        )
+
+
+@dataclass(frozen=True)
+class FullScanOutcome(AnalysisResultQuestion[ScanAnalysisOutcome]):
+    """The full scan's outcome: stored under its identity, or unpersisted."""
+
+    modules: ParsedModuleSet
+    path_scope: AnalysisPathScope
+    parse_seconds: float
+    analysis_seconds: float
+
+    def persisted(self, result: PersistedAnalysisResult) -> ScanAnalysisOutcome:
         return FullScan(
-            modules=modules,
-            findings=findings,
-            parse_seconds=parse_seconds,
-            analysis_seconds=analysis_seconds,
+            modules=self.modules,
+            findings=self.path_scope.filter_findings(result.findings),
+            parse_seconds=self.parse_seconds,
+            analysis_seconds=self.analysis_seconds,
             semantic_descent_graph=NO_HELD_GRAPH,
-            analysis_cache_status=analysis_result.cache_status,
-            cache_identity=analysis_result.cache_identity,
+            analysis_cache_status=result.cache_status,
+            cache_identity=result.cache_identity,
+        )
+
+    def unpersisted(self, result: UnpersistedAnalysisResult) -> ScanAnalysisOutcome:
+        return UnpersistedFullScan(
+            modules=self.modules,
+            findings=self.path_scope.filter_findings(result.findings),
+            parse_seconds=self.parse_seconds,
+            analysis_seconds=self.analysis_seconds,
+            semantic_descent_graph=NO_HELD_GRAPH,
+            analysis_cache_status=result.cache_status,
         )
 
 
