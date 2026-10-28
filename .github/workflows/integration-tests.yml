@@ -14,7 +14,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.11", "3.14"]
+        # 3.12 has no native creation contract, so it runs the SpanOnly
+        # backend that every uncontracted interpreter gets.
+        python-version: ["3.11", "3.12", "3.14"]
         # One runner has 4 cores; the suite needs about 3,000 CPU-seconds.
         # The shard count in the pytest step is len(shard).
         shard: [0, 1, 2, 3]
@@ -22,6 +24,8 @@ jobs:
           # 3.11 has no sys.monitoring, so coverage falls back to settrace and
           # doubles the suite; 3.14 traces through sys.monitoring at about 2%.
           - python-version: "3.11"
+            coverage: ""
+          - python-version: "3.12"
             coverage: ""
           - python-version: "3.14"
             coverage: "--cov=nominal_refactor_advisor --cov-report="
