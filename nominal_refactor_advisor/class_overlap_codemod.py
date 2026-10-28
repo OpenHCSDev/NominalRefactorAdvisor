@@ -166,8 +166,6 @@ class OverlapClass(ABC):
         """The class's own dataclass fields in declaration order; ClassVars excluded."""
 
         declaration = self.facts.dataclass_declaration
-        if declaration is None:
-            return ()
         unplaced = tuple(
             field.name
             for field in declaration.fields
@@ -857,7 +855,7 @@ class ClassComposition:
             field_name
             for symbol in class_index.ancestor_symbols(restating.symbol)
             if (ancestor := class_index.class_for(symbol)) is not None
-            and ancestor.dataclass_declaration is not None
+            and ancestor.dataclass_declaration.declares_dataclass
             for field_name in OverlapClass.for_symbol(self.snapshot, symbol).own_field_names
         )
         moved = frozenset(self.restated.names)
@@ -1037,7 +1035,7 @@ class BaseFold:
         class_index = self.snapshot.class_overlap_verdicts.class_index
         if any(
             (ancestor := class_index.class_for(symbol)) is not None
-            and ancestor.dataclass_declaration is not None
+            and ancestor.dataclass_declaration.declares_dataclass
             for symbol in class_index.ancestor_symbols(base.symbol)
         ):
             raise ValueError(f"`{base.qualname}` inherits dataclass fields")

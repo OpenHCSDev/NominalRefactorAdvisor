@@ -132,8 +132,33 @@ class PythonEnumMemberDeclaration:
     value: PythonEnumMemberValueABC
 
 
+class PythonEnumDeclarationFacet(ABC):
+    """A class's enum facet: a closed standard Enum declaration, or none."""
+
+    @property
+    @abstractmethod
+    def declares_enum(self) -> bool:
+        raise NotImplementedError
+
+    @abstractmethod
+    def require_mapping_key(self, member_name: str) -> Enum:
+        raise NotImplementedError
+
+
 @dataclass(frozen=True)
-class PythonEnumDeclarationAuthority:
+class NoEnumDeclaration(PythonEnumDeclarationFacet):
+    """A class that is not a closed standard Enum: no mapping-key semantics."""
+
+    @property
+    def declares_enum(self) -> bool:
+        return False
+
+    def require_mapping_key(self, member_name: str) -> Enum:
+        raise ValueError("Mapping key declaration semantics remain unproved")
+
+
+@dataclass(frozen=True)
+class PythonEnumDeclarationAuthority(PythonEnumDeclarationFacet):
     """Native mapping-key equality derived from one closed standard Enum declaration."""
 
     identity: str

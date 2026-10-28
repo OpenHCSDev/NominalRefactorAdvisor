@@ -291,9 +291,8 @@ def _location(indexed_class: CompactIndexedClass, line: int | None = None, membe
 
 
 def _construction(indexed_class: CompactIndexedClass) -> tuple[object, ...]:
-    declaration = indexed_class.dataclass_declaration
     return (
-        None if declaration is None else declaration.runtime_declaration,
+        indexed_class.dataclass_declaration.runtime_declaration,
         indexed_class.metaclass_names,
         indexed_class.class_keyword_names,
         indexed_class.class_decorators_are_promotion_safe,
@@ -331,7 +330,7 @@ def _literal_tags(
 def _declared_identity(indexed_class: CompactIndexedClass) -> str | None:
     """Why class creation itself makes this class an identity, if it does."""
 
-    if indexed_class.enum_declaration is not None:
+    if indexed_class.enum_declaration.declares_enum:
         return "its members are enum identities"
     if indexed_class.class_keyword_names:
         return f"class keywords {', '.join(indexed_class.class_keyword_names)} run at creation"

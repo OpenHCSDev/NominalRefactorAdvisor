@@ -355,7 +355,6 @@ class ExactDataclassFieldAuthorityComponentBuilder:
             "." in indexed_class.qualname
             or node.bases
             or node.keywords
-            or declaration is None
             or not declaration.is_standard_dataclass
             or declaration.failures
             or not ClassHeaderSourceSpan(node, source_segments.lines).is_reconstructible

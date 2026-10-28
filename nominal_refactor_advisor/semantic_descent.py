@@ -1336,9 +1336,9 @@ class MappingReadConstructor:
     ) -> str | None:
         symbol = resolve_class(self.reference_parts)
         owner = None if symbol is None else class_index.class_for(symbol)
-        declaration = None if owner is None else owner.dataclass_declaration
-        if declaration is None or not declaration.is_standard_dataclass:
+        if owner is None or not owner.dataclass_declaration.is_standard_dataclass:
             return None
+        declaration = owner.dataclass_declaration
         fields = tuple(
             field.name
             for field in declaration.fields
@@ -4170,10 +4170,7 @@ class DataclassSemanticAuthorityProvider(ClassFamilySemanticAuthorityProvider):
     ) -> SemanticAuthorityProviderResult | None:
         indexed_class = declaration.indexed_class
         dataclass_declaration = indexed_class.dataclass_declaration
-        if (
-            dataclass_declaration is not None
-            and dataclass_declaration.is_standard_dataclass
-        ):
+        if dataclass_declaration.is_standard_dataclass:
             facts = tuple(
                 SemanticFact.dataclass_field(indexed_class, field.name, field.line)
                 for field in dataclass_declaration.fields

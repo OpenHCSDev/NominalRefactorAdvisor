@@ -79,7 +79,8 @@ from .declaration_dependencies import (
 from .descriptor_algebra import AliasProperty
 from .enum_semantics import (
     PYTHON_ENUM_BASE_AUTHORITY,
-    PythonEnumDeclarationAuthority,
+    NoEnumDeclaration,
+    PythonEnumDeclarationFacet,
 )
 from .export_tools import PYTHON_PUBLIC_EXPORT_ASSIGNMENT
 from .lexical_bindings import (
@@ -162,8 +163,8 @@ class ClassDeclaration(QualifiedDeclaration):
     line: int
     declared_base_names: tuple[str, ...]
     resolved_base_symbols: tuple[str, ...] = field(default=(), kw_only=True)
-    dataclass_declaration: CompactDataclassDeclaration | None = field(
-        default=None,
+    dataclass_declaration: CompactDataclassFacet = field(
+        default_factory=lambda: NoDataclassDeclaration(),
         kw_only=True,
     )
     class_decorators_are_promotion_safe: bool = field(default=True, kw_only=True)
@@ -570,12 +571,12 @@ class CompactProductDeclarationFailure(NamedTuple):
     violation: CompactProductAuthorityViolation
 
 
-class CompactDataclassDeclaration(NamedTuple):
-    """One dataclass-like declaration, including fail-closed unknown semantics."""
+class CompactDataclassFacet(ABC):
+    """A class's dataclass facet: declared, or absent with empty answers."""
 
     runtime_declaration: DataclassRuntimeDeclaration | None
     fields: tuple[CompactDataclassFieldDeclaration, ...]
-    failures: tuple[CompactProductDeclarationFailure, ...] = ()
+    failures: tuple[CompactProductDeclarationFailure, ...]
 
     @property
     def is_standard_dataclass(self) -> bool:
@@ -583,6 +584,47 @@ class CompactDataclassDeclaration(NamedTuple):
             self.runtime_declaration is not None
             and self.runtime_declaration.is_dataclass_decorator
         )
+
+    @property
+    @abstractmethod
+    def declares_dataclass(self) -> bool:
+        raise NotImplementedError
+
+    @abstractmethod
+    def require_declared(self, reason: str) -> CompactDataclassDeclaration:
+        raise NotImplementedError
+
+
+@dataclass(frozen=True)
+class CompactDataclassDeclaration(CompactDataclassFacet):
+    """One dataclass-like declaration, including fail-closed unknown semantics."""
+
+    runtime_declaration: DataclassRuntimeDeclaration | None
+    fields: tuple[CompactDataclassFieldDeclaration, ...]
+    failures: tuple[CompactProductDeclarationFailure, ...] = ()
+
+    @property
+    def declares_dataclass(self) -> bool:
+        return True
+
+    def require_declared(self, reason: str) -> CompactDataclassDeclaration:
+        return self
+
+
+@dataclass(frozen=True)
+class NoDataclassDeclaration(CompactDataclassFacet):
+    """A class no dataclass-like decorator declares: no runtime, no fields."""
+
+    runtime_declaration = None
+    fields = ()
+    failures = ()
+
+    @property
+    def declares_dataclass(self) -> bool:
+        return False
+
+    def require_declared(self, reason: str) -> CompactDataclassDeclaration:
+        raise ValueError(reason)
 
 
 @dataclass(frozen=True)
@@ -726,7 +768,7 @@ class CompactIndexedClass(CompactClassHeader):
     keyed_registry_lookup_method_names: tuple[str, ...] = ()
     keyed_registry_reverse_lookup_method_names: tuple[str, ...] = ()
     predicate_selected_methods: tuple[tuple[int, str, str, str], ...] = ()
-    enum_declaration: PythonEnumDeclarationAuthority | None = None
+    enum_declaration: PythonEnumDeclarationFacet = NoEnumDeclaration()
     body_declarations: tuple[ClassBodyDeclarationDigest, ...] = ()
 
     @property
@@ -2592,9 +2634,9 @@ class CompactClassFamilyIndex(ClassDeclarationIndex[CompactIndexedClass]):
             if (lineage := lineages.get(class_symbol)) is not None:
                 return lineage
             indexed_class = self.classes_by_symbol[class_symbol]
-            declaration = indexed_class.dataclass_declaration
-            if declaration is None:
-                raise ValueError("product lineage requires a dataclass declaration")
+            declaration = indexed_class.dataclass_declaration.require_declared(
+                "product lineage requires a dataclass declaration"
+            )
             if class_symbol in pending_symbols:
                 return _CompactProductLineage(
                     (),
@@ -2638,7 +2680,7 @@ class CompactClassFamilyIndex(ClassDeclarationIndex[CompactIndexedClass]):
             elif direct_base_count == 1:
                 base_symbol = indexed_class.resolved_base_symbols[0]
                 base_class = self.classes_by_symbol[base_symbol]
-                if base_class.dataclass_declaration is None:
+                if not base_class.dataclass_declaration.declares_dataclass:
                     failures = (
                         *failures,
                         self._product_authority_failure(
@@ -2672,7 +2714,7 @@ class CompactClassFamilyIndex(ClassDeclarationIndex[CompactIndexedClass]):
 
         resolutions: dict[str, CompactProductAuthorityResolution] = {}
         for class_symbol, indexed_class in self.classes_by_symbol.items():
-            if indexed_class.dataclass_declaration is None:
+            if not indexed_class.dataclass_declaration.declares_dataclass:
                 resolutions[class_symbol] = AbsentCompactProductAuthority(class_symbol)
                 continue
             lineage = compose_lineage(class_symbol, frozenset())
@@ -4556,8 +4598,8 @@ class _CompactClassBindingFacets:
 
     base_references: tuple[CompactNominalReference, ...]
     class_decorators_are_promotion_safe: bool
-    dataclass_declaration: CompactDataclassDeclaration | None
-    enum_declaration: PythonEnumDeclarationAuthority | None
+    dataclass_declaration: CompactDataclassFacet
+    enum_declaration: PythonEnumDeclarationFacet
 
     @property
     def product_base_bindings_are_exact(self) -> bool:
@@ -4592,7 +4634,7 @@ def _compact_class_binding_facets(
             ),
         )
     except ValueError:
-        enum_declaration = None
+        enum_declaration = NoEnumDeclaration()
     return _CompactClassBindingFacets(
         base_references=_compact_base_references(node, module_binding_snapshot),
         class_decorators_are_promotion_safe=all(
@@ -4610,9 +4652,9 @@ def _compact_class_binding_facets(
         dataclass_declaration=(
             _dataclass_declaration(module_binding_snapshot, qualname, node)
             if include_body_facets
-            else None
+            else NoDataclassDeclaration()
         ),
-        enum_declaration=enum_declaration if include_body_facets else None,
+        enum_declaration=enum_declaration if include_body_facets else NoEnumDeclaration(),
     )
 
 
@@ -6966,7 +7008,7 @@ def _dataclass_declaration(
     module_binding_snapshot: ModuleNominalBindingSnapshot,
     qualname: str,
     node: ast.ClassDef,
-) -> CompactDataclassDeclaration | None:
+) -> CompactDataclassFacet:
     decorator_qualified_names = tuple(
         _class_scope_qualified_import_name(
             module_binding_snapshot,
@@ -6999,7 +7041,7 @@ def _dataclass_declaration(
         (*dataclass_decorator_indexes, *dataclass_like_indexes)
     )
     if not dataclass_candidate_indexes:
-        return None
+        return NoDataclassDeclaration()
 
     fields = _dataclass_fields(module_binding_snapshot, node)
     failures: list[CompactProductDeclarationFailure] = []
@@ -7480,10 +7522,11 @@ class CompactClassMappingKeyAuthority(MappingKeyResolverABC[CompactIndexedClass]
             allow_unique_unqualified=False,
         )
         declaration = None if symbol is None else self.class_index.class_for(symbol)
-        enum_declaration = None if declaration is None else declaration.enum_declaration
-        if enum_declaration is None:
+        if declaration is None:
             raise ValueError("Mapping key declaration semantics remain unproved")
-        return enum_declaration.require_mapping_key(reference.attribute_path[0])
+        return declaration.enum_declaration.require_mapping_key(
+            reference.attribute_path[0]
+        )
 
 
 @dataclass(frozen=True)
