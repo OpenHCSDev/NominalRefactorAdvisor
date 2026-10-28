@@ -110,14 +110,14 @@ class CompactFunctionParameter(ABC):
 
     @property
     @abstractmethod
-    def required_names(self) -> frozenset[str]:
-        """The names among this parameter's that a call must supply."""
+    def undefaulted_names(self) -> frozenset[str]:
+        """This parameter's name unless a declared default supplies it."""
         raise NotImplementedError
 
     @property
     @abstractmethod
-    def plain_required_names(self) -> frozenset[str]:
-        """Required names whose removal erases no declaration-time semantics."""
+    def plain_undefaulted_names(self) -> frozenset[str]:
+        """Undefaulted names that carry no annotation either."""
         raise NotImplementedError
 
     @property
@@ -132,7 +132,7 @@ class DefaultedFunctionParameter(CompactFunctionParameter, ABC):
     """A parameter a call may omit: its declared default supplies it."""
 
     @property
-    def required_names(self) -> frozenset[str]:
+    def undefaulted_names(self) -> frozenset[str]:
         return frozenset()
 
 
@@ -141,9 +141,7 @@ class UndefaultedFunctionParameter(CompactFunctionParameter, ABC):
     """A parameter without a default: a call supplies it unless it is variadic."""
 
     @property
-    def required_names(self) -> frozenset[str]:
-        if self.kind.variadic:
-            return frozenset()
+    def undefaulted_names(self) -> frozenset[str]:
         return frozenset({self.name})
 
 
@@ -164,7 +162,7 @@ class AnnotatedParameter(CompactFunctionParameter, ABC):
         )
 
     @property
-    def plain_required_names(self) -> frozenset[str]:
+    def plain_undefaulted_names(self) -> frozenset[str]:
         return frozenset()
 
     @property
@@ -183,8 +181,8 @@ class UnannotatedParameter(CompactFunctionParameter, ABC):
         return UndefaultedUnannotatedParameter(self.name, self.kind)
 
     @property
-    def plain_required_names(self) -> frozenset[str]:
-        return self.required_names
+    def plain_undefaulted_names(self) -> frozenset[str]:
+        return self.undefaulted_names
 
     @property
     def annotations_by_name(self) -> dict[str, str]:
@@ -308,17 +306,22 @@ class CompactFunctionSignature:
     parameters: tuple[CompactFunctionParameter, ...]
 
     @cached_property
+    def fixed_names(self) -> frozenset[str]:
+        """Parameters that bind one value each: every one but `*args`/`**kwargs`."""
+        return frozenset(p.name for p in self.parameters if not p.kind.variadic)
+
+    @cached_property
     def required_names(self) -> frozenset[str]:
         """The parameter names every call must supply."""
-        return frozenset().union(
-            *(parameter.required_names for parameter in self.parameters)
+        return self.fixed_names & frozenset().union(
+            *(parameter.undefaulted_names for parameter in self.parameters)
         )
 
     @cached_property
     def plain_required_names(self) -> frozenset[str]:
         """Required parameters that carry no annotation either."""
-        return frozenset().union(
-            *(parameter.plain_required_names for parameter in self.parameters)
+        return self.fixed_names & frozenset().union(
+            *(parameter.plain_undefaulted_names for parameter in self.parameters)
         )
 
     @cached_property
@@ -332,8 +335,7 @@ class CompactFunctionSignature:
 
     def with_default_names(self, names: frozenset[str]) -> Self:
         """Project a complete default association while retaining parameter structure."""
-        allowed = frozenset(p.name for p in self.parameters if not p.kind.variadic)
-        if not names <= allowed:
+        if not names <= self.fixed_names:
             raise ValueError("Defaults require declared nonvariadic parameters")
         return type(self)(
             tuple(

@@ -2340,6 +2340,72 @@ class ModuleScope(Scope):
 MODULE_SCOPE = ModuleScope()
 
 
+class Enclosure(ABC):
+    """The body a def statement sits in, which decides the scope it opens."""
+
+    @abstractmethod
+    def scope_for(
+        self, function: ast.FunctionDef | ast.AsyncFunctionDef
+    ) -> FunctionScope:
+        raise NotImplementedError
+
+
+@dataclass(frozen=True)
+class ClassBody(Enclosure):
+    """A class body: a def here is a method unless it takes no receiver."""
+
+    owner: ast.ClassDef
+
+    def scope_for(
+        self, function: ast.FunctionDef | ast.AsyncFunctionDef
+    ) -> FunctionScope:
+        arguments = FunctionScope.arguments_of(function)
+        if not arguments or "staticmethod" in decorator_names(function):
+            return FunctionScope(function)
+        return MethodScope(function, self.owner, arguments[0])
+
+
+class FreeBody(Enclosure):
+    """A module or function body: a def here binds no receiver."""
+
+    def scope_for(
+        self, function: ast.FunctionDef | ast.AsyncFunctionDef
+    ) -> FunctionScope:
+        return FunctionScope(function)
+
+
+FREE_BODY = FreeBody()
+
+
+class ScopeCollector(ast.NodeVisitor):
+    """Maps each node of a module to the scope its bare names are read in."""
+
+    def __init__(self) -> None:
+        self.found: dict[int, Scope] = {}
+        self.enclosure: Enclosure = FREE_BODY
+
+    def visit_ClassDef(self, node: ast.ClassDef) -> None:
+        self._visit_within(ClassBody(node), node)
+
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+        self._visit_function(node)
+
+    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+        self._visit_function(node)
+
+    def _visit_function(self, function: ast.FunctionDef | ast.AsyncFunctionDef) -> None:
+        scope = self.enclosure.scope_for(function)
+        for node in scope_walk(function):
+            self.found[id(node)] = scope
+        self._visit_within(FREE_BODY, function)
+
+    def _visit_within(self, enclosure: Enclosure, node: ast.AST) -> None:
+        outer = self.enclosure
+        self.enclosure = enclosure
+        self.generic_visit(node)
+        self.enclosure = outer
+
+
 @dataclass
 class DeclaredTypes:
     """Static types read from declarations alone: annotations, the receiver, a name
@@ -2362,33 +2428,9 @@ class DeclaredTypes:
 
     @staticmethod
     def scopes(module: ParsedModule) -> dict[int, Scope]:
-        functions = [
-            function
-            for function in ast.walk(module.module)
-            if isinstance(function, ast.FunctionDef | ast.AsyncFunctionDef)
-        ]
-        scope_by_function: dict[int, FunctionScope] = {
-            id(function): FunctionScope(function) for function in functions
-        }
-        scope_by_function.update(
-            {
-                id(method): MethodScope(
-                    method, owner, FunctionScope.arguments_of(method)[0]
-                )
-                for owner in ast.walk(module.module)
-                if isinstance(owner, ast.ClassDef)
-                for method in owner.body
-                if isinstance(method, ast.FunctionDef | ast.AsyncFunctionDef)
-                and FunctionScope.arguments_of(method)
-                and "staticmethod" not in decorator_names(method)
-            }
-        )
-        found: dict[int, Scope] = {}
-        for function in functions:
-            scope = scope_by_function[id(function)]
-            for node in scope_walk(function):
-                found[id(node)] = scope
-        return found
+        collector = ScopeCollector()
+        collector.visit(module.module)
+        return collector.found
 
     def of(
         self, module: ParsedModule, node: ast.expr, scope: Scope, depth: int = 0
