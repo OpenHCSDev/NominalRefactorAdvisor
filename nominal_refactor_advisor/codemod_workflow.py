@@ -1526,7 +1526,7 @@ class CodemodSimulationFindingProjection:
             return self.semantic_descent_source
         return SemanticDescentGraphAnalysisSource(
             cached_graph=self.semantic_descent_source.graph_for_modules(
-                list(projected_modules)
+                ParsedModuleSet.of(projected_modules)
             )
         )
 
@@ -1534,12 +1534,12 @@ class CodemodSimulationFindingProjection:
         self,
         projected_modules: tuple[ParsedModule, ...],
         changed_paths: frozenset[str],
-    ) -> list[ParsedModule]:
-        return [
+    ) -> ParsedModuleSet:
+        return ParsedModuleSet.of(
             module
             for module in projected_modules
             if Path(module.path).resolve().as_posix() in changed_paths
-        ]
+        )
 
     @property
     def changed_paths(self) -> frozenset[str]:

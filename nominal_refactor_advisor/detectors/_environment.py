@@ -247,7 +247,7 @@ class _FunctionScope:
     def nodes(self) -> tuple[ast.AST, ...]:
         """This function's body, walked once and held by the scope."""
 
-        return walk_function_body_nodes(self.node)
+        return walk_function_body_nodes(self.node.body)
 
     def references_any_name(self, names: frozenset[str]) -> bool:
         return any(

@@ -18,12 +18,11 @@ from ._base import (
     high_confidence_spec,
     high_confidence_certified_spec,
 )
-from ..ast_tools import ParsedModule
+from ..ast_tools import ParsedModule, ParsedModuleSet
 from ..class_index import (
     CompactClassFamilyIndex,
     CompactModuleClassProjectionFamily,
 )
-from ..ast_tools import ParsedModuleSet
 from ..models import (
     RefactorFinding,
     MappingMetrics,
@@ -229,7 +228,7 @@ class SemanticMirrorWithoutDescentDetector(
     def _collect_findings_from_graph(
         self,
         graph: SemanticDescentGraph,
-        modules: list[ParsedModule],
+        modules: ParsedModuleSet,
         config: DetectorConfig,
     ) -> list[RefactorFinding]:
         del modules, config
@@ -243,7 +242,7 @@ class SemanticMirrorWithoutDescentDetector(
     def _collect_focused_findings_from_graph(
         self,
         graph: SemanticDescentGraph,
-        modules: list[ParsedModule],
+        modules: ParsedModuleSet,
         config: DetectorConfig,
         *,
         includes_path: Callable[[Path], bool],

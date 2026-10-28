@@ -3026,7 +3026,7 @@ class RepeatedConcreteTypeCaseAnalysisDetector(
         RepeatedConcreteTypeCaseAnalysisCandidate
     ],
 ):
-    candidate_collector = staticmethod(_repeated_concrete_type_case_analysis_candidates)
+    candidate_collector = _repeated_concrete_type_case_analysis_candidates
     module_projection_families = (
         CompactRemainingSystemicModuleProjectionFamily,
         CompactModuleClassProjectionFamily,
@@ -3115,7 +3115,7 @@ class ImplicitSelfContractMixinDetector(
     CompactClassIndexMultiProjectionDetector,
     ConfiguredCrossModuleCollectorCandidateDetector[ImplicitSelfContractMixinCandidate],
 ):
-    candidate_collector = staticmethod(_implicit_self_contract_mixin_candidates)
+    candidate_collector = _implicit_self_contract_mixin_candidates
     module_projection_families = (
         CompactRemainingSystemicModuleProjectionFamily,
         CompactModuleClassProjectionFamily,

@@ -178,7 +178,7 @@ class RegexBundleModuleProjection(ParsedModuleFact):
         self, function: ast.FunctionDef | ast.AsyncFunctionDef
     ) -> dict[str, int]:
         literals: dict[str, int] = {}
-        for node in walk_function_body_nodes(function):
+        for node in walk_function_body_nodes(function.body):
             if not isinstance(node, ast.Call):
                 continue
             literal = self.pattern_literal(node)

@@ -650,7 +650,7 @@ def test_semantic_graph_overlay_remaps_line_shifted_projection_identity(
     module_path.write_text(f"\n{source}", encoding="utf-8", newline="")
     overlay = SemanticDescentGraphModuleOverlay(
         base_graph,
-        tuple(parse_python_modules(tmp_path)),
+        parse_python_modules(tmp_path),
     )
     updated_graph = overlay.graph()
     updated_projection = next(
@@ -692,7 +692,7 @@ def test_semantic_graph_overlay_recomputes_positive_proof_locations(
 
     module_path.write_text(f"\n{source}", encoding="utf-8", newline="")
     updated_graph = base_graph.overlay_modules(
-        tuple(parse_python_modules(tmp_path, use_parse_cache=False))
+        parse_python_modules(tmp_path, use_parse_cache=False)
     )
     updated_proof = next(
         certificate.proof_edges[0]
@@ -905,7 +905,7 @@ def test_semantic_mirror_detector_uses_semantic_descent_context_signature(
         "\n"
         "STEP_TABLE = {'load': LoadStep}\n",
     )
-    modules = tuple(parse_python_modules(tmp_path))
+    modules = parse_python_modules(tmp_path)
 
     assert (
         SemanticMirrorWithoutDescentDetector.cache_granularity
@@ -6386,7 +6386,7 @@ def test_semantic_descent_graph_cache_preserves_positive_proof_relations(
         semantic_descent_module.SemanticDescentGraphCache(graph_cache_dir)
         .load(
             SemanticDescentGraphCacheIdentity.from_modules(
-                tuple(parse_python_modules(tmp_path, use_parse_cache=False))
+                parse_python_modules(tmp_path, use_parse_cache=False)
             )
         )
         .graph

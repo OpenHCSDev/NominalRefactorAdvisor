@@ -27,6 +27,7 @@ from ..ast_tools import (
     CollectedFamily,
     LITERAL_DISPATCH_CASE_MATCHER,
     ParsedModule,
+    ParsedModuleSet,
     SourceModule,
     collect_family_items,
     walk_function_body_nodes,
@@ -45,7 +46,6 @@ from ..class_index import (
     LatentRosterObservation,
     build_compact_class_family_index,
 )
-from ..ast_tools import ParsedModuleSet
 from ..exact_method_authority import (
     ParallelMirroredLeafFamilyComponent,
     ParallelMirroredLeafFamilyComponentBuilder,
@@ -110,6 +110,7 @@ from ..observation_shapes import (
     RegistrationShape,
 )
 from ._base import (
+    ModuleBuilderCallShapes,
     _module_builder_call_shapes,
     CANDIDATE_COLLECTION_AUTHORITY,
     certified_spec,
@@ -527,7 +528,7 @@ FormalBoundaryExternalSitesByValue: TypeAlias = dict[
 
 
 def _module_formal_boundary_string_constants(
-    modules: list[ParsedModule],
+    modules: ParsedModuleSet,
 ) -> FormalBoundaryStringConstantRecords:
     return tuple(
         constant
@@ -675,7 +676,7 @@ class FormalBoundaryExternalStringRegistryMirrorAuthority:
     def findings(
         cls,
         detector: IssueDetector,
-        modules: list[ParsedModule],
+        modules: ParsedModuleSet,
     ) -> list[RefactorFinding]:
         constants = _module_formal_boundary_string_constants(modules)
         return cls.findings_from_constants(detector, constants)
@@ -866,7 +867,7 @@ class GeneratedBoundarySemanticConstantAuthority:
     def findings(
         cls,
         detector: IssueDetector,
-        modules: list[ParsedModule],
+        modules: ParsedModuleSet,
     ) -> list[RefactorFinding]:
         sites = tuple(
             site
@@ -1436,7 +1437,7 @@ def _collect_repeated_builder_call_ast_demand(
         for _file_path, callee_name, *_remainder in demand.exact_mapping_keys
     )
     return list(
-        demand.project(tuple(_module_builder_call_shapes(module, callee_names)))
+        demand.project(module.fact(ModuleBuilderCallShapes).calling(callee_names))
     )
 
 
@@ -1521,7 +1522,7 @@ class RepeatedBuilderCallDetector(
         ),
     )
 
-    candidate_collector = staticmethod(_module_builder_call_shapes)
+    candidate_collector = _module_builder_call_shapes
     candidate_sort_key = staticmethod(
         lambda item: (item.file_path, item.lineno, item.symbol)
     )

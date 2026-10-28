@@ -35,7 +35,7 @@ def test_live_scope_binds_relative_roots_once(
     scope = AnalysisPathScope.from_requested_roots(report, roots)
     assert scope.analysis_roots == tuple(tmp_path / root for root in roots)
     assert scope.report_roots == (tmp_path / report[0],)
-    modules = tuple(parse_python_module_roots(scope.analysis_roots))
+    modules = parse_python_module_roots(scope.analysis_roots)
     identity = AnalysisCacheIdentity.from_modules(
         scope.analysis_roots,
         modules,
@@ -96,7 +96,7 @@ def test_live_root_binding_preserves_a_source_symlink(
     assert scope.analysis_roots != (target,)
     identity = AnalysisCacheIdentity.from_modules(
         scope.analysis_roots,
-        tuple(parse_python_module_roots(scope.analysis_roots)),
+        parse_python_module_roots(scope.analysis_roots),
         DetectorConfig(),
         report_roots=scope.report_roots,
     )

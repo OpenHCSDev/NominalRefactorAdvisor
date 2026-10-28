@@ -178,11 +178,11 @@ def test_repository_semantic_signature_changes_for_contextual_source_edit(
     tmp_path: Path,
 ) -> None:
     _write_module(tmp_path, "pkg/sample.py", "\nVALUE = 'before'\n")
-    before_modules = tuple(parse_python_modules(tmp_path))
+    before_modules = parse_python_modules(tmp_path)
     before = GlobalModuleContextSignature.from_modules(before_modules).cache_token
 
     _write_module(tmp_path, "pkg/sample.py", "\nVALUE = 'after'\n")
-    after_modules = tuple(parse_python_modules(tmp_path))
+    after_modules = parse_python_modules(tmp_path)
     after = GlobalModuleContextSignature.from_modules(after_modules).cache_token
 
     assert after != before

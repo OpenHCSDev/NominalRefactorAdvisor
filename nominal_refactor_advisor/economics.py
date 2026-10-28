@@ -454,12 +454,12 @@ class RepositoryChangeBudget(DataclassJsonReport):
 def _scan_modules_for_proof(
     label: str,
     path: Path,
-    modules: list,
+    modules: ParsedModuleSet,
     config: DetectorConfig,
     scan_budget_seconds: float,
 ) -> ScanEconomicsProof:
     started = perf_counter()
-    findings = analyze_modules(ParsedModuleSet(tuple(modules)), config)
+    findings = analyze_modules(modules, config)
     plans = build_refactor_plans(findings, path)
     elapsed = perf_counter() - started
     return ScanEconomicsProof.from_findings_and_plans(
@@ -503,11 +503,11 @@ def build_economics_proof_report(
             parse_workers=parse_workers,
         )
     package_root = package_path.resolve()
-    package_modules = [
+    package_modules = ParsedModuleSet.of(
         module
         for module in parsed_modules
         if module.path.resolve().is_relative_to(package_root)
-    ]
+    )
     package_scan = _scan_modules_for_proof(
         "package",
         package_path,

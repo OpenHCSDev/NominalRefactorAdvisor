@@ -2731,7 +2731,7 @@ class SemanticDescentGraphCacheContext:
         cache.store(identity, graph)
         self._loaded_graphs_by_token[identity.cache_token] = graph
 
-    def graph_for_modules(self, modules: list[ParsedModule]) -> SemanticDescentGraph:
+    def graph_for_modules(self, modules: ParsedModuleSet) -> SemanticDescentGraph:
         cached_graph = self.cached_graph()
         if cached_graph is not None:
             return cached_graph
@@ -2739,7 +2739,7 @@ class SemanticDescentGraphCacheContext:
         if cache is None:
             return build_semantic_descent_graph(modules, use_cache=False)
         identity = SemanticDescentGraphCacheIdentity.from_modules(
-            tuple(modules),
+            modules,
             roots=self.roots,
         )
         module_cache_graph = cache.load(identity).graph
@@ -2806,7 +2806,7 @@ class SemanticDescentGraphAnalysisSource:
         default_factory=SemanticDescentGraphCacheContext
     )
 
-    def graph_for_modules(self, modules: list[ParsedModule]) -> SemanticDescentGraph:
+    def graph_for_modules(self, modules: ParsedModuleSet) -> SemanticDescentGraph:
         if self.cached_graph is not None:
             return self.cached_graph.overlay_modules(tuple(modules))
         return self.cache_context.graph_for_modules(modules)
@@ -3276,7 +3276,7 @@ class IncrementalAnalysisCacheResolver:
         )
         if worker_plan.uses_process_pool:
             state = PerModuleDetectorShardWorkerState(
-                modules=tuple(missing_modules),
+                modules=ParsedModuleSet.of(missing_modules),
                 config=self._config,
             )
             tasks = tuple(enumerate(detector_types_by_module))
@@ -3362,15 +3362,15 @@ class IncrementalAnalysisCacheResolver:
         cache_status = AnalysisCacheStatus.from_reused_item_count(hit_count)
         return IncrementalAnalysisResult(findings, cache_status)
 
-    def _local_detector_modules(self) -> list[ParsedModule]:
+    def _local_detector_modules(self) -> ParsedModuleSet:
         scope = self._report_scope
         if scope is None or not scope.has_report_filter:
             return self._modules
-        return [
+        return ParsedModuleSet.of(
             module
             for module in self._modules
             if scope.includes_report_path(module.path)
-        ]
+        )
 
     def _global_findings(self) -> IncrementalAnalysisResult:
         detector_types = self._detector_partition.detector_types_for(
@@ -3873,7 +3873,7 @@ class FastCachedPathAnalysisAuthority:
         if not changed_modules:
             return []
         findings = analyze_detector_types(
-            ParsedModuleSet(tuple(changed_modules)),
+            changed_modules,
             self._request.config,
             detector_types=detector_types,
             analysis_workers=self._request.analysis_workers,
@@ -3889,7 +3889,7 @@ class FastCachedPathAnalysisAuthority:
             report_roots=self._request.report_roots,
         ).filter_findings(findings)
 
-    def _changed_modules(self, changed_paths: frozenset[str]) -> list[ParsedModule]:
+    def _changed_modules(self, changed_paths: frozenset[str]) -> ParsedModuleSet:
         modules: list[ParsedModule] = []
         seen_paths: set[Path] = set()
         for root, paths in (
@@ -3913,7 +3913,7 @@ class FastCachedPathAnalysisAuthority:
                     continue
                 seen_paths.add(normalized_path)
                 modules.append(module)
-        return modules
+        return ParsedModuleSet(tuple(modules))
 
 
 @dataclass(frozen=True)
