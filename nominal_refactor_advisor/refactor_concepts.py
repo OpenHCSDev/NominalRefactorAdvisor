@@ -154,5 +154,9 @@ class LegacyPathErasureConcept(NominalBoundaryConcept):
     """Delete an old path once its replacement owns the behavior."""
 
 
+class FalseDistinctionErasureConcept(NominalBoundaryConcept):
+    """Delete a distinction the code then treats identically."""
+
+
 class DeclarationReferenceConcept(NominalBoundaryConcept):
     """Write a spelled declaration as the reference it spells."""
