@@ -7,7 +7,6 @@ from abc import (
 )
 from dataclasses import (
     dataclass,
-    replace,
 )
 from enum import StrEnum
 from typing import (
@@ -17,9 +16,13 @@ from typing import (
 )
 
 from .annotation_semantics import NOMINAL_ANNOTATION_SOURCE_AUTHORITY
+from .ast_field_decoders import declared_annotations
 from .lexical_bindings import (
     CompactParameterKind as CompactParameterKind,
+    DefaultedParameterSource,
     FunctionParameterSource,
+    ParameterDefaultQuestion,
+    UndefaultedParameterSource,
 )
 from .value_expression import (
     CompactValueExpression as CompactValueExpression,
@@ -61,24 +64,48 @@ class CompactKeywordArgument(Generic[CallValueT], DataclassGraphValue):
 
 
 @dataclass(frozen=True)
-class CompactFunctionParameter:
+class CompactFunctionParameter(ABC):
+    """One declared parameter; its subtype says whether it declares a default."""
+
     name: str
     kind: CompactParameterKind
-    has_default: bool = False
     annotation_expression: str | None = None
 
+    @staticmethod
+    def from_source(source: FunctionParameterSource) -> CompactFunctionParameter:
+        return source.answer(PARAMETER_RECORD)
+
     @classmethod
-    def from_source(cls, source: FunctionParameterSource) -> Self:
+    def of_source(cls, source: FunctionParameterSource) -> Self:
+        """This record for a declared parameter, its annotation unparsed once."""
+
         return cls(
-            name=source.argument.arg,
-            kind=source.kind,
-            has_default=source.default is not None,
-            annotation_expression=(
-                None
-                if source.argument.annotation is None
-                else ast.unparse(source.argument.annotation)
+            source.argument.arg,
+            source.kind,
+            next(
+                (
+                    ast.unparse(annotation)
+                    for annotation in declared_annotations(source.argument)
+                ),
+                None,
             ),
         )
+
+    def with_default_from(self, names: frozenset[str]) -> CompactFunctionParameter:
+        """This parameter as declared with a default exactly when `names` holds it."""
+
+        record = (
+            DefaultedFunctionParameter
+            if self.name in names
+            else UndefaultedFunctionParameter
+        )
+        return record(self.name, self.kind, self.annotation_expression)
+
+    @property
+    @abstractmethod
+    def required(self) -> bool:
+        """Whether a call must supply this parameter."""
+        raise NotImplementedError
 
     @property
     def has_annotation(self) -> bool:
@@ -95,14 +122,43 @@ class CompactFunctionParameter:
         )
 
     @property
-    def required(self) -> bool:
-        return not self.has_default and not self.kind.variadic
-
-    @property
     def is_plain_required(self) -> bool:
         """Whether removing this parameter erases no declaration-time semantics."""
 
         return self.required and not self.has_annotation
+
+
+@dataclass(frozen=True)
+class DefaultedFunctionParameter(CompactFunctionParameter):
+    """A parameter a call may omit: its declared default supplies it."""
+
+    @property
+    def required(self) -> bool:
+        return False
+
+
+@dataclass(frozen=True)
+class UndefaultedFunctionParameter(CompactFunctionParameter):
+    """A parameter without a default: a call supplies it unless it is variadic."""
+
+    @property
+    def required(self) -> bool:
+        return not self.kind.variadic
+
+
+class ParameterRecord(ParameterDefaultQuestion[CompactFunctionParameter]):
+    """The binding record a declared parameter source projects to."""
+
+    def defaulted(self, source: DefaultedParameterSource) -> CompactFunctionParameter:
+        return DefaultedFunctionParameter.of_source(source)
+
+    def undefaulted(
+        self, source: UndefaultedParameterSource
+    ) -> CompactFunctionParameter:
+        return UndefaultedFunctionParameter.of_source(source)
+
+
+PARAMETER_RECORD = ParameterRecord()
 
 
 @dataclass(frozen=True)
@@ -189,7 +245,7 @@ class CompactFunctionSignature:
             raise ValueError("Defaults require declared nonvariadic parameters")
         return type(self)(
             tuple(
-                replace(parameter, has_default=parameter.name in names)
+                parameter.with_default_from(names)
                 for parameter in self.parameters
             )
         )

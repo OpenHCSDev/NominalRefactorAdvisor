@@ -11,6 +11,7 @@ from types import ModuleType
 import pytest
 import metaclass_registry
 
+from nominal_refactor_advisor.call_binding import DefaultedFunctionParameter
 from nominal_refactor_advisor.ast_tools import ParsedModuleSet
 import nominal_refactor_advisor.registry_identity as registry_identity
 from nominal_refactor_advisor.captured_reference import InitialNativeIsland
@@ -522,14 +523,17 @@ def test_original_constructor_metadata_uses_current_default_owner(monkeypatch):
     (defaulted,) = (
         index
         for index, parameter in enumerate(before.parameters)
-        if parameter.has_default
+        if isinstance(parameter, DefaultedFunctionParameter)
     )
     with monkeypatch.context() as mutation:
         mutation.setattr(function, "__defaults__", None)
         current = entry.constructor_source.signature
-        assert not current.parameters[defaulted].has_default
+        assert not isinstance(current.parameters[defaulted], DefaultedFunctionParameter)
         assert source.defaults == ()
         with pytest.raises(ValueError, match="over prepared inputs remains unproved"):
             _ = entry.construction_admission
-    assert entry.constructor_source.signature.parameters[defaulted].has_default
+    assert isinstance(
+        entry.constructor_source.signature.parameters[defaulted],
+        DefaultedFunctionParameter,
+    )
     assert not environment.entry.operation_conditions
