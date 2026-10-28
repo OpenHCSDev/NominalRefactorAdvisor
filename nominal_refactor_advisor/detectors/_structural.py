@@ -573,7 +573,7 @@ def _catalog_installing_mixin_family_candidates(
 ) -> tuple[CatalogInstallingMixinFamilyCandidate, ...]:
     items: list[tuple[str, str, int]] = []
     for class_node in (
-        node for node in _walk_nodes(module.module) if isinstance(node, ast.ClassDef)
+        node for node in module.syntax_index.breadth_first_nodes if isinstance(node, ast.ClassDef)
     ):
         for statement in class_node.body:
             if not isinstance(statement, ast.FunctionDef):

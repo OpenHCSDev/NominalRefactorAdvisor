@@ -29,7 +29,6 @@ from ..ast_tools import (
     ParsedModule,
     SourceModule,
     collect_family_items,
-    module_syntax_index,
     walk_function_body_nodes,
 )
 from ..native_syntax import NativePythonSyntaxIndex
@@ -2617,7 +2616,7 @@ class StringLiteralDispatchOwnershipLeadDetector(PerModuleIssueDetector):
     def _findings_for_module(
         self, module: ParsedModule, config: DetectorConfig
     ) -> list[RefactorFinding]:
-        index = module_syntax_index(module.module)
+        index = module.syntax_index
         lines = module.source.splitlines()
         findings: list[RefactorFinding] = []
         for node_index, root in index.indexed_nodes_of_type(ast.If):
@@ -2722,7 +2721,7 @@ class GuardedStringCaseOwnershipLeadDetector(PerModuleIssueDetector):
     def _findings_for_module(
         self, module: ParsedModule, config: DetectorConfig
     ) -> list[RefactorFinding]:
-        index = module_syntax_index(module.module)
+        index = module.syntax_index
         lines = module.source.splitlines()
         # Preserve original whole tests and roots even though only selected
         # direct conjuncts are recognized; this is not an exhaustive inventory.

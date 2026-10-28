@@ -116,7 +116,6 @@ from ..ast_tools import (
     LiteralDispatchObservation,
     NumericLiteralDispatchObservationFamily,
     collect_family_items,
-    named_function_nodes,
     structural_ast_hash,
     walk_function_body_nodes,
     _walk_nodes,
@@ -3033,13 +3032,6 @@ def _residual_closed_axis_indirection_candidates(
     )
 
 
-@lru_cache(maxsize=None)
-def _iter_named_functions(
-    module: ParsedModule,
-) -> tuple[tuple[str, ast.FunctionDef | ast.AsyncFunctionDef], ...]:
-    return named_function_nodes(module.module)
-
-
 NamedFunctionCandidateT = TypeVar("NamedFunctionCandidateT")
 NamedFunctionProjectorP = ParamSpec("NamedFunctionProjectorP")
 NamedFunctionNode = ast.FunctionDef | ast.AsyncFunctionDef
@@ -3062,7 +3054,7 @@ def _module_builder_call_shapes(
     shapes: list[BuilderCallShape] = []
     module_class_names = _module_class_names(module)
 
-    for qualname, function in _iter_named_functions(module):
+    for qualname, function in module.syntax_index.named_functions:
         owner_name = qualname.rsplit(".", 1)[0] if "." in qualname else None
         for node in walk_function_body_nodes(function):
             if not isinstance(node, ast.Call):
@@ -3091,7 +3083,6 @@ AstTraversal = Callable[[ast.AST], Iterable[ast.AST]]
 CandidateStreamItemT = TypeVar("CandidateStreamItemT")
 
 
-@lru_cache(maxsize=None)
 def _typed_ast_nodes(root: ast.AST, node_type: type[AstNodeT]) -> tuple[AstNodeT, ...]:
     return tuple(
         (
@@ -3139,7 +3130,7 @@ class CandidateCollectionAuthority:
     ) -> tuple[NamedFunctionCandidateT, ...]:
         projected = (
             candidate
-            for qualname, function in _iter_named_functions(module)
+            for qualname, function in module.syntax_index.named_functions
             for candidate in projector(
                 module, qualname, function, *projector_args, **projector_kwargs
             )
@@ -3572,7 +3563,7 @@ def _comprehension_builder_names(
     family_name: str,
 ) -> tuple[str, ...]:
     builder_names: set[str] = set()
-    for subnode in _walk_nodes(module.module):
+    for subnode in module.syntax_index.breadth_first_nodes:
         if not isinstance(
             subnode, (ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)
         ):
@@ -3819,7 +3810,7 @@ def _module_keyed_selection_helper_candidates(
     helper_shapes = tuple(
         (
             helper
-            for _, function in _iter_named_functions(module)
+            for _, function in module.syntax_index.named_functions
             if "." not in _
             and (helper := _selection_helper_shape(function)) is not None
         )
@@ -3827,7 +3818,7 @@ def _module_keyed_selection_helper_candidates(
     lookup_shapes = tuple(
         (
             lookup
-            for _, function in _iter_named_functions(module)
+            for _, function in module.syntax_index.named_functions
             if "." not in _
             and (lookup := _selection_lookup_shape(function)) is not None
         )

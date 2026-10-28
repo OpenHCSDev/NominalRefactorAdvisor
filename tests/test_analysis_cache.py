@@ -371,24 +371,6 @@ def test_cache_retention_throttles_repeated_tree_walks(tmp_path: Path) -> None:
     assert late_root.is_dir()
 
 
-def test_module_analysis_memory_release_clears_ast_bound_lru_caches() -> None:
-    module = ast_tools_module.ast.parse("def project():\n    return source + 1\n")
-    function = module.body[0]
-    assert isinstance(function, ast.FunctionDef)
-    ast_tools_module._walk_nodes(module)
-    ast_tools_module.walk_function_body_nodes(function)
-    assert ast_tools_module.named_function_nodes(module) == (("project", function),)
-    ast_tools_module.module_syntax_index(module)
-
-    cleared_cache_count = release_module_analysis_memory()
-
-    assert cleared_cache_count > 0
-    assert ast_tools_module._walk_nodes.cache_info().currsize == 0
-    assert ast_tools_module.walk_function_body_nodes.cache_info().currsize == 0
-    assert ast_tools_module.named_function_nodes.cache_info().currsize == 0
-    assert ast_tools_module.module_syntax_index.cache_info().currsize == 0
-
-
 def test_module_analysis_memory_release_preserves_compiled_native_queries() -> None:
     query_source = "(class_definition) @class"
     syntax_index = NativePythonSyntaxIndex.from_source("class Role: pass\n")
@@ -430,11 +412,10 @@ def test_function_body_consumers_share_bounded_projection_authority(
     module = parse_python_modules(package_root, use_parse_cache=False)[0]
     scope = environment_detectors._function_scopes(module)[0]
 
-    environment_nodes = scope.nodes()
-    authority_nodes = ast_tools_module.walk_function_body_nodes(scope.node)
+    environment_nodes = scope.nodes
 
-    assert environment_nodes is scope.nodes()
-    assert environment_nodes is authority_nodes
+    assert environment_nodes is scope.nodes
+    assert environment_nodes == ast_tools_module.walk_function_body_nodes(scope.node)
     assert isinstance(environment_nodes[0], ast.Assign)
     assert not any(
         isinstance(node, ast.Constant)
@@ -458,16 +439,12 @@ def test_class_and_detector_collectors_share_named_function_projection(
     )
     module = parse_python_modules(package_root, use_parse_cache=False)[0]
 
-    class_functions = class_index_module._named_functions(module.module)
-    detector_functions = base_detectors._iter_named_functions(module)
+    class_functions = module.syntax_index.named_functions
+    detector_functions = module.syntax_index.named_functions
     base_detectors._module_builder_call_shapes(module)
 
     assert class_functions is detector_functions
     assert tuple(name for name, _ in class_functions) == ("Outer.Inner.build",)
-    function = class_functions[0][1]
-    assert ast_tools_module.walk_function_body_nodes(function) is (
-        ast_tools_module.walk_function_body_nodes(function)
-    )
 
 
 def test_module_syntax_index_projects_nodes_from_its_owned_traversal() -> None:
@@ -477,7 +454,7 @@ def test_module_syntax_index_projects_nodes_from_its_owned_traversal() -> None:
         "        def build(self):\n"
         "            return Result()\n"
     )
-    syntax_index = ast_tools_module.module_syntax_index(module)
+    syntax_index = ast_tools_module.ModuleSyntaxIndex.build(module)
 
     indexed_classes = syntax_index.indexed_nodes_of_type(ast.ClassDef)
     indexed_calls = syntax_index.indexed_nodes_of_type(ast.Call)

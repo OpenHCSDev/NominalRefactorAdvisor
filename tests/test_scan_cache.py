@@ -18,7 +18,6 @@ from nominal_refactor_advisor.analysis_cache import (
 )
 from nominal_refactor_advisor.ast_tools import (
     BuilderCallShapeFamily,
-    module_syntax_index,
 )
 from nominal_refactor_advisor.implementation_identity import (
     ImplementationSource,
@@ -76,10 +75,8 @@ def test_module_cleanup_keeps_declarations_but_releases_ast():
         original = BuilderCallShapeFamily.implementation_identity()
         tree = ast.parse("def action(): return 1")
         tree_ref = weakref.ref(tree)
-        module_syntax_index(tree)
         release_module_analysis_memory()
         assert BuilderCallShapeFamily.implementation_identity() is original
-        assert module_syntax_index.cache_info().currsize == 0
         del tree
         gc.collect()
         assert tree_ref() is None

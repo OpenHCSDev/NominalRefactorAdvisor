@@ -7,6 +7,7 @@ import pytest
 
 from nominal_refactor_advisor import class_index as class_index_module
 from nominal_refactor_advisor.ast_tools import (
+    ModuleSyntaxIndex,
     ParsedModule,
     collect_family_items,
     parse_python_modules,
@@ -174,14 +175,14 @@ def test_compact_class_family_index_matches_full_ast_inheritance_graph(
     )
     modules = parse_python_modules(tmp_path, use_parse_cache=False)
     full_index = build_class_family_index(modules)
-    original_walk_nodes = class_index_module._walk_nodes
+    original_build = ModuleSyntaxIndex.build.__func__
     walked_roots: list[ast.AST] = []
 
-    def tracked_walk_nodes(root: ast.AST) -> tuple[ast.AST, ...]:
+    def tracked_build(cls, root: ast.Module) -> ModuleSyntaxIndex:
         walked_roots.append(root)
-        return original_walk_nodes(root)
+        return original_build(cls, root)
 
-    monkeypatch.setattr(class_index_module, "_walk_nodes", tracked_walk_nodes)
+    monkeypatch.setattr(ModuleSyntaxIndex, "build", classmethod(tracked_build))
     compact_projections = tuple(
         projection
         for module in modules
@@ -196,9 +197,8 @@ def test_compact_class_family_index_matches_full_ast_inheritance_graph(
         compact_index,
     )
 
-    assert walked_roots == [
-        module.module for module in modules for _root_walk in range(2)
-    ]
+    assert len(walked_roots) == len({id(root) for root in walked_roots})
+    assert {id(root) for root in walked_roots} <= {id(module.module) for module in modules}
     assert compact_resolver.known_symbols is compact_index.classes_by_symbol
     assert (
         compact_resolver.unique_symbols_by_suffix._symbols_by_terminal_name

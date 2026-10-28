@@ -10,7 +10,7 @@ from functools import cached_property
 from importlib import import_module
 from typing import Self
 
-from .ast_tools import BuiltinCallName, ParsedModule, module_syntax_index
+from .ast_tools import BuiltinCallName, ParsedModule
 from .cases_family import handback
 from .codemod_declaration_source import PythonExpressionSourceFormatter
 from .codemod_runtime import CodemodSourceSnapshot
@@ -59,9 +59,7 @@ class ForeignFamilyReference:
         )
         uses_relative_imports = any(
             statement.level
-            for _, statement in module_syntax_index(
-                parsed_module.module
-            ).indexed_nodes_of_type(ast.ImportFrom)
+            for _, statement in parsed_module.syntax_index.indexed_nodes_of_type(ast.ImportFrom)
         )
         reference = (
             snapshot.module_import_graph.import_module_reference(
@@ -326,7 +324,7 @@ class ForeignFamilyFilterModuleFamily(ShapeFamily[ForeignFamilySiteModule]):
 
     @classmethod
     def collect(cls, parsed_module: ParsedModule) -> list[ForeignFamilySiteModule]:
-        index = module_syntax_index(parsed_module.module)
+        index = parsed_module.syntax_index
         node_indices = {
             call: node_index
             for node_index, call in index.indexed_nodes_of_type(ast.Call)

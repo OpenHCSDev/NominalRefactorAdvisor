@@ -359,7 +359,7 @@ def _nominal_authority_shapes_without_ancestors(
 ) -> tuple[NominalAuthorityShape, ...]:
     shapes_without_ancestors: list[NominalAuthorityShape] = []
     for module in modules:
-        for node in _walk_nodes(module.module):
+        for node in module.syntax_index.breadth_first_nodes:
             if not isinstance(node, ast.ClassDef):
                 continue
             field_type_map = HELPER_SYNTAX_PROJECTION_AUTHORITY.typed_field_map(node)
@@ -895,7 +895,7 @@ def _derived_query_index_candidates(
     module: ParsedModule,
 ) -> tuple[DerivedQueryIndexCandidate, ...]:
     grouped: DerivedQuerySpecsBySignature = defaultdict(list)
-    for qualname, function in _iter_named_functions(module):
+    for qualname, function in module.syntax_index.named_functions:
         signature = _linear_query_signature(function)
         if signature is None:
             continue
@@ -1060,7 +1060,7 @@ def _property_alias_hook_groups(
     module: ParsedModule,
 ) -> tuple[PropertyAliasHookGroup, ...]:
     grouped: dict[tuple[str, str, str], list[tuple[str, int]]] = defaultdict(list)
-    for node in _walk_nodes(module.module):
+    for node in module.syntax_index.breadth_first_nodes:
         if not isinstance(node, ast.ClassDef):
             continue
         base_names = tuple(
@@ -1852,7 +1852,7 @@ def _registered_union_surface_candidates(
         node.name: node for node in module.module.body if isinstance(node, ast.ClassDef)
     }
     source_nodes: tuple[ast.AST, ...] = (
-        *(function for _, function in _iter_named_functions(module)),
+        *(function for _, function in module.syntax_index.named_functions),
         *_typed_ast_nodes(module.module, ast.Assign),
     )
     return tuple(
@@ -3155,12 +3155,6 @@ def _autoregister_patch(
     )
 
 
-def _iter_functions(module: ast.Module) -> list[ast.FunctionDef | ast.AsyncFunctionDef]:
-    return [
-        node
-        for node in _walk_nodes(module)
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-    ]
 
 
 @dataclass(frozen=True)
@@ -3745,7 +3739,7 @@ class HelperSyntaxProjectionAuthority:
         candidate_factory: ClassShapeCandidateFactory[ClassShapeT, BuiltCandidateT],
     ) -> tuple[BuiltCandidateT, ...]:
         candidates: list[BuiltCandidateT] = []
-        for node in _walk_nodes(module.module):
+        for node in module.syntax_index.breadth_first_nodes:
             if not isinstance(node, ast.ClassDef):
                 continue
             shape = shape_projector(node)
@@ -3950,7 +3944,7 @@ def _field_only_frozen_dataclass_candidates(
 ) -> tuple[FieldOnlyFrozenDataclassCandidate, ...]:
     return tuple(
         candidate
-        for node in _walk_nodes(module.module)
+        for node in module.syntax_index.breadth_first_nodes
         if isinstance(node, ast.ClassDef)
         for candidate in (FieldOnlyFrozenDataclassCandidate.from_class(module, node),)
         if candidate is not None
@@ -4228,7 +4222,7 @@ def _result_assembly_pipeline_functions(
     module: ParsedModule,
 ) -> tuple[ResultAssemblyPipelineFunction, ...]:
     functions: list[ResultAssemblyPipelineFunction] = []
-    for qualname, function in _iter_named_functions(module):
+    for qualname, function in module.syntax_index.named_functions:
         stages = _pipeline_body_stages(function)
         if stages is None:
             continue

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+from functools import cached_property
 from abc import ABC, abstractmethod
 from collections import defaultdict
 from collections.abc import Callable, Iterable, Sequence
@@ -242,12 +243,15 @@ class _FunctionScope:
             )
         )
 
+    @cached_property
     def nodes(self) -> tuple[ast.AST, ...]:
+        """This function's body, walked once and held by the scope."""
+
         return walk_function_body_nodes(self.node)
 
     def references_any_name(self, names: frozenset[str]) -> bool:
         return any(
-            isinstance(node, ast.Name) and node.id in names for node in self.nodes()
+            isinstance(node, ast.Name) and node.id in names for node in self.nodes
         )
 
     @staticmethod
@@ -319,7 +323,7 @@ class _LiteralResolver:
         )
         if scope.class_node is not None:
             assignments.extend(scope.assignment_nodes(scope.class_node.body))
-        assignments.extend(scope.assignment_nodes(scope.nodes()))
+        assignments.extend(scope.assignment_nodes(scope.nodes))
         values_by_name: dict[str, ast.AST] = {}
         for assignment in assignments:
             value = assignment.value
@@ -611,7 +615,7 @@ def _missing_overrides(
     resolver: _LiteralResolver,
 ) -> dict[str, _MissingOverride]:
     overrides: dict[str, _MissingOverride] = {}
-    for node in scope.nodes():
+    for node in scope.nodes:
         if not isinstance(node, ast.If):
             continue
         checked_names = _none_checked_names(node.test)
@@ -701,7 +705,7 @@ class _EnvironmentReadAuthority:
     def lineage(self, scope: _FunctionScope) -> dict[str, _EnvironmentRead]:
         lineage: dict[str, _EnvironmentRead] = {}
         assignments = sorted(
-            scope.assignment_nodes(scope.nodes()),
+            scope.assignment_nodes(scope.nodes),
             key=lambda node: (node.lineno, node.col_offset),
         )
         for assignment in assignments:
@@ -951,7 +955,7 @@ def _environment_boolean_parser_sites(
     overrides = _missing_overrides(scope, resolver)
     sites: list[_EnvironmentBooleanParserSite] = []
     seen: set[tuple[int, int]] = set()
-    for node in scope.nodes():
+    for node in scope.nodes:
         if not isinstance(node, ast.Compare) or len(node.ops) != 1:
             continue
         operator = node.ops[0]
@@ -1032,7 +1036,7 @@ def _scope_has_declared_authority_shape(scope: _FunctionScope) -> bool:
         semantic_tokens & frozenset(("decision", "enabled"))
     ):
         return False
-    nodes = scope.nodes()
+    nodes = scope.nodes
     return any(isinstance(node, ast.Raise) for node in nodes) or any(
         not EnvironmentSemanticNameAuthority.tokens(ast.unparse(call.func)).isdisjoint(
             _DECLARED_AUTHORITY_CALL_TOKENS

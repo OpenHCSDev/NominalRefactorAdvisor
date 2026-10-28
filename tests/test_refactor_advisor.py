@@ -15262,7 +15262,7 @@ def test_module_syntax_index_projects_literal_dispatch_parentage(
         "    return 0\n",
     )
     module = parse_python_modules(tmp_path)[0]
-    syntax_index = ast_tools_module.module_syntax_index(module.module)
+    syntax_index = module.syntax_index
     indexed_ifs = syntax_index.indexed_nodes_of_type(ast.If)
 
     outer_index, outer_if = indexed_ifs[0]
@@ -15286,7 +15286,7 @@ def test_module_syntax_index_keeps_nested_class_bodies_outside_outer_execution()
         "            if ready:\n"
         "                return 'method'\n"
     )
-    syntax_index = ast_tools_module.module_syntax_index(module)
+    syntax_index = ast_tools_module.ModuleSyntaxIndex.build(module)
     indexed_ifs = syntax_index.indexed_nodes_of_type(ast.If)
 
     assert tuple(

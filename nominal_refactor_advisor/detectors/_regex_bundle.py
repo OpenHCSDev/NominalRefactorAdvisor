@@ -14,7 +14,7 @@ import re
 
 from ..ast_projection import ExpressionReference
 from ..ast_projection import CallKeywords
-from ..ast_tools import ParsedModule, named_function_nodes, walk_function_body_nodes
+from ..ast_tools import ParsedModule, walk_function_body_nodes
 from ..class_index import (
     ModuleNominalBindingAuthority,
     ModuleNominalBindingSnapshot,
@@ -193,7 +193,7 @@ class RegexBundleModuleProjection:
         if not projection.regex_binding_names:
             return ()
         grouped: dict[str, list[FunctionRegexBundle]] = defaultdict(list)
-        for qualname, function in named_function_nodes(module.module):
+        for qualname, function in module.syntax_index.named_functions:
             literals = projection.literals_for(function)
             if literals:
                 bundle = FunctionRegexBundle(qualname, literals)

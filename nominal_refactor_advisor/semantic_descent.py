@@ -43,7 +43,6 @@ from .ast_tools import (
     CompactModuleIdentity,
     ParsedModule,
     PythonSourcePathPolicy,
-    module_syntax_index,
     python_module_path_identities_for_roots,
 )
 from .cache_checkout import (
@@ -4270,7 +4269,7 @@ class CompactSemanticModuleProjectionFamily(
                 )
 
         constructed_type_names_by_class_id: dict[int, set[str]] = {}
-        syntax_index = module_syntax_index(parsed_module.module)
+        syntax_index = parsed_module.syntax_index
         for node_index, call in syntax_index.indexed_nodes_of_type(ast.Call):
             type_names = (
                 PresentationAuthorityConstructionCollector.construction_type_names(

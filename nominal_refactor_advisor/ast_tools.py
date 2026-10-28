@@ -794,6 +794,12 @@ class ParsedModule(SourceFileIdentity):
         )
 
     @cached_property
+    def syntax_index(self) -> ModuleSyntaxIndex:
+        """The one syntax traversal of this module's tree, held by the parse."""
+
+        return ModuleSyntaxIndex.build(self.module)
+
+    @cached_property
     def source_segments(self) -> SourceLineSegmentAuthority:
         """Return the exact source-span projector owned by this parsed module."""
 
@@ -3149,21 +3155,10 @@ class ModuleSyntaxIndex:
         )
 
 
-@lru_cache(maxsize=32768)
-def module_syntax_index(module: ast.Module) -> ModuleSyntaxIndex:
-    """Return the single syntax traversal authority for one live module AST."""
-
-    return ModuleSyntaxIndex.build(module)
-
-
-@lru_cache(maxsize=32768)
 def _walk_nodes(node: ast.AST) -> tuple[ast.AST, ...]:
-    if isinstance(node, ast.Module):
-        return module_syntax_index(node).breadth_first_nodes
     return tuple(ast.walk(node))
 
 
-@lru_cache(maxsize=32768)
 def walk_function_body_nodes(
     function: ast.FunctionDef | ast.AsyncFunctionDef,
 ) -> tuple[ast.AST, ...]:
@@ -3178,15 +3173,6 @@ def walk_function_body_nodes(
             continue
         stack.extend(reversed(tuple(ast.iter_child_nodes(node))))
     return tuple(nodes)
-
-
-@lru_cache(maxsize=32768)
-def named_function_nodes(
-    module: ast.Module,
-) -> tuple[tuple[str, ast.FunctionDef | ast.AsyncFunctionDef], ...]:
-    """Return one shared class-qualified function traversal for a module AST."""
-
-    return module_syntax_index(module).named_functions
 
 
 def active_path_descends_through(
@@ -3205,7 +3191,7 @@ def _iter_attribute_family_calls(
     parsed_module: ParsedModule, family: AstNameFamily
 ) -> tuple[AstCallObservation, ...]:
     observations: list[AstCallObservation] = []
-    for node in _walk_nodes(parsed_module.module):
+    for node in parsed_module.syntax_index.breadth_first_nodes:
         if not isinstance(node, ast.Call):
             continue
         matched_name = _attribute_call_family_name(node, family)
@@ -3225,7 +3211,7 @@ def _iter_class_decorator_family_calls(
     parsed_module: ParsedModule, family: AstNameFamily
 ) -> tuple[tuple[ast.ClassDef, ast.Call, str], ...]:
     observations: list[tuple[ast.ClassDef, ast.Call, str]] = []
-    for node in _walk_nodes(parsed_module.module):
+    for node in parsed_module.syntax_index.breadth_first_nodes:
         if not isinstance(node, ast.ClassDef):
             continue
         for decorator in node.decorator_list:
@@ -3246,7 +3232,7 @@ def _node_display_name(node: ast.AST) -> str:
 def _collect_all_scoped_observations(
     parsed_module: ParsedModule,
 ) -> tuple[ScopedAstObservation, ...]:
-    index = module_syntax_index(parsed_module.module)
+    index = parsed_module.syntax_index
     return tuple(
         ScopedAstObservation(
             node=node,
@@ -3349,9 +3335,7 @@ def _known_class_family(parsed_module: ParsedModule) -> AstNameFamily:
     return AstNameFamily.from_names(
         {
             node.name
-            for _node_index, node in module_syntax_index(
-                parsed_module.module
-            ).indexed_nodes_of_type(ast.ClassDef)
+            for _node_index, node in parsed_module.syntax_index.indexed_nodes_of_type(ast.ClassDef)
         }
     )
 
@@ -3675,7 +3659,7 @@ def _literal_dispatch_observations(
     parsed_module: ParsedModule,
     literal_kind: LiteralKind,
 ) -> tuple[LiteralDispatchObservation, ...]:
-    syntax_index = module_syntax_index(parsed_module.module)
+    syntax_index = parsed_module.syntax_index
     observations: list[LiteralDispatchObservation] = []
     for node_index, node in syntax_index.indexed_nodes_of_type(ast.If):
         parent = syntax_index.parent_node(node_index)
@@ -3716,7 +3700,7 @@ def _inline_literal_dispatch_observations(
     parsed_module: ParsedModule,
     literal_kind: LiteralKind,
 ) -> tuple[LiteralDispatchObservation, ...]:
-    syntax_index = module_syntax_index(parsed_module.module)
+    syntax_index = parsed_module.syntax_index
     observations: list[LiteralDispatchObservation] = []
     statement_blocks = (
         (None, parsed_module.module.body),
@@ -3788,7 +3772,7 @@ def _is_type_call_constructor(node: ast.AST) -> bool:
 def _sentinel_type_usage_observations(
     parsed_module: ParsedModule,
 ) -> tuple[SentinelTypeObservation, ...]:
-    syntax_index = module_syntax_index(parsed_module.module)
+    syntax_index = parsed_module.syntax_index
     sentinel_names = {
         item.sentinel_name
         for _node_index, node in syntax_index.indexed_nodes_of_type(ast.Assign)
@@ -3856,7 +3840,7 @@ def _literal_dispatch_value(node: ast.AST) -> LiteralConstantValue:
 def _module_class_names(parsed_module: ParsedModule) -> frozenset[str]:
     return frozenset(
         node.name
-        for node in _walk_nodes(parsed_module.module)
+        for node in parsed_module.syntax_index.breadth_first_nodes
         if isinstance(node, ast.ClassDef)
     )
 

@@ -10,7 +10,6 @@ from typing import cast
 
 from .ast_tools import (
     ModuleSyntaxIndex,
-    module_syntax_index,
 )
 
 from .codemod_runtime import CodemodDocumentSimulationCarrier
@@ -180,7 +179,7 @@ class SourceClassSuiteCorrespondence(SourceDocumentCorrespondence):
 
     @cached_property
     def after_syntax(self) -> ModuleSyntaxIndex:
-        return module_syntax_index(self.after.module.module)
+        return self.after.module.syntax_index
 
     @cached_property
     def after_class_statements_by_span(self) -> dict[SourceTextSpan, ast.stmt]:
@@ -250,7 +249,7 @@ class SourceClassSuiteCorrespondence(SourceDocumentCorrespondence):
     ) -> None:
         """Authenticate direct members against their original syntax parents."""
         source.definition_operation(declaration)
-        syntax = module_syntax_index(source.module.module)
+        syntax = source.module.syntax_index
         if any(
             syntax.parent_by_node.get(node) is not declaration
             for node in (*declaration.body, *declaration.decorator_list)

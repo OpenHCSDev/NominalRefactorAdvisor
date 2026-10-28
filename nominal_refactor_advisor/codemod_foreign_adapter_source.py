@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from functools import cache, cached_property
 from typing import Self
 
-from .ast_tools import BuiltinCallName, ParsedModule, module_syntax_index
+from .ast_tools import BuiltinCallName, ParsedModule
 from .cases_family import body_without_docstring
 from .codemod_foreign_family_source import (
     FunctionNode,
@@ -427,7 +427,7 @@ class ForeignAdapterBindChainModuleFamily(ShapeFamily[ForeignFamilySiteModule]):
 
     @classmethod
     def collect(cls, parsed_module: ParsedModule) -> list[ForeignFamilySiteModule]:
-        index = module_syntax_index(parsed_module.module)
+        index = parsed_module.syntax_index
         node_indices = {
             statement: node_index
             for node_index, statement in index.indexed_nodes_of_type(ast.If)

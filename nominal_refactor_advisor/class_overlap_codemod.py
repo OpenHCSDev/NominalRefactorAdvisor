@@ -29,7 +29,7 @@ from functools import cached_property
 from importlib import import_module
 from typing import Self
 
-from .ast_tools import ParsedModule, is_docstring_statement, module_syntax_index
+from .ast_tools import ParsedModule, is_docstring_statement
 from .class_index import (
     CLASS_METHOD_OWNERSHIP_HOOK_NAMES,
     ClassReferenceRole,
@@ -486,7 +486,7 @@ class ClassReferenceSites:
             for alias, qualified_name in aliases.items()
             if qualified_name.rsplit(".", 1)[-1] in terminal_names
         )
-        syntax_index = module_syntax_index(parsed_module.module)
+        syntax_index = parsed_module.syntax_index
         nodes = syntax_index.depth_first_nodes
         parents = syntax_index.parent_indices
         resolver = self.snapshot.class_reference_resolver_for_source_path(

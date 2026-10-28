@@ -10,7 +10,7 @@ from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Self, TypeVar
 
-from ..ast_tools import ParsedModule, module_syntax_index
+from ..ast_tools import ParsedModule
 from ..collection_algebra import sorted_tuple
 from ..models import RefactorFinding, SourceLocation
 from ..observation_families import (
@@ -57,7 +57,7 @@ class LongConditionFactoringLeadDetector(PerModuleIssueDetector):
     def _findings_for_module(
         self, module: ParsedModule, config: DetectorConfig
     ) -> list[RefactorFinding]:
-        index = module_syntax_index(module.module)
+        index = module.syntax_index
         findings: list[RefactorFinding] = []
         for node_index, node in sorted(
             (
@@ -101,7 +101,7 @@ class RepeatedLiteralRosterLeadDetector(PerModuleIssueDetector):
     def _findings_for_module(
         self, module: ParsedModule, config: DetectorConfig
     ) -> list[RefactorFinding]:
-        index = module_syntax_index(module.module)
+        index = module.syntax_index
         groups: dict[tuple[str, tuple[str, ...]], list[SourceLocation]] = defaultdict(
             list
         )
