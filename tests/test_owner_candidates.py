@@ -213,3 +213,25 @@ def test_a_star_imported_module_s_field_order_is_settled_the_same_way_on_every_p
         symbol
     ).own_dataclass_field_names == ("name", "size")
     assert context.class_index.class_for(symbol).own_dataclass_field_names == ("name", "size")
+
+
+def test_a_block_copied_off_one_value_refuses_a_mixin_and_ranks_holding_the_source() -> None:
+    (verdict,) = _mixin_verdicts(
+        (
+            "pkg.records",
+            "class First:\n" + BLOCK + "    own_first: int\n\n\n"
+            "class Second:\n" + BLOCK + "    own_second: int\n\n\n"
+            "def summarize(first: First) -> Second:\n"
+            "    return Second(alpha=first.alpha, beta=first.beta)\n",
+        ),
+    )
+
+    kinds = {owner.kind: owner for owner in verdict.owner_candidates}
+    assert OwnerReceiptKind.COPIED_FROM in {
+        receipt.kind for receipt in kinds["new_mixin"].refusals
+    }
+    hold = kinds["hold_source"]
+    assert hold.permitted
+    assert hold.composers == ("pkg.records.Second",)
+    assert hold.symbol == "pkg.records.First"
+    assert verdict.owner_candidates[0] is hold

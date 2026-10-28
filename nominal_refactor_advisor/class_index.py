@@ -2348,6 +2348,9 @@ class CompactClassReference(NamedTuple):
     line: int
     positional_arguments: int = 0
     unpacked_arguments: bool = False
+    copied_fields: tuple[str, ...] = ()
+    """For a construction, the most keywords one call passes as `x.<same name>`
+    from a single value `x`: fields copied off another object."""
 
 
 ClassDeclarationT = TypeVar("ClassDeclarationT", bound=ClassDeclaration)
@@ -6293,6 +6296,27 @@ _GENERIC_ALIAS_ROOTS = frozenset(
 )
 
 
+def _copied_keyword_fields(call: ast.Call) -> tuple[str, ...]:
+    """The keywords one call passes as `x.<same name>`, for the value `x` that
+    supplies the most of them."""
+
+    by_root: dict[str, list[str]] = defaultdict(list)
+    for keyword in call.keywords:
+        value = keyword.value
+        if (
+            keyword.arg is not None
+            and isinstance(value, ast.Attribute)
+            and value.attr == keyword.arg
+            and isinstance(value.value, ast.Name)
+        ):
+            by_root[value.value.id].append(keyword.arg)
+    return max(
+        (tuple(sorted(names)) for names in by_root.values()),
+        key=lambda names: (len(names), names),
+        default=(),
+    )
+
+
 def _compact_class_references(
     parsed_module: ParsedModule,
 ) -> tuple[CompactClassReference, ...]:
@@ -6324,7 +6348,8 @@ def _compact_class_references(
     nodes = syntax_index.depth_first_nodes
     parent_indices = syntax_index.parent_indices
     references: dict[
-        tuple[str, tuple[str, ...], ClassReferenceRole], tuple[int, int, bool]
+        tuple[str, tuple[str, ...], ClassReferenceRole],
+        tuple[int, int, bool, tuple[str, ...]],
     ] = {}
     for node_type in (ast.Name, ast.Attribute):
         for node_index in syntax_index.node_indices_by_type.get(node_type, ()):
@@ -6357,13 +6382,19 @@ def _compact_class_references(
                 if role is ClassReferenceRole.CONSTRUCTION and isinstance(parent, ast.Call)
                 else (0, False)
             )
-            line, seen_positional, seen_unpacked = references.get(
-                key, (node.lineno, 0, False)
+            copied = (
+                _copied_keyword_fields(parent)
+                if role is ClassReferenceRole.CONSTRUCTION and isinstance(parent, ast.Call)
+                else ()
+            )
+            line, seen_positional, seen_unpacked, seen_copied = references.get(
+                key, (node.lineno, 0, False, ())
             )
             references[key] = (
                 min(line, node.lineno),
                 max(seen_positional, positional),
                 seen_unpacked or unpacked,
+                max(seen_copied, copied, key=lambda names: (len(names), names)),
             )
     return tuple(
         CompactClassReference(consumer, parts, role, *facts)

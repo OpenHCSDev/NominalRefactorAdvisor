@@ -704,10 +704,22 @@ class ClassOverlapVerdicts:
                 )
             )
 
+        def copies_of(symbol: str) -> tuple[tuple[SourceLocation, tuple[str, ...]], ...]:
+            indexed_class = self.class_index.class_for(symbol)
+            if indexed_class is None:
+                return ()
+            return tuple(
+                (use.location, use.reference.copied_fields)
+                for use in self.uses.uses_of(indexed_class)
+                if use.role is ClassReferenceRole.CONSTRUCTION
+                and use.reference.copied_fields
+            )
+
         return BlockOwnerQuestion(
             first=first,
             second=second,
             block=block,
+            copies_of=copies_of,
             holders_of=holders_of,
             own_holders_of=own_holders_of,
             declared_names=declared_names,
@@ -716,6 +728,11 @@ class ClassOverlapVerdicts:
                 for name in block
                 if first_declarations[name].kind is ClassBodyDeclarationKind.FIELD
                 and not first_declarations[name].declaration.assigns_value
+            ),
+            block_fields=frozenset(
+                name
+                for name in block
+                if first_declarations[name].kind is ClassBodyDeclarationKind.FIELD
             ),
             constructions_of=constructions_of,
             positional_constructions_of=lambda symbol: constructions_of(

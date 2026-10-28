@@ -60,6 +60,8 @@ class OwnerReceiptKind(ReceiptKind):
     OWNER_NOT_CONTAINED = "owner_not_contained", 0.0, True
     DIFFERENT_CONSTRUCTION = "different_construction", 0.0, True
     CONFLICTING_DECLARATION = "conflicting_declaration", 0.0, True
+    COPIED_FROM = "copied_from", 0.0, True
+    COPIES_ONE_VALUE = "copies_one_value", 1.0, False
     SERVES_CALL_SITES = "serves_call_sites", 0.5, False
     NO_EXACT_SUBSTITUTION = "no_exact_substitution", 0.0, True
 
@@ -122,6 +124,10 @@ class BlockOwnerCandidate(OwnerCandidate, ABC):
     block: tuple[str, ...]
     """The block's declaration names."""
 
+    keeps_both_copies: ClassVar[bool] = True
+    """Whether both classes keep their own values of the block afterwards: true
+    for every owner the two compose, false for an owner that removes a copy."""
+
 
 @dataclass(frozen=True, kw_only=True)
 class SharedBaseOwner(BlockOwnerCandidate):
@@ -145,6 +151,34 @@ class ExistingClassOwner(BlockOwnerCandidate):
 
     def describe(self) -> str:
         return f"existing class `{self.symbol}`"
+
+
+@dataclass(frozen=True, kw_only=True)
+class RedirectToSourceOwner(BlockOwnerCandidate):
+    """The copying class is deleted and its uses read the class it copies from:
+    its declarations are a subset of the source's, so every read finds a field."""
+
+    symbol: str = ""
+    """The class whose values the deleted class copied."""
+    keeps_both_copies: ClassVar[bool] = False
+    KIND: ClassVar[str] = "delete_and_redirect"
+
+    def describe(self) -> str:
+        return f"delete the copy and use `{self.symbol}`"
+
+
+@dataclass(frozen=True, kw_only=True)
+class HoldSourceOwner(BlockOwnerCandidate):
+    """The copying class holds the instance it copied from instead of the copied
+    block; its readers reach the block through it."""
+
+    symbol: str = ""
+    """The class whose instance the copying class would hold."""
+    keeps_both_copies: ClassVar[bool] = False
+    KIND: ClassVar[str] = "hold_source"
+
+    def describe(self) -> str:
+        return f"hold a `{self.symbol}` instead of the copy"
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -238,10 +272,14 @@ class BlockOwnerQuestion:
     first: CompactIndexedClass
     second: CompactIndexedClass
     block: tuple[str, ...]
+    copies_of: Callable[[str], tuple[tuple[SourceLocation, tuple[str, ...]], ...]]
+    """Constructions of a class with the fields each copies as `x.<same name>`."""
     holders_of: Callable[[str], frozenset[str]]
     own_holders_of: Callable[[str], frozenset[str]]
     declared_names: Callable[[str], frozenset[str]]
     required_fields: frozenset[str]
+    block_fields: frozenset[str]
+    """The block's field declarations: what a construction can copy."""
     """Block names that are dataclass fields without a default."""
     constructions_of: Callable[[str], tuple[SourceLocation, ...]]
     positional_constructions_of: Callable[[str], tuple[SourceLocation, ...]]
@@ -257,12 +295,91 @@ class BlockOwnerQuestion:
     SHARED_BASE_LIMIT: ClassVar[int] = 3
 
     def candidates(self) -> tuple[OwnerCandidate, ...]:
-        found = (
+        found: tuple[BlockOwnerCandidate, ...] = (
             *self._shared_bases(),
             *self._existing_classes(),
             *self._new_mixins(),
         )
-        return ranked(found)
+        copy = self._copy()
+        if copy is None:
+            return ranked(found)
+        copier, source, locations = copy
+        refusal = Receipt(
+            OwnerReceiptKind.COPIED_FROM,
+            f"`{copier.qualname}` is built from the block copied field by field off "
+            f"one value: an owner both compose keeps both copies",
+            locations[:4],
+            count=len(locations),
+        )
+        return ranked(
+            (
+                *(
+                    replace(candidate, receipts=(*candidate.receipts, refusal))
+                    if candidate.keeps_both_copies
+                    else candidate
+                    for candidate in found
+                ),
+                self._copy_owner(copier, source, locations),
+            )
+        )
+
+    def _copy(
+        self,
+    ) -> tuple[CompactIndexedClass, CompactIndexedClass, tuple[SourceLocation, ...]] | None:
+        """The class of the two built by copying the whole block off one value,
+        the other class, and where it is built so."""
+
+        if not self.block_fields:
+            return None
+        for copier, source in (self.pair, self.pair[::-1]):
+            locations = tuple(
+                location
+                for location, fields in self.copies_of(copier.symbol)
+                if self.block_fields <= frozenset(fields)
+            )
+            if locations:
+                return copier, source, locations
+        return None
+
+    def _copy_owner(
+        self,
+        copier: CompactIndexedClass,
+        source: CompactIndexedClass,
+        locations: tuple[SourceLocation, ...],
+    ) -> BlockOwnerCandidate:
+        """Delete the copy when it declares nothing the source lacks; otherwise
+        hold the source instead of the copied block."""
+
+        receipt = Receipt(
+            OwnerReceiptKind.COPIES_ONE_VALUE,
+            f"`{copier.qualname}` copies the block off one value field by field",
+            locations[:4],
+            count=len(locations),
+        )
+        cost = OwnerCost(
+            statements_rewritten=len(self.block) + len(locations),
+            imports_added=0,
+            cycles_created=0,
+        )
+        if self.declared_names(copier.symbol) <= self.declared_names(source.symbol):
+            return RedirectToSourceOwner(
+                candidate_id=f"delete_and_redirect:{copier.symbol}",
+                module_name=source.module_name,
+                receipts=(receipt,),
+                cost=cost,
+                composers=(copier.symbol,),
+                block=self.block,
+                symbol=source.symbol,
+            )
+        return HoldSourceOwner(
+            candidate_id=f"hold_source:{copier.symbol}",
+            module_name=copier.module_name,
+            receipts=(receipt,),
+            cost=cost,
+            composers=(copier.symbol,),
+            block=self.block,
+            symbol=source.symbol,
+        )
 
     @property
     def pair(self) -> tuple[CompactIndexedClass, CompactIndexedClass]:
@@ -838,7 +955,9 @@ __all__ = (
     "BlockOwnerQuestion",
     "ExistingClassOwner",
     "ModuleImportGraph",
+    "HoldSourceOwner",
     "NewMixinOwner",
+    "RedirectToSourceOwner",
     "OwnerCandidate",
     "OwnerCost",
     "Receipt",
