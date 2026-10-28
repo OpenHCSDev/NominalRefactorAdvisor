@@ -80,6 +80,13 @@ class LexicalScopeABC(ABC):
 
         raise NotImplementedError
 
+    def augmented_read_resolution(
+        self, resolution: LexicalNameResolution
+    ) -> LexicalNameResolution:
+        """Resolve the read half of `name op= value`; its write targets the same owner."""
+
+        return resolution
+
     @property
     def execution_namespace(self) -> ClassNamespaceScope | None:
         """Only class scopes change lookup ownership as statements execute."""
@@ -201,6 +208,15 @@ class ClassNamespaceScope(LexicalScopeABC):
     @property
     def execution_namespace(self) -> ClassNamespaceScope:
         return self
+
+    def augmented_read_resolution(
+        self, resolution: LexicalNameResolution
+    ) -> LexicalNameResolution:
+        # One token both reads the module and writes the class. A name
+        # replacement cannot independently preserve those two owners.
+        if resolution.is_external_candidate:
+            return LexicalNameResolution.UNPROVED
+        return resolution
 
     def local_resolution_for(self, name: str) -> LexicalNameResolution | None:
         resolution = self.resolution_for(name)

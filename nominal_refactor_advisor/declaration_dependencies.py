@@ -563,11 +563,12 @@ class _DeclarationDependencyCollector(
 
     def visit_AugAssign(self, node: ast.AugAssign) -> None:
         if isinstance(node.target, ast.Name):
-            resolution = self._resolve_name(node.target.id)
-            if resolution.is_external_candidate:
-                # One token both reads the module and writes the class. A name
-                # replacement cannot independently preserve those two owners.
-                self._record_reference(node.target, LexicalNameResolution.UNPROVED)
+            self._record_reference(
+                node.target,
+                self.scopes[-1].augmented_read_resolution(
+                    self._resolve_name(node.target.id)
+                ),
+            )
         else:
             self.visit(node.target)
         self.visit(node.value)
