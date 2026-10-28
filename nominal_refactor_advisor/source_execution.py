@@ -20,7 +20,7 @@ from typing import ClassVar, Generic, TypeVar, cast
 
 from .ast_projection import AstClassProjection
 
-from .ast_tools import ParsedModule, module_syntax_index
+from .ast_tools import ParsedModule
 from .call_binding import (
     CompactCallArgument,
     CompactCallBinding,
@@ -2894,7 +2894,7 @@ class SourceClassBodyEntryABC(
         """
         self.require_original_operation()
         source = self.execution.source
-        syntax = module_syntax_index(source.module.module)
+        syntax = source.module.syntax_index
         original_body = tuple(
             node
             for node in syntax.children_by_node.get(self.node, ())

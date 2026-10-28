@@ -50,7 +50,6 @@ from .ast_tools import (
     CompactModuleIdentity,
     ParsedModule,
     PythonSourcePathPolicy,
-    module_syntax_index,
     python_module_path_identities_for_roots,
 )
 from .cache_checkout import (
@@ -3111,9 +3110,9 @@ class FindingBackedSemanticDescentGraphRequest:
 
     findings: tuple[RefactorFinding, ...]
 
-    @lru_cache(maxsize=16)
+    @cached_property
     def graph(self) -> SemanticDescentGraph:
-        """Derive and cache the graph owned by this immutable request."""
+        """The graph this immutable request derives, held by the request."""
 
         authorities: list[SemanticAuthority] = []
         facts: list[SemanticFact] = []
@@ -3340,7 +3339,7 @@ def build_finding_backed_semantic_descent_graph(
 ) -> SemanticDescentGraph:
     """Project semantic-mirror detector findings into descent graph certificates."""
 
-    return FindingBackedSemanticDescentGraphRequest(findings).graph()
+    return FindingBackedSemanticDescentGraphRequest(findings).graph
 
 
 class FindingAuthorityNamePolicy:
@@ -3840,9 +3839,9 @@ class SemanticDescentGraphBuildRequest:
 
     modules: tuple[ParsedModule, ...]
 
-    @lru_cache(maxsize=None)
+    @cached_property
     def graph(self) -> SemanticDescentGraph:
-        """Build this request's graph once across equal source snapshots."""
+        """This request's graph, built once and held by the request."""
 
         scan_deadline_checkpoint("semantic_descent_class_index")
         class_index = build_class_family_index(list(self.modules))
@@ -3895,10 +3894,10 @@ def build_semantic_descent_graph(
         cache_lookup = cache.load(identity)
         if cache_lookup.graph is not None:
             return cache_lookup.graph
-        graph = request.graph()
+        graph = request.graph
         cache.store(identity, graph)
         return graph
-    return request.graph()
+    return request.graph
 
 
 def load_cached_semantic_descent_graph_for_roots(
@@ -4280,7 +4279,7 @@ class CompactSemanticModuleProjectionFamily(
                 )
 
         constructed_type_names_by_class_id: dict[int, set[str]] = {}
-        syntax_index = module_syntax_index(parsed_module.module)
+        syntax_index = parsed_module.syntax_index
         for node_index, call in syntax_index.indexed_nodes_of_type(ast.Call):
             type_names = (
                 PresentationAuthorityConstructionCollector.construction_type_names(

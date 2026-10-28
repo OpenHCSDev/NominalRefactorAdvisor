@@ -107,7 +107,7 @@ def test_registry_receiver_collection_does_not_rewalk_factory_functions(
     )
     # The module traversal is shared. Collecting its receiver index must not
     # start an additional walk merely because a function calls AutoRegisterMeta.
-    class_index_module.module_syntax_index(parsed.module)
+    parsed.syntax_index
 
     def unexpected_walk(node):
         raise AssertionError("Registry collection repeated the shared AST walk")

@@ -23,6 +23,7 @@ from ..class_index import (
     CompactClassFamilyIndex,
     CompactModuleClassProjectionFamily,
 )
+from ..ast_tools import ParsedModuleSet
 from ..models import (
     RefactorFinding,
     MappingMetrics,
@@ -122,7 +123,7 @@ class SemanticProjectionDetector(
     @classmethod
     def context_signature(
         cls,
-        modules: tuple[ParsedModule, ...],
+        modules: ParsedModuleSet,
         config: DetectorConfig,
     ) -> str:
         del cls, config

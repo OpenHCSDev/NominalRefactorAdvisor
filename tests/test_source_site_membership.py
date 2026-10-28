@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from nominal_refactor_advisor.ast_tools import ParsedModule, module_syntax_index
+from nominal_refactor_advisor.ast_tools import ParsedModule
 from nominal_refactor_advisor.product_flow import source_product_flow_projection
 from nominal_refactor_advisor.source_execution import SourceModuleExecution
 
@@ -51,10 +51,10 @@ def test_syntax_owner_shares_membership_across_projections_and_activations():
         "class First:\n    value = property\nclass Second:\n    value = staticmethod\n"
     )
     copied_container = replace(original)
-    syntax = module_syntax_index(original.module.module)
+    syntax = original.module.syntax_index
     assert (
         syntax.node_membership
-        is module_syntax_index(copied_container.module.module).node_membership
+        is copied_container.module.syntax_index.node_membership
     )
     assert all(
         site.node in syntax.node_membership

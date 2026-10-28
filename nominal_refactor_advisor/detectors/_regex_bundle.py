@@ -3,18 +3,19 @@
 from __future__ import annotations
 
 import ast
+from typing import Self
 from collections import defaultdict
 from collections.abc import Callable
 from dataclasses import dataclass
 from enum import StrEnum
-from functools import cached_property, lru_cache
+from functools import cached_property
 from inspect import Signature, signature
 from itertools import combinations
 import re
 
 from ..ast_projection import ExpressionReference
 from ..ast_projection import CallKeywords
-from ..ast_tools import ParsedModule, named_function_nodes, walk_function_body_nodes
+from ..ast_tools import ParsedModule, ParsedModuleFact, walk_function_body_nodes
 from ..class_index import (
     ModuleNominalBindingAuthority,
     ModuleNominalBindingSnapshot,
@@ -109,14 +110,14 @@ class RepeatedLocalRegexBundleCandidate(FunctionEvidenceLocationsCandidate):
 
 
 @dataclass(frozen=True)
-class RegexBundleModuleProjection:
+class RegexBundleModuleProjection(ParsedModuleFact):
+    """One module's regex-bundle source facts, held by its parse."""
+
     module: ParsedModule
 
     @classmethod
-    @lru_cache(maxsize=32768)
-    def from_module(cls, module: ParsedModule) -> RegexBundleModuleProjection:
-        """Share source facts across scans; analysis memory release clears this cache."""
-        return cls(module)
+    def derive(cls, parsed_module: ParsedModule) -> Self:
+        return cls(parsed_module)
 
     @cached_property
     def external_reference_ids(self) -> frozenset[int]:
@@ -189,11 +190,11 @@ class RegexBundleModuleProjection:
     def collect(
         cls, module: ParsedModule, config: DetectorConfig
     ) -> tuple[RepeatedLocalRegexBundleCandidate, ...]:
-        projection = cls.from_module(module)
+        projection = module.fact(cls)
         if not projection.regex_binding_names:
             return ()
         grouped: dict[str, list[FunctionRegexBundle]] = defaultdict(list)
-        for qualname, function in named_function_nodes(module.module):
+        for qualname, function in module.syntax_index.named_functions:
             literals = projection.literals_for(function)
             if literals:
                 bundle = FunctionRegexBundle(qualname, literals)

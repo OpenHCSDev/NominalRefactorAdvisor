@@ -8,7 +8,6 @@ from functools import cached_property
 from typing import Annotated, cast
 
 from .ast_projection import CallKeywords
-from .ast_tools import module_syntax_index
 from .class_index import ModuleNominalBindingAuthority, nominal_reference_root_name
 from .codemod_declaration_source import DirectClassDeclarationAuthority
 from .codemod_runtime import CodemodSourceSnapshot
@@ -67,7 +66,7 @@ class FieldMetadataKeywordRemoval(SourceTextGeometry):
         Nested executable scopes are deliberately outside this binding proof.
         """
         module = self.snapshot.parsed_module_for_source_path(self.owner.file_path)
-        syntax = module_syntax_index(module.module)
+        syntax = module.syntax_index
         calls = []
         for index, call in syntax.indexed_nodes_of_type(ast.Call):
             ancestors = syntax.ancestor_nodes(index)

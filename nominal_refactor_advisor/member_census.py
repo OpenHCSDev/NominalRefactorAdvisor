@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import Self
 
 from .ast_projection import ExpressionReference
-from .ast_tools import ParsedModule, module_syntax_index, parse_python_modules
+from .ast_tools import ParsedModule, parse_python_modules
 from .class_index import (
     CompactClassFamilyIndex,
     CompactIndexedClass,
@@ -324,7 +324,7 @@ class ForeignModuleSource(MemberCensusSource):
         )
 
     def _pattern_shapes(self, module: ParsedModule) -> Iterator[ForeignTypeTestShape]:
-        index = module_syntax_index(module.module)
+        index = module.syntax_index
         resolver = self.corpus.resolvers[module.file_path]
         for node_index, pattern in index.indexed_nodes_of_type(ast.MatchClass):
             ancestors = index.ancestor_nodes(node_index)
@@ -403,7 +403,7 @@ class ModuleCalls:
 
     @cached_property
     def by_symbol(self) -> Mapping[str, tuple[CalledMethod, ...]]:
-        index = module_syntax_index(self.module.module)
+        index = self.module.syntax_index
         calls: dict[str, list[CalledMethod]] = defaultdict(list)
         for node_index, call in index.indexed_nodes_of_type(ast.Call):
             match call.func:

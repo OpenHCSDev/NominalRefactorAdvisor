@@ -27,7 +27,6 @@ from .ast_tools import (
     CollectedFamily,
     ParsedModule,
     ParsedModuleSourceProjection,
-    module_syntax_index,
 )
 from .call_binding import (
     CallValueT,
@@ -2435,7 +2434,7 @@ class SourceProductFlowRepository(RepositoryModuleBindingProof, ProductFlowRepos
         )
         classes = [
             node
-            for _, node in module_syntax_index(module.module).indexed_nodes_of_type(
+            for _, node in module.syntax_index.indexed_nodes_of_type(
                 ast.ClassDef
             )
             if node.lineno == declaration.line
@@ -2489,7 +2488,7 @@ class SourceProductFlowRepository(RepositoryModuleBindingProof, ProductFlowRepos
         )
         if module is None:
             return None
-        syntax = module_syntax_index(module.module)
+        syntax = module.syntax_index
         current: ast.AST = reference
         while True:
             parent = syntax.parent_by_node.get(current)

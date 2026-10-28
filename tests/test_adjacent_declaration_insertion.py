@@ -7,6 +7,7 @@ import sys
 
 import pytest
 
+from nominal_refactor_advisor.ast_tools import ParsedModuleSet
 from nominal_refactor_advisor.ast_tools import ParsedModule, parse_python_modules
 from nominal_refactor_advisor.codemod import (
     CodemodPlanSequence,
@@ -245,7 +246,7 @@ def test_collector_declaration_requires_complete_class_execution_before_anchor_e
         )
     )
     snapshot = CodemodSourceSnapshot.from_modules(
-        (*parse_python_modules(tmp_path), native_collector_module)
+        ParsedModuleSet.of((*parse_python_modules(tmp_path), native_collector_module))
     )
     with pytest.raises(ValueError, match="unproved_execution_effects"):
         plan.simulate(snapshot)

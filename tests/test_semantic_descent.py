@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+from nominal_refactor_advisor.ast_tools import ParsedModuleSet
 import nominal_refactor_advisor.semantic_descent as semantic_descent_module
 import nominal_refactor_advisor.semantic_refactor_gate as semantic_refactor_gate_module
 from nominal_refactor_advisor.json_reports import json_report_object
@@ -1706,9 +1707,9 @@ def test_autoregister_priority_ordering_synthesizes_one_proven_mro_batch(
         for operation in plan.document.recipes[0].operations
     )
     projected_findings = analyze_modules(
-        snapshot.with_virtual_sources(
+        ParsedModuleSet.of(snapshot.with_virtual_sources(
             simulation.simulation.rewritten_sources
-        ).parsed_modules,
+        ).parsed_modules),
         DetectorConfig(),
     )
     namespace: dict[str, object] = {}
@@ -2127,7 +2128,7 @@ def test_semantic_mirror_registry_proposal_resolves_absolute_finding_paths(
     )
     findings = tuple(
         SemanticMirrorWithoutDescentDetector().detect(
-            snapshot.parsed_modules,
+            ParsedModuleSet.of(snapshot.parsed_modules),
             DetectorConfig(),
         )
     )
@@ -5269,7 +5270,7 @@ def test_semantic_mirror_enum_subset_recipe_resolves_absolute_finding_paths(
     )
     findings = tuple(
         SemanticMirrorWithoutDescentDetector().detect(
-            snapshot.parsed_modules,
+            ParsedModuleSet.of(snapshot.parsed_modules),
             DetectorConfig(),
         )
     )

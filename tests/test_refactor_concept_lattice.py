@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 
+from nominal_refactor_advisor.ast_tools import ParsedModuleSet
 import nominal_refactor_advisor as advisor
 from nominal_refactor_advisor import codemod
 from nominal_refactor_advisor import codemod_workflow
@@ -339,7 +340,7 @@ def test_nominal_boundary_does_not_select_unexecutable_ssot_detectors() -> None:
         capability_gap="A proof-backed executable declaration.",
         relation_context="An unsupported SSOT detector must not enter the lattice.",
     )
-    snapshot = codemod.CodemodSourceSnapshot.from_modules((), (finding,))
+    snapshot = codemod.CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(()), (finding,))
 
     assert not codemod.FindingRecipeSynthesizer.finding_matches_concept(
         finding,

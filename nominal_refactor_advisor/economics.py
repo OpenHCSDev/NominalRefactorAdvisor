@@ -14,6 +14,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterable
 
+from .ast_tools import ParsedModuleSet
 from .analysis import analyze_modules
 from .ast_tools import parse_python_modules
 from .collection_algebra import sorted_tuple
@@ -458,7 +459,7 @@ def _scan_modules_for_proof(
     scan_budget_seconds: float,
 ) -> ScanEconomicsProof:
     started = perf_counter()
-    findings = analyze_modules(modules, config)
+    findings = analyze_modules(ParsedModuleSet(tuple(modules)), config)
     plans = build_refactor_plans(findings, path)
     elapsed = perf_counter() - started
     return ScanEconomicsProof.from_findings_and_plans(

@@ -2,6 +2,7 @@
 
 from pathlib import Path
 
+from nominal_refactor_advisor.ast_tools import ParsedModuleSet
 from nominal_refactor_advisor.analysis import analyze_path
 from nominal_refactor_advisor.ast_tools import SourceModule
 from nominal_refactor_advisor.cli import MARKDOWN_RENDERER
@@ -16,7 +17,7 @@ from nominal_refactor_advisor.patterns import PatternId
 
 def _findings(source: str):
     module = SourceModule(Path("pkg/handler.py"), "pkg.handler", source).parse()
-    return StringLiteralDispatchOwnershipLeadDetector().detect([module], DetectorConfig())
+    return StringLiteralDispatchOwnershipLeadDetector().detect(ParsedModuleSet.of([module]), DetectorConfig())
 
 
 def test_async_method_reports_original_order_and_fallback_without_recipe_claim():
@@ -199,7 +200,7 @@ def test_guarded_event_case_lead_retains_distinct_roots_without_a_recipe():
     )
     parsed = SourceModule(Path("pkg/handler.py"), "pkg.handler", source).parse()
     finding, = GuardedStringCaseOwnershipLeadDetector().detect(
-        [parsed], DetectorConfig()
+        ParsedModuleSet.of([parsed]), DetectorConfig()
     )
     assert finding.certification == "strong_heuristic"
     assert finding.pattern_id is PatternId.SOURCE_BACKED_DISPATCH_LEAD
@@ -242,10 +243,10 @@ def test_rendered_relation_for_both_leads_does_not_assert_closed_family():
         "        return 3\n"
     )
     parsed = SourceModule(Path("pkg/handler.py"), "pkg.handler", source).parse()
-    guarded, = GuardedStringCaseOwnershipLeadDetector().detect([parsed], DetectorConfig())
+    guarded, = GuardedStringCaseOwnershipLeadDetector().detect(ParsedModuleSet.of([parsed]), DetectorConfig())
     ladder_source = source.replace("reply_targets and ", "")
     ladder_parsed = SourceModule(Path("pkg/handler.py"), "pkg.handler", ladder_source).parse()
-    ladder, = StringLiteralDispatchOwnershipLeadDetector().detect([ladder_parsed], DetectorConfig())
+    ladder, = StringLiteralDispatchOwnershipLeadDetector().detect(ParsedModuleSet.of([ladder_parsed]), DetectorConfig())
     for finding in (guarded, ladder):
         output = MARKDOWN_RENDERER.findings([finding])
         assert "Required relation: Selected original source tests" in output
@@ -265,7 +266,7 @@ def test_guarded_cases_in_separate_functions_do_not_form_one_family():
     )
     parsed = SourceModule(Path("pkg/handler.py"), "pkg.handler", source).parse()
     assert GuardedStringCaseOwnershipLeadDetector().detect(
-        [parsed], DetectorConfig()
+        ParsedModuleSet.of([parsed]), DetectorConfig()
     ) == []
 
 
@@ -280,7 +281,7 @@ def test_guard_order_and_false_short_circuit_have_distinct_source_receipts():
         )
         parsed = SourceModule(Path("pkg/handler.py"), "pkg.handler", source).parse()
         finding, = GuardedStringCaseOwnershipLeadDetector().detect(
-            [parsed], DetectorConfig()
+            ParsedModuleSet.of([parsed]), DetectorConfig()
         )
         return finding
 
@@ -303,7 +304,7 @@ def test_same_spelled_rebound_function_is_not_one_lexical_owner():
     )
     parsed = SourceModule(Path("pkg/handler.py"), "pkg.handler", source).parse()
     assert GuardedStringCaseOwnershipLeadDetector().detect(
-        [parsed], DetectorConfig()
+        ParsedModuleSet.of([parsed]), DetectorConfig()
     ) == []
 
 
@@ -315,7 +316,7 @@ def test_two_kind_equalities_in_one_guard_are_not_two_case_alternatives():
     )
     parsed = SourceModule(Path("pkg/handler.py"), "pkg.handler", source).parse()
     assert GuardedStringCaseOwnershipLeadDetector().detect(
-        [parsed], DetectorConfig()
+        ParsedModuleSet.of([parsed]), DetectorConfig()
     ) == []
 
 

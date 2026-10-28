@@ -43,9 +43,9 @@ from .class_index import (
     ClassFamilyIndex,
     CompactModuleClassProjectionFamily,
     RepositoryModuleBindingProof,
-    build_class_family_index,
     build_compact_class_family_index,
 )
+from .ast_tools import ParsedModuleSet
 from .class_overlap import ClassOverlapVerdicts
 from .codemod_architecture_guards import (
     ArchitectureGuardReport,
@@ -273,7 +273,7 @@ class CodemodSourceSnapshot(CodemodSelectorContext):
             canonical_sources,
             analysis_roots=analysis_roots,
         )
-        return cls.from_modules(modules)
+        return cls.from_modules(ParsedModuleSet(tuple(modules)))
 
     @classmethod
     def from_indexed_sources(
@@ -296,7 +296,7 @@ class CodemodSourceSnapshot(CodemodSelectorContext):
         return cls._from_modules_with_indexes(
             modules,
             (
-                build_class_family_index(modules)
+                ParsedModuleSet(modules).fact(ClassFamilyIndex)
                 if class_family_index is None
                 else class_family_index
             ),
@@ -313,15 +313,15 @@ class CodemodSourceSnapshot(CodemodSelectorContext):
     @classmethod
     def from_modules(
         cls,
-        modules: Iterable[ParsedModule],
+        modules: ParsedModuleSet,
         findings: Iterable[RefactorFinding] = (),
     ) -> CodemodSourceSnapshot:
-        module_tuple = tuple(modules)
-        finding_tuple = tuple(findings)
+        """A snapshot of one module set; the set owns its class-family index."""
+
         return cls._from_modules_with_indexes(
-            module_tuple,
-            build_class_family_index(module_tuple),
-            build_source_index_artifacts(module_tuple, finding_tuple),
+            modules.modules,
+            modules.fact(ClassFamilyIndex),
+            build_source_index_artifacts(modules.modules, tuple(findings)),
         )
 
     @classmethod

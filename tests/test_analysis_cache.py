@@ -15,6 +15,7 @@ import weakref
 import pytest
 
 
+from nominal_refactor_advisor.ast_tools import ParsedModuleSet
 from nominal_refactor_advisor.class_index import (
     ResolvedStarImportOrigin,
     UnresolvedStarImportOrigin,
@@ -36,7 +37,6 @@ from nominal_refactor_advisor.analysis import (
     analyze_path,
     accumulate_compact_global_projections_for_roots,
     default_detector_types_for_analysis,
-    release_module_analysis_memory,
 )
 from nominal_refactor_advisor.analysis_cache import (
     AnalysisCacheIdentity,
@@ -242,7 +242,7 @@ def test_codemod_source_context_cache_preserves_its_nominal_entry(
         modules,
         DetectorConfig(),
     )
-    context = CodemodSourceContext.from_modules(modules)
+    context = CodemodSourceContext.from_modules(ParsedModuleSet.of(modules))
     cache = CodemodSourceContextCache(tmp_path / "cache")
 
     assert cache.load(identity).status is Miss
@@ -374,35 +374,6 @@ def test_cache_retention_throttles_repeated_tree_walks(tmp_path: Path) -> None:
     assert late_root.is_dir()
 
 
-def test_module_analysis_memory_release_clears_ast_bound_lru_caches() -> None:
-    module = ast_tools_module.ast.parse("def project():\n    return source + 1\n")
-    function = module.body[0]
-    assert isinstance(function, ast.FunctionDef)
-    ast_tools_module._walk_nodes(module)
-    ast_tools_module.walk_function_body_nodes(function)
-    assert ast_tools_module.named_function_nodes(module) == (("project", function),)
-    ast_tools_module.module_syntax_index(module)
-
-    cleared_cache_count = release_module_analysis_memory()
-
-    assert cleared_cache_count > 0
-    assert ast_tools_module._walk_nodes.cache_info().currsize == 0
-    assert ast_tools_module.walk_function_body_nodes.cache_info().currsize == 0
-    assert ast_tools_module.named_function_nodes.cache_info().currsize == 0
-    assert ast_tools_module.module_syntax_index.cache_info().currsize == 0
-
-
-def test_module_analysis_memory_release_preserves_compiled_native_queries() -> None:
-    query_source = "(class_definition) @class"
-    syntax_index = NativePythonSyntaxIndex.from_source("class Role: pass\n")
-    expected_query = native_syntax_module._python_query(query_source)
-    assert syntax_index.captures(query_source)["class"]
-
-    release_module_analysis_memory()
-
-    assert native_syntax_module._python_query(query_source) is expected_query
-
-
 def test_native_syntax_index_shares_frozen_captures_between_families() -> None:
     syntax_index = NativePythonSyntaxIndex.from_source(
         "class Role:\n    def build(self): return Role()\n"
@@ -433,11 +404,10 @@ def test_function_body_consumers_share_bounded_projection_authority(
     module = parse_python_modules(package_root, use_parse_cache=False)[0]
     scope = environment_detectors._function_scopes(module)[0]
 
-    environment_nodes = scope.nodes()
-    authority_nodes = ast_tools_module.walk_function_body_nodes(scope.node)
+    environment_nodes = scope.nodes
 
-    assert environment_nodes is scope.nodes()
-    assert environment_nodes is authority_nodes
+    assert environment_nodes is scope.nodes
+    assert environment_nodes == ast_tools_module.walk_function_body_nodes(scope.node)
     assert isinstance(environment_nodes[0], ast.Assign)
     assert not any(
         isinstance(node, ast.Constant)
@@ -461,16 +431,12 @@ def test_class_and_detector_collectors_share_named_function_projection(
     )
     module = parse_python_modules(package_root, use_parse_cache=False)[0]
 
-    class_functions = class_index_module._named_functions(module.module)
-    detector_functions = base_detectors._iter_named_functions(module)
+    class_functions = module.syntax_index.named_functions
+    detector_functions = module.syntax_index.named_functions
     base_detectors._module_builder_call_shapes(module)
 
     assert class_functions is detector_functions
     assert tuple(name for name, _ in class_functions) == ("Outer.Inner.build",)
-    function = class_functions[0][1]
-    assert ast_tools_module.walk_function_body_nodes(function) is (
-        ast_tools_module.walk_function_body_nodes(function)
-    )
 
 
 def test_module_syntax_index_projects_nodes_from_its_owned_traversal() -> None:
@@ -480,7 +446,7 @@ def test_module_syntax_index_projects_nodes_from_its_owned_traversal() -> None:
         "        def build(self):\n"
         "            return Result()\n"
     )
-    syntax_index = ast_tools_module.module_syntax_index(module)
+    syntax_index = ast_tools_module.ModuleSyntaxIndex.build(module)
 
     indexed_classes = syntax_index.indexed_nodes_of_type(ast.ClassDef)
     indexed_calls = syntax_index.indexed_nodes_of_type(ast.Call)
@@ -1886,7 +1852,7 @@ def test_graph_detector_uses_cached_repo_graph_for_changed_module_analysis(
 
     changed_module = parse_python_module_roots((package_root / "b.py",))[0]
     result = analyze_modules(
-        [changed_module],
+        ParsedModuleSet.of([changed_module]),
         DetectorConfig(),
         semantic_descent_source=SemanticDescentGraphAnalysisSource(
             cache_context=SemanticDescentGraphCacheContext(
@@ -2154,7 +2120,6 @@ def test_uncertified_family_cache_payload_is_invalidated(
             protocol=pickle.HIGHEST_PROTOCOL,
         )
     )
-    release_module_analysis_memory()
 
     reloaded_module = parse_python_modules(package_root, cache_dir=cache_dir)[0]
     actual_items = collect_family_items(reloaded_module, BuilderCallShapeFamily)
@@ -2213,7 +2178,7 @@ def test_collected_family_can_opt_into_a_larger_bounded_cache_payload(
     monkeypatch.setattr(
         BuilderCallShapeFamily, "cache_payload_max_bytes", payload_bound
     )
-    ast_tools_module.collect_family_batch.cache_clear()
+    module = module.with_source(module.source)
     assert collect_family_items(module, BuilderCallShapeFamily)
     payload_paths = tuple(family_cache_dir.glob("*.pickle"))
 
@@ -2243,7 +2208,6 @@ def test_generated_boundary_global_projection_reuses_compact_module_cache(
         first_module,
         runtime_detectors.GeneratedBoundarySemanticConstantSiteFamily,
     )
-    release_module_analysis_memory()
 
     def unexpected_collection(
         cls: type,
@@ -2293,7 +2257,6 @@ def test_warm_compact_projection_stream_skips_ast_deserialization(
         cache_dir=cache_dir,
     )
     assert first.projection_count == 1
-    release_module_analysis_memory()
 
     def unexpected_ast_load(self, paths):
         del self, paths
@@ -3133,7 +3096,6 @@ def test_class_candidate_anchor_witnesses_follow_reported_seed_locations() -> No
 
 def test_class_demand_omits_unreportable_autoregister_reference_graph(
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     package_root = tmp_path / "pkg"
     package_root.mkdir()
@@ -3163,30 +3125,13 @@ def test_class_demand_omits_unreportable_autoregister_reference_graph(
     assert isinstance(demand, class_index_module.CompactClassProjectionDemand)
     assert demand.include_autoregister_references is False
 
-    collect_autoregister_values: list[bool] = []
-    original_collector = class_index_module._compact_class_syntax_facets
-
-    def recording_syntax_facets(
-        selected_module,
-        *,
-        collect_autoregister: bool = True,
-    ):
-        collect_autoregister_values.append(collect_autoregister)
-        return original_collector(
-            selected_module,
-            collect_autoregister=collect_autoregister,
-        )
-
-    monkeypatch.setattr(
-        class_index_module,
-        "_compact_class_syntax_facets",
-        recording_syntax_facets,
-    )
     demanded = family.collect_demanded(parsed_module, demand)
+    held_facts = vars(parsed_module).get("_facts", {})
 
     assert demanded is not None
     assert demanded[0].autoregister_reference_index is None
-    assert collect_autoregister_values == [False]
+    assert class_index_module.ModuleClassSyntaxFacetsWithoutAutoregister in held_facts
+    assert class_index_module.ModuleClassSyntaxFacets not in held_facts
 
     target_root = class_index_module.CompactIndexedClass(
         symbol="pkg.target.TargetRegistry",
@@ -5047,9 +4992,7 @@ def test_bounded_multi_family_joins_reuse_the_single_class_anchor(
     )
 
     calls = 0
-    collect_cycles_calls: list[bool] = []
     original_builder = class_index_module.build_compact_class_family_index
-    original_release = analysis_module.release_module_analysis_memory
 
     def counting_builder(projections):
         nonlocal calls
@@ -5058,10 +5001,6 @@ def test_bounded_multi_family_joins_reuse_the_single_class_anchor(
 
     def forbidden_builder(_projections):
         raise AssertionError("multi-family detector rebuilt the compact class graph")
-
-    def observing_release(*, collect_cycles=True):
-        collect_cycles_calls.append(collect_cycles)
-        return original_release(collect_cycles=collect_cycles)
 
     monkeypatch.setattr(
         base_detectors,
@@ -5078,17 +5017,11 @@ def test_bounded_multi_family_joins_reuse_the_single_class_anchor(
             "build_compact_class_family_index",
             forbidden_builder,
         )
-    monkeypatch.setattr(
-        analysis_module,
-        "release_module_analysis_memory",
-        observing_release,
-    )
 
     findings = manifest.findings_by_detector(DetectorConfig())
 
     assert calls == 1
     assert set(findings) == set(detector_types)
-    assert collect_cycles_calls[-1] is True
 
 
 def test_compact_repeated_keyed_family_preserves_grouping_semantics(
@@ -5608,7 +5541,6 @@ def test_compact_class_method_projection_reuses_exact_tiny_roles_from_warm_cache
     assert cold_methods[0].promotion_hazards == ()
     assert tuple((cache_dir / "collected-family").glob("*.pickle"))
 
-    release_module_analysis_memory()
     warm_module = parse_python_modules(package_root, cache_dir=cache_dir)[0]
     cached = warm_module.collected_family_cache.load_items(family)
     warm = collect_family_items(warm_module, family)

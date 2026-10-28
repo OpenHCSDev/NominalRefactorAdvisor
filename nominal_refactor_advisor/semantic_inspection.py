@@ -15,6 +15,7 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Iterable, Sequence
 
+from .ast_tools import ParsedModuleSet
 from .lexical_bindings import ImportBoundNameProjection
 from .analysis import analyze_modules
 from .ast_projection import CallKeyword, StatementValue
@@ -306,7 +307,7 @@ class SourceIndexSemanticAstInspector(SemanticAstInspector):
     ) -> SemanticInspectionReport:
         module_tuple = tuple(modules)
         if findings is None:
-            finding_tuple = tuple(analyze_modules(list(module_tuple), self.config))
+            finding_tuple = tuple(analyze_modules(ParsedModuleSet(module_tuple), self.config))
         else:
             finding_tuple = tuple(findings)
         source_index = build_source_index(module_tuple, finding_tuple)

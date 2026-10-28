@@ -81,7 +81,6 @@ from ._base import (
     _cross_module_axis_shadow_family_candidates_from_specs,
     _derived_wrapper_spec_shadow_candidates,
     _implicit_self_contract_mixin_candidates,
-    _iter_named_functions,
     _keyed_record_infrastructure_candidates,
     _KeyedFamilyAxisSpec,
     _manual_fiber_tag_candidates,
@@ -201,10 +200,10 @@ def _compact_concrete_type_case_function_facts(
 ) -> tuple[CompactConcreteTypeCaseFunctionFact, ...]:
     union_aliases = tuple(sorted(_module_union_type_aliases(module).items()))
     facts: list[CompactConcreteTypeCaseFunctionFact] = []
-    for qualname, function in _iter_named_functions(module):
+    for qualname, function in module.syntax_index.named_functions:
         alias_sources = _top_level_attribute_aliases(function)
         grouped_checks: dict[str, list[tuple[str, ...]]] = defaultdict(list)
-        for subnode in _walk_nodes(function):
+        for subnode in module.syntax_index.function_walks[function]:
             isinstance_arguments = BuiltinCallName.isinstance_arguments(subnode)
             if isinstance_arguments is None:
                 continue
@@ -837,7 +836,7 @@ def _projection_property_family_candidates(
 ) -> tuple[ProjectionPropertyFamilyCandidate, ...]:
     candidates: list[ProjectionPropertyFamilyCandidate] = []
     for class_node in (
-        node for node in _walk_nodes(module.module) if isinstance(node, ast.ClassDef)
+        node for node in module.syntax_index.breadth_first_nodes if isinstance(node, ast.ClassDef)
     ):
         properties: list[tuple[ast.FunctionDef | ast.AsyncFunctionDef, str]] = []
         for statement in class_node.body:
@@ -965,7 +964,7 @@ def _collection_projection_property_family_candidates(
 ) -> tuple[CollectionProjectionPropertyFamilyCandidate, ...]:
     candidates: list[CollectionProjectionPropertyFamilyCandidate] = []
     for class_node in (
-        node for node in _walk_nodes(module.module) if isinstance(node, ast.ClassDef)
+        node for node in module.syntax_index.breadth_first_nodes if isinstance(node, ast.ClassDef)
     ):
         properties: list[tuple[ast.FunctionDef | ast.AsyncFunctionDef, str, str]] = []
         for statement in CLASS_NODE_AUTHORITY.methods(class_node):

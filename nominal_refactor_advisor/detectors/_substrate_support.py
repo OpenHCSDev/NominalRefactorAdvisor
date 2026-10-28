@@ -232,7 +232,7 @@ def _class_ancestor_name_map(
 def _module_class_defs_by_name(module: ParsedModule) -> dict[str, ast.ClassDef]:
     return {
         node.name: node
-        for node in _walk_nodes(module.module)
+        for node in module.syntax_index.breadth_first_nodes
         if isinstance(node, ast.ClassDef)
     }
 
