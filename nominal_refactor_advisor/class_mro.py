@@ -18,6 +18,10 @@ if TYPE_CHECKING:
     from .class_index import CompactIndexedClass
 
 
+class UnboundBaseReference(ValueError):
+    """A base reference no declaration-time binding roots."""
+
+
 class NativeMroBase(StrEnum):
     """Standard terminal bases whose native construction has no repository hooks."""
 
@@ -219,10 +223,12 @@ class ClassMroAuthority:
             not declaration.base_references_are_complete
             or len(declaration.resolved_base_symbols)
             != sum(base is None for base in native_bases)
-            or not all(
-                reference.binds_exactly for reference in declaration.base_references
-            )
         ):
+            return UnresolvedBases(symbol)
+        try:
+            for reference in declaration.base_references:
+                reference.require_bound()
+        except UnboundBaseReference:
             return UnresolvedBases(symbol)
         source_bases = iter(declaration.resolved_base_symbols)
         bases = []

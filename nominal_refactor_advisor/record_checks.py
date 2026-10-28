@@ -216,11 +216,7 @@ class DeclaredAttributeContractResolver:
         matches = (
             declared_symbol == expected_symbol
             if declared_symbol is not None
-            else declared.fold_binding(
-                lambda _binding: declared.resolved_parts[0] == "builtins"
-                and declared.resolved_parts == check.expected_type.resolved_parts,
-                lambda: False,
-            )
+            else declared.names_builtin(check.expected_type.resolved_parts)
         )
         if not matches:
             return None

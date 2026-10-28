@@ -1719,15 +1719,7 @@ class ProductFlowRepository(
         for projection in self.class_projections:
             for indexed in projection.classes:
                 for base in indexed.base_references:
-                    parts = base.resolved_parts
-                    qualified = base.fold_binding(
-                        lambda _binding, parts=parts: ".".join(parts),
-                        lambda parts=parts: (
-                            f"{builtins.__name__}.{parts[0]}"
-                            if len(parts) == 1 and hasattr(builtins, parts[0])
-                            else ".".join(parts)
-                        ),
-                    )
+                    qualified = base.builtin_qualified_name
                     if qualified.partition(".")[0] not in self.scanned_roots:
                         found.setdefault(qualified, []).append(indexed.symbol)
         return {base: tuple(classes) for base, classes in found.items()}
