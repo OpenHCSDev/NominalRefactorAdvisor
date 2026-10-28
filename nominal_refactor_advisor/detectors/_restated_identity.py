@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable, Sequence
-from typing import cast
+
 
 from ..class_identity_observations import (
     DeclaredIdentities,
@@ -30,14 +30,12 @@ def _declared_identities(
     projections_by_family: CompactProjectionGroups,
 ) -> DeclaredIdentities:
     return DeclaredIdentities.from_modules(
-        cast(
-            Sequence[ModuleDeclarations], projections_by_family[DeclaredIdentityFamily]
-        )
+        DeclaredIdentityFamily.modules_in(projections_by_family)
     )
 
 
 class RestatedIdentityDetector(
-    JoinedRestatedFactDetector[DeclaredIdentities],
+    JoinedRestatedFactDetector[DeclaredIdentities, RestatingSite],
     DeclarationReferenceFindingRecipeSynthesizer,
 ):
     """A string literal that spells a declared class, module or family member in a position that uses it."""

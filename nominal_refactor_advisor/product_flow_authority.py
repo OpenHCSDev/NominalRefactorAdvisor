@@ -2391,14 +2391,8 @@ class CompactProductFlowRepository(ProductFlowRepository):
         """Recover the typed product-flow join declared by its fact families."""
 
         return cls(
-            product_projections=cast(
-                Sequence[CompactProductFlowModuleProjection],
-                projections_by_family[CompactProductFlowModuleProjectionFamily],
-            ),
-            class_projections=cast(
-                Sequence[CompactModuleClassProjection],
-                projections_by_family[CompactModuleClassProjectionFamily],
-            ),
+            product_projections=CompactProductFlowModuleProjectionFamily.modules_in(projections_by_family),
+            class_projections=CompactModuleClassProjectionFamily.modules_in(projections_by_family),
         )
 
     @classmethod

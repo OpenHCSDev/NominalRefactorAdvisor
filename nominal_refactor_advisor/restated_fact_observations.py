@@ -16,6 +16,7 @@ from collections.abc import Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
+from typing import TypeVar
 
 from .ast_field_decoders import ParameterAnnotations
 from .lexical_bindings import ImportAlias, ImportBoundNameProjection
@@ -23,7 +24,9 @@ from .ast_projection import CallKeywords, StatementValues
 from .ast_tools import BuiltinCallName, ParsedModule
 from .declared_root import DeclaredRoot
 from .models import SourceLocation
+from .class_index import ModuleNominalBindingAuthority
 from .observation_families import ShapeFamily
+from .probe_owner import ProbeOwner, ProbeOwnerResolver
 from .python_module_identity import PythonModulePathIdentity
 
 # A subject needs this many distinct string arms before it is a family spelled out.
@@ -59,16 +62,18 @@ class RestatingSiteModule:
     sites: tuple[RestatingSite, ...]
 
 
-class RestatingSiteFamily(ShapeFamily[RestatingSiteModule], ABC):
+RestatingSiteModuleT = TypeVar("RestatingSiteModuleT", bound=RestatingSiteModule)
+
+
+class RestatingSiteFamily(ShapeFamily[RestatingSiteModuleT], ABC):
     """A family of restating sites; subclasses declare only what they match."""
 
     _registry_skip = True
-    item_type = RestatingSiteModule
 
     @classmethod
-    def collect(cls, parsed_module: ParsedModule) -> list[RestatingSiteModule]:
+    def collect(cls, parsed_module: ParsedModule) -> list[RestatingSiteModuleT]:
         return [
-            RestatingSiteModule(
+            cls.item_type(
                 module_name=parsed_module.module_name,
                 sites=tuple(cls.sites(parsed_module)),
             )
@@ -129,8 +134,10 @@ def _literal_strings(node: ast.expr) -> tuple[str, ...] | None:
     return None
 
 
-class StringDispatchSiteFamily(RestatingSiteFamily):
+class StringDispatchSiteFamily(RestatingSiteFamily[RestatingSiteModule]):
     """One subject compared against several string literals inside one function."""
+
+    item_type = RestatingSiteModule
 
     @classmethod
     def sites(cls, parsed_module: ParsedModule) -> Iterator[RestatingSite]:
@@ -216,7 +223,7 @@ def imported_module_names(parsed_module: ParsedModule) -> frozenset[str]:
     )
 
 
-class NamedAttributeSiteFamily(RestatingSiteFamily):
+class NamedAttributeSiteFamily(RestatingSiteFamily[RestatingSiteModule]):
     """getattr/hasattr/setattr/delattr by a literal name, or by a module constant holding one.
 
     A name computed at run time (read from `_fields`, a loop variable) restates
@@ -225,6 +232,8 @@ class NamedAttributeSiteFamily(RestatingSiteFamily):
     An imported module is not a type of ours: `hasattr(os, "pidfd_open")` asks
     what this platform build provides, which no declaration of ours can hold.
     """
+
+    item_type = RestatingSiteModule
 
     @classmethod
     def sites(cls, parsed_module: ParsedModule) -> Iterator[RestatingSite]:
@@ -315,8 +324,10 @@ class _KeyViewSyntax:
         return tuple(sorted(set(keys)))
 
 
-class ExactKeySetSiteFamily(RestatingSiteFamily):
+class ExactKeySetSiteFamily(RestatingSiteFamily[RestatingSiteModule]):
     """A literal key collection compared with, or subtracted from, a mapping's keys."""
+
+    item_type = RestatingSiteModule
 
     @classmethod
     def sites(cls, parsed_module: ParsedModule) -> Iterator[RestatingSite]:
@@ -421,13 +432,32 @@ class ExactKeySetSiteFamily(RestatingSiteFamily):
                 return
 
 
-class ForeignAbsenceSiteFamily(RestatingSiteFamily):
+@dataclass(frozen=True)
+class ForeignAbsenceSite(RestatingSite):
+    """A foreign absence probe with the class its receiver is declared as."""
+
+    owner: ProbeOwner
+
+
+@dataclass(frozen=True)
+class ForeignAbsenceSiteModule(RestatingSiteModule):
+    """One module's foreign absence probes, each with its owner."""
+
+    sites: tuple[ForeignAbsenceSite, ...]
+
+
+class ForeignAbsenceSiteFamily(RestatingSiteFamily[ForeignAbsenceSiteModule]):
     """`other.attr is None` and `is not None` on an object that is not the method's own."""
 
+    item_type = ForeignAbsenceSiteModule
+
     @classmethod
-    def sites(cls, parsed_module: ParsedModule) -> Iterator[RestatingSite]:
+    def sites(cls, parsed_module: ParsedModule) -> Iterator[ForeignAbsenceSite]:
         index = parsed_module.syntax_index
         modules = imported_module_names(parsed_module)
+        resolver = ProbeOwnerResolver(
+            parsed_module.file_path, ModuleNominalBindingAuthority(parsed_module)
+        )
         for node_index, node in index.indexed_nodes_of_type(ast.Compare):
             match node:
                 case ast.Compare(
@@ -440,14 +470,19 @@ class ForeignAbsenceSiteFamily(RestatingSiteFamily):
                     continue
             if cls.is_own_or_module(receiver, node_index, index, modules):
                 continue
-            yield cls.site(
-                parsed_module,
-                node,
-                index.lexical_symbol(node_index),
-                ast.unparse(receiver),
-                (
+            function = index.scopes[index.scope_ids[node_index]].executable_function_index
+            yield ForeignAbsenceSite(
+                file_path=parsed_module.file_path,
+                lineno=node.lineno,
+                symbol=index.lexical_symbol(node_index),
+                group=ast.unparse(receiver),
+                detail=(
                     attribute,
                     "is None" if isinstance(operator, ast.Is) else "is not None",
+                ),
+                owner=resolver.owner(
+                    receiver,
+                    index.depth_first_nodes[function] if function >= 0 else node,
                 ),
             )
 
@@ -475,13 +510,15 @@ class ForeignAbsenceSiteFamily(RestatingSiteFamily):
         )
 
 
-class ForwardingFacadeSiteFamily(RestatingSiteFamily):
+class ForwardingFacadeSiteFamily(RestatingSiteFamily[RestatingSiteModule]):
     """A class whose members only forward to an object it holds in an attribute.
 
     The first site of a facade is the class itself (detail: held class, or "" when
     unresolved); every further site is one forwarding member (detail: member name,
     kind, target). A facade needs two forwards to one held attribute.
     """
+
+    item_type = RestatingSiteModule
 
     MIN_FORWARDS = 2
     CLASS_SITE = "class"
@@ -712,7 +749,7 @@ class LegacyWord(StrEnum):
         ) or bool(re.search(r"backwards?[ -]compatib", lowered))
 
 
-class LegacyMarkerSiteFamily(RestatingSiteFamily):
+class LegacyMarkerSiteFamily(RestatingSiteFamily[RestatingSiteModule]):
     """A path that says it is the old one, beside what replaces it.
 
     Three self-declarations count: a deprecation mechanism (a `warn` of a
@@ -721,6 +758,8 @@ class LegacyMarkerSiteFamily(RestatingSiteFamily):
     path kept next to its replacement), or an alias `old = new` of a replacement.
     A name that merely contains a marker word, with no sibling, is not one.
     """
+
+    item_type = RestatingSiteModule
 
     @classmethod
     def sites(cls, parsed_module: ParsedModule) -> Iterator[RestatingSite]:
@@ -1141,8 +1180,10 @@ class ReferenceIndex:
         )
 
 
-class DeadModuleSiteFamily(RestatingSiteFamily):
+class DeadModuleSiteFamily(RestatingSiteFamily[RestatingSiteModule]):
     """A module's own site, so that a finding can point at the module file."""
+
+    item_type = RestatingSiteModule
 
     @classmethod
     def sites(cls, parsed_module: ParsedModule) -> Iterator[RestatingSite]:

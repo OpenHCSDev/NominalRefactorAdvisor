@@ -3152,10 +3152,7 @@ class CompactClassFamilyIndex(ClassDeclarationIndex[CompactIndexedClass]):
         """Build the class anchor declared by a compact multi-family join."""
 
         return CompactClassFamilyIndexBuilder(
-            cast(
-                Sequence[CompactModuleClassProjection],
-                projections_by_family[CompactModuleClassProjectionFamily],
-            )
+            CompactModuleClassProjectionFamily.modules_in(projections_by_family)
         ).build()
 
     @classmethod

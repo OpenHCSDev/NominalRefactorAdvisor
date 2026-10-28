@@ -16,7 +16,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 from functools import lru_cache
-from typing import Generic, TypeAlias, TypeVar, cast
+from typing import Generic, TypeAlias, TypeVar
 
 from tree_sitter import Node
 
@@ -2188,14 +2188,8 @@ def _type_keyed_behavior_projection_components(
 def _enum_keyed_derived_map_facade_components(
     projections_by_family: dict[type[CollectedFamily], Sequence[object]],
 ) -> tuple[EnumKeyedDerivedMapFacadeComponent, ...]:
-    facade_projections = cast(
-        Sequence[EnumKeyedDerivedMapFacadeModuleProjection],
-        projections_by_family[EnumKeyedDerivedMapFacadeModuleProjectionFamily],
-    )
-    class_projections = cast(
-        Sequence[CompactModuleClassProjection],
-        projections_by_family[CompactModuleClassProjectionFamily],
-    )
+    facade_projections = EnumKeyedDerivedMapFacadeModuleProjectionFamily.modules_in(projections_by_family)
+    class_projections = CompactModuleClassProjectionFamily.modules_in(projections_by_family)
     exposure_authority = CompactRepositoryPublicExposureIndex(class_projections)
     return sorted_tuple(
         (

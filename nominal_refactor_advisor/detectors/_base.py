@@ -1084,9 +1084,7 @@ class CompactModuleProjectionDetectorMixin(Generic[CompactProjectionItemT]):
                 f"{type(self).__name__} must implement its multi-family compact join"
             )
         return self._findings_from_compact_projections(
-            cast(
-                Sequence[CompactProjectionItemT], projections_by_family[families[0]]
-            ),
+            families[0].modules_in(projections_by_family),
             config,
         )
 
@@ -1116,7 +1114,7 @@ class CompactMultiModuleProjectionDetectorMixin(
 
     module_projection_families: ClassVar[tuple[type[CollectedFamily], ...]]
     compact_shared_group_context_builder: ClassVar[
-        CompactProjectionGroupContextBuilder | None
+        staticmethod[[CompactProjectionGroups], object] | None
     ] = None
 
     @classmethod
