@@ -37,7 +37,7 @@ def _declared_identities(
 
 
 class RestatedIdentityDetector(
-    JoinedRestatedFactDetector[DeclaredIdentities],
+    JoinedRestatedFactDetector[DeclaredIdentities, RestatingSite],
     DeclarationReferenceFindingRecipeSynthesizer,
 ):
     """A string literal that spells a declared class, module or family member in a position that uses it."""

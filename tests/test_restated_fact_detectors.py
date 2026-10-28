@@ -266,6 +266,27 @@ def test_another_objects_attribute_compared_with_none_is_a_finding(tmp_path: Pat
     assert "`goal` is probed for absence 2 time(s)" in finding.summary
 
 
+def test_each_probe_names_its_line_and_the_declared_owner_or_why_not(tmp_path: Path):
+    owner = (
+        "from dataclasses import dataclass\n\n\n"
+        "@dataclass(frozen=True)\nclass Goal:\n    paused_at: int | None = None\n"
+    )
+    source = (
+        "from owner import Goal\n\n\n"
+        "def f(goal: Goal | None, other):\n"
+        "    if goal.paused_at is None:\n        return other.paused_at is None\n"
+    )
+    findings = _findings(
+        tmp_path, ForeignAbsenceProbeDetector, {"owner": owner, "m": source}
+    )
+    by_receiver = {finding.summary.split("`")[1]: finding.summary for finding in findings}
+    assert (
+        f"{tmp_path / 'm.py'}:5 `goal.paused_at is None`, owner `owner.Goal` "
+        f"({tmp_path / 'owner.py'}:5) declares `paused_at: int | None`"
+    ) in by_receiver["goal"]
+    assert "owner unresolved: `other` has no annotation in `f`" in by_receiver["other"]
+
+
 def test_own_state_modules_and_truth_tests_are_not_foreign_probes(tmp_path: Path):
     source = (
         "import sys\n\n\nclass Goal:\n"

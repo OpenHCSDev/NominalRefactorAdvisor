@@ -22,6 +22,10 @@ from ..codemod import (
     LiteralDispatchFindingRecipeSynthesizer,
     RefactorRecipeOperation,
 )
+from ..class_index import (
+    CompactModuleClassProjection,
+    CompactModuleClassProjectionFamily,
+)
 from ..codemod_legacy_path_recipe import LegacyPathErasureFindingRecipeSynthesizer
 from ..codemod_optional_ast_field import (
     OptionalAstFieldDecoderFindingRecipeSynthesizer,
@@ -40,6 +44,7 @@ from ..restated_fact_observations import (
     DeadModuleSiteFamily,
     ExactKeySetSiteFamily,
     ForwardingFacadeSiteFamily,
+    ForeignAbsenceSite,
     ForeignAbsenceSiteFamily,
     LegacyMarkerSiteFamily,
     ModuleReferenceFacts,
@@ -49,6 +54,7 @@ from ..restated_fact_observations import (
     RestatingSite,
     RestatingSiteFamily,
     RestatingSiteModule,
+    ScannedClasses,
     StringDispatchSiteFamily,
     UnreachedModules,
 )
@@ -63,6 +69,7 @@ from ._base import (
 )
 
 ContextT = TypeVar("ContextT")
+SiteT = TypeVar("SiteT", bound=RestatingSite)
 
 # A finding lists this many consumers or keys in its text; evidence keeps them all.
 LISTED_SITES = 8
@@ -122,43 +129,43 @@ def _listed(items: Iterable[str]) -> str:
     return f"{shown}, and {hidden} more" if hidden > 0 else shown
 
 
-class RestatedFactDetector(IssueDetector, Generic[ContextT], ABC):
+class RestatedFactDetector(IssueDetector, Generic[ContextT, SiteT], ABC):
     """One finding per restater: the sites, the fact, the owner, the factoring."""
 
     restated: ClassVar[RestatedFact]
 
     @abstractmethod
-    def describe(self, sites: Sequence[RestatingSite], context: ContextT) -> str:
+    def describe(self, sites: Sequence[SiteT], context: ContextT) -> str:
         """What the restater's sites say, in the terms of their own detector."""
 
         raise NotImplementedError
 
-    def admits(self, sites: Sequence[RestatingSite], context: ContextT) -> bool:
+    def admits(self, sites: Sequence[SiteT], context: ContextT) -> bool:
         """Whether this restater is a finding; every restater is unless a join says otherwise."""
 
         return True
 
-    def owner(self, sites: Sequence[RestatingSite], context: ContextT) -> str:
+    def owner(self, sites: Sequence[SiteT], context: ContextT) -> str:
         """The owner that should hold the fact: a resolved declaration or the shape to create."""
 
         return self.restated.owner
 
     def evidence(
-        self, sites: Sequence[RestatingSite], context: ContextT
+        self, sites: Sequence[SiteT], context: ContextT
     ) -> tuple[SourceLocation, ...]:
         return tuple(site.location for site in sites)
 
     def finding_context(
-        self, sites: Sequence[RestatingSite], context: ContextT
+        self, sites: Sequence[SiteT], context: ContextT
     ) -> dict[str, object]:
         """Typed extras a recipe reads from the finding (empty unless a recipe needs them)."""
 
         return {}
 
     def findings_from_sites(
-        self, sites: Iterable[RestatingSite], context: ContextT
+        self, sites: Iterable[SiteT], context: ContextT
     ) -> list[RefactorFinding]:
-        groups: dict[tuple[str, str, str], list[RestatingSite]] = defaultdict(list)
+        groups: dict[tuple[str, str, str], list[SiteT]] = defaultdict(list)
         for site in sites:
             groups[(site.file_path, site.symbol, site.group)].append(site)
         findings = []
@@ -183,7 +190,7 @@ class RestatedFactDetector(IssueDetector, Generic[ContextT], ABC):
 
 class SingleFamilyRestatedFactDetector(
     CompactModuleProjectionDetectorMixin[RestatingSiteModule],
-    RestatedFactDetector[None],
+    RestatedFactDetector[None, RestatingSite],
     ABC,
 ):
     """A restated-fact detector whose sites come from one family alone."""
@@ -202,7 +209,9 @@ class SingleFamilyRestatedFactDetector(
 
 
 class JoinedRestatedFactDetector(
-    CompactMultiModuleProjectionDetectorMixin, RestatedFactDetector[ContextT], ABC
+    CompactMultiModuleProjectionDetectorMixin,
+    RestatedFactDetector[ContextT, SiteT],
+    ABC,
 ):
     """A restated-fact detector that joins its sites with a second family.
 
@@ -343,7 +352,7 @@ def _unreached_modules(
     return UnreachedModules.from_facts(_reference_facts(projections_by_family))
 
 
-class ExactKeySetDetector(JoinedRestatedFactDetector[DeclaredRecords]):
+class ExactKeySetDetector(JoinedRestatedFactDetector[DeclaredRecords, RestatingSite]):
     """A literal key collection compared with, or subtracted from, a mapping's keys."""
 
     module_projection_families = (ExactKeySetSiteFamily, FieldObservationFamily)
@@ -399,12 +408,30 @@ class ExactKeySetDetector(JoinedRestatedFactDetector[DeclaredRecords]):
         return {} if not declared else {"authority_evidence": declared[0]}
 
 
+def _scanned_classes(projections_by_family: CompactProjectionGroups) -> ScannedClasses:
+    return ScannedClasses(
+        {
+            indexed_class.symbol: indexed_class
+            for projection in cast(
+                Sequence[CompactModuleClassProjection],
+                projections_by_family[CompactModuleClassProjectionFamily],
+            )
+            for indexed_class in projection.classes
+        }
+    )
+
+
 class ForeignAbsenceProbeDetector(
-    SingleFamilyRestatedFactDetector, OptionalAstFieldDecoderFindingRecipeSynthesizer
+    JoinedRestatedFactDetector[ScannedClasses, ForeignAbsenceSite],
+    OptionalAstFieldDecoderFindingRecipeSynthesizer,
 ):
     """`other.attr is None` or `is not None` on an object that is not the method's own."""
 
-    module_projection_family = ForeignAbsenceSiteFamily
+    module_projection_families = (
+        ForeignAbsenceSiteFamily,
+        CompactModuleClassProjectionFamily,
+    )
+    compact_shared_group_context_builder = staticmethod(_scanned_classes)
     restated = RestatedFact(
         fact="Each probe restates a state of the other object's type, a second copy of that type's state that the type does not declare.",
         owner="The owner is the other object's type: its states as subclasses, or a null member.",
@@ -420,16 +447,23 @@ class ForeignAbsenceProbeDetector(
         (ObservationTag.ATTRIBUTE_PROBE,),
     )
 
-    def describe(self, sites: Sequence[RestatingSite], context: None) -> str:
+    def describe(
+        self, sites: Sequence[ForeignAbsenceSite], context: ScannedClasses
+    ) -> str:
         probes = sorted({f"{site.detail[0]} {site.detail[1]}" for site in sites})
+        located = "; ".join(
+            f"{site.file_path}:{site.lineno} `{site.group}.{site.detail[0]} "
+            f"{site.detail[1]}`, {site.owner.describe(site.detail[0], context)}"
+            for site in sites
+        )
         return (
             f"`{sites[0].group}` is probed for absence {len(sites)} time(s) in "
-            f"{sites[0].symbol}: {_listed(probes)}."
+            f"{sites[0].symbol}: {_listed(probes)}. Probes: {located}."
         )
 
 
 class LegacyPathMarkerDetector(
-    JoinedRestatedFactDetector[ReferenceIndex],
+    JoinedRestatedFactDetector[ReferenceIndex, RestatingSite],
     LegacyPathErasureFindingRecipeSynthesizer,
 ):
     """A declaration, parameter, import alias or warning that says it is the old path."""
@@ -551,7 +585,7 @@ class ForwardingFacadeDetector(SingleFamilyRestatedFactDetector):
         return {"metrics": ForwardingFacadeMetrics(len(self.forwards(sites)))}
 
 
-class DeadModuleDetector(JoinedRestatedFactDetector[UnreachedModules]):
+class DeadModuleDetector(JoinedRestatedFactDetector[UnreachedModules, RestatingSite]):
     """A scanned module that nothing imports and that is not an entry point."""
 
     module_projection_families = (DeadModuleSiteFamily, ModuleReferenceFamily)
