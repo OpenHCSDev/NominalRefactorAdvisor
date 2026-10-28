@@ -7,6 +7,8 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import TYPE_CHECKING, TypeAlias
+from .lexical_bindings import ImportBoundNameProjection
+
 
 if TYPE_CHECKING:
     from .codemod_import_graph import SourceModuleImportGraph

@@ -67,6 +67,7 @@ from .codemod_source_edits import (
 from .collection_algebra import sorted_tuple
 from .foreign_family import FunctionDefinition
 from .lexical_bindings import (
+    ImportBoundNameProjection,
     ImportFromModuleName,
     LEXICAL_SCOPE_BINDING_AUTHORITY,
 )

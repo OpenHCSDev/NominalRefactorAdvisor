@@ -26,6 +26,7 @@ from functools import cache, cached_property
 from pathlib import Path
 from typing import ClassVar
 
+from .lexical_bindings import ImportBoundNameProjection
 from .ast_tools import (
     ModuleSyntaxIndex,
     ParsedModule,

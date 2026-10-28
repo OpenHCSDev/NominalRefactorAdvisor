@@ -22,6 +22,7 @@ from tree_sitter import Node
 
 from ._regex_bundle import RepeatedLocalRegexBundleDetector
 
+from ..lexical_bindings import ImportBoundNameProjection
 from ..ast_tools import (
     CollectedFamily,
     LITERAL_DISPATCH_CASE_MATCHER,

@@ -31,6 +31,7 @@ from typing import ClassVar
 
 from metaclass_registry import AutoRegisterMeta
 
+from .lexical_bindings import ImportBoundNameProjection
 from .ast_tools import (
     AstParentIndex,
     BuiltinCallName,
