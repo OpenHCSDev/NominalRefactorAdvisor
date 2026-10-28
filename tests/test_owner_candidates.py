@@ -254,3 +254,64 @@ def test_a_classmethod_building_its_own_class_off_one_value_is_a_copy() -> None:
         receipt.kind for receipt in kinds["new_mixin"].refusals
     }
     assert kinds["hold_source"].composers == ("pkg.records.Second",)
+
+
+SPLIT_OWNERS = (
+    "pkg.owners",
+    "from dataclasses import dataclass\n\n\n"
+    "@dataclass(frozen=True)\nclass SourceLineReference:\n"
+    "    file_path: str\n    line: int\n\n\n"
+    "@dataclass(frozen=True)\nclass ClassNameMixin:\n    class_name: str\n\n\n"
+    "@dataclass(frozen=True)\nclass ClassLine(ClassNameMixin, SourceLineReference):\n"
+    "    pass\n",
+)
+SPLIT_RESTATERS = (
+    "pkg.facts",
+    "from dataclasses import dataclass\n\n\n"
+    "@dataclass(frozen=True)\nclass AxisFact:\n"
+    "    file_path: str\n    line: int\n    class_name: str\n    signals: tuple[str, ...]\n\n\n"
+    "@dataclass(frozen=True)\nclass AuthorityShape:\n"
+    "    file_path: str\n    line: int\n    class_name: str\n    method_names: tuple[str, ...]\n",
+)
+
+
+def test_existing_classes_that_cover_the_block_refuse_a_new_mixin() -> None:
+    (verdict,) = _mixin_verdicts(SPLIT_OWNERS, SPLIT_RESTATERS)
+    owners = {owner.candidate_id: owner for owner in verdict.owner_candidates}
+
+    covering = owners[
+        "compose_existing:pkg.owners.ClassNameMixin+pkg.owners.SourceLineReference"
+    ]
+    assert covering.kind == "compose_existing"
+    assert covering.permitted
+    assert covering.symbols == (
+        "pkg.owners.ClassNameMixin",
+        "pkg.owners.SourceLineReference",
+    )
+    new_mixins = [owner for owner in owners.values() if owner.kind == "new_mixin"]
+    assert new_mixins
+    assert all(
+        OwnerReceiptKind.OWNED_BY_EXISTING_CLASSES
+        in {receipt.kind for receipt in owner.refusals}
+        for owner in new_mixins
+    )
+    assert verdict.owner_candidates[0] is covering
+
+
+def test_a_covering_owner_that_brings_behaviour_is_offered_but_refused() -> None:
+    owners_module = (
+        SPLIT_OWNERS[0],
+        SPLIT_OWNERS[1].replace(
+            "    file_path: str\n    line: int\n\n\n",
+            "    file_path: str\n    line: int\n\n"
+            "    def __post_init__(self):\n        pass\n\n\n",
+            1,
+        ),
+    )
+    (verdict,) = _mixin_verdicts(owners_module, SPLIT_RESTATERS)
+    kinds = {owner.kind: owner for owner in verdict.owner_candidates}
+
+    assert OwnerReceiptKind.OWNER_NOT_CONTAINED in {
+        receipt.kind for receipt in kinds["compose_existing"].refusals
+    }
+    assert not kinds["new_mixin"].permitted

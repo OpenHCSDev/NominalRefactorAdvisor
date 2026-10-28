@@ -8,6 +8,10 @@ an agent. The candidates are:
 - **shared base**: a scanned class both classes already descend from;
 - **existing class**: a scanned class, outside both classes' families, that
   already declares part of the block identically, which both would compose;
+- **existing classes**: two or more such classes, each composed by others,
+  whose own declarations together cover the block. When such a set exists, a
+  new mixin would be a third copy of declarations that already have owners,
+  so the new mixin is refused;
 - **new mixin**: a class NRA would create in one of the two classes' modules.
 
 **The score.** Each receipt has a fixed log-odds weight per unit, stated on its
@@ -31,6 +35,7 @@ import math
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field, replace
+from itertools import combinations
 from typing import ClassVar
 
 from .class_index import CompactIndexedClass
@@ -64,6 +69,7 @@ class OwnerReceiptKind(ReceiptKind):
     COPIES_ONE_VALUE = "copies_one_value", 1.0, False
     SERVES_CALL_SITES = "serves_call_sites", 0.5, False
     NO_EXACT_SUBSTITUTION = "no_exact_substitution", 0.0, True
+    OWNED_BY_EXISTING_CLASSES = "owned_by_existing_classes", 0.0, True
 
 
 SERVED_CONSUMER_CAP = 4
@@ -151,6 +157,22 @@ class ExistingClassOwner(BlockOwnerCandidate):
 
     def describe(self) -> str:
         return f"existing class `{self.symbol}`"
+
+
+@dataclass(frozen=True, kw_only=True)
+class ExistingClassesOwner(BlockOwnerCandidate):
+    """Scanned classes, each composed by others, whose own declarations cover the block.
+
+    Both classes compose all of them and delete their copies; nothing is added
+    to the owners.
+    """
+
+    symbols: tuple[str, ...] = ()
+    """The owners in base order: the composers' leading fields come from the last."""
+    KIND: ClassVar[str] = "compose_existing"
+
+    def describe(self) -> str:
+        return "existing classes " + " + ".join(f"`{symbol}`" for symbol in self.symbols)
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -293,12 +315,16 @@ class BlockOwnerQuestion:
     imports: ModuleImportGraph
     EXISTING_CLASS_LIMIT: ClassVar[int] = 3
     SHARED_BASE_LIMIT: ClassVar[int] = 3
+    COVERING_SET_LIMIT: ClassVar[int] = 3
+    """At most this many existing classes make one covering set."""
 
     def candidates(self) -> tuple[OwnerCandidate, ...]:
+        covering = self._covering_owners()
         found: tuple[BlockOwnerCandidate, ...] = (
             *self._shared_bases(),
             *self._existing_classes(),
-            *self._new_mixins(),
+            *(() if covering is None else (self._covering_candidate(covering),)),
+            *self._new_mixins(covering),
         )
         copy = self._copy()
         if copy is None:
@@ -552,7 +578,152 @@ class BlockOwnerQuestion:
                 held=held,
             )
 
-    def _new_mixins(self) -> Iterator[NewMixinOwner]:
+    def _covering_owners(self) -> tuple[CompactIndexedClass, ...] | None:
+        """The fewest existing classes whose own declarations cover the block.
+
+        Each is outside both classes' families, composed by another class, and
+        declares at least one block name itself; none covers the block alone
+        (that is an existing-class owner). Between sets of one size, the one
+        bringing the fewest other declarations wins, then the symbols.
+        """
+
+        family = self._family()
+        owned: dict[str, frozenset[str]] = {}
+        for name in self.block:
+            for symbol in self.own_holders_of(name) - family:
+                if self.descendants_of(symbol) and self.class_for(symbol) is not None:
+                    owned[symbol] = owned.get(symbol, frozenset()) | {name}
+        block = frozenset(self.block)
+        members = sorted(symbol for symbol, names in owned.items() if names != block)
+        for size in range(2, min(self.COVERING_SET_LIMIT, len(members)) + 1):
+            covers = [
+                combination
+                for combination in combinations(members, size)
+                if frozenset().union(*(owned[symbol] for symbol in combination)) == block
+                and all(
+                    other not in self.ancestors_of(symbol)
+                    for symbol in combination
+                    for other in combination
+                )
+            ]
+            if covers:
+                best = min(
+                    covers,
+                    key=lambda combination: (
+                        len(self._brought_names(combination)),
+                        combination,
+                    ),
+                )
+                return tuple(
+                    indexed_class
+                    for symbol in self._base_order(best)
+                    if (indexed_class := self.class_for(symbol)) is not None
+                )
+        return None
+
+    def _brought_names(self, symbols: Iterable[str]) -> frozenset[str]:
+        return (
+            frozenset().union(*(self.declared_names(symbol) for symbol in symbols))
+            - set(self.block)
+            - self.declared_names(self.first.symbol)
+            - self.declared_names(self.second.symbol)
+        )
+
+    def _base_order(self, symbols: Sequence[str]) -> tuple[str, ...]:
+        """Bases whose dataclass collection yields the block in `first`'s order.
+
+        Collection walks the MRO in reverse, so the base holding the first
+        leading field goes last.
+        """
+
+        fields = tuple(self.first.own_dataclass_field_names or ())
+
+        def leading(symbol: str) -> int:
+            positions = [
+                fields.index(name)
+                for name in self.block
+                if name in fields and symbol in self.own_holders_of(name)
+            ]
+            return min(positions, default=len(fields))
+
+        return tuple(sorted(symbols, key=lambda symbol: (-leading(symbol), symbol)))
+
+    def _covering_candidate(
+        self, owners: tuple[CompactIndexedClass, ...]
+    ) -> ExistingClassesOwner:
+        receipts: list[Receipt] = []
+        imports_added = cycles_created = 0
+        for owner in owners:
+            held = tuple(
+                name for name in self.block if owner.symbol in self.own_holders_of(name)
+            )
+            imports, cycles, import_receipts = self._import_receipts(
+                owner.module_name, (owner,)
+            )
+            imports_added += imports
+            cycles_created += cycles
+            receipts.extend(
+                (
+                    *self._holding_receipts(owner, held),
+                    *self._brought_receipts(owner),
+                    *self._consumer_receipts(owner),
+                    *self._conflict_receipts(owner),
+                    *import_receipts,
+                )
+            )
+            if not self.same_construction(owner, self.first):
+                receipts.append(
+                    Receipt(
+                        OwnerReceiptKind.DIFFERENT_CONSTRUCTION,
+                        f"`{owner.qualname}` is created differently from "
+                        f"`{self.first.qualname}` (dataclass declaration, metaclass "
+                        "or class keywords): composing it changes construction",
+                        (_location(owner), _location(self.first)),
+                    )
+                )
+        receipts.extend(
+            self._field_order_receipts(
+                owners[-1],
+                tuple(
+                    name
+                    for owner in reversed(owners)
+                    for name in owner.own_dataclass_field_names or ()
+                ),
+                keyword_only_route=False,
+            )
+        )
+        return ExistingClassesOwner(
+            candidate_id="compose_existing:"
+            + "+".join(owner.symbol for owner in owners),
+            module_name=owners[0].module_name,
+            receipts=tuple(receipts),
+            cost=OwnerCost(
+                statements_rewritten=(2 + len(self._co_restaters()))
+                * (len(owners) + len(self.block)),
+                imports_added=imports_added,
+                cycles_created=cycles_created,
+            ),
+            composers=self._composers(),
+            block=self.block,
+            symbols=tuple(owner.symbol for owner in owners),
+        )
+
+    def _new_mixins(
+        self, covering: tuple[CompactIndexedClass, ...] | None
+    ) -> Iterator[NewMixinOwner]:
+        owned_elsewhere = (
+            ()
+            if covering is None
+            else (
+                Receipt(
+                    OwnerReceiptKind.OWNED_BY_EXISTING_CLASSES,
+                    "the block is already declared by "
+                    + " + ".join(f"`{owner.qualname}`" for owner in covering)
+                    + ", which other classes compose: a new mixin would be another copy",
+                    tuple(_location(owner) for owner in covering),
+                ),
+            )
+        )
         for module_name in dict.fromkeys(
             indexed_class.module_name for indexed_class in self.pair
         ):
@@ -586,6 +757,7 @@ class BlockOwnerQuestion:
                     *self._restater_receipts(restaters),
                     *import_receipts,
                     *order_receipts,
+                    *owned_elsewhere,
                 ),
                 cost=OwnerCost(
                     statements_rewritten=1
@@ -775,12 +947,7 @@ class BlockOwnerQuestion:
     def _brought_receipts(self, owner: CompactIndexedClass) -> tuple[Receipt, ...]:
         """Declarations composing the owner would give both classes that neither makes."""
 
-        brought = sorted(
-            self.declared_names(owner.symbol)
-            - set(self.block)
-            - self.declared_names(self.first.symbol)
-            - self.declared_names(self.second.symbol)
-        )
+        brought = sorted(self._brought_names((owner.symbol,)))
         if not brought:
             return ()
         return (
@@ -954,6 +1121,7 @@ __all__ = (
     "BlockOwnerCandidate",
     "BlockOwnerQuestion",
     "ExistingClassOwner",
+    "ExistingClassesOwner",
     "ModuleImportGraph",
     "HoldSourceOwner",
     "NewMixinOwner",

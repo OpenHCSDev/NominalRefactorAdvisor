@@ -23,7 +23,7 @@ import difflib
 from abc import ABC, abstractmethod
 import keyword as keyword_module
 import tokenize
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, replace
 from functools import cached_property
 from importlib import import_module
@@ -89,6 +89,7 @@ from .native_class_mro import NativeClassMroDeclaration
 from .models import RefactorFinding
 from .owner_candidates import (
     ExistingClassOwner,
+    ExistingClassesOwner,
     NewMixinOwner,
     OwnerCandidate,
     SharedBaseOwner,
@@ -220,6 +221,12 @@ class OverlapClass(ABC):
         raise NotImplementedError
 
     @abstractmethod
+    def require_order_kept_by(self, composition: CoveringComposition) -> None:
+        """Composing the covering owners keeps this composer's field order; a
+        plain class has none."""
+        raise NotImplementedError
+
+    @abstractmethod
     def require_construction_extended_by(self, extension: OwnerExtension) -> None:
         """Every construction of this owner's family still binds once the
         extension adds its members; a plain class binds no fields."""
@@ -262,6 +269,9 @@ class PlainOverlapClass(OverlapClass):
     ) -> KeywordOnlyComposition | None:
         self.dataclass_options_key
         return None
+
+    def require_order_kept_by(self, composition: CoveringComposition) -> None:
+        self.dataclass_options_key
 
     def require_construction_extended_by(self, extension: OwnerExtension) -> None:
         self.dataclass_options_key
@@ -314,6 +324,10 @@ class DataclassOverlapClass(OverlapClass):
     ) -> KeywordOnlyComposition | None:
         self._require_single_decorator()
         return composition.dataclass_keyword_only()
+
+    def require_order_kept_by(self, composition: CoveringComposition) -> None:
+        self._require_single_decorator()
+        composition.require_dataclass_order(self)
 
     def require_construction_extended_by(self, extension: OwnerExtension) -> None:
         self._require_single_decorator()
@@ -1004,28 +1018,203 @@ class ClassComposition:
         )
 
     def owner_import_edits(self, rationale: str) -> tuple[ModuleImportMutation, ...]:
-        name = self.owner.target.name
-        resolver = self.snapshot.class_reference_resolver_for_source_path(
-            self.restating.file_path
+        return _owner_import_edits(self.snapshot, self.owner, self.restating, rationale)
+
+
+@dataclass(frozen=True)
+class CoveringComposition:
+    """Classes restating a block that existing classes already own between them
+    compose those classes instead (#96).
+
+    The proof is the extract-mixin verdict's permitted `compose_existing`
+    owner on the current source. Each composer restates every owner's whole
+    body, so deleting its copies loses nothing; each owner is a root, so C3
+    places the owners right after the composer, in the given order, ahead of
+    its old ancestors. The owners are declared in other modules or before
+    every composer, and the composers' dataclass field order must come out
+    the same: no keyword-only route is taken for owners other classes use.
+    """
+
+    snapshot: CodemodSourceSnapshot
+    owners: tuple[OverlapClass, ...]
+    composers: tuple[OverlapClass, ...]
+    restated: tuple[tuple[RestatedDeclarations, ...], ...]
+
+    @classmethod
+    def require(
+        cls,
+        snapshot: CodemodSourceSnapshot,
+        owner_references: Sequence[SourceRewriteTarget],
+        composer_references: Sequence[SourceRewriteTarget],
+    ) -> Self:
+        owners = tuple(OverlapClass.require(snapshot, reference) for reference in owner_references)
+        composers = tuple(
+            OverlapClass.require(snapshot, reference) for reference in composer_references
         )
-        if resolver.symbol_for_reference(ast.Name(id=name, ctx=ast.Load())) == self.owner.symbol:
-            return ()
-        bound = LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(
-            self.snapshot.parsed_module_for_source_path(self.restating.file_path).module.body
+        if len(owners) < 2 or not composers:
+            raise ValueError("A covering composition needs two owners and a composer")
+        block = tuple(
+            declaration.name for owner in owners for declaration in owner.facts.body_declarations
         )
-        if name in bound:
-            raise ValueError(f"`{name}` is bound to another declaration there")
-        return (
-            ModuleImportMutation.from_source(
-                file_path=self.restating.file_path,
-                import_source=self.snapshot.module_import_graph.required_import_source(
-                    importing_file_path=self.restating.file_path,
-                    imported_file_path=self.owner.file_path,
-                    imported_name=name,
-                ),
-                rationale=rationale,
+        require_owner_candidate(
+            snapshot,
+            composers[0].symbol,
+            "compose_existing:" + "+".join(owner.symbol for owner in owners),
+            block,
+        )
+        restated = tuple(
+            tuple(
+                RestatedDeclarations.require(
+                    snapshot,
+                    owner,
+                    composer,
+                    (declaration.name for declaration in owner.facts.body_declarations),
+                )
+                for owner in owners
+            )
+            for composer in composers
+        )
+        composition = cls(snapshot, owners, composers, restated)
+        composition.require_roots()
+        composition.require_field_order()
+        for restatements in restated:
+            for restatement in restatements:
+                restatement.require_no_owner_bound_values(snapshot)
+        ClassReferenceSites(
+            snapshot, frozenset(owner.symbol for owner in owners)
+        ).require_no_identity_reads()
+        return composition
+
+    def require_roots(self) -> None:
+        for owner in self.owners:
+            if owner.node.keywords:
+                raise ValueError(f"`{owner.qualname}` passes class creation keywords")
+            if not owner.facts.base_references_are_complete or any(
+                ".".join(reference.resolved_parts) != NativeMroBase.OBJECT.value
+                for reference in owner.facts.base_references
+            ):
+                raise ValueError(
+                    f"`{owner.qualname}` has bases; its C3 order is not [owner, object]"
+                )
+        for composer in self.composers:
+            ancestry = {ancestor.symbol for ancestor in require_static_c3(self.snapshot, composer.facts)}
+            for owner in self.owners:
+                if owner.symbol in ancestry:
+                    raise ValueError(f"`{owner.qualname}` is already an ancestor")
+                if dataclass_options_besides_kw_only(owner) != dataclass_options_besides_kw_only(
+                    composer
+                ):
+                    raise ValueError(
+                        f"`{owner.qualname}` and `{composer.qualname}` differ as dataclasses"
+                    )
+                if owner.file_path == composer.file_path and (
+                    owner.node.lineno > composer.node.lineno
+                ):
+                    raise ValueError(
+                        f"`{owner.qualname}` is declared after `{composer.qualname}`"
+                    )
+            header = ClassHeaderSpanSourceAuthority(
+                composer.node, self.snapshot.sources_by_file_path[composer.file_path]
+            )
+            if not header.can_rewrite:
+                raise ValueError(f"`{composer.qualname}` has an unrewritable header")
+
+    def require_field_order(self) -> None:
+        for composer in self.composers:
+            composer.require_order_kept_by(self)
+
+    def require_dataclass_order(self, composer: OverlapClass) -> None:
+        """Dataclass collection walks the bases last first, so the owners' fields
+        come in that order, then the composer's remaining own fields."""
+
+        before, after = composed_field_order(
+            self.snapshot,
+            tuple(name for owner in reversed(self.owners) for name in owner.own_field_names),
+            composer,
+        )
+        if before != after or any(
+            owner.option("kw_only") != composer.option("kw_only") for owner in self.owners
+        ):
+            raise ValueError(
+                f"Composing {', '.join(f'`{owner.qualname}`' for owner in self.owners)} "
+                f"reorders the fields of `{composer.qualname}`: {before} becomes {after}"
+            )
+
+    def source_edits(self, rationale: str) -> tuple[NominalSourceEdit, ...]:
+        edits: list[NominalSourceEdit] = []
+        imported: set[tuple[str, str]] = set()
+        for composer, restatements in zip(self.composers, self.restated, strict=True):
+            source = self.snapshot.sources_by_file_path[composer.file_path]
+            header = ClassHeaderSpanSourceAuthority(composer.node, source)
+            deletion = StatementDeletionSource(
+                source=source, node=composer.node, file_path=composer.file_path
+            )
+            statements = tuple(
+                statement
+                for restatement in restatements
+                for statement in restatement.statements
+            )
+            for owner in self.owners:
+                if owner.file_path == composer.file_path or (
+                    composer.file_path,
+                    owner.symbol,
+                ) in imported:
+                    continue
+                imported.add((composer.file_path, owner.symbol))
+                edits.extend(_owner_import_edits(self.snapshot, owner, composer, rationale))
+            edits.extend(
+                (
+                    *header.source_edits(
+                        header.with_base_items(
+                            (
+                                *(owner.target.name for owner in self.owners),
+                                *header.base_items,
+                            )
+                        ),
+                        file_path=composer.file_path,
+                        rationale=rationale,
+                    ),
+                    *deletion.physical_edits(
+                        file_path=composer.file_path,
+                        replacements=deletion.replacements_for_statements(statements),
+                        rationale=rationale,
+                    ),
+                    *obsolete_import_edits(
+                        self.snapshot, composer.file_path, statements, rationale
+                    ),
+                )
+            )
+        return tuple(edits)
+
+
+def _owner_import_edits(
+    snapshot: CodemodSourceSnapshot,
+    owner: OverlapClass,
+    composer: OverlapClass,
+    rationale: str,
+) -> tuple[ModuleImportMutation, ...]:
+    """The import that binds the owner's name where the composer is declared."""
+
+    name = owner.target.name
+    resolver = snapshot.class_reference_resolver_for_source_path(composer.file_path)
+    if resolver.symbol_for_reference(ast.Name(id=name, ctx=ast.Load())) == owner.symbol:
+        return ()
+    bound = LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(
+        snapshot.parsed_module_for_source_path(composer.file_path).module.body
+    )
+    if name in bound:
+        raise ValueError(f"`{name}` is bound to another declaration there")
+    return (
+        ModuleImportMutation.from_source(
+            file_path=composer.file_path,
+            import_source=snapshot.module_import_graph.required_import_source(
+                importing_file_path=composer.file_path,
+                imported_file_path=owner.file_path,
+                imported_name=name,
             ),
-        )
+            rationale=rationale,
+        ),
+    )
 
 
 @dataclass(frozen=True)
@@ -1826,6 +2015,47 @@ class ComposeExistingClassOperation(RepositorySourceReprovedOperation):
 
 
 @dataclass(frozen=True, kw_only=True)
+class ComposeExistingClassesOperation(RepositorySourceReprovedOperation):
+    """Make every class restating a block compose the existing classes that own it."""
+
+    owners: tuple[SourceRewriteTarget, ...] = codemod_payload_field(
+        PayloadRecordArrayValueCodec(SourceRewriteTarget)
+    )
+    composers: tuple[SourceRewriteTarget, ...] = codemod_payload_field(
+        PayloadRecordArrayValueCodec(SourceRewriteTarget), default=()
+    )
+
+    def composition(self, snapshot: CodemodSourceSnapshot) -> CoveringComposition:
+        return CoveringComposition.require(
+            snapshot, self.owners, (self.target, *self.composers)
+        )
+
+    def source_edits_from_snapshot(
+        self, snapshot: CodemodSourceSnapshot
+    ) -> tuple[NominalSourceEdit, ...]:
+        composition = self.composition(snapshot)
+        return composition.source_edits(
+            self.rationale_text(
+                "Compose "
+                + " + ".join(f"`{owner.qualname}`" for owner in composition.owners)
+                + " instead of restating their declarations."
+            )
+        )
+
+    def current_source_authority_claims(
+        self, context: CodemodSelectorContext
+    ) -> tuple[AuthorityClaim, ...]:
+        composition = self.composition(context.execution_snapshot())
+        return tuple(
+            AstTargetAuthorityClaim.from_target(
+                owner.target.target,
+                authority_kind=SemanticAuthorityKind.CLASS_FAMILY,
+            )
+            for owner in composition.owners
+        )
+
+
+@dataclass(frozen=True, kw_only=True)
 class FoldSharedDeclarationsIntoBaseOperation(RepositorySourceReprovedOperation):
     """Move a block every direct child of a base restates into that base."""
 
@@ -2384,6 +2614,23 @@ class ClassOverlapFindingRecipeSynthesizer(
                         target=source_rewrite_target(existing),
                         anchor=source_rewrite_target(composers[0]),
                         member_names=missing,
+                    ),
+                )
+            case ExistingClassesOwner():
+                owners = tuple(
+                    indexed_class
+                    for symbol in owner.symbols
+                    if (indexed_class := verdicts.class_index.class_for(symbol)) is not None
+                )
+                if len(owners) != len(owner.symbols) or not composers:
+                    return "the picked owners left the source"
+                return (
+                    ComposeExistingClassesOperation(
+                        target=source_rewrite_target(composers[0]),
+                        owners=tuple(source_rewrite_target(item) for item in owners),
+                        composers=tuple(
+                            source_rewrite_target(item) for item in composers[1:]
+                        ),
                     ),
                 )
             case SharedBaseOwner():
