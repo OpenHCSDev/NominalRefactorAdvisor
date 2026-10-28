@@ -42,6 +42,7 @@ from typing import (
 from .annotation_semantics import (
     CLASSVAR_ANNOTATION_AUTHORITY,
     NOMINAL_ANNOTATION_SOURCE_AUTHORITY,
+    TypeWrapper,
 )
 from .ast_field_decoders import ParameterAnnotations
 from .ast_projection import ExpressionReference
@@ -6191,7 +6192,7 @@ def _compact_class_methods(
     return tuple(methods)
 
 
-def _annotation_type_names(node: ast.AST | None) -> tuple[str, ...]:
+def annotation_type_names(node: ast.AST | None) -> tuple[str, ...]:
     if node is None:
         return ()
     if CompactValueExpression.project(cast(ast.expr, node)).value_is_none_literal:
@@ -6202,20 +6203,20 @@ def _annotation_type_names(node: ast.AST | None) -> tuple[str, ...]:
         return (node.attr,)
     if isinstance(node, ast.Tuple):
         return sorted_tuple(
-            {name for element in node.elts for name in _annotation_type_names(element)}
+            {name for element in node.elts for name in annotation_type_names(element)}
         )
     if isinstance(node, ast.BinOp) and isinstance(node.op, ast.BitOr):
         return sorted_tuple(
-            {*_annotation_type_names(node.left), *_annotation_type_names(node.right)}
+            {*annotation_type_names(node.left), *annotation_type_names(node.right)}
         )
     if isinstance(node, ast.Subscript):
         base_name = _terminal_reference_name(node.value)
-        if base_name in {"Optional", "Required", "NotRequired", "Type", "type"}:
-            return _annotation_type_names(node.slice)
+        if TypeWrapper.wraps(base_name):
+            return annotation_type_names(node.slice)
         if base_name == "Annotated":
             if isinstance(node.slice, ast.Tuple) and node.slice.elts:
-                return _annotation_type_names(node.slice.elts[0])
-            return _annotation_type_names(node.slice)
+                return annotation_type_names(node.slice.elts[0])
+            return annotation_type_names(node.slice)
     return ()
 
 
@@ -6225,7 +6226,7 @@ def _keyed_family_key_type_name(node: ast.ClassDef) -> str | None:
             continue
         if _terminal_reference_name(base.value) != "KeyedNominalFamily":
             continue
-        type_names = _annotation_type_names(base.slice)
+        type_names = annotation_type_names(base.slice)
         if type_names:
             return type_names[0]
     return None

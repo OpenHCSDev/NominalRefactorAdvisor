@@ -27,7 +27,7 @@ from ..ast_field_decoders import (
     variadic_parameters,
 )
 from ..value_expression import CompactValueExpression
-from ..annotation_semantics import CLASSVAR_ANNOTATION_AUTHORITY
+from ..annotation_semantics import CLASSVAR_ANNOTATION_AUTHORITY, TypeWrapper
 from ..ast_projection import ExpressionReference
 from ..ast_projection import (
     CallKeywords,
@@ -85,7 +85,7 @@ from ..ast_tools import (
     ScopedAstObservation,
     statements_without_docstring,
 )
-from ..class_index import ClassFamilyIndex, IndexedClass
+from ..class_index import ClassFamilyIndex, IndexedClass, annotation_type_names
 from ..collection_algebra import sorted_tuple
 from ..models import SourceLocation
 from ..name_algebra import CLASS_NAME_ALGEBRA
@@ -154,7 +154,6 @@ from ._base import (
     TypedCandidateCastBoilerplateCandidate,
 )
 from ._substrate_support import (
-    _annotation_type_names,
     _constant_string,
     _IGNORED_ANCESTOR_NAMES,
     _IGNORED_BASE_NAMES,
@@ -1537,7 +1536,7 @@ def _class_init_concrete_param_backed_attrs(node: ast.ClassDef) -> dict[str, str
     if init_method is None:
         return {}
     parameter_type_names = {
-        argument.arg: _annotation_type_names(
+        argument.arg: annotation_type_names(
             argument.annotation
         )
         for argument in ParameterAnnotations.of(
@@ -1941,7 +1940,6 @@ def _registered_union_surface_candidates(
     )
 
 
-_CLASS_OBJECT_TYPE_ANNOTATION_ROOTS = frozenset({"type", "Type"})
 _CONCRETE_UNION_CONTRACT_IGNORED_BASE_NAMES = frozenset(
     {"ABC", "ABCMeta", "Generic", "Protocol", "object"}
 )
@@ -1974,7 +1972,7 @@ def _class_object_type_argument_name(node: ast.AST) -> str | None:
     if not isinstance(node, ast.Subscript):
         return None
     root_name = HELPER_SYNTAX_PROJECTION_AUTHORITY.annotation_root_name(node.value)
-    if root_name not in _CLASS_OBJECT_TYPE_ANNOTATION_ROOTS:
+    if not TypeWrapper.CLASS_OBJECT.spelled_by(root_name):
         return None
     return HELPER_SYNTAX_PROJECTION_AUTHORITY.annotation_root_name(node.slice)
 

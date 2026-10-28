@@ -16,7 +16,9 @@ import builtins
 from collections.abc import Iterator
 from dataclasses import dataclass
 
+from .annotation_semantics import TypeWrapper
 from .ast_field_decoders import variadic_parameters
+from .ast_projection import ExpressionReference
 from .ast_tools import ParsedModule
 from .class_index import ModuleNominalBindingAuthority, ModuleNominalBindingSnapshot
 from .observation_families import ShapeFamily
@@ -654,7 +656,9 @@ def optional_annotation(annotation: ast.expr | None) -> bool:
     match annotation:
         case ast.BinOp(op=ast.BitOr()):
             return any(spells_none(part) for part in ast.walk(annotation))
-        case ast.Subscript(value=ast.Name(id="Optional") | ast.Attribute(attr="Optional")):
+        case ast.Subscript(value=wrapper) if TypeWrapper.OPTIONAL.spelled_by(
+            ExpressionReference.decoded(wrapper).terminal_name
+        ):
             return True
         case ast.Constant(value=str() as text):
             return "| None" in text or "None |" in text or text.startswith("Optional[")

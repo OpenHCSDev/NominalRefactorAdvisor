@@ -16,7 +16,8 @@ from collections import defaultdict
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 
-from .annotation_semantics import NOMINAL_ANNOTATION_SOURCE_AUTHORITY
+from .annotation_semantics import NOMINAL_ANNOTATION_SOURCE_AUTHORITY, TypeWrapper
+from .ast_projection import ExpressionReference
 from .ast_field_decoders import ParameterAnnotations, variadic_parameters
 from .class_index import CompactIndexedClass, ModuleNominalBindingAuthority
 
@@ -196,9 +197,6 @@ class FailedReceiverType(ReceiverType):
         return UnresolvedProbeOwner(f"type checker: {self.reason}")
 
 
-_OPTIONAL_WRAPPERS = frozenset({"Optional", "typing.Optional"})
-
-
 def _present_alternative(annotation: ast.expr) -> ast.expr:
     """`X | None`, `None | X` and `Optional[X]` declare X; anything else declares itself."""
 
@@ -208,7 +206,9 @@ def _present_alternative(annotation: ast.expr) -> ast.expr:
         case ast.BinOp(op=ast.BitOr(), left=ast.Constant(value=None), right=present):
             return present
         case ast.Subscript(value=wrapper, slice=present) if (
-            ast.unparse(wrapper) in _OPTIONAL_WRAPPERS
+            TypeWrapper.OPTIONAL.spelled_by(
+                ExpressionReference.decoded(wrapper).terminal_name
+            )
         ):
             return present
     return annotation
