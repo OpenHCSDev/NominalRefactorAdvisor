@@ -22,6 +22,7 @@ import ast
 import difflib
 from abc import ABC, abstractmethod
 import keyword as keyword_module
+import tokenize
 from collections.abc import Iterable
 from dataclasses import dataclass, replace
 from functools import cached_property
@@ -1537,6 +1538,259 @@ def _is_own_class(function: ast.expr) -> bool:
     )
 
 
+@dataclass(frozen=True)
+class PositionalConstruction:
+    """One call that builds a dataclass, or its receiver's class, by position."""
+
+    file_path: str
+    call: ast.Call
+    parameter_names: tuple[str, ...]
+
+    @property
+    def location(self) -> str:
+        return f"{self.file_path}:{self.call.lineno}"
+
+    def require_keywordable(self) -> None:
+        call = self.call
+        if any(isinstance(argument, ast.Starred) for argument in call.args):
+            raise ValueError(f"{self.location} unpacks `*` arguments")
+        if any(keyword.arg is None for keyword in call.keywords):
+            raise ValueError(f"{self.location} unpacks `**` arguments")
+        if len(call.args) > len(self.parameter_names):
+            raise ValueError(
+                f"{self.location} passes {len(call.args)} positional argument(s); "
+                f"the generated `__init__` takes {len(self.parameter_names)}"
+            )
+        if any(isinstance(argument, ast.GeneratorExp) for argument in call.args):
+            raise ValueError(f"{self.location} passes a bare generator expression")
+
+    def replacements(
+        self, geometry: SourceTextGeometry
+    ) -> tuple[SourceTextSpanReplacement, ...]:
+        """`name=` before each positional argument's first token; a walrus the
+        call left bare is parenthesized."""
+
+        call = self.call
+        func_end = geometry.required_node_offsets(call.func)[1]
+        starts: list[int] = []
+        depth = 0
+        expecting = True
+        for token in geometry.tokens:
+            offset = geometry.line_offsets[token.start[0] - 1] + token.start[1]
+            if offset < func_end or token.type in _LAYOUT_TOKENS:
+                continue
+            if depth == 1 and expecting and token.string != ")":
+                starts.append(offset)
+                expecting = False
+            if token.type == tokenize.OP and token.string in "([{":
+                depth += 1
+            elif token.type == tokenize.OP and token.string in ")]}":
+                depth -= 1
+                if depth == 0:
+                    break
+            elif token.type == tokenize.OP and token.string == "," and depth == 1:
+                expecting = True
+        replacements: list[SourceTextSpanReplacement] = []
+        for name, argument, start in zip(self.parameter_names, call.args, starts):
+            argument_start, argument_end = geometry.required_node_offsets(argument)
+            bare_walrus = isinstance(argument, ast.NamedExpr) and argument_start == start
+            replacements.append(
+                SourceTextSpanReplacement.from_offsets(
+                    start_offset=start,
+                    end_offset=start,
+                    replacement_source=f"{name}=" + ("(" if bare_walrus else ""),
+                )
+            )
+            if bare_walrus:
+                replacements.append(
+                    SourceTextSpanReplacement.from_offsets(
+                        start_offset=argument_end,
+                        end_offset=argument_end,
+                        replacement_source=")",
+                    )
+                )
+        if len(starts) < len(call.args):
+            raise ValueError(f"{self.location}: the call's arguments do not tokenize")
+        return tuple(replacements)
+
+
+_LAYOUT_TOKENS = frozenset(
+    (tokenize.COMMENT, tokenize.NL, tokenize.NEWLINE, tokenize.INDENT, tokenize.DEDENT)
+)
+
+
+@dataclass(frozen=True)
+class ConstructionKeywording:
+    """Every positional construction of one dataclass, bound by keyword instead.
+
+    A direct call `C(x, y)` binds the generated `__init__`'s positional
+    parameters in order, so `C(a=x, b=y)` binds the same values. A receiver's
+    own class (`cls(...)` in a classmethod, `type(self)(...)` or
+    `self.__class__(...)` in a method) may be any descendant, so the rewrite
+    also needs every descendant's positional parameters to start with the same
+    names. The class and every such descendant need a closed dataclass schema
+    whose fields' keyword-only-ness is known; any construction that unpacks
+    arguments, passes more than the parameters, or passes a bare generator
+    refuses the whole rewrite. A read that hands the class on as a value or a
+    positional class pattern is left alone: it binds through `__match_args__`
+    or an unknown caller, not this call.
+    """
+
+    snapshot: CodemodSourceSnapshot
+    target: OverlapClass
+
+    @classmethod
+    def require(
+        cls, snapshot: CodemodSourceSnapshot, reference: SourceRewriteTarget
+    ) -> ConstructionKeywording:
+        keywording = cls(snapshot, OverlapClass.require(snapshot, reference))
+        if not keywording.constructions:
+            raise ValueError(f"`{keywording.target.qualname}` is never built by position")
+        for construction in keywording.constructions:
+            construction.require_keywordable()
+        return keywording
+
+    def parameter_names(self, symbol: str) -> tuple[str, ...]:
+        resolution = (
+            self.snapshot.class_overlap_verdicts.class_index.product_authority_resolutions_by_symbol.get(
+                symbol
+            )
+        )
+        authority = None if resolution is None else resolution.authority
+        if authority is None:
+            raise ValueError(f"`{symbol}` has no closed dataclass schema")
+        return authority.positional_parameter_names()
+
+    @cached_property
+    def constructions(self) -> tuple[PositionalConstruction, ...]:
+        parameters = self.parameter_names(self.target.symbol)
+        direct = tuple(
+            PositionalConstruction(site.file_path, site.parent, parameters)
+            for site in ClassReferenceSites(self.snapshot, frozenset((self.target.symbol,))).sites
+            if site.role is ClassReferenceRole.CONSTRUCTION
+            and isinstance(site.parent, ast.Call)
+            and site.parent.args
+        )
+        return (*direct, *self.receiver_constructions(parameters))
+
+    def receiver_constructions(
+        self, parameters: tuple[str, ...]
+    ) -> tuple[PositionalConstruction, ...]:
+        module_bound = LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(
+            self.snapshot.parsed_module_for_source_path(self.target.file_path).module.body
+        )
+        calls = tuple(
+            call
+            for function in self.target.node.body
+            if isinstance(function, (ast.FunctionDef, ast.AsyncFunctionDef))
+            for call in _receiver_class_calls(function, module_bound)
+        )
+        if not calls:
+            return ()
+        widest = max(len(call.args) for call in calls)
+        for symbol in self.snapshot.class_overlap_verdicts.class_index.descendant_symbols(
+            self.target.symbol
+        ):
+            if self.parameter_names(symbol)[:widest] != parameters[:widest]:
+                raise ValueError(
+                    f"`{symbol}` takes other positional parameters than "
+                    f"`{self.target.qualname}`, and its receiver may be one"
+                )
+        return tuple(
+            PositionalConstruction(self.target.file_path, call, parameters) for call in calls
+        )
+
+    def source_edits(self, rationale: str) -> tuple[NominalSourceEdit, ...]:
+        by_file: dict[str, list[PositionalConstruction]] = {}
+        for construction in self.constructions:
+            by_file.setdefault(construction.file_path, []).append(construction)
+        return tuple(
+            edit
+            for file_path, constructions in by_file.items()
+            for geometry in (SourceTextGeometry(self.snapshot.sources_by_file_path[file_path]),)
+            for edit in geometry.physical_edits(
+                file_path=file_path,
+                replacements=tuple(
+                    replacement
+                    for construction in constructions
+                    for replacement in construction.replacements(geometry)
+                ),
+                rationale=rationale,
+            )
+        )
+
+
+def _receiver_class_calls(
+    function: ast.FunctionDef | ast.AsyncFunctionDef, module_bound: frozenset[str]
+) -> tuple[ast.Call, ...]:
+    """Positional calls of the method's receiver's own class: `cls(...)` in a
+    classmethod; `type(self)(...)` or `self.__class__(...)` in an undecorated
+    method. Raises when the receiver or `type` is rebound inside the method."""
+
+    positional = (*function.args.posonlyargs, *function.args.args)
+    if not positional:
+        return ()
+    receiver = positional[0].arg
+    decorators = function.decorator_list
+    is_classmethod = (
+        len(decorators) == 1
+        and isinstance(decorators[0], ast.Name)
+        and decorators[0].id == "classmethod"
+        and "classmethod" not in module_bound
+    )
+    if decorators and not is_classmethod:
+        return ()
+
+    def builds_receiver_class(node: ast.expr) -> bool:
+        if is_classmethod:
+            return isinstance(node, ast.Name) and node.id == receiver
+        if isinstance(node, ast.Attribute):
+            return (
+                node.attr == "__class__"
+                and isinstance(node.value, ast.Name)
+                and node.value.id == receiver
+            )
+        return (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "type"
+            and "type" not in module_bound
+            and len(node.args) == 1
+            and not node.keywords
+            and isinstance(node.args[0], ast.Name)
+            and node.args[0].id == receiver
+        )
+
+    calls = tuple(
+        node
+        for node in ast.walk(function)
+        if isinstance(node, ast.Call) and node.args and builds_receiver_class(node.func)
+    )
+    if calls:
+        rebound = {receiver, "type"} & frozenset(
+            name
+            for node in ast.walk(function)
+            if node is not function
+            for name in (
+                (node.id,)
+                if isinstance(node, ast.Name) and not isinstance(node.ctx, ast.Load)
+                else (node.arg,)
+                if isinstance(node, ast.arg) and node is not positional[0]
+                else (node.name,)
+                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+                else tuple(node.names)
+                if isinstance(node, (ast.Global, ast.Nonlocal))
+                else ()
+            )
+        )
+        if rebound:
+            raise ValueError(
+                f"line {function.lineno}: `{function.name}` rebinds {sorted(rebound)}, "
+                "so its own-class calls are unproved"
+            )
+    return calls
+
+
 @dataclass(frozen=True, kw_only=True)
 class ComposeExistingClassOperation(RepositorySourceReprovedOperation):
     """Make a class that restates an existing class's whole body compose that class."""
@@ -2011,6 +2265,36 @@ class ExtendOwnerOperation(RepositorySourceReprovedOperation):
         return (
             AstTargetAuthorityClaim.from_target(
                 extension.owner.target.target,
+                authority_kind=SemanticAuthorityKind.CLASS_FAMILY,
+            ),
+        )
+
+
+@dataclass(frozen=True, kw_only=True)
+class KeywordizeConstructionOperation(RepositorySourceReprovedOperation):
+    """Bind every positional construction of a dataclass by keyword (#86)."""
+
+    def keywording(self, snapshot: CodemodSourceSnapshot) -> ConstructionKeywording:
+        return ConstructionKeywording.require(snapshot, self.target)
+
+    def source_edits_from_snapshot(
+        self, snapshot: CodemodSourceSnapshot
+    ) -> tuple[NominalSourceEdit, ...]:
+        keywording = self.keywording(snapshot)
+        return keywording.source_edits(
+            self.rationale_text(
+                f"Build `{keywording.target.qualname}` by keyword, so its field "
+                "order no longer decides what each call binds."
+            )
+        )
+
+    def current_source_authority_claims(
+        self, context: CodemodSelectorContext
+    ) -> tuple[AuthorityClaim, ...]:
+        keywording = self.keywording(context.execution_snapshot())
+        return (
+            AstTargetAuthorityClaim.from_target(
+                keywording.target.target.target,
                 authority_kind=SemanticAuthorityKind.CLASS_FAMILY,
             ),
         )
