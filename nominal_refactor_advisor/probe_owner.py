@@ -12,9 +12,8 @@ from __future__ import annotations
 
 import ast
 from abc import ABC, abstractmethod
-from collections import defaultdict
 from collections.abc import Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 from .annotation_semantics import NOMINAL_ANNOTATION_SOURCE_AUTHORITY, TypeWrapper
 from .ast_projection import ExpressionReference
@@ -54,20 +53,9 @@ class ReceiverSpan:
 
 @dataclass(frozen=True)
 class ScannedClasses:
-    """The scan's classes by qualified symbol and by simple name."""
+    """The scan's classes by qualified symbol."""
 
     by_symbol: Mapping[str, CompactIndexedClass]
-    by_name: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
-
-    @classmethod
-    def of(cls, classes: Mapping[str, CompactIndexedClass]) -> ScannedClasses:
-        by_name: dict[str, list[str]] = defaultdict(list)
-        for symbol in classes:
-            by_name[symbol.rsplit(".", 1)[-1]].append(symbol)
-        return cls(classes, {name: tuple(found) for name, found in by_name.items()})
-
-    def named(self, name: str) -> tuple[str, ...]:
-        return self.by_name.get(name, ())
 
     def describe_field(self, qualified_name: str, field_name: str) -> str:
         if qualified_name not in self.by_symbol:
@@ -103,6 +91,11 @@ class ProbeOwner(ABC):
 
         return ()
 
+    def class_symbols(self) -> tuple[str, ...]:
+        """The scanned class the receiver is known to be, if any."""
+
+        return ()
+
 
 @dataclass(frozen=True)
 class ResolvedProbeOwner(ProbeOwner):
@@ -112,6 +105,9 @@ class ResolvedProbeOwner(ProbeOwner):
 
     def describe(self, field_name: str, context: ProbeOwnerContext) -> str:
         return context.classes.describe_field(self.qualified_name, field_name)
+
+    def class_symbols(self) -> tuple[str, ...]:
+        return (self.qualified_name,)
 
 
 @dataclass(frozen=True)
@@ -126,6 +122,9 @@ class TypeCheckerProbeOwner(ProbeOwner):
             f"{context.classes.describe_field(self.qualified_name, field_name)} "
             f"(the type checker infers `{self.inferred}`)"
         )
+
+    def class_symbols(self) -> tuple[str, ...]:
+        return (self.qualified_name,)
 
 
 @dataclass(frozen=True)
@@ -163,33 +162,28 @@ class ReceiverType(ABC):
 
 @dataclass(frozen=True)
 class InferredReceiverType(ReceiverType):
-    """The type the checker reports, spelled with short class names."""
+    """The type the checker reports, and the classes it is: one for `X`,
+    `type[X]` or `X | None`; none or several for anything else."""
 
     spelled: str
+    classes: tuple[str, ...]
 
     def owner(self, classes: ScannedClasses) -> ProbeOwner:
-        alternatives = [part.strip() for part in self.spelled.split("|")]
-        present = [part for part in alternatives if part != "None"]
-        if len(present) != 1 or present[0] == "Any":
-            return UnresolvedProbeOwner(
-                f"the type checker infers `{self.spelled}`, not one class"
-            )
-        name = present[0].split("[", 1)[0].rsplit(".", 1)[-1]
-        symbols = classes.named(name)
-        if len(symbols) > 1:
-            return UnresolvedProbeOwner(
-                f"type name `{name}` binds to {len(symbols)} scanned classes"
-            )
-        for symbol in symbols:
-            return TypeCheckerProbeOwner(symbol, self.spelled)
+        match self.classes:
+            case (symbol,) if symbol in classes.by_symbol:
+                return TypeCheckerProbeOwner(symbol, self.spelled)
+            case (_,):
+                return UnresolvedProbeOwner(
+                    f"the type checker infers `{self.spelled}`, which is not a scanned class"
+                )
         return UnresolvedProbeOwner(
-            f"the type checker infers `{self.spelled}`, which is not a scanned class"
+            f"the type checker infers `{self.spelled}`, not one class"
         )
 
 
 @dataclass(frozen=True)
 class FailedReceiverType(ReceiverType):
-    """The type checker gave no type: not installed, the daemon failed, or inspect did."""
+    """The type checker gave no type: not installed, the build failed, or it typed nothing there."""
 
     reason: str
 

@@ -383,32 +383,50 @@ class ModuleExpressionShape:
 
 
 @dataclass(frozen=True)
-class ForeignTypeTestShape:
-    """One `isinstance`/`issubclass` site whose type argument resolved to classes.
+class TypeTestShape:
+    """One `isinstance`/`issubclass` site or class pattern whose classes resolved.
 
-    `type_names` are qualified class names, each reached through an import or a
-    builtin; `subject` is the dump of the tested expression, so sites testing
-    the same value can be told from sites testing a part of it; `owner` is the
-    one module they all come from. Whether that module
-    is declared in the scanned repository is decided against the whole scan.
+    `type_names` are qualified class names, each reached through an import, a
+    module declaration or a builtin; `subject` is the dump of the tested
+    expression, so sites testing the same value can be told from sites testing
+    a part of it.
     """
 
     file_path: str
     lineno: int
     symbol: str
-    owner: str
     type_names: tuple[str, ...]
     subject: str
 
+    @property
+    def owners(self) -> frozenset[str]:
+        """The modules the tested classes are declared in."""
+
+        return frozenset(name.rpartition(".")[0] for name in self.type_names)
+
     def is_foreign_to(self, scanned_module_names: Iterable[str]) -> bool:
-        """Whether no scanned module is, contains, or sits inside the owner."""
+        """Whether no scanned module is, contains, or sits inside any owner."""
 
         return not any(
-            self.owner == scanned_name
-            or self.owner.startswith(f"{scanned_name}.")
-            or scanned_name.startswith(f"{self.owner}.")
+            owner == scanned_name
+            or owner.startswith(f"{scanned_name}.")
+            or scanned_name.startswith(f"{owner}.")
+            for owner in self.owners
             for scanned_name in scanned_module_names
         )
+
+
+@dataclass(frozen=True)
+class ForeignTypeTestShape(TypeTestShape):
+    """A type test whose classes all come from one module. Whether that module is
+    declared in the scanned repository is decided against the whole scan."""
+
+    @property
+    def owner(self) -> str:
+        """The one module every tested class comes from."""
+
+        (owner,) = self.owners
+        return owner
 
 
 @dataclass(frozen=True)
