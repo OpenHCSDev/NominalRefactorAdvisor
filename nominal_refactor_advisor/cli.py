@@ -107,6 +107,7 @@ from .codemod_source_cache import (
     CodemodSourceContextCache,
 )
 from .codemod_target_selectors import CodemodTargetSelector
+from .owner_picks import OwnerPicks
 from .codemod_workflow import (
     CodemodProjectedFindingReport,
     CodemodRefactorGoalReport,
@@ -601,6 +602,15 @@ _CLI_ARGUMENT_SPECS = (
             help=(
                 "Restrict one-shot plan synthesis to findings from this detector "
                 "(can be repeated)."
+            ),
+        ),
+        CliArgumentSpec(
+            flags=("--codemod-owner-picks",),
+            value_type=Path,
+            help=(
+                "A picks file choosing, for --codemod-refactor-goal, the owner of "
+                "each extract-mixin finding among its ranked owner candidates; "
+                "each pick cites the receipt it rests on (#67)."
             ),
         ),
         CliArgumentSpec(
@@ -3618,6 +3628,11 @@ class CodemodRefactorGoalCliCommand(
                 recipe_frontier=FindingRecipeFrontierBudget(
                     max_candidate_batches=self.args.codemod_goal_max_branches,
                 ),
+            ),
+            owner_picks=(
+                None
+                if self.args.codemod_owner_picks is None
+                else OwnerPicks.read(self.args.codemod_owner_picks)
             ),
         ).run()
         replay_plan_payload = json_report_object(report.replay_sequence)

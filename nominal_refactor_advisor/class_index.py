@@ -48,6 +48,7 @@ from .ast_projection import AbsentStatementValue, CallKeywords, StatementValue
 from .ast_tools import (
     CompactModuleIdentity,
     CollectedFamily,
+    LexicalSyntaxScope,
     ParsedModule,
     PythonSourcePathPolicy,
     SourceModule,
@@ -169,6 +170,13 @@ class CompactDataclassFacet(ABC):
         """This standard dataclass declaration, or NotStandardDataclass."""
         raise NotImplementedError
 
+    @property
+    @abstractmethod
+    def generates_construction(self) -> bool:
+        """Whether a dataclass-like decorator builds the class's `__init__` from
+        its fields, so an added field changes how the class is constructed."""
+        raise NotImplementedError
+
     @abstractmethod
     def refuse_inherited_fields(self, heir_qualname: str) -> None:
         """An ancestor's dataclass declaration refuses a heir that adds the decorator."""
@@ -211,6 +219,10 @@ class CompactDataclassDeclaration(CompactDataclassFacet):
             raise NotStandardDataclass(reason)
         return self
 
+    @property
+    def generates_construction(self) -> bool:
+        return True
+
     def refuse_inherited_fields(self, heir_qualname: str) -> None:
         raise ValueError(f"`{heir_qualname}` inherits dataclass fields")
 
@@ -244,6 +256,10 @@ class NoDataclassDeclaration(CompactDataclassFacet):
 
     def require_standard(self, reason: str) -> CompactDataclassDeclaration:
         raise NotStandardDataclass(reason)
+
+    @property
+    def generates_construction(self) -> bool:
+        return False
 
     def refuse_inherited_fields(self, heir_qualname: str) -> None:
         return None
@@ -769,6 +785,16 @@ class CompactDataclassFieldRole(StrEnum):
             None,
         )
 
+    def binding_of_later_fields(
+        self, binding: DataclassInitBinding
+    ) -> DataclassInitBinding:
+        """How the fields after this member bind: a `KW_ONLY` sentinel makes
+        them keyword-only; any other member leaves the binding as it was."""
+
+        if self is CompactDataclassFieldRole.KEYWORD_ONLY_SENTINEL:
+            return DataclassInitBinding.KEYWORD_ONLY
+        return binding
+
     @property
     def has_known_field_position(self) -> bool:
         """Whether this member's place in the dataclass field order is known.
@@ -783,12 +809,41 @@ class CompactDataclassFieldRole(StrEnum):
         )
 
 
+class DataclassInitBinding(StrEnum):
+    """How a dataclass field binds as an `__init__` parameter.
+
+    `kw_only` comes from the field's own `field(kw_only=...)`, else from a
+    preceding `KW_ONLY` sentinel, else from the decorator's `kw_only=`. A value
+    that is not a literal bool leaves the binding unknown.
+    """
+
+    POSITIONAL = "positional"
+    KEYWORD_ONLY = "keyword_only"
+    UNKNOWN = "unknown"
+
+    @classmethod
+    def of_keywords(
+        cls, keywords: Iterable[ast.keyword], otherwise: DataclassInitBinding
+    ) -> DataclassInitBinding:
+        """The binding a call's `kw_only=` keyword declares, or `otherwise`."""
+
+        values = tuple(keyword.value for keyword in keywords if keyword.arg == "kw_only")
+        if not values:
+            return otherwise
+        if len(values) > 1 or not (
+            isinstance(values[0], ast.Constant) and isinstance(values[0].value, bool)
+        ):
+            return cls.UNKNOWN
+        return cls.KEYWORD_ONLY if values[0].value else cls.POSITIONAL
+
+
 class CompactDataclassFieldDeclaration(NamedTuple):
-    """One direct annotated member and its exact dataclass role."""
+    """One direct annotated member, its exact dataclass role and its binding."""
 
     name: str
     line: int
     role: CompactDataclassFieldRole
+    binding: DataclassInitBinding
 
 
 class CompactProductDeclarationFailure(NamedTuple):
@@ -804,19 +859,26 @@ class CompactProductField:
 
     name: str
     role: CompactDataclassFieldRole
+    binding: DataclassInitBinding
     declaring_class_symbol: str
     file_path: str
     line: int
 
 
-@dataclass(frozen=True)
-class CompactProductAuthority:
-    """One linearly composed dataclass schema with source-visible fields."""
+@dataclass(frozen=True, kw_only=True)
+class ProductDeclarationSite:
+    """The source site that declares one product class: its symbol, file and line."""
 
     class_symbol: str
-    effective_fields: tuple[CompactProductField, ...]
     file_path: str
     line: int
+
+
+@dataclass(frozen=True, kw_only=True)
+class CompactProductAuthority(ProductDeclarationSite):
+    """One linearly composed dataclass schema with source-visible fields."""
+
+    effective_fields: tuple[CompactProductField, ...]
 
     @property
     def fields(self) -> tuple[CompactProductField, ...]:
@@ -830,14 +892,32 @@ class CompactProductAuthority:
     def field_names(self) -> tuple[str, ...]:
         return tuple(field.name for field in self.fields)
 
+    def positional_parameter_names(self) -> tuple[str, ...]:
+        """The generated `__init__`'s positional parameters, in order: every
+        field not keyword-only, in field order. Raises when a field's binding
+        is unknown."""
 
-@dataclass(frozen=True)
-class CompactProductAuthorityFailure:
+        unknown = tuple(
+            field.name
+            for field in self.fields
+            if field.binding is DataclassInitBinding.UNKNOWN
+        )
+        if unknown:
+            raise ValueError(
+                f"`{self.class_symbol}` has field(s) {list(unknown)} whose "
+                "keyword-only-ness is not a literal"
+            )
+        return tuple(
+            field.name
+            for field in self.fields
+            if field.binding is DataclassInitBinding.POSITIONAL
+        )
+
+
+@dataclass(frozen=True, kw_only=True)
+class CompactProductAuthorityFailure(ProductDeclarationSite):
     """One failed product obligation attached to its declaration source."""
 
-    class_symbol: str
-    file_path: str
-    line: int
     violation: CompactProductAuthorityViolation
 
 
@@ -893,6 +973,45 @@ class _CompactProductLineage:
 
 
 @dataclass(frozen=True)
+class CompactClassBindingFacets:
+    """Class facts whose authority depends on one module binding snapshot."""
+
+    base_references: tuple[CompactNominalReference, ...]
+    base_references_are_complete: bool
+    class_decorators_are_promotion_safe: bool
+    dataclass_declaration: CompactDataclassFacet
+    enum_declaration: PythonEnumDeclarationFacet
+
+    @property
+    def product_base_bindings_are_exact(self) -> bool:
+        try:
+            for reference in self.base_references:
+                if ClassSymbolResolutionAuthority.establishes_nominal_family(
+                    ".".join(reference.source_parts)
+                ):
+                    reference.require_bound_name()
+        except UnboundReference:
+            return False
+        return True
+
+
+@dataclass(frozen=True)
+class CompactStarResolvedFacets:
+    """A class's binding-sensitive facts as they are when the module's star
+    imports bind none of the names the class reads.
+
+    A module with `from x import *` cannot tell, alone, whether a later name is
+    the star import's or its own: its projection keeps the conservative facts.
+    These are the facts with every name in `root_names` taken as the module's
+    own. The class index uses them when the repository's export contracts
+    prove that every star origin excludes every one of those names.
+    """
+
+    root_names: frozenset[str]
+    facets: CompactClassBindingFacets
+
+
+@dataclass(frozen=True)
 class CompactClassHeader(ClassDeclaration):
     """Class-index surface sufficient for inheritance reconstruction."""
 
@@ -902,6 +1021,9 @@ class CompactClassHeader(ClassDeclaration):
     product_base_bindings_are_exact: bool = False
     is_final: bool = False
     mro_bases_are_static: bool = False
+    star_resolution: CompactStarResolvedFacets | None = field(default=None, kw_only=True)
+    """The facts past the module's star imports, when it has any; the index
+    settles them once the repository's exports are known."""
 
     @property
     def base_resolution_is_complete(self) -> bool:
@@ -916,11 +1038,53 @@ class CompactClassHeader(ClassDeclaration):
 class CompactIndexedClass(CompactClassHeader):
     """AST-free class declaration used to reconstruct inheritance globally."""
 
+    def resolved_past_star_imports(
+        self, exposure: RepositoryPublicExposureAuthority
+    ) -> Self:
+        """The class with its star-resolved facts when every star origin of its
+        module excludes every name they read; otherwise its conservative facts."""
+
+        resolution = self.star_resolution
+        if resolution is None:
+            return self
+        if not all(
+            exposure.star_imports_exclude(self.module_name, name)
+            for name in resolution.root_names
+        ):
+            return replace(self, star_resolution=None)
+        facets = resolution.facets
+        return replace(
+            self,
+            base_references=facets.base_references,
+            base_references_are_complete=facets.base_references_are_complete,
+            product_base_bindings_are_exact=facets.product_base_bindings_are_exact,
+            class_decorators_are_promotion_safe=(
+                facets.class_decorators_are_promotion_safe
+            ),
+            dataclass_declaration=facets.dataclass_declaration,
+            enum_declaration=facets.enum_declaration,
+            star_resolution=None,
+        )
+
     def with_registering_metaclass(self, registers: bool) -> Self:
         return replace(
             self,
             declares_autoregister_meta=registers,
             is_registration_authority=self.is_registration_authority or registers,
+        )
+
+    @property
+    def own_dataclass_field_names(self) -> tuple[str, ...] | None:
+        """The class's own dataclass fields in declaration order, ClassVars excluded;
+        empty for a plain class, None when a field's position is unknown."""
+
+        declaration = self.dataclass_declaration
+        if not all(field.role.has_known_field_position for field in declaration.fields):
+            return None
+        return tuple(
+            field.name
+            for field in declaration.fields
+            if field.role.contributes_semantic_field
         )
 
     direct_member_declarations: tuple[CompactClassMemberDeclaration, ...] = ()
@@ -1359,9 +1523,7 @@ class CompactModuleClassHeader(CompactModuleIdentity):
     @ScanCache.cached
     def from_modules(cls, modules: tuple[ParsedModule, ...]) -> tuple[Self, ...]:
         """Join original declarations with the repository's namespace proof."""
-        return RepositoryModuleBindingProof(modules).refined_class_projections(
-            cls.from_module
-        )
+        return star_resolved_projections(tuple(cls.from_module(module) for module in modules))
 
     @classmethod
     @ScanCache.cached
@@ -2618,6 +2780,9 @@ class CompactClassReference(NamedTuple):
     line: int
     positional_arguments: int = 0
     unpacked_arguments: bool = False
+    copied_fields: tuple[str, ...] = ()
+    """For a construction, the most keywords one call passes as `x.<same name>`
+    from a single value `x`: fields copied off another object."""
 
 
 ClassDeclarationT = TypeVar("ClassDeclarationT", bound=ClassDeclaration)
@@ -2780,6 +2945,7 @@ class _ProductLineageComposer:
             fields_by_name[field_declaration.name] = CompactProductField(
                 name=field_declaration.name,
                 role=field_declaration.role,
+                binding=field_declaration.binding,
                 declaring_class_symbol=class_symbol,
                 file_path=indexed_class.file_path,
                 line=field_declaration.line,
@@ -4316,26 +4482,6 @@ class RepositoryModuleBindingProof(
 
     modules: tuple[ParsedModule, ...]
 
-    def refined_class_projections(
-        self,
-        collect: Callable[[ParsedModule], ClassProjectionT],
-    ) -> tuple[ClassProjectionT, ...]:
-        """Refine original declarations through this repository's export evidence."""
-        projections = []
-        for module in self.modules:
-            excluded_names = frozenset(
-                name
-                for name in _class_nominal_reference_root_names(module)
-                if self.star_imports_exclude(module.module_name, name)
-            )
-            projection = collect(module)
-            if excluded_names:
-                projection = _repository_refined_class_projection(
-                    module, projection, excluded_names
-                )
-            projections.append(projection)
-        return tuple(projections)
-
     @cached_property
     def public_export_contract_by_module_name(
         self,
@@ -4771,28 +4917,6 @@ def _compact_base_references(
     )
 
 
-@dataclass(frozen=True)
-class _CompactClassBindingFacets:
-    """Class facts whose authority depends on one module binding snapshot."""
-
-    base_references: tuple[CompactNominalReference, ...]
-    class_decorators_are_promotion_safe: bool
-    dataclass_declaration: CompactDataclassFacet
-    enum_declaration: PythonEnumDeclarationFacet
-
-    @property
-    def product_base_bindings_are_exact(self) -> bool:
-        try:
-            for reference in self.base_references:
-                if ClassSymbolResolutionAuthority.establishes_nominal_family(
-                    ".".join(reference.source_parts)
-                ):
-                    reference.require_bound_name()
-        except UnboundReference:
-            return False
-        return True
-
-
 def _compact_class_binding_facets(
     node: ast.ClassDef,
     module_binding_snapshot: ModuleNominalBindingSnapshot,
@@ -4800,7 +4924,7 @@ def _compact_class_binding_facets(
     qualname: str,
     *,
     include_body_facets: bool,
-) -> _CompactClassBindingFacets:
+) -> CompactClassBindingFacets:
     try:
         enum_declaration = PYTHON_ENUM_BASE_AUTHORITY.declaration_from_node(
             node,
@@ -4816,8 +4940,10 @@ def _compact_class_binding_facets(
         )
     except ValueError:
         enum_declaration = NoEnumDeclaration()
-    return _CompactClassBindingFacets(
-        base_references=_compact_base_references(node, module_binding_snapshot),
+    base_references = _compact_base_references(node, module_binding_snapshot)
+    return CompactClassBindingFacets(
+        base_references=base_references,
+        base_references_are_complete=len(base_references) == len(node.bases),
         class_decorators_are_promotion_safe=all(
             ClassMethodPromotionSafeDecorator.for_qualified_name(
                 _class_scope_qualified_import_name(
@@ -4850,6 +4976,16 @@ def _compact_indexed_classes(
         ModuleNominalBindingAuthority(parsed_module),
         tuple(node.lineno for _qualname, node in indexed_class_nodes),
         include_final=False,
+    )
+    star_snapshots = (
+        _module_nominal_binding_snapshots(
+            ModuleNominalBindingAuthority(parsed_module),
+            tuple(node.lineno for _qualname, node in indexed_class_nodes),
+            include_final=False,
+            star_import_excluded_names=_class_nominal_reference_root_names(parsed_module),
+        )
+        if module_star_import_origins(parsed_module)
+        else None
     )
     body_scopes = (
         ClassBodyModuleScope.for_lines(
@@ -4892,8 +5028,7 @@ def _compact_indexed_classes(
                 )
                 is not None
             ),
-            base_references_are_complete=len(binding_facets.base_references)
-            == len(node.bases),
+            base_references_are_complete=binding_facets.base_references_are_complete,
             product_base_bindings_are_exact=(
                 binding_facets.product_base_bindings_are_exact
             ),
@@ -4971,6 +5106,17 @@ def _compact_indexed_classes(
                 if include_body_facets
                 else ()
             ),
+            star_resolution=(
+                None
+                if star_snapshots is None
+                else _star_resolved_facets(
+                    node,
+                    star_snapshots[node.lineno],
+                    parsed_module.module_name,
+                    qualname,
+                    include_body_facets=include_body_facets,
+                )
+            ),
         )
         for qualname, node in indexed_class_nodes
         for module_binding_snapshot in (binding_snapshots[node.lineno],)
@@ -4991,10 +5137,61 @@ def _class_nominal_reference_root_names(
 ) -> frozenset[str]:
     """Return module bindings queried while projecting class declarations."""
 
+    return frozenset(
+        name
+        for _qualname, class_node in iter_class_definitions(
+            list(parsed_module.module.body)
+        )
+        for name in _class_reference_root_names(class_node)
+    )
+
+
+def _star_resolved_facets(
+    node: ast.ClassDef,
+    star_snapshot: ModuleNominalBindingSnapshot,
+    module_name: str,
+    qualname: str,
+    *,
+    include_body_facets: bool,
+) -> CompactStarResolvedFacets:
+    return CompactStarResolvedFacets(
+        root_names=_class_reference_root_names(node),
+        facets=_compact_class_binding_facets(
+            node,
+            star_snapshot,
+            module_name,
+            qualname,
+            include_body_facets=include_body_facets,
+        ),
+    )
+
+
+def star_resolved_projections(
+    projections: tuple[ClassProjectionT, ...],
+) -> tuple[ClassProjectionT, ...]:
+    """Settle every class's star-import-dependent facts from the repository's
+    export contracts: the one place those facts are resolved."""
+
+    exposure = CompactRepositoryPublicExposureIndex(projections)
+    return tuple(
+        projection
+        if not projection.star_import_origins
+        else replace(
+            projection,
+            classes=tuple(
+                indexed_class.resolved_past_star_imports(exposure)
+                for indexed_class in projection.classes
+            ),
+        )
+        for projection in projections
+    )
+
+
+def _class_reference_root_names(class_node: ast.ClassDef) -> frozenset[str]:
+    """The module bindings one class declaration reads while it is projected."""
+
     reference_nodes: list[ast.AST] = []
-    for _qualname, class_node in iter_class_definitions(
-        list(parsed_module.module.body)
-    ):
+    for class_node in (class_node,):
         reference_nodes.extend(class_node.bases)
         reference_nodes.extend(class_node.decorator_list)
         reference_nodes.extend(keyword.value for keyword in class_node.keywords)
@@ -5010,48 +5207,6 @@ def _class_nominal_reference_root_names(
         for node in ast.walk(reference_node)
         if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load)
     )
-
-
-def _repository_refined_class_projection(parsed_module: ParsedModule, projection: ClassProjectionT, star_import_excluded_names: frozenset[str]) -> ClassProjectionT:
-    """Refine only binding-sensitive class facts from repository export proof."""
-
-    class_nodes_by_qualname = dict(
-        iter_class_definitions(list(parsed_module.module.body))
-    )
-    binding_snapshots = _module_nominal_binding_snapshots(
-        ModuleNominalBindingAuthority(parsed_module),
-        tuple(node.lineno for node in class_nodes_by_qualname.values()),
-        include_final=False,
-        star_import_excluded_names=star_import_excluded_names,
-    )
-    refined_classes = []
-    for indexed_class in projection.classes:
-        node = class_nodes_by_qualname[indexed_class.qualname]
-        binding_snapshot = binding_snapshots[node.lineno]
-        binding_facets = _compact_class_binding_facets(
-            node,
-            binding_snapshot,
-            parsed_module.module_name,
-            indexed_class.qualname,
-            include_body_facets=True,
-        )
-        refined_classes.append(
-            replace(
-                indexed_class,
-                base_references=binding_facets.base_references,
-                base_references_are_complete=len(binding_facets.base_references)
-                == len(node.bases),
-                product_base_bindings_are_exact=(
-                    binding_facets.product_base_bindings_are_exact
-                ),
-                class_decorators_are_promotion_safe=(
-                    binding_facets.class_decorators_are_promotion_safe
-                ),
-                dataclass_declaration=binding_facets.dataclass_declaration,
-                enum_declaration=binding_facets.enum_declaration,
-            )
-        )
-    return replace(projection, classes=tuple(refined_classes))
 
 
 class CompactModuleClassProjectionFamily(CollectedFamily[CompactModuleClassProjection]):
@@ -5152,9 +5307,9 @@ class CompactModuleClassProjectionFamily(CollectedFamily[CompactModuleClassProje
     ) -> tuple[CompactModuleClassProjection, ...]:
         """Collect the single module projection declared by this family."""
 
-        return RepositoryModuleBindingProof(
-            tuple(parsed_modules)
-        ).refined_class_projections(cls._required_module_projection)
+        return star_resolved_projections(
+            tuple(cls._required_module_projection(module) for module in parsed_modules)
+        )
 
     @classmethod
     def collect_demanded(
@@ -6554,6 +6709,58 @@ _GENERIC_ALIAS_ROOTS = frozenset(
 )
 
 
+def _classmethod_receiver_class(
+    node: ast.AST,
+    scope: LexicalSyntaxScope,
+    nodes: Sequence[ast.AST],
+    parent_indices: Sequence[int],
+    module_bound_names: frozenset[str],
+) -> tuple[str, ...] | None:
+    """The class a `@classmethod`'s receiver parameter denotes, read directly in
+    that method: its class-name path, which resolves like a module-level name."""
+
+    if not isinstance(node, ast.Name) or not scope.function_node_indices:
+        return None
+    function_index = scope.function_node_indices[-1]
+    function = nodes[function_index]
+    if not isinstance(function, (ast.FunctionDef, ast.AsyncFunctionDef)):
+        return None
+    if not isinstance(nodes[parent_indices[function_index]], ast.ClassDef):
+        return None
+    if "classmethod" in module_bound_names or not any(
+        isinstance(decorator, ast.Name) and decorator.id == "classmethod"
+        for decorator in function.decorator_list
+    ):
+        return None
+    positional = (*function.args.posonlyargs, *function.args.args)
+    if not positional or positional[0].arg != node.id:
+        return None
+    if not scope.class_names or scope.class_names[0] not in module_bound_names:
+        return None
+    return scope.class_names
+
+
+def _copied_keyword_fields(call: ast.Call) -> tuple[str, ...]:
+    """The keywords one call passes as `x.<same name>`, for the value `x` that
+    supplies the most of them."""
+
+    by_root: dict[str, list[str]] = defaultdict(list)
+    for keyword in call.keywords:
+        value = keyword.value
+        if (
+            keyword.arg is not None
+            and isinstance(value, ast.Attribute)
+            and value.attr == keyword.arg
+            and isinstance(value.value, ast.Name)
+        ):
+            by_root[value.value.id].append(keyword.arg)
+    return max(
+        (tuple(sorted(names)) for names in by_root.values()),
+        key=lambda names: (len(names), names),
+        default=(),
+    )
+
+
 def _compact_class_references(
     parsed_module: ParsedModule,
 ) -> tuple[CompactClassReference, ...]:
@@ -6585,7 +6792,8 @@ def _compact_class_references(
     nodes = syntax_index.depth_first_nodes
     parent_indices = syntax_index.parent_indices
     references: dict[
-        tuple[str, tuple[str, ...], ClassReferenceRole], tuple[int, int, bool]
+        tuple[str, tuple[str, ...], ClassReferenceRole],
+        tuple[int, int, bool, tuple[str, ...]],
     ] = {}
     for node_type in (ast.Name, ast.Attribute):
         for node_index in syntax_index.node_indices_by_type.get(node_type, ()):
@@ -6596,15 +6804,21 @@ def _compact_class_references(
             parent = nodes[parent_index] if parent_index >= 0 else None
             if isinstance(parent, ast.Attribute) and parent.value is node:
                 continue
-            parts = ExpressionReference.decoded(node).attribute_chain
-            if parts is None or parts[0] not in module_bound_names:
-                continue
             scope = syntax_index.scopes[syntax_index.scope_ids[node_index]]
-            if any(
-                parts[0] in locals_by_function_index.get(function_index, ())
-                for function_index in scope.function_node_indices
-            ):
-                continue
+            receiver_class = _classmethod_receiver_class(
+                node, scope, nodes, parent_indices, module_bound_names
+            )
+            if receiver_class is not None:
+                parts = receiver_class
+            else:
+                parts = ExpressionReference.decoded(node).attribute_chain
+                if parts is None or parts[0] not in module_bound_names:
+                    continue
+                if any(
+                    parts[0] in locals_by_function_index.get(function_index, ())
+                    for function_index in scope.function_node_indices
+                ):
+                    continue
             grandparent_index = parent_indices[parent_index] if parent is not None else -1
             grandparent = nodes[grandparent_index] if grandparent_index >= 0 else None
             role = ClassReferenceRole.of_reference(node, parent, grandparent, import_aliases)
@@ -6618,13 +6832,19 @@ def _compact_class_references(
                 if role is ClassReferenceRole.CONSTRUCTION and isinstance(parent, ast.Call)
                 else (0, False)
             )
-            line, seen_positional, seen_unpacked = references.get(
-                key, (node.lineno, 0, False)
+            copied = (
+                _copied_keyword_fields(parent)
+                if role is ClassReferenceRole.CONSTRUCTION and isinstance(parent, ast.Call)
+                else ()
+            )
+            line, seen_positional, seen_unpacked, seen_copied = references.get(
+                key, (node.lineno, 0, False, ())
             )
             references[key] = (
                 min(line, node.lineno),
                 max(seen_positional, positional),
                 seen_unpacked or unpacked,
+                max(seen_copied, copied, key=lambda names: (len(names), names)),
             )
     return tuple(
         CompactClassReference(consumer, parts, role, *facts)
@@ -6953,7 +7173,7 @@ def _dataclass_field_role(
         value = StatementValue.of(statement).require_value("a bare field annotation")
     except AbsentStatementValue:
         return CompactDataclassFieldRole.STORED_INIT
-    if isinstance(value, ast.Constant):
+    if _is_literal_default(value):
         return CompactDataclassFieldRole.STORED_INIT
     if not isinstance(statement.value, ast.Call):
         return CompactDataclassFieldRole.UNRESOLVED
@@ -7006,6 +7226,27 @@ def _dataclass_role_reference(annotation: ast.expr) -> ast.expr | None:
     return annotation if isinstance(annotation, ast.Name | ast.Attribute) else None
 
 
+_LITERAL_DEFAULT_NODES = (
+    ast.Constant,
+    ast.Tuple,
+    ast.List,
+    ast.Set,
+    ast.Dict,
+    ast.UnaryOp,
+    ast.BinOp,
+    ast.unaryop,
+    ast.operator,
+    ast.expr_context,
+)
+
+
+def _is_literal_default(value: ast.expr) -> bool:
+    """A default built only from literals: it names nothing, so it cannot be a
+    `dataclasses.Field` and the member is a plain stored field."""
+
+    return all(isinstance(node, _LITERAL_DEFAULT_NODES) for node in ast.walk(value))
+
+
 def _dataclass_plain_annotation_is_resolved(
     module_binding_snapshot: ModuleNominalBindingSnapshot,
     class_aliases: dict[str, str],
@@ -7038,6 +7279,7 @@ def _dataclass_plain_annotation_is_resolved(
 def _dataclass_fields(
     module_binding_snapshot: ModuleNominalBindingSnapshot,
     node: ast.ClassDef,
+    class_binding: DataclassInitBinding,
 ) -> tuple[CompactDataclassFieldDeclaration, ...]:
     fields: list[CompactDataclassFieldDeclaration] = []
     preceding_bound_names: set[str] = set()
@@ -7047,18 +7289,28 @@ def _dataclass_fields(
             statement.target,
             ast.Name,
         ):
+            role = _dataclass_field_role(
+                module_binding_snapshot,
+                class_aliases,
+                statement,
+                frozenset(preceding_bound_names),
+            )
             fields.append(
                 CompactDataclassFieldDeclaration(
                     name=statement.target.id,
                     line=statement.lineno,
-                    role=_dataclass_field_role(
-                        module_binding_snapshot,
-                        class_aliases,
-                        statement,
-                        frozenset(preceding_bound_names),
+                    role=role,
+                    binding=DataclassInitBinding.of_keywords(
+                        (
+                            statement.value.keywords
+                            if isinstance(statement.value, ast.Call)
+                            else ()
+                        ),
+                        class_binding,
                     ),
                 )
             )
+            class_binding = role.binding_of_later_fields(class_binding)
         direct_aliases: dict[str, str] = {}
         if isinstance(statement, ast.Assign | ast.AnnAssign):
             alias_name = _single_assignment_target_name(statement)
@@ -7226,7 +7478,15 @@ def _dataclass_declaration(
     if not dataclass_candidate_indexes:
         return NoDataclassDeclaration()
 
-    fields = _dataclass_fields(module_binding_snapshot, node)
+    decorator = node.decorator_list[min(dataclass_candidate_indexes)]
+    fields = _dataclass_fields(
+        module_binding_snapshot,
+        node,
+        DataclassInitBinding.of_keywords(
+            decorator.keywords if isinstance(decorator, ast.Call) else (),
+            DataclassInitBinding.POSITIONAL,
+        ),
+    )
     failures: list[CompactProductDeclarationFailure] = []
     if not dataclass_decorator_indexes:
         failures.extend(
@@ -7536,7 +7796,7 @@ class CompactClassFamilyIndexBuilder:
             UniqueIdentityIndexAuthority.unambiguous_declarations_by_handle(
                 (
                     record
-                    for projection in self.projections
+                    for projection in star_resolved_projections(tuple(self.projections))
                     for record in projection.classes
                 ),
                 lambda record: record.symbol,
