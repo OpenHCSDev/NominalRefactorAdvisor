@@ -108,6 +108,7 @@ from nominal_refactor_advisor.calibration import (
 )
 from nominal_refactor_advisor.cache_paths import default_parse_cache_dir
 from nominal_refactor_advisor.class_index import (
+    ClassFamilyIndex,
     RegistryLookupShape,
     RegistryLookupStyle,
     SelectionGuardKind,
@@ -5740,10 +5741,12 @@ def test_virtual_source_overlay_reuses_unchanged_ast_and_class_records(
         ParsedModuleSet.of(snapshot.modules_with_source_overlay(source_overlay))
     )
     monkeypatch.setattr(
-        codemod_runtime_module,
-        "build_class_family_index",
-        lambda _modules: pytest.fail(
-            "projected snapshots must overlay the class index"
+        ClassFamilyIndex,
+        "derive",
+        classmethod(
+            lambda _cls, _modules: pytest.fail(
+                "projected snapshots must overlay the class index"
+            )
         ),
     )
     monkeypatch.setattr(
