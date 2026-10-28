@@ -44,6 +44,7 @@ from .annotation_semantics import (
     NOMINAL_ANNOTATION_SOURCE_AUTHORITY,
 )
 from .ast_projection import ExpressionReference
+from .ast_projection import CallKeywords
 from .ast_tools import (
     CompactModuleIdentity,
     CollectedFamily,
@@ -4930,7 +4931,9 @@ def _compact_indexed_classes(
                 if (terminal_name := _terminal_reference_name(keyword.value))
                 is not None
             ),
-            class_keyword_names=tuple(keyword.arg or "**" for keyword in node.keywords),
+            class_keyword_names=tuple(
+                keyword.spelled_name for keyword in CallKeywords.of(node.keywords).entries
+            ),
             class_decorators_are_promotion_safe=(
                 binding_facets.class_decorators_are_promotion_safe
             ),
@@ -6638,7 +6641,7 @@ def _compact_class_references(
                 (
                     len(parent.args),
                     any(isinstance(argument, ast.Starred) for argument in parent.args)
-                    or any(keyword.arg is None for keyword in parent.keywords),
+                    or bool(CallKeywords.of(parent.keywords).splats),
                 )
                 if role is ClassReferenceRole.CONSTRUCTION and isinstance(parent, ast.Call)
                 else (0, False)
@@ -6992,9 +6995,7 @@ def _dataclass_field_role(
         or not default_factory_declaration.is_field_factory
     ):
         return CompactDataclassFieldRole.UNRESOLVED
-    if statement.value.args or any(
-        keyword.arg is None for keyword in statement.value.keywords
-    ):
+    if statement.value.args or CallKeywords.of(statement.value.keywords).splats:
         return CompactDataclassFieldRole.UNRESOLVED
     init_values = tuple(
         keyword.value for keyword in statement.value.keywords if keyword.arg == "init"
@@ -7352,7 +7353,7 @@ def _compact_class_member_declarations(
         )
         constructor_keyword_names = (
             sorted_tuple(
-                keyword.arg for keyword in value.keywords if keyword.arg is not None
+                CallKeywords.of(value.keywords).names
             )
             if isinstance(value, ast.Call) and constructor_name is not None
             else ()

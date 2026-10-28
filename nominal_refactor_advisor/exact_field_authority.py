@@ -8,6 +8,7 @@ from functools import cached_property
 from itertools import combinations
 
 from .ast_projection import ExpressionReference
+from .ast_projection import CallKeywords
 from .ast_tools import (
     ModuleAnnotationEvaluationMode,
     ParsedModule,
@@ -69,9 +70,7 @@ class ExactDataclassDecorator:
 
         frozen = False
         if isinstance(decorator, ast.Call):
-            if decorator.args or any(
-                keyword.arg is None for keyword in decorator.keywords
-            ):
+            if decorator.args or CallKeywords.of(decorator.keywords).splats:
                 raise ValueError(
                     "Dataclass decorator options must be explicit keywords"
                 )

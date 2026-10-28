@@ -14,6 +14,7 @@ from metaclass_registry import AutoRegisterMeta
 
 from ..lexical_bindings import ImportBoundNameProjection
 from ..ast_projection import ExpressionReference
+from ..ast_projection import CallKeywords
 from ..ast_tools import (
     BuiltinCallName,
     CollectedFamily,
@@ -408,11 +409,7 @@ class _EnvironmentReadSyntax(_MissingValueSemantics):
         kind: EnvironmentReadKind,
         node: ast.Call,
     ) -> _EnvironmentReadSyntax | None:
-        keyword_values = {
-            keyword.arg: keyword.value
-            for keyword in node.keywords
-            if keyword.arg is not None
-        }
+        keyword_values = dict(CallKeywords.of(node.keywords).by_name)
         key_node = (
             node.args[0]
             if node.args
@@ -1165,9 +1162,8 @@ def _fixed_key_authority_wrapper_facts(
         key_expression = next(
             (
                 keyword.value
-                for keyword in call.keywords
-                if keyword.arg is not None
-                and EnvironmentSemanticNameAuthority.tokens(keyword.arg)
+                for keyword in CallKeywords.of(call.keywords).named
+                if EnvironmentSemanticNameAuthority.tokens(keyword.name)
                 & _ENVIRONMENT_KEY_PARAMETER_TOKENS
             ),
             None,

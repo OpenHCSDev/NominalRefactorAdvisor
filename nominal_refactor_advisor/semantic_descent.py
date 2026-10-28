@@ -36,6 +36,7 @@ from .ast_projection import ExpressionReference
 from .foreign_family import FunctionDefinition
 from .interpreter import PythonVersion
 from .assignment_projection import SingleAssignmentAndValueNameProjection
+from .ast_projection import CallKeywords
 from .ast_tools import (
     ClassFunctionStackNodeVisitor,
     CollectedFamily,
@@ -4679,8 +4680,11 @@ class MappingReadProjectionCollector(ast.NodeVisitor):
             if not parts:
                 continue
             child = self.parents[index + 1]
-            if isinstance(child, ast.keyword) and child.arg is not None:
-                constructions.add(KeywordMappingReadArgument(parts, key, child.arg))
+            if isinstance(child, ast.keyword):
+                for keyword in CallKeywords.of((child,)).named:
+                    constructions.add(
+                        KeywordMappingReadArgument(parts, key, keyword.name)
+                    )
             for position, argument in enumerate(ancestor.args):
                 if argument is child:
                     constructions.add(
@@ -6766,15 +6770,15 @@ class CallPresentationTokenProjector(PresentationTokenNodeProjector):
                     arg, PresentationTokenRole.CALL_ARGUMENT
                 )
             )
-        for keyword in node.keywords:
-            if keyword.arg is not None:
+        for keyword in CallKeywords.of(node.keywords).entries:
+            for name in keyword.names:
                 tokens.extend(
                     PresentationToken(
                         value,
                         PresentationTokenKind.STRING_LITERAL,
                         PresentationTokenRole.CALL_KEYWORD_NAME,
                     )
-                    for value in normalized_name_variants(keyword.arg)
+                    for value in normalized_name_variants(name)
                 )
             tokens.extend(
                 PresentationTokenProjection.tokens_for_node(
@@ -6924,9 +6928,7 @@ class PresentationAuthorityConstructionCollector:
 
     @classmethod
     def constructor_field_tokens(cls, node: ast.Call) -> tuple[str, ...]:
-        field_names = [
-            keyword.arg for keyword in node.keywords if keyword.arg is not None
-        ]
+        field_names = list(CallKeywords.of(node.keywords).names)
         field_names.extend(cls.argument_field_name(argument) for argument in node.args)
         return sorted_tuple(
             variant

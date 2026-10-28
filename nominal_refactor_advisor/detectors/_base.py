@@ -93,6 +93,7 @@ from ..semantic_shape_algebra import (
 if TYPE_CHECKING:
     from ..semantic_descent import SemanticDescentGraph
 
+from ..ast_projection import CallKeywords
 from ..ast_tools import (
     BuiltinCallName,
     AstParentIndex,
@@ -3640,11 +3641,7 @@ def _derived_wrapper_spec_shadow_candidates(
             continue
         keyword_maps: list[dict[str, ast.AST]] = []
         for element in entry_calls:
-            keyword_map = {
-                keyword.arg: keyword.value
-                for keyword in element.keywords
-                if keyword.arg is not None and keyword.value is not None
-            }
+            keyword_map = dict(CallKeywords.of(element.keywords).by_name)
             if not keyword_map:
                 keyword_maps = []
                 break
@@ -3873,11 +3870,7 @@ def _module_keyed_selection_helper_candidates(
             ):
                 continue
             keyword_maps = [
-                {
-                    keyword.arg: keyword.value
-                    for keyword in element.keywords
-                    if keyword.arg is not None and keyword.value is not None
-                }
+                dict(CallKeywords.of(element.keywords).by_name)
                 for element in cast(tuple[ast.Call, ...], elements)
             ]
             if not all(
@@ -4767,17 +4760,13 @@ def _manual_record_registration_constructor(
         return None
     return (
         tuple(
-            (
-                keyword.arg
-                for keyword in assignment_call.keywords
-                if keyword.arg is not None
-            )
+            CallKeywords.of(assignment_call.keywords).names
         ),
         tuple(
             (
-                keyword.arg
-                for keyword in assignment_call.keywords
-                if keyword.arg is not None and ast.unparse(keyword.value) == key_expr
+                keyword.name
+                for keyword in CallKeywords.of(assignment_call.keywords).named
+                if ast.unparse(keyword.value) == key_expr
             )
         ),
     )
@@ -7346,9 +7335,7 @@ class DirectBuildFindingRendererCandidate(
                 base_name=shape.base_name,
                 parameter_name=method.args.args[1].arg,
                 positional_arg_count=len(call.args),
-                keyword_names=tuple(
-                    keyword.arg for keyword in call.keywords if keyword.arg is not None
-                ),
+                keyword_names=CallKeywords.of(call.keywords).names,
             )
             for method in node.body
             if isinstance(method, ast.FunctionDef)

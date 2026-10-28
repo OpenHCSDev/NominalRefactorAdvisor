@@ -27,6 +27,7 @@ from pathlib import Path
 from typing import ClassVar
 
 from .lexical_bindings import ImportBoundNameProjection
+from .ast_projection import CallKeywords
 from .ast_tools import (
     ModuleSyntaxIndex,
     ParsedModule,
@@ -307,10 +308,9 @@ class DeclaredIdentityFamily(ShapeFamily[ModuleDeclarations]):
                 name for base in node.bases if (name := cls.base_name(base))
             ),
             keywords=tuple(
-                (keyword.arg, keyword.value.value)
-                for keyword in node.keywords
-                if keyword.arg is not None
-                and isinstance(keyword.value, ast.Constant)
+                (keyword.name, keyword.value.value)
+                for keyword in CallKeywords.of(node.keywords).named
+                if isinstance(keyword.value, ast.Constant)
                 and isinstance(keyword.value.value, str)
             ),
             consumed_keywords=tuple(

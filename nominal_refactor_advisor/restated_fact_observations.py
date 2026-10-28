@@ -18,6 +18,7 @@ from enum import StrEnum
 from pathlib import Path
 
 from .lexical_bindings import ImportAlias, ImportBoundNameProjection
+from .ast_projection import CallKeywords
 from .ast_tools import BuiltinCallName, ParsedModule, module_syntax_index
 from .declared_root import DeclaredRoot
 from .models import SourceLocation
@@ -980,9 +981,10 @@ class ModuleReferenceFamily(ShapeFamily[ModuleReferenceFacts]):
                 for _i, node in index.indexed_nodes_of_type(ast.Attribute)
             ),
             *(
-                (node.arg, node.value.lineno)
-                for _i, node in index.indexed_nodes_of_type(ast.keyword)
-                if node.arg is not None
+                (keyword.name, keyword.value.lineno)
+                for keyword in CallKeywords.of(
+                    node for _i, node in index.indexed_nodes_of_type(ast.keyword)
+                ).named
             ),
         ]
         referenced: dict[str, int] = {}

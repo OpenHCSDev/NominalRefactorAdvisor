@@ -24,6 +24,7 @@ from typing import (
 
 from ..annotation_semantics import CLASSVAR_ANNOTATION_AUTHORITY
 from ..ast_projection import ExpressionReference
+from ..ast_projection import CallKeywords
 from ..ast_tools import (
     BuiltinCallName,
     SourceModule,
@@ -954,9 +955,7 @@ def _structural_observation_property_candidates_for_class(
         constructor_name = ExpressionReference.decoded(returned.func).terminal_name
         if constructor_name is None:
             continue
-        keyword_names = sorted_tuple(
-            keyword.arg for keyword in returned.keywords if keyword.arg is not None
-        )
+        keyword_names = sorted_tuple(CallKeywords.of(returned.keywords).names)
         if len(keyword_names) < 6:
             continue
         yield StructuralObservationPropertyCandidate(
@@ -1225,9 +1224,8 @@ def _guarded_wrapper_spec_pairs(
             continue
         referenced_functions = [
             keyword.value.id
-            for keyword in value.keywords
-            if keyword.arg is not None
-            and isinstance(keyword.value, ast.Name)
+            for keyword in CallKeywords.of(value.keywords).named
+            if isinstance(keyword.value, ast.Name)
             and keyword.value.id in wrapper_functions
         ]
         if len(referenced_functions) != 1:
@@ -1602,10 +1600,10 @@ def _is_declarative_class_value(node: ast.AST) -> bool:
         return (
             _is_declarative_class_value(node.func)
             and all((_is_declarative_class_value(item) for item in node.args))
+            and not CallKeywords.of(node.keywords).splats
             and all(
                 (
-                    keyword.arg is not None
-                    and _is_declarative_class_value(keyword.value)
+                    _is_declarative_class_value(keyword.value)
                     for keyword in node.keywords
                 )
             )
@@ -3361,9 +3359,7 @@ def _pipeline_stage(statement: ast.stmt) -> PipelineAssemblyStage | None:
     )
     if source is None or callee_name is None:
         return None
-    keyword_names = tuple(
-        (keyword.arg for keyword in source.call.keywords if keyword.arg is not None)
-    )
+    keyword_names = CallKeywords.of(source.call.keywords).names
     return PipelineAssemblyStage(
         kind=source.kind,
         callee_name=callee_name,
@@ -3917,9 +3913,10 @@ class HelperSyntaxProjectionAuthority:
                     forwarded.append(argument.id)
                 continue
             return None
-        for keyword in call.keywords:
-            if keyword.arg is None:
-                return None
+        keywords = CallKeywords.of(call.keywords)
+        if keywords.splats:
+            return None
+        for keyword in keywords.named:
             if (
                 isinstance(keyword.value, ast.Name)
                 and keyword.value.id in parameter_names
@@ -4147,13 +4144,7 @@ def _from_namespace_keyword_names(
             continue
         for call in _walk_nodes(statement):
             if isinstance(call, ast.Call) and name_id(call.func) == "cls":
-                keyword_names = tuple(
-                    (
-                        keyword.arg
-                        for keyword in call.keywords
-                        if keyword.arg is not None
-                    )
-                )
+                keyword_names = CallKeywords.of(call.keywords).names
                 if keyword_names:
                     return (statement.lineno, keyword_names)
     return None

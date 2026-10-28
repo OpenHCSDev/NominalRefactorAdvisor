@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import ast
-from dataclasses import dataclass
+from abc import ABC, abstractmethod
+from collections.abc import Iterable, Mapping
+from dataclasses import dataclass, field
 from typing import Self, cast
 
 from .declared_family import ForeignAdapter
@@ -134,7 +136,7 @@ class AstClassProjection:
         alongside a direct keyword. Other direct keywords remain separate
         construction obligations; this projection does not prove full binding.
         """
-        if any(keyword.arg is None for keyword in node.keywords):
+        if CallKeywords.of(node.keywords).splats:
             raise ValueError(
                 "Expanded class keywords leave metaclass selection unproved"
             )
@@ -174,3 +176,111 @@ class AstNameFamily:
 
     def matches(self, node: ast.AST) -> bool:
         return self.matching_name(node) is not None
+
+
+class CallKeyword(ABC):
+    """One keyword of a call or class header: `name=value` or a `**mapping` splat."""
+
+    node: ast.keyword
+
+    @staticmethod
+    def decoded(keyword: ast.keyword) -> CallKeyword:
+        """The ast boundary: `arg` absent means a `**` mapping splat."""
+
+        if keyword.arg is None:
+            return KeywordSplat(keyword)
+        return NamedKeyword(keyword, keyword.arg)
+
+    @property
+    def value(self) -> ast.expr:
+        return self.node.value
+
+    @property
+    @abstractmethod
+    def spelled_name(self) -> str:
+        raise NotImplementedError
+
+    @property
+    @abstractmethod
+    def names(self) -> tuple[str, ...]:
+        """The keyword names this entry spells: one for `name=value`, none for `**`."""
+        raise NotImplementedError
+
+    @abstractmethod
+    def source(self) -> str:
+        raise NotImplementedError
+
+    @abstractmethod
+    def sort_into(
+        self, named: list[NamedKeyword], splats: list[KeywordSplat]
+    ) -> None:
+        raise NotImplementedError
+
+
+@dataclass(frozen=True)
+class NamedKeyword(CallKeyword):
+    node: ast.keyword
+    name: str
+
+    @property
+    def spelled_name(self) -> str:
+        return self.name
+
+    @property
+    def names(self) -> tuple[str, ...]:
+        return (self.name,)
+
+    def source(self) -> str:
+        return f"{self.name}={ast.unparse(self.value)}"
+
+    def sort_into(
+        self, named: list[NamedKeyword], splats: list[KeywordSplat]
+    ) -> None:
+        named.append(self)
+
+
+@dataclass(frozen=True)
+class KeywordSplat(CallKeyword):
+    node: ast.keyword
+
+    @property
+    def spelled_name(self) -> str:
+        return "**"
+
+    @property
+    def names(self) -> tuple[str, ...]:
+        return ()
+
+    def source(self) -> str:
+        return f"**{ast.unparse(self.value)}"
+
+    def sort_into(
+        self, named: list[NamedKeyword], splats: list[KeywordSplat]
+    ) -> None:
+        splats.append(self)
+
+
+@dataclass(frozen=True)
+class CallKeywords:
+    """A keyword list split into explicit `name=value` keywords and `**` splats."""
+
+    entries: tuple[CallKeyword, ...]
+    named: tuple[NamedKeyword, ...]
+    splats: tuple[KeywordSplat, ...]
+
+    @classmethod
+    def of(cls, keywords: Iterable[ast.keyword]) -> CallKeywords:
+        entries = tuple(CallKeyword.decoded(keyword) for keyword in keywords)
+        named: list[NamedKeyword] = []
+        splats: list[KeywordSplat] = []
+        for entry in entries:
+            entry.sort_into(named, splats)
+        return cls(entries, tuple(named), tuple(splats))
+
+    @property
+    def names(self) -> tuple[str, ...]:
+        return tuple(keyword.name for keyword in self.named)
+
+    @property
+    def by_name(self) -> Mapping[str, ast.expr]:
+        return {keyword.name: keyword.value for keyword in self.named}

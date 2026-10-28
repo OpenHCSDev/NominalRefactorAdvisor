@@ -17,6 +17,7 @@ from typing import Iterable, Sequence
 
 from .lexical_bindings import ImportBoundNameProjection
 from .analysis import analyze_modules
+from .ast_projection import CallKeyword
 from .ast_tools import ParsedModule, parse_python_module_roots
 from .detectors import DetectorConfig
 from .export_tools import PublicExportPolicy, derive_public_exports
@@ -903,9 +904,7 @@ def _target_names(node: ast.expr) -> tuple[str, ...]:
 
 
 def _keyword_name(keyword: ast.keyword) -> str:
-    if keyword.arg is None:
-        return "**"
-    return keyword.arg
+    return CallKeyword.decoded(keyword).spelled_name
 
 
 def _expression_label(node: ast.AST) -> str:
