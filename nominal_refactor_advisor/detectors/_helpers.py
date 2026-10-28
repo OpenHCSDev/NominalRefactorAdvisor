@@ -22,6 +22,7 @@ from typing import (
     cast,
 )
 
+from ..ast_field_decoders import variadic_parameters
 from ..value_expression import CompactValueExpression
 from ..annotation_semantics import CLASSVAR_ANNOTATION_AUTHORITY
 from ..ast_projection import ExpressionReference
@@ -3512,7 +3513,7 @@ def _single_payload_parameter_name(method: ast.FunctionDef) -> str | None:
     payload_names = tuple(
         (argument.arg for argument in positional if argument.arg not in {"self", "cls"})
     )
-    if method.args.vararg is not None or method.args.kwarg is not None:
+    if variadic_parameters(method.args):
         return None
     return single_item(payload_names) if len(payload_names) == 1 else None
 

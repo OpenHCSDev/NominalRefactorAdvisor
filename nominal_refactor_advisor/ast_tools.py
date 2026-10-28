@@ -33,6 +33,7 @@ from typing import Callable, ClassVar, Generic, TypeAlias, TypeVar, cast
 
 from metaclass_registry import AutoRegisterMeta
 
+from .ast_field_decoders import declared_annotations
 from .foreign_family import FunctionDefinition
 from .interpreter import PythonVersion
 from .ast_projection import CallKeywords, StatementValue
@@ -1524,7 +1525,7 @@ class EagerNameLoadCollector(EagerFunctionAnnotationVisitor):
             node.args,
             *node.decorator_list,
             *node.body,
-            *((node.returns,) if node.returns is not None else ()),
+            *declared_annotations(node),
         )
         for child in ast.iter_child_nodes(node):
             if not any(child is handled for handled in handled_children):
