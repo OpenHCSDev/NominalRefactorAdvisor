@@ -20,7 +20,7 @@ from pathlib import Path
 import sys
 from time import perf_counter
 from abc import ABC, abstractmethod
-from typing import Generic, TypeVar, cast
+from typing import ClassVar, Generic, TypeVar, cast
 
 from .analysis_cache import (
     CachedSourceFileSignature,
@@ -1757,6 +1757,124 @@ class DeferredCompactProjectionFamily(DeferredBatchSequence[object]):
         )
 
 
+GraphAnswerT = TypeVar("GraphAnswerT")
+
+
+class SemanticDescentGraphQuestion(ABC, Generic[GraphAnswerT]):
+    """A consumer's work on a graph holding, one arm per holding."""
+
+    @abstractmethod
+    def held(self, graph: SemanticDescentGraph) -> GraphAnswerT:
+        raise NotImplementedError
+
+    @abstractmethod
+    def absent(self) -> GraphAnswerT:
+        raise NotImplementedError
+
+
+class SemanticDescentGraphHolding(ABC):
+    """Whether a scan already holds its repository semantic-descent graph."""
+
+    @staticmethod
+    def of(graph: SemanticDescentGraph | None) -> SemanticDescentGraphHolding:
+        """The holding for a graph the cache store may not have had."""
+        # The graph cache's lookups answer `graph | None` at the pickle store;
+        # this is the one place that absence becomes a holding.
+        if graph is None:
+            return NO_HELD_GRAPH
+        return HeldSemanticDescentGraph(graph)
+
+    @abstractmethod
+    def answer(
+        self, question: SemanticDescentGraphQuestion[GraphAnswerT]
+    ) -> GraphAnswerT:
+        raise NotImplementedError
+
+    @abstractmethod
+    def or_else(
+        self, alternative: SemanticDescentGraphHolding
+    ) -> SemanticDescentGraphHolding:
+        """This holding when it holds a graph, else the alternative."""
+        raise NotImplementedError
+
+    @abstractmethod
+    def serve(self, result: ReusedCacheResult) -> FastCacheAnswer:
+        """A reused result that needs this graph: served with it, or missed."""
+        raise NotImplementedError
+
+    @abstractmethod
+    def store_into(self, context: SemanticDescentGraphCacheContext) -> None:
+        """Publish a held graph as the context's exact graph."""
+        raise NotImplementedError
+
+    @abstractmethod
+    def analysis_source(
+        self,
+        base: SemanticDescentGraphAnalysisSource,
+        context: SemanticDescentGraphCacheContext,
+    ) -> SemanticDescentGraphAnalysisSource:
+        """The detector graph source: overlaying a held graph, else `base`."""
+        raise NotImplementedError
+
+
+@dataclass(frozen=True)
+class HeldSemanticDescentGraph(SemanticDescentGraphHolding):
+    graph: SemanticDescentGraph
+
+    def answer(
+        self, question: SemanticDescentGraphQuestion[GraphAnswerT]
+    ) -> GraphAnswerT:
+        return question.held(self.graph)
+
+    def or_else(
+        self, alternative: SemanticDescentGraphHolding
+    ) -> SemanticDescentGraphHolding:
+        return self
+
+    def serve(self, result: ReusedCacheResult) -> FastCacheAnswer:
+        return replace(result, semantic_descent_graph=self)
+
+    def store_into(self, context: SemanticDescentGraphCacheContext) -> None:
+        context.store_exact_graph(self.graph)
+
+    def analysis_source(
+        self,
+        base: SemanticDescentGraphAnalysisSource,
+        context: SemanticDescentGraphCacheContext,
+    ) -> SemanticDescentGraphAnalysisSource:
+        return SemanticDescentGraphAnalysisSource(
+            cached_graph=self.graph, cache_context=context
+        )
+
+
+class NoHeldSemanticDescentGraph(SemanticDescentGraphHolding):
+    def answer(
+        self, question: SemanticDescentGraphQuestion[GraphAnswerT]
+    ) -> GraphAnswerT:
+        return question.absent()
+
+    def or_else(
+        self, alternative: SemanticDescentGraphHolding
+    ) -> SemanticDescentGraphHolding:
+        return alternative
+
+    def serve(self, result: ReusedCacheResult) -> FastCacheAnswer:
+        return FAST_CACHE_MISS
+
+    def store_into(self, context: SemanticDescentGraphCacheContext) -> None:
+        return
+
+    def analysis_source(
+        self,
+        base: SemanticDescentGraphAnalysisSource,
+        context: SemanticDescentGraphCacheContext,
+    ) -> SemanticDescentGraphAnalysisSource:
+        return base
+
+
+NO_HELD_GRAPH = NoHeldSemanticDescentGraph()
+
+
 @dataclass(frozen=True)
 class CompactPathAnalysisResult:
     """Exact streamed findings and split preparation/analysis timings."""
@@ -1767,7 +1885,7 @@ class CompactPathAnalysisResult:
     preparation_seconds: float
     analysis_seconds: float
     projection_count: int
-    semantic_descent_graph: SemanticDescentGraph | None = None
+    semantic_descent_graph: SemanticDescentGraphHolding = NO_HELD_GRAPH
 
 
 @ScanCache.scope()
@@ -2404,21 +2522,23 @@ def analyze_compact_roots_with_cache(
     )
     if report_scope is not None and report_scope.has_report_filter:
         findings = report_scope.filter_findings(findings)
-    semantic_descent_graph = None
+    semantic_descent_graph: SemanticDescentGraphHolding = NO_HELD_GRAPH
     if include_semantic_descent_graph:
-        semantic_descent_graph = build_compact_semantic_descent_graph(
-            cast(
-                Sequence[CompactSemanticModuleProjection],
-                projection_manifest.projections_for_family(
-                    CompactSemanticModuleProjectionFamily
+        semantic_descent_graph = HeldSemanticDescentGraph(
+            build_compact_semantic_descent_graph(
+                cast(
+                    Sequence[CompactSemanticModuleProjection],
+                    projection_manifest.projections_for_family(
+                        CompactSemanticModuleProjectionFamily
+                    ),
                 ),
-            ),
-            cast(
-                Sequence[CompactModuleClassProjection],
-                projection_manifest.projections_for_family(
-                    CompactModuleClassProjectionFamily
+                cast(
+                    Sequence[CompactModuleClassProjection],
+                    projection_manifest.projections_for_family(
+                        CompactModuleClassProjectionFamily
+                    ),
                 ),
-            ),
+            )
         )
     analysis_seconds = local_analysis_seconds + perf_counter() - join_started
     projection_manifest.store_content_signature_indexes()
@@ -2722,6 +2842,14 @@ class SemanticDescentGraphCacheContext:
             self._loaded_graphs_by_token[identity.cache_token] = graph
         return graph
 
+    def held_graph(self) -> SemanticDescentGraphHolding:
+        """The exact graph this context's cache holds for its roots."""
+        return SemanticDescentGraphHolding.of(self.cached_graph())
+
+    def latest_held_graph(self) -> SemanticDescentGraphHolding:
+        """The latest overlay-capable predecessor graph the cache holds."""
+        return SemanticDescentGraphHolding.of(self.latest_graph())
+
     def store_exact_graph(self, graph: SemanticDescentGraph) -> None:
         """Publish one exact graph without claiming incremental overlay support."""
 
@@ -2866,22 +2994,18 @@ class FastCacheAnswer(ABC):
 class ReusedCacheResult(FastCacheAnswer, ABC):
     """Findings the cache serves for the request whose identity it validated."""
 
+    cache_status: ClassVar[type[AnalysisCacheStatus]]
+
     findings: list[RefactorFinding]
     cache_identity: AnalysisCacheIdentity
-
-    @property
-    @abstractmethod
-    def cache_status(self) -> type[AnalysisCacheStatus]:
-        raise NotImplementedError
+    semantic_descent_graph: SemanticDescentGraphHolding = NO_HELD_GRAPH
 
 
 @dataclass(frozen=True)
 class ExactCacheHit(ReusedCacheResult):
     """The cache holds this exact request's findings."""
 
-    @property
-    def cache_status(self) -> type[AnalysisCacheStatus]:
-        return Hit
+    cache_status = Hit
 
     def answer(
         self, question: FastCacheQuestion[FastCacheAnswerT]
@@ -2893,9 +3017,7 @@ class ExactCacheHit(ReusedCacheResult):
 class PartialCacheReuse(ReusedCacheResult):
     """Previous findings reused where no changed path touched their evidence."""
 
-    @property
-    def cache_status(self) -> type[AnalysisCacheStatus]:
-        return Partial
+    cache_status = Partial
 
     def answer(
         self, question: FastCacheQuestion[FastCacheAnswerT]
@@ -2913,6 +3035,36 @@ class FastCacheMiss(FastCacheAnswer):
 
 
 FAST_CACHE_MISS = FastCacheMiss()
+
+
+class SemanticDescentGraphDemand(ABC):
+    """Whether serving a reused result first needs the repository graph."""
+
+    @abstractmethod
+    def serve(self, result: ReusedCacheResult) -> FastCacheAnswer:
+        raise NotImplementedError
+
+
+class NoGraphDemand(SemanticDescentGraphDemand):
+    """The consumer reads no graph: a reused result is served as it is."""
+
+    def serve(self, result: ReusedCacheResult) -> FastCacheAnswer:
+        return result
+
+
+NO_GRAPH_DEMAND = NoGraphDemand()
+
+
+@dataclass(frozen=True)
+class CachedGraphDemand(SemanticDescentGraphDemand):
+    """The consumer reads the graph: serve only with the cached exact graph,
+    else with `fallback`; without either the request is a miss."""
+
+    cache_context: SemanticDescentGraphCacheContext
+    fallback: SemanticDescentGraphHolding
+
+    def serve(self, result: ReusedCacheResult) -> FastCacheAnswer:
+        return self.cache_context.held_graph().or_else(self.fallback).serve(result)
 
 
 class LoadedAnalysisCache(ABC):
@@ -2958,7 +3110,7 @@ class HeldExactFindings(LoadedAnalysisCache):
         )
 
     def fast_answer(self, authority: FastCachedPathAnalysisAuthority) -> FastCacheAnswer:
-        return ExactCacheHit(list(self.findings), self.cache_identity)
+        return authority.serve(ExactCacheHit(list(self.findings), self.cache_identity))
 
 
 @dataclass(frozen=True)
@@ -3880,6 +4032,7 @@ class CachedPathAnalysisRequest(ParseCacheDirectory):
     semantic_descent_source: SemanticDescentGraphAnalysisSource = field(
         default_factory=SemanticDescentGraphAnalysisSource
     )
+    graph_demand: SemanticDescentGraphDemand = NO_GRAPH_DEMAND
 
     @property
     def analysis_cache_dir(self) -> Path | None:
@@ -3905,7 +4058,11 @@ class FastCachedPathAnalysisAuthority:
         """Reuse the family's latest findings only when the request's policy allows it."""
         if self._request.reuse_policy is not FastCacheReusePolicy.EVIDENCE_LOCAL_PARTIAL:
             return FAST_CACHE_MISS
-        return self._partial_result(held)
+        return self.serve(self._partial_result(held))
+
+    def serve(self, result: ReusedCacheResult) -> FastCacheAnswer:
+        """Serve a reused result once the request's graph demand is met."""
+        return self._request.graph_demand.serve(result)
 
     def summary_result(self) -> AnalysisFindingSummaryCachePayload | None:
         if not self._request.use_parse_cache:

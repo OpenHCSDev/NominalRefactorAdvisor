@@ -55,6 +55,7 @@ import nominal_refactor_advisor.observation_families as observation_families_mod
 from nominal_refactor_advisor import analysis_cache as analysis_cache_module
 from nominal_refactor_advisor.analysis import (
     AnalysisPathScope,
+    NO_HELD_GRAPH,
     CachedPathAnalysisRequest,
     DetectorAnalysisWorkerPlan,
     FastCacheReusePolicy,
@@ -19142,7 +19143,7 @@ def test_loop_preparse_partial_loads_latest_repo_semantic_graph_lazily(
         cache_context=cache_context,
     ).context()
 
-    assert context.latest_graph is None
+    assert context.latest_graph is NO_HELD_GRAPH
     lazy_source = context.analysis_source.with_latest_cached_graph()
     assert lazy_source.cached_graph is not None
     assert lazy_source.cached_graph.authorities == cached_graph.authorities

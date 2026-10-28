@@ -28,6 +28,7 @@ from nominal_refactor_advisor.analysis import (
     DetectorTypePartition,
     FastCacheReusePolicy,
     FastCachedPathAnalysisAuthority,
+    HeldSemanticDescentGraph,
     PartialCacheReuse,
     SemanticDescentGraphCacheContext,
     SemanticDescentGraphAnalysisSource,
@@ -6168,8 +6169,8 @@ def test_compact_analysis_returns_semantic_graph_on_cold_and_aggregate_hits(
         include_semantic_descent_graph=True,
     )
 
-    assert cold.semantic_descent_graph is not None
-    assert cold.semantic_descent_graph.certificates
+    assert isinstance(cold.semantic_descent_graph, HeldSemanticDescentGraph)
+    assert cold.semantic_descent_graph.graph.certificates
     assert warm.cache_status is Hit
     assert warm.semantic_descent_graph == cold.semantic_descent_graph
     assert warm.findings == cold.findings
