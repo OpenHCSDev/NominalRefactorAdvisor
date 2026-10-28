@@ -23,10 +23,10 @@ from .ast_tools import ParsedModule
 from .class_index import ModuleNominalBindingAuthority, ModuleNominalBindingSnapshot
 from .observation_families import ShapeFamily
 from .restated_fact_observations import (
-    RestatingSite,
     RestatingSiteFamily,
     RestatingSiteModule,
 )
+from .observation_shapes import RestatingSite
 
 DEFINITION_TYPES = (ast.FunctionDef, ast.AsyncFunctionDef)
 PROPERTY_DECORATORS = frozenset(

@@ -35,7 +35,7 @@ from ..relocation_observations import (
     ThreadedAbsenceSiteFamily,
     ZeroOneTupleSiteFamily,
 )
-from ..restated_fact_observations import RestatingSite
+from ..observation_shapes import RestatingSite
 from ..taxonomy import CapabilityTag, ObservationTag
 from ._base import CompactProjectionGroups
 from ._restated_facts import (

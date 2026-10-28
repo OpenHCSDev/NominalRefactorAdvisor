@@ -15,12 +15,12 @@ from ..ast_tools import ParsedModule
 from ..collection_algebra import sorted_tuple
 from ..models import RefactorFinding, SourceLocation
 from ..observation_families import (
-    ForeignTypeTestModuleFamily,
+    TypeTestModuleFamily,
     ModuleExpressionShapeFamily,
 )
 from ..observation_shapes import (
-    ForeignTypeTestModule,
-    ForeignTypeTestShape,
+    TypeTestModule,
+    TypeTestShape,
     ModuleExpressionShape,
 )
 from ..patterns import PatternId
@@ -197,7 +197,7 @@ class RepeatedModuleExpressionLeadDetector(
 
 
 class ForeignTypeSwitchDetector(
-    CompactModuleProjectionDetectorMixin[ForeignTypeTestModule], IssueDetector
+    CompactModuleProjectionDetectorMixin[TypeTestModule], IssueDetector
 ):
     """Find `isinstance` tests on one foreign module's classes across the scan.
 
@@ -205,7 +205,7 @@ class ForeignTypeSwitchDetector(
     family, but this detector does not try to recognise decoders.
     """
 
-    module_projection_family = ForeignTypeTestModuleFamily
+    module_projection_family = TypeTestModuleFamily
 
     finding_spec = finding_spec_template(
         PatternId.FOREIGN_TYPE_SWITCH_LEAD,
@@ -219,23 +219,25 @@ class ForeignTypeSwitchDetector(
 
     def _findings_from_compact_projections(
         self,
-        projections: Sequence[ForeignTypeTestModule],
+        projections: Sequence[TypeTestModule],
         config: DetectorConfig,
     ) -> list[RefactorFinding]:
         scanned = tuple(projection.module_name for projection in projections)
-        groups: dict[str, list[ForeignTypeTestShape]] = defaultdict(list)
+        groups: dict[str, list[TypeTestShape]] = defaultdict(list)
         for projection in projections:
             for shape in projection.sites:
-                if shape.is_foreign_to(scanned):
-                    groups[shape.owner].append(shape)
+                if len(shape.owners) == 1 and shape.is_foreign_to(scanned):
+                    (owner,) = shape.owners
+                    if owner:
+                        groups[owner].append(shape)
         findings = (
-            self._finding_from_group(tuple(shapes), config)
-            for shapes in groups.values()
+            self._finding_from_group(owner, tuple(shapes), config)
+            for owner, shapes in groups.items()
         )
         return [finding for finding in findings if finding is not None]
 
     def _finding_from_group(
-        self, shapes: tuple[ForeignTypeTestShape, ...], config: DetectorConfig
+        self, owner: str, shapes: tuple[TypeTestShape, ...], config: DetectorConfig
     ) -> RefactorFinding | None:
         if len(shapes) < config.min_foreign_type_switch_sites:
             return None
@@ -244,7 +246,7 @@ class ForeignTypeSwitchDetector(
         modules = {shape.file_path for shape in sites}
         lines = [
             f"{len(sites)} isinstance/issubclass sites in {len(modules)} module(s) "
-            f"test classes of `{sites[0].owner}`, which this repository does not "
+            f"test classes of `{owner}`, which this repository does not "
             "declare. Type sets seen: "
             + _counted_list(
                 type_sets.most_common(),

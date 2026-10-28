@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import ast
 from abc import ABC, abstractmethod
-from collections.abc import Iterable
+from collections.abc import Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import TYPE_CHECKING, Any, ClassVar, cast
@@ -383,20 +383,36 @@ class ModuleExpressionShape:
 
 
 @dataclass(frozen=True)
-class TypeTestShape:
-    """One `isinstance`/`issubclass` site or class pattern whose classes resolved.
+class RestatingSite:
+    """One place that writes a fact again.
 
-    `type_names` are qualified class names, each reached through an import, a
-    module declaration or a builtin; `subject` is the dump of the tested
-    expression, so sites testing the same value can be told from sites testing
-    a part of it.
+    `group` names what one finding covers inside `symbol` (the dispatch subject,
+    the receiver of a probe, the declared name); `detail` is what the site says.
     """
 
     file_path: str
     lineno: int
     symbol: str
-    type_names: tuple[str, ...]
-    subject: str
+    group: str
+    detail: tuple[str, ...]
+
+    @property
+    def location(self) -> SourceLocation:
+        return SourceLocation(self.file_path, self.lineno, self.symbol)
+
+
+@dataclass(frozen=True)
+class TypeTestShape(RestatingSite):
+    """One `isinstance`/`issubclass` site or class pattern whose classes resolved.
+
+    `type_names` (the site's detail) are qualified class names, each reached
+    through an import, a module declaration or a builtin; `subject` (its group)
+    is the dump of the tested expression, so sites testing the same value can be
+    told from sites testing a part of it.
+    """
+
+    type_names = AliasProperty[tuple[str, ...]]("detail")
+    subject = AliasProperty[str]("group")
 
     @property
     def owners(self) -> frozenset[str]:
@@ -404,37 +420,60 @@ class TypeTestShape:
 
         return frozenset(name.rpartition(".")[0] for name in self.type_names)
 
-    def is_foreign_to(self, scanned_module_names: Iterable[str]) -> bool:
-        """Whether no scanned module is, contains, or sits inside any owner."""
+    def own_type_names(self, scope: DeclaredClassScope) -> tuple[str, ...]:
+        """The tested classes declared in the scan's modules: the syntax already
+        proves each is a class."""
 
-        return not any(
-            owner == scanned_name
-            or owner.startswith(f"{scanned_name}.")
-            or scanned_name.startswith(f"{owner}.")
-            for owner in self.owners
-            for scanned_name in scanned_module_names
+        return tuple(name for name in self.type_names if scope.declares_module_of(name))
+
+    def is_foreign_to(self, scanned_module_names: Sequence[str]) -> bool:
+        """Whether no tested class is declared in the scan."""
+
+        return not self.own_type_names(DeclaredClassScope(tuple(scanned_module_names)))
+
+
+@dataclass(frozen=True)
+class ClassIdentityTestShape(TypeTestShape):
+    """`x is C` or `x in (A, B)`: a type test only when each name is a class.
+
+    The syntax does not prove that (`mode is DEFAULT_MODE` is not a type test),
+    so a name counts only when the scan declares a class by it, and a foreign
+    name is never proved a class.
+    """
+
+    def own_type_names(self, scope: DeclaredClassScope) -> tuple[str, ...]:
+        return tuple(name for name in self.type_names if name in scope.class_symbols)
+
+    def is_foreign_to(self, scanned_module_names: Sequence[str]) -> bool:
+        return False
+
+
+@dataclass(frozen=True)
+class DeclaredClassScope:
+    """What the scan declares: its module names and, when indexed, its class symbols."""
+
+    module_names: tuple[str, ...]
+    class_symbols: frozenset[str] = frozenset()
+
+    def declares_module_of(self, name: str) -> bool:
+        """Whether a scanned module is, contains, or sits inside the module of `name`."""
+
+        owner = name.rpartition(".")[0]
+        return any(
+            owner == scanned
+            or owner.startswith(f"{scanned}.")
+            or scanned.startswith(f"{owner}.")
+            for scanned in self.module_names
         )
 
 
 @dataclass(frozen=True)
-class ForeignTypeTestShape(TypeTestShape):
-    """A type test whose classes all come from one module. Whether that module is
-    declared in the scanned repository is decided against the whole scan."""
-
-    @property
-    def owner(self) -> str:
-        """The one module every tested class comes from."""
-
-        (owner,) = self.owners
-        return owner
-
-
-@dataclass(frozen=True)
-class ForeignTypeTestModule:
-    """One module's type tests, kept even when empty so a scan knows its modules."""
+class TypeTestModule:
+    """One module's type tests, kept even when empty so a scan knows its modules.
+    Whether each tested class is declared in the scan is decided against the whole scan."""
 
     module_name: str
-    sites: tuple[ForeignTypeTestShape, ...]
+    sites: tuple[TypeTestShape, ...]
 
 
 @dataclass(frozen=True)

@@ -46,10 +46,10 @@ from .quoted_reference import (
 from .models import SourceLocation
 from .observation_families import ShapeFamily
 from .restated_fact_observations import (
-    RestatingSite,
     RestatingSiteFamily,
     RestatingSiteModule,
 )
+from .observation_shapes import RestatingSite
 
 
 @dataclass(frozen=True)

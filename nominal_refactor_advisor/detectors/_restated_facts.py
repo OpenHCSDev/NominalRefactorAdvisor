@@ -38,8 +38,8 @@ from ..models import (
     RefactorFinding,
     SourceLocation,
 )
-from ..observation_families import FieldObservationFamily
-from ..observation_shapes import FieldObservation
+from ..observation_families import FieldObservationFamily, TypeTestModuleFamily
+from ..observation_shapes import DeclaredClassScope, FieldObservation, TypeTestShape
 from ..patterns import PatternId
 from ..restated_fact_observations import (
     DeadModuleSiteFamily,
@@ -52,12 +52,12 @@ from ..restated_fact_observations import (
     ModuleReferenceFamily,
     NamedAttributeSiteFamily,
     ReferenceIndex,
-    RestatingSite,
     RestatingSiteFamily,
     RestatingSiteModule,
     StringDispatchSiteFamily,
     UnreachedModules,
 )
+from ..observation_shapes import RestatingSite
 from ..taxonomy import CapabilityTag, ObservationTag
 from ._base import (
     CompactModuleProjectionDetectorMixin,
@@ -140,6 +140,11 @@ class RestatedFactDetector(IssueDetector, Generic[ContextT, SiteT], ABC):
 
         raise NotImplementedError
 
+    def restates(self, site: SiteT, context: ContextT) -> bool:
+        """Whether one site restates the fact; every site does unless a join says otherwise."""
+
+        return True
+
     def admits(self, sites: Sequence[SiteT], context: ContextT) -> bool:
         """Whether this restater is a finding; every restater is unless a join says otherwise."""
 
@@ -167,7 +172,8 @@ class RestatedFactDetector(IssueDetector, Generic[ContextT, SiteT], ABC):
     ) -> list[RefactorFinding]:
         groups: dict[tuple[str, str, str], list[SiteT]] = defaultdict(list)
         for site in sites:
-            groups[(site.file_path, site.symbol, site.group)].append(site)
+            if self.restates(site, context):
+                groups[(site.file_path, site.symbol, site.group)].append(site)
         findings = []
         for _key, group in sorted(groups.items()):
             ordered = sorted(group, key=lambda site: (site.lineno, site.detail))
@@ -235,6 +241,61 @@ class JoinedRestatedFactDetector(
                 for site in module.sites
             ),
             context,
+        )
+
+
+def _declared_class_scope(
+    projections_by_family: CompactProjectionGroups,
+) -> DeclaredClassScope:
+    """The scan's module names and the symbol of every class it declares."""
+
+    return DeclaredClassScope(
+        tuple(
+            module.module_name
+            for module in TypeTestModuleFamily.modules_in(projections_by_family)
+        ),
+        frozenset(
+            indexed_class.symbol
+            for projection in CompactModuleClassProjectionFamily.modules_in(projections_by_family)
+            for indexed_class in projection.classes
+        ),
+    )
+
+
+class OwnTypeTestDetector(
+    JoinedRestatedFactDetector[DeclaredClassScope, TypeTestShape],
+):
+    """A type test (`isinstance`, `issubclass`, `type(x) is`, `x is C`, a class
+    pattern) on a class the scan declares."""
+
+    module_projection_families = (
+        TypeTestModuleFamily,
+        CompactModuleClassProjectionFamily,
+    )
+    compact_shared_group_context_builder = staticmethod(_declared_class_scope)
+    restated = RestatedFact(
+        fact="The test re-derives at the consumer which class the value is, a fact the class already is; every own class added later must find this site.",
+        owner="The owner is the tested class family: a method on the base that answers the default, overridden in each tested class.",
+        factoring="Move each arm's body onto its tested class as the override of one base method, keep the else as the base default, and replace the test with the call; foreign values are tested once, at the decoder that turns them into the family.",
+    )
+    finding_spec = restated.spec(
+        PatternId.OWN_TYPE_TEST,
+        "Type test on a class the scan declares",
+        "a method on the tested class family whose overrides own each arm",
+        "a type test whose tested classes resolve, at least one of them a class declared in the scanned modules",
+        (CapabilityTag.CLOSED_FAMILY_DISPATCH,),
+        (ObservationTag.BRANCH_DISPATCH,),
+    )
+
+    def restates(self, site: TypeTestShape, context: DeclaredClassScope) -> bool:
+        return bool(site.own_type_names(context))
+
+    def describe(self, sites: Sequence[TypeTestShape], context: DeclaredClassScope) -> str:
+        classes = sorted({name for site in sites for name in site.own_type_names(context)})
+        return (
+            f"`{sites[0].symbol}` tests one value against the scan's own "
+            f"{_listed(f'`{name}`' for name in classes)} at "
+            f"{_listed(f'line {site.lineno}' for site in sites)}."
         )
 
 

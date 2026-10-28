@@ -596,6 +596,16 @@ class PatternId(IntEnum):
         witness_capabilities=(CapabilityTag.ENUMERATION,),
     )
 
+    OWN_TYPE_TEST = _pattern(
+        stable_id=49,
+        display_name="Own-Class Type Test",
+        required_relation=(
+            "A consumer tests a value against a class the scan declares, so it "
+            "re-derives at the call site what a method of that class would answer."
+        ),
+        witness_capabilities=(CapabilityTag.CLOSED_FAMILY_DISPATCH,),
+    )
+
     def __new__(
         cls,
         stable_id: int,

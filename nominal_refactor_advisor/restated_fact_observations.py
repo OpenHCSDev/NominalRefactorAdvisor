@@ -23,9 +23,9 @@ from .lexical_bindings import ImportAlias, ImportBoundNameProjection
 from .ast_projection import CallKeywords, StatementValues
 from .ast_tools import AttributeAccessCall, BuiltinCall, BuiltinCallName, ParsedModule
 from .declared_root import DeclaredRoot
-from .models import SourceLocation
 from .class_index import ModuleNominalBindingAuthority
 from .observation_families import ShapeFamily
+from .observation_shapes import RestatingSite
 from .probe_owner import ProbeOwner, ProbeOwnerResolver
 from .python_module_identity import PythonModulePathIdentity
 
@@ -33,25 +33,6 @@ from .python_module_identity import PythonModulePathIdentity
 STRING_DISPATCH_MIN_ARMS = 3
 # A key set needs this many keys before it is a record rather than one probe.
 EXACT_KEY_SET_MIN_KEYS = 2
-
-
-@dataclass(frozen=True)
-class RestatingSite:
-    """One place that writes a fact again.
-
-    `group` names what one finding covers inside `symbol` (the dispatch subject,
-    the receiver of a probe, the declared name); `detail` is what the site says.
-    """
-
-    file_path: str
-    lineno: int
-    symbol: str
-    group: str
-    detail: tuple[str, ...]
-
-    @property
-    def location(self) -> SourceLocation:
-        return SourceLocation(self.file_path, self.lineno, self.symbol)
 
 
 @dataclass(frozen=True)

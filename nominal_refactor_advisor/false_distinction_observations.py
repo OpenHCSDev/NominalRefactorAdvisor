@@ -50,10 +50,10 @@ from .codemod_foreign_family_source import RewrittenLineFit
 from .enum_semantics import PythonEnumBaseKind, PythonEnumDeclarationAuthority
 from .observation_families import ShapeFamily
 from .restated_fact_observations import (
-    RestatingSite,
     RestatingSiteFamily,
     RestatingSiteModule,
 )
+from .observation_shapes import RestatingSite
 
 StatementList = Sequence[ast.stmt]
 ScopeNode = ast.Module | ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef

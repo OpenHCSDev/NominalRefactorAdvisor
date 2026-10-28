@@ -27,8 +27,8 @@ from .observation_shapes import (
     BuilderCallShape,
     DynamicMethodInjectionObservation,
     FieldObservation,
-    ForeignTypeTestModule,
-    ForeignTypeTestShape,
+    ClassIdentityTestShape,
+    TypeTestModule,
     TypeTestShape,
     LiteralDispatchObservation,
     LiteralKind,
@@ -1157,11 +1157,74 @@ def _enclosing_function_names(ancestors: Sequence[ast.AST]) -> frozenset[str]:
     )
 
 
+def _matched_subject(ancestors: Sequence[ast.AST]) -> str:
+    """The value a class pattern tests: the match subject, or a part of it.
+
+    A pattern nested inside another class, sequence or mapping pattern tests an
+    attribute or element of the subject, so it is keyed apart from the top-level
+    patterns of the same match.
+    """
+
+    parts: list[str] = []
+    for ancestor in reversed(ancestors):
+        match ancestor:
+            case ast.MatchClass() | ast.MatchSequence() | ast.MatchMapping():
+                parts.append(f"{ancestor.lineno}:{ancestor.col_offset}")
+            case ast.Match(subject=subject):
+                return ast.dump(subject) + "".join(f"@{part}" for part in parts)
+    return "@".join(parts)
+
+
+
 def type_test_shapes(parsed_module: ParsedModule) -> Iterator[TypeTestShape]:
-    """Every `isinstance`/`issubclass` call of the module whose classes resolve."""
+    """Every type test whose classes resolve: `isinstance`/`issubclass`, a class
+    pattern, `type(x) <op> C`, and `x is C` / `x in (A, B)`."""
 
     index = parsed_module.syntax_index
     resolver = TypeArgumentResolver(parsed_module)
+    for node_index, pattern in index.indexed_nodes_of_type(ast.MatchClass):
+        ancestors = index.ancestor_nodes(node_index)
+        name = resolver.qualified_class_at(pattern.cls, ancestors)
+        if name is not None and name.rpartition(".")[0]:
+            yield TypeTestShape(
+                file_path=parsed_module.file_path,
+                lineno=pattern.lineno,
+                symbol=index.lexical_symbol(node_index),
+                group=_matched_subject(ancestors),
+                detail=(name,),
+            )
+    for node_index, comparison in index.indexed_nodes_of_type(ast.Compare):
+        match comparison:
+            case ast.Compare(
+                left=ast.Call(func=func, args=[subject], keywords=[]),
+                comparators=[kind],
+            ) if BuiltinCallName.TYPE.is_callee(func):
+                shape_type: type[TypeTestShape] = TypeTestShape
+            case ast.Compare(
+                left=subject,
+                ops=[ast.Is() | ast.IsNot()],
+                comparators=[ast.Name() | ast.Attribute() as kind],
+            ):
+                shape_type = ClassIdentityTestShape
+            case ast.Compare(
+                left=subject,
+                ops=[ast.In() | ast.NotIn()],
+                comparators=[ast.Tuple(elts=[_, *_] as members) as kind],
+            ) if all(isinstance(member, ast.Name | ast.Attribute) for member in members):
+                shape_type = ClassIdentityTestShape
+            case _:
+                continue
+        names = resolver.qualified_names(
+            kind, _enclosing_function_names(index.ancestor_nodes(node_index))
+        )
+        if names is not None:
+            yield shape_type(
+                file_path=parsed_module.file_path,
+                lineno=comparison.lineno,
+                symbol=index.lexical_symbol(node_index),
+                group=ast.dump(subject),
+                detail=names,
+            )
     for node_index, node in index.indexed_nodes_of_type(ast.Call):
         arguments = BuiltinCallName.type_test_arguments(node)
         if arguments is None:
@@ -1174,38 +1237,20 @@ def type_test_shapes(parsed_module: ParsedModule) -> Iterator[TypeTestShape]:
                 file_path=parsed_module.file_path,
                 lineno=node.lineno,
                 symbol=index.lexical_symbol(node_index),
-                type_names=names,
-                subject=ast.dump(arguments[0]),
+                group=ast.dump(arguments[0]),
+                detail=names,
             )
 
 
-def _foreign_type_test_shapes(
-    parsed_module: ParsedModule,
-) -> list[ForeignTypeTestShape]:
-    """Collect type tests whose classes all come from one imported owner module."""
-
-    return [
-        ForeignTypeTestShape(
-            file_path=shape.file_path,
-            lineno=shape.lineno,
-            symbol=shape.symbol,
-            type_names=shape.type_names,
-            subject=shape.subject,
-        )
-        for shape in type_test_shapes(parsed_module)
-        if len(shape.owners) == 1 and "" not in shape.owners
-    ]
-
-
-class ForeignTypeTestModuleFamily(ShapeFamily[ForeignTypeTestModule]):
-    item_type = ForeignTypeTestModule
+class TypeTestModuleFamily(ShapeFamily[TypeTestModule]):
+    item_type = TypeTestModule
 
     @classmethod
-    def collect(cls, parsed_module: ParsedModule) -> list[ForeignTypeTestModule]:
+    def collect(cls, parsed_module: ParsedModule) -> list[TypeTestModule]:
         return [
-            ForeignTypeTestModule(
+            TypeTestModule(
                 module_name=parsed_module.module_name,
-                sites=tuple(_foreign_type_test_shapes(parsed_module)),
+                sites=tuple(type_test_shapes(parsed_module)),
             )
         ]
 

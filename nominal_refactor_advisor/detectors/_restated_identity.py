@@ -10,7 +10,6 @@ from ..class_identity_observations import (
     DeclaredIdentityFamily,
     IdentitySpelling,
     IdentitySpellingFamily,
-    ModuleDeclarations,
 )
 from ..codemod_declaration_reference import (
     DeclarationReferenceFindingRecipeSynthesizer,
@@ -20,7 +19,7 @@ from ..codemod_declaration_reference import (
 )
 from ..models import DeclarationReferenceMetrics, RefactorFinding, SourceLocation
 from ..patterns import PatternId
-from ..restated_fact_observations import RestatingSite
+from ..observation_shapes import RestatingSite
 from ..taxonomy import CapabilityTag, ObservationTag
 from ._base import CompactProjectionGroups
 from ._restated_facts import JoinedRestatedFactDetector, RestatedFact, _listed
