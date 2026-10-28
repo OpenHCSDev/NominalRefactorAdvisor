@@ -95,6 +95,7 @@ if TYPE_CHECKING:
 
 from ..ast_projection import CallKeywords, StatementValue
 from ..ast_tools import (
+    ParsedModuleFact,
     BuiltinCallName,
     AstParentIndex,
     BuilderCallShape,
@@ -120,7 +121,6 @@ from ..ast_tools import (
     walk_function_body_nodes,
     _walk_nodes,
     _builder_call_shape,
-    _module_class_names,
 )
 from ..native_syntax import NativePythonSyntaxIndex
 from ..positional_forwarding import PositionalForwardingCall
@@ -3046,23 +3046,35 @@ NamedFunctionProjector: TypeAlias = Callable[
 ]
 
 
-@lru_cache(maxsize=None)
+@dataclass(frozen=True)
+class ModuleBuilderCallShapes(ParsedModuleFact):
+    """Every builder call shape in one module's named functions."""
+
+    shapes: tuple[BuilderCallShape, ...]
+
+    @classmethod
+    def derive(cls, parsed_module: ParsedModule) -> Self:
+        return cls(_derive_builder_call_shapes(parsed_module))
+
+
 def _module_builder_call_shapes(
     module: ParsedModule,
     callee_names: frozenset[str] | None = None,
 ) -> tuple[BuilderCallShape, ...]:
+    shapes = module.fact(ModuleBuilderCallShapes).shapes
+    if callee_names is None:
+        return shapes
+    return tuple(shape for shape in shapes if shape.callee_name in callee_names)
+
+
+def _derive_builder_call_shapes(module: ParsedModule) -> tuple[BuilderCallShape, ...]:
     shapes: list[BuilderCallShape] = []
-    module_class_names = _module_class_names(module)
+    module_class_names = module.class_names
 
     for qualname, function in module.syntax_index.named_functions:
         owner_name = qualname.rsplit(".", 1)[0] if "." in qualname else None
         for node in walk_function_body_nodes(function):
             if not isinstance(node, ast.Call):
-                continue
-            if (
-                callee_names is not None
-                and ExpressionReference.decoded(node.func).terminal_name not in callee_names
-            ):
                 continue
             shape = _builder_call_shape(
                 module,

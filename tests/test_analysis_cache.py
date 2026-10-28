@@ -2187,7 +2187,7 @@ def test_collected_family_can_opt_into_a_larger_bounded_cache_payload(
     monkeypatch.setattr(
         BuilderCallShapeFamily, "cache_payload_max_bytes", payload_bound
     )
-    ast_tools_module.collect_family_batch.cache_clear()
+    module = module.with_source(module.source)
     assert collect_family_items(module, BuilderCallShapeFamily)
     payload_paths = tuple(family_cache_dir.glob("*.pickle"))
 

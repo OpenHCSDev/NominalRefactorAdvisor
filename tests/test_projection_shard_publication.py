@@ -15,7 +15,6 @@ from nominal_refactor_advisor.ast_tools import (
     CollectedFamilyCacheContext,
     PythonModuleRootParser,
     PythonSourcePathPolicy,
-    collect_family_batch,
     collect_family_items,
     collected_family_items_content_signature,
 )
@@ -120,7 +119,7 @@ def test_list_collection_and_batch_share_the_same_publication(tmp_path, monkeypa
         raise AssertionError("List and batch consumers must share the cached receipt")
 
     monkeypatch.setattr(CollectedFamilyCacheContext, "store_items", unexpected_store)
-    batch = collect_family_batch(module, family)
+    batch = module.family_batch(family)
     assert batch.items == tuple(items)
     assert batch.content_signature == collected_family_items_content_signature(
         batch.items

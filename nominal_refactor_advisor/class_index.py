@@ -50,6 +50,7 @@ from .ast_tools import (
     CollectedFamily,
     LexicalSyntaxScope,
     ParsedModule,
+    ParsedModuleFact,
     PythonSourcePathPolicy,
     SourceModule,
     _walk_nodes,
@@ -4726,26 +4727,32 @@ def _module_nominal_binding_snapshots(
     return snapshots
 
 
-@lru_cache(maxsize=None)
-def _module_import_bindings(
-    parsed_module: ParsedModule,
-) -> dict[str, CompactNominalBinding]:
-    return {
-        local_name: binding
-        for local_name, binding in _module_nominal_binding_snapshots(
-            ModuleNominalBindingAuthority(parsed_module),
-            (),
-            include_final=True,
-            policy=ModuleNominalBindingSnapshotPolicy.NAMED_IMPORT_PROJECTION,
-        )[None].bindings_by_name.items()
-        if binding.kind.projects_as_import_alias
-    }
+@dataclass(frozen=True)
+class ModuleImportBindings(ParsedModuleFact):
+    """The import aliases one module binds, by local name."""
+
+    bindings: dict[str, CompactNominalBinding]
+
+    @classmethod
+    def derive(cls, parsed_module: ParsedModule) -> Self:
+        return cls(
+            {
+                local_name: binding
+                for local_name, binding in _module_nominal_binding_snapshots(
+                    ModuleNominalBindingAuthority(parsed_module),
+                    (),
+                    include_final=True,
+                    policy=ModuleNominalBindingSnapshotPolicy.NAMED_IMPORT_PROJECTION,
+                )[None].bindings_by_name.items()
+                if binding.kind.projects_as_import_alias
+            }
+        )
 
 
 def module_import_aliases(parsed_module: ParsedModule) -> dict[str, str]:
     return {
         local_name: binding.qualified_name
-        for local_name, binding in _module_import_bindings(parsed_module).items()
+        for local_name, binding in parsed_module.fact(ModuleImportBindings).bindings.items()
     }
 
 
@@ -4754,7 +4761,7 @@ def module_import_names(parsed_module: ParsedModule) -> frozenset[str]:
 
     return frozenset(
         local_name
-        for local_name, binding in _module_import_bindings(parsed_module).items()
+        for local_name, binding in parsed_module.fact(ModuleImportBindings).bindings.items()
         if binding.kind.binds_module
     )
 
@@ -5359,12 +5366,11 @@ class CompactModuleClassProjectionFamily(CollectedFamily[CompactModuleClassProje
     ) -> list[CompactModuleClassProjection]:
         del cls
         declarations = CompactModuleClassHeader.from_module(parsed_module)
-        syntax_facets = _compact_class_syntax_facets(
-            parsed_module,
-            collect_autoregister=(
-                demand is None or demand.include_autoregister_references
-            ),
-        )
+        syntax_facets = parsed_module.fact(
+            ModuleClassSyntaxFacets
+            if demand is None or demand.include_autoregister_references
+            else ModuleClassSyntaxFacetsWithoutAutoregister
+        ).facets
         indexed_class_nodes = iter_class_definitions(list(parsed_module.module.body))
         class_methods = _compact_class_methods(
             parsed_module,
@@ -6848,7 +6854,29 @@ def _is_builtin_call(node: ast.AST | None, name: str) -> bool:
     )
 
 
-@lru_cache(maxsize=None)
+@dataclass(frozen=True)
+class ModuleClassSyntaxFacets(ParsedModuleFact):
+    """One module's class syntax facets, autoregister references included."""
+
+    collects_autoregister: ClassVar[bool] = True
+    facets: CompactClassSyntaxFacets
+
+    @classmethod
+    def derive(cls, parsed_module: ParsedModule) -> Self:
+        return cls(
+            _compact_class_syntax_facets(
+                parsed_module, collect_autoregister=cls.collects_autoregister
+            )
+        )
+
+
+@dataclass(frozen=True)
+class ModuleClassSyntaxFacetsWithoutAutoregister(ModuleClassSyntaxFacets):
+    """One module's class syntax facets, for a demand without autoregister."""
+
+    collects_autoregister: ClassVar[bool] = False
+
+
 def _compact_class_syntax_facets(
     parsed_module: ParsedModule,
     *,

@@ -26,10 +26,10 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field, fields, is_dataclass
 from enum import Enum, StrEnum
 from fnmatch import fnmatchcase
-from functools import cached_property, lru_cache
+from functools import cached_property
 from pathlib import Path
 from types import EllipsisType
-from typing import Callable, ClassVar, Generic, TypeAlias, TypeVar, cast
+from typing import Callable, ClassVar, Generic, Self, TypeAlias, TypeVar, cast
 
 from metaclass_registry import AutoRegisterMeta
 
@@ -753,6 +753,22 @@ class CompactModuleIdentity:
     file_path: str
 
 
+class ParsedModuleFact(ABC):
+    """A fact derived from one parse, held by that parse and released with it.
+
+    A layer that cannot be named by `ParsedModule` declares its per-parse facts
+    as subclasses; `ParsedModule.fact(kind)` derives each kind once.
+    """
+
+    @classmethod
+    @abstractmethod
+    def derive(cls, parsed_module: ParsedModule) -> Self:
+        raise NotImplementedError
+
+
+ParsedModuleFactT = TypeVar("ParsedModuleFactT", bound=ParsedModuleFact)
+
+
 @dataclass(frozen=True)
 class ParsedModule(SourceFileIdentity):
     """Parsed Python module together with its source text and path."""
@@ -798,6 +814,73 @@ class ParsedModule(SourceFileIdentity):
         """The one syntax traversal of this module's tree, held by the parse."""
 
         return ModuleSyntaxIndex.build(self.module)
+
+    @cached_property
+    def _facts(self) -> dict[type[ParsedModuleFact], ParsedModuleFact]:
+        return {}
+
+    def fact(self, kind: type[ParsedModuleFactT]) -> ParsedModuleFactT:
+        """This parse's fact of one declared kind, derived once."""
+
+        facts = self._facts
+        if kind not in facts:
+            facts[kind] = kind.derive(self)
+        return cast(ParsedModuleFactT, facts[kind])
+
+    @cached_property
+    def _family_batches(self) -> dict[type[CollectedFamily], CollectedFamilyBatch]:
+        return {}
+
+    def family_batch(
+        self, family: type[CollectedFamily[ShapeItemT]]
+    ) -> CollectedFamilyBatch[ShapeItemT]:
+        """One family's items from this parse, collected once and retaining the
+        signature returned by the cache authority."""
+
+        batches = self._family_batches
+        if family not in batches:
+            cached_items = self.collected_family_cache.load_items(family)
+            if cached_items is not None:
+                batches[family] = CollectedFamilyBatch(
+                    cached_items,
+                    self.collected_family_cache.load_content_signature(family),
+                )
+            else:
+                items = tuple(
+                    item
+                    for item in COLLECTED_ITEM_PROJECTION.flatten(family.collect(self))
+                    if isinstance(item, family.item_type)
+                )
+                batches[family] = CollectedFamilyBatch(
+                    items, self.collected_family_cache.store_items(family, items)
+                )
+        return cast(CollectedFamilyBatch[ShapeItemT], batches[family])
+
+    @cached_property
+    def scoped_observations(self) -> tuple[ScopedAstObservation, ...]:
+        """Every located node with its innermost class and function names."""
+
+        index = self.syntax_index
+        return tuple(
+            ScopedAstObservation(
+                node=node,
+                class_name=(scope.class_names[-1] if scope.class_names else None),
+                function_name=(scope.function_names[-1] if scope.function_names else None),
+            )
+            for node, scope_id in zip(index.depth_first_nodes, index.scope_ids, strict=True)
+            for scope in (index.scopes[scope_id],)
+            if "lineno" in node._attributes
+        )
+
+    @cached_property
+    def class_names(self) -> frozenset[str]:
+        """The names of every class this module declares, at any depth."""
+
+        return frozenset(
+            node.name
+            for node in self.syntax_index.breadth_first_nodes
+            if isinstance(node, ast.ClassDef)
+        )
 
     @cached_property
     def source_segments(self) -> SourceLineSegmentAuthority:
@@ -2388,37 +2471,12 @@ class CollectedFamilyBatch(Generic[ShapeItemT]):
     content_signature: str | None
 
 
-@lru_cache(maxsize=None)
-def collect_family_batch(
-    parsed_module: ParsedModule, family: type[CollectedFamily[ShapeItemT]]
-) -> CollectedFamilyBatch[ShapeItemT]:
-    """Collect once, retaining the signature returned by the cache authority."""
-
-    cached_items = parsed_module.collected_family_cache.load_items(family)
-    if cached_items is not None:
-        return CollectedFamilyBatch(
-            cached_items,
-            parsed_module.collected_family_cache.load_content_signature(family),
-        )
-    items = tuple(
-        (
-            item
-            for item in COLLECTED_ITEM_PROJECTION.flatten(family.collect(parsed_module))
-            if isinstance(item, family.item_type)
-        )
-    )
-    return CollectedFamilyBatch(
-        items,
-        parsed_module.collected_family_cache.store_items(family, items),
-    )
-
-
 def collect_family_items(
     parsed_module: ParsedModule,
     family: type[CollectedFamily[ShapeItemT]],
 ) -> list[ShapeItemT]:
     """Collect and flatten items from one registered family."""
-    return list(collect_family_batch(parsed_module, family).items)
+    return list(parsed_module.family_batch(family).items)
 
 
 class RegisteredSpecCollectedFamily(
@@ -3228,35 +3286,13 @@ def _node_display_name(node: ast.AST) -> str:
     return ExpressionReference.decoded(node).terminal_name or node.__class__.__name__
 
 
-@lru_cache(maxsize=None)
-def _collect_all_scoped_observations(
-    parsed_module: ParsedModule,
-) -> tuple[ScopedAstObservation, ...]:
-    index = parsed_module.syntax_index
-    return tuple(
-        ScopedAstObservation(
-            node=node,
-            class_name=(scope.class_names[-1] if scope.class_names else None),
-            function_name=(scope.function_names[-1] if scope.function_names else None),
-        )
-        for node, scope_id in zip(
-            index.depth_first_nodes,
-            index.scope_ids,
-            strict=True,
-        )
-        for scope in (index.scopes[scope_id],)
-        if "lineno" in node._attributes
-    )
-
-
-@lru_cache(maxsize=None)
 def collect_scoped_observations(
     parsed_module: ParsedModule, node_types: tuple[type[ast.AST], ...]
 ) -> tuple[ScopedAstObservation, ...]:
     return tuple(
         (
             observation
-            for observation in _collect_all_scoped_observations(parsed_module)
+            for observation in parsed_module.scoped_observations
             if isinstance(observation.node, node_types)
         )
     )
@@ -3654,7 +3690,6 @@ def _inline_literal_dispatch_groups(
     return sorted_tuple(observations, key=lambda item: item.line)
 
 
-@lru_cache(maxsize=None)
 def _literal_dispatch_observations(
     parsed_module: ParsedModule,
     literal_kind: LiteralKind,
@@ -3695,7 +3730,6 @@ def _literal_dispatch_observations_for_kind(
     return _literal_dispatch_observations(parsed_module, literal_kind)
 
 
-@lru_cache(maxsize=None)
 def _inline_literal_dispatch_observations(
     parsed_module: ParsedModule,
     literal_kind: LiteralKind,
@@ -3836,15 +3870,6 @@ def _literal_dispatch_value(node: ast.AST) -> LiteralConstantValue:
     return None
 
 
-@lru_cache(maxsize=None)
-def _module_class_names(parsed_module: ParsedModule) -> frozenset[str]:
-    return frozenset(
-        node.name
-        for node in parsed_module.syntax_index.breadth_first_nodes
-        if isinstance(node, ast.ClassDef)
-    )
-
-
 def _builder_call_shape(
     parsed_module: ParsedModule,
     node: ast.AST,
@@ -3852,7 +3877,7 @@ def _builder_call_shape(
     function_name: str | None,
     module_class_names: frozenset[str] | None = None,
 ) -> BuilderCallShape | None:
-    module_class_names = module_class_names or _module_class_names(parsed_module)
+    module_class_names = module_class_names or parsed_module.class_names
 
     def owned_builder_authority_call(call: ast.Call) -> bool:
         if not isinstance(call.func, ast.Attribute):

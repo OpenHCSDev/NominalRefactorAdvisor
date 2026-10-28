@@ -59,7 +59,6 @@ from .ast_tools import (
     SourceModule,
     collected_family_demand_cache_signature,
     collected_family_items_content_signature,
-    collect_family_batch,
     collect_family_items,
     parse_python_module_roots,
     parse_python_modules,
@@ -1266,7 +1265,7 @@ def build_compact_projection_shard(
             if demanded_projections is not None:
                 projections = tuple(demanded_projections)
             else:
-                full_batch = collect_family_batch(module, family)
+                full_batch = module.family_batch(family)
                 full_projections = full_batch.items
                 projections = (
                     family.project_cached_demand(full_projections, demand)

@@ -1,5 +1,6 @@
 """Regex observations require imported declaration and lexical ownership evidence."""
 
+import gc
 import ast
 from inspect import Parameter
 from pathlib import Path
@@ -8,7 +9,6 @@ import weakref
 import pytest
 
 from nominal_refactor_advisor.ast_tools import ParsedModule
-from nominal_refactor_advisor.analysis import release_module_analysis_memory
 from nominal_refactor_advisor.detectors import DetectorConfig
 from nominal_refactor_advisor.detectors._runtime import RepeatedLocalRegexBundleDetector
 from nominal_refactor_advisor.detectors._regex_bundle import (
@@ -130,8 +130,8 @@ def test_unrelated_imports_do_not_force_lexical_or_declaration_projection():
 
 def test_cached_source_projection_does_not_cache_configuration_or_retain_released_modules():
     module = _module("import re\n", "re.compile({pattern})")
-    projection = RegexBundleModuleProjection.from_module(module)
-    assert RegexBundleModuleProjection.from_module(module) is projection
+    projection = module.fact(RegexBundleModuleProjection)
+    assert module.fact(RegexBundleModuleProjection) is projection
     assert len(RegexBundleModuleProjection.collect(module, DetectorConfig())) == 1
     assert (
         RegexBundleModuleProjection.collect(
@@ -141,7 +141,5 @@ def test_cached_source_projection_does_not_cache_configuration_or_retain_release
     )
     retained = weakref.ref(module)
     del module, projection
-    assert retained() is not None
-    release_module_analysis_memory()
-    assert RegexBundleModuleProjection.from_module.cache_info().currsize == 0
+    gc.collect()
     assert retained() is None
