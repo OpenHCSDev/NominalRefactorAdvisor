@@ -2065,11 +2065,18 @@ class CodemodRefactorGoalRunner:
         self,
         scan: CodemodWorkflowScan,
     ) -> tuple[RefactorFinding, ...]:
-        return FindingRecipeSynthesizer.findings_for_concept(
+        """The concept's findings; with a picks file, only the picked ones, so
+        no stage serves a finding nobody reviewed."""
+
+        findings = FindingRecipeSynthesizer.findings_for_concept(
             scan.findings,
             self.migration_type,
             scan.source_snapshot,
         )
+        if self.owner_picks is None:
+            return findings
+        picked = self.owner_picks.picked_finding_ids
+        return tuple(finding for finding in findings if finding.stable_id in picked)
 
     def class_plan_root(self) -> Path:
         if self.roots:

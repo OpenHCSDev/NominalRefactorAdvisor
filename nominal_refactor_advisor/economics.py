@@ -221,7 +221,7 @@ class RefactorEvidenceEconomics(DataclassJsonReport):
 
 @dataclass(frozen=True, kw_only=True)
 class TimedScan:
-    """Declares `label`, `elapsed_seconds`, `finding_count` once for the classes that restated them."""
+    """One labeled scan's elapsed time and finding count."""
 
     label: str
     elapsed_seconds: float

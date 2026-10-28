@@ -597,7 +597,7 @@ class CompactProductField:
 
 @dataclass(frozen=True, kw_only=True)
 class ProductDeclarationSite:
-    """Declares `class_symbol`, `file_path`, `line` once for the classes that restated them."""
+    """The source site that declares one product class: its symbol, file and line."""
 
     class_symbol: str
     file_path: str

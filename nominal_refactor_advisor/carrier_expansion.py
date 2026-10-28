@@ -27,7 +27,7 @@ from .value_expression import LexicalValueReference
 
 @dataclass(frozen=True, kw_only=True)
 class ResolvedFieldBindingCall:
-    """Declares `resolved_call`, `field_bindings`, `carrier_source_participant_symbols` once for the classes that restated them."""
+    """A resolved call and the field bindings it passes to its callee."""
 
     resolved_call: CompactResolvedFunctionCall
     field_bindings: tuple[CarrierCollapseFieldBinding, ...]

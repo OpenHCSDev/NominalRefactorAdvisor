@@ -75,6 +75,9 @@ class OwnerPicks:
                     owner=None if item.get("owner") is None else str(item["owner"]),
                     because=str(item.get("because", "")),
                     name=None if item.get("name") is None else str(item["name"]),
+                    judgement=(
+                        None if item.get("judgement") is None else str(item["judgement"])
+                    ),
                 )
                 for item in payload["picks"]
             ),
@@ -197,7 +200,16 @@ class OwnerPicks:
             )
         if isinstance(candidate, NewMixinOwner) and not (pick.name or "").isidentifier():
             return "a new mixin needs a class `name`"
+        if isinstance(candidate, NewMixinOwner) and not (pick.judgement or "").strip():
+            return "a new mixin needs a `judgement`: what the class is, for its docstring"
         return None
+
+    @property
+    def picked_finding_ids(self) -> frozenset[str]:
+        """The findings a pick chooses an owner for: with a picks file, the goal's
+        only targets."""
+
+        return frozenset(pick.finding for pick in self.picks if pick.owner is not None)
 
 
 __all__ = ("OwnerPick", "OwnerPickOutcome", "OwnerPickReport", "OwnerPicks")

@@ -106,12 +106,15 @@ def test_a_new_mixin_is_declared_and_each_class_then_composes_it(tmp_path: Path)
     _apply(
         tmp_path,
         CreateMixinOperation(
-            target=target, member_names=("alpha", "beta", "gamma"), mixin_name="Lettered"
+            target=target,
+            member_names=("alpha", "beta", "gamma"),
+            mixin_name="Lettered",
+            docstring="A lettered record.",
         ),
     )
 
     source = (tmp_path / "pkg/records.py").read_text()
-    assert "@dataclass(frozen=True)\nclass Lettered:\n" in source
+    assert '@dataclass(frozen=True)\nclass Lettered:\n    """A lettered record."""\n' in source
     assert _run(tmp_path, PROBE) == before
     snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     composes = {
@@ -131,6 +134,7 @@ def test_a_mixin_name_already_bound_is_refused(tmp_path: Path) -> None:
         target=SourceRewriteTarget(file_path=str(tmp_path / "pkg/records.py"), qualname="First"),
         member_names=("alpha", "beta", "gamma"),
         mixin_name="Second",
+        docstring="A lettered record.",
     )
 
     with pytest.raises(CodemodOperationPreflightError, match="already bound"):
@@ -234,6 +238,7 @@ def test_a_goal_run_executes_the_picked_owner_and_reports_the_pick(tmp_path: Pat
                     owner="new_mixin:pkg.records",
                     because="new_class",
                     name="Lettered",
+                    judgement="a lettered record",
                 ),
             ),
         ),
@@ -266,6 +271,7 @@ def test_a_pick_citing_a_receipt_its_owner_lacks_is_rejected(tmp_path: Path) -> 
                 owner="new_mixin:pkg.records",
                 because="holds_declaration",
                 name="Lettered",
+                judgement="a lettered record",
             ),
             OwnerPick(finding="0000000000", owner="new_mixin:pkg.records", because="new_class"),
         ),
@@ -359,6 +365,7 @@ def _goal_with_pick(root: Path, name: str) -> object:
                     owner="new_mixin:pkg.records",
                     because="new_class",
                     name=name,
+                    judgement="a lettered record",
                 ),
             ),
         ),
@@ -372,7 +379,7 @@ def test_a_reordering_mixin_is_keyword_only_and_so_is_each_composer(tmp_path: Pa
     report = _goal_with_pick(tmp_path, "Lettered")
 
     source = (tmp_path / "pkg/records.py").read_text()
-    assert report.stage_count == 3
+    assert report.stage_count == 1
     assert "@dataclass(frozen=True, kw_only=True)\nclass Lettered:\n" in source
     assert "@dataclass(frozen=True, kw_only=True)\nclass First(Lettered):\n    lead: int\n" in source
     assert "@dataclass(frozen=True, kw_only=True)\nclass Second(Lettered):\n" in source
@@ -410,3 +417,70 @@ def test_a_reordered_composer_whose_field_order_reaches_a_digest_is_not_composed
 
     assert report.stage_count == 0
     assert (tmp_path / "pkg/records.py").read_text() == digested
+
+
+def test_a_picks_file_makes_the_picked_findings_the_only_targets(tmp_path: Path) -> None:
+    """A compose-existing recipe nobody picked is in the source; the goal leaves it."""
+
+    holder = (
+        "from dataclasses import dataclass\n\n\n"
+        "@dataclass(frozen=True)\n"
+        "class Point:\n"
+        "    x: int\n"
+        "    y: int\n"
+        "    w: int\n\n\n"
+        "@dataclass(frozen=True)\n"
+        "class Located:\n"
+        "    x: int\n"
+        "    y: int\n"
+        "    w: int\n"
+        "    z: int = 0\n"
+    )
+    _write(
+        tmp_path,
+        {"pkg/__init__.py": "", "pkg/records.py": RECORDS, "pkg/points.py": holder},
+    )
+
+    modules = parse_python_modules(tmp_path, use_parse_cache=False)
+    unpicked = CodemodRefactorGoalRunner(
+        roots=(tmp_path,),
+        config=DetectorConfig(),
+        parse_workers=1,
+        dry_run=True,
+        guard_suite=ArchitectureGuardSuite(),
+        initial_scan=CodemodWorkflowScan(
+            modules=modules, findings=analyze_modules(modules, DetectorConfig())
+        ),
+        migration_type=ClassBodyCompositionConcept,
+    ).run()
+    assert unpicked.stage_count >= 1
+
+    report = _goal_with_pick(tmp_path, "Lettered")
+
+    assert report.stage_count == 1
+    assert (tmp_path / "pkg/points.py").read_text() == holder
+
+
+def test_a_mixin_one_composer_cannot_compose_is_not_created(tmp_path: Path) -> None:
+    """Creating the mixin and composing it is one step: a refused composer refuses all."""
+
+    positional = RECORDS + (
+        "\n\ndef build():\n    return Second(1, 'b')\n"
+    )
+    _write(tmp_path, {"pkg/__init__.py": "", "pkg/records.py": positional})
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    records = str(tmp_path / "pkg/records.py")
+    operation = CreateMixinOperation(
+        target=SourceRewriteTarget(file_path=records, qualname="First"),
+        member_names=("alpha", "beta", "gamma"),
+        mixin_name="Lettered",
+        docstring="A lettered record.",
+        composers=(
+            SourceRewriteTarget(file_path=records, qualname="First"),
+            SourceRewriteTarget(file_path=records, qualname="Second"),
+            SourceRewriteTarget(file_path=records, qualname="Missing"),
+        ),
+    )
+
+    with pytest.raises(CodemodOperationPreflightError):
+        operation.source_edits(snapshot)

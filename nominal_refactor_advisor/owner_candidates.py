@@ -167,6 +167,8 @@ class OwnerPick(SemanticRecord):
     """The chosen `candidate_id`; None declines the finding."""
     because: str
     name: str | None = None
+    judgement: str | None = None
+    """What the owner is, in one sentence: a new mixin's docstring."""
 
 
 @dataclass(frozen=True)

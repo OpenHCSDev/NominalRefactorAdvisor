@@ -19,9 +19,10 @@ order, frozen-ness and, where fields are added, every way a field can be bound.
 from __future__ import annotations
 
 import ast
+import difflib
 import keyword as keyword_module
 from collections.abc import Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from functools import cached_property
 from importlib import import_module
 from typing import Self
@@ -61,6 +62,7 @@ from .codemod_declaration_source import (
 )
 from .codemod_imports import ModuleImportMutation
 from .codemod_payload import (
+    PayloadRecordArrayValueCodec,
     PayloadRecordValueCodec,
     RequiredStringPayloadValueCodec,
     StringArrayPayloadValueCodec,
@@ -1326,6 +1328,34 @@ class FieldOrderDigest:
         return sink if serializes else None
 
 
+def _line_difference_edits(
+    file_path: str, before: str, after: str, rationale: str
+) -> tuple[NominalSourceEdit, ...]:
+    """The line spans that differ between two versions of one source."""
+
+    before_lines = before.splitlines(keepends=True)
+    after_lines = after.splitlines(keepends=True)
+    offsets = [0]
+    for line in before_lines:
+        offsets.append(offsets[-1] + len(line))
+    geometry = SourceTextGeometry(before)
+    return geometry.physical_edits(
+        file_path=file_path,
+        replacements=tuple(
+            SourceTextSpanReplacement.from_offsets(
+                start_offset=offsets[first],
+                end_offset=offsets[last],
+                replacement_source="".join(after_lines[new_first:new_last]),
+            )
+            for tag, first, last, new_first, new_last in difflib.SequenceMatcher(
+                a=before_lines, b=after_lines, autojunk=False
+            ).get_opcodes()
+            if tag != "equal"
+        ),
+        rationale=rationale,
+    )
+
+
 def keyword_only_decorator_source(decorator_source: str, decorator: ast.expr) -> str:
     """A dataclass decorator's source with `kw_only=True` added."""
 
@@ -1548,6 +1578,7 @@ class MixinCreation:
     anchor: OverlapClass
     restated: RestatedDeclarations
     name: str
+    docstring: str
     keyword_only: bool
     """Created keyword-only because composing it reorders some composer's fields;
     each such composer then becomes keyword-only as it composes the mixin."""
@@ -1559,8 +1590,11 @@ class MixinCreation:
         anchor_reference: SourceRewriteTarget,
         member_names: tuple[str, ...],
         name: str,
+        docstring: str,
     ) -> Self:
         anchor = OverlapClass.require(snapshot, anchor_reference)
+        if not docstring.strip() or '"""' in docstring or "\\" in docstring:
+            raise ValueError("A mixin needs a one-line docstring without quotes")
         module_name = snapshot.parsed_module_for_source_path(anchor.file_path).module_name
         _, owner = require_owner_candidate(
             snapshot, anchor.symbol, f"new_mixin:{module_name}", member_names
@@ -1590,7 +1624,7 @@ class MixinCreation:
                     ),
                 )
             )
-        return cls(snapshot, anchor, restated, name, keyword_only)
+        return cls(snapshot, anchor, restated, name, docstring, keyword_only)
 
     def decorator_source(self, source: str, decorator: ast.expr) -> str:
         copied = ast.get_source_segment(source, decorator) or ""
@@ -1613,7 +1647,6 @@ class MixinCreation:
             f"{indentation}@{self.decorator_source(source, decorator)}\n"
             for decorator in anchor.node.decorator_list
         )
-        names = ", ".join(f"`{name}`" for name in self.restated.names)
         members: list[str] = []
         for statement in self.restated.statements:
             member = StatementSource(source=source, node=statement).member_source(
@@ -1629,8 +1662,7 @@ class MixinCreation:
                 inserted_lines=(
                     *decorators,
                     f"{indentation}class {self.name}:\n",
-                    f'{member_indentation}"""Declares {names} once for the classes '
-                    'that restated them."""\n\n',
+                    f'{member_indentation}"""{self.docstring}"""\n\n',
                     *members,
                     "\n\n",
                 ),
@@ -1773,23 +1805,61 @@ class OwnerExtension:
 
 @dataclass(frozen=True, kw_only=True)
 class CreateMixinOperation(RepositorySourceReprovedOperation):
-    """Declare a block several classes restate once, in a new class before the anchor."""
+    """Declare a block several classes restate once, in a new class before the
+    anchor, and make each composer compose it, as one proved step.
+
+    The mixin is created on the current source, then each composer composes it
+    on the source the previous step left, each through the compose-existing
+    proof. Any refusal refuses the whole operation, so a mixin is never created
+    without every composer that restates its block.
+    """
 
     member_names: tuple[str, ...] = codemod_payload_field(StringArrayPayloadValueCodec())
     mixin_name: str = codemod_payload_field(RequiredStringPayloadValueCodec())
+    docstring: str = codemod_payload_field(RequiredStringPayloadValueCodec())
+    composers: tuple[SourceRewriteTarget, ...] = codemod_payload_field(
+        PayloadRecordArrayValueCodec(SourceRewriteTarget), default=()
+    )
 
     def creation(self, snapshot: CodemodSourceSnapshot) -> MixinCreation:
         return MixinCreation.require(
-            snapshot, self.target, self.member_names, self.mixin_name
+            snapshot, self.target, self.member_names, self.mixin_name, self.docstring
         )
 
     def source_edits_from_snapshot(
         self, snapshot: CodemodSourceSnapshot
     ) -> tuple[NominalSourceEdit, ...]:
+        rationale = self.rationale_text(
+            f"Declare {', '.join(self.member_names)} once on `{self.mixin_name}`."
+        )
         creation = self.creation(snapshot)
-        return creation.source_edits(
-            self.rationale_text(
-                f"Declare {', '.join(self.member_names)} once on `{self.mixin_name}`."
+        if not self.composers:
+            return creation.source_edits(rationale)
+        mixin = SourceRewriteTarget(
+            file_path=self.target.file_path,
+            qualname=".".join(
+                (*self.target.qualname.split(".")[:-1], self.mixin_name)
+            ),
+        )
+        current = snapshot
+        for step in (
+            replace(self, composers=()),
+            *(
+                ComposeExistingClassOperation(target=composer, owner=mixin)
+                for composer in self.composers
+            ),
+        ):
+            result = RefactorRecipe(recipe_id=f"create-{self.mixin_name}").with_operation(
+                step
+            ).simulate(current)
+            result.preflight_report.require_clean()
+            current = current.with_virtual_sources(result.simulation.rewritten_sources)
+        return tuple(
+            edit
+            for file_path, source in snapshot.sources_by_file_path.items()
+            if current.sources_by_file_path.get(file_path, source) != source
+            for edit in _line_difference_edits(
+                file_path, source, current.sources_by_file_path[file_path], rationale
             )
         )
 
@@ -1897,11 +1967,18 @@ class ClassOverlapFindingRecipeSynthesizer(
                 )
                 if anchor is None or pick.name is None:
                     return f"no composing class lives in `{owner.module_name}`"
+                if pick.judgement is None:
+                    return "a new mixin needs the pick's judgement for its docstring"
                 return (
                     CreateMixinOperation(
                         target=source_rewrite_target(anchor),
                         member_names=owner.block,
                         mixin_name=pick.name,
+                        docstring=pick.judgement[:1].upper() + pick.judgement[1:].rstrip(".") + ".",
+                        composers=tuple(
+                            source_rewrite_target(indexed_class)
+                            for indexed_class in composers
+                        ),
                     ),
                 )
             case ExistingClassOwner():
