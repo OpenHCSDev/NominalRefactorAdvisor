@@ -35,7 +35,12 @@ def imports(environment):
     (
         ("from builtins import object, property", "property", property),
         ("from builtins import property as first, object as second", "first", property),
-        ("from builtins import property as same, object as same", "same", object),
+        pytest.param(
+            "from builtins import property as same, object as same",
+            "same",
+            object,
+            marks=pytest.mark.native_proof,
+        ),
         ("import builtins, typing", "builtins.property", property),
         ("from typing import Annotated, Literal, get_type_hints", "property", property),
     ),

@@ -29,6 +29,7 @@ def assignment(source, in_class=False):
     return env, SourceAssignmentStore(env, context.flow.mutations[-1])
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize(
     "expression",
     (
@@ -75,6 +76,7 @@ def test_tuple_installation_joins_original_operands_and_authored_execution(
         assert operand.source_span == spans[operand.instruction_offset]
 
 
+@pytest.mark.native_proof
 def test_repeated_reads_use_distinct_original_cuts_not_parent_tuple_cut(monkeypatch):
     env, store = assignment(
         "selected = object\npayload = (selected, (selected, selected))\n"
@@ -103,6 +105,7 @@ def test_repeated_reads_use_distinct_original_cuts_not_parent_tuple_cut(monkeypa
     )
 
 
+@pytest.mark.native_proof
 def test_operand_with_same_value_at_another_source_site_cannot_supply_join():
     env, store = assignment("payload = (object, object)\n")
     receipt = store.require_installation(env.required_prefix(env.entry.context, None))
@@ -120,6 +123,7 @@ def test_operand_with_same_value_at_another_source_site_cannot_supply_join():
         replace(join, read=copied_read).require_join(receipt.value.inputs[0])
 
 
+@pytest.mark.native_proof
 def test_tuple_members_keep_historical_bindings_after_later_reassignment():
     source = "selected = object\npayload = (selected, (selected,))\nselected = str\n"
     env = execution(source)
@@ -148,6 +152,7 @@ def test_unobserved_effects_and_unknown_calls_are_not_joined_from_final_values(
         store.require_installation(env.required_prefix(env.entry.context, None))
 
 
+@pytest.mark.native_proof
 def test_foreign_source_context_does_not_borrow_an_original_native_operand():
     env, store = assignment("payload = (object, object)\n")
     foreign, other = assignment("payload = (object, object)\n")
@@ -159,6 +164,7 @@ def test_foreign_source_context_does_not_borrow_an_original_native_operand():
         join.require_join(store.production.value.inputs[0])
 
 
+@pytest.mark.native_proof
 def test_creation_needs_completed_event_even_when_lookup_prefix_is_admitted(
     monkeypatch,
 ):
@@ -177,7 +183,9 @@ def test_creation_needs_completed_event_even_when_lookup_prefix_is_admitted(
         join.require_join(receipt.value.inputs[0])
 
 
-@pytest.mark.parametrize("warm", (False, True))
+@pytest.mark.parametrize(
+    "warm", (False, pytest.param(True, marks=pytest.mark.native_proof))
+)
 @pytest.mark.parametrize("defect", ("reverse", "duplicate", "omit"))
 def test_original_tuple_shape_is_revalidated_after_source_tree_changes(warm, defect):
     env, store = assignment("payload = (object, str)\n")

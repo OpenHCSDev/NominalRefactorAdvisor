@@ -81,6 +81,7 @@ def test_native_file_execution_is_main_not_its_qualified_import(direct_file_evid
     assert interpreter == source().module.native_compilation.identity.interpreter
 
 
+@pytest.mark.native_proof
 def test_script_can_preserve_same_named_cached_import(direct_file_evidence):
     projected = source("import ast\nclass Plain: pass\n")
     initial = InitialNativeIsland((builtins, ast))

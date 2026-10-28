@@ -38,6 +38,7 @@ def test_entry_and_tail_inherit_the_same_native_interpreter():
         assert name not in vars(PreparedNamespaceTail)
 
 
+@pytest.mark.native_proof
 def test_actual_return_value_has_the_completed_source_context():
     tail = scalar_tail("key = None")
     assert isinstance(tail, SourceNativeStorageABC)
@@ -50,6 +51,7 @@ def test_actual_return_value_has_the_completed_source_context():
     assert tail.member("not_present") is None
 
 
+@pytest.mark.native_proof
 def test_entry_and_tail_cannot_borrow_each_others_original_productions():
     tail = scalar_tail("key = None")
     with pytest.raises(ValueError, match="original production"):
@@ -61,6 +63,7 @@ def test_entry_and_tail_cannot_borrow_each_others_original_productions():
         tail.native_value(copy(tail.receipt.value))
 
 
+@pytest.mark.native_proof
 def test_last_store_uses_completed_source_values_not_the_first_store_cut():
     tail = scalar_tail("key = None\nkey = True\nlast = 7")
     assert tail.member("key").require_native_scalar() is True
@@ -82,6 +85,7 @@ def test_last_store_uses_completed_source_values_not_the_first_store_cut():
                 tail.native_value(value)
 
 
+@pytest.mark.native_proof
 def test_compiler_overwrite_changes_final_native_storage_like_the_actual_runtime():
     source = "class Family:\n    __static_attributes__ = None\n"
     tail = scalar_tail("__static_attributes__ = None")
@@ -98,6 +102,7 @@ def test_compiler_overwrite_changes_final_native_storage_like_the_actual_runtime
     assert tail.member("__static_attributes__").native_type.__name__ == runtime["kind"]
 
 
+@pytest.mark.native_proof
 def test_final_method_tail_preserves_prepared_registry_values_without_constructing_class():
     _, entry, method = prepared_function(explicit_scope=False)
     tail = PreparedNamespaceTail(entry, method)
@@ -111,7 +116,9 @@ def test_final_method_tail_preserves_prepared_registry_values_without_constructi
         entry.result()
 
 
-@pytest.mark.parametrize("warm", (False, True))
+@pytest.mark.parametrize(
+    "warm", (False, pytest.param(True, marks=pytest.mark.native_proof))
+)
 def test_final_value_queries_do_not_hide_mutated_source_after_cache_warmup(warm):
     tail = scalar_tail("key = None\npass")
     if warm:
@@ -121,6 +128,7 @@ def test_final_value_queries_do_not_hide_mutated_source_after_cache_warmup(warm)
         tail.member("key")
 
 
+@pytest.mark.native_proof
 def test_captured_tail_value_rechecks_its_actual_source_context():
     tail = scalar_tail("key = None\npass")
     value = tail.native_value(tail.receipt.value)
@@ -130,6 +138,7 @@ def test_captured_tail_value_rechecks_its_actual_source_context():
         value.require_closed()
 
 
+@pytest.mark.native_proof
 def test_tail_cell_fields_use_original_creation_and_the_same_prepared_namespace():
     _, entry, method = prepared_function(explicit_scope=False)
     tail = PreparedNamespaceTail(entry, method)
@@ -150,6 +159,7 @@ def test_tail_cell_fields_use_original_creation_and_the_same_prepared_namespace(
             field.require_value(captured, other)
 
 
+@pytest.mark.native_proof
 def test_compiler_overwrite_does_not_erase_old_function_lifetime_obligation():
     _, entry, method = prepared_function(
         explicit_scope=False,
@@ -163,6 +173,7 @@ def test_compiler_overwrite_does_not_erase_old_function_lifetime_obligation():
         _ = tail.completed
 
 
+@pytest.mark.native_proof
 def test_complete_prepared_namespace_matches_native_return_before_metaclass_runs():
     env, entry, method = prepared_function(explicit_scope=False)
     tail = PreparedNamespaceTail(entry, method)

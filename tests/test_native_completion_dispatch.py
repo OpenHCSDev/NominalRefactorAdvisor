@@ -43,6 +43,7 @@ def test_values_and_effects_select_their_own_completion_contract():
     assert recorder.effects == [discard, item]
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize("expression", ("receiver[key] = value", "unproved()"))
 def test_real_compiler_transfers_do_not_enter_python_result_completion(expression):
     source = expression + "\n"

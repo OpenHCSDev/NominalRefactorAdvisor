@@ -15,6 +15,7 @@ from nominal_refactor_advisor.source_execution import (
 from test_source_function_result import execution, function, native
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize("decorator", ("property", "classmethod", "staticmethod"))
 @pytest.mark.parametrize("async_prefix", ("", "async "))
 @pytest.mark.parametrize("in_class", (False, True))
@@ -55,6 +56,7 @@ def test_native_decorator_result_is_not_the_original_function(
             operation()
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize(
     "outer,inner", tuple(product(("property", "classmethod", "staticmethod"), repeat=2))
 )
@@ -78,6 +80,7 @@ def test_nested_native_decorators_follow_original_application_order(outer, inner
     )
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize("index", (-1, 0, 1, 2))
 def test_copied_or_out_of_range_application_is_not_original_evidence(index):
     environment = execution("@property\ndef chosen(): pass\n")
@@ -108,7 +111,9 @@ def test_unknown_application_cannot_inherit_native_result_proof(decorators):
         environment.definition_result(context, binding)
 
 
-@pytest.mark.parametrize("future", (False, True))
+@pytest.mark.parametrize(
+    "future", (False, pytest.param(True, marks=pytest.mark.native_proof))
+)
 @pytest.mark.parametrize("decorator", ("property", "classmethod", "staticmethod"))
 def test_wrapping_does_not_invent_eager_annotation_execution(future, decorator):
     source = (

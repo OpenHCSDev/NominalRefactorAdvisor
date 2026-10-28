@@ -44,6 +44,7 @@ def installation(query, index=0):
     )[index]
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize("aliased", (False, True))
 @pytest.mark.parametrize("distinct_suffix", (False, True))
 def test_unique_item_read_retains_original_class_and_strict_query_refuses(
@@ -72,6 +73,7 @@ def test_unique_item_read_retains_original_class_and_strict_query_refuses(
     assert replace(query, key="unused").resolve(environment.kernel) is None
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize(
     "value, expected", (("object", object), ("property", property))
 )
@@ -89,6 +91,7 @@ def test_normal_kernel_slot_lookup_exposes_original_native_value(value, expected
     result.require_native_identity(NativeDeclaration(expected))
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize("rebound", ("saved", "Alpha"))
 def test_stored_rhs_retains_alias_before_its_name_is_rebound(rebound):
     environment = execution(
@@ -101,6 +104,7 @@ def test_stored_rhs_retains_alias_before_its_name_is_rebound(rebound):
     assert result.source_definition()[1] is original
 
 
+@pytest.mark.native_proof
 def test_native_dictionary_copy_uses_historical_installed_slots():
     environment = execution(
         BASE + "REGISTRY['alpha'] = Alpha\ncopied = dict(REGISTRY)\n"
@@ -117,6 +121,7 @@ def test_native_dictionary_copy_uses_historical_installed_slots():
     assert query.namespace.initial_names == frozenset(("alpha",))
 
 
+@pytest.mark.native_proof
 def test_repeated_key_release_requires_the_original_independent_class_binding():
     environment = execution(
         BASE + "REGISTRY['alpha'] = Alpha\nREGISTRY['alpha'] = Beta\ntail = REGISTRY\n"
@@ -166,6 +171,7 @@ def test_custom_setter_is_not_exact_dictionary_installation():
         environment.require_item_write(statement.targets[0])
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize(
     "forgery", ("event", "context", "frame", "before-installation")
 )
@@ -203,6 +209,7 @@ class PrefixOnlyEffects(CapturedReferenceEffectsABC):
         return self.environment.admit(context, position)
 
 
+@pytest.mark.native_proof
 def test_arbitrary_prefix_provider_does_not_inherit_storage_attestation():
     environment = execution(BASE + "REGISTRY['alpha'] = Alpha\ntail = REGISTRY\n")
     query = tail_query(environment)
@@ -221,6 +228,7 @@ def test_arbitrary_prefix_provider_does_not_inherit_storage_attestation():
         value.require_closed()
 
 
+@pytest.mark.native_proof
 def test_installation_transition_preserves_unrelated_pending_cycle_guard():
     environment = execution(
         BASE + "REGISTRY['alpha'] = Alpha\nREGISTRY['beta'] = Beta\ntail = REGISTRY\n"
@@ -239,6 +247,7 @@ def test_installation_transition_preserves_unrelated_pending_cycle_guard():
     assert value.mutation is beta.mutation
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize("count", (1, 8, 32))
 def test_latest_item_query_does_not_recursively_replay_superseded_values(count):
     environment = execution(

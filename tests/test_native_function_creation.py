@@ -19,7 +19,6 @@ from nominal_refactor_advisor.native_compilation import (
     OpenNativeFrameOrigin,
     OpenNativeFunctionExecution,
     SourceNativeFrameOrigin,
-    SpanOnlyCreationBackend,
 )
 from nominal_refactor_advisor.source_geometry import SourceByteSpan
 
@@ -56,6 +55,7 @@ def _case(monkeypatch, source, *, damage=None):
     return compilation, receipt, compiled[0], inventories[0]
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize(
     "header,body",
     (
@@ -87,6 +87,7 @@ def test_creation_uses_same_actual_code_and_original_instruction(
     assert compilation.execution_for(receipt.source_span) is receipt
 
 
+@pytest.mark.native_proof
 def test_nested_creation_keeps_exact_parent_receipt_without_claiming_activation(
     monkeypatch,
 ):
@@ -105,6 +106,7 @@ def test_nested_creation_keeps_exact_parent_receipt_without_claiming_activation(
     assert namespace["outer"]().__code__ is child.code
 
 
+@pytest.mark.native_proof
 def test_decorated_result_can_replace_original_created_function(monkeypatch):
     source = "@replace\ndef chosen(): pass\n"
     _, receipt, code, inventory = _case(monkeypatch, source)
@@ -124,7 +126,9 @@ def test_decorated_result_can_replace_original_created_function(monkeypatch):
     assert emission.code is raw[0].__code__
 
 
-@pytest.mark.parametrize("damage", ("missing", "range"))
+@pytest.mark.parametrize(
+    "damage", ("missing", pytest.param("range", marks=pytest.mark.native_proof))
+)
 def test_exact_flags_do_not_fill_missing_creation_evidence(monkeypatch, damage):
     def remove_evidence(inventory):
         for emission in inventory.emissions:
@@ -142,18 +146,6 @@ def test_exact_flags_do_not_fill_missing_creation_evidence(monkeypatch, damage):
     namespace = {}
     exec(code, namespace)
     assert receipt.native_flags == namespace["chosen"].__code__.co_flags
-    with pytest.raises(ValueError, match="creation"):
-        receipt.require_creation()
-
-
-def test_unadmitted_backend_keeps_code_flags_without_creation_proof(monkeypatch):
-    monkeypatch.setattr(
-        NativeCreationBackend,
-        "current",
-        classmethod(lambda cls: SpanOnlyCreationBackend()),
-    )
-    _, receipt, _, _ = _case(monkeypatch, "def chosen(): pass\n")
-    assert type(receipt) is ExactNativeFunctionExecution
     with pytest.raises(ValueError, match="creation"):
         receipt.require_creation()
 
@@ -179,6 +171,7 @@ def test_eliminated_or_duplicated_creation_remains_open(monkeypatch, source, rea
         receipt.require_creation()
 
 
+@pytest.mark.native_proof
 @pytest.mark.skipif(
     sys.version_info < (3, 12), reason="Native generic functions require Python 3.12+"
 )

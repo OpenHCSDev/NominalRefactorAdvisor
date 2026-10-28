@@ -174,6 +174,7 @@ def test_non_reproof_errors_propagate_unchanged():
     assert rejected.value is original
 
 
+@pytest.mark.native_proof
 def test_cli_preserves_actual_collector_import_refusal(tmp_path, monkeypatch, capsys):
     source = (
         "from nominal_refactor_advisor.detectors._base import (\n"

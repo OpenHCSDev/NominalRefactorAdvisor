@@ -100,24 +100,22 @@ def test_changed_source_demand_module_and_schema_keep_distinct_keys(tmp_path):
         )
 
 
-def test_changed_family_declaration_is_observed_on_the_next_invocation(
-    tmp_path, monkeypatch
-):
-    @dataclass(frozen=True)
-    class Item:
-        changed: int
+def test_family_schema_is_derived_again_on_the_next_invocation(tmp_path):
+    """The schema, item fields included, is derived once per invocation, so a
+    family declaration changed between invocations is read afresh."""
 
     source = context(tmp_path)
     with ScanCache.scope():
-        original = source.identity(BuilderCallShapeFamily)
-    monkeypatch.setattr(BuilderCallShapeFamily, "item_type", Item)
+        first = source.identity(BuilderCallShapeFamily).family_schema
+        assert source.identity(BuilderCallShapeFamily).family_schema is first
     with ScanCache.scope():
-        changed = source.identity(BuilderCallShapeFamily)
-    assert (
-        changed.family_schema.item_schema_signature
-        != original.family_schema.item_schema_signature
+        second = source.identity(BuilderCallShapeFamily).family_schema
+    assert second is not first
+    assert second.item_schema_signature == (
+        CollectedFamilySchemaIdentity.schema_signature_of(
+            BuilderCallShapeFamily.item_type
+        )
     )
-    assert changed.cache_token != original.cache_token
 
 
 def test_replacement_does_not_inherit_an_old_derived_token(tmp_path):

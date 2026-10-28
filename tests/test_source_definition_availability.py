@@ -33,6 +33,7 @@ def test_availability_is_owned_by_shared_definition_contract(defined):
     )
 
 
+@pytest.mark.native_proof
 def test_completed_prefix_contains_actual_installed_definition(defined):
     environment, captured = defined
     creation = captured.creation
@@ -48,6 +49,7 @@ def test_completed_prefix_contains_actual_installed_definition(defined):
     assert occurrence.frame is creation.parent_prefix.endpoint.frame
 
 
+@pytest.mark.native_proof
 def test_preinstallation_header_cut_cannot_claim_definition_availability(defined):
     environment, captured = defined
     captured.require_closed()
@@ -58,6 +60,7 @@ def test_preinstallation_header_cut_cannot_claim_definition_availability(defined
         )
 
 
+@pytest.mark.native_proof
 def test_foreign_execution_kernel_and_context_are_rejected(defined):
     environment, captured = defined
     other = execution(environment.module.source)
@@ -75,6 +78,7 @@ def test_copied_context_does_not_acquire_an_original_execution_cut(defined):
         )
 
 
+@pytest.mark.native_proof
 def test_warmed_creation_cannot_switch_to_another_original_node(defined):
     environment, captured = defined
     captured.require_closed()
@@ -92,6 +96,7 @@ def test_warmed_creation_cannot_switch_to_another_original_node(defined):
         )
 
 
+@pytest.mark.native_proof
 def test_existing_class_base_and_constructor_consumers_keep_working():
     environment = execution(
         "class Base: pass\nclass Child(Base): pass\ninstance = Child()\n"

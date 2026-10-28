@@ -18,11 +18,13 @@ from nominal_refactor_advisor.source_execution import SourceModuleExecution
 from nominal_refactor_advisor.source_entry import SourceModuleEntryPremise
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize("value", (object, property, type, 1, None, {}, [], ()))
 def test_static_native_types_without_member_hooks_are_admitted(value):
     CapturedNativeObject(value).require_class_installation()
 
 
+@pytest.mark.native_proof
 def test_descriptor_instance_is_not_confused_with_its_class():
     with pytest.raises(ValueError, match="installation hook"):
         CapturedNativeObject(property()).require_class_installation()
@@ -50,6 +52,7 @@ def test_heap_type_hook_lookup_is_not_executed():
     assert not observed
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize(
     "source",
     (
@@ -86,6 +89,7 @@ print(calls)
     assert ast.literal_eval(native.stdout) == [("InstanceMember", "member")]
 
 
+@pytest.mark.native_proof
 def test_member_hook_absence_does_not_prove_truth_evaluation():
     calls = []
 

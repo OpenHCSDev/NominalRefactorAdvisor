@@ -200,6 +200,7 @@ def test_native_repeat_demonstrates_why_later_source_writes_remain_relevant():
     assert result.returncode == 0, result.stderr
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize(
     "source",
     (

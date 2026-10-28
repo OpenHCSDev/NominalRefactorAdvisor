@@ -18,6 +18,8 @@ from nominal_refactor_advisor.source_geometry import SourceByteSpan
 from test_registry_original_values import authored_runtime
 from test_source_distinct_item_stores import execution
 
+pytestmark = pytest.mark.native_proof
+
 BASE = "REGISTRY = {}\nalias = REGISTRY\nclass Alpha: pass\nclass Beta: pass\n"
 STORES = "REGISTRY['alpha'] = Alpha\nREGISTRY['beta'] = Beta\n"
 

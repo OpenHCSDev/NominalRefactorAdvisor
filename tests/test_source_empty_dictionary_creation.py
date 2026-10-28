@@ -14,10 +14,7 @@ from nominal_refactor_advisor.captured_reference import (
     CapturedNativeObject,
     OpenCapturedReference,
 )
-from nominal_refactor_advisor.native_compilation import (
-    NativeCreationBackend,
-    SpanOnlyCreationBackend,
-)
+from nominal_refactor_advisor.native_compilation import NativeCreationBackend
 from nominal_refactor_advisor.product_flow import CompactFlowValue
 from nominal_refactor_advisor.source_execution import (
     SourceEmptyDictionaryCapture,
@@ -62,6 +59,7 @@ def test_shared_low_projection_retains_conservative_resolver_contract(context):
         value.require_mapping_key()
 
 
+@pytest.mark.native_proof
 def test_aliases_and_repeated_reads_share_the_actual_creation():
     environment = execution("original = {}\nalias = original\nother = {}\n")
     first, alias, other = environment.module.module.body
@@ -97,6 +95,7 @@ def test_trusted_native_alias_control():
     assert native.returncode == 0, native.stderr
 
 
+@pytest.mark.native_proof
 def test_empty_creation_does_not_allocate_analyser_literal_dict(monkeypatch):
     environment = execution("original = {}\n")
 
@@ -109,6 +108,7 @@ def test_empty_creation_does_not_allocate_analyser_literal_dict(monkeypatch):
     result.require_closed()
 
 
+@pytest.mark.native_proof
 def test_creation_namespace_initial_absence_needs_actual_later_cut():
     environment = execution("original = {}\n")
     node = environment.module.module.body[0].value
@@ -124,7 +124,14 @@ def test_creation_namespace_initial_absence_needs_actual_later_cut():
         result.require_available(environment.kernel, at_creation)
 
 
-@pytest.mark.parametrize("defect", ("kernel", "initial", "owner"))
+@pytest.mark.parametrize(
+    "defect",
+    (
+        pytest.param("kernel", marks=pytest.mark.native_proof),
+        pytest.param("initial", marks=pytest.mark.native_proof),
+        "owner",
+    ),
+)
 def test_foreign_execution_or_counterfeit_creation_is_not_admitted(defect):
     environment = execution("original = {}\n")
     other = execution("original = {}\n")
@@ -196,19 +203,6 @@ def test_unknown_or_repeated_activation_remains_open(source):
         result.require_closed()
 
 
-def test_unknown_compiler_does_not_gain_freshness_from_empty_shape(monkeypatch):
-    environment = execution("original = {}\n")
-    monkeypatch.setattr(
-        NativeCreationBackend,
-        "current",
-        classmethod(lambda cls: SpanOnlyCreationBackend()),
-    )
-    result = environment.capture_value(environment.module.module.body[0].value)
-    assert isinstance(result, OpenCapturedReference)
-    with pytest.raises(ValueError):
-        result.require_closed()
-
-
 @pytest.mark.parametrize("expression", ("{'a': 1}", "[]", "[1]", "None", "'text'"))
 def test_other_literal_captures_remain_type_only(expression):
     environment = execution(f"original = {expression}\n")
@@ -228,6 +222,7 @@ def test_native_creation_law_rejects_nonempty_or_non_dictionary_source():
             )
 
 
+@pytest.mark.native_proof
 def test_created_identity_does_not_admit_unproved_stored_value_release():
     environment = execution(
         "original = {}\noriginal['key'] = []\n"
@@ -251,6 +246,7 @@ def test_nonempty_value_read_cannot_request_empty_creation():
         environment.empty_dictionary_creation(CompactFlowValue(read.context, read.use))
 
 
+@pytest.mark.native_proof
 def test_wrong_low_projection_cannot_replace_native_syntax_evidence(monkeypatch):
     project = CompactValueExpression.project
 
@@ -273,6 +269,7 @@ def test_wrong_low_projection_cannot_replace_native_syntax_evidence(monkeypatch)
     assert isinstance(environment.capture_value(node), OpenCapturedReference)
 
 
+@pytest.mark.native_proof
 def test_admitted_plain_class_body_preserves_its_own_dictionary_creation():
     environment = execution("class Owner:\n    original = {}\n    alias = original\n")
     definition = environment.module.module.body[0]

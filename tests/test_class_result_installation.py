@@ -31,6 +31,7 @@ def classes(depth=0, bases="", prefix=""):
     return source, env, entry
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize("depth", (0, 1, 2))
 @pytest.mark.parametrize("bases", ("", "(Left)", "(Left, Right)"))
 def test_original_class_result_and_return_across_nested_frames(depth, bases):
@@ -55,6 +56,7 @@ def test_original_class_result_and_return_across_nested_frames(depth, bases):
     assert not env._pending
 
 
+@pytest.mark.native_proof
 def test_module_global_builder_shadow_does_not_replace_builtin_lookup():
     source, env, entry = classes(prefix="__build_class__ = object\n")
     native(source + "assert type(Target) is type\n")
@@ -63,6 +65,7 @@ def test_module_global_builder_shadow_does_not_replace_builtin_lookup():
     )
 
 
+@pytest.mark.native_proof
 def test_class_creation_site_is_derived_from_body_receipt_after_snapshot(monkeypatch):
     _, env, entry = classes(1)
     capture = entry.capture
@@ -79,6 +82,7 @@ def test_class_creation_site_is_derived_from_body_receipt_after_snapshot(monkeyp
     assert restored.creation.frame is restored.builder.frame
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize("damage", ("builder", "body", "name", "base", "frame"))
 def test_original_class_store_rejects_substituted_native_inputs(damage):
     _, env, entry = classes(bases="(Left)")
@@ -103,6 +107,7 @@ def test_original_class_store_rejects_substituted_native_inputs(damage):
         result.require_native_installation(prefix)
 
 
+@pytest.mark.native_proof
 def test_unavailable_or_foreign_cut_cannot_borrow_class_installation():
     _, env, entry = classes()
     result = entry.result()

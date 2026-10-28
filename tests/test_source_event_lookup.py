@@ -30,7 +30,11 @@ from test_source_mutation_operations import project
         ("value = object\n", CompactValueUse),
         ("value = object\n", CompactEvaluatedResult),
         ("value = object\n", CompactMutation),
-        ("class Original: pass\n", CompactNativeCapture),
+        pytest.param(
+            "class Original: pass\n",
+            CompactNativeCapture,
+            marks=pytest.mark.native_proof,
+        ),
     ),
 )
 def test_event_lookup_returns_actual_operations_for_each_observed_event_family(
@@ -156,6 +160,7 @@ def test_recorded_event_must_belong_to_its_actual_canonical_flow_graph(corruptio
         source.event_operation(selected.event)
 
 
+@pytest.mark.native_proof
 def test_shared_event_lookup_does_not_collapse_separate_source_activations():
     first = execution("class Original: pass\n")
     second = SourceModuleExecution.from_source(first.source)
@@ -173,6 +178,7 @@ def test_shared_event_lookup_does_not_collapse_separate_source_activations():
     assert second.class_entry(node).execution is second
 
 
+@pytest.mark.native_proof
 def test_preceding_class_entries_keep_original_order_and_exclusive_position_cut():
     source = "class First: pass\nclass Second: pass\nclass Third: pass\n"
     environment = execution(source)

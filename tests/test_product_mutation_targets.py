@@ -59,6 +59,7 @@ def test_unproved_receiver_write_cannot_leave_a_product_authorized(tail: str) ->
     )
 
 
+@pytest.mark.native_proof
 def test_confirmed_class_write_is_distinct_from_unresolved_receiver_identity() -> None:
     repository = _repository(_module("Product.extra = replacement\n"))
     (failure,) = repository.product_runtime_failures_by_authority_symbol[
@@ -73,8 +74,11 @@ def test_confirmed_class_write_is_distinct_from_unresolved_receiver_identity() -
 @pytest.mark.parametrize(
     "tail",
     (
-        "Other.extra = replacement\n",
-        "def callback():\n    pass\ncallback.extra = replacement\n",
+        pytest.param("Other.extra = replacement\n", marks=pytest.mark.native_proof),
+        pytest.param(
+            "def callback():\n    pass\ncallback.extra = replacement\n",
+            marks=pytest.mark.native_proof,
+        ),
         "def local():\n    Product = replacement\n",
     ),
     ids=("other-class", "known-function", "local-rebinding"),
@@ -84,6 +88,7 @@ def test_closed_nonproduct_target_does_not_invalidate_a_product(tail: str) -> No
     assert "product_mutation.Product" in repository.product_authorities_by_symbol
 
 
+@pytest.mark.native_proof
 def test_augmented_receiver_resolution_uses_the_actual_captured_class_object() -> None:
     source = (
         "from dataclasses import dataclass\n"

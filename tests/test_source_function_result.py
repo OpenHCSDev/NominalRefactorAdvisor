@@ -51,6 +51,7 @@ def native(source):
     assert result.returncode == 0, result.stderr
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize(
     "header,body",
     (
@@ -91,6 +92,7 @@ def test_plain_result_proves_creation_without_invoking_body(header, body):
     # Never execute a source body to acquire its result or runtime identity.
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize("future", (False, True))
 def test_annotation_callback_obeys_native_phase_without_losing_inventory(future):
     source = (
@@ -136,6 +138,7 @@ def test_default_callback_result_does_not_bypass_header_effect_proof(future):
         environment.definition_result(context, binding)
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize("future", (False, True))
 def test_decorator_can_replace_the_actual_raw_function(future):
     source = (
@@ -164,6 +167,7 @@ def test_unadmitted_or_repeated_creator_does_not_acquire_module_identity(source)
         environment.definition_result(context, binding)
 
 
+@pytest.mark.native_proof
 def test_class_body_creator_retains_its_actual_nonmodule_identity():
     source = "class Owner:\n    def chosen():\n        raise RuntimeError('deferred')\n"
     native(source)
@@ -179,6 +183,7 @@ def test_class_body_creator_retains_its_actual_nonmodule_identity():
     assert actual_binding is binding
 
 
+@pytest.mark.native_proof
 def test_class_creator_rejects_equal_but_nonoriginal_code_receipt():
     environment = execution("class Owner:\n    def chosen(): pass\n")
     owner = environment.class_entry(environment.module.module.body[0])
@@ -190,6 +195,7 @@ def test_class_creator_rejects_equal_but_nonoriginal_code_receipt():
         owner.require_native_creator(copied)
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize("later", ("chosen = object\n", "del chosen\n"))
 def test_historical_alias_capture_remains_separate_from_later_effect_closure(later):
     source = "def chosen(): pass\nsaved = chosen\n" + later + "result = saved\n"
@@ -206,6 +212,7 @@ def test_historical_alias_capture_remains_separate_from_later_effect_closure(lat
     result.require_definition_identity(binding.target.owner)
 
 
+@pytest.mark.native_proof
 def test_proved_dataclass_prefix_preserves_a_later_plain_function_result():
     environment = execution(
         "from dataclasses import dataclass\n@dataclass\nclass Product:\n"
@@ -216,7 +223,15 @@ def test_proved_dataclass_prefix_preserves_a_later_plain_function_result():
     result.require_definition_identity(binding.target.owner)
 
 
-@pytest.mark.parametrize("corruption", ("node", "binding", "execution", "owner"))
+@pytest.mark.parametrize(
+    "corruption",
+    (
+        "node",
+        "binding",
+        "execution",
+        pytest.param("owner", marks=pytest.mark.native_proof),
+    ),
+)
 def test_equal_foreign_receipts_cannot_authenticate_source_function(corruption):
     environment = execution("def chosen(): pass\n")
     node, context, binding = function(environment)
@@ -238,6 +253,7 @@ def test_equal_foreign_receipts_cannot_authenticate_source_function(corruption):
             result.require_definition_identity(replace(binding.target.owner))
 
 
+@pytest.mark.native_proof
 def test_class_entry_reuses_definition_owner_without_function_activation_change():
     environment = execution("class Original: pass\n")
     node = environment.module.module.body[0]

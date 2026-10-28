@@ -1383,6 +1383,7 @@ def test_semantic_descent_ignores_suppression_vocabularies(
     )
 
 
+@pytest.mark.native_proof
 def test_semantic_mirror_registry_finding_retains_unproved_autoregister_recipe(
     tmp_path: Path,
 ) -> None:
@@ -2103,6 +2104,7 @@ def test_finding_recipe_synthesis_detector_scope_excludes_unselected_findings(
     )
 
 
+@pytest.mark.native_proof
 def test_semantic_mirror_registry_proposal_resolves_absolute_finding_paths(
     tmp_path: Path,
     monkeypatch,

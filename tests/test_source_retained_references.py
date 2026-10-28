@@ -26,6 +26,7 @@ def final_capture(owner):
     return owner.capture(owner.module.module.body[-1].value)
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize(
     "declaration", ("class Original: pass", "def Original(): pass")
 )
@@ -76,6 +77,7 @@ def test_destination_and_historical_aliases_are_not_retention_proof(
         final_capture(execution(source)).require_closed()
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize(
     "declaration", ("class Original: pass", "def Original(): pass")
 )
@@ -102,6 +104,7 @@ def test_definition_identity_includes_the_actual_execution(declaration):
         )
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize(
     "declaration", ("class Original: pass", "def Original(): pass")
 )
@@ -118,6 +121,7 @@ def test_repeated_spelling_does_not_reuse_creation_identity(declaration):
     assert not previous.proves_same_object(current)
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize(
     "declaration", ("class Original: pass", "def Original(): pass")
 )

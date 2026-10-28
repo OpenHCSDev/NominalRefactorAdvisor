@@ -14,6 +14,8 @@ from nominal_refactor_advisor.product_flow_authority import (
     UnboundedCompactFunctionTarget,
 )
 
+pytestmark = pytest.mark.native_proof
+
 
 def _repository(source: str) -> SourceProductFlowRepository:
     module = ParsedModule(

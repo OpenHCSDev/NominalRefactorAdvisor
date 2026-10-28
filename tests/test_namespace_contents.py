@@ -42,6 +42,7 @@ def paired_contents():
     return environment, _copy(environment), positioned_contents(environment)
 
 
+@pytest.mark.native_proof
 def test_complete_module_end_registry_needs_no_dictionary_copy_call():
     source = BASE + STORES + "tail = REGISTRY\n"
     environment = execution(source)
@@ -59,6 +60,7 @@ def test_complete_module_end_registry_needs_no_dictionary_copy_call():
     assert runtime["REGISTRY"]["beta"] is runtime["Beta"]
 
 
+@pytest.mark.native_proof
 def test_early_and_late_cuts_observe_one_namespace_at_distinct_times():
     environment = execution(BASE + "early = alias\n" + STORES + "tail = REGISTRY\n")
     early = positioned_contents(environment, "early")
@@ -75,6 +77,7 @@ def test_early_and_late_cuts_observe_one_namespace_at_distinct_times():
         early.require_same_mapping(late)
 
 
+@pytest.mark.native_proof
 def test_copy_and_positioned_mapping_share_values_without_claiming_dict_identity():
     environment, copied, positioned = paired_contents()
     assert isinstance(copied, NamespaceContentsABC)
@@ -88,6 +91,7 @@ def test_copy_and_positioned_mapping_share_values_without_claiming_dict_identity
         )
 
 
+@pytest.mark.native_proof
 def test_keyword_overrides_are_copied_initial_contents_not_parent_contents():
     environment = execution(
         BASE + STORES + "observed = dict({}, beta=Beta, alpha=Alpha)\ntail = observed\n"
@@ -101,6 +105,7 @@ def test_keyword_overrides_are_copied_initial_contents_not_parent_contents():
     _component(environment).require_class_mapping(positioned, environment)
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize("receiver", ("REGISTRY", "observed"))
 def test_later_writes_do_not_rewrite_the_original_copy_contents(receiver):
     source = (
@@ -126,6 +131,7 @@ def test_later_writes_do_not_rewrite_the_original_copy_contents(receiver):
     assert ("extra" in runtime["observed"]) is (receiver == "observed")
 
 
+@pytest.mark.native_proof
 def test_missing_member_helper_preserves_absence_and_rejects_required_absence():
     _, copied, positioned = paired_contents()
     for contents in (copied, positioned):
@@ -134,6 +140,7 @@ def test_missing_member_helper_preserves_absence_and_rejects_required_absence():
             contents.require_member("missing")
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize("key", (1.0, Ellipsis, ("alpha",)))
 def test_both_actual_content_owners_reject_nonscalar_queries(key):
     _, copied, positioned = paired_contents()
@@ -142,6 +149,7 @@ def test_both_actual_content_owners_reject_nonscalar_queries(key):
             contents.member(key)
 
 
+@pytest.mark.native_proof
 def test_string_subclass_query_does_not_execute_hash_or_equality():
     class HostileString(str):
         def __hash__(self):
@@ -156,6 +164,7 @@ def test_string_subclass_query_does_not_execute_hash_or_equality():
             contents.member(HostileString("alpha"))
 
 
+@pytest.mark.native_proof
 def test_class_relation_rejects_a_foreign_kernel_even_for_same_source_projection():
     environment, copied, positioned = paired_contents()
     foreign = SourceModuleExecution.from_source(environment.source)
@@ -167,6 +176,7 @@ def test_class_relation_rejects_a_foreign_kernel_even_for_same_source_projection
             component.require_class_mapping(contents, foreign)
 
 
+@pytest.mark.native_proof
 def test_equal_source_from_another_module_cannot_supply_class_edges():
     environment, copied, _ = paired_contents()
     foreign = execution(environment.module.source)
@@ -174,6 +184,7 @@ def test_equal_source_from_another_module_cannot_supply_class_edges():
         _component(foreign).require_class_mapping(copied, environment)
 
 
+@pytest.mark.native_proof
 def test_same_names_from_separate_class_activations_do_not_prove_same_mapping():
     _, first, _ = paired_contents()
     _, second, _ = paired_contents()
@@ -182,6 +193,7 @@ def test_same_names_from_separate_class_activations_do_not_prove_same_mapping():
         first.require_same_mapping(second)
 
 
+@pytest.mark.native_proof
 def test_native_values_can_prove_mapping_across_independent_executions():
     source = "REGISTRY = {}\nREGISTRY['native'] = object\ntail = REGISTRY\n"
     first = positioned_contents(execution(source))
@@ -190,6 +202,7 @@ def test_native_values_can_prove_mapping_across_independent_executions():
     first.require_same_mapping(second)
 
 
+@pytest.mark.native_proof
 def test_complete_names_do_not_close_an_unresolved_copied_value():
     environment = execution(
         BASE + STORES + "observed = dict(REGISTRY, alpha=missing)\n"
@@ -218,6 +231,7 @@ def test_unadmitted_late_write_cannot_create_positioned_content_evidence(write):
         positioned_contents(environment)
 
 
+@pytest.mark.native_proof
 def test_direct_member_lookup_validates_namespace_availability_before_slots():
     environment, copied, positioned = paired_contents()
     foreign = SourceModuleExecution.from_source(environment.source)
@@ -226,6 +240,7 @@ def test_direct_member_lookup_validates_namespace_availability_before_slots():
         forged.member("alpha")
 
 
+@pytest.mark.native_proof
 def test_empty_names_do_not_bypass_content_owner_admission():
     environment = execution(
         "REGISTRY = {}\nobserved = dict(REGISTRY)\ntail = observed\n"
@@ -237,6 +252,7 @@ def test_empty_names_do_not_bypass_content_owner_admission():
         forged.names
 
 
+@pytest.mark.native_proof
 def test_equal_copied_record_has_no_canonical_content_admission():
     environment, copied, positioned = paired_contents()
     forged = replace(copied)
@@ -256,6 +272,7 @@ def test_equal_copied_record_has_no_canonical_content_admission():
         _component(environment).require_class_mapping(forged, environment)
 
 
+@pytest.mark.native_proof
 def test_actual_earlier_prefix_cannot_admit_a_later_copy_namespace():
     environment = execution(
         BASE + STORES + "early = alias\nobserved = dict(REGISTRY)\ntail = observed\n"

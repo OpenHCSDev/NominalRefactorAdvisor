@@ -14,7 +14,9 @@ def rebuild(entry):
 
 
 @pytest.mark.parametrize("duplicate", (copy, rebuild), ids=("copy", "rebuild"))
-@pytest.mark.parametrize("warm", (False, True))
+@pytest.mark.parametrize(
+    "warm", (False, pytest.param(True, marks=pytest.mark.native_proof))
+)
 @pytest.mark.parametrize(
     "source",
     ("class Family: pass\n", "class Family(metaclass=Creator): pass\n"),

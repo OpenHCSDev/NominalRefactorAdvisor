@@ -45,6 +45,7 @@ def test_manual_entries_retain_original_values_and_class_declarations(registrati
         )
 
 
+@pytest.mark.native_proof
 def test_dictionary_entry_can_use_existing_original_binding_proof():
     module = parsed(
         "class Alpha: pass\nclass Beta: pass\nREGISTRY = {'alpha': Alpha, 'beta': Beta}\n"

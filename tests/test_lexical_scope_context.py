@@ -90,6 +90,7 @@ def test_interrupted_type_parameter_scope_unwinds() -> None:
     assert collector.owner_classes == ()
 
 
+@pytest.mark.native_proof
 def test_cli_composes_member_promotion_and_module_move(tmp_path: Path) -> None:
     package = tmp_path / "nominal_refactor_advisor"
     package.mkdir()

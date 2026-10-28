@@ -47,6 +47,7 @@ def test_selected_value_contract_does_not_require_alias_traversal_implementation
         assert name not in vars(CompactBindingValueResolverABC)
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize(
     "body",
     (
@@ -66,6 +67,7 @@ def test_final_scalar_store_is_derived_from_original_flow(body):
     assert tail.completed is None
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize(
     "definition", ("def arbitrary_name(self):", "async def unrelated_name(self):")
 )
@@ -77,6 +79,7 @@ def test_final_function_kind_is_selected_by_its_declaration_not_name(definition)
     assert tail.completed is None
 
 
+@pytest.mark.native_proof
 def test_prepared_registry_root_no_longer_needs_a_manually_chosen_method():
     env, (root, _) = prepared_execution()
     entry = env.class_entry(root)
@@ -97,6 +100,7 @@ def test_copied_binding_cannot_drive_source_store_selection():
         SourceCompletionResolver(entry.execution).resolve(copy(binding))
 
 
+@pytest.mark.native_proof
 def test_deletion_uses_a_completed_binding_not_an_installed_value():
     entry = body_entry("value = None\ndel value")
     tail = entry.native_tail
@@ -108,6 +112,7 @@ def test_deletion_uses_a_completed_binding_not_an_installed_value():
     assert tail.member("value") is None
 
 
+@pytest.mark.native_proof
 def test_nested_class_is_not_reinterpreted_as_a_function_store():
     entry = body_entry("class Nested:\n    pass")
     binding = entry.context.flow.mutations[-1]
@@ -127,7 +132,9 @@ def test_later_source_work_cannot_be_skipped_by_selecting_an_earlier_store():
         _ = entry.native_tail
 
 
-@pytest.mark.parametrize("warm", (False, True))
+@pytest.mark.parametrize(
+    "warm", (False, pytest.param(True, marks=pytest.mark.native_proof))
+)
 def test_selection_rechecks_original_body_after_warm_queries(warm):
     entry = body_entry("value = None\npass")
     if warm:

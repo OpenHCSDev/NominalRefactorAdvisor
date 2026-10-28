@@ -64,6 +64,7 @@ def _require_dictionary_effects(execution, dictionary):
     execution.required_prefix(context, evaluation.exit)
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize(
     "keys",
     (
@@ -81,6 +82,7 @@ def test_distinct_literal_keys_allow_original_class_operand_capture(keys):
         _require_original_class(execution, node)
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize("size", (1, 2, 20))
 def test_compiler_chunking_does_not_require_values_to_be_literals(size):
     expression = (
@@ -105,6 +107,7 @@ def test_compiler_chunking_does_not_require_values_to_be_literals(size):
         )
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize(
     "left,right",
     (
@@ -148,6 +151,7 @@ def test_equal_literal_keys_do_not_assume_overwritten_value_release(left, right)
     } == {"Alpha", "Beta"}
 
 
+@pytest.mark.native_proof
 def test_duplicate_literal_values_allow_later_original_class_capture():
     execution, dictionary = _execution(
         "{'same': 'old', 'same': None, 'same': 'new', 'class': Alpha}"
@@ -171,7 +175,12 @@ def test_duplicate_class_value_replaced_by_literal_still_requires_release_proof(
             False,
         ),
         ("{**other, 'beta': Beta}", "other = {}\n", False),
-        ("{'alpha': Alpha, **other}", "other = {}\n", True),
+        pytest.param(
+            "{'alpha': Alpha, **other}",
+            "other = {}\n",
+            True,
+            marks=pytest.mark.native_proof,
+        ),
     ),
 )
 def test_unknown_keys_and_unpacking_remain_unproved(
@@ -209,6 +218,7 @@ def test_distinct_keys_do_not_hide_a_preceding_effectful_value():
         _require_original_class(execution, dictionary.values[1])
 
 
+@pytest.mark.native_proof
 def test_foreign_equal_span_operand_does_not_gain_source_identity():
     execution, dictionary = _execution("{'alpha': Alpha, 'beta': Beta}")
     foreign_module = ast.parse(execution.module.source)
@@ -223,6 +233,7 @@ def test_foreign_equal_span_operand_does_not_gain_source_identity():
         _require_original_class(execution, foreign)
 
 
+@pytest.mark.native_proof
 def test_unsupported_backend_rejects_dictionary_construction_specifically(monkeypatch):
     execution, dictionary = _execution("{'alpha': Alpha, 'beta': Beta}")
     # Establish class receipts first, so missing dictionary capability is the

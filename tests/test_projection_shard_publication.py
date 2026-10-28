@@ -126,9 +126,16 @@ def test_list_collection_and_batch_share_the_same_publication(tmp_path, monkeypa
     )
 
 
-def test_incomplete_publication_keeps_all_facts_in_memory(tmp_path, monkeypatch):
+def test_incomplete_publication_keeps_all_facts_in_memory(tmp_path):
+    """A module whose product-flow facts exceed that family's real cache cap
+    (5 MB) is published incompletely: the class facts are stored, the
+    product-flow facts stay in memory only."""
+
     path = tmp_path / "source.py"
-    source = "class Example: pass\ndef target(): return Example()\n"
+    source = "class Example: pass\n" + "".join(
+        f"def target_{index}(a, b):\n    c = Example()\n    d = [a, b, c]\n    return d\n"
+        for index in range(3500)
+    )
     path.write_bytes(source.encode())
     parser = PythonModuleRootParser.for_root(tmp_path, cache_dir=tmp_path / "cache")
     projection_source = CompactProjectionCacheSource(
@@ -144,9 +151,6 @@ def test_incomplete_publication_keeps_all_facts_in_memory(tmp_path, monkeypatch)
     families = (
         CompactModuleClassProjectionFamily,
         CompactProductFlowModuleProjectionFamily,
-    )
-    monkeypatch.setattr(
-        CompactProductFlowModuleProjectionFamily, "cache_payload_max_bytes", 0
     )
     result = build_compact_projection_shard(
         CompactProjectionBuildRequest(

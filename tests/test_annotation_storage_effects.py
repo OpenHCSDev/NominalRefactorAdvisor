@@ -102,6 +102,7 @@ def test_overwritten_annotation_finalizer_cannot_be_hidden_by_a_later_store(trai
         env.require_class_creation(env.module.module.body[-1])
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize("prefix", ("", "from __future__ import annotations\n"))
 def test_annotation_storage_obligation_survives_a_later_plain_assignment(prefix):
     source = prefix + "class Owner:\n    item: 'str' = 'text'\n    last = None\n"

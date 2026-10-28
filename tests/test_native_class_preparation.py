@@ -24,11 +24,13 @@ def require_preparation(metaclass):
     )
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize("metaclass", (type, ABCMeta, AutoRegisterMeta))
 def test_loaded_native_metaclasses_select_the_exact_type_descriptor(metaclass):
     assert require_preparation(metaclass) is None
 
 
+@pytest.mark.native_proof
 def test_exact_descriptor_alias_is_native_identity_not_owner_spelling():
     alias = type(
         "NativePrepareAlias", (type,), {"__prepare__": vars(type)["__prepare__"]}
@@ -44,6 +46,7 @@ def test_exact_descriptor_alias_is_native_identity_not_owner_spelling():
     assert require_preparation(child) is None
 
 
+@pytest.mark.native_proof
 def test_source_class_instance_getter_does_not_replace_its_metaclass_lookup():
     events = []
 
@@ -56,6 +59,7 @@ def test_source_class_instance_getter_does_not_replace_its_metaclass_lookup():
     assert events == []
 
 
+@pytest.mark.native_proof
 def test_reimplemented_prepare_is_not_called_or_admitted():
     events = []
 
@@ -70,6 +74,7 @@ def test_reimplemented_prepare_is_not_called_or_admitted():
     assert events == []
 
 
+@pytest.mark.native_proof
 def test_custom_prepare_descriptor_is_not_executed():
     events = []
 
@@ -84,6 +89,7 @@ def test_custom_prepare_descriptor_is_not_executed():
     assert events == []
 
 
+@pytest.mark.native_proof
 def test_custom_metameta_getter_is_rejected_without_invocation():
     events = []
 
@@ -101,6 +107,7 @@ def test_custom_metameta_getter_is_rejected_without_invocation():
     assert events == []
 
 
+@pytest.mark.native_proof
 def test_metameta_data_descriptor_cannot_hide_behind_raw_member_owner():
     events = []
 
@@ -125,6 +132,7 @@ def test_metameta_data_descriptor_cannot_hide_behind_raw_member_owner():
     assert events == []
 
 
+@pytest.mark.native_proof
 def test_nonstring_namespace_keys_are_rejected_before_name_lookup_callbacks():
     events = []
 
@@ -143,6 +151,7 @@ def test_nonstring_namespace_keys_are_rejected_before_name_lookup_callbacks():
     assert events == []
 
 
+@pytest.mark.native_proof
 def test_mutating_prepare_invalidates_a_previous_success_without_stale_cache():
     meta = type("MutablePrepareMeta", (type,), {})
     declaration = NativeClassMroDeclaration(meta)
@@ -155,6 +164,7 @@ def test_mutating_prepare_invalidates_a_previous_success_without_stale_cache():
     backend.require_fresh_class_namespace(declaration)
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize("non_metaclass", (object, int, lambda: None, object()))
 def test_a_class_or_callable_is_not_automatically_a_native_metaclass(non_metaclass):
     with pytest.raises(ValueError, match="ordinary metaclass attribute lookup"):

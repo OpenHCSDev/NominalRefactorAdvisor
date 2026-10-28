@@ -80,6 +80,7 @@ def _runtime_output(root: Path) -> str:
     return completed.stdout.strip()
 
 
+@pytest.mark.native_proof
 def test_promotes_selected_members_to_existing_ancestor_as_one_operation(
     tmp_path: Path,
 ) -> None:
@@ -110,7 +111,11 @@ def test_promotes_selected_members_to_existing_ancestor_as_one_operation(
 
 
 @pytest.mark.parametrize(
-    "bases,safe", (("Other, Authority", False), ("Authority, Other", True))
+    "bases,safe",
+    (
+        ("Other, Authority", False),
+        pytest.param("Authority, Other", True, marks=pytest.mark.native_proof),
+    ),
 )
 def test_promotion_preserves_native_member_owner_across_branches(
     tmp_path: Path, bases: str, safe: bool
@@ -172,6 +177,7 @@ def test_promotion_preserves_lookup_in_a_descendant_diamond(tmp_path: Path) -> N
     assert path.read_bytes() == source.encode("utf-8")
 
 
+@pytest.mark.native_proof
 def test_chains_member_promotion_with_intermediate_authority_collapse(
     tmp_path: Path,
 ) -> None:
@@ -243,6 +249,7 @@ def test_chains_member_promotion_with_intermediate_authority_collapse(
     assert json.loads(completed.stdout) == ["shared", 3]
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize(
     "base_source",
     ("class Base:\n    pass\n", "class Base: 'Base docs'; pass # base comment\n"),

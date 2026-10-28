@@ -245,6 +245,44 @@ class CollectedFamilySchemaIdentity(CachedDataclassRepresentation):
     item_schema_signature: str
     implementation: CollectedFamilyImplementationIdentity
 
+    @staticmethod
+    def schema_signature_of(item_type: type[object]) -> str:
+        """Persisted-item compatibility, derived from the item's own declaration."""
+
+        declared_fields = (
+            tuple(
+                (
+                    item.name,
+                    repr(item.type),
+                    item.init,
+                    item.kw_only,
+                )
+                for item in fields(item_type)
+            )
+            if is_dataclass(item_type)
+            else tuple(
+                (
+                    name,
+                    repr(annotation),
+                )
+                for owner in reversed(item_type.__mro__)
+                for name, annotation in owner.__dict__.get(
+                    "__annotations__", {}
+                ).items()
+            )
+        )
+        return hashlib.blake2s(
+            repr(
+                (
+                    "collected-family-item-schema-v1",
+                    item_type.__module__,
+                    item_type.__qualname__,
+                    declared_fields,
+                )
+            ).encode("utf-8"),
+            digest_size=16,
+        ).hexdigest()
+
     @classmethod
     @ScanCache.cached
     def from_family(
@@ -257,7 +295,7 @@ class CollectedFamilySchemaIdentity(CachedDataclassRepresentation):
             family_qualname=family.__qualname__,
             item_type_module=item_type.__module__,
             item_type_qualname=item_type.__qualname__,
-            item_schema_signature=family.item_schema_signature(),
+            item_schema_signature=cls.schema_signature_of(item_type),
             implementation=family.implementation_identity(),
         )
 
@@ -2051,46 +2089,6 @@ class CollectedFamily(
         """Project every family producer dependency through registered leaves."""
 
         return declaration_implementation_module_names(cls.all_registered_families())
-
-    @classmethod
-    @ScanCache.cached
-    def item_schema_signature(cls) -> str:
-        """Derive persisted-item compatibility from the nominal item declaration."""
-
-        item_type = cls.item_type
-        declared_fields = (
-            tuple(
-                (
-                    item.name,
-                    repr(item.type),
-                    item.init,
-                    item.kw_only,
-                )
-                for item in fields(item_type)
-            )
-            if is_dataclass(item_type)
-            else tuple(
-                (
-                    name,
-                    repr(annotation),
-                )
-                for owner in reversed(item_type.__mro__)
-                for name, annotation in owner.__dict__.get(
-                    "__annotations__", {}
-                ).items()
-            )
-        )
-        return hashlib.blake2s(
-            repr(
-                (
-                    "collected-family-item-schema-v1",
-                    item_type.__module__,
-                    item_type.__qualname__,
-                    declared_fields,
-                )
-            ).encode("utf-8"),
-            digest_size=16,
-        ).hexdigest()
 
     @classmethod
     @ScanCache.cached

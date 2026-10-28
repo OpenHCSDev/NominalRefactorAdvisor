@@ -24,6 +24,7 @@ from nominal_refactor_advisor.codemod_source_edits import SourceTextGeometry
 from nominal_refactor_advisor.json_reports import json_report_object
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize("with_witness", (False, True), ids=("extract", "extract-and-witness"))
 def test_historical_renderer_helpers_can_be_extracted_as_one_dsl_batch(
     tmp_path: Path, with_witness: bool,

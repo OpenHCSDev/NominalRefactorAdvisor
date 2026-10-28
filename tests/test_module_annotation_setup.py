@@ -28,6 +28,7 @@ def result_at_read(environment):
     return result, environment.required_prefix(read.context, read.use.position)
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize("future", (False, True))
 def test_original_module_setup_supplies_both_read_and_complete_membership(future):
     if not future and sys.version_info >= (3, 14):
@@ -61,6 +62,7 @@ def test_original_module_setup_supplies_both_read_and_complete_membership(future
     assert "__annotations__" not in original_entries
 
 
+@pytest.mark.native_proof
 def test_compiler_setup_precedes_an_unreached_annotated_statement():
     source = "from __future__ import annotations\nresult = __annotations__\nif False:\n    value: int\n"
     subprocess.run(
@@ -105,6 +107,7 @@ def test_unknown_existing_annotation_value_is_not_converted_to_a_fresh_dictionar
         result_at_read(environment)
 
 
+@pytest.mark.native_proof
 def test_source_reassignment_uses_normal_storage_instead_of_replaying_setup():
     source = "from __future__ import annotations\n__annotations__ = {}\nvalue: int\nresult = __annotations__\n"
     subprocess.run(
@@ -120,6 +123,7 @@ def test_source_reassignment_uses_normal_storage_instead_of_replaying_setup():
     }
 
 
+@pytest.mark.native_proof
 def test_module_storage_cannot_be_reused_in_a_different_execution_or_kernel():
     source = (
         "from __future__ import annotations\nvalue: int\nresult = __annotations__\n"
@@ -136,6 +140,7 @@ def test_module_storage_cannot_be_reused_in_a_different_execution_or_kernel():
         first.entry_contents(other.kernel, first.entry, prefix)
 
 
+@pytest.mark.native_proof
 def test_a_class_setup_is_not_misidentified_as_module_setup():
     environment = execution(
         "from __future__ import annotations\nclass Inner:\n    value: int\nresult = Inner\n"
@@ -145,6 +150,7 @@ def test_a_class_setup_is_not_misidentified_as_module_setup():
     result_at_read(environment)
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize("stored", (None, "1", "'text'"))
 def test_dictionary_release_uses_current_contents_for_ordinary_source_dictionaries(
     stored,

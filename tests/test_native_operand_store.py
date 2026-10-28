@@ -29,6 +29,7 @@ def native_store(source):
     )
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize(
     "expression", ("(left, right)", "((left, right), left)", "(left, (right, left))")
 )
@@ -65,6 +66,7 @@ def test_complete_graph_and_stored_tuple_match_original_native_execution(express
         compilation.scalar_store_for(store.production_span, store.source_span, "pair")
 
 
+@pytest.mark.native_proof
 def test_foreign_graph_cannot_supply_an_original_operand():
     _, original = native_store("pair = (left, right)\n")
     _, foreign = native_store("pair = (left, right)\n")
@@ -73,6 +75,7 @@ def test_foreign_graph_cannot_supply_an_original_operand():
             original.require_value(value)
 
 
+@pytest.mark.native_proof
 def test_ambiguous_operand_address_cannot_identify_an_original_value():
     _, store = native_store("pair = (left, right)\n")
     first, second = store.value.inputs
@@ -123,12 +126,14 @@ def test_branching_and_duplicate_storage_remain_unproved(source):
         native_store(source)
 
 
+@pytest.mark.native_proof
 def test_compound_store_does_not_broaden_entry_documentation():
     compilation, store = native_store("pair = (left, right)\n")
     with pytest.raises(ValueError):
         compilation.constant_store_for(store.production_span, "pair")
 
 
+@pytest.mark.native_proof
 def test_compound_operand_join_retains_original_source_without_cross_evaluation_identity():
     source = "class Family:\n    payload = (object, object)\n"
     env = execution(source)
@@ -142,6 +147,7 @@ def test_compound_operand_join_retains_original_source_without_cross_evaluation_
     )
 
 
+@pytest.mark.native_proof
 def test_warm_serialisation_retains_original_graph_membership(monkeypatch):
     compilation, store = native_store("pair = ((left, right), left)\n")
     _ = store._productions_by_offset

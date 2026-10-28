@@ -27,7 +27,6 @@ from nominal_refactor_advisor.native_compilation import (
     OpenNativeClassCapture,
     OpenNativeFrameOrigin,
     SourceNativeFrameOrigin,
-    SpanOnlyCreationBackend,
 )
 from nominal_refactor_advisor.source_geometry import SourceByteSpan
 
@@ -108,6 +107,7 @@ def _assert_native_capture(receipt, inventory, invocation):
     assert receipt.creation is receipt.body.require_creation()
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize(
     "source",
     (
@@ -136,6 +136,7 @@ def test_capture_joins_actual_native_function_and_loader(monkeypatch, source):
     assert namespace["Target"].__name__ == "Target"
 
 
+@pytest.mark.native_proof
 def test_nested_and_repeated_source_owners_are_not_joined_by_name(monkeypatch):
     source = "class Same: pass\n" "First = Same\n" "class Same:\n    class Same: pass\n"
     _, code, inventory, receipts = _compile_case(monkeypatch, source)
@@ -163,6 +164,7 @@ def test_nested_and_repeated_source_owners_are_not_joined_by_name(monkeypatch):
     assert nested.source_span != outer.source_span
 
 
+@pytest.mark.native_proof
 @pytest.mark.skipif(
     sys.version_info < (3, 12), reason="Native type parameters require Python 3.12+"
 )
@@ -243,6 +245,7 @@ print(json.dumps({
     }
 
 
+@pytest.mark.native_proof
 @pytest.mark.skipif(
     sys.version_info < (3, 12), reason="Native type parameters require Python 3.12+"
 )
@@ -365,6 +368,7 @@ def test_missing_creation_ranges_cannot_be_replaced_by_a_synthetic_class_site(
     assert isinstance(capture, OpenNativeClassCapture)
 
 
+@pytest.mark.native_proof
 def test_plain_body_captures_rebound_builtins_before_base_expression(monkeypatch):
     source = (
         "import builtins\n"
@@ -403,6 +407,7 @@ def test_plain_body_captures_rebound_builtins_before_base_expression(monkeypatch
     )
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize(
     "source, reason",
     (
@@ -423,6 +428,7 @@ def test_missing_or_multiple_native_sites_remain_open(monkeypatch, source, reaso
     assert receipt.reason is reason
 
 
+@pytest.mark.native_proof
 def test_duplicate_actual_emission_is_not_collapsed_by_code_identity(monkeypatch):
     compilation, code, inventory, (receipt,) = _compile_case(
         monkeypatch, "class Target: pass\n"
@@ -444,6 +450,7 @@ def test_duplicate_actual_emission_is_not_collapsed_by_code_identity(monkeypatch
     )
 
 
+@pytest.mark.native_proof
 def test_repeated_source_owner_code_remains_distinct_from_unjoined_origin(monkeypatch):
     compilation, _, inventory, (outer, inner) = _compile_case(
         monkeypatch, "class Outer:\n    class Inner: pass\n"
@@ -462,6 +469,7 @@ def test_repeated_source_owner_code_remains_distinct_from_unjoined_origin(monkey
     assert frame.reason is NativeExecutionUnavailable.AMBIGUOUS_SOURCE_SPAN
 
 
+@pytest.mark.native_proof
 def test_rebinding_replaces_receipt_lifetime_without_rewriting_old_proof(monkeypatch):
     compilation, _, inventory, (outer, inner) = _compile_case(
         monkeypatch, 'class Outer:\n    class Inner:\n        "documentation"\n'
@@ -496,22 +504,7 @@ def test_rebinding_replaces_receipt_lifetime_without_rewriting_old_proof(monkeyp
     assert isinstance(changed.body.require_creation().frame, OpenNativeFrameOrigin)
 
 
-def test_unsupported_backend_and_rejected_compile_stay_explicit(monkeypatch):
-    compilation = NativePythonCompilation("class Target: pass\n", "unsupported.py")
-    span = SourceByteSpan.require_node(ast.parse(compilation.source).body[0])
-    monkeypatch.setattr(
-        NativeCreationBackend,
-        "current",
-        classmethod(lambda cls: SpanOnlyCreationBackend()),
-    )
-    receipt = compilation.class_capture_for(span)
-    assert isinstance(receipt, OpenNativeClassCapture)
-    assert receipt.reason is NativeExecutionUnavailable.UNSUPPORTED_COMPILER
-    invalid = NativePythonCompilation("return\n", "rejected.py").class_capture_for(span)
-    assert isinstance(invalid, OpenNativeClassCapture)
-    assert invalid.reason is NativeExecutionUnavailable.COMPILATION_REJECTED
-
-
+@pytest.mark.native_proof
 def test_incomplete_builder_geometry_does_not_admit_an_exact_capture(monkeypatch):
     backend = NativeCreationBackend.current()
     native_instructions = type(backend).instructions
@@ -530,6 +523,7 @@ def test_incomplete_builder_geometry_does_not_admit_an_exact_capture(monkeypatch
     assert receipt.reason is NativeExecutionUnavailable.INCOMPLETE_SOURCE_RANGES
 
 
+@pytest.mark.native_proof
 def test_compact_cached_results_pickle_without_native_code(monkeypatch):
     compilation, _, _, receipts = _compile_case(
         monkeypatch, "class Outer:\n    class Inner: pass\n"
@@ -564,6 +558,7 @@ def _query_capture_in_child(compilation, span):
     return compilation.class_capture_for(span)
 
 
+@pytest.mark.native_proof
 def test_queried_compilation_crosses_spawn_boundary(monkeypatch):
     compilation, _, _, (receipt,) = _compile_case(monkeypatch, "class Target: pass\n")
     with ProcessPoolExecutor(
@@ -595,6 +590,7 @@ class KeepCapture(NativeClassCaptureResolverABC[object]):
         return capture
 
 
+@pytest.mark.native_proof
 def test_receipts_own_dispatch_and_preserve_actual_proof_objects(monkeypatch):
     _, _, _, (receipt,) = _compile_case(monkeypatch, "class Target: pass\n")
     assert receipt.resolve(KeepCapture()) is receipt

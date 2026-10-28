@@ -13,6 +13,8 @@ import pytest
 
 from nominal_refactor_advisor.ast_tools import ParsedModule, ParsedModuleSet
 from nominal_refactor_advisor.detectors import _base as collector_runtime
+from nominal_refactor_advisor.interpreter import CompilerIdentity
+from nominal_refactor_advisor.native_compilation import NativeCreationBackend
 from nominal_refactor_advisor.source_geometry import read_source_text
 
 
@@ -24,9 +26,38 @@ def pytest_addoption(parser: pytest.Parser) -> None:
     )
 
 
+def pytest_configure(config: pytest.Config) -> None:
+    config.addinivalue_line(
+        "markers",
+        "native_proof: the test's subject is a proof that only a native creation "
+        "backend with a contract for the running interpreter can give",
+    )
+
+
+def _native_proof_marks() -> tuple[pytest.MarkDecorator, ...]:
+    """The marks a `native_proof` test gets: a skip when the running
+    interpreter's backend is not a contracted member of NativeCreationBackend's
+    registry (SpanOnlyCreationBackend), none when it is."""
+
+    backend = NativeCreationBackend.current()
+    if type(backend) in NativeCreationBackend.__registry__.values():
+        return ()
+    return (
+        pytest.mark.skip(
+            reason=f"{type(backend).__name__}: no native creation contract for "
+            f"{CompilerIdentity.running()}; the proof under test cannot be given"
+        ),
+    )
+
+
 def pytest_collection_modifyitems(
     config: pytest.Config, items: list[pytest.Item]
 ) -> None:
+    marks = _native_proof_marks()
+    for item in items:
+        if item.get_closest_marker("native_proof") is not None:
+            for mark in marks:
+                item.add_marker(mark)
     shard = config.getoption("--shard")
     if shard is None:
         return

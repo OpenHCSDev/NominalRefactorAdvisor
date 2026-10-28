@@ -146,6 +146,7 @@ def test_existing_entry_store_window_does_not_broaden_to_nontext(literal):
     assert window.store is None
 
 
+@pytest.mark.native_proof
 def test_scalar_query_retains_original_producer_and_source_prefix_obligations():
     environment = execution("class Owner:\n    pass\n")
     entry = environment.class_entry(environment.module.module.body[0])

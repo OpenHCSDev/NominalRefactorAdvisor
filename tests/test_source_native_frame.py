@@ -24,7 +24,12 @@ def resolver_for(env, node):
 
 
 @pytest.mark.parametrize(
-    "statement", ('"documentation"', "def chosen(): pass", "class Chosen: pass")
+    "statement",
+    (
+        pytest.param('"documentation"', marks=pytest.mark.native_proof),
+        "def chosen(): pass",
+        "class Chosen: pass",
+    ),
 )
 def test_module_origin_requires_original_compilation_for_each_consumer(statement):
     env = execution(statement + "\n")
@@ -41,6 +46,7 @@ def test_module_origin_requires_original_compilation_for_each_consumer(statement
         ).resolve(resolver)
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize(
     "statement", ('"documentation"', "def chosen(): pass", "class Chosen: pass")
 )
@@ -76,6 +82,7 @@ def test_matching_module_origin_does_not_replace_prefix_effect_proof(statement):
         _ = resolver.parent_prefix
 
 
+@pytest.mark.native_proof
 def test_builder_observation_does_not_require_later_header_completion():
     env = execution("class Chosen(unknown()): pass\n")
     entry = env.class_entry(env.module.module.body[0])

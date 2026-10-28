@@ -25,6 +25,7 @@ from test_native_behavior_proof import (
 )
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize("key", (object, type, str, int, bool, type(None)))
 def test_static_type_key_has_native_identity_protocol_and_safe_release(key):
     backend = NativeCreationBackend.current()
@@ -38,6 +39,7 @@ def test_static_type_key_has_native_identity_protocol_and_safe_release(key):
         CapturedNativeObject(key).require_native_scalar()
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize(
     "assignments,declaration,expected",
     (
@@ -96,12 +98,14 @@ def test_key_representation_admission_does_not_inherit_storage_or_construction_l
         backend.require_dictionary_key(object)
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize("operand", (None, 1, "class-name", (), object()))
 def test_class_lookup_law_requires_an_actual_class_operand(operand):
     with pytest.raises(ValueError, match="static type lifetime"):
         NativeCreationBackend.current().require_dictionary_class_lookup(operand)
 
 
+@pytest.mark.native_proof
 def test_integer_hash_collision_does_not_alias_a_static_type_key(tmp_path):
     source = (
         "from nominal_refactor_advisor.registry_identity import mro_registry_value\n"
@@ -144,6 +148,7 @@ def test_metaclass_hash_equality_and_metadata_hooks_are_never_used_by_admission(
     assert events == []
 
 
+@pytest.mark.native_proof
 def test_query_rejects_foreign_key_before_hashing_or_equality():
     events = []
 
@@ -162,6 +167,7 @@ def test_query_rejects_foreign_key_before_hashing_or_equality():
     assert events == []
 
 
+@pytest.mark.native_proof
 def test_sequential_dsl_stores_select_the_projected_hit_not_the_prior_result(tmp_path):
     source = (
         "from nominal_refactor_advisor.registry_identity import mro_registry_value\n"

@@ -152,7 +152,18 @@ def native_mapping(source):
     return namespace["observed"]
 
 
-@pytest.mark.parametrize("case", CASES, ids=lambda case: case.name)
+@pytest.mark.parametrize(
+    "case",
+    [
+        # An admitted mapping is a native proof; a refused one is not.
+        pytest.param(
+            case,
+            marks=pytest.mark.native_proof if case.admitted else (),
+            id=case.name,
+        )
+        for case in CASES
+    ],
+)
 def test_complete_document_mapping_relation_matches_eight_actual_rewrites(
     tmp_path, case
 ):
@@ -204,6 +215,7 @@ def test_failed_mapping_blocks_application_even_without_optional_guards(
     assert path.read_bytes() == before_bytes
 
 
+@pytest.mark.native_proof
 def test_positive_mapping_allows_checked_apply_to_original_file(tmp_path):
     path = tmp_path / "allowed.py"
     snapshot = snapshot_for(path, VALUES)
@@ -236,6 +248,7 @@ def test_unsupported_or_shadowed_call_cannot_supply_a_mapping_proof(tmp_path, so
     assert path.read_text() == source
 
 
+@pytest.mark.native_proof
 def test_zero_edit_native_copy_document_can_pass_without_rewriting(tmp_path):
     path = tmp_path / "unchanged.py"
     source = "registry={}\nobserved=dict(registry)\n"
@@ -260,6 +273,7 @@ def test_call_span_outside_inherited_target_is_rejected_before_rewrite(tmp_path)
     assert path.read_text() == source
 
 
+@pytest.mark.native_proof
 def test_registered_operation_roundtrips_public_json_and_executes(tmp_path):
     path = tmp_path / "decoded.py"
     source = "registry={}\nobserved=dict(registry)\n"
@@ -277,7 +291,9 @@ def test_registered_operation_roundtrips_public_json_and_executes(tmp_path):
     assert simulation.is_clean
 
 
-@pytest.mark.parametrize("safe", (True, False))
+@pytest.mark.parametrize(
+    "safe", (pytest.param(True, marks=pytest.mark.native_proof), False)
+)
 def test_earlier_recipe_obligation_checks_later_recipe_physical_edits(tmp_path, safe):
     path = tmp_path / "recipes.py"
     snapshot = snapshot_for(path, VALUES)
@@ -397,7 +413,9 @@ def test_opaque_motion_patch_does_not_claim_retained_call_origin(tmp_path):
     )
 
 
-@pytest.mark.parametrize("safe", (True, False))
+@pytest.mark.parametrize(
+    "safe", (pytest.param(True, marks=pytest.mark.native_proof), False)
+)
 def test_failed_optional_guard_cannot_hide_required_mapping_report(tmp_path, safe):
     path = tmp_path / "optional_guard.py"
     snapshot = snapshot_for(path, VALUES)

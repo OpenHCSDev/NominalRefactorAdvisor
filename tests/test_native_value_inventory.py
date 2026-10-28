@@ -15,6 +15,8 @@ from nominal_refactor_advisor.source_geometry import SourceByteSpan
 from test_native_return_continuation import compiled_stores
 from test_selected_store_continuation import body_entry
 
+pytestmark = pytest.mark.native_proof
+
 
 @pytest.fixture(params=("prologue", "return"))
 def inventory(request):

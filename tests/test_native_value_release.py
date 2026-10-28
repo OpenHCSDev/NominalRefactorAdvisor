@@ -12,6 +12,7 @@ from test_documentation_store import execution
 from test_native_member_value_origins import execution as bound_execution
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize(
     "value", (None, "", "runtime text", "\ud800", 0, -1, 2**80, object())
 )
@@ -39,6 +40,7 @@ def test_unicode_subclass_finalization_remains_unknown():
         CapturedNativeObject(Text("text")).require_release()
 
 
+@pytest.mark.native_proof
 def test_release_requires_original_literal_receipt_and_closed_prefix():
     env = execution('text = "stored"\nalias = text\n')
     literal = env.capture_value(env.module.module.body[0].value)
@@ -72,6 +74,7 @@ def test_source_containers_do_not_borrow_immutable_literal_release():
         env.capture_value(env.module.module.body[0].value).require_release()
 
 
+@pytest.mark.native_proof
 def test_initial_static_type_release_remains_supported():
     CapturedNativeObject(str).require_release()
     with pytest.raises(ValueError):

@@ -24,6 +24,7 @@ def test_sequence_contract_requires_a_concrete_native_declaration():
         NativeSequenceValue(0, ())
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize("in_class", (False, True))
 @pytest.mark.parametrize(
     "expression",
@@ -65,6 +66,7 @@ def test_original_literal_list_installation_matches_authored_execution(
         env.require_class_creation(env.module.module.body[0])
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize("snapshot", (False, True))
 def test_list_and_tuple_transfers_share_capture_but_keep_distinct_types(snapshot):
     compilation = NativePythonCompilation(
@@ -106,6 +108,7 @@ def test_sequence_builder_rejects_unproved_input_counts(operation, count):
         operation.capture(NativeOperandStack(), instruction)
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize("damage", ("root", "child", "order", "type", "contents"))
 def test_warm_literal_join_rechecks_original_sequence_inputs(damage):
     env, store = assignment("payload = [1, 2]\n")
@@ -126,6 +129,7 @@ def test_warm_literal_join_rechecks_original_sequence_inputs(damage):
         store.require_join(value)
 
 
+@pytest.mark.native_proof
 def test_literal_expected_type_cannot_invoke_foreign_protocols():
     env, store = assignment("payload = [1, 2]\n")
     value = store.production.value
@@ -152,6 +156,7 @@ def test_observed_list_transfer_does_not_admit_unproved_source_or_extension(expr
         )
 
 
+@pytest.mark.native_proof
 def test_original_constant_extension_keeps_receiver_and_iterable_receipts():
     env, store = assignment("payload = [1, 2, 3, 4]\n")
     prefix = env.required_prefix(store.native_frame_context, None)

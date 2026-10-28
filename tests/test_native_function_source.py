@@ -31,6 +31,7 @@ def compiled_function(tmp_path, monkeypatch, source):
     return compilation, module.sample
 
 
+@pytest.mark.native_proof
 def test_unrelated_body_with_new_native_constants_does_not_block_correspondence(
     tmp_path, monkeypatch
 ):
@@ -43,6 +44,7 @@ def test_unrelated_body_with_new_native_constants_does_not_block_correspondence(
     assert compilation.function_definition(function).name == "sample"
 
 
+@pytest.mark.native_proof
 def test_cached_native_source_owner_does_not_share_mutable_definition_syntax(
     tmp_path, monkeypatch
 ):
@@ -72,6 +74,7 @@ def test_selected_body_with_unsupported_native_constants_remains_unproved(
         compilation.function_definition(function)
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize(
     "source",
     (
@@ -110,6 +113,7 @@ def test_original_module_context_matches_without_calling_target(
     assert definition.name == "sample"
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize(
     "change",
     (
@@ -139,6 +143,7 @@ def test_warmed_source_proof_rejects_changed_code_on_same_function(
         assert compilation.function_definition(function).name == "sample"
 
 
+@pytest.mark.native_proof
 def test_nested_code_metadata_is_part_of_source_correspondence(tmp_path, monkeypatch):
     compilation, function = compiled_function(
         tmp_path,
@@ -163,6 +168,7 @@ def test_nested_code_metadata_is_part_of_source_correspondence(tmp_path, monkeyp
         compilation.function_definition(function)
 
 
+@pytest.mark.native_proof
 def test_equal_constant_contents_cannot_erase_different_alias_relations(
     tmp_path, monkeypatch
 ):
@@ -189,6 +195,7 @@ def test_equal_constant_contents_cannot_erase_different_alias_relations(
             compilation.function_definition(function)
 
 
+@pytest.mark.native_proof
 def test_same_code_does_not_mean_same_closure_or_defaults(tmp_path, monkeypatch):
     compilation, function = compiled_function(
         tmp_path,
@@ -204,6 +211,7 @@ def test_same_code_does_not_mean_same_closure_or_defaults(tmp_path, monkeypatch)
     # This API returns syntax only, never argument values or an execution result.
 
 
+@pytest.mark.native_proof
 def test_completed_correspondence_cache_is_bounded_and_syntax_is_not_shared(
     tmp_path, monkeypatch
 ):
@@ -241,6 +249,7 @@ def test_replaced_constants_never_execute_equality_callbacks(tmp_path, monkeypat
         compilation.function_definition(function)
 
 
+@pytest.mark.native_proof
 def test_different_compilation_cannot_reuse_completed_source_proof(
     tmp_path, monkeypatch
 ):
@@ -256,6 +265,7 @@ def test_different_compilation_cannot_reuse_completed_source_proof(
             changed.function_definition(function)
 
 
+@pytest.mark.native_proof
 def test_dataclass_factory_rechecks_current_implementation_after_warming(monkeypatch):
     environment, operation = factory_environment("frozen=True")
     authority = environment.call_authority(
@@ -277,6 +287,7 @@ def test_non_function_has_no_python_implementation():
         NativePythonCompilation.from_function(len)
 
 
+@pytest.mark.native_proof
 def test_stdlib_dataclass_code_is_matched_to_current_source():
     function = dataclasses.dataclass
     assert type(function) is FunctionType
@@ -287,6 +298,7 @@ def test_stdlib_dataclass_code_is_matched_to_current_source():
         assert definition.name == function.__name__
 
 
+@pytest.mark.native_proof
 def test_actual_frozen_abc_constructor_joins_current_source_without_invocation():
     function = vars(abc.ABCMeta)["__new__"].__func__
     assert function.__globals__ is vars(abc)
@@ -310,6 +322,7 @@ def test_actual_frozen_abc_constructor_joins_current_source_without_invocation()
     assert not observed
 
 
+@pytest.mark.native_proof
 def test_source_acquisition_does_not_execute_a_custom_loader(tmp_path, monkeypatch):
     source = "def sample(value):\n    raise AssertionError('target must not run')\n"
     _, function = compiled_function(tmp_path, monkeypatch, source)
@@ -338,6 +351,7 @@ def test_source_acquisition_does_not_execute_a_custom_loader(tmp_path, monkeypat
     assert not observed
 
 
+@pytest.mark.native_proof
 def test_physical_source_does_not_require_registered_module_metadata(tmp_path):
     path = tmp_path / "unregistered.py"
     source = "def sample(value):\n    return value\n"
@@ -351,6 +365,7 @@ def test_physical_source_does_not_require_registered_module_metadata(tmp_path):
     )
 
 
+@pytest.mark.native_proof
 def test_ambiguous_physical_source_context_is_not_selected(tmp_path, monkeypatch):
     source = "def sample(value):\n    return value\nafter = 1\n"
     _, function = compiled_function(tmp_path, monkeypatch, source)
@@ -361,6 +376,7 @@ def test_ambiguous_physical_source_context_is_not_selected(tmp_path, monkeypatch
         NativePythonFunctionSource.from_function(function)
 
 
+@pytest.mark.native_proof
 def test_warmed_source_acquisition_rereads_edited_physical_body(tmp_path, monkeypatch):
     compilation, function = compiled_function(
         tmp_path, monkeypatch, "def sample(value):\n    return value\n"
@@ -431,6 +447,7 @@ def test_loader_only_source_remains_unproved_without_executing_loader(
     assert not observed
 
 
+@pytest.mark.native_proof
 def test_physical_source_reader_respects_python_encoding_cookie(tmp_path):
     path = tmp_path / "encoded.py"
     source = b"# coding: latin-1\ndef sample():\n    return 'caf\xe9'\n"
@@ -472,6 +489,7 @@ def test_physical_source_acquisition_dsl_keeps_input_and_original_signature():
     assert definition.decorator_list[0].id == "classmethod"
 
 
+@pytest.mark.native_proof
 def test_executable_filename_preserves_backslashes_separately_from_source_identity():
     source = "def sample():\n    return 17\n"
     filename = r"package\sample.py"
@@ -488,6 +506,7 @@ def test_executable_filename_preserves_backslashes_separately_from_source_identi
         compilation.compile(filename="unrelated.py")
 
 
+@pytest.mark.native_proof
 def test_current_source_metadata_owns_live_default_associations(tmp_path, monkeypatch):
     _, function = compiled_function(
         tmp_path,
@@ -513,6 +532,7 @@ def test_current_source_metadata_owns_live_default_associations(tmp_path, monkey
         assert source.signature.bind((), ()).is_exact
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize("query", ("signature", "defaults"))
 def test_warmed_current_metadata_rejoins_code_before_query(
     tmp_path, monkeypatch, query
@@ -531,6 +551,7 @@ def test_warmed_current_metadata_rejoins_code_before_query(
         assert getattr(source, query)
 
 
+@pytest.mark.native_proof
 def test_current_source_signature_ignores_wrapper_and_annotation_hooks(
     tmp_path, monkeypatch
 ):
@@ -549,6 +570,7 @@ def test_current_source_signature_ignores_wrapper_and_annotation_hooks(
         assert source.signature.annotations_by_name == {"value": "int"}
 
 
+@pytest.mark.native_proof
 def test_native_call_projects_metadata_from_current_source_owner():
     environment, operation = factory_environment("")
     authority = environment.call_authority(
@@ -623,6 +645,7 @@ def test_callable_metadata_dsl_batches_source_ownership_without_effect_admission
     assert original.source != parsed.source
 
 
+@pytest.mark.native_proof
 def test_warmed_compact_flow_rejoins_current_function_code(tmp_path, monkeypatch):
     _, function = compiled_function(
         tmp_path, monkeypatch, "def sample(value):\n    return value\n"
@@ -639,6 +662,7 @@ def test_warmed_compact_flow_rejoins_current_function_code(tmp_path, monkeypatch
         assert source.flow is original_flow
 
 
+@pytest.mark.native_proof
 def test_warmed_compact_flow_rejects_another_valid_source_body(tmp_path, monkeypatch):
     compilation, function = compiled_function(
         tmp_path,
@@ -662,6 +686,7 @@ def test_warmed_compact_flow_rejects_another_valid_source_body(tmp_path, monkeyp
         assert source.flow is original_flow
 
 
+@pytest.mark.native_proof
 def test_warmed_closure_factory_rejoins_current_function_code(monkeypatch):
     with ScanCache.scope():
         proof = NativeReturnedClosureFactorySource.from_function(dataclasses.dataclass)
@@ -678,6 +703,7 @@ def test_warmed_closure_factory_rejoins_current_function_code(monkeypatch):
         proof.require_returned_closure(parameter)
 
 
+@pytest.mark.native_proof
 def test_closure_factory_exposes_fresh_definition_syntax():
     with ScanCache.scope():
         proof = NativeReturnedClosureFactorySource.from_function(dataclasses.dataclass)
@@ -688,6 +714,7 @@ def test_closure_factory_exposes_fresh_definition_syntax():
         proof.require_returned_closure(proof.selected_parameter_name)
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize("dependency", ("dataclass", "_process_class"))
 def test_reused_dataclass_application_revalidates_body_dependencies(
     monkeypatch, dependency
@@ -769,6 +796,7 @@ def test_current_body_owner_dsl_preserves_docstring_and_explicit_source_ownershi
     assert snapshot.parsed_module_for_source_path(path).source != parsed.source
 
 
+@pytest.mark.native_proof
 def test_current_flow_geometry_does_not_reparse_syntax(tmp_path, monkeypatch):
     compilation, function = compiled_function(
         tmp_path, monkeypatch, "def sample(value):\n    return value\n"
@@ -788,6 +816,7 @@ def test_current_flow_geometry_does_not_reparse_syntax(tmp_path, monkeypatch):
         )
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize(
     "body",
     (

@@ -40,6 +40,7 @@ def definition(environment, index=0):
     return environment.context_for_owner(operation.owner), operation.event
 
 
+@pytest.mark.native_proof
 def test_actual_plain_definition_result_has_exact_owner():
     environment = execution("class Original: pass\n")
     context, binding = definition(environment)
@@ -52,7 +53,11 @@ def test_actual_plain_definition_result_has_exact_owner():
 @pytest.mark.parametrize(
     "kind,rejection",
     (
-        ("decorator", "Class decorator result remains unproved"),
+        pytest.param(
+            "decorator",
+            "Class decorator result remains unproved",
+            marks=pytest.mark.native_proof,
+        ),
         (
             "metaclass",
             "Native object identity remains open: unproved_execution_effects",
@@ -106,6 +111,7 @@ def test_definition_identity_preserves_the_original_open_capture_cause():
     assert caught.value.__cause__ is cause
 
 
+@pytest.mark.native_proof
 def test_source_result_rejects_equal_but_foreign_definition_owner():
     environment = execution("class Original: pass\n")
     context, binding = definition(environment)
@@ -150,6 +156,7 @@ def test_actual_nondefinition_event_does_not_enter_definition_dispatch():
         environment.definition_result(context, binding)
 
 
+@pytest.mark.native_proof
 def test_plain_function_result_does_not_claim_body_activation():
     environment = execution("def original(): unknown()\n")
     context, binding = definition(environment)
@@ -162,6 +169,7 @@ def test_plain_function_result_does_not_claim_body_activation():
         )
 
 
+@pytest.mark.native_proof
 def test_alias_value_capture_keeps_earlier_definition_before_rebinding():
     source = "class Original: pass\nsaved = Original\nOriginal = None\n"
     environment = execution(source)
@@ -189,7 +197,10 @@ def test_alias_value_capture_keeps_earlier_definition_before_rebinding():
 
 @pytest.mark.parametrize(
     "previous, admitted",
-    (("Original = 1\n", True), ("class Original: pass\n", False)),
+    (
+        pytest.param("Original = 1\n", True, marks=pytest.mark.native_proof),
+        ("class Original: pass\n", False),
+    ),
 )
 def test_creation_result_requires_final_binding_release_admission(previous, admitted):
     environment = execution(previous + "class Original: pass\n")
@@ -202,6 +213,7 @@ def test_creation_result_requires_final_binding_release_admission(previous, admi
             environment.definition_result(context, binding)
 
 
+@pytest.mark.native_proof
 def test_proved_dataclass_prefix_preserves_a_later_plain_definition_result():
     environment = execution(
         "from dataclasses import dataclass\n@dataclass\n"

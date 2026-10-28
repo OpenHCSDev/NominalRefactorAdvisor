@@ -4732,9 +4732,15 @@ class NativePythonCompilation(SourceLineSegmentAuthority):
             raise ValueError("Python implementation differs from compiled source")
         (matched,) = matches
         span = matched.source_span
+        if matched.creation is None:
+            # A backend without a creation contract observes no raw creation
+            # at all; that is an unproved creation, not an ambiguous body.
+            raise ValueError(
+                f"Native raw function creation remains unproved: "
+                f"{type(backend).__name__} observed no creation for this body"
+            )
         if (
             span is None
-            or matched.creation is None
             or backend.select(
                 [emission for emission in emissions if emission.source_span == span]
             )

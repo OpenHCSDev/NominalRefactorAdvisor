@@ -8,6 +8,8 @@ import pytest
 
 from test_documentation_store import execution
 
+pytestmark = pytest.mark.native_proof
+
 
 @pytest.mark.parametrize(
     "source",

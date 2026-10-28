@@ -80,6 +80,7 @@ def test_import_occurrence_closes_only_its_actual_alias():
         selected[0].effect.require_closed(env)
 
 
+@pytest.mark.native_proof
 def test_expression_disposition_selects_store_or_discard_application():
     env = execution('"module documentation"\nNone\n')
     interval = SingleFlowPrefix(env.entry.context, env.entry.frame, None)
@@ -98,6 +99,7 @@ def test_expression_disposition_selects_store_or_discard_application():
         item.require_closed(env)
 
 
+@pytest.mark.native_proof
 def test_completed_child_intervals_keep_their_actual_effect_occurrences():
     env = execution('class First:\n    "first"\nclass Second:\n    "second"\n')
     second = env.module.module.body[1]

@@ -34,6 +34,7 @@ def _require_final_class(source: str) -> None:
     execution.require_class_creation(node)
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize(
     "source",
     (
@@ -73,6 +74,7 @@ def test_unproved_construction_or_prior_value_release_stays_open(source: str) ->
         _require_final_class(source)
 
 
+@pytest.mark.native_proof
 def test_replacing_initial_exact_text_metadata_has_native_release_proof() -> None:
     source = "__name__ = 'replacement'\nclass Holder: pass\n"
     _require_final_class(source)
@@ -82,6 +84,7 @@ def test_replacing_initial_exact_text_metadata_has_native_release_proof() -> Non
     assert native.returncode == 0, native.stderr
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize(
     "source",
     (
@@ -136,7 +139,12 @@ def test_duplicate_owner_contexts_remain_ambiguous() -> None:
 
 
 @pytest.mark.parametrize(
-    "base, admitted", (("object", True), ("type", False), ("str", False))
+    "base, admitted",
+    (
+        pytest.param("object", True, marks=pytest.mark.native_proof),
+        ("type", False),
+        ("str", False),
+    ),
 )
 def test_body_lookup_requires_native_base_protocol_before_entering_body(
     base, admitted
@@ -155,6 +163,7 @@ def test_body_lookup_requires_native_base_protocol_before_entering_body(
         assert isinstance(captured, OpenCapturedReference)
 
 
+@pytest.mark.native_proof
 def test_native_cell_creation_does_not_fabricate_class_dictionary_bindings() -> None:
     execution = _execution("class Methods:\n    def method(self): return 1\n")
     node = execution.module.module.body[0]

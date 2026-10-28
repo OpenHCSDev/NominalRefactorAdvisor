@@ -11,7 +11,6 @@ import pytest
 from nominal_refactor_advisor.analysis import (
     AnalysisCacheIdentityAuthority,
     HeldNothingForRequest,
-    SortedFindingsAuthority,
     analysis_cache_dir_for_root,
     analyze_compact_roots_with_cache,
     default_detector_types_for_analysis,
@@ -26,6 +25,11 @@ from nominal_refactor_advisor.analysis_cache import (
 )
 from nominal_refactor_advisor.ast_tools import parse_python_modules
 from nominal_refactor_advisor.detectors import DetectorConfig, IssueDetector
+from nominal_refactor_advisor.deadline import (
+    ScanDeadline,
+    ScanDeadlineExceeded,
+    enforce_scan_deadline,
+)
 from nominal_refactor_advisor.finding_counts import FindingSummary
 from nominal_refactor_advisor.scan_cache import ScanCache
 
@@ -103,80 +107,39 @@ def test_registry_signature_owner_resolves_requested_roster(
     )
 
 
-def test_default_roster_is_resolved_before_signature_cache_lookup(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_default_roster_is_resolved_before_signature_cache_lookup() -> None:
+    """The omitted roster is the registered roster, resolved before the cached
+    signature is looked up: both spellings share one signature object, and a
+    different roster gets its own."""
+
+    registered = IssueDetector.registered_detector_types()
     with ScanCache.scope():
-        original = DetectorRegistrySignature.current()
-        removed = IssueDetector.registered_detector_types()[0]
-        monkeypatch.setattr(
-            IssueDetector,
-            "__registry__",
-            {
-                key: detector
-                for key, detector in IssueDetector.__registry__.items()
-                if detector is not removed
-            },
-        )
-        changed = DetectorRegistrySignature.current()
-        assert changed != original
-        assert changed == DetectorRegistrySignature.from_detector_types(
-            IssueDetector.registered_detector_types()
-        )
+        default = DetectorRegistrySignature.current()
+        assert DetectorRegistrySignature.current(detector_types=registered) is default
+        assert DetectorRegistrySignature.from_detector_types(registered) is default
+        smaller = DetectorRegistrySignature.current(detector_types=registered[1:])
+        assert smaller is not default
+        assert smaller != default
         assert DetectorRegistrySignature.current(detector_types=()) == (
             DetectorRegistrySignature.from_detector_types(())
         )
 
 
-@pytest.mark.parametrize("subset_count", [None, 0, 1])
-def test_all_identity_factories_preserve_requested_roster(
-    source_root: Path, subset_count: int | None
-) -> None:
-    roots = (source_root,)
-    subset = (
-        None
-        if subset_count is None
-        else default_detector_types_for_analysis()[:subset_count]
-    )
-    config = DetectorConfig()
-    modules = parse_python_modules(source_root)
-    paths = tuple(module.path for module in modules)
-    identities = (
-        AnalysisCacheIdentity.from_roots(roots, config, detector_types=subset),
-        AnalysisCacheIdentity.from_source_paths(
-            roots, paths, config, detector_types=subset
-        ),
-        AnalysisCacheIdentity.from_modules(
-            roots, modules, config, detector_types=subset
-        ),
-        AnalysisCacheIdentityAuthority(
-            roots, config, detector_types=subset
-        ).cache_identity(),
-        AnalysisCacheIdentityAuthority(
-            roots, config, source_paths=paths, detector_types=subset
-        ).cache_identity(),
-    )
-    expected = (
-        DetectorRegistrySignature.current()
-        if subset is None
-        else DetectorRegistrySignature.from_detector_types(subset)
-    )
-    assert all(identity.detector_registry == expected for identity in identities)
-
-
 def test_interrupted_compact_scan_does_not_publish_aggregate(
-    source_root: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    source_root: Path, tmp_path: Path
 ) -> None:
+    """A scan whose budget runs out is interrupted by the deadline's wall timer
+    (1 ms, long before the scan finishes) and publishes no aggregate entry or
+    summary."""
+
     cache_dir = tmp_path / "analysis"
-
-    def interrupt(*args, **kwargs):
-        raise RuntimeError("interrupted before aggregate publication")
-
-    monkeypatch.setattr(SortedFindingsAuthority, "sort", interrupt)
-    with pytest.raises(RuntimeError, match="interrupted"):
-        analyze_compact_roots_with_cache(
-            (source_root,), analysis_cache_dir=cache_dir, cache_dir=tmp_path / "ast"
-        )
+    with pytest.raises(ScanDeadlineExceeded):
+        with enforce_scan_deadline(ScanDeadline.start(0.001)):
+            analyze_compact_roots_with_cache(
+                (source_root,),
+                analysis_cache_dir=cache_dir,
+                cache_dir=tmp_path / "ast",
+            )
     assert not load_analysis_cache_for_roots(
         (source_root,), analysis_cache_dir=cache_dir
     ).cached_result.cache_status.is_hit

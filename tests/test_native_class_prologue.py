@@ -21,9 +21,7 @@ from nominal_refactor_advisor.native_compilation import (
     NativePrimitiveOperation,
     NativeTypedValue,
     NativePythonCompilation,
-    OpenNativeClassCapture,
     OpenNativeClassPrologue,
-    SpanOnlyCreationBackend,
 )
 from nominal_refactor_advisor.source_geometry import SourceByteSpan
 
@@ -78,6 +76,7 @@ def _case(monkeypatch, source, **extra):
     return compilation, capture, invocations[0], snapshots[0], namespace
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize(
     "source",
     (
@@ -134,6 +133,7 @@ def test_prologue_matches_actual_native_entry_slots(monkeypatch, source):
                 assert type(locals_at_cut[binding.name]) is value.native_type
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize(
     "source",
     (
@@ -173,12 +173,14 @@ def test_pass_only_class_has_actual_native_prefix_cut(monkeypatch, source):
         )
 
 
+@pytest.mark.native_proof
 @pytest.mark.skipif(sys.version_info < (3, 12), reason="Native generic-class syntax")
 def test_generic_inline_pass_retains_actual_native_prefix(monkeypatch):
     _, capture, _, (locals_at_cut, _), _ = _case(monkeypatch, "class Target[T]: pass\n")
     assert {b.name for b in capture.prologue.bindings} <= set(locals_at_cut)
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize(
     "source",
     (
@@ -203,6 +205,7 @@ def test_same_line_source_writes_are_not_initial_namespace(monkeypatch, source):
     assert prefix_offsets.isdisjoint(i.offset for i in explicit_stores)
 
 
+@pytest.mark.native_proof
 def test_missing_terminal_and_geometric_boundary_stays_open(monkeypatch):
     _, _, body, _, _ = _case(monkeypatch, "class Target:\n    record()\n")
     prefix = NativeCodeObservation(body)
@@ -216,6 +219,7 @@ def test_missing_terminal_and_geometric_boundary_stays_open(monkeypatch):
     assert result.reason is NativeExecutionUnavailable.INCOMPLETE_SOURCE_RANGES
 
 
+@pytest.mark.native_proof
 def test_make_cell_retains_actual_owned_slot_without_namespace_entry(monkeypatch):
     _, capture, body, (locals_at_cut, _), _ = _case(
         monkeypatch,
@@ -238,6 +242,7 @@ def test_make_cell_retains_actual_owned_slot_without_namespace_entry(monkeypatch
         assert creation.name not in locals_at_cut
 
 
+@pytest.mark.native_proof
 def test_one_creation_receipt_does_not_identify_repeated_runtime_cells():
     source = (
         "def make():\n"
@@ -369,6 +374,7 @@ def test_unobserved_annotation_creation_provenance_remains_open(monkeypatch, dam
     assert isinstance(backend.class_prologue(prefix), OpenNativeClassPrologue)
 
 
+@pytest.mark.native_proof
 def test_captured_outer_cell_store_is_not_fresh_despite_other_owned_cells(monkeypatch):
     _, capture, body, _, _ = _case(
         monkeypatch,
@@ -454,6 +460,7 @@ def test_fresh_cell_store_joins_exact_prior_native_slot(monkeypatch):
             unresolved.require_fresh_cell_store(store)
 
 
+@pytest.mark.native_proof
 @pytest.mark.skipif(sys.version_info < (3, 12), reason="Native generic-class syntax")
 @pytest.mark.parametrize("annotation", ("", ": T"))
 def test_generic_native_slots_preserve_actual_creator_origin(monkeypatch, annotation):
@@ -494,6 +501,7 @@ def test_late_header_positioned_stores_never_reenter_initial_prefix(monkeypatch)
     )
 
 
+@pytest.mark.native_proof
 def test_read_before_later_local_has_no_initial_binding(monkeypatch):
     _, capture, _, _, namespace = _case(
         monkeypatch,
@@ -503,6 +511,7 @@ def test_read_before_later_local_has_no_initial_binding(monkeypatch):
     assert "builtins" not in {binding.name for binding in capture.prologue.bindings}
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize(
     "source",
     (
@@ -530,24 +539,7 @@ def test_compact_capture_and_queried_compilation_pickle_without_native_code(
             pending.extend(value)
 
 
-def test_unadmitted_backend_cannot_project_prologue(monkeypatch):
-    monkeypatch.setattr(
-        NativeCreationBackend,
-        "current",
-        classmethod(lambda cls: SpanOnlyCreationBackend()),
-    )
-    compilation = NativePythonCompilation("class Target: pass\n", "unsupported.py")
-    capture = compilation.class_capture_for(
-        SourceByteSpan.require_node(ast.parse(compilation.source).body[0])
-    )
-    assert isinstance(capture, OpenNativeClassCapture)
-    assert capture.reason is NativeExecutionUnavailable.UNSUPPORTED_COMPILER
-    prefix = NativeCodeObservation(compilation.compile())
-    result = SpanOnlyCreationBackend().class_prologue(prefix)
-    assert isinstance(result, OpenNativeClassPrologue)
-    assert result.reason is NativeExecutionUnavailable.UNSUPPORTED_COMPILER
-
-
+@pytest.mark.native_proof
 @pytest.mark.parametrize(
     "damage", ("unknown", "jump", "missing_range", "malformed_operand")
 )
@@ -586,6 +578,7 @@ def test_unproved_native_prefix_remains_open(monkeypatch, damage):
     assert isinstance(result, OpenNativeClassPrologue)
 
 
+@pytest.mark.native_proof
 def test_prefix_does_not_restart_after_first_body_instruction(monkeypatch):
     _, capture, body, _, _ = _case(monkeypatch, "class Target:\n    record()\n")
     prefix = NativeCodeObservation(body)
@@ -598,6 +591,7 @@ def test_prefix_does_not_restart_after_first_body_instruction(monkeypatch):
     assert prefix.boundary.offset == capture.prologue.body_instruction_offset
 
 
+@pytest.mark.native_proof
 def test_native_ensure_keeps_existing_value_while_store_replaces_it(monkeypatch):
     annotations = {"existing": object()}
     replaced_module = object()

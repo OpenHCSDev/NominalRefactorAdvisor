@@ -60,6 +60,7 @@ def test_snapshot_retains_supplied_parsed_owner_across_all_lookups():
     assert state.product_flow_repository.product_projections[0] is native.source.compact
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize(
     "member",
     (
@@ -118,6 +119,7 @@ def test_snapshot_does_not_recollect_flows_for_its_second_consumer(monkeypatch):
     assert repository.product_projections[0] is environment.source.compact
 
 
+@pytest.mark.native_proof
 def test_shared_observations_do_not_share_activation_proofs():
     state = snapshot("class Owner: pass\n")
     module = state.parsed_modules[0]

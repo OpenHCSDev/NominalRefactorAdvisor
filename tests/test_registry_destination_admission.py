@@ -44,19 +44,41 @@ def _instance_source(key, *, compact):
     )
 
 
-@pytest.mark.parametrize(
-    "key,direct_item_store_proved",
-    (
-        ("None", False),
-        ("False", True),
-        ("0", True),
-        ("''", True),
-        ("()", False),
-        ("...", False),
-        ("-1", True),
-    ),
+_KEYS = (
+    ("None", False),
+    ("False", True),
+    ("0", True),
+    ("''", True),
+    ("()", False),
+    ("...", False),
+    ("-1", True),
 )
-@pytest.mark.parametrize("form", ("writes", "dictionary", "instances"))
+
+
+def _converts(key, direct_item_store_proved, form):
+    """Whether the operation reaches the simulated conversion, which needs the
+    native proof of the registry stores; every other case is a refusal."""
+    return (
+        key != "None"
+        and form != "instances"
+        and (form != "writes" or direct_item_store_proved)
+    )
+
+
+@pytest.mark.parametrize(
+    "key,direct_item_store_proved,form",
+    [
+        pytest.param(
+            key,
+            proved,
+            form,
+            marks=pytest.mark.native_proof if _converts(key, proved, form) else (),
+            id=f"{form}-{key}-{proved}",
+        )
+        for form in ("writes", "dictionary", "instances")
+        for key, proved in _KEYS
+    ],
+)
 @pytest.mark.parametrize("compact", (False, True), ids=("block", "inline"))
 def test_conversion_preserves_target_keys_or_rejects_missing_registration(
     key, direct_item_store_proved, form, compact
@@ -82,16 +104,8 @@ def test_conversion_preserves_target_keys_or_rejects_missing_registration(
     operation = operation_type(
         target=SourceRewriteTarget(file_path=parsed.file_path, qualname=anchor)
     )
-    if key == "None":
-        with pytest.raises(ValueError, match="registration"):
-            operation.source_edits_from_snapshot(snapshot)
-        return
-    if isinstance(operation, DeriveAutoregisterInstanceViewOperation):
-        with pytest.raises(ValueError):
-            operation.source_edits_from_snapshot(snapshot)
-        return
-    if form == "writes" and not direct_item_store_proved:
-        with pytest.raises(ValueError):
+    if not _converts(key, direct_item_store_proved, form):
+        with pytest.raises(ValueError, match="registration" if key == "None" else None):
             operation.source_edits_from_snapshot(snapshot)
         return
 

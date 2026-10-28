@@ -164,6 +164,7 @@ def test_subscription_obeys_shared_gate_rejection():
     assert caught.value.__cause__ is rejection
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize(
     "native,expected",
     ((list, BuiltinGenericAliasSubscription), (ClassVar, ClassVariableSubscription)),
@@ -210,6 +211,7 @@ def test_actual_counterfeit_initial_object_is_not_native_by_name():
     assert events == [int]
 
 
+@pytest.mark.native_proof
 def test_existing_shared_gate_still_selects_native_builtin_subscription():
     operation, environment = _subscription()
     authority = _authority(operation, environment)
@@ -249,6 +251,7 @@ def test_single_identity_requirement_delegates_to_shared_selection():
     assert environment.capture(reference).require_native_identity(native) is native
 
 
+@pytest.mark.native_proof
 def test_argument_inspection_uses_actual_operand_reads():
     node, environment = _reference(str, "(chosen, int)")
     NativeArgumentInspection(environment).visit(node)
@@ -277,6 +280,7 @@ def test_non_native_argument_metadata_is_not_executed():
     assert events == []
 
 
+@pytest.mark.native_proof
 def test_generic_argument_storage_does_not_claim_classvar_hash_safety():
     events = []
 

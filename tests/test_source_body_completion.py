@@ -23,6 +23,7 @@ def entry_for(body):
     return environment.class_entry(module.module.body[0])
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize(
     "body",
     (
@@ -49,6 +50,7 @@ def test_final_evaluation_is_original_for_every_supported_statement_family(body)
     assert not entry.execution._pending
 
 
+@pytest.mark.native_proof
 def test_prepared_native_root_completion_does_not_claim_construction():
     environment, (root, *_) = prepared_execution(SOURCE, conditions=True)
     entry = environment.class_entry(root)
@@ -61,7 +63,9 @@ def test_prepared_native_root_completion_does_not_claim_construction():
 
 @pytest.mark.parametrize("body", ("key = None\npass", "key = None\nlater = 7"))
 @pytest.mark.parametrize("edit", ("drop", "reverse", "copy", "append", "duplicate"))
-@pytest.mark.parametrize("warm", (False, True))
+@pytest.mark.parametrize(
+    "warm", (False, pytest.param(True, marks=pytest.mark.native_proof))
+)
 def test_changed_statement_list_cannot_borrow_original_completion(body, edit, warm):
     entry = entry_for(body)
     if warm:
@@ -80,6 +84,7 @@ def test_changed_statement_list_cannot_borrow_original_completion(body, edit, wa
         _ = entry.final_evaluation
 
 
+@pytest.mark.native_proof
 def test_other_activation_keeps_its_own_completion():
     first = entry_for("key = None")
     second = entry_for("key = None")

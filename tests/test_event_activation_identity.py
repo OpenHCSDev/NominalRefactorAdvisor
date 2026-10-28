@@ -11,7 +11,10 @@ from test_source_function_result import execution
 
 
 @pytest.fixture(
-    params=("value = {}\n", "import builtins\nvalue = dict(vars(builtins))\n")
+    params=(
+        pytest.param("value = {}\n", marks=pytest.mark.native_proof),
+        "import builtins\nvalue = dict(vars(builtins))\n",
+    )
 )
 def dictionary_activations(request):
     first = execution(request.param)

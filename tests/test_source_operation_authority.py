@@ -61,6 +61,7 @@ def test_shared_authority_owns_the_prelude_without_redeclared_call_state():
         owner(None, None)
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize(
     "text",
     (
@@ -90,6 +91,7 @@ def test_actual_native_call_keeps_original_operation_context_and_prefix(text):
     copied.member("alpha").require_native_identity(NativeDeclaration(object))
 
 
+@pytest.mark.native_proof
 def test_source_object_construction_keeps_the_same_shared_owner_and_opaque_identity():
     text = "class Payload: pass\nheld = Payload()\n"
     native(text + "assert type(held) is Payload\n")
@@ -218,6 +220,7 @@ def test_prefix_is_admitted_once_and_reused_by_the_bound_authority():
     assert not environment._pending
 
 
+@pytest.mark.native_proof
 def test_shared_source_operations_do_not_share_execution_prefixes():
     left = execution("class Payload: pass\nheld = Payload()\n")
     right = SourceModuleExecution.from_source(left.source)

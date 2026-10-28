@@ -51,6 +51,7 @@ def _verify_namespace(
             evidence.require_closed(bindings, module, owner)
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize(
     "annotation,safe",
     (
@@ -144,7 +145,13 @@ def test_subscription_argument_hashing_uses_native_provenance(
 
 
 @pytest.mark.parametrize("constructor", ("staticmethod", "classmethod", "property"))
-@pytest.mark.parametrize("argument,safe", (("payload", False), ("lambda: None", True)))
+@pytest.mark.parametrize(
+    "argument,safe",
+    (
+        ("payload", False),
+        pytest.param("lambda: None", True, marks=pytest.mark.native_proof),
+    ),
+)
 def test_native_descriptor_arguments_can_execute_metadata_hooks(
     tmp_path: Path, constructor: str, argument: str, safe: bool
 ) -> None:

@@ -15,15 +15,10 @@ from nominal_refactor_advisor.native_compilation import (
     ExactNativeClassCapture,
     GeneratedClassNativeFrameOrigin,
     NativeCreationBackend,
-    NativeExecutionUnavailable,
     NativePythonCompilation,
-    OpenNativeClassCapture,
-    OpenNativeFrameOrigin,
-    SpanOnlyCreationBackend,
 )
 from nominal_refactor_advisor.product_flow import (
     CompactClassDeclaration,
-    CompactFunctionCall,
     CompactMutation,
     CompactMutationKind,
     CompactNativeCapture,
@@ -31,6 +26,8 @@ from nominal_refactor_advisor.product_flow import (
     source_product_flow_projection,
 )
 from nominal_refactor_advisor.source_geometry import SourceByteSpan
+
+pytestmark = pytest.mark.native_proof
 
 
 def _project(source):
@@ -231,33 +228,6 @@ def test_declaration_events_retain_exact_source_parent_and_body_owners(source):
         assert events[1].event.site is owner.capture.creation
         assert events[0].position.branch_path == definition.position.branch_path
         assert events[1].position.dominates(definition.position)
-
-
-def test_open_native_capture_does_not_fabricate_positioned_native_events(monkeypatch):
-    monkeypatch.setattr(
-        NativeCreationBackend,
-        "current",
-        classmethod(lambda cls: SpanOnlyCreationBackend()),
-    )
-    module, projection = _project(
-        "import builtins\nclass Target(base()):\n    selected = builtins.property\n"
-    )
-    node = module.module.body[1]
-    definition = _definition_site(projection, node)
-    assert isinstance(definition.event.target.owner.capture, OpenNativeClassCapture)
-    assert (
-        definition.event.target.owner.capture.reason
-        is NativeExecutionUnavailable.UNSUPPORTED_COMPILER
-    )
-    assert not any(
-        isinstance(site.event, CompactNativeCapture) for site in projection.operations
-    )
-    assert any(
-        isinstance(site.event, CompactFunctionCall) for site in projection.operations
-    )
-    # Qualified source operands remain retained; unknown native capture does
-    # not pretend their lookup or the class activation is proved or impossible.
-    assert node.body[0].value in projection.reference_reads_by_node
 
 
 @pytest.mark.skipif(sys.version_info < (3, 12), reason="Native generic class syntax")

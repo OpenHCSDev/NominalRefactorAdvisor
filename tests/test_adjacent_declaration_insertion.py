@@ -213,6 +213,7 @@ def test_inserting_before_dataclass_cannot_move_its_generated_constructor(
     assert subprocess.check_output([sys.executable, str(path)], text=True) == before
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize("newline", ("\n", "\r\n"))
 @pytest.mark.parametrize("decorator", ("classmethod", "traced"))
 def test_collector_declaration_requires_complete_class_execution_before_anchor_edit(

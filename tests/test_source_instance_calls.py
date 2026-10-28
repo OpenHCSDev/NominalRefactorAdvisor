@@ -9,6 +9,7 @@ from nominal_refactor_advisor.native_call import CallAuthority
 from test_source_function_result import execution, native
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize(
     "declaration",
     (
@@ -69,6 +70,7 @@ def test_default_constructor_does_not_invent_argument_acceptance(arguments):
         environment.require_call(environment.module.module.body[-1].value)
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize("hook", (False, True))
 def test_instance_installation_keeps_its_own_native_hook_obligation(hook):
     declaration = (

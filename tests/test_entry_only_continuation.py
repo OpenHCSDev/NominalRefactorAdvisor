@@ -23,6 +23,7 @@ from test_registry_native_registration_controls import native_control
 from test_selected_store_continuation import body_entry
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize("body", ("pass", "pass\npass", "pass\n\n# comment\npass"))
 def test_event_free_body_uses_original_prologue_boundary(body):
     entry = body_entry(body)
@@ -61,6 +62,7 @@ def test_no_store_is_not_equivalent_to_no_source_work(body):
         _ = EntryOnlyNamespaceContinuation(entry).completed
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize("warm", (False, True))
 def test_original_suite_is_rechecked_after_queries(warm):
     entry = body_entry("pass\npass")
@@ -72,6 +74,7 @@ def test_original_suite_is_rechecked_after_queries(warm):
         _ = tail.completed
 
 
+@pytest.mark.native_proof
 def test_prologue_and_other_body_values_cannot_be_reinterpreted_after_entry():
     tail = body_entry("pass").native_tail
     other = body_entry("pass").native_tail
@@ -88,6 +91,7 @@ def test_prologue_and_other_body_values_cannot_be_reinterpreted_after_entry():
                 tail.native_value(value)
 
 
+@pytest.mark.native_proof
 def test_native_body_query_authenticates_original_compilation_and_execution():
     entry = body_entry("pass")
     compilation = entry.execution.module.native_compilation
@@ -104,6 +108,7 @@ def test_native_body_query_authenticates_original_compilation_and_execution():
         warmed.return_from(body)
 
 
+@pytest.mark.native_proof
 def test_missing_ambiguous_or_late_return_cannot_supply_body_coverage():
     entry = body_entry("pass")
     tail = entry.native_tail
@@ -122,6 +127,7 @@ def test_missing_ambiguous_or_late_return_cannot_supply_body_coverage():
     assert tail.completed is None
 
 
+@pytest.mark.native_proof
 def test_prepared_native_metaclass_pass_body_does_not_admit_construction():
     env, (node,) = prepared_execution("class Family(metaclass=Creator):\n    pass\n")
     entry = env.class_entry(node)
@@ -161,6 +167,7 @@ def test_nop_has_no_stack_or_storage_effect_and_jump_entry_still_breaks_tail():
         window.observe(target, NativePrimitiveOperation[target.opname])
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize("body", ("pass", "pass\npass"))
 def test_complete_namespace_matches_actual_class_frame_return(body):
     source = "class Family:\n" + "".join(

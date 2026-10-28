@@ -39,7 +39,11 @@ def execution(source: str) -> SourceModuleExecution:
     "assignment, complete_expression",
     (
         ("copied = dict(vars(builtins))", True),
-        ("copied: object = dict(vars(builtins))", True),
+        pytest.param(
+            "copied: object = dict(vars(builtins))",
+            True,
+            marks=pytest.mark.native_proof,
+        ),
         ("(copied := dict(vars(builtins)))", False),
     ),
 )

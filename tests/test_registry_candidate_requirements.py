@@ -36,6 +36,8 @@ from nominal_refactor_advisor.source_execution import SourceModuleExecution
 from nominal_refactor_advisor.source_geometry import SourceByteSpan
 from test_registry_policy_integrity import _PLAIN, _execute
 
+pytestmark = pytest.mark.native_proof
+
 SOURCES = (
     pytest.param(_PLAIN, id="plain"),
     pytest.param(

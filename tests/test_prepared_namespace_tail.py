@@ -35,6 +35,7 @@ def scalar_tail(body, index=-1):
     return PreparedNamespaceTail(entry, stores[index])
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize(
     "body", ("key = None", "key = None\npass", "key = None\nlast = True")
 )
@@ -51,6 +52,7 @@ def test_final_source_store_has_one_actual_terminal_cut(body):
     assert all(binding.instruction_offset > source_offset for binding in tail.bindings)
 
 
+@pytest.mark.native_proof
 def test_earlier_source_store_cannot_replay_assignments_over_completed_source_state():
     tail = scalar_tail("first = None\nlast = True", index=0)
     # Its historical native continuation exists, but includes later source work.
@@ -59,6 +61,7 @@ def test_earlier_source_store_cannot_replay_assignments_over_completed_source_st
         _ = tail.receipt
 
 
+@pytest.mark.native_proof
 def test_final_method_uses_same_tail_boundary_without_running_its_body():
     env, entry, function = prepared_function(explicit_scope=False)
     assert isinstance(function, SourceInstalledReturnABC)
@@ -73,6 +76,7 @@ def test_final_method_uses_same_tail_boundary_without_running_its_body():
         entry.result()
 
 
+@pytest.mark.native_proof
 def test_compiler_generated_overwrite_remains_after_final_source_assignment():
     tail = scalar_tail("__static_attributes__ = None")
     compiled = tail.entry.execution.module.native_compilation.compile()
@@ -87,7 +91,9 @@ def test_compiler_generated_overwrite_remains_after_final_source_assignment():
     assert tuple(binding.instruction_offset for binding in tail.bindings) == actual
 
 
-@pytest.mark.parametrize("warm", (False, True))
+@pytest.mark.parametrize(
+    "warm", (False, pytest.param(True, marks=pytest.mark.native_proof))
+)
 def test_mutated_original_body_cannot_borrow_warm_native_tail(warm):
     tail = scalar_tail("key = None\npass")
     if warm:

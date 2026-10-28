@@ -19,6 +19,7 @@ from test_documentation_store import execution
 from test_native_value_store import value_store
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize("in_class", (False, True))
 @pytest.mark.parametrize("attribute", ("property", "object", "str"))
 def test_original_attribute_store_closes_class_without_replaying_lookup(
@@ -51,6 +52,7 @@ def test_original_attribute_store_closes_class_without_replaying_lookup(
     assert actual["payload"] is store.source_value.value
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize("expression", ("unknown.item", "unknown.first.second.third"))
 def test_native_unknown_attribute_chain_is_conditional_not_source_admission(expression):
     source = f"payload = {expression}\n"
@@ -80,6 +82,7 @@ def test_native_unknown_attribute_chain_is_conditional_not_source_admission(expr
             restored_receipt.require_value(receiver)
 
 
+@pytest.mark.native_proof
 def test_attribute_receiver_and_result_keep_original_production_identity():
     env = execution("import builtins\npayload = builtins.property\n")
     store = SourceAssignmentStore(env, env.entry.context.flow.mutations[-1])
@@ -92,6 +95,7 @@ def test_attribute_receiver_and_result_keep_original_production_identity():
         store.require_join(receipt.value)
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize("replacement", ("object", "missing"))
 def test_warmed_native_attribute_cannot_borrow_another_source_member(replacement):
     env = execution("import builtins\npayload = builtins.property\n")
@@ -103,6 +107,7 @@ def test_warmed_native_attribute_cannot_borrow_another_source_member(replacement
         store.require_join(receipt.value)
 
 
+@pytest.mark.native_proof
 def test_receiver_site_cannot_be_replaced_by_equal_spelling_at_another_cut():
     env = execution(
         "import builtins\nfirst = builtins.object\npayload = builtins.property\n"
@@ -122,6 +127,7 @@ def test_receiver_site_cannot_be_replaced_by_equal_spelling_at_another_cut():
         store.require_join(receipt.value)
 
 
+@pytest.mark.native_proof
 def test_historical_receiver_read_does_not_use_later_binding():
     env = execution(
         "import builtins\nreceiver = builtins\npayload = receiver.property\nreceiver = object\n"
@@ -151,6 +157,7 @@ def test_method_load_does_not_fabricate_a_bound_receiver_or_null_marker():
     assert window.store is None
 
 
+@pytest.mark.native_proof
 def test_original_attribute_with_missing_receiver_is_not_an_operand_proof():
     env = execution("import builtins\npayload = builtins.property\n")
     store = SourceAssignmentStore(env, env.entry.context.flow.mutations[-1])

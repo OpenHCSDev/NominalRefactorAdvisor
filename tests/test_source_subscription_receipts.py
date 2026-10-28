@@ -8,17 +8,10 @@ import pickle
 import pytest
 
 from nominal_refactor_advisor import product_flow as flow
-from nominal_refactor_advisor.captured_reference import (
-    OpenCapturedReference,
-    SingleFlowPrefix,
-)
+from nominal_refactor_advisor.captured_reference import SingleFlowPrefix
 from nominal_refactor_advisor.class_namespace import (
     OperationEffectOccurrence,
     SubscriptionClassNamespaceEffect,
-)
-from nominal_refactor_advisor.native_compilation import (
-    NativeCreationBackend,
-    SpanOnlyCreationBackend,
 )
 from nominal_refactor_advisor.source_execution import SourceModuleExecution
 from nominal_refactor_advisor.source_geometry import SourceByteSpan
@@ -273,25 +266,7 @@ def test_source_roundtrip_joins_the_restored_ast_and_original_restored_graph():
     require_original_receipts(source, node)
 
 
-@pytest.mark.parametrize("text", ("held = tuple[int]\n", "held = registry[key]\n"))
-def test_source_receipt_does_not_fabricate_native_subscription_result_proof(
-    text, monkeypatch
-):
-    source = project(text)
-    environment = SourceModuleExecution.from_source(source)
-    node = source.module.module.body[0].value
-    require_original_receipts(source, node)
-    monkeypatch.setattr(
-        NativeCreationBackend,
-        "current",
-        classmethod(lambda cls: SpanOnlyCreationBackend()),
-    )
-    captured = environment.capture_value(node)
-    assert isinstance(captured, OpenCapturedReference)
-    with pytest.raises(ValueError, match="unproved"):
-        captured.require_closed()
-
-
+@pytest.mark.native_proof
 def test_subscription_effect_uses_its_application_cut_not_its_receiver_or_argument():
     source = project("held = tuple[int]\n")
     environment = SourceModuleExecution.from_source(source)

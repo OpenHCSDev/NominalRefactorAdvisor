@@ -21,6 +21,8 @@ from nominal_refactor_advisor.source_execution import (
 from test_native_source_class_preparation import SOURCE, prepared_execution
 from test_registry_native_registration_controls import native_control
 
+pytestmark = pytest.mark.native_proof
+
 
 def root_with_known_module(module_name):
     environment, nodes = prepared_execution()

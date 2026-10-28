@@ -33,6 +33,7 @@ def controlled_execution(source: str) -> SourceModuleExecution:
     )
 
 
+@pytest.mark.native_proof
 def test_class_decorator_topology_is_derived_from_the_definition_store():
     environment = controlled_execution(
         "def first(value): return value\n"
@@ -54,6 +55,7 @@ def test_class_decorator_topology_is_derived_from_the_definition_store():
     assert outer.native_value is outer.production.value
 
 
+@pytest.mark.native_proof
 def test_definition_application_activates_its_exact_source_callee_and_argument():
     environment = controlled_execution(
         "def keep(value):\n    return value\n@keep\nclass Target: pass\n"
@@ -81,6 +83,7 @@ def test_definition_application_activates_its_exact_source_callee_and_argument()
         class_entry.result()
 
 
+@pytest.mark.native_proof
 def test_definition_application_proves_its_returned_argument_identity():
     environment = controlled_execution(
         "def keep(value, replace=False):\n"
@@ -99,6 +102,7 @@ def test_definition_application_proves_its_returned_argument_identity():
     assert returned is raw
 
 
+@pytest.mark.native_proof
 def test_definition_application_rejects_a_replaced_argument_result():
     environment = controlled_execution(
         "def replace(value):\n"
@@ -115,6 +119,7 @@ def test_definition_application_rejects_a_replaced_argument_result():
         )
 
 
+@pytest.mark.native_proof
 def test_copied_application_and_foreign_callee_cannot_create_an_activation():
     environment = controlled_execution(
         "def keep(value): return value\n"
@@ -131,6 +136,7 @@ def test_copied_application_and_foreign_callee_cannot_create_an_activation():
         _ = activation.initial_entries
 
 
+@pytest.mark.native_proof
 def test_nested_application_does_not_assume_the_inner_result_identity():
     environment = controlled_execution(
         "def first(value): return value\n"
@@ -145,6 +151,7 @@ def test_nested_application_does_not_assume_the_inner_result_identity():
         _ = outer.function_activation().initial_entries
 
 
+@pytest.mark.native_proof
 def test_native_dataclass_application_proves_its_in_place_result():
     environment = controlled_execution(
         "from dataclasses import dataclass\n@dataclass\nclass Target: pass\n"
@@ -160,6 +167,7 @@ def test_native_dataclass_application_proves_its_in_place_result():
     assert application.proves_same_object(entry.created_result)
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize(
     "decorator",
     ("@dataclass(slots=True)", "@dataclass(frozen=int)"),
@@ -208,6 +216,7 @@ def test_native_dataclass_processor_rebinding_before_application_is_rejected():
         entry.result()
 
 
+@pytest.mark.native_proof
 def test_restoring_a_processor_after_initial_capture_does_not_retroactively_prove_it(
     monkeypatch,
 ):
@@ -228,6 +237,7 @@ def test_restoring_a_processor_after_initial_capture_does_not_retroactively_prov
         entry.result()
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize("kind", ("class", "function"))
 def test_compiler_version_independent_application_path_uses_owned_topology(kind):
     """This test executes unchanged in the CPython 3.11 and 3.14 CI jobs."""
@@ -254,6 +264,7 @@ def test_compiler_version_independent_application_path_uses_owned_topology(kind)
     assert outer.native_value.require_definition_argument() is inner.native_value
 
 
+@pytest.mark.native_proof
 def test_annotated_function_activation_uses_compiler_predecessor_receipt():
     """Python 3.14 may attach annotations between creation and application."""
     environment = controlled_execution(

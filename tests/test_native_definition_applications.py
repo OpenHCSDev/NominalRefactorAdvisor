@@ -79,6 +79,7 @@ def test_attachment_combines_created_guard_and_function_production_by_mro():
     )
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize("decorators", (("first",), ("first", "second")))
 @pytest.mark.parametrize("header", ("def chosen():", "async def chosen():"))
 @pytest.mark.parametrize("in_class", (False, True))
@@ -166,6 +167,7 @@ def test_application_order_and_result_store_match_actual_execution(
         compilation.return_after(receipt)
 
 
+@pytest.mark.native_proof
 def test_global_applied_result_uses_the_original_global_store(monkeypatch):
     source = "class Owner:\n    global chosen\n    @replace\n    def chosen(): pass\n"
     compilation, receipt, code, inventory = _case(monkeypatch, source)
@@ -194,6 +196,7 @@ def test_global_applied_result_uses_the_original_global_store(monkeypatch):
     ).continues(binding)
 
 
+@pytest.mark.native_proof
 def test_raw_function_does_not_gain_an_application_receipt(monkeypatch):
     _, receipt, _, _ = _case(monkeypatch, "def chosen(): pass\n")
     receipt.require_installation()
@@ -203,6 +206,7 @@ def test_raw_function_does_not_gain_an_application_receipt(monkeypatch):
         receipt.require_applications()
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize(
     "damage",
     (
@@ -242,6 +246,7 @@ def test_malformed_native_application_cannot_borrow_result_storage(monkeypatch, 
         receipt.require_applied_installation()
 
 
+@pytest.mark.native_proof
 def test_unsupported_transfer_after_applied_store_does_not_gain_a_return(monkeypatch):
     compilation, receipt, _, _ = _case(
         monkeypatch, "@replace\ndef chosen(): pass\nunknown + 1\n"
@@ -251,6 +256,7 @@ def test_unsupported_transfer_after_applied_store_does_not_gain_a_return(monkeyp
         compilation.return_after_binding(binding.source_span, binding.name)
 
 
+@pytest.mark.native_proof
 def test_application_receipts_survive_serialisation_without_recompiling(monkeypatch):
     source = "@replace\ndef chosen(): pass\n"
     compilation = NativePythonCompilation(source, "applied.py")

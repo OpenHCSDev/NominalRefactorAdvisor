@@ -110,6 +110,7 @@ def test_nested_target_assignments_keep_their_own_actual_rhs(source):
     )
 
 
+@pytest.mark.native_proof
 def test_assignment_query_reads_historical_rhs_before_target_rebinding():
     source = (
         "import builtins\n"

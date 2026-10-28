@@ -6,6 +6,8 @@ import pytest
 
 from test_source_function_result import execution, native
 
+pytestmark = pytest.mark.native_proof
+
 
 @pytest.mark.parametrize(
     "body",

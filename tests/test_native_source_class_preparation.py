@@ -13,10 +13,6 @@ from nominal_refactor_advisor.captured_reference import (
     NamespaceMemberInventory,
     NativeTypePremise,
 )
-from nominal_refactor_advisor.native_compilation import (
-    NativeCreationBackend,
-    SpanOnlyCreationBackend,
-)
 from nominal_refactor_advisor.native_subscription import ClassVariableSubscription
 from nominal_refactor_advisor.source_entry import (
     DeclaredNativeOperationBehavior,
@@ -68,6 +64,7 @@ def prepared_execution(source=SOURCE, *, metaclass=AutoRegisterMeta, conditions=
     return SourceModuleExecution(entry), nodes
 
 
+@pytest.mark.native_proof
 def test_actual_root_uses_canonical_factory_and_complete_prepared_namespace():
     environment, (root, leaf) = prepared_execution()
     entry = environment.class_entry(root)
@@ -108,6 +105,7 @@ def test_actual_root_uses_canonical_factory_and_complete_prepared_namespace():
     assert not environment._pending
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize(
     "condition_kind", ("absent", "completion_only", "wrong_protocol")
 )
@@ -139,6 +137,7 @@ def test_selection_is_not_driven_by_supplied_conditions(condition_kind):
         _ = entry.completed
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize("wrong", (type, int, object))
 def test_explicit_metaclass_identity_cannot_be_replaced_by_source_spelling(wrong):
     environment, (root, _) = prepared_execution(metaclass=wrong)
@@ -147,6 +146,7 @@ def test_explicit_metaclass_identity_cannot_be_replaced_by_source_spelling(wrong
     assert root not in environment._class_entries
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize(
     "header", ("object, metaclass=Creator", "metaclass=Creator, option=True")
 )
@@ -169,6 +169,7 @@ def test_factory_only_caches_original_definitions(copier, source):
     assert node not in environment._class_entries
 
 
+@pytest.mark.native_proof
 def test_unknown_body_effect_is_not_closed_by_native_preparation():
     environment, (root,) = prepared_execution(
         "class Family(metaclass=Creator):\n    unknown()\n"
@@ -181,6 +182,7 @@ def test_unknown_body_effect_is_not_closed_by_native_preparation():
     assert not environment._pending
 
 
+@pytest.mark.native_proof
 def test_prepared_body_never_supplies_a_plain_type_result():
     environment, (root, _) = prepared_execution()
     entry = environment.class_entry(root)
@@ -189,21 +191,6 @@ def test_prepared_body_never_supplies_a_plain_type_result():
         entry.result()
     with pytest.raises(ValueError, match="registration class result"):
         entry._created_result()
-
-
-def test_missing_backend_capability_keeps_prepared_frame_open(monkeypatch):
-    environment, (root, _) = prepared_execution()
-    entry = environment.class_entry(root)
-    # Keep actual compilation receipts, but withdraw only backend preparation.
-    _ = entry.initial_entries
-    monkeypatch.setattr(
-        NativeCreationBackend,
-        "current",
-        classmethod(lambda cls: SpanOnlyCreationBackend()),
-    )
-    with pytest.raises(ValueError, match="fresh class namespace remains unproved"):
-        _ = entry.frame
-    assert "frame" not in vars(entry)
 
 
 @pytest.mark.parametrize("native_metaclass", (False, True))

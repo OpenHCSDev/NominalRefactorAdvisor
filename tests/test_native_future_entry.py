@@ -55,6 +55,7 @@ def test_feature_name_and_source_derive_from_native_export_identity(name: str) -
     assert not declaration.imported_by(ast.parse(f"from .__future__ import {name}"))
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize("feature_name", ("annotations", "division", "absolute_import"))
 @pytest.mark.parametrize("alias", (False, True))
 def test_standard_source_entry_proves_runtime_future_imports(
@@ -79,6 +80,7 @@ def test_standard_source_entry_proves_runtime_future_imports(
     assert observed.value is __future__
 
 
+@pytest.mark.native_proof
 def test_local_importer_spelling_does_not_shadow_frame_builtin_importer() -> None:
     _require_class(
         "from __future__ import annotations\ndef __import__(*args): raise AssertionError\nimport __future__ as features\nclass Owner:\n    pass\n"
@@ -140,6 +142,7 @@ print(module.observed is module, module.observed is native)
     )
 
 
+@pytest.mark.native_proof
 def test_native_feature_module_alias_is_observed_not_inferred(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

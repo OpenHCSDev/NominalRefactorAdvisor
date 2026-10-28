@@ -65,6 +65,7 @@ def _final_write_target(repository: SourceProductFlowRepository):
     return context.flow.mutations[-1].resolve(repository, context)
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize(
     "decorator", ["replace", "final", "staticmethod", "classmethod"]
 )
@@ -117,6 +118,7 @@ def test_source_declaration_remains_retained_after_object_projection() -> None:
     )
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize(
     "body, symbol, product_authorized",
     [
@@ -165,6 +167,7 @@ def test_raw_free_and_local_functions_remain_distinct_controls(
     assert target.declaration is declaration
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize("inherited", [False, True])
 def test_raw_method_namespace_setter_can_install_a_different_object(
     inherited: bool,
@@ -199,6 +202,7 @@ def test_raw_method_namespace_setter_can_install_a_different_object(
     assert isinstance(_final_write_target(repository), UnboundedCompactFunctionTarget)
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize(
     "decorator", ("replace", "final", "staticmethod", "classmethod", "keep")
 )
@@ -244,9 +248,10 @@ def test_function_decorator_refusal_reaches_actual_creation(decorator, alias):
 @pytest.mark.parametrize(
     "body, cause",
     (
-        (
+        pytest.param(
             "import builtins\nbuiltins.__build_class__ = lambda *args, **kwargs: None\nclass callback: pass\ncallback.changed = 1\n",
             "Native instance lifetime remains unproved",
+            marks=pytest.mark.native_proof,
         ),
         (
             "def outer():\n    def callback(): pass\n    callback.changed = 1\nouter()\n",
@@ -277,6 +282,7 @@ def test_other_execution_obligations_do_not_become_definition_identity(body, cau
     _require_capture_cause(environment, receiver, cause)
 
 
+@pytest.mark.native_proof
 def test_native_object_rebinding_preserves_the_saved_original_function_identity():
     source = (
         "def callback(): pass\nsaved = callback\ncallback = object()\n"
@@ -301,6 +307,7 @@ def test_native_object_rebinding_preserves_the_saved_original_function_identity(
     assert type(namespace["callback"]) is object
 
 
+@pytest.mark.native_proof
 def test_identity_preserving_decorator_remains_unproved_not_known_replacement() -> None:
     source = (
         PRODUCT + "def keep(original): return original\n"

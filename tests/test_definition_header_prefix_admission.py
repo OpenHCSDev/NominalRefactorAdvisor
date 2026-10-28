@@ -168,7 +168,7 @@ def test_missing_first_class_base_prevents_later_base_read():
     (
         "def unused(): return absent",
         "async def unused(): return absent",
-        "class Unused: pass",
+        pytest.param("class Unused: pass", marks=pytest.mark.native_proof),
     ),
 )
 def test_empty_header_has_no_unresolved_evaluation_obligation(definition):

@@ -13,6 +13,7 @@ from nominal_refactor_advisor.source_execution import (
 from test_source_function_result import execution, function, native
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize("nested", (False, True))
 def test_raw_class_body_is_available_before_its_replacing_decorator(nested):
     source = (
@@ -74,6 +75,7 @@ def test_later_function_does_not_bypass_preceding_class_transformation():
         environment.definition_result(context, binding)
 
 
+@pytest.mark.native_proof
 def test_raw_class_body_keeps_original_native_creator_identity():
     source = (
         "def transform(raw): return object\n"
@@ -101,6 +103,7 @@ def test_raw_function_also_requires_its_decorator_operand_to_be_evaluated(decora
         SourceCreatedFunctionCapture(environment, node).require_descriptor_argument()
 
 
+@pytest.mark.native_proof
 def test_noncallable_decorator_allows_body_but_not_final_class_installation():
     source = "@42\nclass Owner:\n    global chosen\n    def chosen(): pass\n"
     native(
@@ -136,6 +139,7 @@ def test_deleted_decorator_cannot_resurrect_its_old_value_to_admit_a_body():
         environment.definition_result(context, binding)
 
 
+@pytest.mark.native_proof
 def test_header_uses_original_decorator_capture_before_a_later_operand_rebinds_it():
     source = (
         "decorator = property\n@decorator\n@(decorator := 42)\n"

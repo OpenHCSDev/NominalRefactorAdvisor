@@ -87,6 +87,7 @@ def test_standard_factory_owns_unchanged_initial_associations(tmp_path):
     )
 
 
+@pytest.mark.native_proof
 def test_snapshot_and_multiple_mro_consumers_share_actual_execution(tmp_path):
     module = module_at(
         tmp_path / "shared.py", "class Base: pass\nclass Child(Base): pass\n"
@@ -124,6 +125,7 @@ def test_snapshot_and_multiple_mro_consumers_share_actual_execution(tmp_path):
     assert entry.completion_prefix.endpoint.frame is entry.frame
 
 
+@pytest.mark.native_proof
 def test_substitution_shares_execution_but_not_counterfactual_mro(tmp_path):
     module = module_at(
         tmp_path / "substitution.py",

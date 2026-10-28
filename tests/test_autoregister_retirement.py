@@ -123,6 +123,7 @@ def test_registry_receiver_collection_does_not_rewalk_factory_functions(
     assert index.encoded_edges == "0,0,0"
 
 
+@pytest.mark.native_proof
 def test_registry_factoring_no_longer_acquires_a_fictitious_rent_obligation(
     tmp_path,
 ) -> None:

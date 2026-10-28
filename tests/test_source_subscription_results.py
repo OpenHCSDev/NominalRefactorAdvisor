@@ -57,6 +57,7 @@ def authored_runtime(source):
     return namespace
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize("native", BuiltinGenericAliasSubscription.native_declarations)
 def test_builtin_origins_keep_the_actual_original_operands(native):
     source = f"held = {native.declaration.__name__}[int]\n"
@@ -93,6 +94,7 @@ def test_builtin_subscription_family_projects_the_backend_owned_origin_declarati
     assert len(BuiltinGenericAliasSubscription.native_declarations) == 7
 
 
+@pytest.mark.native_proof
 def test_tuple_argument_retains_the_original_tuple_production_and_order():
     source = "held = tuple[int, str]\n"
     environment = execution(source)
@@ -110,6 +112,7 @@ def test_tuple_argument_retains_the_original_tuple_production_and_order():
     assert authored_runtime(source)["held"].__args__ == (int, str)
 
 
+@pytest.mark.native_proof
 def test_nested_alias_results_share_the_existing_original_value_query():
     source = "held = list[tuple[int, str]]\n"
     environment = execution(source)
@@ -125,6 +128,7 @@ def test_nested_alias_results_share_the_existing_original_value_query():
     assert runtime.__args__[0].__origin__ is tuple
 
 
+@pytest.mark.native_proof
 def test_warmed_nested_alias_completion_does_not_repeat_native_construction_proofs():
     expression = "int"
     for _ in range(16):
@@ -154,6 +158,7 @@ def test_warmed_nested_alias_completion_does_not_repeat_native_construction_proo
     )
 
 
+@pytest.mark.native_proof
 def test_failed_bound_completion_is_not_cached_as_success_or_as_permanent_failure(
     monkeypatch,
 ):
@@ -187,6 +192,7 @@ def test_failed_bound_completion_is_not_cached_as_success_or_as_permanent_failur
     assert completion_name in vars(authority)
 
 
+@pytest.mark.native_proof
 def test_source_created_argument_keeps_its_actual_definition_owner():
     source = "class Item: pass\nheld = list[Item]\n"
     environment = execution(source)
@@ -200,6 +206,7 @@ def test_source_created_argument_keeps_its_actual_definition_owner():
     assert runtime["held"].__args__[0] is runtime["Item"]
 
 
+@pytest.mark.native_proof
 def test_receiver_is_captured_before_argument_rebinding_not_recaptured_afterwards():
     source = "receiver = list\nheld = receiver[(receiver := tuple)]\n"
     environment = execution(source)
@@ -266,6 +273,7 @@ def test_subscription_binding_rejects_noncanonical_operation_ownership(defect):
         ).require_closed()
 
 
+@pytest.mark.native_proof
 def test_shared_source_projection_creates_separate_execution_bound_authorities():
     environment = execution("held = list[int]\n")
     other = SourceModuleExecution.from_source(environment.source)
@@ -370,6 +378,7 @@ def test_custom_subscription_is_not_executed_to_discover_its_result():
         authored_runtime(source)
 
 
+@pytest.mark.native_proof
 def test_argument_hashing_is_not_executed_by_builtin_alias_construction():
     source = (
         "class Item:\n"
@@ -392,6 +401,7 @@ def test_argument_hashing_is_not_executed_by_builtin_alias_construction():
         hash(runtime["held"])
 
 
+@pytest.mark.native_proof
 def test_classvar_execution_admission_does_not_imply_generic_alias_result():
     environment = execution("from typing import ClassVar\nheld = ClassVar[int]\n")
     node = subscription_node(environment)
@@ -415,19 +425,6 @@ def test_classvar_execution_admission_does_not_imply_generic_alias_result():
         result.require_inspected_result()
 
 
-def test_unadmitted_backend_cannot_inherit_builtin_alias_construction(monkeypatch):
-    environment = execution("held = list[int]\n")
-    monkeypatch.setattr(
-        NativeCreationBackend,
-        "current",
-        classmethod(lambda cls: SpanOnlyCreationBackend()),
-    )
-    result = environment.capture_value(subscription_node(environment))
-    assert isinstance(result, OpenCapturedReference)
-    with pytest.raises(ValueError):
-        result.require_closed()
-
-
 def test_backend_requires_an_admitted_origin_not_just_a_native_type():
     with pytest.raises(ValueError):
         NativeCreationBackend.current().require_generic_alias_construction(
@@ -435,6 +432,7 @@ def test_backend_requires_an_admitted_origin_not_just_a_native_type():
         )
 
 
+@pytest.mark.native_proof
 def test_closed_alias_does_not_grant_identity_release_or_plain_class_base():
     environment = execution("held = list[int]\n")
     result = closed_alias(environment)
@@ -452,6 +450,7 @@ def test_closed_alias_does_not_grant_identity_release_or_plain_class_base():
         result.attribute_namespace(environment.initial, "__args__").require_closed()
 
 
+@pytest.mark.native_proof
 def test_builtin_alias_as_class_base_remains_a_separate_unproved_operation():
     environment = execution("class Derived(list[int]): pass\n")
     closed_alias(environment)

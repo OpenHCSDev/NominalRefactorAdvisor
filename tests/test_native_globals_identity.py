@@ -92,6 +92,7 @@ def test_globals_returns_the_original_entry_not_a_reconstructed_dictionary(sourc
     assert environment.capture_value(node) is result
 
 
+@pytest.mark.native_proof
 def test_class_body_globals_is_module_namespace_not_class_locals():
     environment = execution("class Body:\n    observed = globals()\n")
     owner = environment.module.module.body[0]
@@ -105,6 +106,7 @@ def test_class_body_globals_is_module_namespace_not_class_locals():
     environment.require_class_creation(owner)
 
 
+@pytest.mark.native_proof
 def test_copy_of_globals_uses_positioned_bindings_not_initial_entries_or_later_state():
     environment = execution(
         "selected = property\ncopied = dict(globals())\n"
@@ -130,6 +132,7 @@ def test_borrowed_namespace_rejects_a_foreign_admission():
         result.dictionary_namespace(InitialNativeIsland(()))
 
 
+@pytest.mark.native_proof
 def test_globals_borrows_now_but_dict_copies_after_keyword_evaluation():
     environment = execution(
         "selected = property\n"
@@ -176,6 +179,7 @@ def test_unproved_call_or_namespace_effect_is_not_admitted(source):
     assert isinstance(result, OpenCapturedReference)
 
 
+@pytest.mark.native_proof
 def test_native_globals_item_installation_supplies_the_actual_bound_value():
     source = "globals()['property'] = object\nresult = property\n"
     environment = execution(source)

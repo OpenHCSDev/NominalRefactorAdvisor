@@ -26,6 +26,7 @@ def _execution(count: int = 6) -> SourceModuleExecution:
     )
 
 
+@pytest.mark.native_proof
 def test_completed_body_obligations_do_not_repeat_for_later_queries(monkeypatch):
     execution = _execution()
     classes = execution.module.module.body
@@ -69,6 +70,7 @@ def test_failed_interval_is_not_recorded_as_closed():
         assert interval not in execution._closed_intervals
 
 
+@pytest.mark.native_proof
 def test_completed_receipt_is_scoped_to_its_actual_module_activation():
     first = _execution(1)
     second = SourceModuleExecution.from_module(first.module)
@@ -122,6 +124,7 @@ def test_positioned_write_projection_is_reused_but_each_iterator_is_fresh(monkey
     ]
 
 
+@pytest.mark.native_proof
 def test_flat_class_history_does_not_recurse_through_unadmitted_predecessors():
     execution = _execution(200)
     execution.require_class_creation(execution.module.module.body[-1])
@@ -132,6 +135,7 @@ def test_flat_class_history_does_not_recurse_through_unadmitted_predecessors():
     )
 
 
+@pytest.mark.native_proof
 def test_forward_prerequisites_never_admit_a_future_class():
     source = (
         "class Earlier: pass\n"

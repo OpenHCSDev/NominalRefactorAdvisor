@@ -24,6 +24,7 @@ from nominal_refactor_advisor.detectors._base import (
 )
 
 
+@pytest.mark.native_proof
 def test_batched_collectors_inspect_each_native_base_once(
     tmp_path: Path,
     native_collector_module: ParsedModule,
@@ -80,6 +81,7 @@ def test_batched_collectors_inspect_each_native_base_once(
     assert subprocess.check_output([sys.executable, str(path)], text=True) == before
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize(
     "competing_base",
     (
@@ -212,6 +214,7 @@ def test_unrelated_same_name_base_cannot_change_inherited_behaviour(
     assert path.read_bytes() == source.encode()
 
 
+@pytest.mark.native_proof
 def test_registered_collector_base_preserves_native_execution(
     tmp_path: Path, native_collector_module: ParsedModule
 ) -> None:

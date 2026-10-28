@@ -26,6 +26,7 @@ from test_documentation_store import execution
 from test_native_value_store import value_store
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize(
     "expression", ("unknown()", "unknown(object, str)", "unknown(other(object), str)")
 )
@@ -53,6 +54,7 @@ def test_call_observation_retains_actual_operands_without_admitting_execution(
         exec(compilation.compile(), {})  # Authored fixture only.
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize("in_class", (False, True))
 @pytest.mark.parametrize(
     "expression",
@@ -96,6 +98,7 @@ def test_proved_calls_use_the_existing_result_owner_and_match_actual_output(
         env.require_class_creation(env.module.module.body[-1])
 
 
+@pytest.mark.native_proof
 def test_distinct_constructor_invocations_do_not_gain_shared_identity():
     env = execution("class Payload: pass\nfirst = Payload()\nsecond = Payload()\n")
     stores = [
@@ -108,6 +111,7 @@ def test_distinct_constructor_invocations_do_not_gain_shared_identity():
     assert not stores[0].source_value.proves_same_object(stores[1].source_value)
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize("wrapper", ("staticmethod", "classmethod", "property"))
 def test_call_operand_join_does_not_invent_source_function_metadata_proof(wrapper):
     source = f"def handler(): pass\npayload = {wrapper}(handler)\n"
@@ -118,6 +122,7 @@ def test_call_operand_join_does_not_invent_source_function_metadata_proof(wrappe
         store.require_installation(env.required_prefix(env.entry.context, None))
 
 
+@pytest.mark.native_proof
 def test_callee_is_its_original_reference_read_not_a_synthetic_value_event():
     env = execution("class Payload: pass\nresult = Payload()\n")
     node = env.module.module.body[-1].value
@@ -157,6 +162,7 @@ def test_call_marker_cannot_be_stored_as_a_python_object():
         stack.pop(1)
 
 
+@pytest.mark.native_proof
 def test_backend_declares_its_call_order_and_checks_original_preparation():
     instructions = tuple(
         dis.get_instructions(compile("f(object)", "protocol.py", "exec"))
@@ -187,6 +193,7 @@ def test_backend_declares_its_call_order_and_checks_original_preparation():
     }
 
 
+@pytest.mark.native_proof
 def test_serialised_call_graph_keeps_shared_original_receipts_without_recompiling(
     monkeypatch,
 ):

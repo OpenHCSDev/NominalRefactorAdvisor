@@ -15,6 +15,8 @@ from nominal_refactor_advisor.source_execution import (
 from test_positioned_import_effects import execution, imports
 from test_source_function_result import native
 
+pytestmark = pytest.mark.native_proof
+
 
 def selected(
     statement="from builtins import object as first, property as last",

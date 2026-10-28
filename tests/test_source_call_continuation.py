@@ -10,6 +10,8 @@ from nominal_refactor_advisor.source_entry import NoninterferingSourceModuleEntr
 from nominal_refactor_advisor.source_execution import SourceModuleExecution
 from test_source_function_result import execution
 
+pytestmark = pytest.mark.native_proof
+
 
 def invocation(body, *, header="def chosen(value):", arguments="None"):
     source = header + "\n" + "\n".join("    " + line for line in body.splitlines())

@@ -72,6 +72,7 @@ def test_subclasses_and_unknown_objects_do_not_execute_protocols():
         assert not Contents.supports_constant((value,))
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize("expression", ("()", "('run',)", "(None, (1, False), 'name')"))
 @pytest.mark.parametrize("in_class", (False, True))
 def test_folded_tuple_store_joins_original_source_and_actual_compiled_output(
@@ -105,6 +106,7 @@ def test_folded_tuple_store_joins_original_source_and_actual_compiled_output(
         env.require_class_creation(env.module.module.body[0])
 
 
+@pytest.mark.native_proof
 def test_equal_folded_contents_do_not_prove_cross_evaluation_object_identity():
     env = execution("first = ('run',)\nsecond = ('run',)\n")
     stores = [

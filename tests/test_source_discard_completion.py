@@ -17,6 +17,8 @@ from nominal_refactor_advisor.source_execution import (
 from nominal_refactor_advisor.source_geometry import SourceByteSpan
 from test_documentation_store import execution
 
+pytestmark = pytest.mark.native_proof
+
 
 def body_entry(body):
     source = "import builtins\nclass Owner:\n" + "".join(

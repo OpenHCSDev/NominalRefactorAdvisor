@@ -315,7 +315,7 @@ def test_task_owns_ast_but_cached_compact_payload_does_not():
         CompactValueUse,
         CompactFunctionCall,
         CompactCallableReferenceUse,
-        CompactNativeCapture,
+        pytest.param(CompactNativeCapture, marks=pytest.mark.native_proof),
     ),
 )
 def test_source_registration_cannot_authorize_foreign_equal_flow_event(event_type):

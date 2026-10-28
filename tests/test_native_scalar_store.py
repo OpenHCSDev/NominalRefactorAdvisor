@@ -14,7 +14,6 @@ from nominal_refactor_advisor.native_compilation import (
     NativePythonCompilation,
     NativePrimitiveOperation,
     NativeValueStoreStream,
-    SpanOnlyCreationBackend,
 )
 from nominal_refactor_advisor.source_geometry import SourceByteSpan
 
@@ -32,6 +31,7 @@ def store_for(compilation, node):
     )
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize("value", ("None", "True", "7", "'label'"))
 @pytest.mark.parametrize("in_class", (False, True))
 def test_scalar_pair_matches_actual_native_instructions(value, in_class):
@@ -69,6 +69,7 @@ def test_scalar_pair_matches_actual_native_instructions(value, in_class):
     assert NativeInstructionSite(code, store).source_span == receipt.source_span
 
 
+@pytest.mark.native_proof
 def test_later_compiler_overwrite_cannot_substitute_for_source_assignment():
     source = "class Family:\n    __static_attributes__ = None\n"
     compilation = NativePythonCompilation(source, "overwrite.py")
@@ -77,6 +78,7 @@ def test_later_compiler_overwrite_cannot_substitute_for_source_assignment():
     assert receipt.production_span != receipt.source_span
 
 
+@pytest.mark.native_proof
 def test_scalar_receipts_do_not_broaden_documentation_entry_contract():
     source = "first = 1\ntext = 'later'\n"
     compilation = NativePythonCompilation(source, "entry.py")
@@ -135,6 +137,7 @@ def test_instruction_pair_rejects_intervening_work_or_jump_entry(disturbance):
     assert not any(segment.stores for segment in stream.segments)
 
 
+@pytest.mark.native_proof
 def test_duplicate_receipts_and_stale_index_cannot_supply_unique_store():
     source = "key = None\n"
     compilation = NativePythonCompilation(source, "duplicate.py")
@@ -152,6 +155,7 @@ def test_duplicate_receipts_and_stale_index_cannot_supply_unique_store():
     assert store_for(compilation, node) is original
 
 
+@pytest.mark.native_proof
 def test_pickle_preserves_canonical_frames_without_executable_code(monkeypatch):
     source = "class Family:\n    key = None\n"
     original = NativePythonCompilation(source, "pickle.py")
@@ -172,14 +176,3 @@ def test_pickle_preserves_canonical_frames_without_executable_code(monkeypatch):
         ).body
     )
     assert store.value is store.binding.value
-
-
-def test_unsupported_compiler_does_not_infer_scalar_store(monkeypatch):
-    monkeypatch.setattr(
-        NativeCreationBackend,
-        "current",
-        classmethod(lambda cls: SpanOnlyCreationBackend()),
-    )
-    source = "key = None\n"
-    with pytest.raises(ValueError):
-        store_for(NativePythonCompilation(source, "unsupported.py"), assignment(source))

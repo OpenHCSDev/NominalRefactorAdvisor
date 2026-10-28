@@ -259,6 +259,7 @@ def test_ambiguous_after_operation_does_not_select_a_coordinate_lookalike():
         relation.corresponding_reads((before.module.module.body[-1].value,))
 
 
+@pytest.mark.native_proof
 def test_real_mixed_dsl_batch_cannot_claim_its_partial_exact_edit_is_the_whole_change():
     source = """REGISTRY = {}
 class Alpha:
@@ -441,6 +442,7 @@ def test_uncovered_original_module_is_not_recovered_from_another_authority():
         SourceReadCorrespondence(document, before.source, after.source)
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize("shadowed_metaclass", (False, True))
 def test_failed_candidate_native_gate_preserves_read_origin_but_blocks_application(
     tmp_path, shadowed_metaclass

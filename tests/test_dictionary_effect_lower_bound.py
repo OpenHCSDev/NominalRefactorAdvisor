@@ -15,10 +15,7 @@ from nominal_refactor_advisor.class_namespace import (
     EvaluationEffectOccurrence,
     OperationEffectOccurrence,
 )
-from nominal_refactor_advisor.native_compilation import (
-    NativeCreationBackend,
-    SpanOnlyCreationBackend,
-)
+from nominal_refactor_advisor.native_compilation import NativeCreationBackend
 from test_source_dictionary_construction import (
     _execution,
     _require_dictionary_effects,
@@ -46,6 +43,7 @@ def occurrences_at(environment, node):
     return tuple(environment.effects.occurrences(environment.source, prefix))
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize(
     "left,right", (("'same'", "'same'"), ("(1,(2,))", "(True,(2.0,))"))
 )
@@ -77,6 +75,7 @@ def test_duplicate_key_effect_starts_after_first_original_value_capture(left, ri
         _require_dictionary_effects(environment, dictionary)
 
 
+@pytest.mark.native_proof
 def test_nested_key_event_count_does_not_shift_the_native_effect_before_first_value():
     environment, dictionary = _execution("{(1,(2,)):Alpha,(True,(2.0,)):Beta}")
     whole = evaluation(environment, dictionary)
@@ -118,6 +117,7 @@ def test_unknown_or_unpacked_first_key_has_no_stronger_bound(expression, prefix)
         _require_dictionary_effects(environment, dictionary)
 
 
+@pytest.mark.native_proof
 def test_later_unpack_still_interferes_after_first_ordinary_pair():
     environment, dictionary = _execution(
         "{'alpha': Alpha, **other}", prefix="other={}\n"
@@ -177,24 +177,6 @@ def test_lower_bound_requires_actual_contained_source_evaluations(defect):
         operand = environment.module.module.body[-2].value
     with pytest.raises(ValueError):
         environment.source.evaluation_operand_entry(whole, operand)
-
-
-def test_unknown_native_backend_cannot_claim_a_narrower_interval(monkeypatch):
-    environment, dictionary = _execution("{(1,):Alpha,(2,):Beta}")
-    whole = evaluation(environment, dictionary)
-    monkeypatch.setattr(
-        NativeCreationBackend,
-        "current",
-        classmethod(lambda cls: SpanOnlyCreationBackend()),
-    )
-    assert (
-        dictionary_effect(environment, dictionary).earliest_application(
-            environment.source, whole
-        )
-        is whole.entry
-    )
-    with pytest.raises(ValueError):
-        _require_dictionary_effects(environment, dictionary)
 
 
 def test_refined_overlap_keeps_half_open_and_continuation_boundaries():

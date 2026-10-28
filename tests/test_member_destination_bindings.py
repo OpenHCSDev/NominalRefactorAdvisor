@@ -65,6 +65,7 @@ def test_promotion_rejects_destination_namespace_capture(
     assert path.read_bytes() == source.encode("utf-8")
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize(
     "member,observation",
     (
@@ -95,6 +96,7 @@ def test_promotion_preserves_unrelated_names_and_annotation_values(
     assert subprocess.check_output([sys.executable, str(path)]) == before
 
 
+@pytest.mark.native_proof
 @pytest.mark.parametrize("annotation", ("Literal['int']", "Annotated[str, 'int']"))
 def test_subscription_guard_follows_native_annotation_evaluation(
     tmp_path: Path, annotation: str
