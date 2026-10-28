@@ -819,3 +819,40 @@ def test_a_constant_compared_by_identity_is_not_a_type_test(tmp_path: Path):
     )
 
     assert findings == []
+
+
+def test_a_class_imported_inside_the_function_resolves_through_that_import(tmp_path: Path):
+    findings = _findings(
+        tmp_path,
+        OwnTypeTestDetector,
+        {
+            "shapes": OWN_CLASSES,
+            "use": (
+                "def area(shape):\n"
+                "    from shapes import Circle\n"
+                "    if type(shape) is not Circle:\n"
+                "        return 0\n"
+                "    return 1\n"
+            ),
+        },
+    )
+
+    assert _lines(findings) == [3]
+
+
+def test_a_local_import_rebound_in_the_function_still_hides_the_name(tmp_path: Path):
+    findings = _findings(
+        tmp_path,
+        OwnTypeTestDetector,
+        {
+            "shapes": OWN_CLASSES,
+            "use": (
+                "def area(shape, other):\n"
+                "    from shapes import Circle\n"
+                "    Circle = other\n"
+                "    return isinstance(shape, Circle)\n"
+            ),
+        },
+    )
+
+    assert findings == []

@@ -8,6 +8,7 @@ from abc import (
     ABC,
     abstractmethod,
 )
+from collections import defaultdict
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from enum import StrEnum
@@ -722,6 +723,19 @@ class ScopeBindingCollector(ast.NodeVisitor):
     visit_GeneratorExp = visit_ListComp
 
 
+@dataclass
+class ImportSeparatingScopeBindingCollector(ScopeBindingCollector):
+    """The same bindings, with import statements kept apart from every other form."""
+
+    imports: list[ast.Import | ast.ImportFrom] = field(default_factory=list)
+
+    def visit_Import(self, node: ast.Import) -> None:
+        self.imports.append(node)
+
+    def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
+        self.imports.append(node)
+
+
 class _ComprehensionContainingScopeBindingCollector(ScopeBindingCollector):
     """Only walrus targets escape a comprehension; headers retain normal ownership."""
 
@@ -746,6 +760,30 @@ class LexicalScopeBindingAuthority:
         for node in nodes:
             collector.visit(node)
         return frozenset(collector.bound_names)
+
+    @staticmethod
+    def import_only_bindings(
+        nodes: Iterable[ast.AST],
+    ) -> tuple[frozenset[str], dict[str, ast.Import | ast.ImportFrom]]:
+        """One scope's names bound by anything but an import, and each name bound
+        by exactly one import and nothing else, with that import."""
+
+        collector = ImportSeparatingScopeBindingCollector()
+        for node in nodes:
+            collector.visit(node)
+        by_name: dict[str, list[ast.Import | ast.ImportFrom]] = defaultdict(list)
+        for statement in collector.imports:
+            for name in ImportBoundNameProjection(statement).names():
+                by_name[name].append(statement)
+        imported = {
+            name: statement
+            for name, (statement, *rest) in by_name.items()
+            if not rest and name not in collector.bound_names
+        }
+        return (
+            frozenset(collector.bound_names | (by_name.keys() - imported.keys())),
+            imported,
+        )
 
     @staticmethod
     def enclosing_comprehensions(

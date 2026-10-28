@@ -5,7 +5,7 @@ from __future__ import annotations
 import ast
 from abc import ABC, abstractmethod
 from collections.abc import Iterator, Mapping, Sequence
-from collections import Counter
+from collections import Counter, defaultdict
 from dataclasses import dataclass
 from functools import cached_property
 from typing import Callable, ClassVar, Generic, TypeVar
@@ -18,7 +18,8 @@ from .class_index import (
     module_import_names,
 )
 from .foreign_family import FunctionDefinition
-from .lexical_bindings import LEXICAL_SCOPE_BINDING_AUTHORITY
+from .lexical_bindings import LEXICAL_SCOPE_BINDING_AUTHORITY, ImportBoundNameProjection
+from .python_module_identity import PythonModulePathIdentity
 from .export_tools import PublicExportPolicy, derive_public_exports
 from .registry_identity import DEFAULT_REGISTRY_KEY_ATTRIBUTE, class_name_registry_key
 from .native_syntax import NativePythonSyntaxIndex
@@ -1076,7 +1077,7 @@ class TypeArgumentResolver:
     def members(
         self,
         node: ast.expr,
-        shadowed: frozenset[str],
+        scope: EnclosingScope,
         expanding: frozenset[str] = frozenset(),
     ) -> tuple[ast.expr, ...]:
         match node:
@@ -1084,25 +1085,27 @@ class TypeArgumentResolver:
                 return tuple(
                     member
                     for element in elements
-                    for member in self.members(element, shadowed, expanding)
+                    for member in self.members(element, scope, expanding)
                 )
             case ast.BinOp(left=left, op=ast.BitOr(), right=right):
                 return (
-                    *self.members(left, shadowed, expanding),
-                    *self.members(right, shadowed, expanding),
+                    *self.members(left, scope, expanding),
+                    *self.members(right, scope, expanding),
                 )
             case ast.Name(id=name) if (
-                name in self.aliases and name not in shadowed | expanding
+                name in self.aliases and not scope.hides(name) and name not in expanding
             ):
-                return self.members(self.aliases[name], shadowed, expanding | {name})
+                return self.members(self.aliases[name], scope, expanding | {name})
         return (node,)
 
-    def qualified_name(self, member: ast.expr, shadowed: frozenset[str]) -> str | None:
+    def qualified_name(self, member: ast.expr, scope: EnclosingScope) -> str | None:
         if ExpressionReference.decoded(member).qualified_name is None:
             return None
         parts = ExpressionReference.decoded(member).attribute_chain
-        if parts is None or parts[0] in shadowed:
+        if parts is None or parts[0] in scope.shadowed:
             return None
+        if parts[0] in scope.imported:
+            return ".".join((scope.imported[parts[0]], *parts[1:]))
         # The str | None resolver protocol: unbound joins its ast-shaped absences.
         return next(
             iter(NominalReferences.of((self.snapshot.reference_for(parts),)).bound_names),
@@ -1114,13 +1117,16 @@ class TypeArgumentResolver:
     ) -> str | None:
         """Qualified class a name expression denotes beneath these ancestors."""
 
-        return self.qualified_name(member, _enclosing_function_names(ancestors))
+        return self.qualified_name(member, self.scope_at(ancestors))
+
+    def scope_at(self, ancestors: Sequence[ast.AST]) -> EnclosingScope:
+        return EnclosingScope.at(ancestors, self.parsed_module.module_path_identity)
 
     def qualified_names(
-        self, type_argument: ast.expr, shadowed: frozenset[str]
+        self, type_argument: ast.expr, scope: EnclosingScope
     ) -> tuple[str, ...] | None:
-        members = self.members(type_argument, shadowed)
-        names = tuple(self.qualified_name(member, shadowed) for member in members)
+        members = self.members(type_argument, scope)
+        names = tuple(self.qualified_name(member, scope) for member in members)
         if not names or None in names:
             return None
         return tuple(sorted(set(names)))
@@ -1133,7 +1139,7 @@ class TypeArgumentResolver:
             return None
         parents = self.parsed_module.syntax_index.parent_by_node
         ancestors = tuple(self._ancestors(parents, call))
-        return self.qualified_names(arguments[1], _enclosing_function_names(ancestors))
+        return self.qualified_names(arguments[1], self.scope_at(ancestors))
 
     @staticmethod
     def _ancestors(
@@ -1145,16 +1151,44 @@ class TypeArgumentResolver:
             yield from TypeArgumentResolver._ancestors(parents, parent)
 
 
-def _enclosing_function_names(ancestors: Sequence[ast.AST]) -> frozenset[str]:
-    """Names rebound by any enclosing function, which hide module bindings."""
+@dataclass(frozen=True)
+class EnclosingScope:
+    """What enclosing functions do to the module's bindings beneath one site.
 
-    return frozenset().union(
-        *(
-            LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(ancestor.body)
-            | LEXICAL_SCOPE_BINDING_AUTHORITY.argument_names(ancestor)
-            for ancestor in FunctionDefinition.within(ancestors)
-        )
-    )
+    A name an enclosing function binds hides the module's binding. A name bound
+    there by exactly one import and nothing else, in exactly one enclosing
+    function, resolves through that import instead.
+    """
+
+    shadowed: frozenset[str]
+    imported: Mapping[str, str]
+
+    @classmethod
+    def at(
+        cls, ancestors: Sequence[ast.AST], module_identity: PythonModulePathIdentity
+    ) -> EnclosingScope:
+        shadowed: set[str] = set()
+        imports: dict[str, list[str | None]] = defaultdict(list)
+        for function in FunctionDefinition.within(ancestors):
+            bound, imported = LEXICAL_SCOPE_BINDING_AUTHORITY.import_only_bindings(
+                function.body
+            )
+            shadowed |= bound | LEXICAL_SCOPE_BINDING_AUTHORITY.argument_names(function)
+            for name, statement in imported.items():
+                imports[name].extend(
+                    origin.qualified_name
+                    for origin in ImportBoundNameProjection(statement).origins(module_identity)
+                    if origin.bound_name == name
+                )
+        resolved = {
+            name: qualified
+            for name, (qualified, *rest) in imports.items()
+            if not rest and qualified is not None and name not in shadowed
+        }
+        return cls(frozenset(shadowed | (imports.keys() - resolved.keys())), resolved)
+
+    def hides(self, name: str) -> bool:
+        return name in self.shadowed or name in self.imported
 
 
 def _matched_subject(ancestors: Sequence[ast.AST]) -> str:
@@ -1215,7 +1249,7 @@ def type_test_shapes(parsed_module: ParsedModule) -> Iterator[TypeTestShape]:
             case _:
                 continue
         names = resolver.qualified_names(
-            kind, _enclosing_function_names(index.ancestor_nodes(node_index))
+            kind, resolver.scope_at(index.ancestor_nodes(node_index))
         )
         if names is not None:
             yield shape_type(
@@ -1230,7 +1264,7 @@ def type_test_shapes(parsed_module: ParsedModule) -> Iterator[TypeTestShape]:
         if arguments is None:
             continue
         names = resolver.qualified_names(
-            arguments[1], _enclosing_function_names(index.ancestor_nodes(node_index))
+            arguments[1], resolver.scope_at(index.ancestor_nodes(node_index))
         )
         if names is not None:
             yield TypeTestShape(
