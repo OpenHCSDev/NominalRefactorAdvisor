@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from nominal_refactor_advisor.ast_tools import parse_python_modules
+from nominal_refactor_advisor.ast_tools import PythonSourcePathPolicy, parse_python_modules
 from nominal_refactor_advisor.codemod import (
     CodemodPlanSequence,
     CodemodSourceSnapshot,
@@ -21,6 +21,7 @@ from nominal_refactor_advisor.codemod_false_distinctions import (
     FoldEnumMembersOperation,
     RedirectEmptySubclassOperation,
 )
+from nominal_refactor_advisor.false_distinction_observations import NameUse, NameUseKind
 from nominal_refactor_advisor.detectors import (
     DetectorConfig,
     NameOnlySubclassDetector,
@@ -143,10 +144,17 @@ def _run(root: Path) -> str:
     return subprocess.check_output([sys.executable, "main.py"], cwd=root, text=True)
 
 
-def _findings(detector: type, root: Path):
+def _findings(detector: type, root: Path, *, include_tests: bool = False):
+    """The detector's findings on a scan that, like NRA's, leaves tests out."""
+
     with ScanCache.scope():
         return detector().detect(
-            parse_python_modules(root, use_parse_cache=False), DetectorConfig()
+            parse_python_modules(
+                root,
+                use_parse_cache=False,
+                source_policy=PythonSourcePathPolicy(include_tests=include_tests),
+            ),
+            DetectorConfig(),
         )
 
 
@@ -368,3 +376,115 @@ def test_an_explicit_re_export_is_a_public_spelling(tmp_path: Path):
         finding.summary.split(" differs")[0]
         for finding in _findings(NameOnlySubclassDetector, tmp_path)
     ] == ["`RemoteUser`"]
+
+
+ERROR_PACKAGE = {
+    "pkg/__init__.py": "",
+    "pkg/errors.py": (
+        "class LoadError(ValueError):\n    pass\n\n\ndef load():\n    raise LoadError('load')\n"
+    ),
+}
+CATCHING_TESTS = {
+    "pytest-raises": (
+        "import pytest\n\nfrom pkg.errors import LoadError, load\n\n\n"
+        "def test_load():\n    with pytest.raises(LoadError):\n        load()\n"
+    ),
+    "pytest-raises-tuple": (
+        "import pytest\n\nfrom pkg.errors import LoadError, load\n\n\n"
+        "def test_load():\n    with pytest.raises((LoadError, KeyError)):\n        load()\n"
+    ),
+    "assert-raises": (
+        "import unittest\n\nfrom pkg.errors import LoadError, load\n\n\n"
+        "class LoadTest(unittest.TestCase):\n    def test_load(self):\n"
+        "        self.assertRaises(LoadError, load)\n"
+    ),
+    "except": (
+        "from pkg.errors import LoadError, load\n\n\ndef test_load():\n    try:\n"
+        "        load()\n    except LoadError:\n        pass\n"
+    ),
+}
+
+
+@pytest.mark.parametrize("name", sorted(CATCHING_TESTS))
+def test_an_exception_a_test_catches_is_distinguished(tmp_path: Path, name: str):
+    _write(tmp_path, {**ERROR_PACKAGE, "tests/test_errors.py": CATCHING_TESTS[name]})
+    assert _findings(NameOnlySubclassDetector, tmp_path) == []
+
+
+def test_an_exception_nothing_catches_still_differs_only_by_name(tmp_path: Path):
+    _write(tmp_path, ERROR_PACKAGE)
+    (finding,) = _findings(NameOnlySubclassDetector, tmp_path)
+    assert finding.summary.startswith("`LoadError` differs from its base `ValueError`")
+    assert "tests" not in finding.evidence[0].file_path
+
+
+def test_a_test_that_only_constructs_the_subclass_blocks_the_redirect(tmp_path: Path):
+    files = dict(REDIRECTS["name-and-module-imports"][0])
+    files["tests/test_users.py"] = (
+        "from pkg.users import LocalUser\n\n\ndef test_local():\n    assert LocalUser().handle()\n"
+    )
+    _write(tmp_path, files)
+    finding = next(
+        finding
+        for finding in _findings(NameOnlySubclassDetector, tmp_path)
+        if finding.summary.startswith("`LocalUser`")
+    )
+    evaluation = NameOnlySubclassDetector().evaluate_recipe_for_finding(
+        finding, _snapshot(tmp_path)
+    )
+    assert "tests/test_users.py:5 spells `LocalUser` in a test (construct)" in (
+        evaluation.rejection_reason.replace(tmp_path.as_posix() + "/", "")
+    )
+
+
+@pytest.mark.parametrize(
+    ("source", "kind"),
+    (
+        ("try:\n    pass\nexcept Target:\n    pass\n", NameUseKind.CATCH),
+        ("try:\n    pass\nexcept (Target, KeyError):\n    pass\n", NameUseKind.CATCH),
+        ("pytest.raises(Target)\n", NameUseKind.CATCH),
+        ("pytest.raises((KeyError, Target))\n", NameUseKind.CATCH),
+        ("self.assertRaises(Target, f)\n", NameUseKind.CATCH),
+        ("self.assertRaisesRegex(Target, 'x', f)\n", NameUseKind.CATCH),
+        ("raise Target\n", NameUseKind.RAISE),
+        ("Target()\n", NameUseKind.CONSTRUCT),
+        ("pytest.raises(KeyError, Target)\n", NameUseKind.OTHER),
+    ),
+)
+def test_name_use_kinds_wherever_they_appear(tmp_path: Path, source: str, kind: NameUseKind):
+    (tmp_path / "m.py").write_text(source)
+    (module,) = parse_python_modules(tmp_path, use_parse_cache=False)
+    assert {use.kind for use in NameUse.in_module(module) if use.name == "Target"} == {kind}
+
+
+def test_a_test_naming_a_member_alone_keeps_the_members_apart(tmp_path: Path):
+    files = dict(MODE_PACKAGE)
+    files["tests/test_budget.py"] = (
+        "from pkg.budget import budget\nfrom pkg.modes import Mode\n\n\n"
+        "def test_quick():\n    assert budget(Mode.QUICK) == 10\n"
+    )
+    _write(tmp_path, files)
+    assert _findings(UndistinguishedEnumMembersDetector, tmp_path) == []
+    operation = FoldEnumMembersOperation(
+        target=_target(tmp_path, "Mode"), members=("FAST", "QUICK")
+    )
+    with pytest.raises(ValueError) as refused:
+        operation.source_edits(_snapshot(tmp_path))
+    assert "tests/test_budget.py:6 spells `Mode.QUICK` in a test" in str(refused.value).replace(
+        tmp_path.as_posix() + "/", ""
+    )
+
+
+def test_a_class_declared_in_a_test_is_never_reported(tmp_path: Path):
+    _write(
+        tmp_path,
+        {
+            "pkg/__init__.py": "",
+            "pkg/base.py": "class Base:\n    pass\n",
+            "tests/test_base.py": (
+                "from pkg.base import Base\n\n\nclass FakeBase(Base):\n    pass\n\n\n"
+                "def test_fake():\n    assert FakeBase()\n"
+            ),
+        },
+    )
+    assert _findings(NameOnlySubclassDetector, tmp_path, include_tests=True) == []
