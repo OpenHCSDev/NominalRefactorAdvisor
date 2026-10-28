@@ -559,35 +559,10 @@ class CompactClassMemberDeclaration(NamedTuple):
     name: str
     line: int
     expression: str | None
-    value: CompactValueExpression | None
+    value: CompactValueExpression
     constructor_name: str | None
     constructor_keyword_names: tuple[str, ...]
     annotation_expression: str | None
-
-    @property
-    def constant_string(self) -> str | None:
-        return None if self.value is None else self.value.constant_string
-
-    @property
-    def value_is_none_literal(self) -> bool:
-        return self.value is not None and self.value.value_is_none_literal
-
-    def require_mapping_key(self) -> Hashable:
-        """Require original RHS evidence; an annotation supplies no value."""
-        if self.value is None:
-            raise ValueError("Class member has no assigned key value")
-        return self.value.require_mapping_key()
-
-    def resolve_mapping_key(
-        self,
-        resolver: MappingKeyResolverABC[CompactIndexedClass],
-        owner: CompactIndexedClass,
-    ) -> Hashable:
-        """Project this value through its literal or declaration-owned semantics."""
-
-        if self.value is None:
-            raise ValueError("Class member has no assigned key value")
-        return self.value.resolve_mapping_key(resolver, owner)
 
     @property
     def annotation_reference_parts(self) -> tuple[str, ...] | None:
@@ -1006,11 +981,10 @@ class CompactIndexedClass(CompactClassHeader):
     @cached_property
     def direct_value_writes_by_name(self) -> dict[str, CompactClassMemberDeclaration]:
         """Latest direct RHS writes, retaining their original declaration rows."""
-        return {
-            declaration.name: declaration
-            for declaration in self.direct_member_declarations
-            if declaration.value is not None
-        }
+        writes: dict[str, CompactClassMemberDeclaration] = {}
+        for declaration in self.direct_member_declarations:
+            declaration.value.record_write(writes, declaration.name, declaration)
+        return writes
 
     @cached_property
     def direct_annotation_writes_by_name(
@@ -1031,7 +1005,7 @@ class CompactIndexedClass(CompactClassHeader):
 
     def constant_string_assignment(self, name: str) -> str | None:
         declaration = self.direct_value_writes_by_name.get(name)
-        return None if declaration is None else declaration.constant_string
+        return None if declaration is None else declaration.value.constant_string
 
     @property
     def direct_assignment_expressions(self) -> tuple[tuple[str, str | None], ...]:
@@ -1060,9 +1034,9 @@ class CompactIndexedClass(CompactClassHeader):
     @property
     def direct_constant_string_assignments(self) -> tuple[tuple[str, str], ...]:
         return tuple(
-            (declaration.name, declaration.constant_string)
+            (declaration.name, declaration.value.constant_string)
             for declaration in self.direct_value_writes_by_name.values()
-            if declaration.constant_string is not None
+            if declaration.value.constant_string is not None
         )
 
     @property
@@ -1070,7 +1044,7 @@ class CompactIndexedClass(CompactClassHeader):
         return sorted_tuple(
             declaration.name
             for declaration in self.direct_value_writes_by_name.values()
-            if not declaration.value_is_none_literal
+            if not declaration.value.value_is_none_literal
         )
 
 
@@ -7360,12 +7334,13 @@ def _compact_class_member_declarations(
             if isinstance(value, ast.Call) and constructor_name is not None
             else ()
         )
-        compact_value = None if value is None else CompactValueExpression.project(value)
+        statement_value = StatementValue.of(assignment_statement.node)
+        compact_value = statement_value.compact_value()
         declarations.extend(
             CompactClassMemberDeclaration(
                 name=target.id,
                 line=statement.lineno,
-                expression=ast.unparse(value) if value is not None else None,
+                expression=statement_value.value_source,
                 value=compact_value,
                 constructor_name=constructor_name,
                 constructor_keyword_names=constructor_keyword_names,

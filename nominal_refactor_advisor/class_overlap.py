@@ -309,13 +309,13 @@ def _literal_tags(
 
     tags = []
     for member in indexed_class.direct_member_declarations:
-        if member.annotation_expression is None or member.constant_string is None:
+        if member.annotation_expression is None or member.value.constant_string is None:
             continue
         annotation = ast.parse(member.annotation_expression, mode="eval").body
         if not (
             isinstance(annotation, ast.Subscript)
             and isinstance(annotation.slice, ast.Constant)
-            and annotation.slice.value == member.constant_string
+            and annotation.slice.value == member.value.constant_string
         ):
             continue
         parts = ExpressionReference.decoded(annotation.value).attribute_chain
@@ -323,7 +323,7 @@ def _literal_tags(
             continue
         qualified = ".".join((import_aliases.get(parts[0], parts[0]), *parts[1:]))
         if qualified in LITERAL_FORMS:
-            tags.append((member.name, member.line, member.constant_string))
+            tags.append((member.name, member.line, member.value.constant_string))
     return tuple(tags)
 
 

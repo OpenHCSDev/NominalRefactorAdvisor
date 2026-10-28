@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 from typing import Self, TypeVar, cast
 
 from .declared_family import ForeignAdapter
-from .value_expression import CompactValueExpression
+from .value_expression import CompactValueExpression, UnassignedValueExpression
 
 TargetT = TypeVar("TargetT")
 
@@ -339,6 +339,10 @@ class StatementValue(ABC):
     def value_kind_name(self) -> str:
         raise NotImplementedError
 
+    @abstractmethod
+    def compact_value(self) -> CompactValueExpression:
+        raise NotImplementedError
+
     @property
     @abstractmethod
     def supplies_none_literal(self) -> bool:
@@ -377,6 +381,9 @@ class SuppliedValue(StatementValue):
     def value_kind_name(self) -> str:
         return type(self.value).__name__
 
+    def compact_value(self) -> CompactValueExpression:
+        return CompactValueExpression.project(self.value)
+
     @property
     def supplies_none_literal(self) -> bool:
         return CompactValueExpression.project(self.value).value_is_none_literal
@@ -409,6 +416,9 @@ class NoStatementValue(StatementValue):
     @property
     def value_kind_name(self) -> str:
         return "None"
+
+    def compact_value(self) -> CompactValueExpression:
+        return UnassignedValueExpression()
 
     @property
     def supplies_none_literal(self) -> bool:
