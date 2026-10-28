@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+from collections import defaultdict
 from collections.abc import (
     Callable,
     Hashable,
     Iterable,
+    Iterator,
     Sequence,
 )
 from concurrent.futures import ProcessPoolExecutor
@@ -2646,10 +2648,32 @@ class SortedFindingsAuthority:
     def sort(
         findings: Iterable[RefactorFinding],
     ) -> list[RefactorFinding]:
-        return sorted(
-            findings,
-            key=SortedFindingsAuthority.sort_key,
+        return list(
+            SortedFindingsAuthority.numbered(
+                sorted(findings, key=SortedFindingsAuthority.sort_key)
+            )
         )
+
+    @staticmethod
+    def numbered(ordered: Iterable[RefactorFinding]) -> Iterator[RefactorFinding]:
+        """Give distinct findings that share one identity their source-order occurrence.
+
+        Twins share a detector, summary and evidence symbols, so they always sort
+        into the same list; renumbering a numbered list gives the same numbers.
+        """
+
+        twins: defaultdict[str, list[RefactorFinding]] = defaultdict(list)
+        for finding in ordered:
+            unnumbered = finding if not finding.occurrence else replace(finding, occurrence=0)
+            siblings = twins[unnumbered.stable_id]
+            if unnumbered not in siblings:
+                siblings.append(unnumbered)
+            occurrence = siblings.index(unnumbered)
+            yield (
+                finding
+                if occurrence == finding.occurrence
+                else replace(finding, occurrence=occurrence)
+            )
 
     @staticmethod
     def sort_key(
