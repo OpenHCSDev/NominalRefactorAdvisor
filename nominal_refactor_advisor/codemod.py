@@ -8450,17 +8450,11 @@ class EnumSubsetProjection:
         value: ast.AST,
         unavailable_builtin_names: frozenset[str],
     ) -> frozenset[str] | None:
-        if (
-            not isinstance(value, ast.Call)
-            or not isinstance(value.func, ast.Name)
-            or value.func.id != BuiltinCallName.FROZENSET.value
-            or value.func.id in unavailable_builtin_names
-            or len(value.args) != 1
-            or value.keywords
-            or not isinstance(value.args[0], ast.Tuple | ast.List | ast.Set)
-        ):
+        elements = ClassFamilyCollectionFactory.FROZENSET.elements(
+            value, unavailable_builtin_names
+        )
+        if elements is None:
             return None
-        elements = value.args[0].elts
         values = frozenset(
             element.value
             for element in elements
@@ -8522,9 +8516,8 @@ class EnumSubsetDerivation:
             resolved_authority.file_path,
         )
         authority_reference_proof.required_import_source(context)
-        if (
-            BuiltinCallName.FROZENSET.value
-            in authority_reference_proof.unavailable_builtin_names
+        if ClassFamilyCollectionFactory.FROZENSET.is_shadowed(
+            authority_reference_proof.unavailable_builtin_names
         ):
             raise ValueError("Enum authority shadows the frozenset constructor")
         projection_reference_proof = ClassAuthorityReferenceProof.from_context(
@@ -11534,6 +11527,11 @@ class ClassFamilyCollectionFactory(StrEnum):
     SET = (BuiltinCallName.SET.value, ast.Set, False)
     FROZENSET = (BuiltinCallName.FROZENSET.value, None, False)
 
+    def is_shadowed(self, unavailable_builtin_names: frozenset[str]) -> bool:
+        """Whether the module rebinds this factory's builtin name."""
+
+        return self.value in unavailable_builtin_names
+
     def elements(
         self,
         value: ast.AST,
@@ -11547,7 +11545,7 @@ class ClassFamilyCollectionFactory(StrEnum):
             not isinstance(value, ast.Call)
             or not isinstance(value.func, ast.Name)
             or value.func.id != self.value
-            or self.value in unavailable_builtin_names
+            or self.is_shadowed(unavailable_builtin_names)
             or len(value.args) != 1
             or value.keywords
             or not isinstance(value.args[0], ast.Tuple | ast.List | ast.Set)

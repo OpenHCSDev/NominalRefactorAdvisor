@@ -1381,17 +1381,6 @@ class BuiltinCallName(StrEnum):
 
         return cls.set_constructor_names() | frozenset((cls.SORTED, cls.LIST, cls.TUPLE))
 
-    def carries_default(self, argument_count: int) -> bool:
-        """Whether a call of this builtin with that many arguments supplies a default."""
-
-        return self is BuiltinCallName.GETATTR and argument_count == 3
-
-    @classmethod
-    def attribute_access_names(cls) -> frozenset[BuiltinCallName]:
-        """The builtins that reach an attribute through a runtime name."""
-
-        return frozenset((cls.GETATTR, cls.HASATTR, cls.SETATTR, cls.DELATTR))
-
     @classmethod
     def type_test_names(cls) -> frozenset[BuiltinCallName]:
         return frozenset((cls.ISINSTANCE, cls.ISSUBCLASS))
@@ -1555,6 +1544,137 @@ class BuiltinCallName(StrEnum):
                 cls.TUPLE,
             )
         )
+
+
+@dataclass(frozen=True)
+class BuiltinCall(ABC, metaclass=AutoRegisterMeta):
+    """A call decoded once by the builtin it names and its positional arity.
+
+    The decoded class answers what the call does, so consumers ask it instead
+    of comparing the callee's name. The callee is a builtin when it is a bare
+    name or ``builtins.<name>``; whether a bare name is shadowed stays the
+    consumer's binding question (``BuiltinCallName.resolves_unshadowed``).
+    """
+
+    __registry_key__ = "signature"
+    __skip_if_no_key__ = True
+
+    signature: ClassVar[tuple[BuiltinCallName, int]]
+    node: ast.Call
+
+    @classmethod
+    def decoded(cls, node: ast.Call) -> BuiltinCall:
+        """The call's builtin member, or ``NonBuiltinCall`` for any other call."""
+
+        match node.func:
+            case ast.Name(id=name) | ast.Attribute(
+                value=ast.Name(id="builtins"), attr=name
+            ):
+                key = (name, len(node.args))
+                if key in BuiltinCall.__registry__:
+                    return BuiltinCall.__registry__[key](node)
+        return NonBuiltinCall(node)
+
+    @property
+    def builtin(self) -> BuiltinCallName:
+        return self.signature[0]
+
+
+@dataclass(frozen=True)
+class NonBuiltinCall(BuiltinCall):
+    """A call whose callee and arity name none of the decoded builtins."""
+
+
+@dataclass(frozen=True)
+class AttributeAccessCall(BuiltinCall):
+    """A call that reaches an object's attribute through a runtime name."""
+
+    @property
+    def object_argument(self) -> ast.expr:
+        return self.node.args[0]
+
+    @property
+    def name_argument(self) -> ast.expr:
+        return self.node.args[1]
+
+    @property
+    def description(self) -> str:
+        return self.builtin
+
+
+@dataclass(frozen=True)
+class AttributeLookup(AttributeAccessCall):
+    """Reads or probes the attribute without changing the object."""
+
+
+@dataclass(frozen=True)
+class Getattr(AttributeLookup):
+    signature = (BuiltinCallName.GETATTR, 2)
+    carries_default: ClassVar[bool] = False
+
+
+@dataclass(frozen=True)
+class GetattrWithDefault(Getattr):
+    signature = (BuiltinCallName.GETATTR, 3)
+    carries_default = True
+
+    @property
+    def description(self) -> str:
+        return f"{self.builtin} with default"
+
+
+@dataclass(frozen=True)
+class Hasattr(AttributeLookup):
+    signature = (BuiltinCallName.HASATTR, 2)
+
+
+@dataclass(frozen=True)
+class AttributeMutation(AttributeAccessCall):
+    """Writes or deletes the attribute."""
+
+
+@dataclass(frozen=True)
+class Setattr(AttributeMutation):
+    signature = (BuiltinCallName.SETATTR, 3)
+
+
+@dataclass(frozen=True)
+class Delattr(AttributeMutation):
+    signature = (BuiltinCallName.DELATTR, 2)
+
+
+@dataclass(frozen=True)
+class NamespaceCall(BuiltinCall):
+    """Returns the calling scope's namespace as a dictionary."""
+
+
+@dataclass(frozen=True)
+class Globals(NamespaceCall):
+    signature = (BuiltinCallName.GLOBALS, 0)
+
+
+@dataclass(frozen=True)
+class Locals(NamespaceCall):
+    signature = (BuiltinCallName.LOCALS, 0)
+
+
+@dataclass(frozen=True)
+class TypeCall(BuiltinCall):
+    """A call of ``type``: a query of one object or the creation of a class."""
+
+
+@dataclass(frozen=True)
+class TypeQuery(TypeCall):
+    signature = (BuiltinCallName.TYPE, 1)
+
+    @property
+    def queried(self) -> ast.expr:
+        return self.node.args[0]
+
+
+@dataclass(frozen=True)
+class ClassCreation(TypeCall):
+    signature = (BuiltinCallName.TYPE, 3)
 
 
 class VariableAnnotationVisitorABC(ABC):
@@ -3902,7 +4022,7 @@ def _is_type_call_constructor(node: ast.AST) -> bool:
     return bool(
         isinstance(node, ast.Call)
         and isinstance(node.func, ast.Call)
-        and (ExpressionReference.decoded(node.func.func).terminal_name == BuiltinCallName.TYPE)
+        and isinstance(BuiltinCall.decoded(node.func), TypeCall)
     )
 
 
@@ -3950,20 +4070,18 @@ def _dynamic_method_injection_observations(
     for node in walk_function_body_nodes(function.body):
         if not isinstance(node, ast.Call):
             continue
-        if ExpressionReference.decoded(node.func).terminal_name != BuiltinCallName.SETATTR:
-            continue
-        if len(node.args) < 3:
-            continue
-        target = node.args[0]
-        if isinstance(target, ast.Name) and target.id.endswith("type"):
-            observations.append(
-                DynamicMethodInjectionObservation(
-                    file_path=parsed_module.file_path,
-                    line=node.lineno,
-                    symbol=function.name,
-                    mutator_name=BuiltinCallName.SETATTR,
+        match BuiltinCall.decoded(node):
+            case Setattr(object_argument=ast.Name(id=target)) as call if target.endswith(
+                "type"
+            ):
+                observations.append(
+                    DynamicMethodInjectionObservation(
+                        file_path=parsed_module.file_path,
+                        line=node.lineno,
+                        symbol=function.name,
+                        mutator_name=call.builtin,
+                    )
                 )
-            )
     return sorted_tuple(observations, key=lambda item: item.line)
 
 

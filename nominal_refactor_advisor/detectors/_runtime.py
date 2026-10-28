@@ -25,7 +25,9 @@ from ._regex_bundle import RepeatedLocalRegexBundleDetector
 
 from ..lexical_bindings import ImportBoundNameProjection
 from ..ast_tools import (
+    BuiltinCall,
     BuiltinCallName,
+    Globals,
     CollectedFamily,
     LITERAL_DISPATCH_CASE_MATCHER,
     ParsedModule,
@@ -1115,13 +1117,7 @@ def _call_symbol(node: ast.AST) -> str:
 
 
 def _is_globals_call(node: ast.AST) -> bool:
-    return (
-        isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Name)
-        and node.func.id == BuiltinCallName.GLOBALS
-        and not node.args
-        and not node.keywords
-    )
+    return isinstance(node, ast.Call) and isinstance(BuiltinCall.decoded(node), Globals)
 
 
 def _is_runtime_bridge_namespace_call(node: ast.AST) -> bool:

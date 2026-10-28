@@ -30,9 +30,10 @@ from .lexical_bindings import ImportBoundNameProjection
 from .ast_projection import StatementValues
 from .ast_projection import CallKeywords
 from .ast_tools import (
-    BuiltinCallName,
+    BuiltinCall,
     ModuleSyntaxIndex,
     ParsedModule,
+    Setattr,
 )
 from .class_index import module_import_aliases
 from .installed_source import InstalledModule
@@ -273,13 +274,13 @@ class DeclaredIdentityFamily(ShapeFamily[ModuleDeclarations]):
                 attribute == cls.NAME
             ):
                 yield receiver
-            case ast.Call(
-                func=ast.Name(id=BuiltinCallName.SETATTR),
-                args=[receiver, ast.Constant(value=attribute), *_],
-            ) if (
-                attribute == cls.NAME
-            ):
-                yield receiver
+            case ast.Call():
+                match BuiltinCall.decoded(node):
+                    case Setattr(
+                        object_argument=receiver,
+                        name_argument=ast.Constant(value=written_name),
+                    ) if written_name == cls.NAME:
+                        yield receiver
 
     @classmethod
     def writes_name(cls, node: ast.ClassDef) -> bool:

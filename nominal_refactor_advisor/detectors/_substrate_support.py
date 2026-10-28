@@ -16,7 +16,9 @@ from typing import Generic, TypeVar
 from ..value_expression import CompactValueExpression
 from ..ast_projection import ExpressionReference
 from ..ast_tools import (
+    BuiltinCall,
     BuiltinCallName,
+    TypeQuery,
     ParsedModule,
     is_docstring_statement,
     statements_without_docstring,
@@ -41,15 +43,10 @@ class _SelectorAttributeProjection(_AstNodeProjection[str | None]):
         if isinstance(node, ast.Attribute):
             if isinstance(node.value, ast.Name) and node.value.id in {"self", "cls"}:
                 return node.attr
-            if (
-                isinstance(node.value, ast.Call)
-                and isinstance(node.value.func, ast.Name)
-                and (node.value.func.id == BuiltinCallName.TYPE)
-                and (len(node.value.args) == 1)
-                and isinstance(node.value.args[0], ast.Name)
-                and (node.value.args[0].id == "self")
-            ):
-                return node.attr
+            if isinstance(node.value, ast.Call):
+                match BuiltinCall.decoded(node.value):
+                    case TypeQuery(queried=ast.Name(id="self")):
+                        return node.attr
         return None
 
 
