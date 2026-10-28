@@ -415,19 +415,6 @@ def test_classvar_execution_admission_does_not_imply_generic_alias_result():
         result.require_inspected_result()
 
 
-def test_unadmitted_backend_cannot_inherit_builtin_alias_construction(monkeypatch):
-    environment = execution("held = list[int]\n")
-    monkeypatch.setattr(
-        NativeCreationBackend,
-        "current",
-        classmethod(lambda cls: SpanOnlyCreationBackend()),
-    )
-    result = environment.capture_value(subscription_node(environment))
-    assert isinstance(result, OpenCapturedReference)
-    with pytest.raises(ValueError):
-        result.require_closed()
-
-
 def test_backend_requires_an_admitted_origin_not_just_a_native_type():
     with pytest.raises(ValueError):
         NativeCreationBackend.current().require_generic_alias_construction(

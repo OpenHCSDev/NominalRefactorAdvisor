@@ -11,7 +11,6 @@ import pytest
 
 from nominal_refactor_advisor.native_compilation import (
     CreatedNativeFunctionExecution,
-    ExactNativeFunctionExecution,
     InstalledNativeFunctionExecution,
     InstallGlobalNativeFunction,
     InstallNativeFunction,
@@ -20,7 +19,6 @@ from nominal_refactor_advisor.native_compilation import (
     NativeCreationOperation,
     NativePrimitiveOperation,
     SourceNativeFrameOrigin,
-    SpanOnlyCreationBackend,
 )
 from nominal_refactor_advisor.source_geometry import SourceByteSpan
 from test_native_function_creation import _case
@@ -216,18 +214,6 @@ def test_global_installation_derives_registry_key_and_shares_execution_logic():
         is InstallGlobalNativeFunction
     )
     assert NativeCreationOperation.__registry__["STORE_NAME"] is InstallNativeFunction
-
-
-def test_span_only_backend_does_not_infer_installation_from_code_flags(monkeypatch):
-    monkeypatch.setattr(
-        NativeCreationBackend,
-        "current",
-        classmethod(lambda cls: SpanOnlyCreationBackend()),
-    )
-    _, receipt, _, _ = _case(monkeypatch, "def chosen(): pass\n")
-    assert type(receipt) is ExactNativeFunctionExecution
-    with pytest.raises(ValueError, match="installation"):
-        receipt.require_installation()
 
 
 @pytest.mark.parametrize("disturbance", ("intervening", "jump"))

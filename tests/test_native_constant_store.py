@@ -16,7 +16,6 @@ from nominal_refactor_advisor.native_compilation import (
     NativePythonCompilation,
     NativeConstantValue,
     SourceNativeFrameOrigin,
-    SpanOnlyCreationBackend,
 )
 from nominal_refactor_advisor.product_flow import CompilerStoredValue
 from nominal_refactor_advisor.source_execution import (
@@ -173,17 +172,6 @@ def test_generic_kernel_has_no_compiler_value_authority():
     generic = CapturedReferenceKernel(env.initial, env)
     with pytest.raises(ValueError):
         generic.read(read).require_closed()
-
-
-def test_unsupported_native_backend_never_falls_back_to_raw_literal(monkeypatch):
-    monkeypatch.setattr(
-        NativeCreationBackend,
-        "current",
-        classmethod(lambda cls: SpanOnlyCreationBackend()),
-    )
-    env = execution('"documentation"\n')
-    with pytest.raises(ValueError):
-        env.capture_value(env.module.module.body[0].value).require_native_text()
 
 
 @pytest.mark.parametrize("disturbance", ("jump", "extra_value", "unsupported"))

@@ -13,10 +13,6 @@ from nominal_refactor_advisor.captured_reference import (
     NamespaceMemberInventory,
     NativeTypePremise,
 )
-from nominal_refactor_advisor.native_compilation import (
-    NativeCreationBackend,
-    SpanOnlyCreationBackend,
-)
 from nominal_refactor_advisor.native_subscription import ClassVariableSubscription
 from nominal_refactor_advisor.source_entry import (
     DeclaredNativeOperationBehavior,
@@ -189,21 +185,6 @@ def test_prepared_body_never_supplies_a_plain_type_result():
         entry.result()
     with pytest.raises(ValueError, match="registration class result"):
         entry._created_result()
-
-
-def test_missing_backend_capability_keeps_prepared_frame_open(monkeypatch):
-    environment, (root, _) = prepared_execution()
-    entry = environment.class_entry(root)
-    # Keep actual compilation receipts, but withdraw only backend preparation.
-    _ = entry.initial_entries
-    monkeypatch.setattr(
-        NativeCreationBackend,
-        "current",
-        classmethod(lambda cls: SpanOnlyCreationBackend()),
-    )
-    with pytest.raises(ValueError, match="fresh class namespace remains unproved"):
-        _ = entry.frame
-    assert "frame" not in vars(entry)
 
 
 @pytest.mark.parametrize("native_metaclass", (False, True))

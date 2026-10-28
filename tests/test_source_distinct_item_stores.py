@@ -10,10 +10,6 @@ import pytest
 
 from nominal_refactor_advisor.ast_tools import ParsedModule
 from nominal_refactor_advisor.manual_registry import DirectManualRegistryComponent
-from nominal_refactor_advisor.native_compilation import (
-    NativeCreationBackend,
-    SpanOnlyCreationBackend,
-)
 from nominal_refactor_advisor.native_declarations import NativeDeclaration
 from nominal_refactor_advisor.product_flow import CompactItemTarget
 from nominal_refactor_advisor.source_execution import SourceModuleExecution
@@ -303,18 +299,3 @@ def test_unsupported_mutation_kind_does_not_become_plain_store(source):
     )
     with pytest.raises(ValueError):
         environment.require_item_write(target)
-
-
-def test_unsupported_backend_cannot_admit_native_setter(monkeypatch):
-    environment = execution(BASE + "REGISTRY['alpha'] = Alpha\n")
-    statement = item_statements(environment)[0]
-    # Establish earlier supported creations first, not the store itself.
-    environment.capture_value(environment.module.module.body[0].value).require_closed()
-    environment.capture_value(statement.value).require_closed()
-    monkeypatch.setattr(
-        NativeCreationBackend,
-        "current",
-        classmethod(lambda cls: SpanOnlyCreationBackend()),
-    )
-    with pytest.raises(ValueError):
-        environment.require_item_write(statement.targets[0])

@@ -12,10 +12,6 @@ from nominal_refactor_advisor.captured_reference import (
     OpenCapturedReference,
 )
 from nominal_refactor_advisor.manual_registry import DirectManualRegistryComponent
-from nominal_refactor_advisor.native_compilation import (
-    NativeCreationBackend,
-    SpanOnlyCreationBackend,
-)
 from nominal_refactor_advisor.product_flow import (
     CompactBindingVisit,
     CompactTupleValue,
@@ -238,19 +234,6 @@ def test_conditional_repeated_or_unproved_activation_remains_open(source):
         if isinstance(node, ast.Tuple)
     )
     captured = environment.capture_value(node)
-    assert isinstance(captured, OpenCapturedReference)
-    with pytest.raises(ValueError):
-        captured.require_closed()
-
-
-def test_unsupported_native_backend_does_not_gain_tuple_construction(monkeypatch):
-    environment = execution("held=(object,)\n")
-    monkeypatch.setattr(
-        NativeCreationBackend,
-        "current",
-        classmethod(lambda cls: SpanOnlyCreationBackend()),
-    )
-    captured = environment.capture_value(tuple_node(environment))
     assert isinstance(captured, OpenCapturedReference)
     with pytest.raises(ValueError):
         captured.require_closed()

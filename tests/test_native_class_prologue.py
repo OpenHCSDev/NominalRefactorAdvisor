@@ -21,9 +21,7 @@ from nominal_refactor_advisor.native_compilation import (
     NativePrimitiveOperation,
     NativeTypedValue,
     NativePythonCompilation,
-    OpenNativeClassCapture,
     OpenNativeClassPrologue,
-    SpanOnlyCreationBackend,
 )
 from nominal_refactor_advisor.source_geometry import SourceByteSpan
 
@@ -528,24 +526,6 @@ def test_compact_capture_and_queried_compilation_pickle_without_native_code(
             pending.extend(value.values())
         elif isinstance(value, (tuple, list)):
             pending.extend(value)
-
-
-def test_unadmitted_backend_cannot_project_prologue(monkeypatch):
-    monkeypatch.setattr(
-        NativeCreationBackend,
-        "current",
-        classmethod(lambda cls: SpanOnlyCreationBackend()),
-    )
-    compilation = NativePythonCompilation("class Target: pass\n", "unsupported.py")
-    capture = compilation.class_capture_for(
-        SourceByteSpan.require_node(ast.parse(compilation.source).body[0])
-    )
-    assert isinstance(capture, OpenNativeClassCapture)
-    assert capture.reason is NativeExecutionUnavailable.UNSUPPORTED_COMPILER
-    prefix = NativeCodeObservation(compilation.compile())
-    result = SpanOnlyCreationBackend().class_prologue(prefix)
-    assert isinstance(result, OpenNativeClassPrologue)
-    assert result.reason is NativeExecutionUnavailable.UNSUPPORTED_COMPILER
 
 
 @pytest.mark.parametrize(

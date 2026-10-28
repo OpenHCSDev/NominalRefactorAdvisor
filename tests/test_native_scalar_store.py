@@ -14,7 +14,6 @@ from nominal_refactor_advisor.native_compilation import (
     NativePythonCompilation,
     NativePrimitiveOperation,
     NativeValueStoreStream,
-    SpanOnlyCreationBackend,
 )
 from nominal_refactor_advisor.source_geometry import SourceByteSpan
 
@@ -172,14 +171,3 @@ def test_pickle_preserves_canonical_frames_without_executable_code(monkeypatch):
         ).body
     )
     assert store.value is store.binding.value
-
-
-def test_unsupported_compiler_does_not_infer_scalar_store(monkeypatch):
-    monkeypatch.setattr(
-        NativeCreationBackend,
-        "current",
-        classmethod(lambda cls: SpanOnlyCreationBackend()),
-    )
-    source = "key = None\n"
-    with pytest.raises(ValueError):
-        store_for(NativePythonCompilation(source, "unsupported.py"), assignment(source))

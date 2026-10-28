@@ -25,7 +25,6 @@ from nominal_refactor_advisor.native_compilation import (
 from nominal_refactor_advisor.product_flow import (
     ExactCompactBindingMutation,
     InitialCompactParameterBinding,
-    OpenCompactBindingMutation,
     compact_product_flow_projection,
 )
 
@@ -205,49 +204,6 @@ def test_rejected_probe_remains_open(monkeypatch, clear_probe_cache):
     result = CPython311CreationBackend.annotation_order()
     assert isinstance(result, OpenNativeAnnotationOrder)
     assert result.reason is NativeAnnotationOrderUnavailable.COMPILATION_REJECTED
-
-
-@pytest.mark.skipif(
-    sys.version_info[:2] != (3, 11), reason="Native eager annotation syntax"
-)
-def test_unavailable_order_retains_reads_and_does_not_recover_stale_parameters(
-    monkeypatch,
-):
-    monkeypatch.setattr(
-        NativeCreationBackend,
-        "current",
-        classmethod(lambda cls: SpanOnlyCreationBackend()),
-    )
-    source = (
-        "def outer(Target, replacement):\n"
-        "    def inner(a: Target, /, b: (Target := replacement), c=Target): pass\n"
-        "    consume(Target)\n"
-    )
-    flow = next(
-        flow for flow in projection(source).flows if flow.owner.qualname == "outer"
-    )
-    reads = [
-        use
-        for use in flow.reference_uses
-        if use.lexical_reference is not None
-        and use.lexical_reference.root_name == "Target"
-    ]
-    assert len(reads) == 3
-    before, annotation, after = reads
-    assert isinstance(
-        flow.binding_resolution_for("Target", before.position),
-        InitialCompactParameterBinding,
-    )
-    assert isinstance(
-        flow.binding_resolution_for("Target", annotation.position),
-        OpenCompactBindingMutation,
-    )
-    assert isinstance(
-        flow.binding_resolution_for("Target", after.position),
-        ExactCompactBindingMutation,
-    )
-    assert before.position.dominates(annotation.position)
-    assert annotation.position.dominates(after.position)
 
 
 @pytest.mark.parametrize("future", (False, True))

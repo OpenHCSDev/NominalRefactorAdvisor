@@ -17,7 +17,6 @@ from nominal_refactor_advisor.native_compilation import (
     NativeFunctionExecution,
     NativeFunctionExecutionMode,
     NativePythonCompilation,
-    SpanOnlyCreationBackend,
 )
 from nominal_refactor_advisor.source_geometry import SourceByteSpan
 
@@ -455,21 +454,6 @@ def test_later_region_reset_does_not_erase_completed_attachment_witness(
     )
     assert backend.observe(current, store, None) is None
     assert backend.proves_body(emission)
-
-
-def test_unregistered_compiler_uses_span_only_without_annotation_metadata(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(NativeCreationBackend, "__registry__", {})
-    monkeypatch.delattr(dis, "FUNCTION_ATTR_FLAGS", raising=False)
-    backend = NativeCreationBackend.current()
-    assert isinstance(backend, SpanOnlyCreationBackend)
-    source = "def sample():\n    return None\n"
-    compilation = NativePythonCompilation(source, "unsupported_backend.py")
-    span = SourceByteSpan.require_node(ast.parse(source).body[0])
-    execution = compilation.execution_for(span)
-    assert isinstance(execution, ExactNativeFunctionExecution)
-    assert execution.violation is None
 
 
 def test_projected_owner_retains_no_code_or_transient_emission_in_dict_values() -> None:

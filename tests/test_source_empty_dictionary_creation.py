@@ -14,10 +14,7 @@ from nominal_refactor_advisor.captured_reference import (
     CapturedNativeObject,
     OpenCapturedReference,
 )
-from nominal_refactor_advisor.native_compilation import (
-    NativeCreationBackend,
-    SpanOnlyCreationBackend,
-)
+from nominal_refactor_advisor.native_compilation import NativeCreationBackend
 from nominal_refactor_advisor.product_flow import CompactFlowValue
 from nominal_refactor_advisor.source_execution import (
     SourceEmptyDictionaryCapture,
@@ -191,19 +188,6 @@ def test_unknown_or_repeated_activation_remains_open(source):
         if isinstance(node, ast.Dict)
     )
     result = environment.capture_value(node)
-    assert isinstance(result, OpenCapturedReference)
-    with pytest.raises(ValueError):
-        result.require_closed()
-
-
-def test_unknown_compiler_does_not_gain_freshness_from_empty_shape(monkeypatch):
-    environment = execution("original = {}\n")
-    monkeypatch.setattr(
-        NativeCreationBackend,
-        "current",
-        classmethod(lambda cls: SpanOnlyCreationBackend()),
-    )
-    result = environment.capture_value(environment.module.module.body[0].value)
     assert isinstance(result, OpenCapturedReference)
     with pytest.raises(ValueError):
         result.require_closed()

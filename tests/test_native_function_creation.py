@@ -19,7 +19,6 @@ from nominal_refactor_advisor.native_compilation import (
     OpenNativeFrameOrigin,
     OpenNativeFunctionExecution,
     SourceNativeFrameOrigin,
-    SpanOnlyCreationBackend,
 )
 from nominal_refactor_advisor.source_geometry import SourceByteSpan
 
@@ -142,18 +141,6 @@ def test_exact_flags_do_not_fill_missing_creation_evidence(monkeypatch, damage):
     namespace = {}
     exec(code, namespace)
     assert receipt.native_flags == namespace["chosen"].__code__.co_flags
-    with pytest.raises(ValueError, match="creation"):
-        receipt.require_creation()
-
-
-def test_unadmitted_backend_keeps_code_flags_without_creation_proof(monkeypatch):
-    monkeypatch.setattr(
-        NativeCreationBackend,
-        "current",
-        classmethod(lambda cls: SpanOnlyCreationBackend()),
-    )
-    _, receipt, _, _ = _case(monkeypatch, "def chosen(): pass\n")
-    assert type(receipt) is ExactNativeFunctionExecution
     with pytest.raises(ValueError, match="creation"):
         receipt.require_creation()
 

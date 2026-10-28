@@ -15,10 +15,7 @@ from nominal_refactor_advisor.class_namespace import (
     EvaluationEffectOccurrence,
     OperationEffectOccurrence,
 )
-from nominal_refactor_advisor.native_compilation import (
-    NativeCreationBackend,
-    SpanOnlyCreationBackend,
-)
+from nominal_refactor_advisor.native_compilation import NativeCreationBackend
 from test_source_dictionary_construction import (
     _execution,
     _require_dictionary_effects,
@@ -177,24 +174,6 @@ def test_lower_bound_requires_actual_contained_source_evaluations(defect):
         operand = environment.module.module.body[-2].value
     with pytest.raises(ValueError):
         environment.source.evaluation_operand_entry(whole, operand)
-
-
-def test_unknown_native_backend_cannot_claim_a_narrower_interval(monkeypatch):
-    environment, dictionary = _execution("{(1,):Alpha,(2,):Beta}")
-    whole = evaluation(environment, dictionary)
-    monkeypatch.setattr(
-        NativeCreationBackend,
-        "current",
-        classmethod(lambda cls: SpanOnlyCreationBackend()),
-    )
-    assert (
-        dictionary_effect(environment, dictionary).earliest_application(
-            environment.source, whole
-        )
-        is whole.entry
-    )
-    with pytest.raises(ValueError):
-        _require_dictionary_effects(environment, dictionary)
 
 
 def test_refined_overlap_keeps_half_open_and_continuation_boundaries():

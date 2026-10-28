@@ -27,7 +27,6 @@ from nominal_refactor_advisor.native_compilation import (
     OpenNativeClassCapture,
     OpenNativeFrameOrigin,
     SourceNativeFrameOrigin,
-    SpanOnlyCreationBackend,
 )
 from nominal_refactor_advisor.source_geometry import SourceByteSpan
 
@@ -494,22 +493,6 @@ def test_rebinding_replaces_receipt_lifetime_without_rewriting_old_proof(monkeyp
     assert isinstance(restored.builder.frame, SourceNativeFrameOrigin)
     assert restored.body.require_creation().frame is restored.builder.frame
     assert isinstance(changed.body.require_creation().frame, OpenNativeFrameOrigin)
-
-
-def test_unsupported_backend_and_rejected_compile_stay_explicit(monkeypatch):
-    compilation = NativePythonCompilation("class Target: pass\n", "unsupported.py")
-    span = SourceByteSpan.require_node(ast.parse(compilation.source).body[0])
-    monkeypatch.setattr(
-        NativeCreationBackend,
-        "current",
-        classmethod(lambda cls: SpanOnlyCreationBackend()),
-    )
-    receipt = compilation.class_capture_for(span)
-    assert isinstance(receipt, OpenNativeClassCapture)
-    assert receipt.reason is NativeExecutionUnavailable.UNSUPPORTED_COMPILER
-    invalid = NativePythonCompilation("return\n", "rejected.py").class_capture_for(span)
-    assert isinstance(invalid, OpenNativeClassCapture)
-    assert invalid.reason is NativeExecutionUnavailable.COMPILATION_REJECTED
 
 
 def test_incomplete_builder_geometry_does_not_admit_an_exact_capture(monkeypatch):

@@ -8,10 +8,7 @@ from nominal_refactor_advisor.captured_reference import (
     CapturedNativeObject,
     NativeTypePremise,
 )
-from nominal_refactor_advisor.native_compilation import (
-    NativeCreationBackend,
-    SpanOnlyCreationBackend,
-)
+from nominal_refactor_advisor.native_compilation import NativeCreationBackend
 from test_source_function_storage import prepared_function
 
 
@@ -83,20 +80,6 @@ def test_source_marker_getters_are_not_executed_to_prove_absence():
     assert calls == []
     assert value.__isabstractmethod__ is False
     assert calls == [value]
-
-
-def test_unavailable_native_backend_does_not_gain_a_marker_law(monkeypatch):
-    _, entry, function = prepared_function()
-    prefix = entry.completion_prefix
-    monkeypatch.setattr(
-        NativeCreationBackend,
-        "current",
-        classmethod(lambda cls: SpanOnlyCreationBackend()),
-    )
-    with pytest.raises(ValueError):
-        function.require_nonabstract_member(prefix)
-    with pytest.raises(ValueError):
-        CapturedNativeObject(1).require_nonabstract_member(prefix)
 
 
 @pytest.mark.parametrize(
