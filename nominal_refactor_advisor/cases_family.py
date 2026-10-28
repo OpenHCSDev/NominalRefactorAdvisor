@@ -64,9 +64,13 @@ from .descent import (
 from .declared_root import DeclaredRoot
 from .semantic_descent import AuthorityClaim, SemanticAuthorityKind
 
-ITERATING_CALLS = frozenset({"tuple", "list", "set", "frozenset", "sorted"})
 BOOLEAN_CALLS = frozenset(
-    (*BuiltinCallName.type_test_names(), BuiltinCallName.BOOL, "callable", "hasattr")
+    (
+        *BuiltinCallName.type_test_names(),
+        BuiltinCallName.BOOL,
+        BuiltinCallName.CALLABLE,
+        BuiltinCallName.HASATTR,
+    )
 )
 
 
@@ -1537,7 +1541,7 @@ class CasesFamily(Cases, Descent):
             return True
         return (
             isinstance(parent, ast.Call)
-            and is_name(parent.func, ITERATING_CALLS)
+            and is_name(parent.func, BuiltinCallName.key_view_wrapper_names())
             and parent.args == [node]
         )
 

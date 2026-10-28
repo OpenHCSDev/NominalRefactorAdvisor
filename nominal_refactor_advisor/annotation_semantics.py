@@ -5,9 +5,33 @@ from __future__ import annotations
 import ast
 import re
 from dataclasses import dataclass
+from enum import Enum
 from functools import cached_property
 
+from .ast_tools import BuiltinCallName
 from .lexical_bindings import LEXICAL_SCOPE_BINDING_AUTHORITY
+
+
+class TypeWrapper(Enum):
+    """A typing subscript whose slice is the type it annotates, by its spellings.
+
+    ``type[X]`` and ``typing.Type[X]`` are one wrapper, the class object of
+    ``X``, spelled twice.
+    """
+
+    OPTIONAL = ("Optional",)
+    REQUIRED = ("Required",)
+    NOT_REQUIRED = ("NotRequired",)
+    CLASS_OBJECT = (BuiltinCallName.TYPE.value, "Type")
+
+    def spelled_by(self, name: str | None) -> bool:
+        return name in self.value
+
+    @classmethod
+    def wraps(cls, name: str | None) -> bool:
+        """Whether a subscript rooted at ``name`` annotates its slice's type."""
+
+        return any(wrapper.spelled_by(name) for wrapper in cls)
 
 @dataclass(frozen=True)
 class ClassVarAnnotationAuthority:

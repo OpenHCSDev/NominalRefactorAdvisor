@@ -21,7 +21,7 @@ from typing import TypeVar
 from .ast_field_decoders import ParameterAnnotations
 from .lexical_bindings import ImportAlias, ImportBoundNameProjection
 from .ast_projection import CallKeywords, StatementValues
-from .ast_tools import BuiltinCallName, ParsedModule
+from .ast_tools import AttributeAccessCall, BuiltinCall, BuiltinCallName, ParsedModule
 from .declared_root import DeclaredRoot
 from .models import SourceLocation
 from .class_index import ModuleNominalBindingAuthority
@@ -240,26 +240,24 @@ class NamedAttributeSiteFamily(RestatingSiteFamily[RestatingSiteModule]):
         index = parsed_module.syntax_index
         constants = cls.string_constants(parsed_module)
         modules = imported_module_names(parsed_module)
-        names = BuiltinCallName.attribute_access_names()
         for node_index, call in index.indexed_nodes_of_type(ast.Call):
-            callee = call.func
-            if not isinstance(callee, ast.Name) or callee.id not in names:
+            access = BuiltinCall.decoded(call)
+            if not isinstance(access, AttributeAccessCall) or not isinstance(
+                call.func, ast.Name
+            ):
                 continue
-            if len(call.args) < 2:
-                continue
-            receiver, name_expression, *_rest = call.args
+            receiver = access.object_argument
             if isinstance(receiver, ast.Name) and receiver.id in modules:
                 continue
-            spelled = cls.attribute_name(name_expression, constants)
+            spelled = cls.attribute_name(access.name_argument, constants)
             if spelled is None:
                 continue
-            defaulted = BuiltinCallName(callee.id).carries_default(len(call.args))
             yield cls.site(
                 parsed_module,
                 call,
                 index.lexical_symbol(node_index),
                 ast.unparse(receiver),
-                (f"{callee.id}{' with default' if defaulted else ''}", spelled),
+                (access.description, spelled),
             )
 
     @staticmethod

@@ -7,7 +7,13 @@ from dataclasses import dataclass
 
 from .annotation_semantics import NOMINAL_ANNOTATION_SOURCE_AUTHORITY
 from .ast_field_decoders import declared_annotations
-from .ast_tools import BuiltinCallName, ClassFunctionStackNodeVisitor, ParsedModule
+from .ast_tools import (
+    BuiltinCall,
+    BuiltinCallName,
+    ClassFunctionStackNodeVisitor,
+    ParsedModule,
+    TypeQuery,
+)
 from .class_index import (
     CompactClassFamilyIndex,
     CompactClassReferenceResolver,
@@ -120,15 +126,15 @@ class DeclaredAttributeCheckCollector(ClassFunctionStackNodeVisitor):
             ):
                 if (
                     isinstance(call, ast.Call)
-                    and BuiltinCallName.TYPE.resolves_unshadowed(
+                    and isinstance(query := BuiltinCall.decoded(call), TypeQuery)
+                    and query.builtin.resolves_unshadowed(
                         call.func,
                         self.module_bindings.resolves_unshadowed_builtin,
                         self.locals,
                     )
-                    and len(call.args) == 1
                     and not call.keywords
                 ):
-                    self._record(node, call.args[0], expected)
+                    self._record(node, query.queried, expected)
         self.generic_visit(node)
 
     def _record(self, node: ast.AST, value: ast.AST, expected: ast.AST) -> None:

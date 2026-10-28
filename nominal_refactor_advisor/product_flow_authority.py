@@ -22,8 +22,9 @@ from typing import (
 )
 
 from .value_expression import CompactValueExpression
-from .annotation_semantics import NOMINAL_ANNOTATION_SOURCE_AUTHORITY
+from .annotation_semantics import NOMINAL_ANNOTATION_SOURCE_AUTHORITY, TypeWrapper
 from .ast_tools import (
+    BuiltinCallName,
     CollectedFamily,
     ParsedModule,
     ParsedModuleSourceProjection,
@@ -1466,7 +1467,9 @@ class ProductFlowRepository(
         )
 
     # Builtins and standard calls that return attributes chosen by a value.
-    COMPUTED_FETCH_BUILTINS: ClassVar[frozenset[str]] = frozenset(("getattr", "vars"))
+    COMPUTED_FETCH_BUILTINS: ClassVar[frozenset[str]] = frozenset(
+        (BuiltinCallName.GETATTR, BuiltinCallName.VARS)
+    )
     COMPUTED_FETCH_CALLS: ClassVar[frozenset[str]] = frozenset(
         ("getmembers", "getmembers_static", "attrgetter", "methodcaller")
     )
@@ -1702,11 +1705,9 @@ class ProductFlowRepository(
             classes.extend(self.foreign_base_subclasses.get(foreign, ()))
         return tuple(classes)
 
-    OPTIONAL: ClassVar[frozenset[str]] = frozenset(("Optional", "type", "Type"))
-
     @classmethod
     def _annotation_alternatives(cls, expression: ast.expr) -> list[ast.expr]:
-        """The classes an annotation admits: `A | B`, `Optional[A]` and `type[A]` unpacked."""
+        """The classes an annotation admits: `A | B`, and each `TypeWrapper` (`Optional[A]`, `type[A]`, ...) unpacked."""
 
         match expression:
             case ast.BinOp(left=left, op=ast.BitOr(), right=right):
@@ -1716,7 +1717,7 @@ class ProductFlowRepository(
                 ]
             case ast.Subscript(value=wrapper, slice=inner) if (
                 reference := LexicalValueReference.from_expression(wrapper)
-            ) is not None and reference.terminal_name in cls.OPTIONAL:
+            ) is not None and TypeWrapper.wraps(reference.terminal_name):
                 return cls._annotation_alternatives(inner)
         return [expression]
 

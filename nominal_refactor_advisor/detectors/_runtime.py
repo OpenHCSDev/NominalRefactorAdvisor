@@ -25,6 +25,9 @@ from ._regex_bundle import RepeatedLocalRegexBundleDetector
 
 from ..lexical_bindings import ImportBoundNameProjection
 from ..ast_tools import (
+    BuiltinCall,
+    BuiltinCallName,
+    Globals,
     CollectedFamily,
     LITERAL_DISPATCH_CASE_MATCHER,
     ParsedModule,
@@ -1095,14 +1098,13 @@ class RuntimeNamespaceBridgeKind(StrEnum):
     GUARDED_GLOBALS_DEFINITION = "guarded globals definition"
 
 
-_GLOBALS_BUILTIN_NAME = "globals"
 _RUNTIME_BRIDGE_NAMESPACE_NAME = "runtime_bridge_namespace"
 
 
 def _runtime_namespace_bridge_source_may_match(source: str) -> bool:
     """Return whether source contains a symbol required by every bridge witness."""
 
-    return _GLOBALS_BUILTIN_NAME in source or _RUNTIME_BRIDGE_NAMESPACE_NAME in source
+    return BuiltinCallName.GLOBALS in source or _RUNTIME_BRIDGE_NAMESPACE_NAME in source
 
 
 def _call_symbol(node: ast.AST) -> str:
@@ -1115,13 +1117,7 @@ def _call_symbol(node: ast.AST) -> str:
 
 
 def _is_globals_call(node: ast.AST) -> bool:
-    return (
-        isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Name)
-        and node.func.id == _GLOBALS_BUILTIN_NAME
-        and not node.args
-        and not node.keywords
-    )
+    return isinstance(node, ast.Call) and isinstance(BuiltinCall.decoded(node), Globals)
 
 
 def _is_runtime_bridge_namespace_call(node: ast.AST) -> bool:

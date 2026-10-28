@@ -13,9 +13,10 @@ from collections import defaultdict
 from dataclasses import dataclass
 from typing import Generic, TypeVar
 
-from ..value_expression import CompactValueExpression
 from ..ast_projection import ExpressionReference
 from ..ast_tools import (
+    BuiltinCall,
+    TypeQuery,
     ParsedModule,
     is_docstring_statement,
     statements_without_docstring,
@@ -26,7 +27,6 @@ from ..collection_algebra import sorted_tuple
 from ..foreign_family import FunctionDefinition
 from ..name_algebra import CLASS_NAME_ALGEBRA, ClassNameAlgebra
 
-_TYPE_NAME_LITERAL = "type"
 ProjectionT = TypeVar("ProjectionT")
 
 
@@ -41,15 +41,10 @@ class _SelectorAttributeProjection(_AstNodeProjection[str | None]):
         if isinstance(node, ast.Attribute):
             if isinstance(node.value, ast.Name) and node.value.id in {"self", "cls"}:
                 return node.attr
-            if (
-                isinstance(node.value, ast.Call)
-                and isinstance(node.value.func, ast.Name)
-                and (node.value.func.id == _TYPE_NAME_LITERAL)
-                and (len(node.value.args) == 1)
-                and isinstance(node.value.args[0], ast.Name)
-                and (node.value.args[0].id == "self")
-            ):
-                return node.attr
+            if isinstance(node.value, ast.Call):
+                match BuiltinCall.decoded(node.value):
+                    case TypeQuery(queried=ast.Name(id="self")):
+                        return node.attr
         return None
 
 
@@ -64,41 +59,8 @@ class _DataclassDecoratorProjection(_AstNodeProjection[bool]):
         return False
 
 
-class _AnnotationTypeNamesProjection(_AstNodeProjection[tuple[str, ...]]):
-    def __call__(self, node: ast.AST | None) -> tuple[str, ...]:
-        if node is None:
-            return ()
-        if CompactValueExpression.project(node).value_is_none_literal:
-            return ()
-        if isinstance(node, ast.Name):
-            return () if node.id == "None" else (node.id,)
-        if isinstance(node, ast.Attribute):
-            return (node.attr,)
-        if isinstance(node, ast.Tuple):
-            names = {name for element in node.elts for name in self(element)}
-            return sorted_tuple(names)
-        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.BitOr):
-            return sorted_tuple({*self(node.left), *self(node.right)})
-        if isinstance(node, ast.Subscript):
-            base_name = ExpressionReference.decoded(node.value).terminal_name
-            if base_name in {
-                "Optional",
-                "Required",
-                "NotRequired",
-                "Type",
-                _TYPE_NAME_LITERAL,
-            }:
-                return self(node.slice)
-            if base_name == "Annotated":
-                if isinstance(node.slice, ast.Tuple) and node.slice.elts:
-                    return self(node.slice.elts[0])
-                return self(node.slice)
-        return ()
-
-
 _selector_attribute_name = _SelectorAttributeProjection()
 _dataclass_decorator_projection = _DataclassDecoratorProjection()
-_annotation_type_names_projection = _AnnotationTypeNamesProjection()
 
 
 def _camel_case(value: str) -> str:
@@ -193,10 +155,6 @@ def _is_dataclass_class(node: ast.ClassDef) -> bool:
             for decorator in node.decorator_list
         )
     )
-
-
-def _annotation_type_names(node: ast.AST | None) -> tuple[str, ...]:
-    return _annotation_type_names_projection(node)
 
 
 _IGNORED_BASE_NAMES = frozenset({"ABC", "object"})
@@ -315,7 +273,6 @@ __all__ = (
     "_is_abstract_method",
     "_is_dataclass_class",
     "_selector_attribute_name",
-    "_annotation_type_names",
     "CLASS_NAME_ALGEBRA",
     "_IGNORED_BASE_NAMES",
     "_IGNORED_ANCESTOR_NAMES",

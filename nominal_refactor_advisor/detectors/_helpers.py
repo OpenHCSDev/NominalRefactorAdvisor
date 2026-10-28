@@ -27,7 +27,7 @@ from ..ast_field_decoders import (
     variadic_parameters,
 )
 from ..value_expression import CompactValueExpression
-from ..annotation_semantics import CLASSVAR_ANNOTATION_AUTHORITY
+from ..annotation_semantics import CLASSVAR_ANNOTATION_AUTHORITY, TypeWrapper
 from ..ast_projection import ExpressionReference
 from ..ast_projection import (
     CallKeywords,
@@ -36,7 +36,12 @@ from ..ast_projection import (
     single_name_targets,
 )
 from ..ast_tools import (
+    AttributeAccessCall,
+    AttributeLookup,
+    BuiltinCall,
     BuiltinCallName,
+    Getattr,
+    NamespaceCall,
     SourceModule,
     walk_function_body_nodes,
 )
@@ -80,7 +85,7 @@ from ..ast_tools import (
     ScopedAstObservation,
     statements_without_docstring,
 )
-from ..class_index import ClassFamilyIndex, IndexedClass
+from ..class_index import ClassFamilyIndex, IndexedClass, annotation_type_names
 from ..collection_algebra import sorted_tuple
 from ..models import SourceLocation
 from ..name_algebra import CLASS_NAME_ALGEBRA
@@ -102,13 +107,10 @@ from ..semantic_match import (
     single_return_value,
 )
 from ._base import (
-    _GETATTR_BUILTIN,
-    _HASATTR_BUILTIN,
     _is_classmethod,
     _module_builder_call_shapes,
     _PIPELINE_ASSIGN_STAGE,
     _PIPELINE_RETURN_STAGE,
-    _REFLECTIVE_SELF_BUILTINS,
     _self_attr_name,
     _string_constant_expression,
     CANDIDATE_COLLECTION_AUTHORITY,
@@ -152,7 +154,6 @@ from ._base import (
     TypedCandidateCastBoilerplateCandidate,
 )
 from ._substrate_support import (
-    _annotation_type_names,
     _constant_string,
     _IGNORED_ANCESTOR_NAMES,
     _IGNORED_BASE_NAMES,
@@ -1201,10 +1202,14 @@ def _reflective_self_attribute_candidates_for_class(
         for subnode in _walk_nodes(statement):
             if not isinstance(subnode, ast.Call):
                 continue
-            builtin_name = ExpressionReference.decoded(subnode.func).terminal_name
-            if builtin_name != _GETATTR_BUILTIN or len(subnode.args) != 2:
-                continue
-            receiver, attribute_name_node = subnode.args[0], subnode.args[1]
+            match BuiltinCall.decoded(subnode):
+                case Getattr(carries_default=False) as call:
+                    receiver, attribute_name_node = (
+                        call.object_argument,
+                        call.name_argument,
+                    )
+                case _:
+                    continue
             attribute_name = _constant_string(attribute_name_node)
             if not (
                 isinstance(receiver, ast.Name)
@@ -1218,7 +1223,7 @@ def _reflective_self_attribute_candidates_for_class(
                 subject_name=node.name,
                 name_family=(attribute_name,),
                 method_name=statement.name,
-                reflective_builtin=builtin_name,
+                reflective_builtin=call.builtin,
                 attribute_name=attribute_name,
             )
 
@@ -1358,12 +1363,11 @@ def _dynamic_self_field_selection_candidates_for_class(
         for subnode in module.syntax_index.function_walks[statement]:
             if not isinstance(subnode, ast.Call):
                 continue
-            builtin_name = ExpressionReference.decoded(subnode.func).terminal_name
-            if builtin_name not in _REFLECTIVE_SELF_BUILTINS:
-                continue
-            if len(subnode.args) < 2:
-                continue
-            receiver, selector_node = subnode.args[0], subnode.args[1]
+            match BuiltinCall.decoded(subnode):
+                case AttributeAccessCall() as call:
+                    receiver, selector_node = call.object_argument, call.name_argument
+                case _:
+                    continue
             if not isinstance(receiver, ast.Name) or receiver.id != "self":
                 continue
             if _constant_string(selector_node) is not None:
@@ -1380,7 +1384,7 @@ def _dynamic_self_field_selection_candidates_for_class(
                 subject_name=node.name,
                 name_family=(selector_expression,),
                 method_name=statement.name,
-                reflective_builtin=builtin_name,
+                reflective_builtin=call.builtin,
                 selector_expression=selector_expression,
             )
 
@@ -1409,11 +1413,11 @@ def _reflective_lookup_shape(
     node: ast.AST,
 ) -> tuple[str, str, ast.AST] | None:
     if isinstance(node, ast.Call):
-        builtin_name = ExpressionReference.decoded(node.func).terminal_name
-        if builtin_name == _GETATTR_BUILTIN and len(node.args) >= 2:
-            selector_node = node.args[1]
-            if _constant_string(selector_node) is None:
-                return (_GETATTR_BUILTIN, ast.unparse(node.args[0]), selector_node)
+        match BuiltinCall.decoded(node):
+            case Getattr(name_argument=selector_node) as call if (
+                _constant_string(selector_node) is None
+            ):
+                return (call.builtin, ast.unparse(call.object_argument), selector_node)
         if (
             isinstance(node.func, ast.Attribute)
             and node.func.attr == "get"
@@ -1427,13 +1431,10 @@ def _reflective_lookup_shape(
     if (
         isinstance(node, ast.Subscript)
         and isinstance(node.value, ast.Call)
-        and isinstance(node.value.func, ast.Name)
-        and (node.value.func.id in {"globals", "locals"})
-        and (not node.value.args)
-        and (not node.value.keywords)
+        and isinstance(namespace := BuiltinCall.decoded(node.value), NamespaceCall)
         and (_constant_string(node.slice) is None)
     ):
-        return (f"{node.value.func.id}[]", f"{node.value.func.id}()", node.slice)
+        return (f"{namespace.builtin}[]", f"{namespace.builtin}()", node.slice)
     return None
 
 
@@ -1535,7 +1536,7 @@ def _class_init_concrete_param_backed_attrs(node: ast.ClassDef) -> dict[str, str
     if init_method is None:
         return {}
     parameter_type_names = {
-        argument.arg: _annotation_type_names(
+        argument.arg: annotation_type_names(
             argument.annotation
         )
         for argument in ParameterAnnotations.of(
@@ -1602,16 +1603,15 @@ def _concrete_config_field_probe_candidates(
             for subnode in _walk_nodes(method):
                 if not isinstance(subnode, ast.Call):
                     continue
-                builtin_name = ExpressionReference.decoded(subnode.func).terminal_name
-                if (
-                    builtin_name not in {_GETATTR_BUILTIN, _HASATTR_BUILTIN}
-                    or len(subnode.args) < 2
-                ):
+                lookup = BuiltinCall.decoded(subnode)
+                if not isinstance(lookup, AttributeLookup):
                     continue
-                probed_field_name = _constant_string(subnode.args[1])
+                probed_field_name = _constant_string(lookup.name_argument)
                 if probed_field_name is None:
                     continue
-                config_attr_name = _receiver_self_attr_name(subnode.args[0], aliases)
+                config_attr_name = _receiver_self_attr_name(
+                    lookup.object_argument, aliases
+                )
                 if config_attr_name is None:
                     continue
                 config_type_name = concrete_config_attrs.get(config_attr_name)
@@ -1632,7 +1632,7 @@ def _concrete_config_field_probe_candidates(
                     continue
                 key = (config_attr_name, config_type_name)
                 grouped_missing_fields[key].add(probed_field_name)
-                grouped_probe_builtins[key].add(builtin_name)
+                grouped_probe_builtins[key].add(lookup.builtin)
                 grouped_lines.setdefault(key, subnode.lineno)
             for (config_attr_name, config_type_name), missing_fields in sorted(
                 grouped_missing_fields.items()
@@ -1940,7 +1940,6 @@ def _registered_union_surface_candidates(
     )
 
 
-_CLASS_OBJECT_TYPE_ANNOTATION_ROOTS = frozenset({"type", "Type"})
 _CONCRETE_UNION_CONTRACT_IGNORED_BASE_NAMES = frozenset(
     {"ABC", "ABCMeta", "Generic", "Protocol", "object"}
 )
@@ -1973,7 +1972,7 @@ def _class_object_type_argument_name(node: ast.AST) -> str | None:
     if not isinstance(node, ast.Subscript):
         return None
     root_name = HELPER_SYNTAX_PROJECTION_AUTHORITY.annotation_root_name(node.value)
-    if root_name not in _CLASS_OBJECT_TYPE_ANNOTATION_ROOTS:
+    if not TypeWrapper.CLASS_OBJECT.spelled_by(root_name):
         return None
     return HELPER_SYNTAX_PROJECTION_AUTHORITY.annotation_root_name(node.slice)
 

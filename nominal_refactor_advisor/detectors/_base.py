@@ -126,6 +126,7 @@ from ..ast_tools import (
 from ..native_syntax import NativePythonSyntaxIndex
 from ..positional_forwarding import PositionalForwardingCall
 from ..class_index import (
+    annotation_type_names,
     ClsRegistryMembership,
     ClassFamilyIndex,
     ClassSymbolResolutionAuthority,
@@ -202,7 +203,6 @@ from ..taxonomy import (
 from ..ast_tools import statements_without_docstring
 from ..name_algebra import CLASS_NAME_ALGEBRA
 from ._substrate_support import (
-    _annotation_type_names,
     _constant_string,
     _IGNORED_ANCESTOR_NAMES,
     _is_abstract_method,
@@ -211,13 +211,6 @@ from ._substrate_support import (
     CLASS_NODE_AUTHORITY,
 )
 
-_GETATTR_BUILTIN = "getattr"
-_HASATTR_BUILTIN = "hasattr"
-_SETATTR_BUILTIN = "setattr"
-_DELATTR_BUILTIN = "delattr"
-_REFLECTIVE_SELF_BUILTINS = frozenset(
-    {_GETATTR_BUILTIN, _HASATTR_BUILTIN, _SETATTR_BUILTIN, _DELATTR_BUILTIN}
-)
 _PIPELINE_ASSIGN_STAGE = "assign"
 _PIPELINE_RETURN_STAGE = "return"
 
@@ -3303,7 +3296,7 @@ class SyntaxProjectionAuthority:
                 != "KeyedNominalFamily"
             ):
                 continue
-            type_names = _annotation_type_names(base.slice)
+            type_names = annotation_type_names(base.slice)
             if type_names:
                 return type_names[0]
         return None
