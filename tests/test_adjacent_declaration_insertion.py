@@ -7,7 +7,7 @@ import sys
 
 import pytest
 
-from nominal_refactor_advisor.class_index import ParsedModuleSet
+from nominal_refactor_advisor.ast_tools import ParsedModuleSet
 from nominal_refactor_advisor.ast_tools import ParsedModule, parse_python_modules
 from nominal_refactor_advisor.codemod import (
     CodemodPlanSequence,
@@ -134,7 +134,7 @@ def test_generated_dispatch_family_keeps_parenthesized_decorator_on_function(
         )
     )
     simulation = plan.simulate(
-        CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
+        CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     )
     assert simulation.is_clean
     simulation.apply()
@@ -177,7 +177,7 @@ def test_collector_migration_does_not_erase_decorated_forwarder_behaviour(
     )
     with pytest.raises(ValueError, match="witnesses"):
         plan.simulate(
-            CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
+            CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
         )
     assert path.read_bytes() == source.encode()
 
@@ -206,7 +206,7 @@ def test_inserting_before_dataclass_cannot_move_its_generated_constructor(
         )
     )
     simulation = plan.simulate(
-        CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
+        CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     )
     assert simulation.is_clean
     simulation.apply()

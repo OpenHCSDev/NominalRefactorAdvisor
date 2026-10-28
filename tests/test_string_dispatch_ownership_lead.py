@@ -2,7 +2,7 @@
 
 from pathlib import Path
 
-from nominal_refactor_advisor.class_index import ParsedModuleSet
+from nominal_refactor_advisor.ast_tools import ParsedModuleSet
 from nominal_refactor_advisor.analysis import analyze_path
 from nominal_refactor_advisor.ast_tools import SourceModule
 from nominal_refactor_advisor.cli import MARKDOWN_RENDERER

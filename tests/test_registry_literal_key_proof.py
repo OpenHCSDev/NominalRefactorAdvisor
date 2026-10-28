@@ -15,7 +15,7 @@ from pathlib import Path
 import pytest
 from registry_test_sources import keyed_registry_source
 
-from nominal_refactor_advisor.class_index import ParsedModuleSet
+from nominal_refactor_advisor.ast_tools import ParsedModuleSet
 from nominal_refactor_advisor.analysis import analyze_detector_types
 from nominal_refactor_advisor.ast_tools import (
     CollectedFamilyImplementationIdentity,

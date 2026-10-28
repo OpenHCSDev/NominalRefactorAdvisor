@@ -77,6 +77,7 @@ from .observation_graph import (
     StructuralExecutionLevel,
     StructuralObservation,
     StructuralObservationCarrier,
+    collect_structural_observations,
 )
 from .observation_shapes import (
     BuilderCallShape,
@@ -910,6 +911,66 @@ class ParsedModule(SourceFileIdentity):
             source,
             family_cache_dir=self.family_cache_dir,
         ).parse()
+
+
+class ParsedModuleSetFact(ABC):
+    """A fact derived from one run's module set, held by that set.
+
+    A layer that `ast_tools` cannot name declares its set facts as subclasses;
+    `ParsedModuleSet.fact(kind)` derives each kind once.
+    """
+
+    @classmethod
+    @abstractmethod
+    def derive(cls, modules: ParsedModuleSet) -> Self:
+        raise NotImplementedError
+
+
+ParsedModuleSetFactT = TypeVar("ParsedModuleSetFactT", bound=ParsedModuleSetFact)
+
+
+@dataclass(frozen=True)
+class ParsedModuleSet(Sequence[ParsedModule]):
+    """The parses one run or scan analyzes, and the facts derived from them as
+    a set. The parse functions construct it; a later stage over the same
+    parses is handed this object, so the set's facts are shared by identity."""
+
+    modules: tuple[ParsedModule, ...]
+
+    @classmethod
+    def of(cls, modules: Iterable[ParsedModule]) -> ParsedModuleSet:
+        return cls(tuple(modules))
+
+    def __len__(self) -> int:
+        return len(self.modules)
+
+    def __getitem__(self, index):
+        return self.modules[index]
+
+    def __iter__(self) -> Iterator[ParsedModule]:
+        return iter(self.modules)
+
+    @cached_property
+    def _facts(self) -> dict[type[ParsedModuleSetFact], ParsedModuleSetFact]:
+        return {}
+
+    def fact(self, kind: type[ParsedModuleSetFactT]) -> ParsedModuleSetFactT:
+        """This set's fact of one declared kind, derived once."""
+
+        facts = self._facts
+        if kind not in facts:
+            facts[kind] = kind.derive(self)
+        return cast(ParsedModuleSetFactT, facts[kind])
+
+    @cached_property
+    def observation_graph(self) -> ObservationGraph:
+        return ObservationGraph(
+            tuple(
+                observation
+                for module in self.modules
+                for observation in collect_structural_observations(module)
+            )
+        )
 
 
 @dataclass(frozen=True)
@@ -2919,14 +2980,18 @@ def parse_python_modules(
     use_parse_cache: bool = True,
     parse_workers: int = _DEFAULT_PARSE_WORKERS,
     source_policy: PythonSourcePathPolicy | None = None,
-) -> list[ParsedModule]:
+) -> ParsedModuleSet:
     """Parse one path (file or directory) into canonical ParsedModule records."""
-    return PythonModuleRootParser.parse(
-        root,
-        cache_dir=cache_dir,
-        use_parse_cache=use_parse_cache,
-        parse_workers=parse_workers,
-        source_policy=source_policy,
+    return ParsedModuleSet(
+        tuple(
+            PythonModuleRootParser.parse(
+                root,
+                cache_dir=cache_dir,
+                use_parse_cache=use_parse_cache,
+                parse_workers=parse_workers,
+                source_policy=source_policy,
+            )
+        )
     )
 
 
@@ -2937,7 +3002,7 @@ def parse_python_module_roots(
     use_parse_cache: bool = True,
     parse_workers: int = _DEFAULT_PARSE_WORKERS,
     source_policy: PythonSourcePathPolicy | None = None,
-) -> list[ParsedModule]:
+) -> ParsedModuleSet:
     """Parse multiple file or directory roots into one de-duplicated module set."""
     modules: list[ParsedModule] = []
     seen_paths: set[Path] = set()
@@ -2957,7 +3022,7 @@ def parse_python_module_roots(
             seen_paths.add(normalized_path)
             admitted_paths.append(path)
         modules.extend(parser.parsed_source_paths(tuple(admitted_paths)))
-    return modules
+    return ParsedModuleSet(tuple(modules))
 
 
 def python_module_path_identities_for_roots(

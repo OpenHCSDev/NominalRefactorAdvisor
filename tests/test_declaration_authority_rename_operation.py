@@ -7,7 +7,6 @@ from pathlib import Path
 
 import pytest
 
-from nominal_refactor_advisor.class_index import ParsedModuleSet
 from nominal_refactor_advisor.ast_tools import (
     ModuleAnnotationEvaluationMode,
     parse_python_modules,
@@ -69,7 +68,7 @@ def test_renames_class_authority_without_touching_shadowed_names(
     tmp_path: Path,
 ) -> None:
     module_path = _write_fixture(tmp_path)
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     operation = _operation(tmp_path)
     replayed = RefactorRecipeOperation.from_json_value(json_report_object(operation))
 
@@ -159,7 +158,7 @@ def test_renames_function_authority_across_repository_consumers(
         ),
         new_name="canonical",
     )
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
 
     result = (
         RefactorRecipe(recipe_id="rename-function-authority")
@@ -212,7 +211,7 @@ def test_renames_async_function_declaration(tmp_path: Path) -> None:
         ),
         new_name="canonical",
     )
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
 
     result = (
         RefactorRecipe(recipe_id="rename-async-function")
@@ -257,7 +256,7 @@ def test_renames_assignment_authority_across_repository_consumers(
         binding_name="_TargetNode",
         new_name="AstTargetNode",
     )
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     replayed = RefactorRecipeOperation.from_json_value(json_report_object(operation))
 
     result = RefactorRecipe("rename-assignment-authority").with_operation(
@@ -309,7 +308,7 @@ def test_renames_annotated_assignment_authority(tmp_path: Path) -> None:
         "pkg/types.py",
         "LegacyType: object = int\n\nREFERENCE = LegacyType\n",
     )
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     operation = RenameTopLevelBindingAuthorityOperation(
         target=SourceRewriteTarget(file_path=module_path.as_posix()),
         binding_name="LegacyType",
@@ -337,7 +336,7 @@ def test_renames_forward_annotations_from_final_assignment_authority(
         "    return LegacyType(value)\n\n\n"
         "LegacyType = int\n",
     )
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     operation = RenameTopLevelBindingAuthorityOperation(
         target=SourceRewriteTarget(file_path=module_path.as_posix()),
         binding_name="LegacyType",
@@ -366,7 +365,7 @@ def test_binding_rename_respects_runtime_forward_annotation_mode(
         "    return value\n\n\n"
         "LegacyType = int\n",
     )
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     operation = RenameTopLevelBindingAuthorityOperation(
         target=SourceRewriteTarget(file_path=module_path.as_posix()),
         binding_name="LegacyType",
@@ -409,7 +408,7 @@ def test_binding_rename_rejects_ambiguous_assignment_authority(
         "pkg/types.py",
         "LegacyType = AliasType = int\n",
     )
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     operation = RenameTopLevelBindingAuthorityOperation(
         target=SourceRewriteTarget(file_path=module_path.as_posix()),
         binding_name="LegacyType",
@@ -436,7 +435,7 @@ def test_chains_declaration_renames_against_each_prior_source_state(
         "    return value\n\n\n"
         "REFERENCE = legacy\n",
     )
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
 
     def rename_stage(old_name: str, new_name: str) -> CodemodPlanDocument:
         return CodemodPlanDocument(
@@ -481,7 +480,7 @@ def test_rejects_nested_declaration_target(tmp_path: Path) -> None:
         "    def legacy(self) -> int:\n"
         "        return 1\n",
     )
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     operation = RenameTopLevelDeclarationAuthorityOperation(
         target=SourceRewriteTarget(
             file_path=module_path.as_posix(),
@@ -509,7 +508,7 @@ def test_renames_repository_imports_aliases_and_annotations(tmp_path: Path) -> N
         "def consume(value: 'Legacy') -> Legacy:\n"
         "    return KeptAlias(value.value + 1)\n",
     )
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
 
     result = RefactorRecipe(recipe_id="repository-consumer").with_operation(
         _operation(tmp_path)
@@ -607,7 +606,7 @@ def test_rejects_rebound_repository_import(tmp_path: Path) -> None:
         "VALUE = Legacy(1)\n"
         "Legacy = object\n",
     )
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
 
     with pytest.raises(CodemodOperationPreflightError, match="binding.*is rebound"):
         RefactorRecipe(recipe_id="rebound-consumer").with_operation(
@@ -635,7 +634,7 @@ def test_rejects_unproved_import_binding_rename(
         "VALUE = Legacy(1)\n"
         f"{trailing_source}",
     )
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
 
     with pytest.raises(CodemodOperationPreflightError, match=message):
         RefactorRecipe(recipe_id="unproved-consumer").with_operation(
@@ -650,7 +649,7 @@ def test_rejects_used_star_import_consumer(tmp_path: Path) -> None:
         "pkg/consumer.py",
         "from pkg.family import *\n\nVALUE = Legacy(1)\n",
     )
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
 
     with pytest.raises(
         CodemodOperationPreflightError,
@@ -670,7 +669,7 @@ def test_rejects_star_import_that_would_gain_new_public_name(tmp_path: Path) -> 
         "    pass\n",
     )
     _write_module(tmp_path, "pkg/consumer.py", "from pkg.family import *\n")
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     operation = RenameTopLevelDeclarationAuthorityOperation(
         target=SourceRewriteTarget(
             file_path=family_path.as_posix(),
@@ -697,7 +696,7 @@ def test_rejects_nested_import_consumer(tmp_path: Path) -> None:
         "    from pkg.family import Legacy\n\n"
         "    return Legacy\n",
     )
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
 
     with pytest.raises(CodemodOperationPreflightError, match="nested import"):
         RefactorRecipe(recipe_id="nested-consumer").with_operation(
@@ -722,7 +721,7 @@ def test_renames_transitive_repository_consumers(tmp_path: Path) -> None:
         "pkg/qualified_consumer.py",
         "import pkg.reexport as exported\n\nVALUE = exported.Legacy(2)\n",
     )
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
 
     result = RefactorRecipe(recipe_id="transitive-consumer").with_operation(
         _operation(tmp_path)
@@ -770,7 +769,7 @@ def test_preserves_unrelated_same_spelled_authority_and_export(tmp_path: Path) -
         "pkg/unrelated_consumer.py",
         "import pkg.unrelated as unrelated\n\nVALUE = unrelated.Legacy\n",
     )
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
 
     result = RefactorRecipe(recipe_id="unrelated-authority").with_operation(
         _operation(tmp_path)
@@ -793,7 +792,7 @@ def test_preserves_explicit_reexport_alias(tmp_path: Path) -> None:
         "pkg/api_consumer.py",
         "from pkg.api import PublicAuthority\n\nVALUE = PublicAuthority(3)\n",
     )
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
 
     result = RefactorRecipe(recipe_id="stable-public-alias").with_operation(
         _operation(tmp_path)
@@ -816,7 +815,7 @@ def test_renames_qualified_self_module_reference(tmp_path: Path) -> None:
             "    return family.Legacy\n"
         ),
     )
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
 
     result = RefactorRecipe(recipe_id="qualified-reference").with_operation(
         _operation(tmp_path)
@@ -829,7 +828,7 @@ def test_renames_qualified_self_module_reference(tmp_path: Path) -> None:
 
 def test_rejects_string_name_surface(tmp_path: Path) -> None:
     _write_fixture(tmp_path, trailing_source='\nSERIALIZED = "Legacy"\n')
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
 
     with pytest.raises(
         CodemodOperationPreflightError,
@@ -849,7 +848,7 @@ def test_rejects_class_local_stringized_annotation_shadow(tmp_path: Path) -> Non
             "    value: 'Legacy'\n"
         ),
     )
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
 
     with pytest.raises(
         CodemodOperationPreflightError,
@@ -862,7 +861,7 @@ def test_rejects_class_local_stringized_annotation_shadow(tmp_path: Path) -> Non
 
 def test_rejects_replacement_name_collision(tmp_path: Path) -> None:
     _write_fixture(tmp_path, trailing_source="\nclass Canonical:\n    pass\n")
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
 
     with pytest.raises(
         CodemodOperationPreflightError,

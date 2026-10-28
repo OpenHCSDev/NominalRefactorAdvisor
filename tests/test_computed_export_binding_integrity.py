@@ -8,7 +8,6 @@ from types import ModuleType
 
 import pytest
 
-from nominal_refactor_advisor.class_index import ParsedModuleSet
 from nominal_refactor_advisor.ast_tools import ParsedModule, parse_python_modules
 from nominal_refactor_advisor.class_index import module_public_export_contract
 from nominal_refactor_advisor.codemod import (
@@ -81,7 +80,7 @@ def test_symbol_move_does_not_restore_an_import_overwritten_by_computed_star(tmp
 
     before = native_output()
     assert before == "True"
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     operation = MoveSymbolClosureToModuleOperation(
         target=SourceRewriteTarget(file_path=source_path.as_posix()),
         root_symbol_qualnames=("Payload",),

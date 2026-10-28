@@ -11,7 +11,6 @@ import textwrap
 
 import pytest
 
-from nominal_refactor_advisor.class_index import ParsedModuleSet
 from nominal_refactor_advisor.lexical_bindings import LEXICAL_SCOPE_BINDING_AUTHORITY
 from nominal_refactor_advisor import ast_tools, lexical_bindings, python_module_identity
 from nominal_refactor_advisor.declaration_dependencies import FunctionBindingProjection
@@ -115,7 +114,7 @@ def test_insertion_rejects_additional_header_bindings(
     )
     with pytest.raises(ValueError, match="exactly one member name"):
         plan.simulate(
-            CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
+            CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
         )
 
 
@@ -138,7 +137,7 @@ def test_insertion_rejects_a_binding_owned_by_an_existing_default(
     )
     with pytest.raises(ValueError, match="already binds members"):
         plan.simulate(
-            CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
+            CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
         )
 
 
@@ -156,7 +155,7 @@ def test_insertion_accepts_comprehension_with_its_own_loop_binding(
         )
     )
     plan.simulate(
-        CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
+        CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     ).apply()
     namespace = {}
     exec(path.read_text(encoding="utf-8"), namespace)

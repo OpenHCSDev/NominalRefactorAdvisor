@@ -8,7 +8,7 @@ from typing import Generic, TypeVar
 import pytest
 from metaclass_registry import AutoRegisterMeta
 
-from nominal_refactor_advisor.class_index import ParsedModuleSet
+from nominal_refactor_advisor.ast_tools import ParsedModuleSet
 from nominal_refactor_advisor.class_mro import DeclarationMroType
 from nominal_refactor_advisor.detectors._base import (
     CrossModuleCandidateDetector,

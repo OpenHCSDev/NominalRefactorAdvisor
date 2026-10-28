@@ -2,7 +2,6 @@ import ast
 from dataclasses import fields
 from pathlib import Path
 
-from nominal_refactor_advisor.class_index import ParsedModuleSet
 from nominal_refactor_advisor.ast_tools import CollectedFamily, parse_python_modules
 from nominal_refactor_advisor.class_index import CompactModuleClassProjectionFamily
 from nominal_refactor_advisor.codemod import LiteralDispatchFindingRecipeSynthesizer
@@ -33,7 +32,7 @@ from nominal_refactor_advisor.semantic_descent import (
 def test_repository_has_no_external_enum_case_recovery() -> None:
     package_root = Path(__file__).resolve().parents[1] / "nominal_refactor_advisor"
     findings = ExternalEnumCaseRecoveryDetector().detect(
-        ParsedModuleSet.of(parse_python_modules(package_root)),
+        parse_python_modules(package_root),
         DetectorConfig(),
     )
 

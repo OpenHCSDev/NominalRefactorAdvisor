@@ -7,7 +7,7 @@ from types import ModuleType
 import pytest
 
 from registry_test_sources import keyed_registry_source
-from nominal_refactor_advisor.class_index import ParsedModuleSet
+from nominal_refactor_advisor.ast_tools import ParsedModuleSet
 from nominal_refactor_advisor.analysis import analyze_modules
 from nominal_refactor_advisor.ast_tools import ParsedModule
 from nominal_refactor_advisor.class_index import CompactModuleClassProjectionFamily

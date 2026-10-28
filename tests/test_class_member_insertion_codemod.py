@@ -9,7 +9,6 @@ import sys
 
 import pytest
 
-from nominal_refactor_advisor.class_index import ParsedModuleSet
 from nominal_refactor_advisor.ast_tools import parse_python_modules
 from nominal_refactor_advisor.codemod import (
     CodemodPlanDocument,
@@ -109,7 +108,7 @@ def test_one_document_keeps_coalesced_member_evaluation_order(
             ),
         )
     )
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     operation = document.recipes[0].operations[0]
     assert isinstance(operation.source_edits(snapshot)[0], ClassMemberInsertion)
     document.simulate(snapshot).apply()
@@ -147,7 +146,7 @@ def test_atomic_method_alias_captures_class_member_not_same_spelled_global(
             ),
         )
     )
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     document.simulate(snapshot).apply()
     namespace = {}
     exec(compile(path.read_bytes(), str(path), "exec", dont_inherit=True), namespace)
@@ -179,7 +178,7 @@ def test_separate_stages_recompute_current_first_method_boundary(
     plan = CodemodPlanSequence.from_operations(
         InsertClassMemberOperation(target=target, source=source) for source in sources
     )
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     plan.simulate(snapshot).apply()
     namespace = {}
     exec(compile(path.read_bytes(), str(path), "exec", dont_inherit=True), namespace)
@@ -265,7 +264,7 @@ def test_member_name_is_derived_from_authored_declaration(
         target=SourceRewriteTarget(file_path=path.as_posix(), qualname="Owner"),
         source=member,
     )
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     assert operation.source_edits(snapshot)[0].members[0].name == name
     CodemodPlanSequence.from_operations((operation,)).simulate(snapshot).apply()
     node = ast.parse(path.read_text(encoding="utf-8")).body[0]
@@ -302,7 +301,7 @@ def test_invalid_or_colliding_members_leave_source_unchanged(
     )
     with pytest.raises(ValueError):
         plan.simulate(
-            CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
+            CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
         )
     assert path.read_bytes() == source.encode()
 
@@ -320,5 +319,5 @@ def test_member_insertion_rejects_a_function_scope(tmp_path: Path) -> None:
     )
     with pytest.raises(ValueError, match="class declaration"):
         plan.simulate(
-            CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
+            CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
         )

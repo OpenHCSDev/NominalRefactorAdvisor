@@ -8,7 +8,7 @@ import sys
 import pytest
 from registry_test_sources import _type_keyed_behavior_projection_source
 
-from nominal_refactor_advisor.class_index import ParsedModuleSet
+from nominal_refactor_advisor.ast_tools import ParsedModuleSet
 from nominal_refactor_advisor.analysis import analyze_modules
 from nominal_refactor_advisor.codemod import (
     CodemodPlanDocument,

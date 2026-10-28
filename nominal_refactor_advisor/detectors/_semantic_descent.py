@@ -20,10 +20,10 @@ from ._base import (
 )
 from ..ast_tools import ParsedModule
 from ..class_index import (
-    ParsedModuleSet,
     CompactClassFamilyIndex,
     CompactModuleClassProjectionFamily,
 )
+from ..ast_tools import ParsedModuleSet
 from ..models import (
     RefactorFinding,
     MappingMetrics,

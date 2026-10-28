@@ -7,7 +7,6 @@ import sys
 
 import pytest
 
-from nominal_refactor_advisor.class_index import ParsedModuleSet
 from nominal_refactor_advisor.ast_tools import parse_python_modules
 from nominal_refactor_advisor.codemod import (
     CodemodPlanSequence,
@@ -58,7 +57,7 @@ def test_two_property_leaves_promote_through_the_proved_existing_authority(
         "from sample import Alpha, Beta; print(Alpha().result, Beta().result)",
     ]
     before = subprocess.check_output(command, cwd=tmp_path)
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     component = snapshot.exact_leaf_method_component_builder.required_proven_component(
         "sample.Root"
     )
@@ -111,7 +110,7 @@ def test_small_authored_role_can_be_factored_and_extracted_in_one_cli_plan(
         "print(Alpha().normalize(' A '), Beta().normalize(' B '))",
     ]
     before = subprocess.check_output(command, cwd=tmp_path)
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     component = (
         snapshot.exact_method_role_component_builder.required_component_for_method(
             file_path=path.as_posix(), method_qualname="Alpha.normalize"

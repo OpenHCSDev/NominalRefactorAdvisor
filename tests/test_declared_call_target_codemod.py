@@ -8,7 +8,6 @@ import sys
 
 import pytest
 
-from nominal_refactor_advisor.class_index import ParsedModuleSet
 from nominal_refactor_advisor.ast_tools import parse_python_modules
 from nominal_refactor_advisor.codemod import (
     CodemodPlanSequence,
@@ -107,7 +106,7 @@ def test_one_stage_redirects_differing_and_nested_calls_without_span_overlap(
         json.loads(json.dumps(json_report_object(plan)))
     )
     simulation = replay.simulate(
-        CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
+        CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     )
     assert simulation.is_clean
     assert simulation.stage_count == 1
@@ -140,7 +139,7 @@ def test_native_mro_selects_the_declaration_not_a_same_named_method(
     path.write_text(source, encoding="utf-8", newline="")
     before = subprocess.check_output([sys.executable, str(path)], text=True)
     simulation = _plan(path, "replacement", callee=callee).simulate(
-        CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
+        CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     )
     simulation.apply()
     assert "Base.legacy(3)" in path.read_text()
@@ -171,7 +170,7 @@ def test_callable_edit_inherits_selection_proof_and_failure_atomicity(
     path.write_text(source, encoding="utf-8", newline="")
     with pytest.raises(ValueError, match=error):
         _plan(path, "replacement").simulate(
-            CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
+            CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
         )
     assert path.read_bytes() == source.encode()
 
@@ -187,7 +186,7 @@ def test_callable_edit_protects_comments_inside_the_selected_callable(
     path.write_text(source, encoding="utf-8", newline="")
     with pytest.raises(ValueError, match="remove a comment"):
         _plan(path, "Owner.legacy", callee="Owner.legacy").simulate(
-            CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
+            CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
         )
     assert path.read_bytes() == source.encode()
 
@@ -201,6 +200,6 @@ def test_callable_edit_requires_one_authored_expression(
     path.write_text(source, encoding="utf-8", newline="")
     with pytest.raises(SyntaxError):
         _plan(path, expression).simulate(
-            CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
+            CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
         )
     assert path.read_bytes() == source.encode()

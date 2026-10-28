@@ -11,7 +11,7 @@ import typing
 import metaclass_registry
 import pytest
 
-from nominal_refactor_advisor.class_index import ParsedModuleSet
+from nominal_refactor_advisor.ast_tools import ParsedModuleSet
 from nominal_refactor_advisor.ast_tools import ParsedModule
 from nominal_refactor_advisor.captured_reference import (
     CapturedReferenceRejection,

@@ -13,7 +13,6 @@ import sys
 
 import pytest
 
-from nominal_refactor_advisor.class_index import ParsedModuleSet
 from nominal_refactor_advisor.ast_tools import parse_python_modules
 from nominal_refactor_advisor.codemod import CodemodSourceSnapshot
 from nominal_refactor_advisor.json_reports import json_report_object
@@ -127,7 +126,7 @@ print(json.dumps([
     report = json.loads(cli.stdout)
     assert report["plan_sequence_simulation"]["is_clean"]
     assert report["applied"] is False
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     result = plan.simulate(snapshot)
     assert result.is_clean
     assert result.stage_count == 6

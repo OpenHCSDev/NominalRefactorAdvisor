@@ -40,12 +40,12 @@ from .ast_tools import (
     PythonModulePathAuthority,
 )
 from .class_index import (
-    ParsedModuleSet,
     ClassFamilyIndex,
     CompactModuleClassProjectionFamily,
     RepositoryModuleBindingProof,
     build_compact_class_family_index,
 )
+from .ast_tools import ParsedModuleSet
 from .class_overlap import ClassOverlapVerdicts
 from .codemod_architecture_guards import (
     ArchitectureGuardReport,
@@ -296,7 +296,7 @@ class CodemodSourceSnapshot(CodemodSelectorContext):
         return cls._from_modules_with_indexes(
             modules,
             (
-                ParsedModuleSet(modules).class_family_index
+                ParsedModuleSet(modules).fact(ClassFamilyIndex)
                 if class_family_index is None
                 else class_family_index
             ),
@@ -320,7 +320,7 @@ class CodemodSourceSnapshot(CodemodSelectorContext):
 
         return cls._from_modules_with_indexes(
             modules.modules,
-            modules.class_family_index,
+            modules.fact(ClassFamilyIndex),
             build_source_index_artifacts(modules.modules, tuple(findings)),
         )
 

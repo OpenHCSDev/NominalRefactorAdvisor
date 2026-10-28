@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from nominal_refactor_advisor.class_index import ParsedModuleSet
+from nominal_refactor_advisor.ast_tools import ParsedModuleSet
 from nominal_refactor_advisor.ast_tools import parse_python_modules
 from nominal_refactor_advisor.codemod import (
     CodemodBackend,
@@ -240,7 +240,7 @@ def test_operation_reproves_field_component_without_serializing_rosters(
     simulation.apply()
     assert _runtime_output(tmp_path) == before
     after_snapshot = CodemodSourceSnapshot.from_modules(
-        ParsedModuleSet.of(tuple(parse_python_modules(tmp_path)))
+        parse_python_modules(tmp_path)
     )
     with pytest.raises(
         CodemodOperationPreflightError,
@@ -254,7 +254,7 @@ def test_staged_operations_factor_nested_field_authorities_without_local_minimum
 ) -> None:
     module_path = _write_fixture(tmp_path, source=_lattice_source())
     before = _lattice_runtime_output(tmp_path)
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(tuple(parse_python_modules(tmp_path))))
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
 
     def stage(
         recipe_id: str,
@@ -321,7 +321,7 @@ def test_operation_rejects_a_drifted_target_component(tmp_path: Path) -> None:
             1,
         ),
     )
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(tuple(parse_python_modules(tmp_path))))
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
 
     with pytest.raises(
         CodemodOperationPreflightError,
@@ -338,7 +338,7 @@ def test_operation_rejects_generated_authority_name_collision(tmp_path: Path) ->
         "from dataclasses import dataclass\n\nProjectionIdentity = object()\n",
     )
     module_path = _write_fixture(tmp_path, source=source)
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(tuple(parse_python_modules(tmp_path))))
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
 
     with pytest.raises(
         CodemodOperationPreflightError,

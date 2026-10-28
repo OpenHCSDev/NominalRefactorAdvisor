@@ -33,7 +33,6 @@ from ..ast_tools import (
 )
 from ..native_syntax import NativePythonSyntaxIndex
 from ..class_index import (
-    ParsedModuleSet,
     CompactClassFamilyIndex,
     CompactClassReferenceResolver,
     CompactExactTypeGuard,
@@ -46,6 +45,7 @@ from ..class_index import (
     LatentRosterObservation,
     build_compact_class_family_index,
 )
+from ..ast_tools import ParsedModuleSet
 from ..exact_method_authority import (
     ParallelMirroredLeafFamilyComponent,
     ParallelMirroredLeafFamilyComponentBuilder,

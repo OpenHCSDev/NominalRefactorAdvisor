@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from nominal_refactor_advisor.class_index import ParsedModuleSet
+from nominal_refactor_advisor.ast_tools import ParsedModuleSet
 from nominal_refactor_advisor.product_flow_authority import ResolvedCompactFunctionTarget
 import ast
 from dataclasses import replace
@@ -371,10 +371,10 @@ def test_parameter_conveyor_goal_runner_proves_one_terminal_replay(
     source_path = _write_source(tmp_path, "pkg/complete.py", _base_source())
     modules = parse_python_modules(tmp_path)
     findings = ClosedParameterConveyorDetector().detect(
-        ParsedModuleSet.of(modules),
+        modules,
         DetectorConfig(),
     )
-    starting_snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(modules), findings)
+    starting_snapshot = CodemodSourceSnapshot.from_modules(modules, findings)
 
     report = CodemodRefactorGoalRunner(
         roots=(tmp_path,),
@@ -383,7 +383,7 @@ def test_parameter_conveyor_goal_runner_proves_one_terminal_replay(
         dry_run=True,
         migration_type=SemanticCarrierConcept,
         guard_suite=ArchitectureGuardSuite(),
-        initial_scan=CodemodWorkflowScan(modules=ParsedModuleSet.of(modules), findings=findings),
+        initial_scan=CodemodWorkflowScan(modules=modules, findings=findings),
     ).run()
 
     assert report.stop_reason is CodemodWorkflowStopReason.ACHIEVED

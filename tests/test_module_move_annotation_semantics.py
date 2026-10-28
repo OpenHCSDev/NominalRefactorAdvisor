@@ -7,7 +7,6 @@ import sys
 
 import pytest
 
-from nominal_refactor_advisor.class_index import ParsedModuleSet
 from nominal_refactor_advisor.ast_tools import parse_python_modules
 from nominal_refactor_advisor.codemod import (
     CodemodPlanDocument,
@@ -106,7 +105,7 @@ def test_guarding_original_runtime_alias_changes_dataclass_creation(
 
 def _move(root: Path):
     snapshot = CodemodSourceSnapshot.from_modules(
-        ParsedModuleSet.of(parse_python_modules(root, use_parse_cache=False, parse_workers=1))
+        parse_python_modules(root, use_parse_cache=False, parse_workers=1)
     )
     operation = MoveSymbolsToModuleOperation(
         target=SourceRewriteTarget(file_path=(root / "pkg/source.py").as_posix()),

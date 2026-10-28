@@ -4,7 +4,7 @@ import ast
 import inspect
 from pathlib import Path
 
-from nominal_refactor_advisor.class_index import ParsedModuleSet
+from nominal_refactor_advisor.ast_tools import ParsedModuleSet
 from nominal_refactor_advisor.ast_tools import parse_python_modules
 from nominal_refactor_advisor.detectors import (
     DetectorConfig,
@@ -224,8 +224,8 @@ def decode(row):
     return ImportedRecord(alpha=row['alpha'], beta=row['beta'], gamma=row['gamma'])
 """)
     parsed = parse_python_modules(tmp_path, use_parse_cache=False, parse_workers=1)
-    assert not UnmodeledRecordShapeDetector().detect(ParsedModuleSet.of(parsed), DetectorConfig())
-    mirrors = SemanticMirrorWithoutDescentDetector().detect(ParsedModuleSet.of(parsed), DetectorConfig())
+    assert not UnmodeledRecordShapeDetector().detect(parsed, DetectorConfig())
+    mirrors = SemanticMirrorWithoutDescentDetector().detect(parsed, DetectorConfig())
     assert len(mirrors) == 1 and mirrors[0].authority_evidence.symbol == "Record"
-    checks = RedundantTypeCheckDetector().detect(ParsedModuleSet.of(parsed), DetectorConfig())
+    checks = RedundantTypeCheckDetector().detect(parsed, DetectorConfig())
     assert len(checks) == 1 and checks[0].evidence[1].symbol == "Record.alpha"

@@ -4,7 +4,6 @@ from pathlib import Path
 
 import pytest
 
-from nominal_refactor_advisor.class_index import ParsedModuleSet
 from nominal_refactor_advisor.analysis import analyze_path
 from nominal_refactor_advisor.ast_tools import parse_python_modules
 from nominal_refactor_advisor.codemod import (
@@ -146,7 +145,7 @@ def test_literal_return_dispatch_is_wired_to_polymorphism_operation(tmp_path: Pa
     )
     (finding,) = _findings(tmp_path, StringKindDispatchDetector, {"m": source})
     snapshot = CodemodSourceSnapshot.from_modules(
-        ParsedModuleSet.of(parse_python_modules(tmp_path)), (finding,)
+        parse_python_modules(tmp_path), (finding,)
     )
     evaluation = StringKindDispatchDetector().evaluate_recipe_for_finding(
         finding, snapshot
@@ -342,7 +341,7 @@ def test_an_unused_legacy_function_gets_an_executable_erasure(tmp_path: Path):
             "def legacy_load(path):\n    return load(path)\n"
         },
     )
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     evaluation = LegacyPathMarkerDetector().evaluate_recipe_for_finding(
         finding, snapshot
     )
@@ -356,7 +355,7 @@ def test_a_marked_parameter_is_not_widened_to_its_function(tmp_path: Path):
         LegacyPathMarkerDetector,
         {"m": "def f(path, mode=None, legacy_mode=False):\n    return path\n"},
     )
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     evaluation = LegacyPathMarkerDetector().evaluate_recipe_for_finding(
         finding, snapshot
     )

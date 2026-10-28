@@ -9,7 +9,6 @@ from pathlib import Path
 
 import pytest
 
-from nominal_refactor_advisor.class_index import ParsedModuleSet
 from nominal_refactor_advisor.ast_tools import parse_python_modules
 from nominal_refactor_advisor.class_overlap_codemod import KeywordizeConstructionOperation
 from nominal_refactor_advisor.codemod import (
@@ -59,7 +58,7 @@ def _write(root: Path, files: dict[str, str]) -> None:
 
 
 def _simulate(root: Path, qualname: str):
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(root)))
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(root))
     operation = KeywordizeConstructionOperation(
         target=SourceRewriteTarget(
             file_path=(root / "pkg/records.py").as_posix(), qualname=qualname

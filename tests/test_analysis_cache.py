@@ -15,7 +15,7 @@ import weakref
 import pytest
 
 
-from nominal_refactor_advisor.class_index import ParsedModuleSet
+from nominal_refactor_advisor.ast_tools import ParsedModuleSet
 from nominal_refactor_advisor.class_index import (
     ResolvedStarImportOrigin,
     UnresolvedStarImportOrigin,
@@ -1064,13 +1064,13 @@ def test_equivalent_checkouts_reuse_graph_and_detector_caches_with_rebased_paths
     try:
         first = analyze_modules_with_cache(
             (checkout_a,),
-            ParsedModuleSet.of(parse_python_module_roots((checkout_a,))),
+            parse_python_module_roots((checkout_a,)),
             DetectorConfig(),
             analysis_cache_dir=analysis_cache_dir,
         )
         second = analyze_modules_with_cache(
             (checkout_b,),
-            ParsedModuleSet.of(parse_python_module_roots((checkout_b,))),
+            parse_python_module_roots((checkout_b,)),
             DetectorConfig(),
             analysis_cache_dir=analysis_cache_dir,
         )
@@ -1501,7 +1501,7 @@ def test_analysis_cache_reuses_semantic_identity_after_comment_only_change(
 
     first_result = analyze_modules_with_cache(
         (package_root,),
-        ParsedModuleSet.of(parse_python_module_roots((package_root,))),
+        parse_python_module_roots((package_root,)),
         DetectorConfig(),
         analysis_cache_dir=cache_dir,
     )
@@ -1513,7 +1513,7 @@ def test_analysis_cache_reuses_semantic_identity_after_comment_only_change(
     )
     second_result = analyze_modules_with_cache(
         (package_root,),
-        ParsedModuleSet.of(parse_python_module_roots((package_root,))),
+        parse_python_module_roots((package_root,)),
         DetectorConfig(),
         analysis_cache_dir=cache_dir,
     )
@@ -1637,7 +1637,7 @@ def test_cross_module_candidate_detector_reuses_contextual_global_cache(
 
     first_result = analyze_modules_with_cache(
         (package_root,),
-        ParsedModuleSet.of(parse_python_module_roots((package_root,))),
+        parse_python_module_roots((package_root,)),
         DetectorConfig(),
         analysis_cache_dir=cache_dir,
     )
@@ -1648,7 +1648,7 @@ def test_cross_module_candidate_detector_reuses_contextual_global_cache(
     )
     second_result = analyze_modules_with_cache(
         (package_root,),
-        ParsedModuleSet.of(parse_python_module_roots((package_root,))),
+        parse_python_module_roots((package_root,)),
         DetectorConfig(),
         analysis_cache_dir=cache_dir,
     )
@@ -1741,7 +1741,7 @@ def test_contextual_global_graph_detectors_share_semantic_descent_graph(
         )
         result = analyze_modules_with_cache(
             (package_root,),
-            ParsedModuleSet.of(parse_python_module_roots((package_root,))),
+            parse_python_module_roots((package_root,)),
             DetectorConfig(),
             analysis_cache_dir=cache_dir,
         )
@@ -1955,7 +1955,7 @@ def test_uncached_analysis_preserves_cached_repo_graph_source(
 
     result = analyze_modules_with_cache(
         (package_root,),
-        ParsedModuleSet.of(parse_python_module_roots((package_root,))),
+        parse_python_module_roots((package_root,)),
         DetectorConfig(),
         analysis_cache_dir=None,
         semantic_descent_source=SemanticDescentGraphAnalysisSource(
@@ -2022,7 +2022,7 @@ def test_global_detector_shard_survives_detector_registry_expansion(
         )
         first_result = analyze_modules_with_cache(
             (package_root,),
-            ParsedModuleSet.of(parse_python_module_roots((package_root,))),
+            parse_python_module_roots((package_root,)),
             DetectorConfig(),
             analysis_cache_dir=cache_dir,
         )
@@ -2045,7 +2045,7 @@ def test_global_detector_shard_survives_detector_registry_expansion(
         )
         second_result = analyze_modules_with_cache(
             (package_root,),
-            ParsedModuleSet.of(parse_python_module_roots((package_root,))),
+            parse_python_module_roots((package_root,)),
             DetectorConfig(),
             analysis_cache_dir=cache_dir,
         )
@@ -2343,7 +2343,7 @@ def test_compact_global_projection_accumulator_matches_full_ast_detection(
         detector_type
     ]
     modules = parse_python_modules(package_root, use_parse_cache=False)
-    full_ast_findings = detector_type().detect(ParsedModuleSet.of(modules), DetectorConfig())
+    full_ast_findings = detector_type().detect(modules, DetectorConfig())
 
     assert [json_report_object(finding) for finding in projected_findings] == [
         json_report_object(finding) for finding in full_ast_findings
@@ -2367,7 +2367,7 @@ def test_parallel_compact_root_analysis_returns_uncached_projection_fallbacks(
     )
     detector_type = runtime_detectors.GeneratedBoundarySemanticConstantMirrorDetector
     modules = parse_python_modules(package_root, use_parse_cache=False)
-    expected = detector_type().detect(ParsedModuleSet.of(modules), DetectorConfig())
+    expected = detector_type().detect(modules, DetectorConfig())
 
     result = analyze_compact_roots_with_cache(
         (package_root,),
@@ -3717,7 +3717,7 @@ def test_compact_root_analysis_matches_full_ast_and_reuses_aggregate_cache(
     cache_dir = tmp_path / ".nra-cache" / "ast"
     analysis_cache_dir = tmp_path / ".nra-cache" / "analysis"
     modules = parse_python_modules(package_root, use_parse_cache=False)
-    expected = analyze_modules(ParsedModuleSet.of(modules), DetectorConfig(), analysis_workers=1)
+    expected = analyze_modules(modules, DetectorConfig(), analysis_workers=1)
 
     cold = analyze_compact_roots_with_cache(
         (package_root,),
@@ -4068,7 +4068,7 @@ def test_compact_global_detector_shards_reuse_across_report_targets(
         report_roots=(runtime_path,),
     )
     modules = parse_python_modules(package_root, use_parse_cache=False)
-    all_findings = analyze_modules(ParsedModuleSet.of(modules), DetectorConfig(), analysis_workers=1)
+    all_findings = analyze_modules(modules, DetectorConfig(), analysis_workers=1)
 
     first = analyze_compact_roots_with_cache(
         (package_root,),
@@ -4205,7 +4205,7 @@ def test_compact_flattened_candidate_projections_match_full_ast_detection(
     modules = parse_python_modules(package_root, use_parse_cache=False)
 
     for detector_type in detector_types:
-        full_ast_findings = detector_type().detect(ParsedModuleSet.of(modules), DetectorConfig())
+        full_ast_findings = detector_type().detect(modules, DetectorConfig())
         assert [
             json_report_object(finding) for finding in projected_findings[detector_type]
         ] == [json_report_object(finding) for finding in full_ast_findings]
@@ -4252,7 +4252,7 @@ def test_compact_class_index_detectors_match_full_ast_detection(
     modules = parse_python_modules(package_root, use_parse_cache=False)
 
     for detector_type in detector_types:
-        full_ast_findings = detector_type().detect(ParsedModuleSet.of(modules), DetectorConfig())
+        full_ast_findings = detector_type().detect(modules, DetectorConfig())
         assert [
             json_report_object(finding) for finding in projected_findings[detector_type]
         ] == [json_report_object(finding) for finding in full_ast_findings]

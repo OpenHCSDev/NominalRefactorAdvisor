@@ -11,7 +11,6 @@ from pathlib import Path
 
 import pytest
 
-from nominal_refactor_advisor.class_index import ParsedModuleSet
 from nominal_refactor_advisor.ast_tools import parse_python_modules
 from nominal_refactor_advisor.codemod import (
     CodemodPlanSequence,
@@ -45,7 +44,7 @@ def _operation(
 
 def _simulate(tmp_path: Path, operation: RouteForeignFamilyFilterOperation):
     return CodemodPlanSequence.from_operations((operation,)).simulate(
-        CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
+        CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     )
 
 
@@ -197,7 +196,7 @@ def test_routable_filter_finding_recipe_routes_exact_filters_only(
         "b.py",
         "c.py",
     ]
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     evaluation = ForeignFamilyRoutableFilterDetector().evaluate_recipe_for_finding(
         finding, snapshot
     )

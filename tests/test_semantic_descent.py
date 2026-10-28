@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from nominal_refactor_advisor.class_index import ParsedModuleSet
+from nominal_refactor_advisor.ast_tools import ParsedModuleSet
 import nominal_refactor_advisor.semantic_descent as semantic_descent_module
 import nominal_refactor_advisor.semantic_refactor_gate as semantic_refactor_gate_module
 from nominal_refactor_advisor.json_reports import json_report_object
@@ -760,7 +760,7 @@ def test_semantic_mirror_detector_reports_authority_and_projection(
     )
 
     findings = SemanticMirrorWithoutDescentDetector().detect(
-        ParsedModuleSet.of(parse_python_modules(tmp_path)),
+        parse_python_modules(tmp_path),
         DetectorConfig(),
     )
 
@@ -802,7 +802,7 @@ def test_class_family_mirror_requires_affinity_for_reused_crosscutting_facts(
 
     findings = tuple(
         SemanticMirrorWithoutDescentDetector().detect(
-            ParsedModuleSet.of(parse_python_modules(tmp_path)),
+            parse_python_modules(tmp_path),
             DetectorConfig(),
         )
     )
@@ -939,7 +939,7 @@ def test_semantic_mirror_finding_projects_to_descent_graph(
     finding = next(
         item
         for item in SemanticMirrorWithoutDescentDetector().detect(
-            ParsedModuleSet.of(parse_python_modules(tmp_path)),
+            parse_python_modules(tmp_path),
             DetectorConfig(),
         )
         if item.detector_id == "semantic_mirror_without_descent"
@@ -1292,7 +1292,7 @@ def test_dataclass_template_materializer_certifies_projection_descent(
 
     modules = parse_python_modules(tmp_path)
     findings = tuple(
-        SemanticMirrorWithoutDescentDetector().detect(ParsedModuleSet.of(modules), DetectorConfig())
+        SemanticMirrorWithoutDescentDetector().detect(modules, DetectorConfig())
     )
 
     assert not any(
@@ -1330,7 +1330,7 @@ def test_dataclass_template_construction_does_not_mirror_sibling_schema(
 
     modules = parse_python_modules(tmp_path)
     findings = tuple(
-        SemanticMirrorWithoutDescentDetector().detect(ParsedModuleSet.of(modules), DetectorConfig())
+        SemanticMirrorWithoutDescentDetector().detect(modules, DetectorConfig())
     )
 
     assert not any(
@@ -1362,7 +1362,7 @@ def test_semantic_descent_ignores_suppression_vocabularies(
 
     modules = parse_python_modules(tmp_path)
     findings = tuple(
-        SemanticMirrorWithoutDescentDetector().detect(ParsedModuleSet.of(modules), DetectorConfig())
+        SemanticMirrorWithoutDescentDetector().detect(modules, DetectorConfig())
     )
 
     assert any(
@@ -1401,9 +1401,9 @@ def test_semantic_mirror_registry_finding_retains_unproved_autoregister_recipe(
     )
     modules = parse_python_modules(tmp_path)
     findings = tuple(
-        SemanticMirrorWithoutDescentDetector().detect(ParsedModuleSet.of(modules), DetectorConfig())
+        SemanticMirrorWithoutDescentDetector().detect(modules, DetectorConfig())
     )
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(modules), findings)
+    snapshot = CodemodSourceSnapshot.from_modules(modules, findings)
 
     plan = codemod_plan_from_findings(findings, selector_context=snapshot)
     simulation = plan.simulate(snapshot)
@@ -1475,7 +1475,7 @@ def test_codemod_source_context_hydrates_selected_finding_files_only(
     )
 
     context = CodemodSourceContext.from_modules(
-        ParsedModuleSet.of(modules),
+        modules,
         (alpha_finding, beta_finding),
     )
     snapshot = context.snapshot_for_findings((alpha_finding,), parse_workers=4)
@@ -1532,12 +1532,12 @@ def test_inherited_autoregister_config_synthesizes_assignment_deletions(
     finding = next(
         item
         for item in InheritedAutoRegisterConfigBoilerplateDetector().detect(
-            ParsedModuleSet.of(modules),
+            modules,
             DetectorConfig(),
         )
         if item.detector_id == "inherited_autoregister_config_boilerplate"
     )
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(modules), (finding,))
+    snapshot = CodemodSourceSnapshot.from_modules(modules, (finding,))
 
     plan = codemod_plan_from_findings((finding,), selector_context=snapshot)
     simulation = plan.simulate(snapshot)
@@ -1596,13 +1596,13 @@ def test_inherited_autoregister_config_replay_reproves_ancestor_values(
     finding = next(
         finding
         for finding in InheritedAutoRegisterConfigBoilerplateDetector().detect(
-            ParsedModuleSet.of(initial_modules),
+            initial_modules,
             DetectorConfig(),
         )
         if finding.detector_id == "inherited_autoregister_config_boilerplate"
     )
     initial_snapshot = CodemodSourceSnapshot.from_modules(
-        ParsedModuleSet.of(initial_modules),
+        initial_modules,
         (finding,),
     )
     document_payload = json_report_object(
@@ -1617,7 +1617,7 @@ def test_inherited_autoregister_config_replay_reproves_ancestor_values(
         newline="",
     )
     current_snapshot = CodemodSourceSnapshot.from_modules(
-        ParsedModuleSet.of(parse_python_modules(tmp_path, use_parse_cache=False))
+        parse_python_modules(tmp_path, use_parse_cache=False)
     )
 
     with pytest.raises(
@@ -1694,10 +1694,10 @@ def test_autoregister_priority_ordering_synthesizes_one_proven_mro_batch(
     modules = parse_python_modules(tmp_path)
     finding = next(
         item
-        for item in analyze_modules(ParsedModuleSet.of(modules))
+        for item in analyze_modules(modules)
         if item.detector_id == "autoregister_explicit_priority_ordering"
     )
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(modules), (finding,))
+    snapshot = CodemodSourceSnapshot.from_modules(modules, (finding,))
 
     plan = codemod_plan_from_findings((finding,), selector_context=snapshot)
     simulation = plan.simulate(snapshot)
@@ -1791,7 +1791,7 @@ def test_autoregister_priority_ordering_synthesizes_one_proven_mro_batch(
         newline="",
     )
     reprioritized_snapshot = CodemodSourceSnapshot.from_modules(
-        ParsedModuleSet.of(parse_python_modules(tmp_path))
+        parse_python_modules(tmp_path)
     )
     reprioritized = CodemodPlanDocument.from_json_value(
         json_report_object(plan.document)
@@ -1818,7 +1818,7 @@ def test_autoregister_priority_ordering_synthesizes_one_proven_mro_batch(
         newline="",
     )
     duplicate_priority_snapshot = CodemodSourceSnapshot.from_modules(
-        ParsedModuleSet.of(parse_python_modules(tmp_path))
+        parse_python_modules(tmp_path)
     )
     duplicate_priority_preflight = CodemodPlanDocument.from_json_value(
         json_report_object(plan.document)
@@ -1833,11 +1833,11 @@ def test_autoregister_priority_ordering_synthesizes_one_proven_mro_batch(
         source_modules = parse_python_modules(source_root)
         source_finding = next(
             item
-            for item in analyze_modules(ParsedModuleSet.of(source_modules))
+            for item in analyze_modules(source_modules)
             if item.detector_id == "autoregister_explicit_priority_ordering"
         )
         source_snapshot = CodemodSourceSnapshot.from_modules(
-            ParsedModuleSet.of(source_modules),
+            source_modules,
             (source_finding,),
         )
         return codemod_plan_from_findings(
@@ -1933,7 +1933,7 @@ def test_repeated_builder_call_rejects_identity_constructor_wrapper(
     )
     assert isinstance(finding.metrics, ConstructorOwnedMappingMetrics)
     assert finding.projection_evidence == finding.evidence[0]
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(modules), (finding,))
+    snapshot = CodemodSourceSnapshot.from_modules(modules, (finding,))
 
     plan = codemod_plan_from_findings((finding,), selector_context=snapshot)
 
@@ -1994,7 +1994,7 @@ def test_repeated_builder_call_keeps_repeated_local_values_as_parameters(
         for item in analyze_path(tmp_path)
         if item.detector_id == "repeated_builder_calls"
     )
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(modules), (finding,))
+    snapshot = CodemodSourceSnapshot.from_modules(modules, (finding,))
 
     plan = codemod_plan_from_findings((finding,), selector_context=snapshot)
     simulation = plan.simulate(snapshot)
@@ -2086,7 +2086,7 @@ def test_finding_recipe_synthesis_detector_scope_excludes_unselected_findings(
     finding = next(
         item
         for item in SemanticMirrorWithoutDescentDetector().detect(
-            ParsedModuleSet.of(modules),
+            modules,
             DetectorConfig(),
         )
         if item.detector_id == "semantic_mirror_without_descent"
@@ -2202,7 +2202,7 @@ def test_semantic_mirror_autoregister_instance_view_retains_unproved_proposal(
     )
     modules = parse_python_modules(tmp_path)
     findings = tuple(
-        SemanticMirrorWithoutDescentDetector().detect(ParsedModuleSet.of(modules), DetectorConfig())
+        SemanticMirrorWithoutDescentDetector().detect(modules, DetectorConfig())
     )
     finding = next(
         item
@@ -2210,7 +2210,7 @@ def test_semantic_mirror_autoregister_instance_view_retains_unproved_proposal(
         if item.detector_id == "semantic_mirror_without_descent"
         and item.metrics.plan_registry_name == "STEP_TABLE"
     )
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(modules), (finding,))
+    snapshot = CodemodSourceSnapshot.from_modules(modules, (finding,))
 
     plan = codemod_plan_from_findings((finding,), selector_context=snapshot)
     simulation = plan.simulate(snapshot)
@@ -2272,7 +2272,7 @@ def test_semantic_descent_resolves_bound_constructor_values_to_class_family(
 
     modules = parse_python_modules(tmp_path)
     findings = tuple(
-        SemanticMirrorWithoutDescentDetector().detect(ParsedModuleSet.of(modules), DetectorConfig())
+        SemanticMirrorWithoutDescentDetector().detect(modules, DetectorConfig())
     )
 
     finding = next(
@@ -2382,7 +2382,7 @@ def test_semantic_mirror_omits_ambiguous_mapping_class_key_fallback(
 
     modules = parse_python_modules(tmp_path)
     findings = tuple(
-        SemanticMirrorWithoutDescentDetector().detect(ParsedModuleSet.of(modules), DetectorConfig())
+        SemanticMirrorWithoutDescentDetector().detect(modules, DetectorConfig())
     )
 
     finding = next(
@@ -2396,7 +2396,7 @@ def test_semantic_mirror_omits_ambiguous_mapping_class_key_fallback(
         "TemplateActionBuilder",
     )
     assert finding.metrics.plan_class_key_pairs == ("AbcActionBuilder='abc'",)
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(modules), (finding,))
+    snapshot = CodemodSourceSnapshot.from_modules(modules, (finding,))
     plan = codemod_plan_from_findings((finding,), selector_context=snapshot)
 
     record = plan.records[0]
@@ -2449,7 +2449,7 @@ def test_dataclass_template_keywords_do_not_invent_dsl_action(
     )
     modules = parse_python_modules(tmp_path)
     findings = tuple(
-        SemanticMirrorWithoutDescentDetector().detect(ParsedModuleSet.of(modules), DetectorConfig())
+        SemanticMirrorWithoutDescentDetector().detect(modules, DetectorConfig())
     )
     assert not any(
         finding.metrics.plan_source_name == "RefactorAction" for finding in findings
@@ -2499,7 +2499,7 @@ def test_reused_dataclass_fields_do_not_invent_foreign_authority_mirrors(
 
     findings = tuple(
         SemanticMirrorWithoutDescentDetector().detect(
-            ParsedModuleSet.of(parse_python_modules(tmp_path)),
+            parse_python_modules(tmp_path),
             DetectorConfig(),
         )
     )
@@ -2535,7 +2535,7 @@ def test_other_authority_kinds_do_not_make_dataclass_fields_look_reused(
 
     findings = tuple(
         SemanticMirrorWithoutDescentDetector().detect(
-            ParsedModuleSet.of(parse_python_modules(tmp_path)),
+            parse_python_modules(tmp_path),
             DetectorConfig(),
         )
     )
@@ -2573,7 +2573,7 @@ def test_typed_axis_selects_one_of_two_dataclasses_with_the_same_fields(
 
     findings = tuple(
         SemanticMirrorWithoutDescentDetector().detect(
-            ParsedModuleSet.of(parse_python_modules(tmp_path)),
+            parse_python_modules(tmp_path),
             DetectorConfig(),
         )
     )
@@ -2614,7 +2614,7 @@ def test_semantic_mirror_return_dict_synthesizes_dataclass_payload_recipe(
     )
     modules = parse_python_modules(tmp_path)
     findings = tuple(
-        SemanticMirrorWithoutDescentDetector().detect(ParsedModuleSet.of(modules), DetectorConfig())
+        SemanticMirrorWithoutDescentDetector().detect(modules, DetectorConfig())
     )
     finding = next(
         item
@@ -2623,7 +2623,7 @@ def test_semantic_mirror_return_dict_synthesizes_dataclass_payload_recipe(
         and item.metrics.plan_source_name == "RefactorAction"
         and item.metrics.plan_mapping_name == "ActionReport.to_dict:return"
     )
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(modules), (finding,))
+    snapshot = CodemodSourceSnapshot.from_modules(modules, (finding,))
 
     plan = codemod_plan_from_findings((finding,), selector_context=snapshot)
     record = plan.records[0]
@@ -2726,7 +2726,7 @@ def test_dataclass_payload_operation_rederives_current_source(tmp_path: Path) ->
         "        'description': action.description,\n"
         "    }\n",
     )
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     operation = _dataclass_payload_projection_operation(
         snapshot,
         "RefactorAction",
@@ -2773,7 +2773,7 @@ def test_dataclass_payload_owns_complete_expression_or_only_its_field_run(
         f"def payload(row: Row):\n    return {{{entries}}}\n"
     )
     path = _write_module(tmp_path, source)
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     operation = _dataclass_payload_projection_operation(snapshot, "Row", "payload")
     simulation = (
         RefactorRecipe("derive-payload-boundary")
@@ -2812,7 +2812,7 @@ def test_complete_dataclass_payload_does_not_discard_trailing_comments(
         "    return {'left': row.left, 'right': row.right,  # retain this explanation\n"
         "    }\n",
     )
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     operation = _dataclass_payload_projection_operation(snapshot, "Row", "payload")
     document = CodemodPlanDocument(
         recipes=(RefactorRecipe("preserve-comment").with_operation(operation),)
@@ -2837,7 +2837,7 @@ def test_dataclass_payload_operation_rejects_authority_schema_drift(
         "        'description': action.description,\n"
         "    }\n",
     )
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     operation = _dataclass_payload_projection_operation(
         snapshot,
         "RefactorAction",
@@ -2880,7 +2880,7 @@ def test_dataclass_payload_operation_rejects_ambiguous_return_projections(
         "        'description': action.description,\n"
         "    }\n",
     )
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     operation = _dataclass_payload_projection_operation(
         snapshot,
         "RefactorAction",
@@ -2912,7 +2912,7 @@ def test_dataclass_payload_operation_ignores_nested_function_returns(
         "        }\n"
         "    return {}\n",
     )
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     operation = _dataclass_payload_projection_operation(
         snapshot,
         "RefactorAction",
@@ -2946,13 +2946,13 @@ def test_semantic_mirror_synthesizes_dataclass_field_name_collection_recipe(
     finding = next(
         item
         for item in SemanticMirrorWithoutDescentDetector().detect(
-            ParsedModuleSet.of(modules),
+            modules,
             DetectorConfig(),
         )
         if item.metrics.plan_source_name == "PhaseRecord"
         and item.metrics.plan_mapping_name == "phase_record_fields"
     )
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(modules), (finding,))
+    snapshot = CodemodSourceSnapshot.from_modules(modules, (finding,))
 
     plan = codemod_plan_from_findings((finding,), selector_context=snapshot)
     simulation = plan.simulate(snapshot)
@@ -3044,13 +3044,13 @@ def test_semantic_mirror_rejects_reordered_dataclass_field_name_collection(
     finding = next(
         item
         for item in SemanticMirrorWithoutDescentDetector().detect(
-            ParsedModuleSet.of(modules),
+            modules,
             DetectorConfig(),
         )
         if item.metrics.plan_source_name == "PhaseRecord"
         and item.metrics.plan_mapping_name == "phase_record_fields"
     )
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(modules), (finding,))
+    snapshot = CodemodSourceSnapshot.from_modules(modules, (finding,))
 
     plan = codemod_plan_from_findings((finding,), selector_context=snapshot)
 
@@ -3093,13 +3093,13 @@ def test_semantic_mirror_field_name_collection_rejects_new_runtime_import(
     finding = next(
         item
         for item in SemanticMirrorWithoutDescentDetector().detect(
-            ParsedModuleSet.of(modules),
+            modules,
             DetectorConfig(),
         )
         if item.metrics.plan_source_name == "PhaseRecord"
         and item.metrics.plan_mapping_name == "phase_record_fields"
     )
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(modules), (finding,))
+    snapshot = CodemodSourceSnapshot.from_modules(modules, (finding,))
 
     plan = codemod_plan_from_findings((finding,), selector_context=snapshot)
 
@@ -3139,7 +3139,7 @@ def test_semantic_mirror_key_value_sequence_synthesizes_dataclass_payload_recipe
     )
     modules = parse_python_modules(tmp_path)
     findings = tuple(
-        SemanticMirrorWithoutDescentDetector().detect(ParsedModuleSet.of(modules), DetectorConfig())
+        SemanticMirrorWithoutDescentDetector().detect(modules, DetectorConfig())
     )
     finding = next(
         item
@@ -3147,7 +3147,7 @@ def test_semantic_mirror_key_value_sequence_synthesizes_dataclass_payload_recipe
         if item.detector_id == "semantic_mirror_without_descent"
         and item.metrics.plan_source_name == "WorkflowModel"
     )
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(modules), (finding,))
+    snapshot = CodemodSourceSnapshot.from_modules(modules, (finding,))
 
     plan = codemod_plan_from_findings((finding,), selector_context=snapshot)
     record = plan.records[0]
@@ -3279,12 +3279,12 @@ def test_key_value_sequence_recipe_rejects_interleaving_and_comments(
         finding = next(
             item
             for item in SemanticMirrorWithoutDescentDetector().detect(
-                ParsedModuleSet.of(modules),
+                modules,
                 DetectorConfig(),
             )
             if item.metrics.plan_source_name == "WorkflowModel"
         )
-        snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(modules), (finding,))
+        snapshot = CodemodSourceSnapshot.from_modules(modules, (finding,))
         plan = codemod_plan_from_findings((finding,), selector_context=snapshot)
 
         record = plan.records[0]
@@ -3334,7 +3334,7 @@ def test_semantic_mirror_cross_file_return_dict_synthesizes_dataclass_payload_re
     )
     modules = parse_python_modules(tmp_path)
     findings = tuple(
-        SemanticMirrorWithoutDescentDetector().detect(ParsedModuleSet.of(modules), DetectorConfig())
+        SemanticMirrorWithoutDescentDetector().detect(modules, DetectorConfig())
     )
     finding = next(
         item
@@ -3342,7 +3342,7 @@ def test_semantic_mirror_cross_file_return_dict_synthesizes_dataclass_payload_re
         if item.detector_id == "semantic_mirror_without_descent"
         and item.metrics.plan_source_name == "RefactorAction"
     )
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(modules), (finding,))
+    snapshot = CodemodSourceSnapshot.from_modules(modules, (finding,))
 
     plan = codemod_plan_from_findings((finding,), selector_context=snapshot)
     record = plan.records[0]
@@ -3380,13 +3380,13 @@ def test_semantic_mirror_cross_file_return_dict_synthesizes_dataclass_payload_re
     imported_finding = next(
         item
         for item in SemanticMirrorWithoutDescentDetector().detect(
-            ParsedModuleSet.of(imported_modules),
+            imported_modules,
             DetectorConfig(),
         )
         if item.metrics.plan_source_name == "RefactorAction"
     )
     imported_snapshot = CodemodSourceSnapshot.from_modules(
-        ParsedModuleSet.of(imported_modules),
+        imported_modules,
         (imported_finding,),
     )
     imported_plan = codemod_plan_from_findings(
@@ -3417,13 +3417,13 @@ def test_semantic_mirror_cross_file_return_dict_synthesizes_dataclass_payload_re
     shadowed_finding = next(
         item
         for item in SemanticMirrorWithoutDescentDetector().detect(
-            ParsedModuleSet.of(shadowed_modules),
+            shadowed_modules,
             DetectorConfig(),
         )
         if item.metrics.plan_source_name == "RefactorAction"
     )
     shadowed_snapshot = CodemodSourceSnapshot.from_modules(
-        ParsedModuleSet.of(shadowed_modules),
+        shadowed_modules,
         (shadowed_finding,),
     )
     shadowed_plan = codemod_plan_from_findings(
@@ -3479,7 +3479,7 @@ def test_semantic_mirror_cross_file_payload_recipe_rejects_import_cycle(
     )
     modules = parse_python_modules(tmp_path)
     findings = tuple(
-        SemanticMirrorWithoutDescentDetector().detect(ParsedModuleSet.of(modules), DetectorConfig())
+        SemanticMirrorWithoutDescentDetector().detect(modules, DetectorConfig())
     )
     finding = next(
         item
@@ -3487,7 +3487,7 @@ def test_semantic_mirror_cross_file_payload_recipe_rejects_import_cycle(
         if item.detector_id == "semantic_mirror_without_descent"
         and item.metrics.plan_source_name == "RefactorAction"
     )
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(modules), (finding,))
+    snapshot = CodemodSourceSnapshot.from_modules(modules, (finding,))
 
     plan = codemod_plan_from_findings((finding,), selector_context=snapshot)
     record = plan.records[0]
@@ -3600,13 +3600,13 @@ def test_dataclass_payload_recipe_requires_one_exhaustive_direct_field_run(
         finding = next(
             item
             for item in SemanticMirrorWithoutDescentDetector().detect(
-                ParsedModuleSet.of(modules),
+                modules,
                 DetectorConfig(),
             )
             if item.metrics.plan_source_name == "RefactorAction"
             and item.metrics.plan_mapping_name == expected_mapping_name
         )
-        snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(modules), (finding,))
+        snapshot = CodemodSourceSnapshot.from_modules(modules, (finding,))
         plan = codemod_plan_from_findings((finding,), selector_context=snapshot)
 
         record = plan.records[0]
@@ -3703,7 +3703,7 @@ def test_semantic_mirror_constructor_projection_uses_dataclass_method(
             source_name="SourceLineSpan",
         ),
     )
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(modules), (finding,))
+    snapshot = CodemodSourceSnapshot.from_modules(modules, (finding,))
 
     plan = codemod_plan_from_findings((finding,), selector_context=snapshot)
     record = plan.records[0]
@@ -3821,7 +3821,7 @@ def test_constructor_projection_rejection_reports_only_constructor_builder(
             source_name="SourceLineSpan",
         ),
     )
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(modules), (finding,))
+    snapshot = CodemodSourceSnapshot.from_modules(modules, (finding,))
 
     record = codemod_plan_from_findings(
         (finding,),
@@ -3900,7 +3900,7 @@ def test_constructor_projection_requires_same_nominal_constructor(
         ),
     )
     snapshot = CodemodSourceSnapshot.from_modules(
-        ParsedModuleSet.of(parse_python_modules(tmp_path)),
+        parse_python_modules(tmp_path),
         (finding,),
     )
 
@@ -3942,7 +3942,7 @@ def test_nested_factory_keyword_names_do_not_prove_dataclass_authority(
         "        ]\n",
     )
     findings = SemanticMirrorWithoutDescentDetector().detect(
-        ParsedModuleSet.of(parse_python_modules(tmp_path)),
+        parse_python_modules(tmp_path),
         DetectorConfig(),
     )
 
@@ -3977,7 +3977,7 @@ def test_semantic_mirror_enum_subset_synthesizes_authority_method_recipe(
     )
     modules = parse_python_modules(tmp_path)
     findings = tuple(
-        SemanticMirrorWithoutDescentDetector().detect(ParsedModuleSet.of(modules), DetectorConfig())
+        SemanticMirrorWithoutDescentDetector().detect(modules, DetectorConfig())
     )
     finding = next(
         item
@@ -3985,7 +3985,7 @@ def test_semantic_mirror_enum_subset_synthesizes_authority_method_recipe(
         if item.detector_id == "semantic_mirror_without_descent"
         and item.metrics.plan_mapping_name == "_ACTIONABLE_CONFIDENCE_LEVELS"
     )
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(modules), (finding,))
+    snapshot = CodemodSourceSnapshot.from_modules(modules, (finding,))
 
     plan = codemod_plan_from_findings((finding,), selector_context=snapshot)
     simulation = plan.simulate(snapshot)
@@ -4085,7 +4085,7 @@ def test_enum_subset_operation_rederives_current_source(tmp_path: Path) -> None:
     )
     taxonomy_path.write_text(taxonomy_source, encoding="utf-8", newline="")
     projection_path.write_text(projection_source, encoding="utf-8", newline="")
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     operation = _enum_subset_operation(snapshot, "ConfidenceLevel", projection_path)
     replayed = RefactorRecipeOperation.from_json_value(json_report_object(operation))
     changed_projection_source = projection_source.replace("medium", "low")
@@ -4123,7 +4123,7 @@ def test_enum_subset_operation_rejects_authority_value_drift(
         "    MEDIUM = 'medium'\n\n"
         "ACTIONABLE = frozenset(('high', 'medium'))\n",
     )
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     operation = _enum_subset_operation(snapshot, "ConfidenceLevel", module_path)
     changed_source = snapshot.sources_by_file_path[module_path.as_posix()].replace(
         "MEDIUM = 'medium'",
@@ -4153,7 +4153,7 @@ def test_enum_subset_operation_rejects_ambiguous_projections(
         "FIRST = frozenset(('high', 'medium'))\n"
         "SECOND = frozenset(('medium',))\n",
     )
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     operation = _enum_subset_operation(snapshot, "ConfidenceLevel", module_path)
 
     with pytest.raises(
@@ -4189,7 +4189,7 @@ def test_enum_subset_operation_rejects_shadowed_frozenset(
         encoding="utf-8",
         newline="",
     )
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     operation = _enum_subset_operation(snapshot, "ConfidenceLevel", projection_path)
 
     with pytest.raises(CodemodOperationPreflightError):
@@ -4208,7 +4208,7 @@ def test_enum_subset_operation_rejects_aliases_and_accessor_collisions(
         "ACTIONABLE = frozenset(('shared',))\n",
     )
     aliased_snapshot = CodemodSourceSnapshot.from_modules(
-        ParsedModuleSet.of(parse_python_modules(tmp_path))
+        parse_python_modules(tmp_path)
     )
     aliased_operation = _enum_subset_operation(
         aliased_snapshot,
@@ -4233,7 +4233,7 @@ def test_enum_subset_operation_rejects_aliases_and_accessor_collisions(
         newline="",
     )
     collision_snapshot = CodemodSourceSnapshot.from_modules(
-        ParsedModuleSet.of(parse_python_modules(tmp_path))
+        parse_python_modules(tmp_path)
     )
     collision_operation = _enum_subset_operation(
         collision_snapshot,
@@ -4259,7 +4259,7 @@ def test_enum_subset_operation_executes_source_derived_view(tmp_path: Path) -> N
         "    LOW = 'low'\n\n"
         "ACTIONABLE = frozenset(('high', 'medium'))\n",
     )
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     operation = _enum_subset_operation(snapshot, "ConfidenceLevel", module_path)
 
     simulation = (
@@ -4308,12 +4308,12 @@ def test_semantic_mirror_enum_rejection_reports_only_enum_builder(
     finding = next(
         item
         for item in SemanticMirrorWithoutDescentDetector().detect(
-            ParsedModuleSet.of(modules),
+            modules,
             DetectorConfig(),
         )
         if item.metrics.plan_mapping_name == "_ACTIONABLE_CONFIDENCE_LEVELS"
     )
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(modules), (finding,))
+    snapshot = CodemodSourceSnapshot.from_modules(modules, (finding,))
 
     record = codemod_plan_from_findings(
         (finding,),
@@ -4357,7 +4357,7 @@ def test_semantic_mirror_class_collection_synthesizes_authority_query_recipe(
     )
     modules = parse_python_modules(tmp_path)
     findings = tuple(
-        SemanticMirrorWithoutDescentDetector().detect(ParsedModuleSet.of(modules), DetectorConfig())
+        SemanticMirrorWithoutDescentDetector().detect(modules, DetectorConfig())
     )
     finding = next(
         item
@@ -4365,7 +4365,7 @@ def test_semantic_mirror_class_collection_synthesizes_authority_query_recipe(
         if item.detector_id == "semantic_mirror_without_descent"
         and item.metrics.plan_registry_name == "MODE_ENUMS"
     )
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(modules), (finding,))
+    snapshot = CodemodSourceSnapshot.from_modules(modules, (finding,))
 
     plan = codemod_plan_from_findings((finding,), selector_context=snapshot)
     simulation = plan.simulate(snapshot)
@@ -4456,7 +4456,7 @@ def test_semantic_mirror_class_name_collection_synthesizes_authority_query_recip
     )
     modules = parse_python_modules(tmp_path)
     findings = tuple(
-        SemanticMirrorWithoutDescentDetector().detect(ParsedModuleSet.of(modules), DetectorConfig())
+        SemanticMirrorWithoutDescentDetector().detect(modules, DetectorConfig())
     )
     finding = next(
         item
@@ -4464,7 +4464,7 @@ def test_semantic_mirror_class_name_collection_synthesizes_authority_query_recip
         if item.detector_id == "semantic_mirror_without_descent"
         and item.metrics.plan_registry_name == "OWNER_NAMES"
     )
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(modules), (finding,))
+    snapshot = CodemodSourceSnapshot.from_modules(modules, (finding,))
 
     plan = codemod_plan_from_findings((finding,), selector_context=snapshot)
     simulation = plan.simulate(snapshot)
@@ -4532,7 +4532,7 @@ def test_class_family_collection_operation_rederives_current_source(
     projection_source = "from .taxonomy import Alpha, Beta\n\nMEMBERS = (Alpha, Beta)\n"
     taxonomy_path.write_text(taxonomy_source, encoding="utf-8", newline="")
     projection_path.write_text(projection_source, encoding="utf-8", newline="")
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     operation = _class_family_collection_operation(snapshot, "Root", projection_path)
     payload = json_report_object(operation)
     replayed = RefactorRecipeOperation.from_json_value(payload)
@@ -4576,7 +4576,7 @@ def test_class_family_collection_operation_rejects_ambiguous_projections(
         "FIRST = (Alpha, Beta)\n"
         "SECOND = (Alpha, Beta)\n",
     )
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     operation = _class_family_collection_operation(snapshot, "Root", module_path)
 
     with pytest.raises(
@@ -4599,7 +4599,7 @@ def test_class_family_collection_operation_executes_source_derived_view(
         "    pass\n\n"
         "MEMBERS: tuple[type[Root], ...] = (Alpha, Beta)\n",
     )
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     operation = _class_family_collection_operation(snapshot, "Root", module_path)
 
     direct_edits = operation.source_edits(snapshot)
@@ -4650,7 +4650,7 @@ def test_class_family_collection_operation_requires_provable_runtime_order(
         encoding="utf-8",
         newline="",
     )
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     operation = _class_family_collection_operation(snapshot, "Root", projection_path)
 
     if not is_executable:
@@ -4685,7 +4685,7 @@ def test_class_family_collection_operation_rejects_shadowed_factory(
         "frozenset = lambda values: tuple(values)\n"
         "MEMBERS = frozenset({Alpha, Beta})\n",
     )
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     operation = _class_family_collection_operation(snapshot, "Root", module_path)
 
     with pytest.raises(ValueError, match="exactly one complete literal collection"):
@@ -4714,7 +4714,7 @@ def test_class_family_collection_operation_rejects_authority_name_collision(
         encoding="utf-8",
         newline="",
     )
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     operation = _class_family_collection_operation(snapshot, "Root", projection_path)
 
     with pytest.raises(ValueError, match="authority name 'Root' is rebound"):
@@ -4742,7 +4742,7 @@ def test_semantic_mirror_preserves_public_export_contract(tmp_path: Path) -> Non
     )
 
     findings = SemanticMirrorWithoutDescentDetector().detect(
-        ParsedModuleSet.of(parse_python_modules(tmp_path)),
+        parse_python_modules(tmp_path),
         DetectorConfig(),
     )
 
@@ -4776,13 +4776,13 @@ def test_semantic_mirror_deep_class_collection_requires_complete_runtime_query(
     finding = next(
         finding
         for finding in SemanticMirrorWithoutDescentDetector().detect(
-            ParsedModuleSet.of(modules),
+            modules,
             DetectorConfig(),
         )
         if finding.metrics.plan_registry_name == "ALL_MEMBERS"
         and finding.evidence[1].symbol == "Root"
     )
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(modules), (finding,))
+    snapshot = CodemodSourceSnapshot.from_modules(modules, (finding,))
 
     plan = codemod_plan_from_findings((finding,), selector_context=snapshot)
 
@@ -4825,7 +4825,7 @@ def test_semantic_descent_ignores_qualified_enum_member_references(
 
     findings = tuple(
         SemanticMirrorWithoutDescentDetector().detect(
-            ParsedModuleSet.of(parse_python_modules(tmp_path)),
+            parse_python_modules(tmp_path),
             DetectorConfig(),
         )
     )
@@ -4860,7 +4860,7 @@ def test_two_member_enum_overlap_without_authority_affinity_is_not_mirror(
 
     findings = tuple(
         SemanticMirrorWithoutDescentDetector().detect(
-            ParsedModuleSet.of(parse_python_modules(tmp_path)),
+            parse_python_modules(tmp_path),
             DetectorConfig(),
         )
     )
@@ -4893,7 +4893,7 @@ def test_two_member_class_family_branch_without_authority_affinity_is_not_mirror
 
     findings = tuple(
         SemanticMirrorWithoutDescentDetector().detect(
-            ParsedModuleSet.of(parse_python_modules(tmp_path)),
+            parse_python_modules(tmp_path),
             DetectorConfig(),
         )
     )
@@ -4924,7 +4924,7 @@ def test_enum_string_literal_branch_still_reports_mirror(
 
     findings = tuple(
         SemanticMirrorWithoutDescentDetector().detect(
-            ParsedModuleSet.of(parse_python_modules(tmp_path)),
+            parse_python_modules(tmp_path),
             DetectorConfig(),
         )
     )
@@ -4955,7 +4955,7 @@ def test_untyped_enum_string_literal_branch_is_not_authority_proof(
     )
 
     findings = SemanticMirrorWithoutDescentDetector().detect(
-        ParsedModuleSet.of(parse_python_modules(tmp_path)),
+        parse_python_modules(tmp_path),
         DetectorConfig(),
     )
 
@@ -4985,7 +4985,7 @@ def test_builtin_calls_do_not_prove_enum_authority(
     )
 
     findings = SemanticMirrorWithoutDescentDetector().detect(
-        ParsedModuleSet.of(parse_python_modules(tmp_path)),
+        parse_python_modules(tmp_path),
         DetectorConfig(),
     )
 
@@ -5015,7 +5015,7 @@ def test_enum_branch_over_structural_type_names_is_not_mirror(
 
     findings = tuple(
         SemanticMirrorWithoutDescentDetector().detect(
-            ParsedModuleSet.of(parse_python_modules(tmp_path)),
+            parse_python_modules(tmp_path),
             DetectorConfig(),
         )
     )
@@ -5079,7 +5079,7 @@ def test_enum_branch_with_only_weak_authority_name_affinity_is_not_mirror(
 
     findings = tuple(
         SemanticMirrorWithoutDescentDetector().detect(
-            ParsedModuleSet.of(parse_python_modules(tmp_path)),
+            parse_python_modules(tmp_path),
             DetectorConfig(),
         )
     )
@@ -5111,7 +5111,7 @@ def test_dataclass_branch_over_local_variable_names_is_not_mirror(
 
     findings = tuple(
         SemanticMirrorWithoutDescentDetector().detect(
-            ParsedModuleSet.of(parse_python_modules(tmp_path)),
+            parse_python_modules(tmp_path),
             DetectorConfig(),
         )
     )
@@ -5143,7 +5143,7 @@ def test_dataclass_branch_over_field_name_literals_still_reports_mirror(
 
     findings = tuple(
         SemanticMirrorWithoutDescentDetector().detect(
-            ParsedModuleSet.of(parse_python_modules(tmp_path)),
+            parse_python_modules(tmp_path),
             DetectorConfig(),
         )
     )
@@ -5180,7 +5180,7 @@ def test_dataclass_branch_using_qualified_authority_constructor_is_descent(
 
     findings = tuple(
         SemanticMirrorWithoutDescentDetector().detect(
-            ParsedModuleSet.of(parse_python_modules(tmp_path)),
+            parse_python_modules(tmp_path),
             DetectorConfig(),
         )
     )
@@ -5223,7 +5223,7 @@ def test_semantic_descent_ignores_function_local_variable_tuple_projection(
 
     findings = tuple(
         SemanticMirrorWithoutDescentDetector().detect(
-            ParsedModuleSet.of(parse_python_modules(tmp_path)),
+            parse_python_modules(tmp_path),
             DetectorConfig(),
         )
     )
@@ -5695,13 +5695,13 @@ def test_semantic_mirror_owned_dataclass_payload_synthesizes_derivation_recipe(
     finding = next(
         item
         for item in SemanticMirrorWithoutDescentDetector().detect(
-            ParsedModuleSet.of(modules),
+            modules,
             DetectorConfig(),
         )
         if item.metrics.plan_source_name == "Report"
         and item.metrics.plan_mapping_name == "Report.to_dict:return"
     )
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(modules), (finding,))
+    snapshot = CodemodSourceSnapshot.from_modules(modules, (finding,))
 
     plan = codemod_plan_from_findings((finding,), selector_context=snapshot)
     simulation = plan.simulate(snapshot)

@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from nominal_refactor_advisor.class_index import ParsedModuleSet
+from nominal_refactor_advisor.ast_tools import ParsedModuleSet
 import nominal_refactor_advisor as advisor
 from nominal_refactor_advisor import codemod
 from nominal_refactor_advisor import codemod_workflow
@@ -896,11 +896,11 @@ def _repeated_builder_evaluation_for_source(
     modules = parse_python_modules(tmp_path)
     findings = tuple(
         finding
-        for finding in analyze_modules(ParsedModuleSet.of(modules))
+        for finding in analyze_modules(modules)
         if finding.detector_id == "repeated_builder_calls"
     )
     assert len(findings) == 1
-    snapshot = codemod.CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(modules), findings)
+    snapshot = codemod.CodemodSourceSnapshot.from_modules(modules, findings)
     synthesizer = codemod.FindingRecipeSynthesizer.for_finding(findings[0])
     assert synthesizer is not None
     return synthesizer.evaluate_recipe_for_finding(findings[0], snapshot)

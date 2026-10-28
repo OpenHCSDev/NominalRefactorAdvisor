@@ -9,7 +9,6 @@ import sys
 
 import pytest
 
-from nominal_refactor_advisor.class_index import ParsedModuleSet
 from nominal_refactor_advisor.ast_tools import ParsedModule, parse_python_modules
 from nominal_refactor_advisor.class_index import CompactModuleClassProjectionFamily
 from nominal_refactor_advisor.codemod import (
@@ -148,7 +147,7 @@ def test_mixed_access_cannot_share_an_incompatible_argument_edit(
     )
     with pytest.raises(ValueError, match="do not bind"):
         plan.simulate(
-            CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
+            CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
         )
     assert path.read_bytes() == source.encode()
 

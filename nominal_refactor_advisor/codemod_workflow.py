@@ -14,7 +14,7 @@ import sys
 import time
 from typing import ClassVar, Generic, Self, TextIO, TypeVar
 
-from .class_index import ParsedModuleSet
+from .ast_tools import ParsedModuleSet
 from .analysis import (
     AnalysisPathScope,
     EvidenceLocalFindingReuseAuthority,
@@ -1630,10 +1630,9 @@ class CodemodRefactorGoalRunner:
             use_parse_cache=self.enabled,
             parse_workers=self.parse_workers,
         )
-        module_set = ParsedModuleSet.of(modules)
         return CodemodWorkflowScan(
-            modules=module_set,
-            findings=self.report_scoped_findings(analyze_modules(module_set, self.config)),
+            modules=modules,
+            findings=self.report_scoped_findings(analyze_modules(modules, self.config)),
         )
 
     def projected_scan(

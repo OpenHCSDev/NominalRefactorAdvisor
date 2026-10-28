@@ -23,7 +23,7 @@ from typing import ClassVar, Self, TypeAlias, cast
 
 from metaclass_registry import AutoRegisterMeta
 
-from .class_index import ParsedModuleSet
+from .ast_tools import ParsedModuleSet
 from .scan_cache import ScanCache
 
 from .source_geometry import read_source_text
@@ -4032,14 +4032,12 @@ def _main_without_deadline(invocation: CliArguments) -> int:
             )
         else:
             started = perf_counter()
-            modules = ParsedModuleSet.of(
-                parse_python_module_roots(
-                    roots,
-                    cache_dir=parse_cache_dir,
-                    use_parse_cache=args.use_parse_cache,
-                    parse_workers=args.parse_workers,
-                    source_policy=source_policy,
-                )
+            modules = parse_python_module_roots(
+                roots,
+                cache_dir=parse_cache_dir,
+                use_parse_cache=args.use_parse_cache,
+                parse_workers=args.parse_workers,
+                source_policy=source_policy,
             )
             parse_seconds = round(perf_counter() - started, 3)
             if not scan_analysis_required:

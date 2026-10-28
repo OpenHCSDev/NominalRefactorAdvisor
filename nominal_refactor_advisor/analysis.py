@@ -77,12 +77,12 @@ from .cache_checkout import (
     lexical_absolute_path,
 )
 from .class_index import (
-    ParsedModuleSet,
     CompactClassFamilyIndex,
     CompactClassProjectionDemand,
     CompactModuleClassProjection,
     CompactModuleClassProjectionFamily,
 )
+from .ast_tools import ParsedModuleSet
 from .detectors import (
     CompactClassRepositoryContext,
     CompactFindingStream,
@@ -3985,7 +3985,7 @@ def analyze_path(
     )
     return analyze_modules_with_cache(
         (root,),
-        ParsedModuleSet(tuple(modules)),
+        modules,
         config,
         analysis_cache_dir=analysis_cache_dir_for_root(
             root,
@@ -4041,7 +4041,7 @@ def analyze_paths(
     root = roots[0]
     return analyze_modules_with_cache(
         roots,
-        ParsedModuleSet(tuple(modules)),
+        modules,
         config,
         analysis_cache_dir=analysis_cache_dir_for_root(
             root,

@@ -7,7 +7,7 @@ import sys
 
 import pytest
 
-from nominal_refactor_advisor.class_index import ParsedModuleSet
+from nominal_refactor_advisor.ast_tools import ParsedModuleSet
 from nominal_refactor_advisor.ast_tools import ParsedModule
 from nominal_refactor_advisor.codemod import (
     CodemodPlanSequence,

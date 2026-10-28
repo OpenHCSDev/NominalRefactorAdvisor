@@ -18,7 +18,6 @@ from pathlib import Path
 import black
 import pytest
 
-from nominal_refactor_advisor.class_index import ParsedModuleSet
 from nominal_refactor_advisor.ast_tools import parse_python_modules
 from nominal_refactor_advisor.cases_family import CasesFamily
 from nominal_refactor_advisor.codemod import (
@@ -90,7 +89,7 @@ def _staged(tmp_path: Path, form: str) -> tuple[CodemodSourceSnapshot, Path, Pat
     tests = tmp_path / "tests" / "test_class_mro.py"
     shutil.copy(FIXTURES / f"class_mro_{form}.py", module)
     shutil.copy(FIXTURES / "class_mro_tests_before.py", tests)
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)), ())
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path), ())
     return snapshot, module, tests
 
 
@@ -171,7 +170,7 @@ def test_external_enum_case_recovery_sees_the_pre_images_and_not_the_family(
     _staged(tmp_path, form)
 
     found = ExternalEnumCaseRecoveryDetector().detect(
-        ParsedModuleSet.of(list(parse_python_modules(tmp_path))), DetectorConfig()
+        parse_python_modules(tmp_path), DetectorConfig()
     )
 
     assert [evidence.symbol for finding in found for evidence in finding.evidence] == (
@@ -185,7 +184,7 @@ def _family_staged(tmp_path: Path, form: str) -> CodemodSourceSnapshot:
     (tmp_path / "tests").mkdir()
     for path, stem in FAMILY_FILES:
         shutil.copy(FIXTURES / f"{stem}_{form}.py", tmp_path / path)
-    return CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)), ())
+    return CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path), ())
 
 
 def _family(snapshot: CodemodSourceSnapshot, names: tuple[str, ...]) -> CasesFamily:
@@ -255,7 +254,7 @@ def test_external_enum_case_recovery_sees_the_family_pre_image_only(
     _family_staged(tmp_path, form)
 
     found = ExternalEnumCaseRecoveryDetector().detect(
-        ParsedModuleSet.of(list(parse_python_modules(tmp_path))), DetectorConfig()
+        parse_python_modules(tmp_path), DetectorConfig()
     )
 
     assert [
@@ -298,7 +297,7 @@ def test_cases_family_keeps_the_unfolded_body_when_members_would_share_an_overri
     tmp_path: Path,
 ) -> None:
     (tmp_path / "split.py").write_text(SPLIT_ENUM_SOURCE)
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)), ())
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path), ())
     operation = CasesFamily(
         target=_target(snapshot, "split.Shape"), rationale="", names=("check_shape",)
     )
@@ -356,7 +355,7 @@ class Holder:
 
 def test_cases_family_turns_a_decided_away_elif_into_an_if(tmp_path: Path) -> None:
     (tmp_path / "need.py").write_text(ELIF_ENUM_SOURCE)
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)), ())
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path), ())
     operation = CasesFamily(
         target=_target(snapshot, "need.Need"), rationale="", names=("check_reference",)
     )
@@ -392,7 +391,7 @@ def test_cases_family_gives_each_independent_if_its_own_method(tmp_path: Path) -
 """,
         )
     )
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)), ())
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path), ())
 
     with pytest.raises(ValueError) as refusal:
         CasesFamily(
@@ -417,7 +416,7 @@ def test_cases_family_keeps_sorted_imports_sorted(tmp_path: Path) -> None:
     (tmp_path / "need.py").write_text(
         (tmp_path / "need.py").read_text() + "\n\ndef helper() -> None:\n    pass\n"
     )
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)), ())
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path), ())
     operation = CasesFamily(
         target=_target(snapshot, "need.Need"), rationale="", names=("check_reference",)
     )
@@ -457,7 +456,7 @@ class Echo(StrEnum):
 
 def test_cases_family_inlines_lambda_data_into_its_only_caller(tmp_path: Path) -> None:
     (tmp_path / "echo.py").write_text(LAMBDA_ENUM_SOURCE)
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)), ())
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path), ())
     operation = CasesFamily(
         target=_target(snapshot, "echo.Echo"), rationale="", names=()
     )
@@ -504,7 +503,7 @@ def test_cases_family_moves_a_returning_branch_with_the_rest_of_its_function(
 """,
         )
     )
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)), ())
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path), ())
     operation = CasesFamily(
         target=_target(snapshot, "tail.Need"), rationale="", names=("label",)
     )
@@ -536,7 +535,7 @@ def test_cases_family_follows_a_re_export_to_the_enum(tmp_path: Path) -> None:
     (tmp_path / "reader.py").write_text(
         "from hub import Need\n\nassert Need.REQUIRED.required\n"
     )
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)), ())
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path), ())
     operation = CasesFamily(
         target=_target(snapshot, "need.Need"), rationale="", names=("check_reference",)
     )
@@ -563,7 +562,7 @@ def test_cases_family_hands_back_an_enum_imported_inside_a_function(
         "    from need import Need\n\n"
         "    return Need.REQUIRED.required\n"
     )
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)), ())
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path), ())
 
     with pytest.raises(ValueError) as refusal:
         CasesFamily(
@@ -592,7 +591,7 @@ def test_cases_family_spells_the_case_import_as_its_package_does(
         )
         + "\n\nassert THING\n"
     )
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)), ())
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path), ())
     operation = CasesFamily(
         target=_target(snapshot, "nominal_refactor_advisor.need.Need"),
         rationale="",
@@ -624,7 +623,7 @@ def test_cases_family_hands_back_a_member_whose_value_is_not_a_string(
         "    def high(self) -> bool:\n"
         "        return self is Level.HIGH\n"
     )
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)), ())
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path), ())
 
     with pytest.raises(ValueError) as refusal:
         CasesFamily(
@@ -646,7 +645,7 @@ def test_cases_family_keeps_a_string_default_a_value(tmp_path: Path) -> None:
         '    def trigger(self, *, when: str = "") -> str:\n'
         "        return self.value + when\n"
     )
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)), ())
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path), ())
     operation = CasesFamily(
         target=_target(snapshot, "mutation.Mutation"), rationale="", names=()
     )
@@ -671,7 +670,7 @@ def test_cases_family_root_with_only_methods_has_one_blank_line_after_its_docstr
         "    def trigger(self) -> str:\n"
         "        return self.value\n"
     )
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)), ())
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path), ())
     operation = CasesFamily(
         target=_target(snapshot, "mutation.Mutation"), rationale="", names=()
     )
@@ -693,7 +692,7 @@ def test_cases_family_root_with_nothing_of_its_own_passes(tmp_path: Path) -> Non
         '    OBSERVER = "observer"\n\n\n'
         "assert Reason.OBSERVER.value\n"
     )
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)), ())
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path), ())
     operation = CasesFamily(
         target=_target(snapshot, "reason.Reason"), rationale="", names=()
     )
@@ -720,7 +719,7 @@ def test_cases_family_leaves_annotated_metadata_values(tmp_path: Path) -> None:
         'def choose(tier: Annotated[Tier, "Tier help text", Tier.STANDARD]) -> str:\n'
         "    return tier.label\n"
     )
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)), ())
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path), ())
     operation = CasesFamily(
         target=_target(snapshot, "tier.Tier"), rationale="", names=()
     )
@@ -744,7 +743,7 @@ def test_cases_family_hands_back_without_a_declared_family_root(
         "class Reason(StrEnum):\n"
         '    OBSERVER = "observer"\n'
     )
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)), ())
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path), ())
 
     with pytest.raises(ValueError) as refusal:
         CasesFamily(
@@ -822,7 +821,7 @@ def _derived_staged(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, source: str
     (tmp_path / "family.py").write_text(DERIVED_ROOT_SOURCE)
     (tmp_path / "kind.py").write_text(source)
     monkeypatch.syspath_prepend(tmp_path)
-    return CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)), ())
+    return CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path), ())
 
 
 def test_cases_family_carries_values_through_the_declared_root(
@@ -910,7 +909,7 @@ def test_cases_family_refuses_a_member_read_through_a_receiver(tmp_path: Path) -
         "def required(kind: type[Need] = Need) -> bool:\n"
         "    return kind.REQUIRED.required\n"
     )
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)), ())
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path), ())
     operation = CasesFamily(
         target=_target(snapshot, "need.Need"), rationale="", names=("check_reference",)
     )

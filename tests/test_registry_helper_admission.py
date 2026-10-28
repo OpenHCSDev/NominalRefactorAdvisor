@@ -7,7 +7,7 @@ from types import ModuleType
 import pytest
 from registry_test_sources import _type_keyed_behavior_projection_source
 
-from nominal_refactor_advisor.class_index import ParsedModuleSet
+from nominal_refactor_advisor.ast_tools import ParsedModuleSet
 from nominal_refactor_advisor.ast_tools import ParsedModule, parse_python_modules
 from nominal_refactor_advisor.codemod import (
     CodemodPlanSequence,
@@ -40,7 +40,7 @@ def test_counterfeit_helper_is_not_implicitly_admitted(tmp_path, monkeypatch) ->
     path = tmp_path / "subject.py"
     path.write_text(source)
     snapshot = CodemodSourceSnapshot.from_modules(
-        ParsedModuleSet.of(parse_python_modules(tmp_path, use_parse_cache=False))
+        parse_python_modules(tmp_path, use_parse_cache=False)
     )
     plan = CodemodPlanSequence.from_operations(
         (

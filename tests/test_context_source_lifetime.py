@@ -5,7 +5,7 @@ import weakref
 
 import pytest
 
-from nominal_refactor_advisor.class_index import ParsedModuleSet
+from nominal_refactor_advisor.ast_tools import ParsedModuleSet
 from nominal_refactor_advisor import analysis
 from nominal_refactor_advisor.analysis_cache import AnalysisCacheIdentity, AnalysisFindingCache
 from nominal_refactor_advisor.ast_tools import ParsedModule

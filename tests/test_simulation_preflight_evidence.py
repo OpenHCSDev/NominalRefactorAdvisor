@@ -5,7 +5,6 @@ from dataclasses import replace
 
 import pytest
 
-from nominal_refactor_advisor.class_index import ParsedModuleSet
 from nominal_refactor_advisor.ast_tools import parse_python_modules
 from nominal_refactor_advisor.codemod import (
     CodemodPlanDocument,
@@ -35,7 +34,7 @@ def _move(tmp_path):
     destination = package / "destination.py"
     destination.write_text("")
     snapshot = CodemodSourceSnapshot.from_modules(
-        ParsedModuleSet.of(parse_python_modules(tmp_path, use_parse_cache=False))
+        parse_python_modules(tmp_path, use_parse_cache=False)
     )
     operation = MoveSymbolsToModuleOperation(
         target=SourceRewriteTarget(file_path=str(source)),

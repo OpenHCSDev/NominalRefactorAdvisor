@@ -126,7 +126,6 @@ from ..ast_tools import (
 from ..native_syntax import NativePythonSyntaxIndex
 from ..positional_forwarding import PositionalForwardingCall
 from ..class_index import (
-    ParsedModuleSet,
     ClsRegistryMembership,
     ClassFamilyIndex,
     ClassSymbolResolutionAuthority,
@@ -148,6 +147,7 @@ from ..class_index import (
     build_compact_class_family_index,
     star_resolved_projections,
 )
+from ..ast_tools import ParsedModuleSet
 from ..collection_algebra import UniqueIdentityIndexAuthority, sorted_tuple
 from ..models import (
     CERTIFIED,
@@ -5243,7 +5243,7 @@ def _repeated_concrete_type_case_analysis_candidates(
     modules: ParsedModuleSet,
     config: DetectorConfig,
 ) -> tuple[RepeatedConcreteTypeCaseAnalysisCandidate, ...]:
-    class_index = modules.class_family_index
+    class_index = modules.fact(ClassFamilyIndex)
     min_function_count = max(3, config.min_registration_sites)
     min_class_count = max(2, config.min_reflective_selector_values)
     candidates: list[RepeatedConcreteTypeCaseAnalysisCandidate] = []
@@ -5339,7 +5339,7 @@ def _implicit_self_contract_mixin_candidates(
     modules: ParsedModuleSet,
     config: DetectorConfig,
 ) -> tuple[ImplicitSelfContractMixinCandidate, ...]:
-    class_index = modules.class_family_index
+    class_index = modules.fact(ClassFamilyIndex)
     min_consumer_count = max(2, config.min_registration_sites)
     candidates: list[ImplicitSelfContractMixinCandidate] = []
     for indexed_class in sorted(

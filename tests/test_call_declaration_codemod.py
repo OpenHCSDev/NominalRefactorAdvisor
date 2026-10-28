@@ -4,7 +4,6 @@ from pathlib import Path
 
 import pytest
 
-from nominal_refactor_advisor.class_index import ParsedModuleSet
 from nominal_refactor_advisor.ast_tools import parse_python_modules
 from nominal_refactor_advisor.codemod import (
     CodemodBackend,
@@ -20,7 +19,7 @@ from nominal_refactor_advisor.json_reports import json_report_object
 
 
 def _snapshot(root: Path) -> CodemodSourceSnapshot:
-    return CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(root)), ())
+    return CodemodSourceSnapshot.from_modules(parse_python_modules(root), ())
 
 
 def test_module_call_declaration_operation_round_trips_and_deletes_exact_call(

@@ -8,7 +8,6 @@ import sys
 
 import pytest
 
-from nominal_refactor_advisor.class_index import ParsedModuleSet
 from nominal_refactor_advisor.ast_tools import parse_python_modules
 from nominal_refactor_advisor.codemod import CodemodPlanDocument, CodemodSourceSnapshot
 
@@ -173,7 +172,7 @@ def test_deletion_preserves_surviving_runtime(
         str(path),
     ]
     expected = subprocess.check_output(command, text=True)
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     simulation = _document(path, scope, target, names).simulate(snapshot)
     assert simulation.is_clean
     assert path.read_text(encoding="utf-8") == source
@@ -200,7 +199,7 @@ def test_deletion_rejects_ambiguous_or_incomplete_assignment_selection(
     path = tmp_path / "probe.py"
     source = f"def run():\n    {assignment}\n    return 2\n"
     path.write_text(source, newline="")
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     with pytest.raises(ValueError, match=error):
         _document(path, "function", "run", ("drop",)).simulate(snapshot)
     assert path.read_text() == source
@@ -217,7 +216,7 @@ def test_explicit_deletion_removes_evaluation_without_touching_other_calls(
         "print(run(), events)\n"
     )
     path.write_text(source, newline="")
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     simulation = _document(path, "function", "run", ("drop",)).simulate(snapshot)
     simulation.apply()
     assert (

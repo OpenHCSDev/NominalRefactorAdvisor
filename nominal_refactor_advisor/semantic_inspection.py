@@ -15,7 +15,7 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Iterable, Sequence
 
-from .class_index import ParsedModuleSet
+from .ast_tools import ParsedModuleSet
 from .lexical_bindings import ImportBoundNameProjection
 from .analysis import analyze_modules
 from .ast_projection import CallKeyword, StatementValue

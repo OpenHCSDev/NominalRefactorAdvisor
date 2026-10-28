@@ -11,7 +11,6 @@ import textwrap
 
 import pytest
 
-from nominal_refactor_advisor.class_index import ParsedModuleSet
 from nominal_refactor_advisor.ast_tools import parse_python_modules
 from nominal_refactor_advisor.codemod import (
     CodemodPlanSequence,
@@ -66,7 +65,7 @@ def test_rename_preserves_native_class_lookup(
         new_name="renamed",
     )
     CodemodPlanSequence.from_operations((operation,)).simulate(
-        CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
+        CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     ).apply()
     assert subprocess.check_output([sys.executable, str(path)]) == before
 
@@ -178,7 +177,7 @@ def test_rename_refuses_ambiguous_lookup_without_touching_source(
     )
     with pytest.raises(ValueError, match="class.*binding"):
         plan.simulate(
-            CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
+            CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
         )
     assert path.read_bytes() == source.encode("utf-8")
 
@@ -313,7 +312,7 @@ def test_class_declarations_distinguish_module_fallback_from_closure_lookup(
         new_name="renamed",
     )
     CodemodPlanSequence.from_operations((operation,)).simulate(
-        CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
+        CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     ).apply()
     assert subprocess.check_output([sys.executable, str(path)]) == before
 
@@ -339,7 +338,7 @@ def test_generic_method_annotation_retains_class_namespace_lookup(
         new_name="renamed",
     )
     CodemodPlanSequence.from_operations((operation,)).simulate(
-        CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
+        CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     ).apply()
     assert subprocess.check_output([sys.executable, str(path)]) == before
 

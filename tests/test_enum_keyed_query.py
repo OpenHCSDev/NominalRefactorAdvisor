@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from nominal_refactor_advisor.class_index import ParsedModuleSet
+from nominal_refactor_advisor.ast_tools import ParsedModuleSet
 from nominal_refactor_advisor.analysis import analyze_compact_roots_with_cache
 from nominal_refactor_advisor.analysis_cache import Hit
 from nominal_refactor_advisor.ast_tools import parse_python_modules

@@ -22,9 +22,9 @@ from .ast_tools import (
     SourceModuleBatchParser,
 )
 from .class_index import (
-    ParsedModuleSet,
     ClassFamilyIndex,
 )
+from .ast_tools import ParsedModuleSet
 from .codemod_import_graph import SourceModuleImportGraph
 from .codemod_runtime import CodemodSourceSnapshot
 from .models import RefactorFinding
@@ -65,7 +65,7 @@ class CodemodSourceContext(IndexedSourceAuthority):
             sources_by_file_path={
                 module.file_path: module.source for module in module_tuple
             },
-            class_family_index=modules.class_family_index,
+            class_family_index=modules.fact(ClassFamilyIndex),
             imported_modules_by_module=import_graph.import_edges_by_module,
         )
 

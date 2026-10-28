@@ -7,7 +7,6 @@ from pathlib import Path
 
 import pytest
 
-from nominal_refactor_advisor.class_index import ParsedModuleSet
 from nominal_refactor_advisor.ast_tools import parse_python_modules
 from nominal_refactor_advisor.codemod import (
     CodemodOperationPreflightError,
@@ -99,7 +98,7 @@ def test_collapses_historical_semantic_record_authority_as_one_reproved_batch(
 ) -> None:
     source_index_path = _write_authority_fixture(tmp_path)
     expected_runtime_output = _runtime_output(tmp_path)
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     operation = _operation(tmp_path)
     replayed = RefactorRecipeOperation.from_json_value(json_report_object(operation))
 
@@ -132,7 +131,7 @@ def test_collapses_historical_semantic_record_authority_as_one_reproved_batch(
 
 def test_rejects_non_equivalent_class_method_behavior(tmp_path: Path) -> None:
     _write_authority_fixture(tmp_path, method_return="{'different': True}")
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
 
     with pytest.raises(
         CodemodOperationPreflightError,
@@ -154,7 +153,7 @@ def test_rejects_matching_method_syntax_with_different_global_binding(
         ),
         encoding="utf-8", newline="",
     )
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
 
     with pytest.raises(
         CodemodOperationPreflightError,
@@ -174,7 +173,7 @@ def test_rejects_different_neutral_base_mechanics(tmp_path: Path) -> None:
         ),
         encoding="utf-8", newline="",
     )
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
 
     with pytest.raises(
         CodemodOperationPreflightError,
@@ -204,7 +203,7 @@ def test_rejects_equivalent_source_that_depends_on_defining_class(
         ),
         encoding="utf-8", newline="",
     )
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
 
     with pytest.raises(
         CodemodOperationPreflightError,
@@ -231,7 +230,7 @@ def test_rejects_import_cleanup_that_would_remove_a_retained_alias(
         ),
         encoding="utf-8", newline="",
     )
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
 
     with pytest.raises(
         CodemodOperationPreflightError,
@@ -247,7 +246,7 @@ def test_rejects_non_base_reference_to_displaced_authority(tmp_path: Path) -> No
         tmp_path,
         trailing_source="\nSOURCE_RECORD_TYPE = SourceIndexRecord\n",
     )
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
 
     with pytest.raises(
         CodemodOperationPreflightError,
@@ -265,7 +264,7 @@ def test_rejects_imported_reference_to_displaced_authority(tmp_path: Path) -> No
         "pkg/consumer.py",
         "from .source_index import SourceIndexRecord\n",
     )
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
 
     with pytest.raises(
         CodemodOperationPreflightError,

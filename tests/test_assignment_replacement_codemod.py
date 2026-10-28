@@ -8,7 +8,6 @@ import sys
 
 import pytest
 
-from nominal_refactor_advisor.class_index import ParsedModuleSet
 from nominal_refactor_advisor.ast_tools import parse_python_modules
 from nominal_refactor_advisor.codemod import (
     CodemodPlanSequence,
@@ -34,7 +33,7 @@ def test_module_assignment_preserves_same_line_neighbour(tmp_path: Path) -> None
         )
     )
     plan.simulate(
-        CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
+        CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     ).apply()
     assert path.read_text(encoding="utf-8") == "value = 2; neighbour = 3  # retain\n"
 
@@ -104,7 +103,7 @@ def test_assignment_replacement_preserves_multiline_literal_bytes(
         )
     )
     plan.simulate(
-        CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
+        CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     ).apply()
     assert subprocess.check_output(
         [sys.executable, str(path)], text=True
@@ -137,7 +136,7 @@ def test_module_replacement_rejects_incomplete_statement_ownership(
     )
     with pytest.raises(ValueError, match=error):
         plan.simulate(
-            CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
+            CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
         )
     assert path.read_bytes() == original.encode()
 
@@ -172,7 +171,7 @@ def test_scope_replacement_rejects_non_assignment_payloads(
     )
     with pytest.raises(ValueError):
         plan.simulate(
-            CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
+            CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
         )
     assert path.read_bytes() == source.encode()
 
@@ -196,7 +195,7 @@ def test_sequential_assignment_rename_resolves_the_new_field(tmp_path: Path) -> 
         )
     )
     plan.simulate(
-        CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
+        CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     ).apply()
     assert (
         path.read_text(encoding="utf-8")

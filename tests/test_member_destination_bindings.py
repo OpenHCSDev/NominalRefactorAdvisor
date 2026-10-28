@@ -6,7 +6,6 @@ import sys
 
 import pytest
 
-from nominal_refactor_advisor.class_index import ParsedModuleSet
 from nominal_refactor_advisor.ast_tools import parse_python_modules
 from nominal_refactor_advisor.captured_reference import CapturedReferenceViolation
 from nominal_refactor_advisor.codemod import (
@@ -60,7 +59,7 @@ def test_promotion_rejects_destination_namespace_capture(
     path = tmp_path / "probe.py"
     path.write_text(source, encoding="utf-8", newline="")
     subprocess.run([sys.executable, str(path)], check=True, capture_output=True)
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     with pytest.raises(ValueError):
         _plan(path).simulate(snapshot)
     assert path.read_bytes() == source.encode("utf-8")
@@ -88,7 +87,7 @@ def test_promotion_preserves_unrelated_names_and_annotation_values(
     )
     path.write_text(source, encoding="utf-8", newline="")
     before = subprocess.check_output([sys.executable, str(path)])
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     simulation = _plan(path).simulate(snapshot)
     assert simulation.is_clean
     assert path.read_bytes() == source.encode("utf-8")
@@ -109,7 +108,7 @@ def test_subscription_guard_follows_native_annotation_evaluation(
     )
     path.write_text(source, encoding="utf-8", newline="")
     before = subprocess.check_output([sys.executable, str(path)])
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     if sys.version_info < (3, 14):
         # Unsupported origins are rejected by the shared native-reference gate.
         with pytest.raises(CodemodOperationPreflightError) as rejected:

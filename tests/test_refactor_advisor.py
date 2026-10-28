@@ -18,7 +18,7 @@ from unittest.mock import Mock
 
 import pytest
 
-from nominal_refactor_advisor.class_index import ParsedModuleSet
+from nominal_refactor_advisor.ast_tools import ParsedModuleSet
 from nominal_refactor_advisor.ast_projection import CallKeyword
 from metaclass_registry import DuplicateRegistryKeyError
 
@@ -886,7 +886,7 @@ def test_replace_target_reproves_declaration_identity(
         "pkg/mod.py",
         "class Alpha:\n    def run(self):\n        return 0\n",
     )
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     operation = ReplaceTargetOperation(
         target=SourceRewriteTarget(
             qualname="Alpha.run",
@@ -924,7 +924,7 @@ def test_codemod_apply_rejects_source_changed_after_simulation(
         "pkg/mod.py",
         "class Alpha:\n    value = 1\n",
     )
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     simulation = (
         RefactorRecipe("rewrite-alpha")
         .with_operation(
@@ -956,7 +956,7 @@ def test_codemod_apply_rejects_create_path_that_appeared_after_simulation(
 ) -> None:
     _write_module(tmp_path, "pkg/existing.py", "EXISTING = 1\n")
     generated_path = tmp_path / "pkg/generated.py"
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     simulation = CodemodPlanDocument(
         recipes=(
             RefactorRecipe("create-generated").with_operation(
@@ -986,7 +986,7 @@ def test_codemod_multifile_commit_failure_rolls_back_prior_files(
     beta_source = "class Beta:\n    value = 2\n"
     _write_module(tmp_path, "pkg/alpha.py", alpha_source)
     _write_module(tmp_path, "pkg/beta.py", beta_source)
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     simulation = CodemodPlanDocument(
         recipes=(
             RefactorRecipe("rewrite-alpha").with_operation(
@@ -1126,7 +1126,7 @@ def test_codemod_source_snapshot_executes_recipe_document(
         "\nclass Alpha:\n    def run(self, value):\n        return value\n",
     )
     modules = parse_python_modules(tmp_path)
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(modules))
+    snapshot = CodemodSourceSnapshot.from_modules(modules)
     recipe = RefactorRecipe(
         recipe_id="route-alpha",
         reason="Replace the implementation.",
@@ -1183,7 +1183,7 @@ def test_codemod_preflight_does_not_derive_proof_requirements_from_rationale(
         "\nclass Alpha:\n    def run(self, value):\n        return value\n",
     )
     modules = parse_python_modules(tmp_path)
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(modules))
+    snapshot = CodemodSourceSnapshot.from_modules(modules)
     recipe = RefactorRecipe(
         recipe_id="fake-authority-route",
         reason="route through authority",
@@ -1201,7 +1201,7 @@ def test_codemod_create_file_rejects_existing_source_without_mutation(
     module_path = tmp_path / "pkg/mod.py"
     original_source = "KEEP = 1\n"
     _write_module(tmp_path, "pkg/mod.py", original_source)
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     document = CodemodPlanDocument(
         recipes=(
             RefactorRecipe("replace-existing-with-create").with_operation(
@@ -1230,7 +1230,7 @@ def test_codemod_create_file_rejects_duplicate_source_authorities(
 ) -> None:
     _write_module(tmp_path, "pkg/existing.py", "EXISTING = 1\n")
     generated_path = tmp_path / "pkg/generated.py"
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     document = CodemodPlanDocument(
         recipes=(
             RefactorRecipe("first-create").with_operation(
@@ -1271,7 +1271,7 @@ def test_codemod_preflight_accepts_source_backed_authority_claim(
         "\nclass AlphaAuthority:\n    def run(self, value):\n        return value\n",
     )
     modules = parse_python_modules(tmp_path)
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(modules))
+    snapshot = CodemodSourceSnapshot.from_modules(modules)
     recipe = RefactorRecipe(
         recipe_id="claimed-authority-route",
         reason="route through authority",
@@ -1308,7 +1308,7 @@ def test_codemod_preflight_emits_finding_for_unresolved_authority_claim(
         "\nclass Alpha:\n    def run(self, value):\n        return value\n",
     )
     modules = parse_python_modules(tmp_path)
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(modules))
+    snapshot = CodemodSourceSnapshot.from_modules(modules)
     recipe = RefactorRecipe(
         recipe_id="missing-authority-route",
         reason="route through authority",
@@ -1346,7 +1346,7 @@ def test_codemod_preflight_accepts_declared_authority_claim(
         "        return value\n",
     )
     modules = parse_python_modules(tmp_path)
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(modules))
+    snapshot = CodemodSourceSnapshot.from_modules(modules)
     recipe = RefactorRecipe(
         recipe_id="declared-authority-route",
         reason="route through authority",
@@ -1670,7 +1670,7 @@ def test_finding_recipe_plan_preserves_conflicting_branches_independent_of_input
 
     try:
         snapshot = CodemodSourceSnapshot.from_modules(
-            ParsedModuleSet.of(parse_python_modules(tmp_path)),
+            parse_python_modules(tmp_path),
             (weak, strong),
         )
         plans = tuple(
@@ -1815,7 +1815,7 @@ def test_finding_recipe_batch_preserves_equal_cost_conflicting_branches(
         )
         for detector_id, replacement in (("equal_left", 2), ("equal_right", 3))
     )
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)), ())
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path), ())
 
     batch_result = _direct_recipe_batch_result(candidates, snapshot)
     records = batch_result.records
@@ -1864,7 +1864,7 @@ def test_finding_recipe_batch_exposes_every_conflicting_branch(
         )
         for index in range(3)
     )
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)), ())
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path), ())
 
     batch_result = _direct_recipe_batch_result(candidates, snapshot)
     records = batch_result.records
@@ -1904,7 +1904,7 @@ def test_finding_recipe_batch_does_not_use_missing_cost_to_select_conflict(
         before=None,
         after=None,
     )
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)), ())
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path), ())
 
     records = _direct_recipe_batch_evaluation((proved, unproved), snapshot)
 
@@ -1978,7 +1978,7 @@ def test_finding_recipe_batch_preserves_nominal_prefix_conflicts(
         before=4,
         after=1,
     )
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)), ())
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path), ())
 
     records = _direct_recipe_batch_evaluation((child, parent), snapshot)
     records_by_detector = {record.detector_id: record for record in records}
@@ -2014,7 +2014,7 @@ def test_finding_recipe_batch_preserves_physical_conflicts(
         before=8,
         after=1,
     )
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)), ())
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path), ())
 
     records = _direct_recipe_batch_evaluation((weak, strong), snapshot)
     records_by_detector = {record.detector_id: record for record in records}
@@ -2052,7 +2052,7 @@ def test_finding_recipe_batch_combines_composable_disjoint_edits(
             after=1,
         ),
     )
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)), ())
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path), ())
     batch_evaluation = CurrentSnapshotRecipeBatchEvaluation(
         candidates=candidates,
         source_snapshot=snapshot,
@@ -2128,7 +2128,7 @@ def test_finding_recipe_trajectory_frontier_fails_closed_at_enumeration_budget(
         for name in ("a", "b")
         for value in (2, 3)
     )
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)), ())
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path), ())
     batch_result = CurrentSnapshotRecipeBatchEvaluation(
         candidates=candidates,
         source_snapshot=snapshot,
@@ -2157,7 +2157,7 @@ def test_finding_recipe_singleton_without_cost_is_only_a_snapshot_candidate(
         before=None,
         after=None,
     )
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)), ())
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path), ())
 
     (record,) = _direct_recipe_batch_evaluation((candidate,), snapshot)
 
@@ -2231,7 +2231,7 @@ def test_finding_recipe_batch_rejects_order_dependent_composition(
         insertion_candidate("order_left", "Alpha", "LEFT = 1\n"),
         insertion_candidate("order_right", "Beta", "RIGHT = 1\n"),
     )
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)), ())
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path), ())
 
     batch_result = _direct_recipe_batch_result(candidates, snapshot)
     records = batch_result.records
@@ -2266,7 +2266,7 @@ def test_finding_recipe_batch_does_not_use_incomparable_costs_to_select_conflict
             ("baseline_right", 3, 8),
         )
     )
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)), ())
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path), ())
 
     records = _direct_recipe_batch_evaluation(candidates, snapshot)
 
@@ -2290,7 +2290,7 @@ def test_finding_recipe_batch_does_not_reject_candidate_on_local_cost(
         before=1,
         after=2,
     )
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)), ())
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path), ())
 
     batch_result = _direct_recipe_batch_result((candidate,), snapshot)
     record = batch_result.records[0]
@@ -2334,7 +2334,7 @@ def test_finding_recipe_batch_preserves_duplicate_finding_positions(
             ),
         )
     )
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)), ())
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path), ())
 
     records = _direct_recipe_batch_evaluation(
         (weak, strong_with_duplicate_id),
@@ -2396,7 +2396,7 @@ def test_finding_recipe_batch_isolates_dirty_disjoint_recipe(
             evaluation=dirty.record.evaluation.with_recipe(dirty_recipe),
         )
     )
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)), ())
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path), ())
 
     records = _direct_recipe_batch_evaluation((clean, dirty), snapshot)
 
@@ -2444,7 +2444,7 @@ def test_synthesized_plan_apply_and_export_require_trajectory_proof(
         )
     )
     modules = parse_python_modules(tmp_path)
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(modules), ())
+    snapshot = CodemodSourceSnapshot.from_modules(modules, ())
     batch_result = _direct_recipe_batch_result(candidates, snapshot)
     records = batch_result.records
     plan = FindingRecipePlan(
@@ -2465,7 +2465,7 @@ def test_synthesized_plan_apply_and_export_require_trajectory_proof(
             mode=CodemodExecutionMode.APPLY,
         ),
         plan_out=plan_path,
-        workflow_scan=CodemodWorkflowScan(modules=ParsedModuleSet.of(modules), findings=[]),
+        workflow_scan=CodemodWorkflowScan(modules=modules, findings=[]),
         plan=plan,
     )
 
@@ -2483,7 +2483,7 @@ def test_semantic_descent_context_does_not_guess_an_authority_claim(
     tmp_path: Path,
 ) -> None:
     _write_module(tmp_path, "pkg/mod.py", "class HandlerAuthority:\n    pass\n")
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     finding = RefactorFinding(
         detector_id="authority_gate_fixture",
         pattern_id=PatternId.AUTHORITATIVE_SCHEMA,
@@ -2647,7 +2647,7 @@ def test_assignment_deletion_rejects_partial_chained_bindings_in_every_scope(
         "class Holder:\n"
         "    class_left = class_right = 2\n",
     )
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     operations = (
         DeleteModuleAssignmentsOperation(
             target=SourceRewriteTarget(file_path=module_path.as_posix()),
@@ -2772,7 +2772,7 @@ def test_projected_finding_report_uses_focused_partial_scan(
         "class Other:\n    def value(self):\n        return 2\n",
     )
     modules = parse_python_modules(tmp_path)
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(modules))
+    snapshot = CodemodSourceSnapshot.from_modules(modules)
     simulation = (
         RefactorRecipe(recipe_id="project-changed-source")
         .with_operation(
@@ -2873,7 +2873,7 @@ def test_projected_finding_report_omits_compact_global_detectors(
         "class Other:\n    def value(self):\n        return 2\n",
     )
     modules = parse_python_modules(tmp_path)
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(modules))
+    snapshot = CodemodSourceSnapshot.from_modules(modules)
     simulation = (
         RefactorRecipe(recipe_id="project-changed-source")
         .with_operation(
@@ -3081,7 +3081,7 @@ def test_patch_target_operation_chains_dependent_exact_transformations(
         ),
     )
     payload = json_report_object(operation)
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
 
     simulation = (
         RefactorRecipe("patch-render").with_operation(operation).simulate(snapshot)
@@ -3132,7 +3132,7 @@ def test_patch_target_operation_rejects_unproved_intermediate_transformation(
             ),
         ),
     )
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
 
     with pytest.raises(
         CodemodOperationPreflightError,
@@ -3312,7 +3312,7 @@ def test_adjacent_insertions_derive_top_level_and_nested_spacing(
         "    def second(self):\n"
         "        pass\n",
     )
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     document = CodemodPlanDocument(
         recipes=(
             RefactorRecipe("insert-top-level").with_operation(
@@ -3371,7 +3371,7 @@ def test_function_signature_replacement_preserves_async_nominal_identity(
         "pkg/mod.py",
         "class Worker:\n" "    async def run(self, value):\n" "        return value\n",
     )
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     simulation = (
         RefactorRecipe("async-signature")
         .with_operation(
@@ -3406,7 +3406,7 @@ def test_function_signature_replacement_rejects_unproved_suffixes(
 ) -> None:
     module_path = tmp_path / "pkg/mod.py"
     _write_module(tmp_path, "pkg/mod.py", "def run(value):\n    return value\n")
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     operation = ReplaceFunctionSignatureOperation(
         target=SourceRewriteTarget(
             file_path=module_path.as_posix(),
@@ -3422,7 +3422,7 @@ def test_function_signature_replacement_rejects_unproved_suffixes(
 def test_function_mutations_reprove_the_target_kind(tmp_path: Path) -> None:
     module_path = tmp_path / "pkg/mod.py"
     _write_module(tmp_path, "pkg/mod.py", "class Worker:\n    pass\n")
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     target = SourceRewriteTarget(
         file_path=module_path.as_posix(),
         qualname="Worker",
@@ -3528,7 +3528,7 @@ def test_class_base_mutations_preserve_no_ops_and_reprove_class_target(
         "def run():\n"
         "    return None\n",
     )
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
 
     assert (
         AddClassBaseOperation(
@@ -3897,7 +3897,7 @@ def test_synthesized_empty_recipe_has_terminal_status_and_no_expected_removal(
         (SourceLocation(module_path.as_posix(), 1, "Alpha"),),
     )
     snapshot = CodemodSourceSnapshot.from_modules(
-        ParsedModuleSet.of(parse_python_modules(tmp_path)),
+        parse_python_modules(tmp_path),
         (finding,),
     )
 
@@ -3971,7 +3971,7 @@ def test_rejected_synthesis_does_not_require_executable_action_keys(
 
     try:
         snapshot = CodemodSourceSnapshot.from_modules(
-            ParsedModuleSet.of(parse_python_modules(tmp_path)),
+            parse_python_modules(tmp_path),
             (finding,),
         )
         plan = snapshot.plan_from_findings((finding,))
@@ -4031,7 +4031,7 @@ def test_executable_synthesis_requires_action_keys_before_planning(
 
     try:
         snapshot = CodemodSourceSnapshot.from_modules(
-            ParsedModuleSet.of(parse_python_modules(tmp_path)),
+            parse_python_modules(tmp_path),
             (finding,),
         )
         plan = snapshot.plan_from_findings((finding,))
@@ -4301,7 +4301,7 @@ def test_exact_tiny_method_role_does_not_invent_an_authority(
         f"{class_name}.render" for class_name in _EXACT_TINY_METHOD_ROLE_CLASS_NAMES
     )
 
-    plan = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(modules), findings).plan_from_findings(
+    plan = CodemodSourceSnapshot.from_modules(modules, findings).plan_from_findings(
         findings,
         detector_ids=(_EXACT_TINY_METHOD_ROLE_DETECTOR_ID,),
     )
@@ -4327,7 +4327,7 @@ def test_exact_method_role_operation_reproves_cohort_from_one_method_target(
     _write_module(tmp_path, "pkg/mod.py", source)
     modules = parse_python_modules(tmp_path)
     findings = _exact_tiny_method_role_findings(modules)
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(modules), findings)
+    snapshot = CodemodSourceSnapshot.from_modules(modules, findings)
     target = next(
         target
         for target in snapshot.source_index.ast_targets
@@ -4391,7 +4391,7 @@ def test_exact_method_role_operation_rejects_a_drifted_target_cohort(
         "    return normalized.lower()"
     ).replace("return normalized.lower()", "return normalized.upper()", 1)
     _write_module(tmp_path, "pkg/mod.py", source)
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     recipe = RefactorRecipe(recipe_id="stale-exact-method-role").with_operation(
         FactorExactMethodRoleOperation(
             target=SourceRewriteTarget(
@@ -4431,7 +4431,7 @@ def test_exact_leaf_methods_promote_to_one_proved_existing_authority(
     _write_module(tmp_path, "pkg/mod.py", source)
     modules = parse_python_modules(tmp_path)
     findings = _exact_leaf_method_ancestor_promotion_findings(modules)
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(modules), findings)
+    snapshot = CodemodSourceSnapshot.from_modules(modules, findings)
 
     assert len(findings) == 1
     assert findings[0].authority_evidence is findings[0].evidence[0]
@@ -4539,7 +4539,7 @@ def test_exact_leaf_method_promotion_preserves_multiple_inheritance_mros(
     _write_module(tmp_path, "pkg/mod.py", source)
     modules = parse_python_modules(tmp_path)
     findings = _exact_leaf_method_ancestor_promotion_findings(modules)
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(modules), findings)
+    snapshot = CodemodSourceSnapshot.from_modules(modules, findings)
 
     assert len(findings) == 1
     plan = snapshot.plan_from_findings(
@@ -4765,7 +4765,7 @@ def test_exact_leaf_method_promotion_revalidates_a_stale_family(
     )
     current_modules = parse_python_modules(tmp_path)
     plan = CodemodSourceSnapshot.from_modules(
-        ParsedModuleSet.of(current_modules),
+        current_modules,
         stale_findings,
     ).plan_from_findings(
         stale_findings,
@@ -4809,7 +4809,7 @@ def test_exact_leaf_method_promotion_revalidates_declaration_hooks(
     _write_module(tmp_path, "pkg/mod.py", decorated_source)
     current_modules = parse_python_modules(tmp_path)
     plan = CodemodSourceSnapshot.from_modules(
-        ParsedModuleSet.of(current_modules),
+        current_modules,
         stale_findings,
     ).plan_from_findings(
         stale_findings,
@@ -4846,7 +4846,7 @@ def test_exact_leaf_method_promotion_preserves_authority_method_comments(
     _write_module(tmp_path, "pkg/mod.py", source)
     modules = parse_python_modules(tmp_path)
     findings = _exact_leaf_method_ancestor_promotion_findings(modules)
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(modules), findings)
+    snapshot = CodemodSourceSnapshot.from_modules(modules, findings)
 
     assert len(findings) == 1
     plan = snapshot.plan_from_findings(
@@ -5021,7 +5021,7 @@ def test_method_promotion_rejects_lossy_commented_class_headers(
         match="belongs to 0 current exact-method role components",
     ):
         recipe.simulate(
-            CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(modules)),
+            CodemodSourceSnapshot.from_modules(modules),
             backend=CodemodBackend.AST_SPAN,
         )
 
@@ -5092,7 +5092,7 @@ def test_factor_exact_method_role_rejects_generated_base_binding_collision(
         module_prefix="SharedRenderMixin = 'keep'",
     )
     _write_module(tmp_path, "pkg/mod.py", source)
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     recipe = RefactorRecipe(recipe_id="base-binding-collision").with_operation(
         FactorExactMethodRoleOperation(
             target=SourceRewriteTarget(
@@ -5125,7 +5125,7 @@ def test_factor_exact_method_role_rejects_nested_class_targets(tmp_path: Path) -
         "            return normalized.lower()\n"
     )
     _write_module(tmp_path, "pkg/mod.py", source)
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     recipe = RefactorRecipe(recipe_id="nested-method-promotion").with_operation(
         FactorExactMethodRoleOperation(
             target=SourceRewriteTarget(
@@ -5168,14 +5168,14 @@ def test_repeated_property_alias_findings_do_not_invent_a_mixin_authority(
     modules = parse_python_modules(tmp_path)
     findings = tuple(
         finding
-        for finding in analyze_modules(ParsedModuleSet.of(modules))
+        for finding in analyze_modules(modules)
         if finding.detector_id == "repeated_property_alias_hooks"
     )
     plan = codemod_plan_from_findings(
         findings,
         detector_ids=("repeated_property_alias_hooks",),
         selector_context=CodemodSourceSnapshot.from_modules(
-            ParsedModuleSet.of(modules),
+            modules,
             findings,
         ),
     )
@@ -5218,7 +5218,7 @@ def test_semantic_overlap_method_evidence_has_no_local_recipe_synthesizer(
     modules = parse_python_modules(tmp_path)
     findings = tuple(
         finding
-        for finding in analyze_modules(ParsedModuleSet.of(modules))
+        for finding in analyze_modules(modules)
         if finding.detector_id == _SEMANTIC_OVERLAP_METHOD_DETECTOR_ID
     )
     source_index = build_source_index(modules, findings)
@@ -5400,7 +5400,7 @@ def test_target_deletion_owns_its_source_separator(
 ) -> None:
     module_path = tmp_path / "pkg/mod.py"
     _write_module(tmp_path, "pkg/mod.py", source)
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
 
     simulation = (
         RefactorRecipe("delete-target-separator")
@@ -5733,7 +5733,7 @@ def test_virtual_source_overlay_reuses_unchanged_ast_and_class_records(
         "pkg/beta.py",
         "from .alpha import Base\n\n\nclass Beta(Base):\n    pass\n",
     )
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     beta_source = snapshot.sources_by_file_path[beta_path.as_posix()]
     source_overlay = {beta_path.as_posix(): beta_source.replace("Beta(Base)", "Beta")}
     rebuilt = CodemodSourceSnapshot.from_modules(
@@ -5789,7 +5789,7 @@ def test_virtual_source_overlay_derives_changes_from_canonical_path_identity(
 ) -> None:
     module_path = tmp_path / "pkg/mod.py"
     _write_module(tmp_path, "pkg/mod.py", "class Alpha:\n    pass\n")
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     source_alias = (tmp_path / "pkg/../pkg/mod.py").as_posix()
     original_source = module_path.read_text()
 
@@ -5822,7 +5822,7 @@ def test_virtual_source_overlay_reuses_class_index_without_class_changes(
     value_path = tmp_path / "pkg/value.py"
     _write_module(tmp_path, "pkg/base.py", "class Base:\n    pass\n")
     _write_module(tmp_path, "pkg/value.py", "VALUE = 1\n")
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
 
     projected = snapshot.with_virtual_sources({value_path.as_posix(): "VALUE = 2\n"})
 
@@ -5844,7 +5844,7 @@ def test_virtual_source_overlay_rebuilds_changed_global_class_symbol_space(
         "pkg/beta.py",
         "from alpha import Shared\n\n\nclass Consumer(Shared):\n    pass\n",
     )
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
 
     assert snapshot.required_class_family_index.classes_by_symbol[
         "pkg.beta.Consumer"
@@ -5993,7 +5993,7 @@ def test_plan_document_compiles_recipe_operations_as_one_edit_batch(
         "pkg/mod.py",
         "class Parser:\n    pass\n",
     )
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     document = CodemodPlanDocument(
         recipes=(
             RefactorRecipe("ensure-alpha-import").with_operation(
@@ -6180,7 +6180,7 @@ def test_replace_module_assignment_rejects_unproved_source_declarations(
         return
 
     operation = RefactorRecipeOperation.from_json_value(payload)
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     with pytest.raises(ValueError, match=expected_error):
         operation.source_edits(snapshot)
 
@@ -6788,7 +6788,7 @@ def test_finding_recipe_batch_preserves_source_derived_dispatch_authority(
         "        return value + 2\n"
         "    raise ValueError(pattern_id)\n",
     )
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)), ())
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path), ())
     render_target = next(
         target
         for target in snapshot.source_index.ast_targets
@@ -6849,7 +6849,7 @@ def test_dispatch_refactor_guard_rejects_later_branch_reintroduction(
         "        return 2\n"
         "    raise ValueError(kind)\n",
     )
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     render_target = next(
         target
         for target in snapshot.source_index.ast_targets
@@ -7030,7 +7030,7 @@ def test_dispatch_to_polymorphism_derives_supported_function_shapes(
     module_path = tmp_path / "pkg/mod.py"
     _write_module(tmp_path, "pkg/mod.py", source)
     modules = parse_python_modules(tmp_path)
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(modules))
+    snapshot = CodemodSourceSnapshot.from_modules(modules)
     render_target = next(
         target
         for target in snapshot.source_index.ast_targets
@@ -7069,7 +7069,7 @@ def test_dispatch_to_polymorphism_derives_unbound_generated_names(
         "    return _dispatch_strategy + _dispatch_case_type\n"
     )
     _write_module(tmp_path, "pkg/mod.py", source)
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     render_target = next(
         target
         for target in snapshot.source_index.ast_targets
@@ -7205,7 +7205,7 @@ def test_refactor_recipe_relocates_symbol_and_rewrites_consumers(
         "pkg/consumer.py",
         "from .source import Moved\n\n" "value = Moved.value\n",
     )
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     operation = RelocateSymbolsToModuleOperation(
         target=SourceRewriteTarget(file_path=source_path.as_posix()),
         symbol_qualnames=("Moved",),
@@ -7278,7 +7278,7 @@ def test_refactor_recipe_relocates_symbol_into_new_module(
         "pkg/consumer.py",
         "from .source import Moved\n\n" "value = Moved.value\n",
     )
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     operation = RelocateSymbolsToNewModuleOperation(
         target=SourceRewriteTarget(file_path=source_path.as_posix()),
         symbol_qualnames=("Moved",),
@@ -7358,7 +7358,7 @@ def test_symbol_relocation_fails_closed_when_source_binding_is_required(
     _write_module(tmp_path, "pkg/__init__.py", "")
     _write_module(tmp_path, "pkg/source.py", source)
     _write_module(tmp_path, "pkg/destination.py", "")
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     operation = RelocateSymbolsToModuleOperation(
         target=SourceRewriteTarget(file_path=source_path.as_posix()),
         symbol_qualnames=("Moved",),
@@ -7387,7 +7387,7 @@ def test_symbol_relocation_rejects_source_dependency_collision(
         "pkg/destination.py",
         "class Kept:\n" "    pass\n",
     )
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     operation = RelocateSymbolsToModuleOperation(
         target=SourceRewriteTarget(file_path=source_path.as_posix()),
         symbol_qualnames=("Moved",),
@@ -7417,7 +7417,7 @@ def test_symbol_move_preserves_explicit_source_reexport_dependency(
         "    pass\n",
     )
     _write_module(tmp_path, "pkg/destination.py", "")
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     operation = MoveSymbolsToModuleOperation(
         target=SourceRewriteTarget(file_path=source_path.as_posix()),
         symbol_qualnames=("Helper",),
@@ -7476,7 +7476,7 @@ def test_symbol_move_derives_import_authority_independent_of_reexport_spelling(
         "pkg/destination.py",
         "from .shared import Shared\n",
     )
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     operation = MoveSymbolsToModuleOperation(
         target=SourceRewriteTarget(file_path=source_path.as_posix()),
         symbol_qualnames=("Helper",),
@@ -7627,7 +7627,7 @@ def test_symbol_move_derives_explicit_import_from_proven_star_export(
         "    value: int\n",
     )
     _write_module(tmp_path, "pkg/destination.py", "")
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     operation = MoveSymbolClosureToModuleOperation(
         target=SourceRewriteTarget(file_path=source_path.as_posix()),
         root_symbol_qualnames=("Payload",),
@@ -7683,7 +7683,7 @@ def test_symbol_move_does_not_invent_a_binding_from_an_export_policy(
         "from .base import *\n\n\n" "def build():\n" "    return missing()\n",
     )
     _write_module(tmp_path, "pkg/destination.py", "")
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     operation = MoveSymbolClosureToModuleOperation(
         target=SourceRewriteTarget(file_path=source_path.as_posix()),
         root_symbol_qualnames=("build",),
@@ -7719,7 +7719,7 @@ def test_symbol_move_rejects_unproved_star_export_dependency(tmp_path: Path) -> 
         "    value: int\n",
     )
     _write_module(tmp_path, "pkg/destination.py", "")
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     operation = MoveSymbolClosureToModuleOperation(
         target=SourceRewriteTarget(file_path=source_path.as_posix()),
         root_symbol_qualnames=("Payload",),
@@ -7753,7 +7753,7 @@ def test_symbol_move_preserves_only_public_and_still_referenced_source_bindings(
         "    return _UsedHelper()\n",
     )
     _write_module(tmp_path, "pkg/destination.py", "")
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     operation = MoveSymbolsToModuleOperation(
         target=SourceRewriteTarget(file_path=source_path.as_posix()),
         symbol_qualnames=("_ClosureHelper", "_UsedHelper", "PublicRoot"),
@@ -7811,7 +7811,7 @@ def test_symbol_move_preserves_dependencies_shadowed_in_nested_scope(
         "        return value\n",
     )
     _write_module(tmp_path, "pkg/destination.py", "")
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     operation = MoveSymbolsToModuleOperation(
         target=SourceRewriteTarget(file_path=source_path.as_posix()),
         symbol_qualnames=("Helper",),
@@ -7864,7 +7864,7 @@ def test_symbol_move_preserves_class_dependency_loaded_before_local_binding(
         "    VALUE = 'local'\n",
     )
     _write_module(tmp_path, "pkg/destination.py", "")
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     operation = MoveSymbolsToModuleOperation(
         target=SourceRewriteTarget(file_path=source_path.as_posix()),
         symbol_qualnames=("Helper",),
@@ -7919,7 +7919,7 @@ def test_symbol_move_preserves_type_checking_import_scope(tmp_path: Path) -> Non
         "pkg/destination.py",
         "from __future__ import annotations\n",
     )
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     operation = MoveSymbolsToModuleOperation(
         target=SourceRewriteTarget(file_path=source_path.as_posix()),
         symbol_qualnames=("Helper",),
@@ -8001,7 +8001,7 @@ def test_symbol_move_preserves_runtime_import_for_forward_annotation(
         "from .existing import VALUE\n\n\n"
         "DESTINATION = VALUE\n",
     )
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     operation = MoveSymbolsToModuleOperation(
         target=SourceRewriteTarget(file_path=source_path.as_posix()),
         symbol_qualnames=("Helper",),
@@ -8066,7 +8066,7 @@ def test_symbol_move_preserves_runtime_import_consumed_by_dataclass(
         "pkg/destination.py",
         "from __future__ import annotations\n",
     )
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     operation = MoveSymbolsToModuleOperation(
         target=SourceRewriteTarget(file_path=source_path.as_posix()),
         symbol_qualnames=("RegistryOwner",),
@@ -8122,7 +8122,7 @@ def test_symbol_move_preserves_function_local_annotation_imports(
         "pkg/destination.py",
         "from __future__ import annotations\n",
     )
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     operation = MoveSymbolClosureToModuleOperation(
         target=SourceRewriteTarget(file_path=source_path.as_posix()),
         root_symbol_qualnames=("normalize",),
@@ -8158,7 +8158,7 @@ def test_symbol_move_renders_relative_dependency_from_destination_identity(
         "from .dependencies import VALUE\n\n\n" "class Helper:\n" "    value = VALUE\n",
     )
     _write_module(tmp_path, "pkg/nested/destination.py", "")
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
 
     simulation = (
         RefactorRecipe("move-relative-dependency")
@@ -8211,7 +8211,7 @@ def test_symbol_move_rewrites_type_checking_consumer_import(tmp_path: Path) -> N
         "def build(value: Helper) -> Helper:\n"
         "    return value\n",
     )
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     operation = MoveSymbolsToModuleOperation(
         target=SourceRewriteTarget(file_path=source_path.as_posix()),
         symbol_qualnames=("Helper",),
@@ -8269,7 +8269,7 @@ def test_symbol_move_extends_aliased_type_checking_guard(tmp_path: Path) -> None
         "if t.TYPE_CHECKING:\n"
         "    from pathlib import Path\n",
     )
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
 
     simulation = (
         RefactorRecipe("extend-aliased-type-guard")
@@ -8318,7 +8318,7 @@ def test_symbol_move_rejects_guarded_import_for_eager_annotation(
         "    value: External\n",
     )
     _write_module(tmp_path, "pkg/destination.py", "")
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     operation = MoveSymbolsToModuleOperation(
         target=SourceRewriteTarget(file_path=source_path.as_posix()),
         symbol_qualnames=("Helper",),
@@ -8352,7 +8352,7 @@ def test_symbol_move_rejects_multiple_import_authorities(tmp_path: Path) -> None
         "    pass\n",
     )
     _write_module(tmp_path, "pkg/destination.py", "")
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     operation = MoveSymbolsToModuleOperation(
         target=SourceRewriteTarget(file_path=source_path.as_posix()),
         symbol_qualnames=("Helper",),
@@ -8390,7 +8390,7 @@ def test_refactor_recipe_extracts_symbol_closure_to_new_module(
         "def use_helper(value: int) -> Helper:\n"
         "    return Helper(value)\n",
     )
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     operation = ExtractSymbolsToNewModuleOperation(
         target=SourceRewriteTarget(file_path=source_path.as_posix()),
         symbol_qualnames=("LocalBase", "Helper"),
@@ -8461,7 +8461,7 @@ def test_module_extraction_composes_import_and_assignment_at_one_anchor(
         "pkg/source.py",
         "from .support import TOKEN\n\n" "VALUE = TOKEN\n",
     )
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     operation = ExtractSymbolsToNewModuleOperation(
         target=SourceRewriteTarget(file_path=source_path.as_posix()),
         symbol_qualnames=("VALUE",),
@@ -8505,7 +8505,7 @@ def test_new_module_closure_extraction_derives_transitive_local_dependencies(
         "pkg/consumer.py",
         "from .source import Root, Unrelated\n",
     )
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     operation = ExtractSymbolClosureToNewModuleOperation(
         target=SourceRewriteTarget(file_path=source_path.as_posix()),
         root_symbol_qualnames=("Root",),
@@ -8570,7 +8570,7 @@ def test_new_module_extraction_removes_terminal_declaration_spacing(
         "pkg/source.py",
         "_KEEP = 1\n\n\ndef _moved():\n    return 2\n",
     )
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     operation = ExtractSymbolClosureToNewModuleOperation(
         target=SourceRewriteTarget(file_path=source_path.as_posix()),
         root_symbol_qualnames=("_moved",),
@@ -8603,7 +8603,7 @@ def test_new_module_extraction_rejects_explicit_annotation_policy_change(
         "class Helper:\n"
         "    value: MissingUntilRuntime\n",
     )
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     operation = ExtractSymbolClosureToNewModuleOperation(
         target=SourceRewriteTarget(file_path=source_path.as_posix()),
         root_symbol_qualnames=("Helper",),
@@ -8646,7 +8646,7 @@ def test_module_move_rejects_annotation_evaluation_mode_changes(
         "pkg/destination.py",
         (future_source if destination_future else "") + "DESTINATION_VALUE = 1\n",
     )
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     operation = MoveSymbolClosureToModuleOperation(
         target=SourceRewriteTarget(file_path=source_path.as_posix()),
         root_symbol_qualnames=("Helper",),
@@ -8694,7 +8694,7 @@ def test_module_move_allows_annotation_policy_difference_without_annotations(
         "pkg/destination.py",
         "from __future__ import annotations\n\n\nDESTINATION_VALUE = 1\n",
     )
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     operation = MoveSymbolClosureToModuleOperation(
         target=SourceRewriteTarget(file_path=source_path.as_posix()),
         root_symbol_qualnames=("Helper",),
@@ -8734,7 +8734,7 @@ def test_existing_module_closure_move_derives_transitive_local_dependencies(
         "    return Helper()\n",
     )
     _write_module(tmp_path, "pkg/destination.py", "DESTINATION_VALUE = 1\n")
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     operation = MoveSymbolClosureToModuleOperation(
         target=SourceRewriteTarget(file_path=source_path.as_posix()),
         root_symbol_qualnames=("Helper",),
@@ -8787,7 +8787,7 @@ def test_module_closure_move_rejects_derived_selection_beyond_declared_budget(
         "class Base:\n" "    pass\n\n\n" "class Helper(Base):\n" "    pass\n",
     )
     _write_module(tmp_path, "pkg/destination.py", "")
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     operation = MoveSymbolClosureToModuleOperation(
         target=SourceRewriteTarget(file_path=source_path.as_posix()),
         root_symbol_qualnames=("Helper",),
@@ -8828,7 +8828,7 @@ def test_symbol_move_removes_orphaned_end_of_file_separator(tmp_path: Path) -> N
         "def retained():\n" "    return 1\n\n\n" "class Helper:\n" "    pass\n",
     )
     _write_module(tmp_path, "pkg/destination.py", "")
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
 
     simulation = (
         RefactorRecipe("move-final-symbol")
@@ -8862,7 +8862,7 @@ def test_existing_module_move_follows_destination_declaration_dependencies(
         "pkg/destination.py",
         "class Base:\n" "    pass\n",
     )
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     operation = MoveSymbolClosureToModuleOperation(
         target=SourceRewriteTarget(file_path=source_path.as_posix()),
         root_symbol_qualnames=("Derived",),
@@ -8914,7 +8914,7 @@ def test_symbol_move_rejects_destination_import_from_different_authority(
         "pkg/destination.py",
         "from .second import Base\n",
     )
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     operation = MoveSymbolsToModuleOperation(
         target=SourceRewriteTarget(file_path=source_path.as_posix()),
         symbol_qualnames=("Derived",),
@@ -8950,7 +8950,7 @@ def test_symbol_move_rejects_same_named_destination_for_source_local_dependency(
         "pkg/destination.py",
         "class Base:\n    pass\n",
     )
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     operation = MoveSymbolsToModuleOperation(
         target=SourceRewriteTarget(file_path=source_path.as_posix()),
         symbol_qualnames=("Derived",),
@@ -8982,7 +8982,7 @@ def test_new_module_closure_extraction_derives_assignment_dependencies(
         "def read_value():\n"
         "    return VALUE\n",
     )
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     operation = ExtractSymbolClosureToNewModuleOperation(
         target=SourceRewriteTarget(file_path=source_path.as_posix()),
         root_symbol_qualnames=("read_value",),
@@ -9026,7 +9026,7 @@ def test_explicit_module_move_accepts_an_assignment_root(tmp_path: Path) -> None
     _write_module(tmp_path, "pkg/__init__.py", "")
     _write_module(tmp_path, "pkg/source.py", "VALUE = 3\n")
     _write_module(tmp_path, "pkg/destination.py", "KEEP = 1\n")
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     operation = MoveSymbolsToModuleOperation(
         target=SourceRewriteTarget(file_path=source_path.as_posix()),
         symbol_qualnames=("VALUE",),
@@ -9065,7 +9065,7 @@ def test_module_move_closure_follows_a_source_binding_that_shadows_a_builtin(
         "pkg/source.py",
         "list = tuple\n\n\n" "def build():\n" "    return list((1, 2))\n",
     )
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     operation = ExtractSymbolClosureToNewModuleOperation(
         target=SourceRewriteTarget(file_path=source_path.as_posix()),
         root_symbol_qualnames=("build",),
@@ -9109,7 +9109,7 @@ def test_module_move_rejects_a_destination_binding_that_shadows_a_builtin(
         "def build():\n" "    return list((1, 2))\n",
     )
     _write_module(tmp_path, "pkg/destination.py", "list = tuple\n")
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     operation = MoveSymbolClosureToModuleOperation(
         target=SourceRewriteTarget(file_path=source_path.as_posix()),
         root_symbol_qualnames=("build",),
@@ -9142,7 +9142,7 @@ def test_module_move_rejects_implicit_module_context_dependencies(
         "def module_name():\n" "    return __name__\n",
     )
     _write_module(tmp_path, "pkg/destination.py", "KEEP = 1\n")
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     operation = MoveSymbolClosureToModuleOperation(
         target=SourceRewriteTarget(file_path=source_path.as_posix()),
         root_symbol_qualnames=("module_name",),
@@ -9171,7 +9171,7 @@ def test_module_move_rejects_an_assignment_sharing_its_source_line(
     destination_path = tmp_path / "pkg/destination.py"
     _write_module(tmp_path, "pkg/source.py", "FIRST = 1; SECOND = 2\n")
     _write_module(tmp_path, "pkg/destination.py", "KEEP = 1\n")
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     operation = MoveSymbolsToModuleOperation(
         target=SourceRewriteTarget(file_path=source_path.as_posix()),
         symbol_qualnames=("FIRST",),
@@ -9192,7 +9192,7 @@ def test_new_module_closure_extraction_rejects_ambiguous_assignment_dependency(
         "pkg/source.py",
         "OTHER = VALUE = 1\n\n\n" "def read_value():\n" "    return VALUE\n",
     )
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     operation = ExtractSymbolClosureToNewModuleOperation(
         target=SourceRewriteTarget(file_path=source_path.as_posix()),
         root_symbol_qualnames=("read_value",),
@@ -9224,7 +9224,7 @@ def test_new_module_extraction_reports_its_leaf_creation_conflict(
     destination_path = tmp_path / "pkg/existing.py"
     _write_module(tmp_path, "pkg/source.py", "class Helper:\n    pass\n")
     _write_module(tmp_path, "pkg/existing.py", "KEEP = 1\n")
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     document = CodemodPlanDocument(
         recipes=(
             RefactorRecipe("reject-existing-destination").with_operation(
@@ -9262,7 +9262,7 @@ def test_symbol_move_retains_import_with_remaining_string_reference(
         '__all__ = ("lru_cache",)\n',
     )
     _write_module(tmp_path, "pkg/destination.py", "")
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     operation = MoveSymbolsToModuleOperation(
         target=SourceRewriteTarget(file_path=source_path.as_posix()),
         symbol_qualnames=("helper",),
@@ -9303,7 +9303,7 @@ def test_symbol_move_rewrites_repository_consumer_imports(
         "def build():\n"
         "    return ImportedHelper(), Unmoved()\n",
     )
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     operation = MoveSymbolsToModuleOperation(
         target=SourceRewriteTarget(file_path=source_path.as_posix()),
         symbol_qualnames=("Helper",),
@@ -9398,7 +9398,7 @@ def test_refactor_recipe_rejects_moved_symbol_reexport_cycle(
         "pkg/destination.py",
         "from .source import SOURCE_MARKER\n",
     )
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     operation = MoveSymbolsToModuleOperation(
         target=SourceRewriteTarget(file_path=source_path.as_posix()),
         symbol_qualnames=("Helper",),
@@ -9540,7 +9540,7 @@ def test_authority_source_operations_fail_closed_on_unproved_declarations(
         "def old_helper(value):\n"
         "    return value.strip()\n",
     )
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     helper_target = next(
         target
         for target in snapshot.source_index.ast_targets
@@ -10873,7 +10873,7 @@ def test_finding_build_context_remains_nominal_through_spec_construction() -> No
     )
 
 
-def test_finding_stable_id_is_derived_from_source_coordinates() -> None:
+def test_finding_stable_id_is_derived_from_source_coordinates(no_modules: ParsedModuleSet) -> None:
     spec = _finding_spec(
         PatternId.SHARED_ALGORITHM_AUTHORITY,
         "Collapse repeated class family",
@@ -10905,7 +10905,7 @@ def test_finding_stable_id_is_derived_from_source_coordinates() -> None:
     assert f"Stable id: {finding.stable_id}" in MARKDOWN_RENDERER.report([finding])
     assert json_report_object(finding)["stable_id"] == finding.stable_id
     assert (
-        JsonPayloadBuilder(findings=[finding], plans=[], modules=[]).build()[
+        JsonPayloadBuilder(findings=[finding], plans=[], modules=no_modules).build()[
             "findings"
         ][0]["stable_id"]
         == finding.stable_id
@@ -11514,7 +11514,7 @@ def test_repository_change_budget_separates_backend_detector_and_tests() -> None
     assert budget.generated.net_added == 15
 
 
-def test_economics_markdown_and_json_expose_evidence_proof() -> None:
+def test_economics_markdown_and_json_expose_evidence_proof(no_modules: ParsedModuleSet) -> None:
     certificate = _object_family_certificate(
         8,
         ("abc",),
@@ -11542,7 +11542,7 @@ def test_economics_markdown_and_json_expose_evidence_proof() -> None:
     payload = JsonPayloadBuilder(
         findings=[finding],
         plans=[],
-        modules=[],
+        modules=no_modules,
         economics=economics,
     ).build()
 
@@ -12042,7 +12042,7 @@ def test_source_import_identity_uses_nested_package_boundary(
         "external/pyqt-reactive/src/pyqt_reactive/services/widget_tree_projection.py",
         "class WidgetRect:\n    pass\n",
     )
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
 
     assert (
         snapshot.module_import_graph.module_name_for_file_path(
@@ -12440,7 +12440,7 @@ def test_analysis_cache_reuses_unchanged_per_module_detector_shards(
     modules = parse_python_module_roots((root,))
     first_result = analyze_modules_with_cache(
         (root,),
-        ParsedModuleSet.of(modules),
+        modules,
         DetectorConfig(),
         analysis_cache_dir=cache_dir,
     )
@@ -12454,7 +12454,7 @@ def test_analysis_cache_reuses_unchanged_per_module_detector_shards(
     changed_modules = parse_python_module_roots((root,))
     changed_result = analyze_modules_with_cache(
         (root,),
-        ParsedModuleSet.of(changed_modules),
+        changed_modules,
         DetectorConfig(),
         analysis_cache_dir=cache_dir,
     )
@@ -12465,7 +12465,7 @@ def test_analysis_cache_reuses_unchanged_per_module_detector_shards(
     hit_modules = parse_python_module_roots((root,))
     hit_result = analyze_modules_with_cache(
         (root,),
-        ParsedModuleSet.of(hit_modules),
+        hit_modules,
         DetectorConfig(),
         analysis_cache_dir=cache_dir,
     )
@@ -12571,7 +12571,7 @@ def test_focused_analysis_schedules_local_detectors_only_for_report_modules(
 
     result = analyze_modules_with_cache(
         (root,),
-        ParsedModuleSet.of(modules),
+        modules,
         DetectorConfig(),
         report_scope=AnalysisPathScope(
             analysis_roots=(root,),
@@ -12591,7 +12591,7 @@ def test_focused_analysis_schedules_local_detectors_only_for_report_modules(
     cache_dir = tmp_path / ".nra-cache" / "analysis"
     analyze_modules_with_cache(
         (root,),
-        ParsedModuleSet.of(modules),
+        modules,
         DetectorConfig(),
         analysis_cache_dir=cache_dir,
     )
@@ -12600,7 +12600,7 @@ def test_focused_analysis_schedules_local_detectors_only_for_report_modules(
     global_calls.clear()
     cached_result = analyze_modules_with_cache(
         (root,),
-        ParsedModuleSet.of(modules),
+        modules,
         DetectorConfig(),
         analysis_cache_dir=cache_dir,
         report_scope=AnalysisPathScope(
@@ -13107,12 +13107,12 @@ def test_parallel_analyze_modules_matches_sequential_stable_ids(
 
     modules = parse_python_module_roots((tmp_path / "pkg",), use_parse_cache=False)
     sequential_findings = analyze_modules(
-        ParsedModuleSet.of(modules),
+        modules,
         DetectorConfig(),
         analysis_workers=1,
     )
     parallel_findings = analyze_modules(
-        ParsedModuleSet.of(modules),
+        modules,
         DetectorConfig(),
         analysis_workers=2,
     )
@@ -14380,7 +14380,7 @@ def test_detects_declarative_detector_class_shell(tmp_path: Path) -> None:
 
     modules = parse_python_modules(tmp_path)
     source_path = (tmp_path / "pkg/mod.py").as_posix()
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(modules), findings)
+    snapshot = CodemodSourceSnapshot.from_modules(modules, findings)
     plan = snapshot.plan_from_findings(
         findings,
         detector_ids=("declarative_detector_class",),
@@ -14490,7 +14490,7 @@ def test_declarative_detector_collapse_keeps_unrepresented_source(
     )
     assert len(findings) == 1
     snapshot = CodemodSourceSnapshot.from_modules(
-        ParsedModuleSet.of(parse_python_modules(tmp_path)), findings
+        parse_python_modules(tmp_path), findings
     )
     plan = snapshot.plan_from_findings(
         findings, detector_ids=("declarative_detector_class",)
@@ -14587,7 +14587,7 @@ def test_detects_direct_build_finding_renderer(tmp_path: Path) -> None:
 
     modules = parse_python_modules(tmp_path)
     source_path = (tmp_path / "pkg/mod.py").as_posix()
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(modules), findings)
+    snapshot = CodemodSourceSnapshot.from_modules(modules, findings)
     plan = snapshot.plan_from_findings(
         findings,
         detector_ids=("direct_build_finding_renderer",),
@@ -14620,7 +14620,7 @@ def test_detects_direct_build_finding_renderer(tmp_path: Path) -> None:
     )
     assert len(declarative_findings) == 1
     next_snapshot = CodemodSourceSnapshot.from_modules(
-        ParsedModuleSet.of(parse_python_modules(tmp_path)),
+        parse_python_modules(tmp_path),
         declarative_findings,
     )
     next_plan = next_snapshot.plan_from_findings(
@@ -14671,7 +14671,7 @@ def test_direct_build_finding_renderer_preserves_source_comments(
         if finding.detector_id == "direct_build_finding_renderer"
     )
     snapshot = CodemodSourceSnapshot.from_modules(
-        ParsedModuleSet.of(parse_python_modules(tmp_path)),
+        parse_python_modules(tmp_path),
         findings,
     )
     plan = snapshot.plan_from_findings(
@@ -15355,10 +15355,10 @@ def test_repeated_builder_synthesizes_single_source_constructor_projection(
     modules = parse_python_modules(tmp_path)
     findings = tuple(
         finding
-        for finding in analyze_modules(ParsedModuleSet.of(modules))
+        for finding in analyze_modules(modules)
         if finding.detector_id == REPEATED_BUILDER_CALLS_DETECTOR_ID
     )
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(modules), findings)
+    snapshot = CodemodSourceSnapshot.from_modules(modules, findings)
 
     plan = snapshot.plan_from_findings(
         findings,
@@ -15411,7 +15411,7 @@ def test_repeated_builder_synthesizes_single_source_constructor_projection(
     simulation.document_simulation.apply()
     assert not any(
         finding.detector_id == REPEATED_BUILDER_CALLS_DETECTOR_ID
-        for finding in analyze_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
+        for finding in analyze_modules(parse_python_modules(tmp_path))
     )
 
 
@@ -15426,10 +15426,10 @@ def test_repeated_builder_replay_reproves_changed_participant_mapping(
     modules = parse_python_modules(tmp_path)
     findings = tuple(
         finding
-        for finding in analyze_modules(ParsedModuleSet.of(modules))
+        for finding in analyze_modules(modules)
         if finding.detector_id == REPEATED_BUILDER_CALLS_DETECTOR_ID
     )
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(modules), findings)
+    snapshot = CodemodSourceSnapshot.from_modules(modules, findings)
     document_payload = json_report_object(
         snapshot.plan_from_findings(
             findings,
@@ -15455,7 +15455,7 @@ def test_repeated_builder_replay_reproves_changed_participant_mapping(
     )
     _write_module(tmp_path, "pkg/mod.py", current_source)
     current_snapshot = CodemodSourceSnapshot.from_modules(
-        ParsedModuleSet.of(parse_python_modules(tmp_path))
+        parse_python_modules(tmp_path)
     )
     replay = CodemodPlanDocument.from_json_value(document_payload).simulate(
         current_snapshot,
@@ -15490,10 +15490,10 @@ def build_{index}(source: PlanSource):
     modules = parse_python_modules(tmp_path)
     findings = tuple(
         finding
-        for finding in analyze_modules(ParsedModuleSet.of(modules))
+        for finding in analyze_modules(modules)
         if finding.detector_id == REPEATED_BUILDER_CALLS_DETECTOR_ID
     )
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(modules), findings)
+    snapshot = CodemodSourceSnapshot.from_modules(modules, findings)
 
     plan = snapshot.plan_from_findings(
         findings,
@@ -15507,7 +15507,7 @@ def build_{index}(source: PlanSource):
     simulation.document_simulation.apply()
     assert not any(
         finding.detector_id == REPEATED_BUILDER_CALLS_DETECTOR_ID
-        for finding in analyze_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
+        for finding in analyze_modules(parse_python_modules(tmp_path))
     )
 
 
@@ -15535,10 +15535,10 @@ def delta(source: PlanSource):
     modules = parse_python_modules(tmp_path)
     findings = tuple(
         finding
-        for finding in analyze_modules(ParsedModuleSet.of(modules))
+        for finding in analyze_modules(modules)
         if finding.detector_id == REPEATED_BUILDER_CALLS_DETECTOR_ID
     )
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(modules), findings)
+    snapshot = CodemodSourceSnapshot.from_modules(modules, findings)
 
     plan = snapshot.plan_from_findings(
         findings,
@@ -15567,10 +15567,10 @@ def test_repeated_builder_resolves_existing_forward_reference_annotations(
     modules = parse_python_modules(tmp_path)
     findings = tuple(
         finding
-        for finding in analyze_modules(ParsedModuleSet.of(modules))
+        for finding in analyze_modules(modules)
         if finding.detector_id == REPEATED_BUILDER_CALLS_DETECTOR_ID
     )
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(modules), findings)
+    snapshot = CodemodSourceSnapshot.from_modules(modules, findings)
 
     plan = snapshot.plan_from_findings(
         findings,
@@ -15620,10 +15620,10 @@ def test_repeated_builder_rejects_same_named_distinct_source_types(
     modules = parse_python_modules(tmp_path)
     findings = tuple(
         finding
-        for finding in analyze_modules(ParsedModuleSet.of(modules))
+        for finding in analyze_modules(modules)
         if finding.detector_id == REPEATED_BUILDER_CALLS_DETECTOR_ID
     )
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(modules), findings)
+    snapshot = CodemodSourceSnapshot.from_modules(modules, findings)
 
     plan = snapshot.plan_from_findings(
         findings,
@@ -15655,10 +15655,10 @@ def test_repeated_builder_preserves_inherited_builder_implementation(
     modules = parse_python_modules(tmp_path)
     findings = tuple(
         finding
-        for finding in analyze_modules(ParsedModuleSet.of(modules))
+        for finding in analyze_modules(modules)
         if finding.detector_id == REPEATED_BUILDER_CALLS_DETECTOR_ID
     )
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(modules), findings)
+    snapshot = CodemodSourceSnapshot.from_modules(modules, findings)
 
     plan = snapshot.plan_from_findings(
         findings,
@@ -15725,10 +15725,10 @@ def test_repeated_builder_descends_through_existing_consumer_family_authority(
     modules = parse_python_modules(tmp_path)
     findings = tuple(
         finding
-        for finding in analyze_modules(ParsedModuleSet.of(modules))
+        for finding in analyze_modules(modules)
         if finding.detector_id == REPEATED_BUILDER_CALLS_DETECTOR_ID
     )
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(modules), findings)
+    snapshot = CodemodSourceSnapshot.from_modules(modules, findings)
 
     plan = snapshot.plan_from_findings(
         findings,
@@ -15761,7 +15761,7 @@ def test_repeated_builder_descends_through_existing_consumer_family_authority(
     simulation.document_simulation.apply()
     assert not any(
         finding.detector_id == REPEATED_BUILDER_CALLS_DETECTOR_ID
-        for finding in analyze_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
+        for finding in analyze_modules(parse_python_modules(tmp_path))
     )
 
 
@@ -15779,10 +15779,10 @@ def test_repeated_builder_rejects_shadowed_consumer_family_authority(
     modules = parse_python_modules(tmp_path)
     findings = tuple(
         finding
-        for finding in analyze_modules(ParsedModuleSet.of(modules))
+        for finding in analyze_modules(modules)
         if finding.detector_id == REPEATED_BUILDER_CALLS_DETECTOR_ID
     )
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(modules), findings)
+    snapshot = CodemodSourceSnapshot.from_modules(modules, findings)
 
     plan = snapshot.plan_from_findings(
         findings,
@@ -15813,10 +15813,10 @@ class External:
     modules = parse_python_modules(tmp_path)
     findings = tuple(
         finding
-        for finding in analyze_modules(ParsedModuleSet.of(modules))
+        for finding in analyze_modules(modules)
         if finding.detector_id == REPEATED_BUILDER_CALLS_DETECTOR_ID
     )
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(modules), findings)
+    snapshot = CodemodSourceSnapshot.from_modules(modules, findings)
 
     plan = snapshot.plan_from_findings(
         findings,
@@ -15831,7 +15831,7 @@ class External:
     simulation.document_simulation.apply()
     assert not any(
         finding.detector_id == REPEATED_BUILDER_CALLS_DETECTOR_ID
-        for finding in analyze_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
+        for finding in analyze_modules(parse_python_modules(tmp_path))
     )
 
 
@@ -15842,10 +15842,10 @@ def test_repeated_builder_inherited_descent_reproves_authority_mapping(
     modules = parse_python_modules(tmp_path)
     findings = tuple(
         finding
-        for finding in analyze_modules(ParsedModuleSet.of(modules))
+        for finding in analyze_modules(modules)
         if finding.detector_id == REPEATED_BUILDER_CALLS_DETECTOR_ID
     )
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(modules), findings)
+    snapshot = CodemodSourceSnapshot.from_modules(modules, findings)
     document = snapshot.plan_from_findings(
         findings,
         detector_ids=(REPEATED_BUILDER_CALLS_DETECTOR_ID,),
@@ -15858,7 +15858,7 @@ def test_repeated_builder_inherited_descent_reproves_authority_mapping(
     )
     _write_module(tmp_path, "pkg/mod.py", changed_source)
     current_snapshot = CodemodSourceSnapshot.from_modules(
-        ParsedModuleSet.of(parse_python_modules(tmp_path)),
+        parse_python_modules(tmp_path),
         findings,
     )
 
@@ -15887,10 +15887,10 @@ def test_repeated_builder_rejects_ambiguous_consumer_family_authorities(
     modules = parse_python_modules(tmp_path)
     findings = tuple(
         finding
-        for finding in analyze_modules(ParsedModuleSet.of(modules))
+        for finding in analyze_modules(modules)
         if finding.detector_id == REPEATED_BUILDER_CALLS_DETECTOR_ID
     )
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(modules), findings)
+    snapshot = CodemodSourceSnapshot.from_modules(modules, findings)
 
     plan = snapshot.plan_from_findings(
         findings,
@@ -15917,10 +15917,10 @@ def test_repeated_builder_rejects_unproved_source_projection_type(
     modules = parse_python_modules(tmp_path)
     findings = tuple(
         finding
-        for finding in analyze_modules(ParsedModuleSet.of(modules))
+        for finding in analyze_modules(modules)
         if finding.detector_id == REPEATED_BUILDER_CALLS_DETECTOR_ID
     )
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(modules), findings)
+    snapshot = CodemodSourceSnapshot.from_modules(modules, findings)
 
     plan = snapshot.plan_from_findings(
         findings,
@@ -16018,7 +16018,7 @@ def test_repeated_builder_counts_method_receiver_as_source_root(
     )
 
     findings = analyze_modules(
-        ParsedModuleSet.of(parse_python_modules(tmp_path)),
+        parse_python_modules(tmp_path),
         DetectorConfig(min_builder_keywords=2),
     )
 
@@ -16315,7 +16315,7 @@ def test_codemod_execution_modes_share_one_typed_plan_authority(
     module_path = tmp_path / "pkg/mod.py"
     original_source = "VALUE = 1\n"
     _write_module(tmp_path, "pkg/mod.py", original_source)
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     sequence = CodemodPlanSequence.from_document(
         CodemodPlanDocument(
             recipes=(
@@ -16381,7 +16381,7 @@ def test_codemod_apply_execution_blocks_dirty_guard_without_mutation(
         "def legacy():\n    return 1\n\n\ndef caller():\n    return legacy()\n"
     )
     _write_module(tmp_path, "pkg/mod.py", original_source)
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     document = CodemodPlanDocument(
         recipes=(
             RefactorRecipe("rewrite-legacy").with_operation(
@@ -16431,7 +16431,7 @@ def test_codemod_simulation_presents_operation_preflight_failure_report(
         "class LocalBase:\n    pass\n\n\nclass Helper(LocalBase):\n    pass\n",
     )
     _write_module(tmp_path, "pkg/destination.py", "")
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     sequence = CodemodPlanSequence.from_document(
         CodemodPlanDocument(
             recipes=(
@@ -17083,7 +17083,7 @@ def test_codemod_plan_sequence_resolves_later_stage_against_projected_source(
             ),
         )
     )
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)), ())
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path), ())
 
     simulation = sequence.simulate(snapshot)
     projected_snapshot = snapshot.with_simulation(simulation.simulation)
@@ -17190,7 +17190,7 @@ def test_codemod_plan_sequence_chains_hand_patch_into_semantic_extraction(
             ]
         }
     )
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
 
     simulation = sequence.simulate(snapshot)
     first_stage, second_stage = simulation.stage_reports
@@ -17246,7 +17246,7 @@ def test_codemod_sequential_report_projection_preserves_same_file_changes(
         "pkg/mod.py",
         "class Alpha:\n    value = 1\n\n\nclass Beta:\n    value = 2\n",
     )
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     alpha_recipe = RefactorRecipe("rewrite-alpha").with_operation(
         PatchTargetOperation(
             target=SourceRewriteTarget(
@@ -17298,7 +17298,7 @@ def test_codemod_document_empty_guard_avoids_after_snapshot_rebuild(
         "pkg/mod.py",
         "\nclass Alpha:\n    def run(self):\n        return 1\n",
     )
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)), ())
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path), ())
     document = CodemodPlanDocument(
         recipes=(
             RefactorRecipe("rewrite-alpha").with_operation(
@@ -17345,7 +17345,7 @@ def test_codemod_plan_sequence_reuses_stage_after_snapshots(
     module_path = tmp_path / "pkg/mod.py"
     _write_module(tmp_path, "pkg/mod.py", "VALUE = 1\n")
     sequence = _sequential_value_rewrite_plan(module_path)
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)), ())
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path), ())
     rebuild_count = 0
     real_from_source_mapping = CodemodSourceSnapshot.from_source_mapping.__func__
 
@@ -17380,7 +17380,7 @@ def test_codemod_sequence_preflight_reuses_each_document_proof(
     module_path = tmp_path / "pkg/mod.py"
     _write_module(tmp_path, "pkg/mod.py", "VALUE = 1\n")
     sequence = _sequential_value_rewrite_plan(module_path)
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)), ())
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path), ())
     preflight_count = 0
     real_preflight = CodemodPlanDocument.preflight_rewrite_snapshot
 
@@ -17429,7 +17429,7 @@ def test_codemod_workflow_scan_reuses_source_snapshot(
         "from_modules",
         classmethod(counted_from_modules),
     )
-    scan = CodemodWorkflowScan(modules=ParsedModuleSet.of(modules), findings=[])
+    scan = CodemodWorkflowScan(modules=modules, findings=[])
 
     first_snapshot = scan.source_snapshot
     second_snapshot = scan.source_snapshot
@@ -17457,7 +17457,7 @@ def test_codemod_source_snapshot_reuses_source_index_target_nodes(
         classmethod(fail_reindex),
     )
 
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)), ())
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path), ())
     target_ids_by_qualname = {
         target.qualname: target.target_id
         for target in snapshot.source_index.ast_targets
@@ -17512,7 +17512,7 @@ def test_finding_recipe_physical_edit_cache_owns_recipe_declarations(
         "pkg/mod.py",
         "\nclass Alpha:\n    pass\n\n\nclass Beta:\n    pass\n",
     )
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)), ())
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path), ())
     targets = {target.qualname: target for target in snapshot.source_index.ast_targets}
     alpha_recipe = RefactorRecipe("alpha").with_operation(
         ReplaceTargetOperation(
@@ -17564,7 +17564,7 @@ def test_codemod_plan_sequence_synthesizes_continuation_from_final_snapshot(
             ),
         )
     )
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)), ())
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path), ())
 
     simulation = sequence.simulate(snapshot)
     findings = tuple(
@@ -19431,7 +19431,7 @@ def test_goal_runner_rejects_terminal_with_new_finding_obligations(
             migration_type=SemanticCarrierConcept,
             guard_suite=ArchitectureGuardSuite(),
             initial_scan=CodemodWorkflowScan(
-                modules=ParsedModuleSet.of(parse_python_modules(tmp_path)),
+                modules=parse_python_modules(tmp_path),
                 findings=[initial],
             ),
         ).run()
@@ -19652,7 +19652,7 @@ def test_codemod_refactor_goal_runner_builds_staged_replay_plan(
             trajectory_budget=CodemodRefactorTrajectoryBudget(max_depth=2),
             guard_suite=ArchitectureGuardSuite(),
             initial_scan=CodemodWorkflowScan(
-                modules=ParsedModuleSet.of(modules),
+                modules=modules,
                 findings=[finding],
             ),
         ).run()
@@ -19668,7 +19668,7 @@ def test_codemod_refactor_goal_runner_builds_staged_replay_plan(
             ),
             guard_suite=ArchitectureGuardSuite(),
             initial_scan=CodemodWorkflowScan(
-                modules=ParsedModuleSet.of(modules),
+                modules=modules,
                 findings=[finding],
             ),
         ).run()
@@ -19764,7 +19764,7 @@ def test_proved_migration_reports_divergent_post_apply_rescan(
         "Alpha.run encodes the semantic fact outside its boundary.",
         (SourceLocation(module_path.as_posix(), 3, "Alpha.run"),),
     )
-    initial_scan = CodemodWorkflowScan(modules=ParsedModuleSet.of(modules), findings=[finding])
+    initial_scan = CodemodWorkflowScan(modules=modules, findings=[finding])
 
     class AppliedMigrationSynthesizer(
         FindingRecipeSynthesizer,
@@ -19804,7 +19804,7 @@ def test_proved_migration_reports_divergent_post_apply_rescan(
     def divergent_fresh_scan(self: object) -> CodemodWorkflowScan:
         del self
         return CodemodWorkflowScan(
-            modules=ParsedModuleSet.of(parse_python_modules(tmp_path)),
+            modules=parse_python_modules(tmp_path),
             findings=[finding],
         )
 
@@ -19973,7 +19973,7 @@ def test_goal_runner_does_not_commit_conflicting_trajectory_branches(
             trajectory_budget=CodemodRefactorTrajectoryBudget(max_depth=2),
             guard_suite=ArchitectureGuardSuite(),
             initial_scan=CodemodWorkflowScan(
-                modules=ParsedModuleSet.of(parse_python_modules(tmp_path)),
+                modules=parse_python_modules(tmp_path),
                 findings=[weak, strong],
             ),
         ).run()
@@ -20106,7 +20106,7 @@ def test_goal_runner_analyzes_equivalent_branch_state_once(
             trajectory_budget=CodemodRefactorTrajectoryBudget(max_depth=2),
             guard_suite=ArchitectureGuardSuite(),
             initial_scan=CodemodWorkflowScan(
-                modules=ParsedModuleSet.of(parse_python_modules(tmp_path)),
+                modules=parse_python_modules(tmp_path),
                 findings=list(findings),
             ),
         ).run()
@@ -20340,7 +20340,7 @@ def test_goal_runner_crosses_local_worsening_move_to_unique_terminal(
             trajectory_budget=CodemodRefactorTrajectoryBudget(max_depth=3),
             guard_suite=terminal_guard_suite,
             initial_scan=CodemodWorkflowScan(
-                modules=ParsedModuleSet.of(parse_python_modules(tmp_path)),
+                modules=parse_python_modules(tmp_path),
                 findings=list(initial_findings),
             ),
         ).run()
@@ -20719,7 +20719,7 @@ def test_codemod_refactor_goal_runner_scopes_context_root_progress(
             trajectory_budget=CodemodRefactorTrajectoryBudget(max_depth=2),
             guard_suite=ArchitectureGuardSuite(),
             initial_scan=CodemodWorkflowScan(
-                modules=ParsedModuleSet.of(modules),
+                modules=modules,
                 findings=[report_finding, context_finding],
             ),
         ).run()
@@ -20797,7 +20797,7 @@ def test_codemod_refactor_goal_reports_terminal_synthesis_failures(
             dry_run=True,
             guard_suite=ArchitectureGuardSuite(),
             initial_scan=CodemodWorkflowScan(
-                modules=ParsedModuleSet.of(modules),
+                modules=modules,
                 findings=[finding],
             ),
             migration_type=SemanticCarrierConcept,
@@ -20845,10 +20845,10 @@ def test_semantic_carrier_goal_policy_derives_targets_from_concept_mro(
     modules = parse_python_modules(tmp_path)
     findings = tuple(
         finding
-        for finding in analyze_modules(ParsedModuleSet.of(modules))
+        for finding in analyze_modules(modules)
         if finding.detector_id == REPEATED_BUILDER_CALLS_DETECTOR_ID
     )
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(modules), findings)
+    snapshot = CodemodSourceSnapshot.from_modules(modules, findings)
 
     assert (
         FindingRecipeSynthesizer.findings_for_concept(
@@ -21361,10 +21361,10 @@ def test_codemod_class_plan_groups_typed_synthesis_records(
     modules = parse_python_modules(tmp_path)
     findings = tuple(
         finding
-        for finding in analyze_modules(ParsedModuleSet.of(modules), DetectorConfig())
+        for finding in analyze_modules(modules, DetectorConfig())
         if finding.detector_id == "manual_class_registration"
     )
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(modules), findings)
+    snapshot = CodemodSourceSnapshot.from_modules(modules, findings)
 
     report = codemod_class_plan_from_findings(
         findings,
@@ -22100,7 +22100,7 @@ def test_manual_class_registration_findings_synthesize_recipe_plan(
     modules = parse_python_modules(tmp_path)
     findings = tuple(
         finding
-        for finding in analyze_modules(ParsedModuleSet.of(modules))
+        for finding in analyze_modules(modules)
         if finding.detector_id == "manual_class_registration"
     )
     source_index = build_source_index(modules, findings)
@@ -22186,7 +22186,7 @@ def test_manual_class_registration_findings_synthesize_recipe_plan(
     simulation.document_simulation.apply()
     remaining = tuple(
         finding
-        for finding in analyze_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
+        for finding in analyze_modules(parse_python_modules(tmp_path))
         if finding.detector_id == "manual_class_registration"
     )
     assert len(remaining) == 1
@@ -22217,7 +22217,7 @@ def test_semantic_mirror_registration_findings_synthesize_recipe_plan(
     modules = parse_python_modules(tmp_path)
     findings = tuple(
         finding
-        for finding in analyze_modules(ParsedModuleSet.of(modules))
+        for finding in analyze_modules(modules)
         if finding.detector_id == "semantic_mirror_without_descent"
     )
     source_index = build_source_index(modules, findings)
@@ -22272,7 +22272,7 @@ def test_semantic_mirror_registration_findings_synthesize_recipe_plan(
     assert "STEP_TABLE = {'load': LoadStep, 'save': SaveStep}" in rewritten
     remaining = tuple(
         finding
-        for finding in analyze_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
+        for finding in analyze_modules(parse_python_modules(tmp_path))
         if finding.detector_id == "semantic_mirror_without_descent"
     )
     assert len(remaining) == 1
@@ -22961,10 +22961,10 @@ def test_parallel_mirrored_leaf_recipe_factors_runtime_equivalent_mi_product(
     modules = parse_python_modules(tmp_path)
     findings = tuple(
         finding
-        for finding in analyze_modules(ParsedModuleSet.of(modules))
+        for finding in analyze_modules(modules)
         if finding.detector_id == "parallel_mirrored_leaf_family"
     )
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(modules), findings)
+    snapshot = CodemodSourceSnapshot.from_modules(modules, findings)
 
     assert len(findings) == 1
     parallel_builder = snapshot.parallel_mirrored_leaf_family_component_builder
@@ -23069,7 +23069,7 @@ def test_parallel_mirrored_leaf_recipe_rejects_stale_method_proof(
         if finding.detector_id == "parallel_mirrored_leaf_family"
     )
     original_snapshot = CodemodSourceSnapshot.from_modules(
-        ParsedModuleSet.of(parse_python_modules(tmp_path)),
+        parse_python_modules(tmp_path),
         findings,
     )
     original_document = original_snapshot.plan_from_findings(
@@ -23089,7 +23089,7 @@ def test_parallel_mirrored_leaf_recipe_rejects_stale_method_proof(
         newline="",
     )
     snapshot = CodemodSourceSnapshot.from_modules(
-        ParsedModuleSet.of(parse_python_modules(tmp_path)),
+        parse_python_modules(tmp_path),
         findings,
     )
     preflight = original_document.preflight_snapshot(snapshot)
@@ -23120,10 +23120,10 @@ def test_parallel_mirrored_leaf_recipe_rejects_bound_role_authority_name(
     modules = parse_python_modules(tmp_path)
     findings = tuple(
         finding
-        for finding in analyze_modules(ParsedModuleSet.of(modules))
+        for finding in analyze_modules(modules)
         if finding.detector_id == "parallel_mirrored_leaf_family"
     )
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(modules), findings)
+    snapshot = CodemodSourceSnapshot.from_modules(modules, findings)
 
     plan = snapshot.plan_from_findings(
         findings,
@@ -23251,10 +23251,10 @@ def test_behavior_bearing_registration_syntax_is_detected_but_not_deleted(
     modules = parse_python_modules(tmp_path)
     findings = tuple(
         finding
-        for finding in analyze_modules(ParsedModuleSet.of(modules))
+        for finding in analyze_modules(modules)
         if finding.detector_id == "manual_class_registration"
     )
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(modules), findings)
+    snapshot = CodemodSourceSnapshot.from_modules(modules, findings)
 
     plan = codemod_plan_from_findings(
         findings,
@@ -23581,8 +23581,7 @@ def test_json_payload_summary_skips_source_backed_sections(
         raise AssertionError("summary payload should not build source snapshot")
 
     monkeypatch.setattr(
-        "nominal_refactor_advisor.cli.build_observation_graph",
-        fail_observation_graph,
+        ParsedModuleSet, "observation_graph", property(fail_observation_graph)
     )
     monkeypatch.setattr(
         CodemodSourceSnapshot,
@@ -23942,8 +23941,7 @@ def test_json_payload_agent_skips_heavy_graph_and_recipe_sections(
         raise AssertionError("agent payload should not build observation graph")
 
     monkeypatch.setattr(
-        "nominal_refactor_advisor.cli.build_observation_graph",
-        fail_observation_graph,
+        ParsedModuleSet, "observation_graph", property(fail_observation_graph)
     )
 
     payload = JsonPayloadBuilder(
@@ -23978,7 +23976,7 @@ def test_json_payload_agent_reports_semantic_descent_graph_for_mirrors(
     )
     modules = parse_python_modules(tmp_path)
     findings = SemanticMirrorWithoutDescentDetector().detect(
-        ParsedModuleSet.of(modules),
+        modules,
         DetectorConfig(),
     )
 
@@ -24515,7 +24513,7 @@ def test_structural_overlap_does_not_project_codemod_candidates(
     )
 
 
-def test_semantic_gate_orders_boundary_evidence_by_stable_authority_identity() -> None:
+def test_semantic_gate_orders_boundary_evidence_by_stable_authority_identity(no_modules: ParsedModuleSet) -> None:
     spec = _finding_spec(
         PatternId.AUTHORITATIVE_SCHEMA,
         "Authority boundary",
@@ -24548,7 +24546,7 @@ def test_semantic_gate_orders_boundary_evidence_by_stable_authority_identity() -
     payload = JsonPayloadBuilder(
         findings=[small, large_one, large_two],
         plans=[],
-        modules=[],
+        modules=no_modules,
         payload_sections=JsonPayloadProfile.agent.sections,
     ).build()
     boundary_evidence = cast(list[dict[str, object]], payload["findings"])
@@ -24561,7 +24559,7 @@ def test_semantic_gate_orders_boundary_evidence_by_stable_authority_identity() -
     assert boundary_evidence[1]["authority_candidate"] == "SmallAuthority"
 
 
-def test_semantic_gate_does_not_rank_boundary_evidence_by_certificate_breadth() -> None:
+def test_semantic_gate_does_not_rank_boundary_evidence_by_certificate_breadth(no_modules: ParsedModuleSet) -> None:
     spec = _finding_spec(
         PatternId.AUTHORITATIVE_SCHEMA,
         "Authority boundary",
@@ -24612,7 +24610,7 @@ def test_semantic_gate_does_not_rank_boundary_evidence_by_certificate_breadth() 
     payload = JsonPayloadBuilder(
         findings=[narrow_one, narrow_two, broad],
         plans=[],
-        modules=[],
+        modules=no_modules,
         payload_sections=JsonPayloadProfile.agent.sections,
     ).build()
     boundary_evidence = cast(list[dict[str, object]], payload["findings"])
@@ -24627,7 +24625,7 @@ def test_semantic_gate_does_not_rank_boundary_evidence_by_certificate_breadth() 
     assert boundary_evidence[1]["covered_finding_count"] == 2
 
 
-def test_json_payload_uses_semantic_boundary_evidence_when_gate_is_active() -> None:
+def test_json_payload_uses_semantic_boundary_evidence_when_gate_is_active(no_modules: ParsedModuleSet) -> None:
     spec = _finding_spec(
         PatternId.AUTHORITATIVE_SCHEMA,
         "Authority boundary",
@@ -24655,13 +24653,13 @@ def test_json_payload_uses_semantic_boundary_evidence_when_gate_is_active() -> N
     payload = JsonPayloadBuilder(
         findings=[critical],
         plans=[],
-        modules=[],
+        modules=no_modules,
         payload_sections=JsonPayloadProfile.agent.sections,
     ).build()
     raw_payload = JsonPayloadBuilder(
         findings=[critical],
         plans=[],
-        modules=[],
+        modules=no_modules,
         payload_sections=JsonPayloadProfile.agent.sections,
         raw_findings=True,
     ).build()
@@ -24858,7 +24856,7 @@ def resolve(obj):
     )
     modules = parse_python_modules(tmp_path)
     projected_observations = modules[0].structural_observations
-    graph = ParsedModuleSet.of(modules).observation_graph
+    graph = modules.observation_graph
 
     assert collect_structural_observations(modules[0]) is projected_observations
     kinds = {item.observation_kind for item in graph.observations}
@@ -24905,7 +24903,7 @@ def test_numeric_literal_dispatch_function_synthesis_uses_evidence_target(
         if finding.detector_id == "numeric_literal_dispatch"
     )
     modules = parse_python_modules(tmp_path)
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(modules), findings)
+    snapshot = CodemodSourceSnapshot.from_modules(modules, findings)
 
     plan = codemod_plan_from_findings((finding,), selector_context=snapshot)
 
@@ -24979,7 +24977,7 @@ def test_numeric_literal_dispatch_method_rejection_uses_evidence_target(
         if finding.detector_id == "numeric_literal_dispatch"
     )
     modules = parse_python_modules(tmp_path)
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(modules), findings)
+    snapshot = CodemodSourceSnapshot.from_modules(modules, findings)
 
     plan = codemod_plan_from_findings((finding,), selector_context=snapshot)
 
@@ -25237,7 +25235,7 @@ def test_markdown_output_can_include_subsystem_plans(tmp_path: Path) -> None:
     assert "Plan step:" not in output
 
 
-def test_markdown_and_json_can_include_execution_plan(tmp_path: Path) -> None:
+def test_markdown_and_json_can_include_execution_plan(tmp_path: Path, no_modules: ParsedModuleSet) -> None:
     spec = _finding_spec(
         PatternId.AUTHORITATIVE_CONTEXT,
         "Collapse execution batch",
@@ -25259,7 +25257,7 @@ def test_markdown_and_json_can_include_execution_plan(tmp_path: Path) -> None:
     payload = JsonPayloadBuilder(
         findings=[finding],
         plans=[],
-        modules=[],
+        modules=no_modules,
         execution_plan=execution_plan,
     ).build()
 
@@ -25451,7 +25449,7 @@ def test_detects_semantic_overlap_method(tmp_path: Path) -> None:
         '\nfrom abc import ABC\n\n\nclass Exporter(ABC):\n    pass\n\n\nclass CsvExporter(Exporter):\n    def emit(self, rows):\n        cleaned = self.normalize(rows)\n        encoded = encode_csv(cleaned)\n        self.write(encoded, suffix=".csv")\n        return encoded\n\n\nclass JsonExporter(Exporter):\n    def emit(self, rows):\n        cleaned = self.normalize(rows)\n        encoded = encode_json(cleaned)\n        self.write(encoded, suffix=".json")\n        return encoded\n\n\nclass XmlExporter(Exporter):\n    def emit(self, rows):\n        cleaned = self.normalize(rows)\n        encoded = encode_xml(cleaned)\n        self.write(encoded, suffix=".xml")\n        return encoded\n',
     )
     modules = parse_python_modules(tmp_path)
-    findings = analyze_modules(ParsedModuleSet.of(modules))
+    findings = analyze_modules(modules)
     finding = next(
         (
             finding
@@ -26602,10 +26600,10 @@ def test_type_keyed_behavior_recipe_descends_behavior_and_consumers(
     modules = parse_python_modules(tmp_path)
     findings = tuple(
         finding
-        for finding in analyze_modules(ParsedModuleSet.of(modules))
+        for finding in analyze_modules(modules)
         if finding.detector_id == "type_keyed_behavior_projection"
     )
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(modules), findings)
+    snapshot = CodemodSourceSnapshot.from_modules(modules, findings)
 
     plan = snapshot.plan_from_findings(
         findings,
@@ -26677,10 +26675,10 @@ def test_type_keyed_behavior_recipe_requires_mro_equivalent_lookup(
     modules = parse_python_modules(tmp_path)
     findings = tuple(
         finding
-        for finding in analyze_modules(ParsedModuleSet.of(modules))
+        for finding in analyze_modules(modules)
         if finding.detector_id == "type_keyed_behavior_projection"
     )
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(modules), findings)
+    snapshot = CodemodSourceSnapshot.from_modules(modules, findings)
 
     plan = snapshot.plan_from_findings(
         findings,
@@ -26717,7 +26715,7 @@ def test_type_keyed_descent_preserves_class_owned_method_semantics(
     event._NamedEvent__secret = "destination-owned"
     assert namespace["render_event"](event) == expected
 
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     operation = _authored_fixture_descent(snapshot, module_path)
     with pytest.raises(ValueError, match=hazard):
         operation.source_edits_from_snapshot(snapshot)
@@ -26742,7 +26740,7 @@ def test_type_keyed_descent_rejects_inherited_registry_key_overwrite(
         namespace["NamedEventProjection"]
     )
 
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     operation = _authored_fixture_descent(snapshot, module_path)
     with pytest.raises(ValueError, match="outside the proved type bindings"):
         operation.source_edits_from_snapshot(snapshot)
@@ -26767,7 +26765,7 @@ def test_type_keyed_descent_cli_preserves_runtime_or_rejects_without_writes(
     module_path.write_text(source.replace("\n", newline), encoding="utf-8", newline="")
     original = module_path.read_bytes()
     before = subprocess.check_output([sys.executable, str(module_path)])
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     plan = CodemodPlanSequence.from_operations(
         (_authored_fixture_descent(snapshot, module_path),)
     )
@@ -26813,7 +26811,7 @@ def test_type_keyed_descent_reuses_evaluated_default_ownership_guard(
     event = namespace["NamedEvent"]()
     event.name = "source-owned"
     assert namespace["render_event"](event) == "source-owned"
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     operation = _authored_fixture_descent(snapshot, module_path)
     with pytest.raises(ValueError, match="evaluated_default"):
         operation.source_edits_from_snapshot(snapshot)
@@ -26897,7 +26895,7 @@ def test_cross_module_behavior_descent_cli_reproves_global_authorities(
                 import_source=ensure_import,
             )
         )
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(package)))
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(package))
     if operations:
         preceding = CodemodPlanSequence.from_operations(operations).simulate(snapshot)
         assert preceding.is_clean
@@ -26940,10 +26938,10 @@ def test_type_keyed_behavior_recipe_rejects_unrewritten_family_reference(
     modules = parse_python_modules(tmp_path)
     findings = tuple(
         finding
-        for finding in analyze_modules(ParsedModuleSet.of(modules))
+        for finding in analyze_modules(modules)
         if finding.detector_id == "type_keyed_behavior_projection"
     )
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(modules), findings)
+    snapshot = CodemodSourceSnapshot.from_modules(modules, findings)
 
     plan = snapshot.plan_from_findings(
         findings,

@@ -10,7 +10,6 @@ import sys
 
 import pytest
 
-from nominal_refactor_advisor.class_index import ParsedModuleSet
 from nominal_refactor_advisor.ast_tools import parse_python_modules
 from nominal_refactor_advisor.codemod import (
     CodemodBackend,
@@ -87,7 +86,7 @@ def test_body_replacement_executes_with_preserved_identity_and_literals(
         + f"\nprint(json.dumps([{call}, untouched()]))\n"
     )
     module_path.write_text(original, newline="")
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     document = CodemodPlanDocument.from_payload_fields({
         "recipes": [{
             "recipe_id": "body",
@@ -135,7 +134,7 @@ def test_invalid_body_plan_does_not_write_source(tmp_path: Path, body: str) -> N
     module_path = tmp_path / "probe.py"
     original = "def run():\n    return 1\n"
     module_path.write_text(original, newline="")
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     document = CodemodPlanDocument.from_payload_fields({
         "recipes": [{
             "recipe_id": "invalid-body",

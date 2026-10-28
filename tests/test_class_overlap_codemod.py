@@ -8,7 +8,6 @@ from pathlib import Path
 
 import pytest
 
-from nominal_refactor_advisor.class_index import ParsedModuleSet
 from nominal_refactor_advisor.ast_tools import parse_python_modules
 from nominal_refactor_advisor.class_overlap_codemod import (
     ComposeExistingClassOperation,
@@ -94,7 +93,7 @@ def _write(root: Path, files: dict[str, str]) -> None:
 
 
 def _apply(root: Path, operation: RefactorRecipeOperation) -> dict[str, str]:
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(root)))
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(root))
     replayed = RefactorRecipeOperation.from_json_value(json_report_object(operation))
     result = RefactorRecipe(recipe_id="class-overlap").with_operation(replayed).simulate(snapshot)
     assert result.is_clean is True
@@ -167,7 +166,7 @@ def test_composition_refuses_a_type_test_on_the_owner(tmp_path: Path) -> None:
             "    return isinstance(value, FunctionFamilyEvidenceSurface)\n",
         },
     )
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     with pytest.raises(CodemodOperationPreflightError, match="refuses the move"):
         _compose(tmp_path).source_edits(snapshot)
 
@@ -178,7 +177,7 @@ def test_composition_refuses_a_field_order_it_would_change(tmp_path: Path) -> No
         "class FunctionEvidenceLocationsCandidate(LineWitness):\n    label: str\n",
     )
     _write(tmp_path, {"pkg/__init__.py": "", "pkg/surface.py": reordered})
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     with pytest.raises(CodemodOperationPreflightError, match="reorders the fields"):
         _compose(tmp_path).source_edits(snapshot)
 
@@ -245,7 +244,7 @@ def test_the_fold_refuses_a_positional_construction_of_its_own_class(
             }
         ),
     )
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     with pytest.raises(CodemodOperationPreflightError, match="positional"):
         _fold(tmp_path).source_edits(snapshot)
 
@@ -260,6 +259,6 @@ def test_the_fold_refuses_a_class_handed_on_as_a_value(tmp_path: Path) -> None:
             }
         ),
     )
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     with pytest.raises(CodemodOperationPreflightError, match="as a value"):
         _fold(tmp_path).source_edits(snapshot)

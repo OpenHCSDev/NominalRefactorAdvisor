@@ -14,7 +14,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterable
 
-from .class_index import ParsedModuleSet
+from .ast_tools import ParsedModuleSet
 from .analysis import analyze_modules
 from .ast_tools import parse_python_modules
 from .collection_algebra import sorted_tuple

@@ -8,7 +8,7 @@ from pathlib import Path
 from time import perf_counter
 from typing import Iterable
 
-from .class_index import ParsedModuleSet
+from .ast_tools import ParsedModuleSet
 from .analysis import analyze_modules
 from .analysis_cache import AnalysisCacheStatus
 from .ast_tools import ParsedModule, parse_python_modules

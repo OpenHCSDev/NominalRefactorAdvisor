@@ -11,7 +11,7 @@ from types import ModuleType
 import pytest
 import metaclass_registry
 
-from nominal_refactor_advisor.class_index import ParsedModuleSet
+from nominal_refactor_advisor.ast_tools import ParsedModuleSet
 import nominal_refactor_advisor.registry_identity as registry_identity
 from nominal_refactor_advisor.captured_reference import InitialNativeIsland
 from nominal_refactor_advisor.codemod import (

@@ -8,7 +8,6 @@ from pathlib import Path
 
 import pytest
 
-from nominal_refactor_advisor.class_index import ParsedModuleSet
 from nominal_refactor_advisor.analysis import analyze_modules
 from nominal_refactor_advisor.ast_tools import parse_python_modules
 from nominal_refactor_advisor.class_overlap import (
@@ -84,7 +83,7 @@ def _write(root: Path, files: dict[str, str]) -> None:
 
 
 def _apply(root: Path, operation: RefactorRecipeOperation) -> dict[str, str]:
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(root)))
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(root))
     replayed = RefactorRecipeOperation.from_json_value(json_report_object(operation))
     result = RefactorRecipe(recipe_id="owner-move").with_operation(replayed).simulate(snapshot)
     assert result.is_clean is True
@@ -117,7 +116,7 @@ def test_a_new_mixin_is_declared_and_each_class_then_composes_it(tmp_path: Path)
     source = (tmp_path / "pkg/records.py").read_text()
     assert '@dataclass(frozen=True)\nclass Lettered:\n    """A lettered record."""\n' in source
     assert _run(tmp_path, PROBE) == before
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     composes = {
         candidate.restating.qualname
         for candidate in snapshot.class_overlap_verdicts.candidates
@@ -130,7 +129,7 @@ def test_a_new_mixin_is_declared_and_each_class_then_composes_it(tmp_path: Path)
 
 def test_a_mixin_name_already_bound_is_refused(tmp_path: Path) -> None:
     _write(tmp_path, {"pkg/__init__.py": "", "pkg/records.py": RECORDS})
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     operation = CreateMixinOperation(
         target=SourceRewriteTarget(file_path=str(tmp_path / "pkg/records.py"), qualname="First"),
         member_names=("alpha", "beta", "gamma"),
@@ -150,7 +149,7 @@ def test_extending_an_owner_its_descendants_construct_without_the_field_is_refus
         tmp_path,
         {"pkg/__init__.py": "", "pkg/records.py": records, "pkg/holder.py": HOLDER},
     )
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     operation = ExtendOwnerOperation(
         target=SourceRewriteTarget(file_path=str(tmp_path / "pkg/holder.py"), qualname="Holder"),
         anchor=SourceRewriteTarget(file_path=str(tmp_path / "pkg/records.py"), qualname="First"),
@@ -190,7 +189,7 @@ def test_an_owner_gains_the_declarations_it_lacks_and_is_then_composed(
     after = _run(tmp_path, PROBE + "from pkg.holder import build\nprint(build())\n")
     assert after.splitlines()[0] == before.splitlines()[0]
     assert after.splitlines()[1] == "Uses(alpha=1, beta='b', delta=0.0, extra=0)"
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     assert {
         candidate.restating.qualname
         for candidate in snapshot.class_overlap_verdicts.candidates
@@ -202,7 +201,7 @@ def test_a_goal_run_executes_the_picked_owner_and_reports_the_pick(tmp_path: Pat
     _write(tmp_path, {"pkg/__init__.py": "", "pkg/records.py": RECORDS})
     before = _run(tmp_path, PROBE)
     modules = parse_python_modules(tmp_path, use_parse_cache=False)
-    findings = analyze_modules(ParsedModuleSet.of(modules), DetectorConfig())
+    findings = analyze_modules(modules, DetectorConfig())
     (mixin,) = (
         finding
         for finding in findings
@@ -215,7 +214,7 @@ def test_a_goal_run_executes_the_picked_owner_and_reports_the_pick(tmp_path: Pat
         parse_workers=1,
         dry_run=True,
         guard_suite=ArchitectureGuardSuite(),
-        initial_scan=CodemodWorkflowScan(modules=ParsedModuleSet.of(modules), findings=findings),
+        initial_scan=CodemodWorkflowScan(modules=modules, findings=findings),
         migration_type=ClassBodyCompositionConcept,
         owner_picks=OwnerPicks("picks.json", "0", ()),
     ).run()
@@ -228,7 +227,7 @@ def test_a_goal_run_executes_the_picked_owner_and_reports_the_pick(tmp_path: Pat
         parse_workers=1,
         dry_run=False,
         guard_suite=ArchitectureGuardSuite(),
-        initial_scan=CodemodWorkflowScan(modules=ParsedModuleSet.of(modules), findings=findings),
+        initial_scan=CodemodWorkflowScan(modules=modules, findings=findings),
         migration_type=ClassBodyCompositionConcept,
         owner_picks=OwnerPicks(
             "picks.json",
@@ -255,7 +254,7 @@ def test_a_goal_run_executes_the_picked_owner_and_reports_the_pick(tmp_path: Pat
 def test_a_pick_citing_a_receipt_its_owner_lacks_is_rejected(tmp_path: Path) -> None:
     _write(tmp_path, {"pkg/__init__.py": "", "pkg/records.py": RECORDS})
     findings = analyze_modules(
-        ParsedModuleSet.of(parse_python_modules(tmp_path, use_parse_cache=False)), DetectorConfig()
+        parse_python_modules(tmp_path, use_parse_cache=False), DetectorConfig()
     )
     (mixin,) = (
         finding
@@ -294,7 +293,7 @@ def test_a_pick_citing_a_receipt_its_owner_lacks_is_rejected(tmp_path: Path) -> 
 def test_a_pick_without_an_owner_declines_the_finding(tmp_path: Path) -> None:
     _write(tmp_path, {"pkg/__init__.py": "", "pkg/records.py": RECORDS})
     findings = analyze_modules(
-        ParsedModuleSet.of(parse_python_modules(tmp_path, use_parse_cache=False)), DetectorConfig()
+        parse_python_modules(tmp_path, use_parse_cache=False), DetectorConfig()
     )
     (mixin,) = (
         finding
@@ -342,7 +341,7 @@ REORDERED_PROBE = (
 
 def _goal_with_pick(root: Path, name: str) -> object:
     modules = parse_python_modules(root, use_parse_cache=False)
-    findings = analyze_modules(ParsedModuleSet.of(modules), DetectorConfig())
+    findings = analyze_modules(modules, DetectorConfig())
     (mixin,) = (
         finding
         for finding in findings
@@ -355,7 +354,7 @@ def _goal_with_pick(root: Path, name: str) -> object:
         parse_workers=1,
         dry_run=False,
         guard_suite=ArchitectureGuardSuite(),
-        initial_scan=CodemodWorkflowScan(modules=ParsedModuleSet.of(modules), findings=findings),
+        initial_scan=CodemodWorkflowScan(modules=modules, findings=findings),
         migration_type=ClassBodyCompositionConcept,
         owner_picks=OwnerPicks(
             "picks.json",
@@ -450,7 +449,7 @@ def test_a_picks_file_makes_the_picked_findings_the_only_targets(tmp_path: Path)
         dry_run=True,
         guard_suite=ArchitectureGuardSuite(),
         initial_scan=CodemodWorkflowScan(
-            modules=ParsedModuleSet.of(modules), findings=analyze_modules(ParsedModuleSet.of(modules), DetectorConfig())
+            modules=modules, findings=analyze_modules(modules, DetectorConfig())
         ),
         migration_type=ClassBodyCompositionConcept,
     ).run()
@@ -469,7 +468,7 @@ def test_a_mixin_one_composer_cannot_compose_is_not_created(tmp_path: Path) -> N
         "\n\ndef build():\n    return Second(1, 'b')\n"
     )
     _write(tmp_path, {"pkg/__init__.py": "", "pkg/records.py": positional})
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     records = str(tmp_path / "pkg/records.py")
     operation = CreateMixinOperation(
         target=SourceRewriteTarget(file_path=records, qualname="First"),

@@ -11,7 +11,6 @@ import sys
 
 import pytest
 
-from nominal_refactor_advisor.class_index import ParsedModuleSet
 from nominal_refactor_advisor.ast_tools import parse_python_modules
 from nominal_refactor_advisor.codemod import (
     CodemodPlanSequence,
@@ -58,7 +57,7 @@ def test_local_projection_preserves_initializer_effects_and_shadowed_reads(
     ).replace("\n", newline)
     path.write_text(source, newline="", encoding="utf-8")
     before = subprocess.check_output([sys.executable, str(path)], text=True)
-    snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     ast_before = ast.dump(
         snapshot.module_nodes_by_file_path[path.as_posix()], include_attributes=True
     )
@@ -123,7 +122,7 @@ def test_local_projection_fails_closed_without_one_unchanged_binding(
     path.write_text(source, newline="", encoding="utf-8")
     with pytest.raises(ValueError, match=error):
         CodemodPlanSequence.from_operations((_operation(path),)).simulate(
-            CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
+            CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
         )
     assert path.read_text(encoding="utf-8") == source
 
@@ -193,7 +192,7 @@ def test_documented_geometry_batch_projects_reads_and_removes_only_its_local(
     path.write_text(source, newline="", encoding="utf-8")
     before = subprocess.check_output([sys.executable, str(path)], text=True)
     simulation = plan.simulate(
-        CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(parse_python_modules(tmp_path)))
+        CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     )
     assert simulation.is_clean
     simulation.apply()
