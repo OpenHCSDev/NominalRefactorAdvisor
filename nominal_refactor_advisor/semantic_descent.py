@@ -28,7 +28,7 @@ from enum import Flag, StrEnum, auto
 from functools import cached_property, lru_cache
 from itertools import groupby
 from pathlib import Path
-from typing import ClassVar, Generic, TypeAlias, TypeVar, cast
+from typing import ClassVar, Generic, TypeAlias, TypeVar
 
 from metaclass_registry import AutoRegisterMeta
 
@@ -4437,14 +4437,8 @@ class CompactSemanticDescentRepository:
         """Recover the typed semantic join declared by its fact families."""
 
         return cls.from_projections(
-            cast(
-                Sequence[CompactSemanticModuleProjection],
-                projections_by_family[CompactSemanticModuleProjectionFamily],
-            ),
-            cast(
-                Sequence[CompactModuleClassProjection],
-                projections_by_family[CompactModuleClassProjectionFamily],
-            ),
+            CompactSemanticModuleProjectionFamily.modules_in(projections_by_family),
+            CompactModuleClassProjectionFamily.modules_in(projections_by_family),
             class_index=class_index,
         )
 

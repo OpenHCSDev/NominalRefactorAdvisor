@@ -14,7 +14,7 @@ from abc import ABC, abstractmethod
 from collections import defaultdict
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
-from typing import ClassVar, Generic, TypeVar, cast
+from typing import ClassVar, Generic, TypeVar
 
 from ..codemod import (
     DispatchToPolymorphismOperation,
@@ -332,16 +332,14 @@ def _declared_records(
     projections_by_family: CompactProjectionGroups,
 ) -> DeclaredRecords:
     return DeclaredRecords.from_observations(
-        cast(Sequence[FieldObservation], projections_by_family[FieldObservationFamily])
+        FieldObservationFamily.modules_in(projections_by_family)
     )
 
 
 def _reference_facts(
     projections_by_family: CompactProjectionGroups,
 ) -> Sequence[ModuleReferenceFacts]:
-    return cast(
-        Sequence[ModuleReferenceFacts], projections_by_family[ModuleReferenceFamily]
-    )
+    return ModuleReferenceFamily.modules_in(projections_by_family)
 
 
 def _reference_index(projections_by_family: CompactProjectionGroups) -> ReferenceIndex:
@@ -421,19 +419,13 @@ def _probe_owner_context(
     classes = ScannedClasses.of(
         {
             indexed_class.symbol: indexed_class
-            for projection in cast(
-                Sequence[CompactModuleClassProjection],
-                projections_by_family[CompactModuleClassProjectionFamily],
-            )
+            for projection in CompactModuleClassProjectionFamily.modules_in(projections_by_family)
             for indexed_class in projection.classes
         }
     )
     spans = tuple(
         span
-        for module in cast(
-            Sequence[ForeignAbsenceSiteModule],
-            projections_by_family[ForeignAbsenceSiteFamily],
-        )
+        for module in ForeignAbsenceSiteFamily.modules_in(projections_by_family)
         for site in module.sites
         for span in site.owner.type_checker_spans()
     )
