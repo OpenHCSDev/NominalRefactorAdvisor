@@ -3590,7 +3590,7 @@ class SourceExecutionABC(
         return super().entry_contents(kernel, namespace, prefix)
 
     _closed_storage_operations: set[SourceFlowOperation] = field(
-        default_factory=set, init=False
+        default_factory=set, init=False, repr=False
     )
 
     require_operation_completion = AliasProperty[
@@ -3733,18 +3733,22 @@ class SourceExecutionABC(
     ) -> None:
         raise ValueError("Source receiver storage protocol remains unproved")
 
+    # Proofs this execution has memoised so far: its own working state, not
+    # part of what identifies it, so its repr leaves them out.
     _class_entries: dict[ast.ClassDef, SourceClassBodyEntryABC] = field(
-        default_factory=dict, init=False
+        default_factory=dict, init=False, repr=False
     )
     _pending: set[tuple[int, CompactFlowPosition | None]] = field(
-        default_factory=set, init=False
+        default_factory=set, init=False, repr=False
     )
     _admissions: dict[
         tuple[int, CompactFlowPosition | None],
         AdmittedExecutionPrefixABC | OpenCapturedReference,
-    ] = field(default_factory=dict, init=False)
+    ] = field(default_factory=dict, init=False, repr=False)
 
-    _closed_intervals: set[SingleFlowPrefix] = field(default_factory=set, init=False)
+    _closed_intervals: set[SingleFlowPrefix] = field(
+        default_factory=set, init=False, repr=False
+    )
 
     def require_discard(self, node: ast.Expr) -> None:
         operations = tuple(
