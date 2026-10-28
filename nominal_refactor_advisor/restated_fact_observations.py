@@ -17,7 +17,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
 
-from .lexical_bindings import ImportAlias, ImportBoundNameProjection, RenamedImportAlias
+from .lexical_bindings import ImportAlias, ImportBoundNameProjection
 from .ast_tools import BuiltinCallName, ParsedModule, module_syntax_index
 from .declared_root import DeclaredRoot
 from .models import SourceLocation
@@ -774,18 +774,17 @@ class LegacyMarkerSiteFamily(RestatingSiteFamily):
                         )
         for node_index, node in index.indexed_nodes_of_type(ast.alias):
             # An alias renames the old path; a plain import of a marked name is its consumer.
-            if (
-                isinstance(renamed := ImportAlias.from_alias(node), RenamedImportAlias)
-                and LegacyWord.in_identifier(bound := renamed.asname)
-                and not LegacyWord.in_identifier(node.name)
-            ):
-                yield cls.site(
-                    parsed_module,
-                    node,
-                    cls.declared_symbol(index.lexical_symbol(node_index), bound),
-                    bound,
-                    ("import alias", f"of {node.name}"),
-                )
+            if LegacyWord.in_identifier(node.name):
+                continue
+            for bound in ImportAlias.from_alias(node).legacy_marker_spellings():
+                if LegacyWord.in_identifier(bound):
+                    yield cls.site(
+                        parsed_module,
+                        node,
+                        cls.declared_symbol(index.lexical_symbol(node_index), bound),
+                        bound,
+                        ("import alias", f"of {node.name}"),
+                    )
         for node_index, call in index.indexed_nodes_of_type(ast.Call):
             warned = cls.warned_legacy_class(call)
             if warned is not None:

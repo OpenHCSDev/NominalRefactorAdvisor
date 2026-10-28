@@ -210,6 +210,11 @@ class ImportAlias:
 
         return False
 
+    def legacy_marker_spellings(self) -> tuple[str, ...]:
+        """Spellings this alias authors for an imported name: none without `as`."""
+
+        return ()
+
     def renamed(self, new_name: str) -> ImportAlias:
         """The alias importing a renamed declaration under the binding it implies."""
 
@@ -255,6 +260,9 @@ class RenamedImportAlias(ImportAlias):
     @property
     def declares_reexport(self) -> bool:
         return self.asname == self.name
+
+    def legacy_marker_spellings(self) -> tuple[str, ...]:
+        return (self.asname,)
 
     def renamed(self, new_name: str) -> ImportAlias:
         """A foreign `as` binding survives; a re-export follows the new name."""
