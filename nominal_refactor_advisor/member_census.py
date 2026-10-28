@@ -1,4 +1,5 @@
-"""Census of which consumer functions know the members of a family.
+"""Census of which consumer functions know the members of a family, against
+what inheritance derives for them.
 
 A consumer that names a family's members (a type test, a class pattern, a
 case comparison) restates the family outside its declaration. The census counts
@@ -20,6 +21,7 @@ from itertools import chain
 from pathlib import Path
 from typing import Self
 
+from .amortization import InheritanceAmortization, inheritance_amortization
 from .ast_projection import ExpressionReference
 from .ast_tools import ParsedModule, parse_python_modules
 from .class_index import (
@@ -121,6 +123,7 @@ class MemberAwarenessCensus(SemanticRecord):
     groups: tuple[MemberSetGroup, ...]
     owners: tuple[OwnerCensus, ...]
     add_member_costs: tuple[FamilyAddCost, ...]
+    inherited: InheritanceAmortization
 
     @json_report_property()
     def add_member_edits(self) -> int:
@@ -706,6 +709,11 @@ class MemberAwarenessCensusBuilder:
             groups=groups,
             owners=self.owner_census(),
             add_member_costs=self.add_member_costs(groups),
+            inherited=inheritance_amortization(
+                self.corpus.modules,
+                self.corpus.class_index,
+                self.corpus.resolvers,
+            ),
         )
 
 

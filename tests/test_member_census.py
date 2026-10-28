@@ -252,3 +252,42 @@ def test_own_class_family_consumers_cost_one_edit_each_to_add_a_member(tmp_path:
     assert cost.family == "shapes.Shape"
     assert [consumer.qualname for consumer in cost.consumers] == ["hand_rolled"]
     assert report.add_member_edits == sum(item.edits for item in report.add_member_costs)
+
+
+def test_inherited_pairs_count_only_where_a_typed_call_reaches_them(tmp_path: Path):
+    """Two subclasses inherit ``describe`` from Base: a call through an annotated
+    Base parameter reaches both pairs. ``unused`` is inherited too, but no typed
+    call reaches it, and an untyped receiver resolves nothing."""
+    _write(
+        tmp_path,
+        {
+            "family": (
+                "class Base:\n"
+                "    def describe(self):\n"
+                "        return self.name()\n"
+                "    def unused(self):\n"
+                "        return 0\n"
+                "    def name(self):\n"
+                "        raise NotImplementedError\n"
+                "class Left(Base):\n"
+                "    def name(self):\n"
+                "        return 'left'\n"
+                "class Right(Base):\n"
+                "    def name(self):\n"
+                "        return 'right'\n"
+            ),
+            "consumers": (
+                "from family import Base\n"
+                "def typed(item: Base):\n"
+                "    return item.describe()\n"
+                "def untyped(item):\n"
+                "    return item.unused()\n"
+            ),
+        },
+    )
+    inherited = build_member_awareness_census(tmp_path).inherited
+    [owner] = inherited.owners
+    assert (owner.owner, owner.derived_pairs, owner.members) == ("family.Base", 2, 2)
+    assert owner.consumers == 1
+    assert (inherited.attribute_calls, inherited.receiver_typed_calls) == (3, 2)
+    assert inherited.calls_reaching_inherited == 1
