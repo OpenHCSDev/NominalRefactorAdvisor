@@ -16,6 +16,12 @@ class AutoRegisterByClassVar:
     registry_key_attr: ClassVar[str]
     _registry: ClassVar[dict[object, object]]
 
+    def __init_subclass__(cls, **kwargs):
+        super().__init_subclass__(**kwargs)
+        key = cls.__dict__.get(getattr(cls, "registry_key_attr", ""))
+        if key is not None:
+            cls._registry[key] = cls
+
 
 class KeyedNominalFamily(AutoRegisterByClassVar, Generic[KeyT]):
     pass

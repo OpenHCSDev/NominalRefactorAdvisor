@@ -145,6 +145,54 @@ def test_a_keyed_family_key_type_is_read_from_a_registry_family_base_only() -> N
     } == {"Keyed": "Mode", "NamedLikeOne": None, "Family": None}
 
 
+def test_a_subclass_storing_init_subclass_makes_a_registry_family() -> None:
+    """An `__init_subclass__` that stores `cls` in a mapping registers each subclass (#144)."""
+
+    source = (
+        "from typing import Generic, TypeVar\n\n"
+        "K = TypeVar('K')\n\n\n"
+        "class Stores:\n"
+        "    _registry = {}\n\n"
+        "    def __init_subclass__(cls, **kwargs):\n"
+        "        super().__init_subclass__(**kwargs)\n"
+        "        cls._registry[cls.__name__] = cls\n\n\n"
+        "class Family(Stores, Generic[K]):\n    pass\n\n\n"
+        "class Declared(Family[str]):\n"
+        "    __registry__ = {}\n"
+        "    __registry_key__ = 'kind'\n\n\n"
+        "class Keyed(Family[str]):\n    pass\n\n\n"
+        "class Counts:\n"
+        "    seen = []\n\n"
+        "    def __init_subclass__(cls, **kwargs):\n"
+        "        super().__init_subclass__(**kwargs)\n"
+        "        Counts.seen.append(cls.__name__)\n\n\n"
+        "class Counted(Counts):\n    pass\n"
+    )
+    path = Path("pkg/hooked.py")
+    module = ParsedModule(
+        path=path,
+        module_name="pkg.hooked",
+        module=ast.parse(source, filename=str(path)),
+        source=source,
+    )
+    classes = build_compact_class_family_index(
+        CompactModuleClassProjectionFamily.collect_modules((module,))
+    ).classes_by_symbol
+    assert {
+        name: classes[f"pkg.hooked.{name}"].is_registration_authority
+        for name in ("Stores", "Family", "Declared", "Keyed", "Counts", "Counted")
+    } == {
+        "Stores": True,
+        "Family": True,
+        "Declared": True,
+        "Keyed": True,
+        "Counts": False,
+        "Counted": False,
+    }
+    assert classes["pkg.hooked.Keyed"].keyed_family_key_type_name == "str"
+    assert not classes["pkg.hooked.Family"].declares_autoregister_meta
+
+
 def test_the_source_index_gives_the_same_answer() -> None:
     index = build_class_family_index([_module()])
 

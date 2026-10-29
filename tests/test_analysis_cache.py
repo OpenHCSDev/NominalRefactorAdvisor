@@ -4179,6 +4179,17 @@ def test_compact_keyed_axis_projection_is_the_only_global_candidate_authority(
     package_root = tmp_path / "pkg"
     package_root.mkdir()
     (package_root / "specs.py").write_text(
+        "from typing import Generic, TypeVar\n"
+        "\n"
+        "KeyT = TypeVar('KeyT')\n"
+        "\n"
+        "class KeyedNominalFamily(Generic[KeyT]):\n"
+        "    def __init_subclass__(cls, **kwargs):\n"
+        "        super().__init_subclass__(**kwargs)\n"
+        "        key = cls.__dict__.get(getattr(cls, 'registry_key_attr', ''))\n"
+        "        if key is not None:\n"
+        "            cls._registry[key] = cls\n"
+        "\n"
         "class ModeConfig:\n"
         "    pass\n"
         "\n"
@@ -4200,7 +4211,7 @@ def test_compact_keyed_axis_projection_is_the_only_global_candidate_authority(
         newline="",
     )
     (package_root / "runtime.py").write_text(
-        "from .specs import Mode, KeyedNominalFamily\n"
+        "from specs import Mode, KeyedNominalFamily\n"
         "\n"
         "class ModeRuntimePolicy(KeyedNominalFamily[Mode]):\n"
         "    registry_key_attr = 'mode'\n"
@@ -4617,7 +4628,12 @@ def test_compact_registry_projection_candidates_preserve_projection_semantics(
         "from enum import Enum, auto\n"
         "from typing import Generic, TypeVar\n"
         "KeyT = TypeVar('KeyT')\n"
-        "class AutoRegisterByClassVar: pass\n"
+        "class AutoRegisterByClassVar:\n"
+        "    def __init_subclass__(cls, **kwargs):\n"
+        "        super().__init_subclass__(**kwargs)\n"
+        "        key = cls.__dict__.get(getattr(cls, 'registry_key_attr', ''))\n"
+        "        if key is not None:\n"
+        "            cls._registry[key] = cls\n"
         "class KeyedNominalFamily(AutoRegisterByClassVar, Generic[KeyT]): pass\n"
         "class Mode(Enum):\n"
         "    ALPHA = auto()\n"
@@ -4717,6 +4733,16 @@ def test_keyed_registry_detectors_share_one_compact_repository_context(
     package_root.mkdir()
     (package_root / "family.py").write_text(
         "from abc import ABC\n"
+        "from typing import Generic, TypeVar\n"
+        "\n"
+        "KeyT = TypeVar('KeyT')\n"
+        "\n"
+        "class KeyedNominalFamily(Generic[KeyT]):\n"
+        "    def __init_subclass__(cls, **kwargs):\n"
+        "        super().__init_subclass__(**kwargs)\n"
+        "        key = cls.__dict__.get(getattr(cls, 'registry_key_attr', ''))\n"
+        "        if key is not None:\n"
+        "            cls._registry[key] = cls\n"
         "\n"
         "class Handler(KeyedNominalFamily[str], ABC):\n"
         "    registry_key_attr = 'kind'\n"

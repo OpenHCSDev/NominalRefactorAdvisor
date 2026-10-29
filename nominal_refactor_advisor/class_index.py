@@ -338,7 +338,7 @@ class ClassDeclaration(QualifiedDeclaration):
     def with_registering_metaclass(
         self, authority: RegisteringMetaclassAuthority[Any]
     ) -> Self:
-        return replace(self, declares_autoregister_meta=authority.registers(self))
+        return replace(self, declares_autoregister_meta=authority.registers_remembered(self))
 
 
 @dataclass(frozen=True)
@@ -1119,16 +1119,14 @@ class CompactIndexedClass(CompactClassHeader):
     def with_registering_metaclass(
         self, authority: RegisteringMetaclassAuthority[Any]
     ) -> Self:
-        """Its own metaclass, whether a registering metaclass creates it, and its registry family's key type."""
+        """Its own metaclass, whether it is a registry family, and its registry family's key type."""
 
-        registers = authority.registers(self)
+        registers = authority.registers_remembered(self)
         return replace(
             self,
             declares_autoregister_meta=registers,
             is_registration_authority=(
-                self.is_registration_authority
-                or registers
-                or authority.inherits_registering(self)
+                self.is_registration_authority or authority.is_registry_family(self)
             ),
             keyed_family_key_type_name=authority.registry_family_key_type_name(self),
         )
@@ -7270,10 +7268,11 @@ def _compact_class_syntax_facets(
 def _is_registration_authority(node: ast.ClassDef) -> bool:
     """Whether the class declares the registry protocol itself: a registry and its key attribute.
 
-    A class whose metaclass registers the classes it creates is an authority
-    too; the index adds that from what the metaclass does
-    (`RegisteringMetaclassAuthority`, `with_registering_metaclass`). A class's
-    name is no evidence either way.
+    A registry family is an authority too: a registering metaclass creates
+    it, or it or an ancestor has an `__init_subclass__` that stores the
+    subclass. The index adds that from what the class does
+    (`RegisteringMetaclassAuthority.is_registry_family`,
+    `with_registering_metaclass`). A class's name is no evidence either way.
     """
 
     assignments = _direct_class_assignments(node)
@@ -7928,6 +7927,12 @@ class RegisteringMetaclassAuthority(Generic[ClassDeclarationT]):
     same way, stores the class it creates into a mapping
     (`ClassRegistryFacts.stores_created_class`). A native root stores none,
     and an ancestor that cannot be read is not known to register.
+
+    A registry family is a class whose subclasses are stored in a mapping as
+    they are created: a registering metaclass creates it
+    (`registers`, `inherits_registering`), or it or an ancestor defines an
+    `__init_subclass__` that stores the subclass
+    (`ClassRegistryFacts.stores_subclass`, `stores_subclasses`).
     """
 
     scanned: Mapping[str, ClassDeclarationT]
@@ -7965,9 +7970,13 @@ class RegisteringMetaclassAuthority(Generic[ClassDeclarationT]):
         return False
 
     def is_registry_family(self, declaration: ClassDeclaration) -> bool:
-        """Whether the classes created under it are registered: its metaclass or an ancestor's registers."""
+        """Whether the subclasses created under it are stored in a mapping as they are created."""
 
-        return self.registers(declaration) or self.inherits_registering(declaration)
+        return (
+            self.registers_remembered(declaration)
+            or self.inherits_registering(declaration)
+            or self.stores_subclasses(declaration)
+        )
 
     def registry_family_key_type_name(
         self, declaration: CompactIndexedClass
@@ -7995,10 +8004,34 @@ class RegisteringMetaclassAuthority(Generic[ClassDeclarationT]):
 
         Python creates a subclass with its bases' metaclass, so a class whose
         ancestor's metaclass registers is registered too, whatever it declares
-        itself. Bases resolve as `declaration_for` resolves them; an ancestor
-        that cannot be read is not known to register. An ancestry left unread
-        past `MAX_ANCESTORS` is not known not to register, so it counts as
-        registering: the answer that refuses a move.
+        itself.
+        """
+
+        return self.some_ancestor(declaration, self.registers_remembered)
+
+    def stores_subclasses(self, declaration: ClassDeclaration) -> bool:
+        """Whether its own `__init_subclass__`, or one it inherits, stores each subclass."""
+
+        return declaration.registry_facts.stores_subclass or self.some_ancestor(
+            declaration, lambda found: found.registry_facts.stores_subclass
+        )
+
+    def registers_remembered(self, declaration: ClassDeclaration) -> bool:
+        if declaration.symbol not in self.registering:
+            self.registering[declaration.symbol] = self.registers(declaration)
+        return self.registering[declaration.symbol]
+
+    def some_ancestor(
+        self,
+        declaration: ClassDeclaration,
+        holds: Callable[[ClassDeclaration], bool],
+    ) -> bool:
+        """Whether `holds` is true of an ancestor.
+
+        Bases resolve as `declaration_for` resolves them; an ancestor that
+        cannot be read is not known to hold. An ancestry left unread past
+        `MAX_ANCESTORS` is not known not to hold, so it counts as holding:
+        the answer that refuses a move.
         """
 
         pending = [
@@ -8014,9 +8047,7 @@ class RegisteringMetaclassAuthority(Generic[ClassDeclarationT]):
             if found is None or found.symbol in seen:
                 continue
             seen.add(found.symbol)
-            if found.symbol not in self.registering:
-                self.registering[found.symbol] = self.registers(found)
-            if self.registering[found.symbol]:
+            if holds(found):
                 return True
             pending.extend(
                 (base, found.module_name)
