@@ -16,8 +16,8 @@ never ran. Inherited pairs are scored on each state's own source text.
 
 from __future__ import annotations
 
-from abc import ABC
-from collections.abc import Iterable, Mapping
+from abc import ABC, abstractmethod
+from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
 from difflib import SequenceMatcher
 from pathlib import Path
@@ -38,14 +38,15 @@ from .refactor_concepts import RefactorConcept
 
 @dataclass(frozen=True)
 class StateScore(SemanticRecord):
-    """One source state on both axes."""
+    """One source state on all three axes."""
 
     findings: int
     derived: int
     add_member_edits: int
 
 
-# Characters per token of Python source, for the token cost of a diff.
+# Characters per token of Python source, for the token cost of a diff: a stated
+# approximation of tokenizer output, not a measurement of any one tokenizer.
 CHARACTERS_PER_TOKEN = 4
 
 
@@ -71,11 +72,27 @@ class SearchMove(SemanticRecord, ABC):
 
     concept: str
 
-    def scored(self) -> tuple[ScoredMove, ...]:
-        return ()
+    @abstractmethod
+    def dominates(self, other: ScoredMove) -> bool:
+        """Whether this move is at least as good as `other` on every axis and better on one."""
+        raise NotImplementedError
 
-    def unscored(self) -> tuple[UnscoredMove, ...]:
-        return ()
+    @abstractmethod
+    def front_member(self, moves: tuple[SearchMove, ...]) -> tuple[ScoredMove, ...]:
+        """This move, when no move of the turn dominates it; otherwise nothing."""
+        raise NotImplementedError
+
+    @abstractmethod
+    def looked_past(
+        self, search: RefactorSearch, widened: frozenset[str], depth: int
+    ) -> SearchMove:
+        """This move with the best continuations from its end state, when it is widened."""
+        raise NotImplementedError
+
+    @abstractmethod
+    def off_front(self, front: tuple[ScoredMove, ...]) -> tuple[str, ...]:
+        """What a report says about this move when it is not on the front."""
+        raise NotImplementedError
 
 
 @dataclass(frozen=True)
@@ -84,13 +101,24 @@ class UnscoredMove(SearchMove):
 
     reason: str
 
-    def unscored(self) -> tuple[UnscoredMove, ...]:
-        return (self,)
+    def dominates(self, other: ScoredMove) -> bool:
+        return False
+
+    def front_member(self, moves: tuple[SearchMove, ...]) -> tuple[ScoredMove, ...]:
+        return ()
+
+    def looked_past(
+        self, search: RefactorSearch, widened: frozenset[str], depth: int
+    ) -> SearchMove:
+        return self
+
+    def off_front(self, front: tuple[ScoredMove, ...]) -> tuple[str, ...]:
+        return (f"not played {self.concept}: {self.reason}",)
 
 
 @dataclass(frozen=True)
 class ScoredMove(SearchMove):
-    """A completed goal search: how far it moved both axes."""
+    """A completed goal search: how far it moved each of the three axes."""
 
     stages: int
     tokens: int
@@ -100,9 +128,6 @@ class ScoredMove(SearchMove):
     end: CodemodWorkflowScan = json_report_field(included=False, compare=False, repr=False)
     following: tuple[ScoredMove, ...] = ()
     """The best moves found from this move's end state, when lookahead reached it."""
-
-    def scored(self) -> tuple[ScoredMove, ...]:
-        return (self,)
 
     @json_report_property()
     def findings_removed(self) -> int:
@@ -150,9 +175,38 @@ class ScoredMove(SearchMove):
             self.line_derived_gained,
         )
 
+    @property
+    def front_order(self) -> tuple[float, int, int, str]:
+        """Best line first; the concept breaks ties so the order is stable."""
+        return (
+            -self.slop_per_kilotoken,
+            -self.line_add_member_edits_removed,
+            -self.line_derived_gained,
+            self.concept,
+        )
+
     def dominates(self, other: ScoredMove) -> bool:
         return self.axes != other.axes and all(
             mine >= theirs for mine, theirs in zip(self.axes, other.axes)
+        )
+
+    def front_member(self, moves: tuple[SearchMove, ...]) -> tuple[ScoredMove, ...]:
+        return () if any(move.dominates(self) for move in moves) else (self,)
+
+    def looked_past(
+        self, search: RefactorSearch, widened: frozenset[str], depth: int
+    ) -> SearchMove:
+        if self.concept not in widened:
+            return self
+        return replace(self, following=search.turn(self.end, self.after, depth).front)
+
+    def off_front(self, front: tuple[ScoredMove, ...]) -> tuple[str, ...]:
+        if self in front:
+            return ()
+        return (
+            f"dominated {self.concept}: -{self.findings_removed} finding(s) "
+            f"for {self.tokens} token(s), -{self.add_member_edits_removed} add-member "
+            f"edit(s), +{self.derived_gained} derived",
         )
 
 
@@ -161,33 +215,14 @@ class SearchTurn(SemanticRecord):
     """Every concept tried from one state, and the moves no other move beats."""
 
     start: StateScore
-    scored: tuple[ScoredMove, ...]
-    unscored: tuple[UnscoredMove, ...]
-
-    @classmethod
-    def of(cls, start: StateScore, moves: Iterable[SearchMove]) -> SearchTurn:
-        moves = tuple(moves)
-        return cls(
-            start=start,
-            scored=tuple(scored for move in moves for scored in move.scored()),
-            unscored=tuple(unscored for move in moves for unscored in move.unscored()),
-        )
+    moves: tuple[SearchMove, ...]
 
     @json_report_property()
     def front(self) -> tuple[ScoredMove, ...]:
         return tuple(
             sorted(
-                (
-                    move
-                    for move in self.scored
-                    if not any(other.dominates(move) for other in self.scored)
-                ),
-                key=lambda move: (
-                    -move.slop_per_kilotoken,
-                    -move.line_add_member_edits_removed,
-                    -move.line_derived_gained,
-                    move.concept,
-                ),
+                (member for move in self.moves for member in move.front_member(self.moves)),
+                key=lambda move: move.front_order,
             )
         )
 
@@ -196,9 +231,11 @@ class SearchTurn(SemanticRecord):
 class SearchBudget(SemanticRecord):
     """How far and how wide the search looks, and which concepts are too broad to play."""
 
-    depth: int = 2
-    width: int = 2
-    max_targets: int = 100
+    depth: int = field(default=2, metadata={"cli_help": "how many moves ahead to look"})
+    width: int = field(default=2, metadata={"cli_help": "how many best moves to look past"})
+    max_targets: int = field(
+        default=100, metadata={"cli_help": "skip a concept with more targets than this"}
+    )
 
 
 @dataclass(frozen=True)
@@ -220,23 +257,22 @@ class RefactorSearch:
             add_member_edits=census.add_member_edits,
         )
 
-    def turn(self, scan: CodemodWorkflowScan, depth: int) -> SearchTurn:
-        start = self.score(scan)
-        turn = SearchTurn.of(
+    def turn(self, scan: CodemodWorkflowScan, start: StateScore, depth: int) -> SearchTurn:
+        """Every concept played from `scan`, whose score is `start`, looking `depth` moves ahead."""
+
+        turn = SearchTurn(
             start,
-            (self.move(scan, start, concept) for concept in RefactorConcept.declaration_types()),
+            tuple(
+                self.move(scan, start, concept)
+                for concept in RefactorConcept.declaration_types()
+            ),
         )
         if depth <= 1:
             return turn
-        widened = {move.concept for move in turn.front[: self.budget.width]}
+        widened = frozenset(move.concept for move in turn.front[: self.budget.width])
         return replace(
             turn,
-            scored=tuple(
-                replace(move, following=self.turn(move.end, depth - 1).front)
-                if move.concept in widened
-                else move
-                for move in turn.scored
-            ),
+            moves=tuple(move.looked_past(self, widened, depth - 1) for move in turn.moves),
         )
 
     def move(
@@ -280,7 +316,7 @@ class RefactorSearch:
 def build_refactor_search(
     root: Path,
     *,
-    config: DetectorConfig | None = None,
+    config: DetectorConfig,
     cache_dir: Path | None = None,
     use_parse_cache: bool = True,
     parse_workers: int = 1,
@@ -289,7 +325,6 @@ def build_refactor_search(
 ) -> SearchTurn:
     """Search ``root`` for the refactors that remove the most slop and derive the most."""
 
-    config = config or DetectorConfig()
     search = RefactorSearch((root,), config, budget, introspection)
     scan = CodemodWorkflowScan.parsed(
         (root,),
@@ -298,4 +333,4 @@ def build_refactor_search(
         use_parse_cache=use_parse_cache,
         parse_workers=parse_workers,
     )
-    return search.turn(scan, budget.depth)
+    return search.turn(scan, search.score(scan), budget.depth)

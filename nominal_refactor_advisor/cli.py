@@ -14,7 +14,7 @@ import os
 import sys
 from abc import ABC, abstractmethod
 from collections.abc import Callable
-from dataclasses import dataclass, field, fields, replace
+from dataclasses import Field, dataclass, field, fields, replace
 from enum import Enum, StrEnum
 from functools import cached_property
 from pathlib import Path
@@ -237,6 +237,54 @@ class CliArgumentSpec:
         parser.add_argument(*self.flags, **kwargs)
 
 
+class SearchBudgetArguments:
+    """One `--search-<field>` flag per `SearchBudget` field, each refused without
+    --search-refactors; an unsupplied flag leaves the field's default."""
+
+    @staticmethod
+    def flag(budget_field: Field[object]) -> str:
+        return f"--search-{budget_field.name.replace('_', '-')}"
+
+    @classmethod
+    def specs(cls) -> tuple[CliArgumentSpec, ...]:
+        return tuple(
+            CliArgumentSpec(
+                flags=(cls.flag(budget_field),),
+                value_type=int,
+                help=(
+                    f"With --search-refactors: {budget_field.metadata['cli_help']} "
+                    f"(default {budget_field.default})."
+                ),
+            )
+            for budget_field in fields(SearchBudget)
+        )
+
+    @staticmethod
+    def supplied(args: argparse.Namespace) -> dict[str, int]:
+        return {
+            budget_field.name: value
+            for budget_field in fields(SearchBudget)
+            if (value := getattr(args, f"search_{budget_field.name}")) is not None
+        }
+
+    @classmethod
+    def require_search(
+        cls, parser: argparse.ArgumentParser, args: argparse.Namespace
+    ) -> None:
+        supplied = cls.supplied(args)
+        if supplied and not args.search_refactors:
+            flags = ", ".join(
+                cls.flag(budget_field)
+                for budget_field in fields(SearchBudget)
+                if budget_field.name in supplied
+            )
+            parser.error(f"{flags} require --search-refactors")
+
+    @classmethod
+    def budget(cls, args: argparse.Namespace) -> SearchBudget:
+        return SearchBudget(**cls.supplied(args))
+
+
 def _config_argument_specs() -> tuple[CliArgumentSpec, ...]:
     return tuple(
         (
@@ -432,24 +480,7 @@ _CLI_ARGUMENT_SPECS = (
                 "move beats, looking --search-depth moves ahead."
             ),
         ),
-        CliArgumentSpec(
-            flags=("--search-depth",),
-            value_type=int,
-            default=SearchBudget.depth,
-            help="With --search-refactors: how many moves ahead to look.",
-        ),
-        CliArgumentSpec(
-            flags=("--search-width",),
-            value_type=int,
-            default=SearchBudget.width,
-            help="With --search-refactors: how many best moves to look past.",
-        ),
-        CliArgumentSpec(
-            flags=("--search-max-targets",),
-            value_type=int,
-            default=SearchBudget.max_targets,
-            help="With --search-refactors: skip a concept with more targets than this.",
-        ),
+        *SearchBudgetArguments.specs(),
         CliArgumentSpec(
             flags=("--detector-capabilities",),
             action="store_true",
@@ -2069,16 +2100,10 @@ class MarkdownReportRenderer(ABC):
             f"   - Start: {turn.start.findings} finding(s), "
             f"{turn.start.derived} derived, {turn.start.add_member_edits} add-member edit(s)",
         ]
-        lines.extend(self.search_moves(turn.front, "   "))
+        front = turn.front
+        lines.extend(self.search_moves(front, "   "))
         lines.extend(
-            f"   - dominated {move.concept}: -{move.findings_removed} finding(s) "
-            f"for {move.tokens} token(s), -{move.add_member_edits_removed} add-member "
-            f"edit(s), +{move.derived_gained} derived"
-            for move in turn.scored
-            if move not in turn.front
-        )
-        lines.extend(
-            f"   - not played {move.concept}: {move.reason}" for move in turn.unscored
+            f"   - {said}" for move in turn.moves for said in move.off_front(front)
         )
         return "\n".join(lines)
 
@@ -2281,7 +2306,9 @@ class CliArguments:
         )
         for spec in _CLI_ARGUMENT_SPECS:
             spec.add_to_parser(parser)
-        return cls(parser, parser.parse_args(argv))
+        args = parser.parse_args(argv)
+        SearchBudgetArguments.require_search(parser, args)
+        return cls(parser, args)
 
     @cached_property
     def selected_command_type(self) -> type[CliCommand] | None:
@@ -2565,11 +2592,7 @@ class RefactorSearchCliCommand(SingleRootReportCliCommand):
             cache_dir=self.configured_parse_cache_dir,
             use_parse_cache=self.args.use_parse_cache,
             parse_workers=self.args.parse_workers,
-            budget=SearchBudget(
-                depth=self.args.search_depth,
-                width=self.args.search_width,
-                max_targets=self.args.search_max_targets,
-            ),
+            budget=SearchBudgetArguments.budget(self.args),
             introspection=IntrospectionSource.from_argument(self.args.introspection_trace),
         )
 

@@ -41,17 +41,21 @@ def test_front_keeps_every_move_no_other_move_beats_on_every_axis() -> None:
     amortizing = scored("amortizing", removed=1, tokens=1000, add_member=10)
     dominated = scored("dominated", removed=1, tokens=1000)
 
-    turn = SearchTurn.of(START, (dominated, amortizing, cheap, UnscoredMove("idle", "no targets")))
+    idle = UnscoredMove("idle", "no targets")
+    turn = SearchTurn(START, (dominated, amortizing, cheap, idle))
 
     assert turn.front == (cheap, amortizing)
-    assert turn.unscored == (UnscoredMove("idle", "no targets"),)
+    assert [said for move in turn.moves for said in move.off_front(turn.front)] == [
+        "dominated dominated: -1 finding(s) for 1000 token(s), -0 add-member edit(s), +0 derived",
+        "not played idle: no targets",
+    ]
 
 
 def test_a_cheap_move_that_opens_a_large_one_beats_the_expensive_greedy_move() -> None:
     greedy = scored("greedy", removed=3, tokens=1000)
     opener = scored("opener", 1, 100, following=(scored("next", 4, 100),))
 
-    turn = SearchTurn.of(START, (greedy, opener))
+    turn = SearchTurn(START, (greedy, opener))
 
     assert (opener.line_findings_removed, opener.line_tokens) == (5, 200)
     assert opener.slop_per_kilotoken == 25

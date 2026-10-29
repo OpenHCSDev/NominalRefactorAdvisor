@@ -96,23 +96,19 @@ def test_refactor_search_scores_the_conveyor_collapse_and_looks_past_it(
         parse_workers=1,
     )
 
-    turn = search.turn(scan, depth=2)
+    turn = search.turn(scan, search.score(scan), depth=2)
 
     (carrier,) = (
         move
-        for move in turn.scored
+        for move in turn.front
         if move.concept == SemanticCarrierConcept.concept_key()
     )
     assert carrier.stages == 1
     assert carrier.tokens > 0
     assert carrier.findings_removed >= 1
     assert carrier.before == turn.start
-    assert carrier in turn.front
-    assert all(
-        move.concept != SemanticCarrierConcept.concept_key() for move in turn.unscored
-    )
     assert carrier.line_findings_removed >= carrier.findings_removed
-    assert len(json_report_object(turn)["scored"]) == len(turn.scored)
+    assert len(json_report_object(turn)["moves"]) == len(turn.moves)
 
 
 def test_rejected_conveyor_boolean_preserves_on_demand_diagnostics() -> None:
