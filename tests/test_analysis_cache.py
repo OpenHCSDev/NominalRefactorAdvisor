@@ -2969,7 +2969,10 @@ def test_class_candidate_anchor_witnesses_follow_reported_seed_locations() -> No
                 direct_member_declarations=class_index_module._compact_class_member_declarations(
                     ast.parse("class Root: registry_key_attr = 'kind'").body[0]
                 ),
-                keyed_family_key_type_name="Kind",
+                base_references=(
+                    class_index_module.UnboundNominalReference(("Family",)),
+                ),
+                base_key_type_names=("Kind",),
             ),
         ),
     )
@@ -4541,12 +4544,22 @@ def test_compact_keyed_registry_axis_facts_preserve_axis_semantics(
     (package_root / "family.py").write_text(
         "from abc import ABC\n"
         "from enum import Enum\n"
+        "from typing import Generic, TypeVar\n"
+        "\n"
+        "KeyT = TypeVar('KeyT')\n"
         "\n"
         "class Kind(Enum):\n"
         "    ALPHA = 'alpha'\n"
         "    BETA = 'beta'\n"
         "\n"
-        "class Handler(ABC):\n"
+        "class KeyedFamily(Generic[KeyT]):\n"
+        "    def __init_subclass__(cls, **kwargs):\n"
+        "        super().__init_subclass__(**kwargs)\n"
+        "        key = cls.__dict__.get(getattr(cls, 'registry_key_attr', ''))\n"
+        "        if key is not None:\n"
+        "            cls._registry[key] = cls\n"
+        "\n"
+        "class Handler(KeyedFamily[Kind], ABC):\n"
         "    registry_key_attr = 'kind'\n"
         "    @classmethod\n"
         "    def for_kind(cls, kind): return cls._registry[kind]\n"
@@ -4574,19 +4587,8 @@ def test_compact_keyed_registry_axis_facts_preserve_axis_semantics(
     )
     modules = parse_python_modules(package_root, use_parse_cache=False)
     config = DetectorConfig()
-    projections = tuple(
-        replace(
-            projection,
-            classes=tuple(
-                (
-                    replace(indexed_class, keyed_family_key_type_name="Kind")
-                    if indexed_class.simple_name == "Handler"
-                    else indexed_class
-                )
-                for indexed_class in projection.classes
-            ),
-        )
-        for projection in systemic_detectors.NonInjectiveTypeRegistryDetector.compact_module_projections(
+    projections = (
+        systemic_detectors.NonInjectiveTypeRegistryDetector.compact_module_projections(
             modules
         )
     )
@@ -4606,7 +4608,14 @@ def test_compact_keyed_registry_axis_facts_preserve_axis_semantics(
     assert fact.consumer_symbols == ("first", "second")
     assert fact.missing_maturity_signals == ("registered_case_axis",)
     assert fact.injectivity_proof.duplicate_key_names == ("Kind.ALPHA",)
-    assert fact.injectivity_proof.missing_type_names == ("MissingKeyHandler",)
+    # `KeyedFamily.__init_subclass__` runs at each member's creation and could
+    # set `kind`, so no member's MRO is closed and `MissingKeyHandler`'s key is
+    # unresolved, not proved missing. The duplicate alone disproves injectivity.
+    assert fact.injectivity_proof.missing_type_names == ()
+    assert fact.injectivity_proof.registered_type_names == (
+        "AliasAlphaHandler",
+        "AlphaHandler",
+    )
 
 
 def test_compact_registry_projection_candidates_preserve_projection_semantics(

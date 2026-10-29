@@ -1062,6 +1062,9 @@ class CompactClassHeader(ClassDeclaration):
     """Class-index surface sufficient for inheritance reconstruction."""
 
     base_references: tuple[CompactNominalReference, ...]
+    base_key_type_names: tuple[str | None, ...] = ()
+    """The key type each base reference's subscript names (`Family[Key]`), aligned
+    with `base_references`; the family index reads a registry family's key from it."""
     direct_base_count: int = 0
     base_references_are_complete: bool = False
     product_base_bindings_are_exact: bool = False
@@ -1155,8 +1158,6 @@ class CompactIndexedClass(CompactClassHeader):
     metaclass_names: tuple[str, ...] = ()
     class_keyword_names: tuple[str, ...] = ()
     class_header_is_reconstructible: bool = True
-    base_key_type_names: tuple[str | None, ...] = ()
-    """The key type each base reference's subscript names (`Family[Key]`), aligned with `base_references`."""
     keyed_family_key_type_name: str | None = None
     """The key type of the first subscripted base that is a registry family; set by the index."""
     end_line: int | None = None
@@ -1838,11 +1839,17 @@ class CompactModuleClassProjection(
     def _default_values_outside(
         declaration_type: type,
         preserved_type: type,
-    ) -> dict[str, object]:
+    ) -> dict[str, Any]:
+        """Each field `declaration_type` adds past `preserved_type`, at its declared default.
+
+        The values are each field's own default, read from `fields()`, so each
+        has its field's type; `fields()` exposes them only as `Any`.
+        """
+
         preserved_names = frozenset(
             dataclass_field.name for dataclass_field in fields(preserved_type)
         )
-        values: dict[str, object] = {}
+        values: dict[str, Any] = {}
         for dataclass_field in fields(declaration_type):
             if dataclass_field.name in preserved_names:
                 continue
