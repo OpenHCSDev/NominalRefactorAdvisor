@@ -1151,7 +1151,7 @@ def _target_has_keyed_family_axis_root(
 
     del config
     return any(
-        indexed_class.keyed_family_key_type_name is not None
+        indexed_class.declares_keyed_base
         and "registry_key_attr" in indexed_class.direct_declared_member_names
         for projection in projections_by_family.get(
             CompactModuleClassProjectionFamily, ()
@@ -2188,6 +2188,9 @@ class RepeatedKeyedFamilyDetector(
                 for projection in projections
                 for root in projection.repeated_keyed_family_roots
             ),
+            scanned_roots=frozenset(
+                projection.module_name.partition(".")[0] for projection in projections
+            ),
             minimum_root_count=max(3, config.min_registration_sites),
         )
 
@@ -2210,7 +2213,12 @@ class RepeatedKeyedFamilyDetector(
         return self.build_finding(
             (
                 f"Registry roots {class_names} each repeat `{registry_keys}` + `_registry` + "
-                f"`{lookup_names}` over `{family_candidate.family_base_name}`."
+                f"`{lookup_names}` "
+                + (
+                    f"over `{family_candidate.family_base_name}`."
+                    if family_candidate.family_base_name
+                    else "with no shared base."
+                )
             ),
             evidence,
         )
@@ -2623,7 +2631,7 @@ def _target_has_keyed_registry_axis_root(
 
     del config
     return any(
-        indexed_class.keyed_family_key_type_name is not None
+        indexed_class.declares_keyed_base
         and indexed_class.constant_string_assignment("registry_key_attr") is not None
         for projection in projections_by_family.get(
             CompactModuleClassProjectionFamily, ()

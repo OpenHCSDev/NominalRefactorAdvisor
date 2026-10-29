@@ -13,6 +13,7 @@ import builtins
 import copy
 import hashlib
 import re
+import sys
 from abc import ABC, abstractmethod
 from collections import defaultdict, deque
 from collections.abc import (
@@ -118,6 +119,7 @@ from .product_flow import (
 )
 from .class_creation_store import CreatedClassStore
 from .installed_source import InstalledModule
+from .registry_identity import REGISTRY_ATTRIBUTE_NAME, REGISTRY_KEY_ATTRIBUTE_NAME
 from .source_execution import SourceModuleExecution
 from .semantic_algebra import DirectedGraph
 from .source_geometry import ClassHeaderSourceSpan as ClassHeaderSourceSpan
@@ -333,8 +335,10 @@ class ClassDeclaration(QualifiedDeclaration):
     ) -> Self:
         return replace(self, resolved_base_symbols=resolved_base_symbols)
 
-    def with_registering_metaclass(self, registers: bool) -> Self:
-        return replace(self, declares_autoregister_meta=registers)
+    def with_registering_metaclass(
+        self, authority: RegisteringMetaclassAuthority[Any]
+    ) -> Self:
+        return replace(self, declares_autoregister_meta=authority.registers_remembered(self))
 
 
 @dataclass(frozen=True)
@@ -1058,6 +1062,9 @@ class CompactClassHeader(ClassDeclaration):
     """Class-index surface sufficient for inheritance reconstruction."""
 
     base_references: tuple[CompactNominalReference, ...]
+    base_key_type_names: tuple[str | None, ...] = ()
+    """The key type each base reference's subscript names (`Family[Key]`), aligned
+    with `base_references`; the family index reads a registry family's key from it."""
     direct_base_count: int = 0
     base_references_are_complete: bool = False
     product_base_bindings_are_exact: bool = False
@@ -1112,12 +1119,26 @@ class CompactIndexedClass(CompactClassHeader):
             star_resolution=None,
         )
 
-    def with_registering_metaclass(self, registers: bool) -> Self:
+    def with_registering_metaclass(
+        self, authority: RegisteringMetaclassAuthority[Any]
+    ) -> Self:
+        """Its own metaclass, whether it is a registry family, and its registry family's key type."""
+
+        registers = authority.registers_remembered(self)
         return replace(
             self,
             declares_autoregister_meta=registers,
-            is_registration_authority=self.is_registration_authority or registers,
+            is_registration_authority=(
+                self.is_registration_authority or authority.is_registry_family(self)
+            ),
+            keyed_family_key_type_name=authority.registry_family_key_type_name(self),
         )
+
+    @property
+    def declares_keyed_base(self) -> bool:
+        """Whether a base names a key type (`Family[Key]`): a registry family's key, once the index resolves the base."""
+
+        return any(name is not None for name in self.base_key_type_names)
 
     @property
     def own_dataclass_field_names(self) -> tuple[str, ...] | None:
@@ -1138,6 +1159,7 @@ class CompactIndexedClass(CompactClassHeader):
     class_keyword_names: tuple[str, ...] = ()
     class_header_is_reconstructible: bool = True
     keyed_family_key_type_name: str | None = None
+    """The key type of the first subscripted base that is a registry family; set by the index."""
     end_line: int | None = None
     method_names: tuple[str, ...] = ()
     abstract_method_names: tuple[str, ...] = ()
@@ -1817,11 +1839,17 @@ class CompactModuleClassProjection(
     def _default_values_outside(
         declaration_type: type,
         preserved_type: type,
-    ) -> dict[str, object]:
+    ) -> dict[str, Any]:
+        """Each field `declaration_type` adds past `preserved_type`, at its declared default.
+
+        The values are each field's own default, read from `fields()`, so each
+        has its field's type; `fields()` exposes them only as `Any`.
+        """
+
         preserved_names = frozenset(
             dataclass_field.name for dataclass_field in fields(preserved_type)
         )
-        values: dict[str, object] = {}
+        values: dict[str, Any] = {}
         for dataclass_field in fields(declaration_type):
             if dataclass_field.name in preserved_names:
                 continue
@@ -2722,10 +2750,27 @@ class RegistryLookupShape:
         )
 
 
+class DeclaredFamilyBase(NamedTuple):
+    """One base a class declares: the symbol its binding resolves to, shown by its terminal name."""
+
+    symbol: str
+    name: str
+
+    @classmethod
+    def of(cls, reference: CompactNominalReference) -> Self:
+        return cls(reference.builtin_qualified_name, reference.simple_name)
+
+    def is_standard_library(self, scanned_roots: frozenset[str]) -> bool:
+        """Whether it resolves into the standard library: a top-level module no scanned module shadows."""
+
+        root = self.symbol.partition(".")[0]
+        return root in sys.stdlib_module_names and root not in scanned_roots
+
+
 @dataclass(frozen=True)
 class CompactRepeatedKeyedFamilyRoot(CompactSourceLocation):
     class_name: str
-    family_base_name: str
+    family_bases: tuple[DeclaredFamilyBase, ...]
     registry_key_attr_name: str
     lookup_method_name: str
     lookup_style: RegistryLookupStyle
@@ -5074,19 +5119,37 @@ def _collect_demanded_class_projection_from_source(
     return CompactModuleClassProjectionFamily._collect_header_core(parsed_module)
 
 
+def _referenced_bases(
+    node: ast.ClassDef,
+) -> Iterator[tuple[ast.expr, tuple[str, ...]]]:
+    """Each base a name or attribute chain spells, with that chain; `Family[Key]` spells `Family`."""
+
+    for base in node.bases:
+        parts = ExpressionReference.decoded(
+            ClassSymbolResolutionAuthority.reference_node(base)
+        ).attribute_chain
+        if parts is not None:
+            yield base, parts
+
+
 def _compact_base_references(
     node: ast.ClassDef,
     module_binding_snapshot: ModuleNominalBindingSnapshot,
 ) -> tuple[CompactNominalReference, ...]:
     return tuple(
         module_binding_snapshot.reference_for(parts)
-        for base in node.bases
-        if (
-            parts := ExpressionReference.decoded(
-                ClassSymbolResolutionAuthority.reference_node(base)
-            ).attribute_chain
-        )
-        is not None
+        for _base, parts in _referenced_bases(node)
+    )
+
+
+def _compact_base_key_type_names(node: ast.ClassDef) -> tuple[str | None, ...]:
+    """The key type each referenced base's subscript names first (`Family[Key]`), aligned with its base references."""
+
+    return tuple(
+        next(iter(annotation_type_names(base.slice)), None)
+        if isinstance(base, ast.Subscript)
+        else None
+        for base, _parts in _referenced_bases(node)
     )
 
 
@@ -5223,7 +5286,7 @@ def _compact_indexed_classes(
                 node,
                 parsed_module.source_segments.lines,
             ).is_reconstructible,
-            keyed_family_key_type_name=_keyed_family_key_type_name(node),
+            base_key_type_names=_compact_base_key_type_names(node),
             is_final=any(
                 (isinstance(decorator, ast.Name) and decorator.id == "final")
                 or (isinstance(decorator, ast.Attribute) and decorator.attr == "final")
@@ -5425,7 +5488,7 @@ class CompactModuleClassProjectionFamily(CollectedFamily[CompactModuleClassProje
                 or any(
                     bool(indexed_class.registry_facts.metaclass_references)
                     or (
-                        indexed_class.keyed_family_key_type_name is not None
+                        indexed_class.declares_keyed_base
                         and "registry_key_attr"
                         in indexed_class.direct_declared_member_names
                     )
@@ -5573,7 +5636,7 @@ class CompactModuleClassProjectionFamily(CollectedFamily[CompactModuleClassProje
                     syntax_facets.autoregister_reference_index
                 ),
                 repeated_keyed_family_roots=_compact_repeated_keyed_family_roots(
-                    parsed_module
+                    parsed_module, declarations
                 ),
                 manual_subclass_roster_roots=_compact_manual_subclass_roster_roots(
                     parsed_module
@@ -6222,18 +6285,6 @@ def annotation_type_names(node: ast.AST | None) -> tuple[str, ...]:
     return ()
 
 
-def _keyed_family_key_type_name(node: ast.ClassDef) -> str | None:
-    for base in node.bases:
-        if not isinstance(base, ast.Subscript):
-            continue
-        if _terminal_reference_name(base.value) != "KeyedNominalFamily":
-            continue
-        type_names = annotation_type_names(base.slice)
-        if type_names:
-            return type_names[0]
-    return None
-
-
 def _compact_keyed_table_axes(
     parsed_module: ParsedModule,
 ) -> tuple[CompactKeyedTableAxis, ...]:
@@ -6755,16 +6806,12 @@ def _trim_method_docstring(
 
 def _compact_repeated_keyed_family_roots(
     parsed_module: ParsedModule,
+    declarations: CompactModuleClassHeader,
 ) -> tuple[CompactRepeatedKeyedFamilyRoot, ...]:
     roots: list[CompactRepeatedKeyedFamilyRoot] = []
+    classes = {record.qualname: record for record in declarations.classes}
     for node in parsed_module.module.body:
         if not isinstance(node, ast.ClassDef):
-            continue
-        if "AutoRegisterByClassVar" not in {
-            terminal_name
-            for base in node.bases
-            if (terminal_name := _terminal_reference_name(base)) is not None
-        }:
             continue
         assignments = _direct_class_assignments(node)
         registry_key_attr_name = _string_constant(assignments.get("registry_key_attr"))
@@ -6793,7 +6840,10 @@ def _compact_repeated_keyed_family_roots(
                 file_path=parsed_module.file_path,
                 line=node.lineno,
                 class_name=node.name,
-                family_base_name="AutoRegisterByClassVar",
+                family_bases=tuple(
+                    DeclaredFamilyBase.of(reference)
+                    for reference in classes[node.name].base_references
+                ),
                 registry_key_attr_name=registry_key_attr_name,
                 lookup_method_name=lookup_method.name,
                 lookup_style=lookup_shape.style,
@@ -7224,49 +7274,20 @@ def _compact_class_syntax_facets(
     )
 
 
-def _registration_authority_base_name(base_name: str) -> bool:
-    tokens = frozenset(
-        token.lower()
-        for token in re.findall(
-            r"[A-Z]+(?=[A-Z][a-z0-9]|$)|[A-Z]?[a-z0-9]+",
-            base_name,
-        )
-        if token
-    )
-    return bool(
-        tokens & {"autoregister", "registered", "registry"}
-        or (
-            "registration" in tokens
-            and bool(tokens & {"authority", "base", "family", "meta", "root"})
-        )
-        or ("stable" in tokens and bool(tokens & {"axis", "key"}))
-        or ("key" in tokens and "family" in tokens)
-        or (
-            "nominal" in tokens
-            and "base" in tokens
-            and bool(tokens & {"axis", "family", "formula", "policy"})
-        )
-    )
-
-
 def _is_registration_authority(node: ast.ClassDef) -> bool:
+    """Whether the class declares the registry protocol itself: a registry and its key attribute.
+
+    A registry family is an authority too: a registering metaclass creates
+    it, or it or an ancestor has an `__init_subclass__` that stores the
+    subclass. The index adds that from what the class does
+    (`RegisteringMetaclassAuthority.is_registry_family`,
+    `with_registering_metaclass`). A class's name is no evidence either way.
+    """
+
     assignments = _direct_class_assignments(node)
-    inherits_named_authority = any(
-        _registration_authority_base_name(terminal_name)
-        for base in node.bases
-        if (terminal_name := _terminal_reference_name(base)) is not None
-    )
-    declares_named_authority = (
-        "AutoRegister" in node.name
-        or "Registered" in node.name
-        or node.name.endswith("KeyFamily")
-        or _registration_authority_base_name(node.name)
-    )
-    return bool(
-        inherits_named_authority
-        or declares_named_authority
-        or ("__registry__" in assignments and "__registry_key__" in assignments)
-        or "stable_key_axis" in assignments
+    return (
+        REGISTRY_ATTRIBUTE_NAME in assignments
+        and REGISTRY_KEY_ATTRIBUTE_NAME in assignments
     )
 
 
@@ -7915,10 +7936,20 @@ class RegisteringMetaclassAuthority(Generic[ClassDeclarationT]):
     same way, stores the class it creates into a mapping
     (`ClassRegistryFacts.stores_created_class`). A native root stores none,
     and an ancestor that cannot be read is not known to register.
+
+    A registry family is a class whose subclasses are stored in a mapping as
+    they are created: a registering metaclass creates it
+    (`registers`, `inherits_registering`), or it or an ancestor defines an
+    `__init_subclass__` that stores the subclass
+    (`ClassRegistryFacts.stores_subclass`, `stores_subclasses`).
     """
 
     scanned: Mapping[str, ClassDeclarationT]
     exposure: CompactRepositoryPublicExposureIndex
+    registering: dict[str, bool] = field(
+        default_factory=dict, init=False, repr=False, compare=False
+    )
+    """`registers`, remembered per class symbol while ancestors are walked."""
     MAX_ANCESTORS: ClassVar[int] = 64
 
     @cached_property
@@ -7946,6 +7977,92 @@ class RegisteringMetaclassAuthority(Generic[ClassDeclarationT]):
                 for base in found.registry_facts.base_references
             )
         return False
+
+    def is_registry_family(self, declaration: ClassDeclaration) -> bool:
+        """Whether the subclasses created under it are stored in a mapping as they are created."""
+
+        return (
+            self.registers_remembered(declaration)
+            or self.inherits_registering(declaration)
+            or self.stores_subclasses(declaration)
+        )
+
+    def registry_family_key_type_name(
+        self, declaration: CompactIndexedClass
+    ) -> str | None:
+        """The key type `Family[Key]` names, for the first subscripted base that is a registry family."""
+
+        return next(
+            (
+                key_type_name
+                for reference, key_type_name in zip(
+                    declaration.base_references,
+                    declaration.base_key_type_names,
+                    strict=True,
+                )
+                if key_type_name is not None
+                and (found := self.declaration_for(reference, declaration.module_name))
+                is not None
+                and self.is_registry_family(found)
+            ),
+            None,
+        )
+
+    def inherits_registering(self, declaration: ClassDeclaration) -> bool:
+        """Whether a class it inherits from is created by a registering metaclass.
+
+        Python creates a subclass with its bases' metaclass, so a class whose
+        ancestor's metaclass registers is registered too, whatever it declares
+        itself.
+        """
+
+        return self.some_ancestor(declaration, self.registers_remembered)
+
+    def stores_subclasses(self, declaration: ClassDeclaration) -> bool:
+        """Whether its own `__init_subclass__`, or one it inherits, stores each subclass."""
+
+        return declaration.registry_facts.stores_subclass or self.some_ancestor(
+            declaration, lambda found: found.registry_facts.stores_subclass
+        )
+
+    def registers_remembered(self, declaration: ClassDeclaration) -> bool:
+        if declaration.symbol not in self.registering:
+            self.registering[declaration.symbol] = self.registers(declaration)
+        return self.registering[declaration.symbol]
+
+    def some_ancestor(
+        self,
+        declaration: ClassDeclaration,
+        holds: Callable[[ClassDeclaration], bool],
+    ) -> bool:
+        """Whether `holds` is true of an ancestor.
+
+        Bases resolve as `declaration_for` resolves them; an ancestor that
+        cannot be read is not known to hold. An ancestry left unread past
+        `MAX_ANCESTORS` is not known not to hold, so it counts as holding:
+        the answer that refuses a move.
+        """
+
+        pending = [
+            (base, declaration.module_name)
+            for base in declaration.registry_facts.base_references
+        ]
+        seen: set[str] = set()
+        for _step in range(self.MAX_ANCESTORS):
+            if not pending:
+                break
+            reference, module_name = pending.pop()
+            found = self.declaration_for(reference, module_name)
+            if found is None or found.symbol in seen:
+                continue
+            seen.add(found.symbol)
+            if holds(found):
+                return True
+            pending.extend(
+                (base, found.module_name)
+                for base in found.registry_facts.base_references
+            )
+        return bool(pending)
 
     def declaration_for(
         self, reference: CompactNominalReference, module_name: str
@@ -7985,7 +8102,7 @@ class RegisteringMetaclassAuthority(Generic[ClassDeclarationT]):
 
     def resolved(self) -> dict[str, ClassDeclarationT]:
         return {
-            symbol: declaration.with_registering_metaclass(self.registers(declaration))
+            symbol: declaration.with_registering_metaclass(self)
             for symbol, declaration in self.scanned.items()
         }
 
@@ -8394,7 +8511,7 @@ class ClassFamilyIndexBuilder:
         return ClassFamilyIndex(
             classes_by_symbol={
                 symbol: (
-                    record.with_registering_metaclass(authority.registers(record))
+                    record.with_registering_metaclass(authority)
                     if record.module_name in rebuilt
                     else record
                 )

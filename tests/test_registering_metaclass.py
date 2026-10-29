@@ -82,6 +82,117 @@ def test_the_compact_index_resolves_each_metaclass_and_reads_it() -> None:
     assert index.classes_by_symbol["pkg.registry_family.Family"].is_registration_authority
 
 
+def test_a_subclass_of_a_registering_family_is_an_authority_by_inheritance() -> None:
+    """Python creates a subclass with its base's metaclass; a name is no evidence (#139)."""
+
+    source = (
+        "from metaclass_registry import AutoRegisterMeta\n\n\n"
+        "class Root(metaclass=AutoRegisterMeta):\n    pass\n\n\n"
+        "class Member(Root):\n    pass\n\n\n"
+        "class Grandchild(Member):\n    pass\n\n\n"
+        "class StringRegistryConstant:\n    value: str\n"
+    )
+    path = Path("pkg/inherited.py")
+    module = ParsedModule(
+        path=path,
+        module_name="pkg.inherited",
+        module=ast.parse(source, filename=str(path)),
+        source=source,
+    )
+    index = build_compact_class_family_index(
+        CompactModuleClassProjectionFamily.collect_modules((module,))
+    )
+    classes = index.classes_by_symbol
+    assert {
+        name: classes[f"pkg.inherited.{name}"].is_registration_authority
+        for name in ("Root", "Member", "Grandchild", "StringRegistryConstant")
+    } == {"Root": True, "Member": True, "Grandchild": True, "StringRegistryConstant": False}
+    # Only the root declares the metaclass; the subclasses inherit it.
+    assert classes["pkg.inherited.Root"].declares_autoregister_meta
+    assert not classes["pkg.inherited.Member"].declares_autoregister_meta
+
+
+def test_a_keyed_family_key_type_is_read_from_a_registry_family_base_only() -> None:
+    """`Family[Key]` names the key only when `Family` is a registry family, whatever its name."""
+
+    source = (
+        "from enum import Enum\n"
+        "from typing import Generic, TypeVar\n\n"
+        "K = TypeVar('K')\n\n\n"
+        "class StoresMeta(type):\n"
+        "    def __init__(cls, name, bases, namespace):\n"
+        "        super().__init__(name, bases, namespace)\n"
+        "        cls.__registry__[namespace.get('key')] = cls\n\n\n"
+        "class Family(Generic[K], metaclass=StoresMeta):\n    pass\n\n\n"
+        "class KeyedNominalFamily(Generic[K]):\n    pass\n\n\n"
+        "class Mode(Enum):\n    ALPHA = 1\n\n\n"
+        "class Keyed(Family[Mode]):\n    registry_key_attr = 'mode'\n\n\n"
+        "class NamedLikeOne(KeyedNominalFamily[Mode]):\n    registry_key_attr = 'mode'\n"
+    )
+    path = Path("pkg/keyed.py")
+    module = ParsedModule(
+        path=path,
+        module_name="pkg.keyed",
+        module=ast.parse(source, filename=str(path)),
+        source=source,
+    )
+    classes = build_compact_class_family_index(
+        CompactModuleClassProjectionFamily.collect_modules((module,))
+    ).classes_by_symbol
+    assert {
+        name: classes[f"pkg.keyed.{name}"].keyed_family_key_type_name
+        for name in ("Keyed", "NamedLikeOne", "Family")
+    } == {"Keyed": "Mode", "NamedLikeOne": None, "Family": None}
+
+
+def test_a_subclass_storing_init_subclass_makes_a_registry_family() -> None:
+    """An `__init_subclass__` that stores `cls` in a mapping registers each subclass (#144)."""
+
+    source = (
+        "from typing import Generic, TypeVar\n\n"
+        "K = TypeVar('K')\n\n\n"
+        "class Stores:\n"
+        "    _registry = {}\n\n"
+        "    def __init_subclass__(cls, **kwargs):\n"
+        "        super().__init_subclass__(**kwargs)\n"
+        "        cls._registry[cls.__name__] = cls\n\n\n"
+        "class Family(Stores, Generic[K]):\n    pass\n\n\n"
+        "class Declared(Family[str]):\n"
+        "    __registry__ = {}\n"
+        "    __registry_key__ = 'kind'\n\n\n"
+        "class Keyed(Family[str]):\n    pass\n\n\n"
+        "class Counts:\n"
+        "    seen = []\n\n"
+        "    def __init_subclass__(cls, **kwargs):\n"
+        "        super().__init_subclass__(**kwargs)\n"
+        "        Counts.seen.append(cls.__name__)\n\n\n"
+        "class Counted(Counts):\n    pass\n"
+    )
+    path = Path("pkg/hooked.py")
+    module = ParsedModule(
+        path=path,
+        module_name="pkg.hooked",
+        module=ast.parse(source, filename=str(path)),
+        source=source,
+    )
+    classes = build_compact_class_family_index(
+        CompactModuleClassProjectionFamily.collect_modules((module,))
+    ).classes_by_symbol
+    assert {
+        name: classes[f"pkg.hooked.{name}"].is_registration_authority
+        for name in ("Stores", "Family", "Declared", "Keyed", "Counts", "Counted")
+    } == {
+        "Stores": True,
+        "Family": True,
+        "Declared": True,
+        "Keyed": True,
+        "Counts": False,
+        "Counted": False,
+    }
+    assert classes["pkg.hooked.Keyed"].keyed_family_key_type_name == "str"
+    assert not classes["pkg.hooked.Family"].declares_autoregister_meta
+
+
 def test_the_source_index_gives_the_same_answer() -> None:
     index = build_class_family_index([_module()])
 

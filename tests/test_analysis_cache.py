@@ -2969,7 +2969,10 @@ def test_class_candidate_anchor_witnesses_follow_reported_seed_locations() -> No
                 direct_member_declarations=class_index_module._compact_class_member_declarations(
                     ast.parse("class Root: registry_key_attr = 'kind'").body[0]
                 ),
-                keyed_family_key_type_name="Kind",
+                base_references=(
+                    class_index_module.UnboundNominalReference(("Family",)),
+                ),
+                base_key_type_names=("Kind",),
             ),
         ),
     )
@@ -4179,6 +4182,17 @@ def test_compact_keyed_axis_projection_is_the_only_global_candidate_authority(
     package_root = tmp_path / "pkg"
     package_root.mkdir()
     (package_root / "specs.py").write_text(
+        "from typing import Generic, TypeVar\n"
+        "\n"
+        "KeyT = TypeVar('KeyT')\n"
+        "\n"
+        "class KeyedNominalFamily(Generic[KeyT]):\n"
+        "    def __init_subclass__(cls, **kwargs):\n"
+        "        super().__init_subclass__(**kwargs)\n"
+        "        key = cls.__dict__.get(getattr(cls, 'registry_key_attr', ''))\n"
+        "        if key is not None:\n"
+        "            cls._registry[key] = cls\n"
+        "\n"
         "class ModeConfig:\n"
         "    pass\n"
         "\n"
@@ -4200,7 +4214,7 @@ def test_compact_keyed_axis_projection_is_the_only_global_candidate_authority(
         newline="",
     )
     (package_root / "runtime.py").write_text(
-        "from .specs import Mode, KeyedNominalFamily\n"
+        "from specs import Mode, KeyedNominalFamily\n"
         "\n"
         "class ModeRuntimePolicy(KeyedNominalFamily[Mode]):\n"
         "    registry_key_attr = 'mode'\n"
@@ -4530,12 +4544,22 @@ def test_compact_keyed_registry_axis_facts_preserve_axis_semantics(
     (package_root / "family.py").write_text(
         "from abc import ABC\n"
         "from enum import Enum\n"
+        "from typing import Generic, TypeVar\n"
+        "\n"
+        "KeyT = TypeVar('KeyT')\n"
         "\n"
         "class Kind(Enum):\n"
         "    ALPHA = 'alpha'\n"
         "    BETA = 'beta'\n"
         "\n"
-        "class Handler(ABC):\n"
+        "class KeyedFamily(Generic[KeyT]):\n"
+        "    def __init_subclass__(cls, **kwargs):\n"
+        "        super().__init_subclass__(**kwargs)\n"
+        "        key = cls.__dict__.get(getattr(cls, 'registry_key_attr', ''))\n"
+        "        if key is not None:\n"
+        "            cls._registry[key] = cls\n"
+        "\n"
+        "class Handler(KeyedFamily[Kind], ABC):\n"
         "    registry_key_attr = 'kind'\n"
         "    @classmethod\n"
         "    def for_kind(cls, kind): return cls._registry[kind]\n"
@@ -4563,19 +4587,8 @@ def test_compact_keyed_registry_axis_facts_preserve_axis_semantics(
     )
     modules = parse_python_modules(package_root, use_parse_cache=False)
     config = DetectorConfig()
-    projections = tuple(
-        replace(
-            projection,
-            classes=tuple(
-                (
-                    replace(indexed_class, keyed_family_key_type_name="Kind")
-                    if indexed_class.simple_name == "Handler"
-                    else indexed_class
-                )
-                for indexed_class in projection.classes
-            ),
-        )
-        for projection in systemic_detectors.NonInjectiveTypeRegistryDetector.compact_module_projections(
+    projections = (
+        systemic_detectors.NonInjectiveTypeRegistryDetector.compact_module_projections(
             modules
         )
     )
@@ -4595,7 +4608,14 @@ def test_compact_keyed_registry_axis_facts_preserve_axis_semantics(
     assert fact.consumer_symbols == ("first", "second")
     assert fact.missing_maturity_signals == ("registered_case_axis",)
     assert fact.injectivity_proof.duplicate_key_names == ("Kind.ALPHA",)
-    assert fact.injectivity_proof.missing_type_names == ("MissingKeyHandler",)
+    # `KeyedFamily.__init_subclass__` runs at each member's creation and could
+    # set `kind`, so no member's MRO is closed and `MissingKeyHandler`'s key is
+    # unresolved, not proved missing. The duplicate alone disproves injectivity.
+    assert fact.injectivity_proof.missing_type_names == ()
+    assert fact.injectivity_proof.registered_type_names == (
+        "AliasAlphaHandler",
+        "AlphaHandler",
+    )
 
 
 def test_compact_registry_projection_candidates_preserve_projection_semantics(
@@ -4617,7 +4637,12 @@ def test_compact_registry_projection_candidates_preserve_projection_semantics(
         "from enum import Enum, auto\n"
         "from typing import Generic, TypeVar\n"
         "KeyT = TypeVar('KeyT')\n"
-        "class AutoRegisterByClassVar: pass\n"
+        "class AutoRegisterByClassVar:\n"
+        "    def __init_subclass__(cls, **kwargs):\n"
+        "        super().__init_subclass__(**kwargs)\n"
+        "        key = cls.__dict__.get(getattr(cls, 'registry_key_attr', ''))\n"
+        "        if key is not None:\n"
+        "            cls._registry[key] = cls\n"
         "class KeyedNominalFamily(AutoRegisterByClassVar, Generic[KeyT]): pass\n"
         "class Mode(Enum):\n"
         "    ALPHA = auto()\n"
@@ -4717,6 +4742,16 @@ def test_keyed_registry_detectors_share_one_compact_repository_context(
     package_root.mkdir()
     (package_root / "family.py").write_text(
         "from abc import ABC\n"
+        "from typing import Generic, TypeVar\n"
+        "\n"
+        "KeyT = TypeVar('KeyT')\n"
+        "\n"
+        "class KeyedNominalFamily(Generic[KeyT]):\n"
+        "    def __init_subclass__(cls, **kwargs):\n"
+        "        super().__init_subclass__(**kwargs)\n"
+        "        key = cls.__dict__.get(getattr(cls, 'registry_key_attr', ''))\n"
+        "        if key is not None:\n"
+        "            cls._registry[key] = cls\n"
         "\n"
         "class Handler(KeyedNominalFamily[str], ABC):\n"
         "    registry_key_attr = 'kind'\n"
@@ -4952,6 +4987,139 @@ def test_bounded_multi_family_joins_reuse_the_single_class_anchor(
 
     assert calls == 1
     assert set(findings) == set(detector_types)
+
+
+def test_repeated_keyed_family_roots_are_found_by_shape_not_by_base_name(
+    tmp_path: Path,
+) -> None:
+    package_root = tmp_path / "pkg"
+    package_root.mkdir()
+    for module_name, class_name, bases in (
+        ("alpha", "AlphaPolicy", "KeyedShell, ABC"),
+        ("beta", "BetaPolicy", "KeyedShell"),
+        ("epsilon", "EpsilonPolicy", "KeyedShell"),
+        ("gamma", "GammaPolicy", "ABC"),
+        ("delta", "DeltaPolicy", "ABC"),
+        ("zeta", "ZetaPolicy", "ABC"),
+    ):
+        (package_root / f"{module_name}.py").write_text(
+            "from abc import ABC\n"
+            "from pkg.shell import KeyedShell\n"
+            "\n"
+            f"class {class_name}({bases}):\n"
+            f"    registry_key_attr = '{module_name}'\n"
+            "    _registry = {}\n"
+            "    @classmethod\n"
+            f"    def for_{module_name}(cls, key):\n"
+            "        try:\n"
+            "            return cls._registry[key]\n"
+            "        except KeyError as error:\n"
+            "            raise ValueError(key) from error\n",
+            encoding="utf-8",
+            newline="",
+        )
+    (package_root / "shell.py").write_text("class KeyedShell:\n    pass\n")
+    modules = parse_python_modules(package_root, use_parse_cache=False)
+    projections = (
+        systemic_detectors.RepeatedKeyedFamilyDetector.compact_module_projections(
+            modules
+        )
+    )
+
+    candidates = systemic_detectors.RepeatedKeyedFamilyDetector._candidates_from_compact_projections(
+        projections,
+        DetectorConfig(),
+    )
+
+    # Grouped by the bases the roots declare outside the standard library:
+    # `ABC` is no family, so three roots over `KeyedShell` and three over nothing.
+    assert {
+        candidate.family_base_name: tuple(root.class_name for root in candidate.roots)
+        for candidate in candidates
+    } == {
+        "KeyedShell": ("AlphaPolicy", "BetaPolicy", "EpsilonPolicy"),
+        "": ("DeltaPolicy", "GammaPolicy", "ZetaPolicy"),
+    }
+
+
+def _keyed_family_root_candidates(
+    scan_root: Path, package: str, roots: tuple[tuple[str, str, str], ...]
+) -> list[tuple[str, tuple[str, ...]]]:
+    package_root = scan_root / package
+    package_root.mkdir()
+    for module_name, class_name, base_import in roots:
+        (package_root / f"{module_name}.py").write_text(
+            f"{base_import}\n"
+            "\n"
+            f"class {class_name}(Base):\n"
+            f"    registry_key_attr = '{module_name}'\n"
+            "    _registry = {}\n"
+            "    @classmethod\n"
+            f"    def for_{module_name}(cls, key):\n"
+            "        try:\n"
+            "            return cls._registry[key]\n"
+            "        except KeyError as error:\n"
+            "            raise ValueError(key) from error\n",
+            encoding="utf-8",
+            newline="",
+        )
+    detector = systemic_detectors.RepeatedKeyedFamilyDetector
+    candidates = detector._candidates_from_compact_projections(
+        detector.compact_module_projections(
+            parse_python_modules(scan_root, use_parse_cache=False)
+        ),
+        DetectorConfig(),
+    )
+    return sorted(
+        (
+            candidate.family_base_name,
+            tuple(root.class_name for root in candidate.roots),
+        )
+        for candidate in candidates
+    )
+
+
+def test_repeated_keyed_family_roots_group_by_base_symbol_not_base_name(
+    tmp_path: Path,
+) -> None:
+    """Two unrelated classes named `Base` are two families, both shown as `Base`."""
+
+    (tmp_path / "pkg").mkdir()
+    for module_name in ("one", "two"):
+        (tmp_path / "pkg" / f"{module_name}.py").write_text("class Base:\n    pass\n")
+    candidates = _keyed_family_root_candidates(
+        tmp_path,
+        "roots",
+        tuple(
+            (f"{origin}_{index}", f"{origin.title()}{index}Policy", f"from pkg.{origin} import Base")
+            for origin in ("one", "two")
+            for index in range(3)
+        ),
+    )
+
+    assert candidates == [
+        ("Base", ("One0Policy", "One1Policy", "One2Policy")),
+        ("Base", ("Two0Policy", "Two1Policy", "Two2Policy")),
+    ]
+
+
+def test_a_scanned_module_named_like_the_standard_library_is_a_family_base(
+    tmp_path: Path,
+) -> None:
+    """A scanned top-level `code` module is the project's, not the standard library's."""
+
+    (tmp_path / "code").mkdir()
+    (tmp_path / "code" / "__init__.py").write_text("class Base:\n    pass\n")
+    candidates = _keyed_family_root_candidates(
+        tmp_path,
+        "roots",
+        tuple(
+            (f"root_{index}", f"Root{index}Policy", "from code import Base")
+            for index in range(3)
+        ),
+    )
+
+    assert candidates == [("Base", ("Root0Policy", "Root1Policy", "Root2Policy"))]
 
 
 def test_compact_repeated_keyed_family_preserves_grouping_semantics(
