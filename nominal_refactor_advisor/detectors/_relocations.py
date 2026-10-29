@@ -23,6 +23,7 @@ from ..class_index import (
     CompactModuleClassProjectionFamily,
 )
 
+from ..declared_receivers import DeclaredReceiverTyping
 from ..models import RefactorFinding, SourceLocation
 from ..patterns import PatternId
 from ..relocation_observations import (
@@ -168,6 +169,7 @@ class RelocationIndex:
     families: MemberFamilies
     branch_reads: dict[str, list[BranchRead]]
     lambda_calls: dict[str, list[LambdaCall]]
+    typing: DeclaredReceiverTyping
 
     def reaching(
         self, uses: Iterable[UseT], sites: Sequence[RestatingSite]
@@ -189,7 +191,7 @@ class RelocationIndex:
         counted: list[UseT] = []
         unresolved: list[UseT] = []
         for use in uses:
-            match use.receiver.class_symbols():
+            match use.receiver.resolved(self.typing).class_symbols():
                 case (symbol,) if self.families.creates_classes(symbol):
                     unresolved.append(use)
                 case (symbol,) if symbol == sites[0].detail[0]:
@@ -214,9 +216,10 @@ def _relocation_index(projections_by_family: CompactProjectionGroups) -> Relocat
             reads[read.member].append(read)
         for call in module.lambda_calls:
             calls[call.member].append(call)
+    class_index = CompactClassFamilyIndex.from_projection_groups(projections_by_family)
     return RelocationIndex(
         MemberFamilies(
-            CompactClassFamilyIndex.from_projection_groups(projections_by_family),
+            class_index,
             {
                 shape.symbol: shape
                 for module in ClassShapeFamily.modules_in(projections_by_family)
@@ -225,6 +228,10 @@ def _relocation_index(projections_by_family: CompactProjectionGroups) -> Relocat
         ),
         dict(reads),
         dict(calls),
+        DeclaredReceiverTyping.from_projections(
+            CompactModuleClassProjectionFamily.modules_in(projections_by_family),
+            class_index,
+        ),
     )
 
 

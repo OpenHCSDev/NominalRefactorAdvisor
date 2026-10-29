@@ -3308,6 +3308,7 @@ def test_native_class_header_core_matches_cached_minimal_projection(
         "from __future__ import annotations\n"
         "from support import Parent as ImportedParent\n"
         "from .exports import *\n"
+        "from typing import final\n"
         "__all__ = ('Child',)\n"
         "\n"
         "@final\n"

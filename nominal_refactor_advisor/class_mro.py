@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from abc import ABC, ABCMeta, abstractmethod
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import (
@@ -59,11 +59,20 @@ class DeclarationMroType(ABCMeta, Generic[MroDeclarationT]):
 
     @property
     def declarations(self) -> tuple[MroDeclarationT, ...]:
-        return tuple(
-            owner.declaration
-            for owner in self.__mro__
-            if isinstance(owner, DeclarationMroType)
-        )
+        return self.declarations_before(lambda entry: False)
+
+    def declarations_before(
+        self, stops: Callable[[type], bool]
+    ) -> tuple[MroDeclarationT, ...]:
+        """The declarations along this MRO up to the first entry `stops` marks."""
+
+        found: list[MroDeclarationT] = []
+        for owner in self.__mro__:
+            if stops(owner):
+                break
+            if isinstance(owner, DeclarationMroType):
+                found.append(owner.declaration)
+        return tuple(found)
 
 
 @dataclass(frozen=True)
@@ -140,14 +149,74 @@ class InconsistentHierarchy(HierarchyViolation):
     """C3 linearization finds no consistent order."""
 
 
+class MroBasePolicy(ABC):
+    """What a hierarchy needs proved before Python's C3 orders it."""
+
+    @abstractmethod
+    def creation_is_static(self, declaration: CompactIndexedClass) -> bool:
+        raise NotImplementedError
+
+    @abstractmethod
+    def foreign_base(self, qualified_name: str) -> type | None:
+        """The type standing for a base the scan does not declare, or None when it has none."""
+        raise NotImplementedError
+
+    def is_opaque(self, entry: type) -> bool:
+        """Whether an MRO entry stands for a base whose members nothing declares."""
+        return False
+
+
+class RuntimeProofBases(MroBasePolicy):
+    """The MRO Python builds at runtime: class creation runs no code, every base is known."""
+
+    def creation_is_static(self, declaration: CompactIndexedClass) -> bool:
+        return (
+            declaration.mro_bases_are_static
+            and not declaration.class_keyword_names
+            and declaration.class_decorators_are_promotion_safe
+            and not declaration.has_class_creation_hook
+        )
+
+    def foreign_base(self, qualified_name: str) -> type | None:
+        native = NativeMroBase.for_qualified_name(qualified_name)
+        return None if native is None else native.python_type
+
+
+@dataclass
+class DeclaredBases(MroBasePolicy):
+    """The MRO the declarations state, for reading declared member types.
+
+    Class creation hooks, metaclasses and subscripted bases (`Base[T]`) do not
+    change which class declares a member, so they do not open the order. A
+    base the scan does not declare stands in as an opaque placeholder: its
+    members are unknown, so a lookup that reaches it learns nothing past it.
+    """
+
+    _placeholders: dict[str, type] = field(default_factory=dict)
+
+    def creation_is_static(self, declaration: CompactIndexedClass) -> bool:
+        return True
+
+    def foreign_base(self, qualified_name: str) -> type | None:
+        native = NativeMroBase.for_qualified_name(qualified_name)
+        if native is not None:
+            return native.python_type
+        return self._placeholders.setdefault(qualified_name, type(qualified_name, (), {}))
+
+    def is_opaque(self, entry: type) -> bool:
+        return self._placeholders.get(entry.__name__) is entry
+
+
 @dataclass(frozen=True)
 class ClassMroAuthority:
     """Lazily derive each required hierarchy from the authoritative class graph."""
 
     classes_by_symbol: Mapping[str, CompactIndexedClass]
+    bases: MroBasePolicy = field(default_factory=RuntimeProofBases)
     _resolutions: dict[str, ClassMroResolution] = field(
         default_factory=dict, init=False, repr=False, compare=False
     )
+
 
     def resolve(self, symbol: str) -> ClassMroResolution:
         return self._resolve(symbol, frozenset())
@@ -180,7 +249,7 @@ class ClassMroAuthority:
             if declaration is None:
                 break
             prefix.append(declaration)
-            if not self._creation_is_static(declaration):
+            if not self.bases.creation_is_static(declaration):
                 break
             if not declaration.base_references_are_complete:
                 break
@@ -192,26 +261,18 @@ class ClassMroAuthority:
             symbol = declaration.resolved_base_symbols[0]
         return tuple(prefix)
 
-    @staticmethod
-    def _creation_is_static(declaration: CompactIndexedClass) -> bool:
-        return (
-            declaration.mro_bases_are_static
-            and not declaration.class_keyword_names
-            and declaration.class_decorators_are_promotion_safe
-            and not declaration.has_class_creation_hook
-        )
 
     def _derive(self, symbol: str, pending: frozenset[str]) -> ClassMroResolution:
         declaration = self.classes_by_symbol.get(symbol)
         if declaration is None:
             return MissingDeclaration(symbol)
-        if not self._creation_is_static(declaration):
+        if not self.bases.creation_is_static(declaration):
             return DynamicClassDeclaration(symbol)
         native_bases = tuple(
             (
                 None
                 if reference.qualified_name in self.classes_by_symbol
-                else NativeMroBase.for_qualified_name(reference.qualified_name)
+                else self.bases.foreign_base(reference.qualified_name)
             )
             for reference in declaration.base_references
         )
@@ -227,7 +288,7 @@ class ClassMroAuthority:
         bases = []
         for native_base in native_bases:
             if native_base is not None:
-                bases.append(native_base.python_type)
+                bases.append(native_base)
                 continue
             base_symbol = next(source_bases)
             resolution = self._resolve(base_symbol, pending)

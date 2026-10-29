@@ -20,13 +20,16 @@ from .annotation_semantics import TypeWrapper
 from .ast_field_decoders import variadic_parameters
 from .ast_projection import ExpressionReference
 from .ast_tools import ParsedModule
-from .class_index import ModuleNominalBindingAuthority, ModuleNominalBindingSnapshot
-from .lexical_bindings import LEXICAL_SCOPE_BINDING_AUTHORITY
+from .class_index import (
+    ABSTRACT_METHOD_DECORATOR,
+    PROPERTY_DECORATORS,
+    ModuleNominalBindingAuthority,
+    ModuleNominalBindingSnapshot,
+)
 from .observation_families import ShapeFamily
 from .probe_owner import (
     ProbeOwner,
     ProbeOwnerResolver,
-    ResolvedProbeOwner,
     UnresolvedProbeOwner,
 )
 from .restated_fact_observations import (
@@ -36,10 +39,6 @@ from .restated_fact_observations import (
 from .observation_shapes import RestatingSite
 
 DEFINITION_TYPES = (ast.FunctionDef, ast.AsyncFunctionDef)
-PROPERTY_DECORATORS = frozenset(
-    {"property", "cached_property", "functools.cached_property"}
-)
-ABSTRACT_DECORATORS = frozenset({"abstractmethod", "abc.abstractmethod"})
 
 
 
@@ -103,13 +102,18 @@ def scoped_classes(module: ast.Module) -> Iterator[tuple[str, ast.ClassDef]]:
                 yield f"{prefix}{nested.name}", nested
 
 
-def decorator_names(
-    node: ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef,
-) -> frozenset[str]:
-    return frozenset(
-        ast.unparse(decorator.func if isinstance(decorator, ast.Call) else decorator)
-        for decorator in node.decorator_list
+def bound_classes(
+    parsed_module: ParsedModule,
+) -> Iterator[tuple[str, ast.ClassDef, ModuleNominalBindingSnapshot]]:
+    """Every class in the module with its dotted name and the module bindings its
+    body's decorators resolve through, taken in one pass."""
+
+    classes = tuple(scoped_classes(parsed_module.module))
+    snapshots = ModuleNominalBindingAuthority(parsed_module).snapshots_before(
+        node.lineno for _qualname, node in classes
     )
+    for qualname, node in classes:
+        yield qualname, node, snapshots[node.lineno]
 
 
 def statements_after_docstring(body: list[ast.stmt]) -> list[ast.stmt]:
@@ -128,10 +132,12 @@ def takes_only_receiver(node: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
     )
 
 
-def declares_abstract(node: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
+def declares_abstract(
+    node: ast.FunctionDef | ast.AsyncFunctionDef, bindings: ModuleNominalBindingSnapshot
+) -> bool:
     """An abstract declaration asks the question; it answers nothing."""
 
-    if decorator_names(node) & ABSTRACT_DECORATORS:
+    if bindings.decorated_by(node, (ABSTRACT_METHOD_DECORATOR,)):
         return True
     match statements_after_docstring(node.body):
         case [] | [ast.Pass()] | [ast.Expr(value=ast.Constant(value=builtins.Ellipsis))]:
@@ -244,6 +250,7 @@ class ClassBodyReading:
     answer nothing; every other declaration is computed.
     """
 
+    bindings: ModuleNominalBindingSnapshot
     answers: list[ConstantAnswer]
     computed: set[str]
     declared: set[str]
@@ -251,8 +258,10 @@ class ClassBodyReading:
     arities: list[TupleArity]
 
     @classmethod
-    def of(cls, node: ast.ClassDef) -> ClassBodyReading:
-        reading = cls([], set(), set(), [], [])
+    def of(
+        cls, node: ast.ClassDef, bindings: ModuleNominalBindingSnapshot
+    ) -> ClassBodyReading:
+        reading = cls(bindings, [], set(), set(), [], [])
         for statement in node.body:
             reading.read(statement)
         return reading
@@ -287,7 +296,7 @@ class ClassBodyReading:
         arities = absence_tuple_arities(statement)
         if arities:
             self.arities.append(TupleArity(name, arities, statement.lineno))
-        if declares_abstract(statement):
+        if declares_abstract(statement, self.bindings):
             return
         parameters = [
             argument.arg
@@ -324,9 +333,13 @@ class ClassShape:
 
     @classmethod
     def of(
-        cls, parsed_module: ParsedModule, qualname: str, node: ast.ClassDef
+        cls,
+        parsed_module: ParsedModule,
+        qualname: str,
+        node: ast.ClassDef,
+        bindings: ModuleNominalBindingSnapshot,
     ) -> ClassShape:
-        reading = ClassBodyReading.of(node)
+        reading = ClassBodyReading.of(node, bindings)
         return cls(
             symbol=f"{parsed_module.module_name}.{qualname}",
             declared=frozenset(reading.declared),
@@ -351,8 +364,8 @@ class ClassShapeFamily(ShapeFamily[ClassShapesModule]):
             ClassShapesModule(
                 parsed_module.module_name,
                 tuple(
-                    ClassShape.of(parsed_module, qualname, node)
-                    for qualname, node in scoped_classes(parsed_module.module)
+                    ClassShape.of(parsed_module, qualname, node, bindings)
+                    for qualname, node, bindings in bound_classes(parsed_module)
                 ),
             )
         ]
@@ -365,12 +378,11 @@ class ClassShapeFamily(ShapeFamily[ClassShapesModule]):
 class MemberUse:
     """`x.member` used by a consumer: where, and what `x` is declared to be.
 
-    `receiver` is the class `x` is declared as, a `ResolvedProbeOwner` keyed
-    the way the compact class index resolves classes: the enclosing class for
-    a method's first parameter, a parameter's annotation otherwise
-    (`ProbeOwnerResolver.annotation_owner`). Anything else is an
-    `UnresolvedProbeOwner` saying why: nothing declares the name, the
-    parameter declares no annotation, or the function rebinds it.
+    `receiver` is `x` as its module declares it (`DeclaredPathProbeOwner`):
+    a parameter's annotation, the method's own class, a member's annotation or
+    a declared return, a declared collection's element, or a local bound from
+    one. The scan's declarations resolve it to the class it is declared as
+    (`ProbeOwner.resolved`); anything else says why it stays unresolved.
     """
 
     file_path: str
@@ -401,62 +413,6 @@ class ConsumerShapesModule:
     module_name: str
     branch_reads: tuple[BranchRead, ...]
     lambda_calls: tuple[LambdaCall, ...]
-
-
-def declared_receivers(
-    parsed_module: ParsedModule,
-) -> dict[int, dict[str, ProbeOwner]]:
-    """For each node of a function's own body, what its parameters are declared as.
-
-    A method's first parameter (not under `staticmethod`) is its class; an
-    annotated parameter is what its annotation resolves to
-    (`ProbeOwnerResolver.annotation_owner`); an unannotated one is unresolved,
-    since its type is only the type checker's to infer. A parameter the
-    function's own scope rebinds (`LexicalScopeBindingAuthority.bound_names`:
-    assignments, `except ... as`, `case ... as` and the other captures, never a
-    nested function's parameters) is unresolved: the value read may no longer
-    be the one declared.
-    """
-
-    resolver = ProbeOwnerResolver(
-        parsed_module.file_path, ModuleNominalBindingAuthority(parsed_module)
-    )
-    classes = {qualname for qualname, _node in scoped_classes(parsed_module.module)}
-    found: dict[int, dict[str, ProbeOwner]] = {}
-    for prefix, scope in walk_scopes(parsed_module.module):
-        if not isinstance(scope, DEFINITION_TYPES):
-            continue
-        rebound = LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(scope.body)
-        parameters = [*scope.args.posonlyargs, *scope.args.args, *scope.args.kwonlyargs]
-        owner = prefix.rstrip(".").rpartition(".")[0]
-        declared: dict[str, ProbeOwner] = {}
-        if (
-            owner in classes
-            and parameters
-            and staticmethod.__name__ not in decorator_names(scope)
-        ):
-            declared[parameters[0].arg] = ResolvedProbeOwner(
-                f"{parsed_module.module_name}.{owner}"
-            )
-        for parameter in parameters:
-            declared.setdefault(
-                parameter.arg,
-                UnresolvedProbeOwner(f"`{parameter.arg}` declares no annotation")
-                if parameter.annotation is None
-                else resolver.annotation_owner(parameter.annotation),
-            )
-        declared = {
-            name: (
-                UnresolvedProbeOwner(f"`{name}` is rebound in its function")
-                if name in rebound
-                else receiver
-            )
-            for name, receiver in declared.items()
-        }
-        for statement in statements_of(scope):
-            for node in scope_nodes(statement):
-                found[id(node)] = declared
-    return found
 
 
 def branch_tests(node: ast.AST) -> Iterator[ast.expr]:
@@ -509,29 +465,24 @@ class ConsumerShapeFamily(ShapeFamily[ConsumerShapesModule]):
     item_type = ConsumerShapesModule
 
     @staticmethod
-    def receiver(node: ast.expr, declared: dict[str, ProbeOwner]) -> ProbeOwner:
-        """What the object `node.member` or `node.member()` is read from is declared as."""
+    def receiver(node: ast.expr, resolver: ProbeOwnerResolver) -> ProbeOwner:
+        """The object `node.member` or `node.member()` is read from, as its module declares it."""
 
         match node:
-            case ast.Attribute(value=ast.Name(id=name)) | ast.Call(
-                func=ast.Attribute(value=ast.Name(id=name))
+            case ast.Attribute(value=receiver) | ast.Call(
+                func=ast.Attribute(value=receiver)
             ):
-                return declared.get(
-                    name, UnresolvedProbeOwner(f"nothing declares `{name}`")
-                )
-        return UnresolvedProbeOwner(
-            f"`{ast.unparse(node)}` is not read off a declared name"
-        )
+                return resolver.owner(receiver)
+        return UnresolvedProbeOwner(f"`{ast.unparse(node)}` reads no member")
 
     @classmethod
     def collect(cls, parsed_module: ParsedModule) -> list[ConsumerShapesModule]:
         symbols = enclosing_symbols(parsed_module.module)
-        receivers = declared_receivers(parsed_module)
+        resolver = ProbeOwnerResolver.of(parsed_module)
         reads = []
         calls = []
         for node in ast.walk(parsed_module.module):
             symbol = symbols.get(id(node), "<module>")
-            declared = receivers.get(id(node), {})
             for test in branch_tests(node):
                 for read, member, called in tested_reads(test):
                     reads.append(
@@ -540,7 +491,7 @@ class ConsumerShapeFamily(ShapeFamily[ConsumerShapesModule]):
                             read.lineno,
                             symbol,
                             member,
-                            cls.receiver(read, declared),
+                            cls.receiver(read, resolver),
                             called,
                         )
                     )
@@ -557,7 +508,7 @@ class ConsumerShapeFamily(ShapeFamily[ConsumerShapesModule]):
                                 node.lineno,
                                 symbol,
                                 member,
-                                cls.receiver(node, declared),
+                                cls.receiver(node, resolver),
                                 lambdas,
                             )
                         )
@@ -576,8 +527,8 @@ class ConstantAnswerSiteFamily(RestatingSiteFamily[RestatingSiteModule]):
 
     @classmethod
     def sites(cls, parsed_module: ParsedModule) -> Iterator[RestatingSite]:
-        for qualname, node in scoped_classes(parsed_module.module):
-            for answer in ClassBodyReading.of(node).answers:
+        for qualname, node, bindings in bound_classes(parsed_module):
+            for answer in ClassBodyReading.of(node, bindings).answers:
                 yield RestatingSite(
                     parsed_module.file_path,
                     answer.lineno,
@@ -691,7 +642,9 @@ class OwnStateBoolSiteFamily(RestatingSiteFamily[RestatingSiteModule]):
                     case [first, *_]:
                         accessed = (
                             "property"
-                            if decorator_names(statement) & PROPERTY_DECORATORS
+                            if bindings.snapshot_before(node.lineno).decorated_by(
+                                statement, PROPERTY_DECORATORS
+                            )
                             else "method"
                         )
                         yield RestatingSite(
@@ -714,8 +667,8 @@ class LambdaFoldSiteFamily(RestatingSiteFamily[RestatingSiteModule]):
 
     @classmethod
     def sites(cls, parsed_module: ParsedModule) -> Iterator[RestatingSite]:
-        for qualname, node in scoped_classes(parsed_module.module):
-            for fold in ClassBodyReading.of(node).folds:
+        for qualname, node, bindings in bound_classes(parsed_module):
+            for fold in ClassBodyReading.of(node, bindings).folds:
                 yield RestatingSite(
                     parsed_module.file_path,
                     fold.lineno,

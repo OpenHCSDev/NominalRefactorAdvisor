@@ -293,15 +293,19 @@ def test_each_probe_names_its_line_and_the_declared_owner_or_why_not(tmp_path: P
         "owner unresolved: the type checker infers `Any`, not one class"
         in by_receiver["other"]
     )
+    # `make` declares its return, so the declarations type `made` as the same
+    # class the type checker infers, without asking it.
     assert (
-        f"owner `owner.Goal` ({tmp_path / 'owner.py'}:5) declares "
-        "`paused_at: int | None` (the type checker infers `owner.Goal`)"
+        f"{tmp_path / 'm.py'}:12 `made.paused_at is not None`, owner `owner.Goal` "
+        f"({tmp_path / 'owner.py'}:5) declares `paused_at: int | None`. "
     ) in by_receiver["made"]
 
 
+# A lambda declares no return type, so only the type checker types `made`
+# (mypy infers the lambda's body; it types an unannotated def's call as `Any`).
 _INFERRED_PROBE = (
     "from owner import Goal\n\n\n"
-    "def make() -> Goal:\n    return Goal()\n\n\n"
+    "make = lambda: Goal()\n\n\n"
     "def f() -> bool:\n    made = make()\n    return made.paused_at is None\n"
 )
 _GOAL = "class Goal:\n    paused_at: int | None = None\n"
@@ -314,6 +318,19 @@ def test_the_inferred_class_is_the_exact_one_when_two_share_a_name(tmp_path: Pat
         {"owner": _GOAL, "other_owner": _GOAL, "m": _INFERRED_PROBE},
     )
     assert "(the type checker infers `owner.Goal`)" in finding.summary
+
+
+def test_the_declared_class_is_the_exact_one_when_two_share_a_name(tmp_path: Path):
+    declared = _INFERRED_PROBE.replace(
+        "make = lambda: Goal()", "def make() -> Goal:\n    return Goal()"
+    )
+    (finding,) = _findings(
+        tmp_path,
+        ForeignAbsenceProbeDetector,
+        {"owner": _GOAL, "other_owner": _GOAL, "m": declared},
+    )
+    assert f"owner `owner.Goal` ({tmp_path / 'owner.py'}:1) declares" in finding.summary
+    assert "type checker" not in finding.summary
 
 
 def test_without_mypy_the_owner_says_so(tmp_path: Path, monkeypatch):

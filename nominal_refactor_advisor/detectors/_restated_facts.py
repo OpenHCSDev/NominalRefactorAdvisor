@@ -27,6 +27,7 @@ from ..class_index import (
     CompactModuleClassProjectionFamily,
 )
 from ..ast_tools import ParsedModuleSet
+from ..declared_receivers import DeclaredReceiverTyping
 from ..probe_owner import ProbeOwnerContext, ReceiverSpan, ScannedClasses
 from ..type_checker_session import (
     SourceFiles,
@@ -481,32 +482,29 @@ class ExactKeySetDetector(JoinedRestatedFactDetector[DeclaredRecords, RestatingS
 
 @dataclass(frozen=True)
 class ProbeOwnerQuery:
-    """The scan's classes, and the receivers that declare no annotation.
+    """The scan's classes and declared receiver typing, and the receivers it leaves undeclared.
 
     An owner resolves only to a scanned class, so its declaring file is a
     source of the type checker's build too.
     """
 
     classes: ScannedClasses
+    typing: DeclaredReceiverTyping
     spans: tuple[ReceiverSpan, ...]
 
     @classmethod
     def of(cls, projections_by_family: CompactProjectionGroups) -> ProbeOwnerQuery:
+        projections = CompactModuleClassProjectionFamily.modules_in(projections_by_family)
+        index = CompactClassFamilyIndex.from_projection_groups(projections_by_family)
+        typing = DeclaredReceiverTyping.from_projections(projections, index)
         return cls(
-            ScannedClasses(
-                {
-                    indexed_class.symbol: indexed_class
-                    for projection in CompactModuleClassProjectionFamily.modules_in(
-                        projections_by_family
-                    )
-                    for indexed_class in projection.classes
-                }
-            ),
+            ScannedClasses(index.classes_by_symbol),
+            typing,
             tuple(
                 span
                 for module in ForeignAbsenceSiteFamily.modules_in(projections_by_family)
                 for site in module.sites
-                for span in site.owner.type_checker_spans()
+                for span in site.owner.resolved(typing).type_checker_spans()
             ),
         )
 
@@ -517,15 +515,16 @@ class ProbeOwnerQuery:
         )
 
     def answered(self, sources: TypeCheckerSources) -> ProbeOwnerContext:
-        """The type checker's owner for each receiver; it runs only when there is one."""
+        """The type checker's owner for each undeclared receiver; it runs only when there is one."""
 
         if not self.spans:
-            return ProbeOwnerContext(self.classes, {})
+            return ProbeOwnerContext(self.classes, {}, self.typing)
         with TypeCheckerSession.session(sources) as session:
             answers = session.receiver_types(self.spans)
         return ProbeOwnerContext(
             self.classes,
             {span: answer.owner(self.classes) for span, answer in answers.items()},
+            self.typing,
         )
 
 

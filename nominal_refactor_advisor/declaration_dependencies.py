@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import ast
 import copy
-import sys
 from abc import ABC, abstractmethod
 from collections.abc import Iterable, Iterator
 from contextlib import (
@@ -16,6 +15,7 @@ from enum import StrEnum
 from functools import cached_property
 from typing import Callable, TypeAlias
 
+from .ast_field_decoders import TYPE_PARAMETERS
 from .ast_projection import (
     NoStatementValue,
     StatementValue,
@@ -635,12 +635,8 @@ class _DeclarationDependencyCollector(
         self,
         node: ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef,
     ) -> None:
-        if sys.version_info < (3, 12):
-            return
-        for parameter in node.type_params:
-            for expression in ast.iter_child_nodes(parameter):
-                if isinstance(expression, ast.expr):
-                    self._visit_annotation(expression)
+        for expression in TYPE_PARAMETERS.expressions(node):
+            self._visit_annotation(expression)
 
     def _visit_annotation(
         self,
@@ -825,6 +821,4 @@ class _DeclarationDependencyCollector(
 def _type_parameter_names(
     node: ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef,
 ) -> frozenset[str]:
-    if sys.version_info < (3, 12):
-        return frozenset()
-    return frozenset(parameter.name for parameter in node.type_params)
+    return frozenset(TYPE_PARAMETERS.names(node))

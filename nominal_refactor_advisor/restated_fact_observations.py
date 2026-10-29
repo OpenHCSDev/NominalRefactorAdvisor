@@ -23,7 +23,6 @@ from .lexical_bindings import ImportAlias, ImportBoundNameProjection
 from .ast_projection import CallKeywords, StatementValues
 from .ast_tools import AttributeAccessCall, BuiltinCall, BuiltinCallName, ParsedModule
 from .declared_root import DeclaredRoot
-from .class_index import ModuleNominalBindingAuthority
 from .observation_families import ShapeFamily
 from .observation_shapes import RestatingSite
 from .probe_owner import ProbeOwner, ProbeOwnerResolver
@@ -434,9 +433,7 @@ class ForeignAbsenceSiteFamily(RestatingSiteFamily[ForeignAbsenceSiteModule]):
     def sites(cls, parsed_module: ParsedModule) -> Iterator[ForeignAbsenceSite]:
         index = parsed_module.syntax_index
         modules = imported_module_names(parsed_module)
-        resolver = ProbeOwnerResolver(
-            parsed_module.file_path, ModuleNominalBindingAuthority(parsed_module)
-        )
+        resolver = ProbeOwnerResolver.of(parsed_module)
         for node_index, node in index.indexed_nodes_of_type(ast.Compare):
             match node:
                 case ast.Compare(
@@ -449,7 +446,6 @@ class ForeignAbsenceSiteFamily(RestatingSiteFamily[ForeignAbsenceSiteModule]):
                     continue
             if cls.is_own_or_module(receiver, node_index, index, modules):
                 continue
-            function = index.scopes[index.scope_ids[node_index]].executable_function_index
             yield ForeignAbsenceSite(
                 file_path=parsed_module.file_path,
                 lineno=node.lineno,
@@ -459,10 +455,7 @@ class ForeignAbsenceSiteFamily(RestatingSiteFamily[ForeignAbsenceSiteModule]):
                     attribute,
                     "is None" if isinstance(operator, ast.Is) else "is not None",
                 ),
-                owner=resolver.owner(
-                    receiver,
-                    index.depth_first_nodes[function] if function >= 0 else node,
-                ),
+                owner=resolver.owner(receiver),
             )
 
     @staticmethod

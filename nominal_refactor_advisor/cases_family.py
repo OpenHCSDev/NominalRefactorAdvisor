@@ -62,6 +62,13 @@ from .descent import (
     TailName,
 )
 from .declared_root import DeclaredRoot
+from .class_index import (
+    CLASS_METHOD_DECORATOR,
+    PROPERTY_DECORATOR,
+    STATIC_METHOD_DECORATOR,
+    ModuleNominalBindingAuthority,
+    ModuleNominalBindingSnapshot,
+)
 from .semantic_descent import AuthorityClaim, SemanticAuthorityKind
 
 BOOLEAN_CALLS = frozenset(
@@ -234,8 +241,18 @@ def docstring(statements: list[ast.stmt]) -> ast.Expr | None:
     return first if isinstance(first, ast.Expr) else None
 
 
-def decorator_names(function: ast.FunctionDef) -> tuple[str, ...]:
-    return tuple(ast.unparse(decorator) for decorator in function.decorator_list)
+def class_bindings(module: ParsedModule, node: ast.ClassDef) -> ModuleNominalBindingSnapshot:
+    """The module bindings a class body's decorators resolve through."""
+
+    return ModuleNominalBindingAuthority(module).snapshot_before(node.lineno)
+
+
+ENUM_METHOD_DECORATORS = (
+    PROPERTY_DECORATOR,
+    CLASS_METHOD_DECORATOR,
+    STATIC_METHOD_DECORATOR,
+)
+"""The native decorators an enum method may carry onto the family."""
 
 
 def is_name(node: ast.AST | None, names: Iterable[str]) -> bool:
@@ -1037,10 +1054,8 @@ class CasesFamily(Cases, Descent):
         self.fold_properties(model)
         model.called = frozenset(
             function.name
-            for function in enum.methods
-            if isinstance(function, ast.FunctionDef)
-            and decorator_names(function) == ("property",)
-            and function.name not in model.folded
+            for function in enum.properties
+            if function.name not in model.folded
             and function.name not in forwarded.values()
         )
         model.inlined = self.inlined(model, snapshot)
@@ -1209,12 +1224,7 @@ class CasesFamily(Cases, Descent):
 
         stored = {datum.stored for datum in data}
         forwarded: dict[str, str] = {}
-        for function in enum.methods:
-            if not (
-                isinstance(function, ast.FunctionDef)
-                and decorator_names(function) == ("property",)
-            ):
-                continue
+        for function in enum.properties:
             body = body_without_docstring(function.body)
             receiver = function.args.args[0].arg
             if (
@@ -1233,10 +1243,8 @@ class CasesFamily(Cases, Descent):
 
         properties = (
             (function, body_without_docstring(function.body))
-            for function in model.enum.methods
-            if isinstance(function, ast.FunctionDef)
-            and decorator_names(function) == ("property",)
-            and function.name not in model.forwarded.values()
+            for function in model.enum.properties
+            if function.name not in model.forwarded.values()
         )
         # Only a property whose whole body returns a value can fold.
         pending = dict(
@@ -1368,12 +1376,19 @@ class CasesFamily(Cases, Descent):
         module = model.enum.module
         if not isinstance(function, ast.FunctionDef):
             raise handback(module, function, "async enum method")
-        decorators = decorator_names(function)
+        references = class_bindings(module, model.enum.node).decorator_references(function)
+        decorators = tuple(
+            identity
+            for reference in references
+            for identity in ENUM_METHOD_DECORATORS
+            if reference.has_bound_name(identity)
+        )
         if function.name in model.folded or function.name in model.forwarded.values():
             return None
-        if decorators not in ((), ("property",), ("classmethod",), ("staticmethod",)):
-            raise handback(module, function, f"enum method decorated {decorators}")
-        static = decorators == ("staticmethod",)
+        if len(references) > 1 or len(decorators) != len(references):
+            spelled = tuple(reference.qualified_name for reference in references)
+            raise handback(module, function, f"enum method decorated {spelled}")
+        static = decorators == (STATIC_METHOD_DECORATOR,)
         receiver = None if static else function.args.args[0].arg
         first = None if static else "cls"
         header_decorator = ["@staticmethod"] if static else ["@classmethod"]
@@ -1414,7 +1429,7 @@ class CasesFamily(Cases, Descent):
         statements = body_without_docstring(function.body)
         documentation = docstring(function.body)
         renames = self.method_renames(
-            model, function, receiver, decorators == ("classmethod",)
+            model, function, receiver, decorators == (CLASS_METHOD_DECORATOR,)
         )
         applications = [
             node
@@ -1436,7 +1451,7 @@ class CasesFamily(Cases, Descent):
                             model, member, receiver, node
                         )
                     )
-                    if receiver is not None and decorators != ("classmethod",)
+                    if receiver is not None and decorators != (CLASS_METHOD_DECORATOR,)
                     else (lambda node: UNKNOWN)
                 ),
                 renames
@@ -1607,7 +1622,9 @@ class CasesFamily(Cases, Descent):
                     self.refuse_member_comparisons(module, function, model, names)
                     if (
                         not held
-                        or "staticmethod" in decorator_names(function)
+                        or class_bindings(module, owner).decorated_by(
+                            function, (STATIC_METHOD_DECORATOR,)
+                        )
                         or not function.args.args
                     ):
                         continue
@@ -2363,12 +2380,13 @@ class ClassBody(Enclosure):
     """A class body: a def here is a method unless it takes no receiver."""
 
     owner: ast.ClassDef
+    bindings: ModuleNominalBindingSnapshot
 
     def scope_for(
         self, function: ast.FunctionDef | ast.AsyncFunctionDef
     ) -> FunctionScope:
         arguments = FunctionScope.arguments_of(function)
-        if not arguments or "staticmethod" in decorator_names(function):
+        if not arguments or self.bindings.decorated_by(function, (STATIC_METHOD_DECORATOR,)):
             return FunctionScope(function)
         return MethodScope(function, self.owner, arguments[0])
 
@@ -2388,12 +2406,15 @@ FREE_BODY = FreeBody()
 class ScopeCollector(ast.NodeVisitor):
     """Maps each node of a module to the scope its bare names are read in."""
 
-    def __init__(self) -> None:
+    def __init__(self, module: ParsedModule) -> None:
         self.found: dict[int, Scope] = {}
         self.enclosure: Enclosure = FREE_BODY
+        self.bindings = ModuleNominalBindingAuthority(module).snapshots_before(
+            node.lineno for node in ast.walk(module.module) if isinstance(node, ast.ClassDef)
+        )
 
     def visit_ClassDef(self, node: ast.ClassDef) -> None:
-        self._visit_within(ClassBody(node), node)
+        self._visit_within(ClassBody(node, self.bindings[node.lineno]), node)
 
     def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
         self._visit_function(node)
@@ -2436,7 +2457,7 @@ class DeclaredTypes:
 
     @staticmethod
     def scopes(module: ParsedModule) -> dict[int, Scope]:
-        collector = ScopeCollector()
+        collector = ScopeCollector(module)
         collector.visit(module.module)
         return collector.found
 

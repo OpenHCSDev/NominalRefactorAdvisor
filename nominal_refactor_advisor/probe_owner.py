@@ -1,11 +1,13 @@
 """Whose field a foreign absence probe reads, and how that owner was found.
 
 A probe `receiver.field is None` restates a state of the receiver's class. The
-owner is that class: named by the receiver's declared annotation
-(`ResolvedProbeOwner`), or, when the receiver declares none, by the type
-checker (`TypeCheckerProbeOwner`). `UnannotatedProbeOwner` is the receiver
-waiting for the type checker's answer; `UnresolvedProbeOwner` says which step
-failed.
+owner is that class. Per module the receiver is recorded as its declared
+receiver path (`DeclaredPathProbeOwner`, `declared_receivers.ReceiverPath`);
+across the scan the path resolves through the declarations alone to the class
+(`ResolvedProbeOwner`) or the classes of one family (`DeclaredFamilyProbeOwner`).
+A receiver no declaration types waits for the type checker's answer
+(`UndeclaredProbeOwner`, then `TypeCheckerProbeOwner`); `UnresolvedProbeOwner`
+says which step failed.
 """
 
 from __future__ import annotations
@@ -15,10 +17,13 @@ from abc import ABC, abstractmethod
 from collections.abc import Mapping
 from dataclasses import dataclass
 
-from .annotation_semantics import NOMINAL_ANNOTATION_SOURCE_AUTHORITY, TypeWrapper
-from .ast_projection import ExpressionReference
-from .ast_field_decoders import ParameterAnnotations, variadic_parameters
-from .class_index import CompactIndexedClass, ModuleNominalBindingAuthority
+from .ast_tools import ParsedModule
+from .class_index import CompactIndexedClass, module_import_aliases
+from .declared_receivers import (
+    DeclaredReceiverTyping,
+    ReceiverPath,
+    ReceiverPathBuilder,
+)
 
 
 @dataclass(frozen=True)
@@ -77,6 +82,7 @@ class ProbeOwnerContext:
 
     classes: ScannedClasses
     typed: Mapping[ReceiverSpan, ProbeOwner]
+    typing: DeclaredReceiverTyping
 
 
 class ProbeOwner(ABC):
@@ -90,6 +96,11 @@ class ProbeOwner(ABC):
         """Receivers this owner needs the type checker for: none once it is known."""
 
         return ()
+
+    def resolved(self, typing: DeclaredReceiverTyping) -> ProbeOwner:
+        """This owner once the scan's declarations have typed it: itself, unless a path."""
+
+        return self
 
     def class_symbols(self) -> tuple[str, ...]:
         """The scanned class the receiver is known to be, if any."""
@@ -137,21 +148,6 @@ class UnresolvedProbeOwner(ProbeOwner):
         return f"owner unresolved: {self.reason}"
 
 
-@dataclass(frozen=True)
-class UnannotatedProbeOwner(ProbeOwner):
-    """A receiver with no annotation: its owner is whatever the type checker infers."""
-
-    name: str
-    function_name: str
-    span: ReceiverSpan
-
-    def describe(self, field_name: str, context: ProbeOwnerContext) -> str:
-        return context.typed[self.span].describe(field_name, context)
-
-    def type_checker_spans(self) -> tuple[ReceiverSpan, ...]:
-        return (self.span,)
-
-
 class ReceiverType(ABC):
     """The type checker's answer for one receiver span."""
 
@@ -191,101 +187,84 @@ class FailedReceiverType(ReceiverType):
         return UnresolvedProbeOwner(f"type checker: {self.reason}")
 
 
-def _present_alternative(annotation: ast.expr) -> ast.expr:
-    """`X | None`, `None | X` and `Optional[X]` declare X; anything else declares itself."""
+@dataclass(frozen=True)
+class DeclaredFamilyProbeOwner(ProbeOwner):
+    """The receiver's declarations admit these classes, all of one family."""
 
-    match annotation:
-        case ast.BinOp(op=ast.BitOr(), left=present, right=ast.Constant(value=None)):
-            return present
-        case ast.BinOp(op=ast.BitOr(), left=ast.Constant(value=None), right=present):
-            return present
-        case ast.Subscript(value=wrapper, slice=present) if (
-            TypeWrapper.OPTIONAL.spelled_by(
-                ExpressionReference.decoded(wrapper).terminal_name
-            )
-        ):
-            return present
-    return annotation
+    qualified_names: tuple[str, ...]
+
+    def describe(self, field_name: str, context: ProbeOwnerContext) -> str:
+        return "; ".join(
+            context.classes.describe_field(name, field_name)
+            for name in self.qualified_names
+        )
+
+    def class_symbols(self) -> tuple[str, ...]:
+        return self.qualified_names
+
+
+@dataclass(frozen=True)
+class UndeclaredProbeOwner(ProbeOwner):
+    """No declaration types the receiver: its owner is whatever the type checker infers."""
+
+    reason: str
+    span: ReceiverSpan
+
+    def describe(self, field_name: str, context: ProbeOwnerContext) -> str:
+        return context.typed[self.span].describe(field_name, context)
+
+    def type_checker_spans(self) -> tuple[ReceiverSpan, ...]:
+        return (self.span,)
+
+
+@dataclass(frozen=True)
+class DeclaredPathProbeOwner(ProbeOwner):
+    """A receiver as its module declares it; the scan's declarations resolve the path."""
+
+    path: ReceiverPath
+    span: ReceiverSpan
+
+    def resolved(self, typing: DeclaredReceiverTyping) -> ProbeOwner:
+        declared = self.path.declared(typing)
+        match declared.class_symbols():
+            case (symbol,):
+                return ResolvedProbeOwner(symbol)
+            case ():
+                return UndeclaredProbeOwner(declared.why_no_class(), self.span)
+            case symbols:
+                return DeclaredFamilyProbeOwner(symbols)
+
+    def describe(self, field_name: str, context: ProbeOwnerContext) -> str:
+        return self.resolved(context.typing).describe(field_name, context)
 
 
 @dataclass(frozen=True)
 class ProbeOwnerResolver:
-    """Names the class whose field a probe reads, from the receiver's declared annotation."""
+    """Records each probe receiver as the path its module declares it by."""
 
     file_path: str
-    bindings: ModuleNominalBindingAuthority
+    builder: ReceiverPathBuilder
 
-    def owner(self, receiver: ast.expr, function: ast.AST) -> ProbeOwner:
-        match receiver, function:
-            case ast.Name(id=name), ast.FunctionDef() | ast.AsyncFunctionDef():
-                return self.local_owner(receiver, name, function)
-            case ast.Name(id=name), _:
-                return UnresolvedProbeOwner(f"`{name}` is probed outside a function")
-            case ast.Attribute(), _:
-                return UnresolvedProbeOwner(
-                    f"`{ast.unparse(receiver)}` is reached through an attribute; "
-                    "its holder's field type is not followed"
-                )
-        return UnresolvedProbeOwner(
-            f"`{ast.unparse(receiver)}` is a {type(receiver).__name__} expression, "
-            "not a declared name"
-        )
-
-    def local_owner(
-        self,
-        receiver: ast.expr,
-        name: str,
-        function: ast.FunctionDef | ast.AsyncFunctionDef,
-    ) -> ProbeOwner:
-        arguments = function.args
-        parameters = ParameterAnnotations.of(
-            (
-                *arguments.posonlyargs,
-                *arguments.args,
-                *arguments.kwonlyargs,
-                *variadic_parameters(arguments),
-            )
-        )
-        declared = (
-            *(
-                parameter.annotation
-                for parameter in parameters.annotated
-                if parameter.arg == name
-            ),
-            *(
-                statement.annotation
-                for statement in ast.walk(function)
-                if isinstance(statement, ast.AnnAssign)
-                and isinstance(statement.target, ast.Name)
-                and statement.target.id == name
+    @classmethod
+    def of(cls, parsed_module: ParsedModule) -> ProbeOwnerResolver:
+        return cls(
+            parsed_module.file_path,
+            ReceiverPathBuilder(
+                parsed_module.module_name,
+                parsed_module.module,
+                module_import_aliases(parsed_module),
             ),
         )
-        for annotation in declared:
-            return self.annotation_owner(annotation)
-        return UnannotatedProbeOwner(
-            name, function.name, ReceiverSpan.of(self.file_path, receiver)
-        )
 
-    def annotation_owner(self, annotation: ast.expr) -> ProbeOwner:
-        spelled = _present_alternative(
-            ast.parse(annotation.value, mode="eval").body
-            if isinstance(annotation, ast.Constant) and isinstance(annotation.value, str)
-            else annotation
+    def owner(self, receiver: ast.expr) -> DeclaredPathProbeOwner:
+        return DeclaredPathProbeOwner(
+            self.builder.path_of(receiver), ReceiverSpan.of(self.file_path, receiver)
         )
-        reference = NOMINAL_ANNOTATION_SOURCE_AUTHORITY.reference_or_none(spelled)
-        if reference is None:
-            return UnresolvedProbeOwner(
-                f"annotation `{ast.unparse(annotation)}` is not one class"
-            )
-        qualified = self.bindings.qualified_name_at(reference, line=None)
-        if qualified is None:
-            return UnresolvedProbeOwner(
-                f"annotation `{ast.unparse(annotation)}` binds to nothing in its module"
-            )
-        return ResolvedProbeOwner(qualified)
 
 
 __all__ = (
+    "DeclaredFamilyProbeOwner",
+    "DeclaredPathProbeOwner",
     "FailedReceiverType",
     "InferredReceiverType",
     "ProbeOwner",
@@ -296,6 +275,6 @@ __all__ = (
     "ResolvedProbeOwner",
     "ScannedClasses",
     "TypeCheckerProbeOwner",
-    "UnannotatedProbeOwner",
+    "UndeclaredProbeOwner",
     "UnresolvedProbeOwner",
 )

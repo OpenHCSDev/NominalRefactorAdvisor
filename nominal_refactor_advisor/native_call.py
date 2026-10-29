@@ -5,7 +5,6 @@ from __future__ import annotations
 import ast
 import builtins
 import dataclasses
-import sys
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from functools import cached_property
@@ -17,6 +16,7 @@ from typing import (
     cast,
 )
 
+from .ast_field_decoders import TYPE_PARAMETERS
 from .value_expression import CompactValueExpression
 from .ast_tools import SourceModule
 from .captured_reference import (
@@ -589,7 +589,7 @@ class NativeReturnedClosureFactorySource:
             )
             or closure.args.vararg is not None
             or closure.args.kwarg is not None
-            or (sys.version_info >= (3, 12) and closure.type_params)
+            or TYPE_PARAMETERS.names(closure)
         ):
             raise ValueError("Returned closure creation has executable header inputs")
         return closure

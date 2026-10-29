@@ -39,19 +39,46 @@ class Excerpt:
         chosen = [
             node
             for node in tree.body
-            if isinstance(node, ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef)
-            and (node.name in self.names or self.contains(node))
+            if (
+                isinstance(node, ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef)
+                and (node.name in self.names or self.contains(node))
+            )
+            or (isinstance(node, ast.Assign) and _assigned_names(node) & set(self.names))
         ]
-        assert set(self.names) <= {node.name for node in chosen}, (self, self.names)
+        assert set(self.names) <= {
+            name for node in chosen for name in _defined_names(node)
+        }, (self, self.names)
         definitions = [
             "\n".join(
-                (*(f"@{ast.unparse(decorator)}" for decorator in node.decorator_list),
+                (*(f"@{ast.unparse(decorator)}" for decorator in _decorators(node)),
                  ast.get_source_segment(text, node, padded=True))
             )
             for node in chosen
         ]
         header = "\n".join(ast.unparse(node) for node in imports)
         return "\n\n\n".join((header, *definitions)) + "\n"
+
+
+def _assigned_names(node: ast.Assign) -> set[str]:
+    return {target.id for target in node.targets if isinstance(target, ast.Name)}
+
+
+def _defined_names(node: ast.stmt) -> set[str]:
+    match node:
+        case ast.Assign():
+            return _assigned_names(node)
+        case ast.ClassDef(name=name) | ast.FunctionDef(name=name) | ast.AsyncFunctionDef(name=name):
+            return {name}
+    return set()
+
+
+def _decorators(node: ast.stmt) -> list[ast.expr]:
+    match node:
+        case ast.ClassDef(decorator_list=decorators) | ast.FunctionDef(
+            decorator_list=decorators
+        ) | ast.AsyncFunctionDef(decorator_list=decorators):
+            return decorators
+    return []
 
 
 @dataclass(frozen=True)
@@ -98,7 +125,19 @@ DECLARES_DATACLASS = Relocation(
         Excerpt(
             "3d33f21d",
             f"{NRA}/class_index.py",
-            ("CompactDataclassFacet", "CompactDataclassDeclaration", "NoDataclassDeclaration"),
+            (
+                "CompactDataclassFacet",
+                "CompactDataclassDeclaration",
+                "NoDataclassDeclaration",
+                # The receivers' declarations: the index's `classes_by_symbol`
+                # on its generic base, and the `dataclass_declaration` the
+                # indexed class inherits.
+                "ClassDeclarationT",
+                "ClassDeclaration",
+                "ClassDeclarationIndex",
+                "CompactClassHeader",
+                "CompactIndexedClass",
+            ),
             (2683, 2717),
         ),
     )
