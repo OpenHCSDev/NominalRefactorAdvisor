@@ -780,20 +780,43 @@ class ClassNameOwners:
     ENUMS: ClassVar[frozenset[str]] = frozenset(
         f"{enum.__name__}.{name}"
         for name, value in vars(enum).items()
-        if isinstance(value, type) and issubclass(value, enum.Enum)
+        if isinstance(value, type)
+        and issubclass(value, enum.Enum)
+        and not value.__members__
     )
+    """The standard enum classes a class can extend: those with no members."""
 
-    def is_enum(self, qualified: str, visiting: frozenset[str] = frozenset()) -> bool:
-        """Whether the class reaches one of the standard library's enum classes through its bases."""
+    VALUE_ENUMS: ClassVar[frozenset[str]] = frozenset(
+        f"{enum.__name__}.{name}"
+        for name, value in vars(enum).items()
+        if isinstance(value, type)
+        and issubclass(value, enum.Enum)
+        and not value.__members__
+        and issubclass(value, str)
+    )
+    """The standard enums whose members are their values as strings: equal, hashed,
+    `str()` and `format()` alike (`StrEnum`). A `(str, Enum)` mixin's member is
+    equal but formats as `Enum.MEMBER`; a plain `Enum`'s is not even equal."""
+
+    def is_enum(self, qualified: str) -> bool:
+        return self.reaches(qualified, self.ENUMS)
+
+    def reaches(
+        self,
+        qualified: str,
+        standard: frozenset[str],
+        visiting: frozenset[str] = frozenset(),
+    ) -> bool:
+        """Whether the class reaches one of the `standard` classes through its bases."""
 
         declared = self.classes.get(qualified)
         if declared is None or qualified in visiting:
             return False
         return any(
-            origin in self.ENUMS
+            origin in standard
             or (
                 (found := self.canonical(origin)) is not None
-                and self.is_enum(found, visiting | {qualified})
+                and self.reaches(found, standard, visiting | {qualified})
             )
             for origin in declared.origins
         )
@@ -1121,10 +1144,13 @@ class EnumValueSpelling(IdentitySpelling):
     The position is the enum's by declaration: an annotated assignment or field
     (`x: E = "a"`, through `ClassVar[...]` or `Final[...]`), a parameter
     default, a `return` in a function declared `-> E`, or a comparison or match
-    against a parameter declared `E`. The literal then restates that member,
-    and `E.MEMBER` stands there. Equal text in a position nothing types as the
-    enum is no site: equal values are not one owner. The detail carries the
-    holding statement's index and the name the declaration types it by.
+    against a parameter declared `E` that its function never rebinds. The
+    literal then restates that member. `E.MEMBER` replaces it only where the
+    member behaves as the string does wherever the value goes (an enum reaching
+    `ClassNameOwners.VALUE_ENUMS`); for any other enum the finding stands and
+    no rewrite is offered. Equal text in a position nothing types as the enum is
+    no site: equal values are not one owner. The detail carries the holding
+    statement's index and the name the declaration types it by.
     """
 
     tag = "enum value"
@@ -1132,7 +1158,12 @@ class EnumValueSpelling(IdentitySpelling):
     @classmethod
     def rewrite(cls, detail, identities, file_path):
         _tag, holding, name, literal = detail
-        if not holding or identities.typed_member(file_path, name, literal) is None:
+        member = identities.typed_member(file_path, name, literal)
+        if not holding or member is None:
+            return ReferenceRewrite.NONE
+        if not identities.class_names.reaches(
+            member.enum, ClassNameOwners.VALUE_ENUMS
+        ):
             return ReferenceRewrite.NONE
         if not identities.binds(file_path, int(holding), name):
             return ReferenceRewrite.NONE
@@ -1774,7 +1805,7 @@ class IdentityPositions:
             return
         if isinstance(subject, ast.Name):
             yield from self.typed_site(
-                literal_node, self.declared_type(node_index, subject.id)
+                literal_node, self.declared_parameter_type(node_index, subject.id)
             )
         match subject:
             case ast.Attribute(attr=attribute) if (
@@ -1890,6 +1921,36 @@ class IdentityPositions:
         return Receiver(
             ast.unparse(receiver), self.called(receiver), class_object, instance
         )
+
+    def declared_parameter_type(self, node_index: int, name: str) -> ast.expr | None:
+        """The annotation of the parameter `name` this node reads, when nothing rebinds it.
+
+        The nearest function binding `name` must bind it as a parameter and bind
+        it nowhere in its body (an assignment, loop target, `with`, walrus or
+        nested definition), so the value read is still the one the annotation
+        declares.
+        """
+
+        for ancestor in reversed(self.index.ancestor_nodes(node_index)):
+            match ancestor:
+                case ast.FunctionDef(args=arguments, body=body) | ast.AsyncFunctionDef(
+                    args=arguments, body=body
+                ):
+                    rebound = any(
+                        name in ModuleReferenceScope.bound_names(node)
+                        for statement in body
+                        for node in ast.walk(statement)
+                    )
+                    for argument in (
+                        *arguments.posonlyargs,
+                        *arguments.args,
+                        *arguments.kwonlyargs,
+                    ):
+                        if argument.arg == name:
+                            return None if rebound else argument.annotation
+                    if rebound:
+                        return None
+        return None
 
     def declared_type(self, node_index: int, name: str) -> ast.expr | None:
         """The type the nearest binding of `name` around this node declares.

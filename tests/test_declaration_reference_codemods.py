@@ -453,12 +453,12 @@ def test_a_string_in_a_position_typed_as_an_enum_becomes_its_member(tmp_path: Pa
         {
             "pkg/__init__": "",
             "pkg/attrs": (
-                "from enum import Enum\n\n\n"
-                "class RegistryAttribute(str, Enum):\n"
+                "from enum import StrEnum\n\n\n"
+                "class RegistryAttribute(StrEnum):\n"
                 "    REGISTRY = '__registry__'\n"
                 "    REGISTRY_KEY = 'registry_key'\n"
                 "    PLAIN = 'plain'\n\n\n"
-                "class OtherKey(str, Enum):\n    REGISTRY = '__registry__'\n"
+                "class OtherKey(StrEnum):\n    REGISTRY = '__registry__'\n"
             ),
             "pkg/use": (
                 "from typing import ClassVar\n\n"
@@ -510,8 +510,8 @@ def test_an_installed_enum_named_by_an_annotation_is_referenced_by_that_name(
     site.mkdir(parents=True)
     (site / "__init__.py").write_text("from .core import Attr, Holder\n")
     (site / "core.py").write_text(
-        "from enum import Enum\n\n\n"
-        "class Attr(str, Enum):\n    REGISTRY = '__registry__'\n\n\n"
+        "from enum import StrEnum\n\n\n"
+        "class Attr(StrEnum):\n    REGISTRY = '__registry__'\n\n\n"
         "class Holder:\n    pass\n"
     )
     monkeypatch.syspath_prepend(str(site.parent))
@@ -530,3 +530,57 @@ def test_an_installed_enum_named_by_an_annotation_is_referenced_by_that_name(
     _records, rewritten = _replayed(root)
     (source,) = rewritten.values()
     assert "def read(attrs, key: Key = Key.REGISTRY):" in source
+
+
+def test_an_enum_whose_members_do_not_behave_as_their_strings_keeps_its_spelling(
+    tmp_path: Path,
+):
+    # A (str, Enum) member is equal to its string but formats as `Mixed.A`; a
+    # plain Enum member is not even equal. Both still restate the member, but
+    # writing the member there would change what the program does.
+    _write(
+        tmp_path,
+        {
+            "pkg/__init__": "",
+            "pkg/kinds": (
+                "from enum import Enum\n\n\n"
+                "class Mixed(str, Enum):\n    A = 'mixed_a'\n\n\n"
+                "class Plain(Enum):\n    A = 'plain_a'\n"
+            ),
+            "pkg/use": (
+                "from pkg.kinds import Mixed, Plain\n\n"
+                "MIXED: Mixed = 'mixed_a'\n"
+                "PLAIN: Plain = 'plain_a'\n"
+            ),
+        },
+    )
+    findings = _identity_findings(tmp_path)
+    for member in ("`Mixed.A`", "`Plain.A`"):
+        assert any(f"enum member {member}" in finding.summary for finding in findings)
+    records, rewritten = _replayed(tmp_path)
+    assert not any(record.candidate_recipes for record in records)
+    assert rewritten == {}
+
+
+def test_a_parameter_rebound_before_it_is_compared_is_not_its_declared_enum(
+    tmp_path: Path,
+):
+    _write(
+        tmp_path,
+        {
+            "pkg/__init__": "",
+            "pkg/kinds": "from enum import StrEnum\n\n\nclass Kind(StrEnum):\n    A = 'kind_a'\n",
+            "pkg/use": (
+                "from pkg.kinds import Kind\n\n\n"
+                "def rebound(kind: Kind):\n"
+                "    kind = str(kind).upper()\n"
+                "    return kind == 'kind_a'\n\n\n"
+                "def kept(kind: Kind):\n"
+                "    return kind == 'kind_a'\n"
+            ),
+        },
+    )
+    _records, rewritten = _replayed(tmp_path)
+    (source,) = rewritten.values()
+    assert "    kind = str(kind).upper()\n    return kind == 'kind_a'\n" in source
+    assert "def kept(kind: Kind):\n    return kind == Kind.A\n" in source
