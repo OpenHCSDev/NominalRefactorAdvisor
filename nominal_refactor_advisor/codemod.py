@@ -537,7 +537,6 @@ from .codemod_source_edits import (
     SimulatedSourceRewrite as SimulatedSourceRewrite,
     SourceEditWindowABC as SourceEditWindowABC,
     SourceIntervalProjectionABC as SourceIntervalProjectionABC,
-    SourceLineSpan,
     SourceOffsetSpan as SourceOffsetSpan,
     SourceRetainedSpanIndex as SourceRetainedSpanIndex,
     SourceRewriteDelta as SourceRewriteDelta,
@@ -7984,71 +7983,73 @@ class ManualClassRegistrationFindingRecipeSynthesizer(
             return self.rejected_evaluation(
                 "manual-registry conversion requires a source selector context"
             )
-        parts = self.recipe_parts_for_finding(finding, context)
-        if parts is None:
-            return self.rejected_evaluation(
-                self.recipe_rejection_reason(finding, context)
-            )
+        try:
+            parts = self.recipe_parts_for_finding(finding, context)
+        except ValueError as refusal:
+            return self.rejected_evaluation(f"manual-registry conversion: {refusal}")
         return self.executable_evaluation(self.recipe_from_parts(finding, parts))
 
     def recipe_parts_for_finding(
         self,
         finding: RefactorFinding,
         context: CodemodSelectorContext,
-    ) -> ManualRegistryRecipeParts | None:
+    ) -> ManualRegistryRecipeParts:
+        """The proved component and anchor, or a ValueError naming the premise that failed."""
+
         registry_name = finding.metrics.plan_registry_name
         expected_class_names = frozenset(finding.metrics.plan_class_names)
-        if registry_name is None or not expected_class_names:
-            return None
+        if registry_name is None:
+            raise ValueError("the finding exposes no registry name")
+        if not expected_class_names:
+            raise ValueError("the finding exposes no registered classes")
         evidence = finding.primary_evidence
         if evidence is None:
-            return None
+            raise ValueError("the finding has no primary evidence")
         source_paths = context.resolve_source_paths((evidence.file_path,))
         if len(source_paths) != 1:
-            return None
+            raise ValueError(
+                f"`{evidence.file_path}` resolves to {len(source_paths)} source files, not one"
+            )
         source_path = next(iter(source_paths))
-        targets = tuple(
-            ClassMemberPromotionTargets.optional_class_target(
+        targets = {
+            class_name: ClassMemberPromotionTargets.optional_class_target(
                 context.source_index,
                 context.ast_target_nodes_by_id,
                 source_path=source_path,
                 class_name=class_name,
             )
             for class_name in sorted(expected_class_names)
-        )
-        if any(target is None or "." in target.qualname for target in targets):
-            return None
-        resolved_targets = tuple(target for target in targets if target is not None)
+        }
+        missing = sorted(name for name, target in targets.items() if target is None)
+        if missing:
+            raise ValueError(
+                f"registered class(es) {', '.join(f'`{name}`' for name in missing)} "
+                f"are not declared in `{source_path}`"
+            )
+        resolved_targets = tuple(target for target in targets.values() if target is not None)
+        nested = sorted(target.qualname for target in resolved_targets if "." in target.qualname)
+        if nested:
+            raise ValueError(
+                f"registered class(es) {', '.join(f'`{name}`' for name in nested)} "
+                "are nested, not module-level"
+            )
         anchor_target = min(resolved_targets, key=lambda target: target.line)
-        try:
-            component = DirectManualRegistryComponent.from_module_anchor(
-                context.module_nodes_by_file_path[source_path],
-                anchor_target.node.name,
+        component = DirectManualRegistryComponent.from_module_anchor(
+            context.module_nodes_by_file_path[source_path],
+            anchor_target.node.name,
+        )
+        if component.registry_name != registry_name:
+            raise ValueError(
+                f"the registry at `{anchor_target.node.name}` is "
+                f"`{component.registry_name}`, not the finding's `{registry_name}`"
             )
-        except ValueError:
-            return None
-        if (
-            component.registry_name != registry_name
-            or frozenset(component.class_names) != expected_class_names
-        ):
-            return None
+        if frozenset(component.class_names) != expected_class_names:
+            raise ValueError(
+                "the registry's classes "
+                f"({', '.join(sorted(component.class_names))}) differ from the finding's "
+                f"({', '.join(sorted(expected_class_names))})"
+            )
         return ManualRegistryRecipeParts(anchor_target=anchor_target.target)
-
-    def recipe_rejection_reason(
-        self,
-        finding: RefactorFinding,
-        context: CodemodSelectorContext,
-    ) -> str:
-        if finding.metrics.plan_registry_name is None:
-            return "manual-registry finding exposes no registry name"
-        if not finding.metrics.plan_class_names:
-            return "manual-registry finding exposes no registered classes"
-        if self.recipe_parts_for_finding(finding, context) is None:
-            return (
-                "manual-registry conversion requires one complete direct dict "
-                "component with an exact registered-class anchor"
-            )
-        return "manual-registry conversion produced no executable recipe"
 
     def recipe_from_parts(
         self,
