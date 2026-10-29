@@ -12324,59 +12324,62 @@ class LiteralDispatchFindingRecipeSynthesizer(
     ) -> FindingRecipeEvaluation:
         if context is None:
             return self.rejected_evaluation(
-                self.recipe_rejection_reason(finding, context)
+                "literal dispatch synthesis requires a source selector context"
             )
-        target = self.dispatch_target(finding, context)
-        if target is None:
-            return self.rejected_evaluation(
-                self.recipe_rejection_reason(finding, context)
-            )
+        try:
+            target = self.dispatch_target(finding, context)
+        except ValueError as refusal:
+            return self.rejected_evaluation(f"literal dispatch: {refusal}")
         return self.executable_evaluation(self.recipe_from_target(finding, target))
 
     def dispatch_target(
         self,
         finding: RefactorFinding,
         context: CodemodSelectorContext,
-    ) -> AstTargetDigest | None:
+    ) -> AstTargetDigest:
+        """The one rewritable dispatch function, or a ValueError naming the premise that failed."""
+
         action_keys = self.action_keys_for_finding(finding)
         if len(action_keys) != 1:
-            return None
-        action_key = action_keys[0]
-        target_digest = self.evidence_target_digest(
-            finding,
-            action_key,
-            context,
-            node_kinds=(AstTargetNodeKind.FUNCTION,),
-        )
-        if target_digest is None:
-            return None
-        node = context.ast_target_nodes_by_id[target_digest.target_id]
-        if not isinstance(node, ast.FunctionDef):
-            return None
-        if DispatchPolymorphismSource.from_function(node) is None:
-            return None
-        return target_digest
-
-    @staticmethod
-    def evidence_target_digest(
-        finding: RefactorFinding,
-        action_key: FindingRecipeActionKey,
-        context: CodemodSelectorContext,
-        *,
-        node_kinds: tuple[AstTargetNodeKind, ...],
-    ) -> AstTargetDigest | None:
+            raise ValueError(
+                f"the finding has {len(action_keys)} source action keys, not one"
+            )
+        (action_key,) = action_keys
         target_ids = TargetSetExpressionSelector(
             include=(FindingEvidenceTargetSelector.from_findings((finding,)),),
             require=(
                 SourceIndexTargetSelector(
-                    node_kinds=node_kinds,
+                    node_kinds=(AstTargetNodeKind.FUNCTION, AstTargetNodeKind.METHOD),
                     file_paths=(action_key.file_path,),
                 ),
             ),
         ).target_ids(context)
-        if len(target_ids) != 1:
-            return None
-        return context.source_index.target_by_id[target_ids[0]]
+        targets = tuple(
+            context.source_index.target_by_id[target_id] for target_id in target_ids
+        )
+        functions = tuple(target for target in targets if not target.is_method)
+        if not functions and len(targets) == 1:
+            raise ValueError(
+                "dispatch_to_polymorphism rewrites module functions; method target "
+                f"{targets[0].qualname!r} requires extracting or owning the "
+                "closed-axis authority at the class boundary first"
+            )
+        if len(functions) != 1:
+            raise ValueError(
+                f"{len(functions)} function targets matched dispatch action "
+                f"{action_key.subject_name!r}, not one"
+            )
+        (target,) = functions
+        node = context.ast_target_nodes_by_id[target.target_id]
+        if not isinstance(node, ast.FunctionDef):
+            raise ValueError(f"{target.qualname!r} is not a synchronous function")
+        if DispatchPolymorphismSource.from_function(node) is None:
+            raise ValueError(
+                f"{target.qualname!r} is not a mechanically supported "
+                "literal-return dispatch; extract the closed-axis authority "
+                "with the replacement scaffold before simulating"
+            )
+        return target
 
     def recipe_from_target(
         self,
@@ -12408,47 +12411,6 @@ class LiteralDispatchFindingRecipeSynthesizer(
             finding,
             ((evidence.file_path, evidence.subject_symbol),),
         )
-
-    def recipe_rejection_reason(
-        self,
-        finding: RefactorFinding,
-        context: CodemodSelectorContext | None = None,
-    ) -> str:
-        action_keys = self.action_keys_for_finding(finding)
-        if not action_keys:
-            return "literal dispatch finding lacks a source action key"
-        if len(action_keys) != 1:
-            return "literal dispatch synthesis requires exactly one source action key"
-        if context is None:
-            return "literal dispatch synthesis requires a source selector context"
-        action_key = action_keys[0]
-        target = self.evidence_target_digest(
-            finding,
-            action_key,
-            context,
-            node_kinds=(AstTargetNodeKind.FUNCTION, AstTargetNodeKind.METHOD),
-        )
-        if target is None:
-            return (
-                f"no function or method target matched dispatch action "
-                f"{action_key.subject_name!r}"
-            )
-        if target.is_method:
-            return (
-                "dispatch_to_polymorphism currently rewrites module functions; "
-                f"method target {target.qualname!r} requires extracting or owning "
-                "the closed-axis authority at the class boundary first."
-            )
-        node = context.ast_target_nodes_by_id[target.target_id]
-        if not isinstance(node, ast.FunctionDef):
-            return "literal dispatch target is not an AST function"
-        if DispatchPolymorphismSource.from_function(node) is None:
-            return (
-                f"{target.qualname!r} is not a mechanically supported "
-                "literal-return dispatch; extract the closed-axis authority "
-                "with the replacement scaffold before simulating."
-            )
-        return "literal dispatch target has an executable authority recipe"
 
 
 class NumericLiteralDispatchFindingRecipeSynthesizer(
