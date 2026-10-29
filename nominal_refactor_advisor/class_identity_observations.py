@@ -25,7 +25,7 @@ from collections.abc import Iterable, Iterator, Sequence
 from dataclasses import dataclass, field, replace
 from functools import cache, cached_property
 from pathlib import Path
-from typing import ClassVar, Final
+from typing import ClassVar
 
 from .lexical_bindings import ImportBoundNameProjection
 from .ast_projection import StatementValues
@@ -38,6 +38,7 @@ from .ast_tools import (
 )
 from .class_index import module_import_aliases
 from .installed_source import InstalledModule
+from .annotation_semantics import TypeQualifier
 from .quoted_reference import (
     DeclaredInterpreter,
     ModuleReferenceScope,
@@ -2154,17 +2155,13 @@ class IdentityPositions:
 
     # Enum value positions -------------------------------------------------------
 
-    WRAPPERS: ClassVar[frozenset[str]] = frozenset(
-        (ClassVar.__name__, Final.__name__)
-    )
-
     @classmethod
     def declared_name(cls, annotation: ast.expr | None) -> str:
-        """The bare name an annotation declares a value to be, through `ClassVar[...]` or `Final[...]`."""
+        """The bare name an annotation declares a value to be, through a `TypeQualifier` (`ClassVar[...]`, `Final[...]`)."""
 
         match annotation:
             case ast.Subscript(value=ast.Name(id=wrapper), slice=inner) if (
-                wrapper in cls.WRAPPERS
+                TypeQualifier.qualifies(wrapper)
             ):
                 return cls.declared_name(inner)
             case ast.Name(id=name):
@@ -2195,18 +2192,16 @@ class IdentityPositions:
 
         for _node_index, node in self.index.indexed_nodes_of_type(ast.AnnAssign):
             yield from self.typed_site(node.value, node.annotation)
-        for kind in (ast.FunctionDef, ast.AsyncFunctionDef):
-            for _node_index, function in self.index.indexed_nodes_of_type(kind):
-                arguments = function.args
-                positional = [*arguments.posonlyargs, *arguments.args]
-                for argument, default in (
-                    *zip(
-                        positional[len(positional) - len(arguments.defaults) :],
-                        arguments.defaults,
-                    ),
-                    *zip(arguments.kwonlyargs, arguments.kw_defaults),
-                ):
-                    yield from self.typed_site(default, argument.annotation)
+        for _node_index, arguments in self.index.indexed_nodes_of_type(ast.arguments):
+            positional = [*arguments.posonlyargs, *arguments.args]
+            for argument, default in (
+                *zip(
+                    positional[len(positional) - len(arguments.defaults) :],
+                    arguments.defaults,
+                ),
+                *zip(arguments.kwonlyargs, arguments.kw_defaults),
+            ):
+                yield from self.typed_site(default, argument.annotation)
         for node_index, returned in StatementValues.keyed(
             self.index.indexed_nodes_of_type(ast.Return)
         ).supplied:

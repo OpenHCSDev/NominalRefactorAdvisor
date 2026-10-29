@@ -33,11 +33,27 @@ class TypeWrapper(Enum):
 
         return any(wrapper.spelled_by(name) for wrapper in cls)
 
+class TypeQualifier(Enum):
+    """A typing subscript qualifying a variable that holds a value of its slice's type.
+
+    ``x: ClassVar[E]`` and ``x: Final[E]`` hold an ``E``; unlike a
+    ``TypeWrapper`` such as ``type[E]``, the qualifier never changes what the
+    value is.
+    """
+
+    CLASS_VARIABLE = "ClassVar"
+    FINAL = "Final"
+
+    @classmethod
+    def qualifies(cls, name: str) -> bool:
+        return any(qualifier.value == name for qualifier in cls)
+
+
 @dataclass(frozen=True)
 class ClassVarAnnotationAuthority:
     """Own recognition of typing.ClassVar annotation roots."""
 
-    root_name: str = "ClassVar"
+    root_name: str = TypeQualifier.CLASS_VARIABLE.value
 
     def matches(self, annotation: ast.AST) -> bool:
         return self.annotation_root_name(annotation) == self.root_name

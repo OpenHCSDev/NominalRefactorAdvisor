@@ -19,7 +19,12 @@ from ..codemod_declaration_reference import (
     ReferenceImportedModuleOperation,
     UnquoteResolvedTypeNamesOperation,
 )
-from ..models import DeclarationReferenceMetrics, RefactorFinding, SourceLocation
+from ..models import (
+    CarriedReferenceRewrites,
+    CoveredReferenceRewrites,
+    RefactorFinding,
+    SourceLocation,
+)
 from ..patterns import PatternId
 from ..restated_fact_observations import RestatingSite
 from ..taxonomy import CapabilityTag, ObservationTag
@@ -102,10 +107,12 @@ class RestatedIdentityDetector(
         self, sites: Sequence[RestatingSite], context: DeclaredIdentities
     ) -> dict[str, object]:
         carried = context.carried_rewrites(sites)
-        covering = () if carried else context.covering_rewrites(sites)
-        if not (carried or covering):
-            return {}
-        return {"metrics": DeclarationReferenceMetrics(carried, covering)}
+        if carried:
+            return {"metrics": CarriedReferenceRewrites(carried)}
+        covering = context.covering_rewrites(sites)
+        if covering:
+            return {"metrics": CoveredReferenceRewrites(covering)}
+        return {}
 
 
 __all__ = ("RestatedIdentityDetector",)

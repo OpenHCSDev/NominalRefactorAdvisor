@@ -2323,15 +2323,12 @@ class RejectedRecipeEvaluation(DeclaredRecipeEvaluation):
 class CoveredRecipeEvaluation(DeclaredRecipeEvaluation):
     """A finding another finding's executable recipe removes: neither a candidate nor rejected.
 
-    `covering` names that recipe's rewrite and where its carrying finding stands.
+    `rejection_reason` names that recipe's rewrite and where its carrying
+    finding stands.
     """
 
     status = FindingRecipeSynthesisStatus.COVERED_BY_CANDIDATE
-    covering: str
-
-    @property
-    def rejection_reason(self) -> str:
-        return f"covered by {self.covering}"
+    rejection_reason: str
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -2784,7 +2781,7 @@ class FindingRecipeEvaluator(ABC):
 
     def covered_evaluation(self, covering: str) -> CoveredRecipeEvaluation:
         return CoveredRecipeEvaluation(
-            covering=covering,
+            rejection_reason=f"covered by {covering}",
             evaluation_declaration_type=type(self),
         )
 

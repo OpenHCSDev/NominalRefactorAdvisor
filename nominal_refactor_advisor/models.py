@@ -414,14 +414,46 @@ class EmptyFindingMetrics(FindingMetrics):
 
 @dataclass(frozen=True)
 class DeclarationReferenceMetrics(FindingMetrics):
-    """The scan-wide reference rewrites this finding carries, each with its files, or those that carry its sites.
+    """How a restated-identity finding stands toward the scan-wide reference rewrites.
 
-    `carried_by` names, for a finding whose rewritable sites another finding's
-    recipe rewrites, each such rewrite and where that finding stands.
+    Each rewrite kind is carried by one finding (`CarriedReferenceRewrites`);
+    another finding whose sites it rewrites is covered by it
+    (`CoveredReferenceRewrites`). Each answer is empty unless the subclass gives it.
     """
 
-    carried_rewrites: tuple[tuple[str, tuple[str, ...]], ...]
-    carried_by: tuple[tuple[str, str], ...] = ()
+    @property
+    def carried_rewrites(self) -> tuple[tuple[str, tuple[str, ...]], ...]:
+        """The rewrite kinds this finding carries, each with the files it rewrites."""
+
+        return ()
+
+    @property
+    def carried_by(self) -> tuple[tuple[str, str], ...]:
+        """The rewrite kinds other findings carry that rewrite this finding's sites, each with where its carrier stands."""
+
+        return ()
+
+
+@dataclass(frozen=True)
+class CarriedReferenceRewrites(DeclarationReferenceMetrics):
+    """The finding a scan-wide reference rewrite is offered on."""
+
+    rewrites: tuple[tuple[str, tuple[str, ...]], ...]
+
+    @property
+    def carried_rewrites(self) -> tuple[tuple[str, tuple[str, ...]], ...]:
+        return self.rewrites
+
+
+@dataclass(frozen=True)
+class CoveredReferenceRewrites(DeclarationReferenceMetrics):
+    """A finding whose sites rewrites carried by other findings remove."""
+
+    carriers: tuple[tuple[str, str], ...]
+
+    @property
+    def carried_by(self) -> tuple[tuple[str, str], ...]:
+        return self.carriers
 
 
 @dataclass(frozen=True)

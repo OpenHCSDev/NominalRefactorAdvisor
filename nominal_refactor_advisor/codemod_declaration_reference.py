@@ -490,7 +490,10 @@ class ReferenceEnumMemberOperation(ReferenceNamedClassOperation):
 
     position_tags: ClassVar[frozenset[str]] = frozenset((EnumValueSpelling.tag,))
     default_rationale: ClassVar[str] = (
-        "Reference the enum member instead of spelling its value."
+        "Reference the enum member instead of spelling its value. The value "
+        "becomes the member its declaration types the position as: ==, hash(), "
+        "str() and format() answer as before; type(), repr(), pickling and `is` "
+        "see the member, not the string."
     )
 
     def named(self, detail, identities, path):
@@ -507,10 +510,10 @@ class DeclarationReferenceFindingRecipeSynthesizer(
     """One recipe per scan-wide rewrite, offered on the finding the detector names as its carrier.
 
     The detector names one finding per rewrite kind and the files that rewrite
-    touches (`DeclarationReferenceMetrics`). Its recipe holds one proved
+    touches (`CarriedReferenceRewrites`). Its recipe holds one proved
     operation per file, so the whole rewrite is one candidate; every other
-    finding it removes is covered by that one (`carried_by`), and a finding
-    with no rewritable site is rejected.
+    finding it removes is covered by that one (`CoveredReferenceRewrites`),
+    and a finding with no rewritable site is rejected.
     """
 
     reference_operations: tuple[type[DeclarationReferenceOperation], ...] = (
