@@ -1213,23 +1213,23 @@ def _matched_subject(ancestors: Sequence[ast.AST]) -> str:
 
 
 def _subject_reading(subject: ast.expr, ancestors: Sequence[ast.AST]) -> SubjectReading:
-    """`ForeignSubject` when the tested value is the innermost enclosing function's
-    parameter annotated `object`; otherwise the value is held as itself."""
+    """`ForeignSubject` when the tested value is a parameter annotated `object`
+    that nothing rebinds (`LexicalScopeBindingAuthority.parameter_annotation`);
+    otherwise the value is held as itself.
+
+    `ancestors` run from the module down to the test expression holding the
+    subject (the comparison or call); no scope lies between it and the subject.
+    """
 
     match subject:
-        case ast.Name(id=name):
-            for function in reversed(tuple(FunctionDefinition.within(ancestors))):
-                arguments = (
-                    *function.args.posonlyargs,
-                    *function.args.args,
-                    *function.args.kwonlyargs,
-                )
-                for argument in arguments:
-                    if argument.arg == name:
-                        match argument.annotation:
-                            case ast.Name(id="object") | ast.Constant(value="object"):
-                                return ForeignSubject()
-                        return SubjectReading()
+        case ast.Name():
+            match LEXICAL_SCOPE_BINDING_AUTHORITY.parameter_annotation(
+                subject, ancestors
+            ):
+                case ast.Name(id=declared) | ast.Constant(value=declared) if (
+                    declared == object.__name__
+                ):
+                    return ForeignSubject()
     return SubjectReading()
 
 
@@ -1281,7 +1281,9 @@ def type_test_shapes(parsed_module: ParsedModule) -> Iterator[TypeTestShape]:
                 symbol=index.lexical_symbol(node_index),
                 group=ast.dump(subject),
                 detail=names,
-                reading=_subject_reading(subject, index.ancestor_nodes(node_index)),
+                reading=_subject_reading(
+                    subject, (*index.ancestor_nodes(node_index), comparison)
+                ),
             )
     for node_index, node in index.indexed_nodes_of_type(ast.Call):
         arguments = BuiltinCallName.type_test_arguments(node)
@@ -1297,7 +1299,9 @@ def type_test_shapes(parsed_module: ParsedModule) -> Iterator[TypeTestShape]:
                 symbol=index.lexical_symbol(node_index),
                 group=ast.dump(arguments[0]),
                 detail=names,
-                reading=_subject_reading(arguments[0], index.ancestor_nodes(node_index)),
+                reading=_subject_reading(
+                    arguments[0], (*index.ancestor_nodes(node_index), node)
+                ),
             )
 
 

@@ -13,7 +13,12 @@ PYTHON_PUBLIC_EXPORT_ASSIGNMENT = "__all__"
 
 @dataclass(frozen=True)
 class PublicExportPolicy:
-    """Declarative policy for deriving a module's public export surface."""
+    """Declarative policy for deriving a module's public export surface.
+
+    `package_reexports`: a package's surface also holds what it imports from
+    its own submodules, so a value declared in `module_name` or any module
+    below it counts as the package's.
+    """
 
     module_name: str
     types_only: bool = True
@@ -22,6 +27,14 @@ class PublicExportPolicy:
     exclude_abstract: bool = False
     root_types: tuple[type[object], ...] = ()
     explicit_names: frozenset[str] = frozenset()
+    package_reexports: bool = False
+
+    def owns_module(self, module_name: str) -> bool:
+        """Whether a value declared in `module_name` belongs to this surface."""
+
+        return module_name == self.module_name or (
+            self.package_reexports and module_name.startswith(f"{self.module_name}.")
+        )
 
 
 def matches_public_export_policy(
@@ -34,7 +47,7 @@ def matches_public_export_policy(
     if name in policy.explicit_names:
         return True
     module = inspect.getmodule(value)
-    if module is None or module.__name__ != policy.module_name:
+    if module is None or not policy.owns_module(module.__name__):
         return False
     if policy.types_only and (not isinstance(value, type)):
         return False

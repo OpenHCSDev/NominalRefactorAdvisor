@@ -882,3 +882,25 @@ def test_a_test_on_a_value_annotated_object_is_the_decoder_not_slop(tmp_path: Pa
     )
 
     assert _lines(findings) == [12]
+
+
+def test_identity_on_a_sentinel_class_is_not_a_type_test(tmp_path: Path):
+    # `class MISSING: pass` extends no scanned class and no scanned class
+    # extends it: `value is MISSING` asks which object the value is, not which
+    # family member. The membership test beside it still tests `Circle`.
+    findings = _findings(
+        tmp_path,
+        OwnTypeTestDetector,
+        {
+            "shapes": OWN_CLASSES + "class MISSING:\n    pass\n",
+            "use": (
+                "from shapes import MISSING, Circle\n"
+                "def get(value=MISSING):\n"
+                "    if value is MISSING:\n        return None\n"
+                "    if value in (MISSING, Circle):\n        return 0\n"
+                "    return value\n"
+            ),
+        },
+    )
+
+    assert _lines(findings) == [5]

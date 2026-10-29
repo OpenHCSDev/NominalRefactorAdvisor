@@ -199,7 +199,11 @@ class RepeatedModuleExpressionLeadDetector(
 class ForeignTypeSwitchDetector(
     CompactModuleProjectionDetectorMixin[TypeTestModule], IssueDetector
 ):
-    """Find `isinstance` tests on one foreign module's classes across the scan.
+    """Find type tests on one foreign module's classes across the scan.
+
+    A type test is an `isinstance`/`issubclass` call, a class pattern, or
+    `type(x) is C` (`type_test_shapes`); `x is C` and `x in (A, B)` never count
+    here, since a foreign name is never proved a class.
 
     Every site counts: a module may legitimately hold exactly one decoder for a
     family, but this detector does not try to recognise decoders.
@@ -211,8 +215,8 @@ class ForeignTypeSwitchDetector(
         PatternId.FOREIGN_TYPE_SWITCH_LEAD,
         "Type tests on foreign classes raise a closed-set question",
         "Several sites test instances against classes owned by one module outside this repository. Each site restates which of that module's classes it handles; a site that tests a strict subset of another site's set may have missed a case.",
-        "isinstance/issubclass sites whose type argument resolves through imports or builtins to classes of one non-repository module; closedness, owner and migration recipe OPEN",
-        "isinstance/issubclass sites on classes of one foreign module at or above the configured site count across the scanned modules",
+        "type tests (isinstance/issubclass, a class pattern, type(x) is C) whose classes resolve through imports or builtins to classes of one non-repository module; closedness, owner and migration recipe OPEN",
+        "type tests (isinstance/issubclass, a class pattern, type(x) is C) on classes of one foreign module at or above the configured site count across the scanned modules",
         (CapabilityTag.PROVENANCE,),
         (ObservationTag.PARTIAL_VIEW,),
     )
@@ -245,7 +249,8 @@ class ForeignTypeSwitchDetector(
         type_sets = Counter(shape.type_names for shape in sites)
         modules = {shape.file_path for shape in sites}
         lines = [
-            f"{len(sites)} isinstance/issubclass sites in {len(modules)} module(s) "
+            f"{len(sites)} type tests (isinstance/issubclass, class patterns, "
+            f"type(x) is C) in {len(modules)} module(s) "
             f"test classes of `{owner}`, which this repository does not "
             "declare. Type sets seen: "
             + _counted_list(

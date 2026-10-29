@@ -23,6 +23,7 @@ from ..codemod import (
     RefactorRecipeOperation,
 )
 from ..class_index import (
+    CompactClassFamilyIndex,
     CompactModuleClassProjectionFamily,
 )
 from ..ast_tools import ParsedModuleSet
@@ -253,18 +254,23 @@ class JoinedRestatedFactDetector(
 def _declared_class_scope(
     projections_by_family: CompactProjectionGroups,
 ) -> DeclaredClassScope:
-    """The scan's module names and the symbol of every class it declares."""
+    """The scan's module names and the symbol of every class in one of its own
+    families: a class one of whose resolved bases the scan declares, and each
+    such base."""
 
+    index = CompactClassFamilyIndex.from_projection_groups(projections_by_family)
+    edges = tuple(
+        (symbol, base)
+        for symbol, indexed_class in index.classes_by_symbol.items()
+        for base in indexed_class.resolved_base_symbols
+        if base in index.known_symbols
+    )
     return DeclaredClassScope(
         tuple(
             module.module_name
             for module in TypeTestModuleFamily.modules_in(projections_by_family)
         ),
-        frozenset(
-            indexed_class.symbol
-            for projection in CompactModuleClassProjectionFamily.modules_in(projections_by_family)
-            for indexed_class in projection.classes
-        ),
+        frozenset(symbol for edge in edges for symbol in edge),
     )
 
 

@@ -461,15 +461,21 @@ class TypeTestShape(RestatingSite):
 
 @dataclass(frozen=True)
 class ClassIdentityTestShape(TypeTestShape):
-    """`x is C` or `x in (A, B)`: a type test only when each name is a class.
+    """`x is C` or `x in (A, B)`: a type test only when each name is a family class.
 
-    The syntax does not prove that (`mode is DEFAULT_MODE` is not a type test),
-    so a name counts only when the scan declares a class by it, and a foreign
-    name is never proved a class.
+    The syntax does not prove the name is a class (`mode is DEFAULT_MODE` is not
+    a type test), and a class proves no type test either: identity on a class
+    that no scanned class extends and that extends no scanned class (a sentinel
+    such as `class MISSING: pass`) asks which object the value is, not which
+    family member. So a name counts only when the scan declares it as a class in
+    one of its own families (`DeclaredClassScope.family_class_symbols`), and a
+    foreign name is never proved one.
     """
 
     def declared_type_names(self, scope: DeclaredClassScope) -> tuple[str, ...]:
-        return tuple(name for name in self.type_names if name in scope.class_symbols)
+        return tuple(
+            name for name in self.type_names if name in scope.family_class_symbols
+        )
 
     def is_foreign_to(self, scanned_module_names: Sequence[str]) -> bool:
         return False
@@ -477,10 +483,11 @@ class ClassIdentityTestShape(TypeTestShape):
 
 @dataclass(frozen=True)
 class DeclaredClassScope:
-    """What the scan declares: its module names and, when indexed, its class symbols."""
+    """What the scan declares: its module names and, when indexed, the symbols of
+    its family classes, those with a scanned base or a scanned subclass."""
 
     module_names: tuple[str, ...]
-    class_symbols: frozenset[str] = frozenset()
+    family_class_symbols: frozenset[str] = frozenset()
 
     def declares_module_of(self, name: str) -> bool:
         """Whether a scanned module is, contains, or sits inside the module of `name`."""

@@ -4,6 +4,7 @@ Importing `_implementations` registers every concrete detector; the names
 below are the ones code and tests read through this package.
 """
 
+from .. import export_tools as _export_tools
 from . import _implementations as _implementations
 from ._base import (
     CompactClassRepositoryContext,
@@ -91,5 +92,13 @@ from ._systemic import (
     ResidualClosedAxisIndirectionDetector,
 )
 
-# The public surface is exactly what this package imports.
-__all__ = tuple(sorted(name for name in tuple(globals()) if not name.startswith("_")))
+__all__ = _export_tools.derive_public_exports(
+    globals(),
+    _export_tools.PublicExportPolicy(
+        module_name=__name__,
+        types_only=False,
+        allow_callables=True,
+        include_enums=True,
+        package_reexports=True,
+    ),
+)

@@ -436,7 +436,7 @@ class DetectorConfig:
     )
     min_foreign_type_switch_sites: int = detector_config_option(
         3,
-        "Minimum isinstance/issubclass sites on one foreign module's classes before surfacing a type-switch lead.",
+        "Minimum type tests (isinstance/issubclass, class patterns, type(x) is C) on one foreign module's classes before surfacing a type-switch lead.",
     )
     min_repeated_local_regex_literals: int = detector_config_option(
         3,
