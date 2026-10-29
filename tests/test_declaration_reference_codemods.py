@@ -14,6 +14,7 @@ from nominal_refactor_advisor.codemod import (
 )
 from nominal_refactor_advisor.codemod_declaration_reference import (
     ReferenceClassNameOperation,
+    ReferenceEnumMemberOperation,
     ReferenceImportedModuleOperation,
     UnquoteResolvedTypeNamesOperation,
 )
@@ -152,7 +153,10 @@ def test_a_module_the_file_does_not_import_keeps_its_prescription(tmp_path: Path
     (finding,) = _identity_findings(tmp_path)
     records, rewritten = _replayed(tmp_path)
     (record,) = records
-    assert record.status is not FindingRecipeSynthesisStatus.EXECUTABLE_CANDIDATE
+    assert record.status is FindingRecipeSynthesisStatus.REJECTED_BY_SAFETY_CHECK
+    assert record.reason == (
+        "no site of this finding can be written as its reference where it stands"
+    )
     assert rewritten == {}
     assert "a site no recipe rewrites keeps this prescription" in finding.summary
 
@@ -202,6 +206,17 @@ def test_the_scan_rewrite_is_one_candidate_with_one_operation_per_file(
         if record.status is FindingRecipeSynthesisStatus.EXECUTABLE_CANDIDATE
     ]
     assert len(executable) == 1
+    # Every other finding is removed by that one recipe: covered, naming where
+    # its carrier stands, never reported as rejected.
+    others = [record for record in records if record not in executable]
+    assert others
+    assert {record.status for record in others} == {
+        FindingRecipeSynthesisStatus.COVERED_BY_CANDIDATE
+    }
+    assert all(
+        record.reason.startswith("covered by the type rewrite carried at ")
+        for record in others
+    )
     operations = executable[0].candidate_recipes[0].operations
     assert sorted(
         Path(operation.target.file_path).name for operation in operations
@@ -430,3 +445,217 @@ def test_a_new_import_may_take_submodules_from_the_running_package(tmp_path: Pat
     (source,) = rewritten.values()
     assert "import sys\nfrom pkg.owner import NamedOwner\n" in source
     assert "send(NamedOwner.__name__)" in source
+
+
+def test_a_string_in_a_position_typed_as_an_enum_becomes_its_member(tmp_path: Path):
+    _write(
+        tmp_path,
+        {
+            "pkg/__init__": "",
+            "pkg/attrs": (
+                "from enum import StrEnum\n\n\n"
+                "class RegistryAttribute(StrEnum):\n"
+                "    REGISTRY = '__registry__'\n"
+                "    REGISTRY_KEY = 'registry_key'\n"
+                "    PLAIN = 'plain'\n\n\n"
+                "class OtherKey(StrEnum):\n    REGISTRY = '__registry__'\n"
+            ),
+            "pkg/use": (
+                "from typing import ClassVar\n\n"
+                "from pkg.attrs import RegistryAttribute\n\n"
+                "DEFAULT: RegistryAttribute = '__registry__'\n\n\n"
+                "class Keyed:\n"
+                "    key: ClassVar[RegistryAttribute] = 'registry_key'\n"
+                "    marker = 'registry_key'\n\n\n"
+                "def pick(kind: RegistryAttribute = 'registry_key') -> RegistryAttribute:\n"
+                "    if kind == 'plain':\n"
+                "        return '__registry__'\n"
+                "    return kind\n\n\n"
+                "def untyped(attrs, name: str = '__registry__'):\n"
+                "    return attrs['__registry__'], getattr(attrs, 'registry_key')\n"
+            ),
+        },
+    )
+    records, rewritten = _replayed(tmp_path)
+    operations = [
+        operation
+        for record in records
+        for recipe in record.candidate_recipes
+        for operation in recipe.operations
+    ]
+    assert [type(operation) for operation in operations] == [
+        ReferenceEnumMemberOperation
+    ]
+    (source,) = rewritten.values()
+    # The declaration names the enum, so the member is the one of that enum,
+    # even where another enum shares the value, and even a one-word value.
+    assert "DEFAULT: RegistryAttribute = RegistryAttribute.REGISTRY\n" in source
+    assert "key: ClassVar[RegistryAttribute] = RegistryAttribute.REGISTRY_KEY\n" in source
+    assert (
+        "def pick(kind: RegistryAttribute = RegistryAttribute.REGISTRY_KEY)"
+        in source
+    )
+    assert "if kind == RegistryAttribute.PLAIN:" in source
+    assert "return RegistryAttribute.REGISTRY\n" in source
+    # Equal text where nothing types the position as the enum is not the enum.
+    assert "    marker = 'registry_key'\n" in source
+    assert "def untyped(attrs, name: str = '__registry__'):" in source
+    assert "return attrs['__registry__'], getattr(attrs, 'registry_key')" in source
+
+
+def test_an_installed_enum_named_by_an_annotation_is_referenced_by_that_name(
+    tmp_path: Path, monkeypatch
+):
+    site = tmp_path / "site" / "nra_test_attrs_pkg"
+    site.mkdir(parents=True)
+    (site / "__init__.py").write_text("from .core import Attr, Holder\n")
+    (site / "core.py").write_text(
+        "from enum import StrEnum\n\n\n"
+        "class Attr(StrEnum):\n    REGISTRY = '__registry__'\n\n\n"
+        "class Holder:\n    pass\n"
+    )
+    monkeypatch.syspath_prepend(str(site.parent))
+    root = tmp_path / "scan"
+    _write(
+        root,
+        {
+            "pkg/__init__": "",
+            "pkg/use": (
+                "from nra_test_attrs_pkg import Attr as Key\n\n\n"
+                "def read(attrs, key: Key = '__registry__'):\n"
+                "    return attrs[key]\n"
+            ),
+        },
+    )
+    _records, rewritten = _replayed(root)
+    (source,) = rewritten.values()
+    assert "def read(attrs, key: Key = Key.REGISTRY):" in source
+
+
+def test_an_enum_whose_members_do_not_behave_as_their_strings_keeps_its_spelling(
+    tmp_path: Path,
+):
+    # A (str, Enum) member is equal to its string but formats as `Mixed.A`; a
+    # plain Enum member is not even equal; a StrEnum that overrides `__eq__`,
+    # or composes a base that overrides `__format__` ahead of StrEnum in its
+    # MRO, answers as that override does. All still restate the member, but
+    # writing the member there would change what the program does.
+    _write(
+        tmp_path,
+        {
+            "pkg/__init__": "",
+            "pkg/kinds": (
+                "from enum import Enum, StrEnum\n\n\n"
+                "class Mixed(str, Enum):\n    A = 'mixed_a'\n\n\n"
+                "class Plain(Enum):\n    A = 'plain_a'\n\n\n"
+                "class Folded(StrEnum):\n    A = 'folded_a'\n\n"
+                "    def __eq__(self, other):\n"
+                "        return str(self).casefold() == str(other).casefold()\n\n"
+                "    __hash__ = StrEnum.__hash__\n\n\n"
+                "class Shouting:\n"
+                "    def __format__(self, spec):\n        return str(self).upper()\n\n\n"
+                "class Loud(Shouting, StrEnum):\n    A = 'loud_a'\n"
+            ),
+            "pkg/use": (
+                "from pkg.kinds import Folded, Loud, Mixed, Plain\n\n"
+                "MIXED: Mixed = 'mixed_a'\n"
+                "PLAIN: Plain = 'plain_a'\n"
+                "FOLDED: Folded = 'folded_a'\n"
+                "LOUD: Loud = 'loud_a'\n"
+            ),
+        },
+    )
+    findings = _identity_findings(tmp_path)
+    for member in ("`Mixed.A`", "`Plain.A`", "`Folded.A`", "`Loud.A`"):
+        assert any(f"enum member {member}" in finding.summary for finding in findings)
+    records, rewritten = _replayed(tmp_path)
+    assert not any(record.candidate_recipes for record in records)
+    assert rewritten == {}
+
+
+def test_a_parameter_rebound_before_it_is_compared_is_not_its_declared_enum(
+    tmp_path: Path,
+):
+    _write(
+        tmp_path,
+        {
+            "pkg/__init__": "",
+            "pkg/kinds": "from enum import StrEnum\n\n\nclass Kind(StrEnum):\n    A = 'kind_a'\n",
+            "pkg/use": (
+                "from pkg.kinds import Kind\n\n\n"
+                "def rebound(kind: Kind):\n"
+                "    kind = str(kind).upper()\n"
+                "    return kind == 'kind_a'\n\n\n"
+                "def kept(kind: Kind):\n"
+                "    return kind == 'kind_a'\n"
+            ),
+        },
+    )
+    _records, rewritten = _replayed(tmp_path)
+    (source,) = rewritten.values()
+    assert "    kind = str(kind).upper()\n    return kind == 'kind_a'\n" in source
+    assert "def kept(kind: Kind):\n    return kind == Kind.A\n" in source
+
+
+def test_a_parameter_any_scope_form_rebinds_is_not_its_declared_enum(tmp_path: Path):
+    # `except ... as`, a match capture, a `for` target and a nested `nonlocal`
+    # all rebind the parameter; a nested function's own parameter of the same
+    # name is a different variable. None of these reads is the declared `Kind`.
+    rebinding = (
+        "def caught(kind: Kind):\n"
+        "    try:\n        pass\n    except ValueError as kind:\n        pass\n"
+        "    return kind == 'kind_a'\n\n\n"
+        "def captured(kind: Kind, value):\n"
+        "    match value:\n        case str() as kind:\n            pass\n"
+        "    return kind == 'kind_a'\n\n\n"
+        "def looped(kind: Kind, values):\n"
+        "    for kind in values:\n        pass\n"
+        "    return kind == 'kind_a'\n\n\n"
+        "def closed(kind: Kind):\n"
+        "    def reset():\n        nonlocal kind\n        kind = 'other'\n"
+        "    reset()\n"
+        "    return kind == 'kind_a'\n\n\n"
+        "def shadowed(kind: Kind):\n"
+        "    def inner(kind):\n        return kind == 'kind_a'\n"
+        "    return inner\n"
+    )
+    _write(
+        tmp_path,
+        {
+            "pkg/__init__": "",
+            "pkg/kinds": "from enum import StrEnum\n\n\nclass Kind(StrEnum):\n    A = 'kind_a'\n",
+            "pkg/use": "from pkg.kinds import Kind\n\n\n" + rebinding,
+        },
+    )
+    assert not any(
+        "enum member `Kind.A`" in finding.summary
+        for finding in _identity_findings(tmp_path)
+    )
+
+
+def test_only_the_typing_qualifiers_and_real_members_name_an_enum(tmp_path: Path):
+    # A class of the project's own named `Final` qualifies nothing, and an
+    # enum body's `_ignore_` string is reserved by `enum`, no member's value.
+    _write(
+        tmp_path,
+        {
+            "pkg/__init__": "",
+            "pkg/kinds": (
+                "from enum import StrEnum\n\n\n"
+                "class Kind(StrEnum):\n    _ignore_ = 'kind_ignored'\n    A = 'kind_a'\n\n\n"
+                "class Final:\n    def __class_getitem__(cls, item):\n        return cls\n"
+            ),
+            "pkg/use": (
+                "import typing\n\n"
+                "from pkg.kinds import Final, Kind\n\n"
+                "OWN: Final[Kind] = 'kind_a'\n"
+                "IGNORED: Kind = 'kind_ignored'\n"
+                "QUALIFIED: typing.Final[Kind] = 'kind_a'\n"
+            ),
+        },
+    )
+    _records, rewritten = _replayed(tmp_path)
+    (source,) = rewritten.values()
+    assert "OWN: Final[Kind] = 'kind_a'\n" in source
+    assert "IGNORED: Kind = 'kind_ignored'\n" in source
+    assert "QUALIFIED: typing.Final[Kind] = Kind.A\n" in source

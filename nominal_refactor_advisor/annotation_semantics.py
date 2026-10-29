@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ast
 import re
+import typing
 from dataclasses import dataclass
 from enum import Enum
 from functools import cached_property
@@ -33,11 +34,40 @@ class TypeWrapper(Enum):
 
         return any(wrapper.spelled_by(name) for wrapper in cls)
 
+
+TYPING_MODULES = frozenset((typing.__name__, "typing_extensions"))
+"""The modules exporting the typing special forms."""
+
+
+class TypeQualifier(Enum):
+    """A typing subscript qualifying a variable that holds a value of its slice's type.
+
+    ``x: ClassVar[E]`` and ``x: Final[E]`` hold an ``E``; unlike a
+    ``TypeWrapper`` such as ``type[E]``, the qualifier never changes what the
+    value is.
+    """
+
+    CLASS_VARIABLE = "ClassVar"
+    FINAL = "Final"
+
+    @property
+    def qualified_names(self) -> frozenset[str]:
+        """The qualifier as each of `TYPING_MODULES` exports it."""
+
+        return frozenset(f"{module}.{self.value}" for module in TYPING_MODULES)
+
+    @classmethod
+    def qualifies(cls, qualified: str) -> bool:
+        """Whether a qualified name is one of the qualifiers a typing module exports."""
+
+        return any(qualified in qualifier.qualified_names for qualifier in cls)
+
+
 @dataclass(frozen=True)
 class ClassVarAnnotationAuthority:
     """Own recognition of typing.ClassVar annotation roots."""
 
-    root_name: str = "ClassVar"
+    root_name: str = TypeQualifier.CLASS_VARIABLE.value
 
     def matches(self, annotation: ast.AST) -> bool:
         return self.annotation_root_name(annotation) == self.root_name

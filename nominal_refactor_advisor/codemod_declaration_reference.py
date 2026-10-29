@@ -7,9 +7,11 @@ all resolve unquoted as the expression it spells;
 `ReferenceImportedModuleOperation` writes a module's dotted name, where a string
 selects a module the file already imports eagerly or is the file's own
 package, as the module reference; `ReferenceClassNameOperation` writes a class
-name spelled as a value as `Name.__name__`. Where the names resolve is owned by
-`quoted_reference` and `class_identity_observations`, which the detector asks
-too.
+name spelled as a value as `Name.__name__`, and `ReferenceEnumMemberOperation`
+a string in a position typed as an enum, equal to a member's value, as
+`Enum.MEMBER`. Where the
+names resolve is owned by `quoted_reference` and `class_identity_observations`,
+which the detector asks too.
 """
 
 from __future__ import annotations
@@ -37,9 +39,12 @@ from .codemod_source_edits import (
 from .finding_recipe_actions import FindingRecipeActionKey
 from .class_identity_observations import (
     ClassNameSpelling,
+    DeclaredIdentities,
+    EnumValueSpelling,
     IdentityPositions,
     IdentitySpelling,
     ModuleSpelling,
+    NameImport,
     TypeSpelling,
 )
 from .models import DeclarationReferenceMetrics, RefactorFinding
@@ -371,26 +376,14 @@ class ReferenceImportedModuleOperation(DeclarationReferenceOperation):
 
 
 @dataclass(frozen=True, kw_only=True)
-class ReferenceClassNameOperation(DeclarationReferenceOperation):
-    """Write a class name spelled as a value (passed, returned, compared, matched) as `Name.__name__`.
+class ReferenceNamedClassOperation(DeclarationReferenceOperation, ABC):
+    """Write each rewritable site of the operation's position as an expression on a class, importing the class where needed.
 
-    `Name.__name__` evaluates to the literal when `Name` is bound, wherever the
-    literal runs, to a scanned class that keeps its statement's name
-    (`ClassNameOwners.keeps_name`). Either the file binds it already, by a
-    top-level class statement or `from` import that runs first and is shadowed
-    nowhere, or the file binds the name nowhere and a `from` statement before
-    the literal can also import the class without changing the import order
-    (`ClassNameOwners.importable`): the name is added to that statement.
-    Otherwise a new `from owner import Name` goes after the file's last
-    top-level import when the owner module cannot import this one back
-    (`ClassNameOwners.new_import`).
+    Each site names its class and replacement (`named`) and how the file comes
+    to bind the class there (`NameImport`): already bound, added to a `from`
+    statement before the literal, or a new `from owner import Name` after the
+    file's last top-level import.
     """
-
-    position_tags: ClassVar[frozenset[str]] = frozenset((ClassNameSpelling.tag,))
-    default_rationale: ClassVar[str] = (
-        "Name the class object's __name__ instead of spelling the class name."
-    )
-    NAME_OF_CLASS: ClassVar[str] = "__name__"
 
     def rewrites(self, context, module, path):
         identities = context.declared_identities
@@ -406,21 +399,18 @@ class ReferenceClassNameOperation(DeclarationReferenceOperation):
                 position.rewrite(detail, identities, path).rewritable(
                     DeclaredInterpreter.of(Path(path))
                 )
-                and position.rewrite_kind is ClassNameSpelling
+                and position.rewrite_kind.tag in self.position_tags
             ):
                 continue
-            binding, holding, literal = detail[-3:]
-            found[id(node)] = SpanRewrite(node, f"{literal}.{self.NAME_OF_CLASS}")
-            if binding:
+            named = self.named(detail, identities, path)
+            if named is None:
                 continue
-            owners = identities.class_names
-            statement = owners.importable(path, int(holding), literal)
-            if statement is not None:
-                imported.setdefault(statement.index, {})[literal] = None
-                continue
-            owner = owners.new_import(path, int(holding), literal)
-            if owner is not None:
-                created.setdefault(owner, {})[literal] = None
+            replacement, how = named
+            found[id(node)] = SpanRewrite(node, replacement)
+            if how.statement is not None:
+                imported.setdefault(how.statement, {})[how.name] = None
+            elif how.created:
+                created.setdefault(how.created, {})[how.name] = None
         source = context.sources_by_file_path[path]
         last_import = identities.class_names.by_path[path].last_import
         return (
@@ -441,6 +431,78 @@ class ReferenceClassNameOperation(DeclarationReferenceOperation):
             ),
         )
 
+    @abstractmethod
+    def named(
+        self, detail: tuple[str, ...], identities: DeclaredIdentities, path: str
+    ) -> tuple[str, NameImport] | None:
+        """The rewritable site's replacement source, and how the file binds the class it names."""
+
+        raise NotImplementedError
+
+
+@dataclass(frozen=True, kw_only=True)
+class ReferenceClassNameOperation(ReferenceNamedClassOperation):
+    """Write a class name spelled as a value (passed, returned, compared, matched) as `Name.__name__`.
+
+    `Name.__name__` evaluates to the literal when `Name` is bound, wherever the
+    literal runs, to a scanned class that keeps its statement's name
+    (`ClassNameOwners.keeps_name`). Either the file binds it already, by a
+    top-level class statement or `from` import that runs first and is shadowed
+    nowhere, or the file binds the name nowhere and a `from` statement before
+    the literal can also import the class without changing the import order
+    (`ClassNameOwners.importable`): the name is added to that statement.
+    Otherwise a new `from owner import Name` goes after the file's last
+    top-level import when the owner module cannot import this one back
+    (`ClassNameOwners.new_import`).
+    """
+
+    position_tags: ClassVar[frozenset[str]] = frozenset((ClassNameSpelling.tag,))
+    default_rationale: ClassVar[str] = (
+        "Name the class object's __name__ instead of spelling the class name."
+    )
+    NAME_OF_CLASS: ClassVar[str] = "__name__"
+
+    def named(self, detail, identities, path):
+        binding, holding, literal = detail[-3:]
+        reference = f"{literal}.{self.NAME_OF_CLASS}"
+        if binding:
+            return reference, NameImport(literal)
+        owners = identities.class_names
+        statement = owners.importable(path, int(holding), literal)
+        if statement is not None:
+            return reference, NameImport(literal, statement=statement.index)
+        owner = owners.new_import(path, int(holding), literal)
+        if owner is not None:
+            return reference, NameImport(literal, created=owner)
+        return None
+
+
+@dataclass(frozen=True, kw_only=True)
+class ReferenceEnumMemberOperation(ReferenceNamedClassOperation):
+    """Write a string in a position typed as an enum, equal to one of its members' values, as `Enum.MEMBER`.
+
+    The declaration typing the position names the enum, so the file binds it
+    already (`DeclaredIdentities.binds`); the member is the value the position
+    is declared to hold, and it answers `==`, `hash()`, `str()` and `format()`
+    as its string (`ClassNameOwners.answers_as_string`). `type()`, `repr()`,
+    pickling and `is` see the member instead.
+    """
+
+    position_tags: ClassVar[frozenset[str]] = frozenset((EnumValueSpelling.tag,))
+    default_rationale: ClassVar[str] = (
+        "Reference the enum member instead of spelling its value. The value "
+        "becomes the member its declaration types the position as: ==, hash(), "
+        "str() and format() answer as before; type(), repr(), pickling and `is` "
+        "see the member, not the string."
+    )
+
+    def named(self, detail, identities, path):
+        _tag, _holding, name, literal = detail
+        member = identities.typed_member(path, name, literal)
+        if member is None:
+            return None
+        return f"{name}.{member.member}", NameImport(name)
+
 
 class DeclarationReferenceFindingRecipeSynthesizer(
     FindingRecipeSynthesizer, DeclarationReferenceConcept, ABC
@@ -448,26 +510,34 @@ class DeclarationReferenceFindingRecipeSynthesizer(
     """One recipe per scan-wide rewrite, offered on the finding the detector names as its carrier.
 
     The detector names one finding per rewrite kind and the files that rewrite
-    touches (`DeclarationReferenceMetrics`). Its recipe holds one proved
+    touches (`CarriedReferenceRewrites`). Its recipe holds one proved
     operation per file, so the whole rewrite is one candidate; every other
-    finding it removes is rejected here as carried by that one.
+    finding it removes is covered by that one (`CoveredReferenceRewrites`),
+    and a finding with no rewritable site is rejected.
     """
 
     reference_operations: tuple[type[DeclarationReferenceOperation], ...] = (
         UnquoteResolvedTypeNamesOperation,
         ReferenceImportedModuleOperation,
         ReferenceClassNameOperation,
+        ReferenceEnumMemberOperation,
     )
+
+    @staticmethod
+    def reference_metrics(finding: RefactorFinding) -> DeclarationReferenceMetrics:
+        """How the finding stands toward the scan's reference rewrites; a finding the detector gave no such record carries and is covered by none."""
+
+        metrics = finding.metrics
+        if isinstance(metrics, DeclarationReferenceMetrics):
+            return metrics
+        return DeclarationReferenceMetrics()
 
     def carried(
         self, finding: RefactorFinding
     ) -> tuple[tuple[type[DeclarationReferenceOperation], tuple[str, ...]], ...]:
-        metrics = finding.metrics
-        if not isinstance(metrics, DeclarationReferenceMetrics):
-            return ()
         return tuple(
             (operation, files)
-            for kind, files in metrics.carried_rewrites
+            for kind, files in self.reference_metrics(finding).carried_rewrites
             for operation in self.reference_operations
             if kind in operation.position_tags
         )
@@ -498,10 +568,7 @@ class DeclarationReferenceFindingRecipeSynthesizer(
             )
         carried = self.carried(finding)
         if not carried:
-            return self.rejected_evaluation(
-                "no recipe rewrites this site, or its rewrite is carried by the "
-                "finding at the scan's first rewritable site"
-            )
+            return self.reference_metrics(finding).uncarried_evaluation(self)
         recipe = RefactorRecipe(
             recipe_id=f"{finding.stable_id}-declaration-references",
             reason="Write the scan's spelled declarations as the references they spell.",
