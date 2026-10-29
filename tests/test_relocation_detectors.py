@@ -317,7 +317,8 @@ def test_an_own_state_answer_of_an_open_class_branched_on_through_self_is_flagge
     ]
     assert any(
         "`Authority.keyed_metaclass_family` (property) probes `self.registry_key_attribute`" in summary
-        and "1 branch test(s) select on it: m.py:15." in summary
+        and "1 branch test(s) select on it:" in summary
+        and "/m.py:15." in summary
         for summary in summaries
     ), summaries
 
@@ -334,8 +335,9 @@ def test_a_metaclass_methods_class_parameter_is_shown_never_counted_or_dropped(t
     metaclass_line, counted_line = _branch_lines(source)
     (finding,) = _findings(ConstantSubtypeAnswerDetector, _sources(tmp_path, {"m": source}))
     counted, _, uncounted = finding.summary.partition("Not counted")
-    assert f"1 branch test(s) read the name: m.py:{counted_line}." in counted
-    assert f"m.py:{metaclass_line}." in uncounted
+    assert "1 branch test(s) read the name:" in counted
+    assert f"/m.py:{counted_line}." in counted
+    assert f"/m.py:{metaclass_line}." in uncounted
 
 
 def test_a_parameter_rebound_by_a_capture_is_uncounted_but_a_nested_parameter_is_not_a_rebind(
@@ -362,5 +364,6 @@ def test_a_parameter_rebound_by_a_capture_is_uncounted_but_a_nested_parameter_is
     *rebound_lines, nested_line = _branch_lines(source)
     (finding,) = _findings(ConstantSubtypeAnswerDetector, _sources(tmp_path, {"m": source}))
     counted, _, uncounted = finding.summary.partition("Not counted")
-    assert f"1 branch test(s) read the name: m.py:{nested_line}." in counted
-    assert all(f"m.py:{line}." in uncounted for line in rebound_lines), finding.summary
+    assert "1 branch test(s) read the name:" in counted
+    assert f"/m.py:{nested_line}." in counted
+    assert all(f"/m.py:{line}." in uncounted for line in rebound_lines), finding.summary
