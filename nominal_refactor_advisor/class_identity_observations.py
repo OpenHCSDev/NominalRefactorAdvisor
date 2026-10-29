@@ -27,13 +27,14 @@ from functools import cache, cached_property
 from pathlib import Path
 from typing import ClassVar
 
-from .lexical_bindings import ImportBoundNameProjection
+from .lexical_bindings import LEXICAL_SCOPE_BINDING_AUTHORITY, ImportBoundNameProjection
 from .ast_projection import StatementValues
 from .ast_projection import CallKeywords
 from .ast_tools import (
     BuiltinCall,
     ModuleSyntaxIndex,
     ParsedModule,
+    ParsedModuleFact,
     Setattr,
 )
 from .class_index import module_import_aliases
@@ -96,22 +97,27 @@ class DeclaredClass:
 
 
 @dataclass(frozen=True)
-class NameBindings:
+class NameBindings(ParsedModuleFact):
     """What a name means where a top-level statement of one module runs.
 
     `bound` are the names a top-level class statement or `from` import binds
     and nothing else in the module binds, so no scope can shadow them, each
     with its binding statement's index and the qualified name it binds;
     `named` every name the module binds or reads anywhere; `starred` whether a
-    `from module import *` binds names no source lists.
+    `from module import *` binds names no source lists; `typed` the names a
+    typed position's annotation declares its value to be
+    (`QualifiedNames.declared_name` of an annotated assignment, a parameter or
+    a return annotation).
     """
 
     bound: tuple[tuple[str, int, str], ...] = ()
     named: frozenset[str] = frozenset()
     starred: bool = False
+    typed: frozenset[str] = frozenset()
 
     @classmethod
-    def of(cls, parsed_module: ParsedModule) -> NameBindings:
+    def derive(cls, parsed_module: ParsedModule) -> NameBindings:
+        qualified_names = parsed_module.fact(QualifiedNames)
         counts = Counter(
             bound
             for node in ast.walk(parsed_module.module)
@@ -148,7 +154,27 @@ class NameBindings:
                 if isinstance(node, ast.ImportFrom)
                 for alias in node.names
             ),
+            typed=frozenset(
+                filter(
+                    None,
+                    (
+                        qualified_names.declared_name(annotation)
+                        for node in ast.walk(parsed_module.module)
+                        for annotation in cls.typed_annotations(node)
+                    ),
+                )
+            ),
         )
+
+    @staticmethod
+    def typed_annotations(node: ast.AST) -> Iterator[ast.expr | None]:
+        """The annotations typing a value position: an annotated assignment's, a parameter's, a return's."""
+
+        match node:
+            case ast.AnnAssign(annotation=annotation) | ast.arg(annotation=annotation):
+                yield annotation
+            case ast.FunctionDef(returns=returns) | ast.AsyncFunctionDef(returns=returns):
+                yield returns
 
     @cached_property
     def by_name(self) -> dict[str, tuple[int, str]]:
@@ -234,7 +260,7 @@ class DeclaredIdentityFamily(ShapeFamily[ModuleDeclarations]):
     @classmethod
     def collect(cls, parsed_module: ParsedModule) -> list[ModuleDeclarations]:
         index = parsed_module.syntax_index
-        names = QualifiedNames.of(parsed_module)
+        names = parsed_module.fact(QualifiedNames)
         top_level = {
             id(statement)
             for statement in parsed_module.module.body
@@ -283,7 +309,7 @@ class DeclaredIdentityFamily(ShapeFamily[ModuleDeclarations]):
                     ),
                     default=-1,
                 ),
-                names=NameBindings.of(parsed_module),
+                names=parsed_module.fact(NameBindings),
             )
         ]
 
@@ -536,7 +562,7 @@ class DeclaredIdentityFamily(ShapeFamily[ModuleDeclarations]):
 
 
 @dataclass(frozen=True)
-class QualifiedNames:
+class QualifiedNames(ParsedModuleFact):
     """What a module-level name or attribute chain names, as a qualified name.
 
     An imported name resolves through the module's final import bindings, a
@@ -550,7 +576,7 @@ class QualifiedNames:
     local: frozenset[str]
 
     @classmethod
-    def of(cls, parsed_module: ParsedModule) -> QualifiedNames:
+    def derive(cls, parsed_module: ParsedModule) -> QualifiedNames:
         return cls(
             parsed_module.module_name,
             module_import_aliases(parsed_module),
@@ -573,6 +599,24 @@ class QualifiedNames:
                     return f"{self.module_name}.{name}"
                 if hasattr(builtins, name):
                     return f"{builtins.__name__}.{name}"
+        return ""
+
+    def declared_name(self, annotation: ast.expr | None) -> str:
+        """The bare name an annotation declares a value to be, through a `TypeQualifier`.
+
+        `ClassVar[E]` and `Final[E]` declare an `E` when the subscripted name
+        resolves through the module's imports to the qualifier `typing` or
+        `typing_extensions` exports; a class of the module's own named `Final`
+        qualifies nothing.
+        """
+
+        match annotation:
+            case ast.Subscript(value=qualifier, slice=inner) if TypeQualifier.qualifies(
+                self.qualified(qualifier)
+            ):
+                return self.declared_name(inner)
+            case ast.Name(id=name):
+                return name
         return ""
 
 
@@ -610,6 +654,7 @@ class ClassNameOwners:
     )
     MAX_REEXPORTS: ClassVar[int] = 16
     MAX_INSTALLED: ClassVar[int] = 64
+    """The most installed modules one scan reads, counted as each is read, not per round."""
 
     @classmethod
     def from_modules(cls, modules: Iterable[ModuleDeclarations]) -> ClassNameOwners:
@@ -625,8 +670,9 @@ class ClassNameOwners:
             }
             if not missing or len(tried) >= cls.MAX_INSTALLED:
                 break
-            tried |= missing
-            for module_name in missing:
+            reading = sorted(missing)[: cls.MAX_INSTALLED - len(tried)]
+            tried.update(reading)
+            for module_name in reading:
                 found = DeclaredIdentityFamily.installed(module_name)
                 if found is not None:
                     loaded[module_name] = found
@@ -696,12 +742,20 @@ class ClassNameOwners:
                     yield origin
 
     def foreign_imports(self) -> Iterator[str]:
-        """Names the scanned modules import from outside the scan and the standard library."""
+        """Names a scanned module imports from outside the scan and the standard library and types a position by.
+
+        Only a name some annotation declares a value to be (`NameBindings.typed`)
+        can make a string an enum member's restatement, so only those send
+        `from_modules` to the installed source.
+        """
 
         for name in self.scanned:
-            for qualified in self.imports[name].values():
+            imports = self.imports[name]
+            for bound in self.modules[name].names.typed:
+                qualified = imports.get(bound)
                 if (
-                    qualified.partition(".")[0] not in self.scanned_roots
+                    qualified is not None
+                    and qualified.partition(".")[0] not in self.scanned_roots
                     and not self.standard(qualified)
                     and self.canonical(qualified) is None
                 ):
@@ -834,11 +888,14 @@ class ClassNameOwners:
     ) -> bool:
         """Whether the enum's members answer `STRING_ANSWERS` as their values do.
 
-        Every base and metaclass on the way is a `VALUE_ENUMS` class or a
-        scanned class that defines none of `STRING_ANSWERS` and answers so in
-        turn. One overriding class anywhere in the bases, or one base nothing
-        scanned declares, decides the answer for every member through the MRO,
-        so reaching `StrEnum` along one path is not enough.
+        Every class statement's `DeclaredClass.origins` on the way (its bases,
+        and a metaclass only when the statement names one with `metaclass=`)
+        is a `VALUE_ENUMS` class or a class read here that defines none of
+        `STRING_ANSWERS` and answers so in turn. One overriding class anywhere
+        in the bases, or one base nothing read here declares, decides the
+        answer for every member through the MRO, so reaching `StrEnum` along
+        one path is not enough. The metaclass a class inherits from its bases
+        is not walked.
         """
 
         declared = self.classes.get(qualified)
@@ -1244,6 +1301,19 @@ class EnumMember:
     member: str
     declared_at: SourceLocation
 
+    @staticmethod
+    def names_member(name: str) -> bool:
+        """Whether a name an enum body binds becomes a member.
+
+        `enum` reserves `_sunder_` and `__dunder__` names (`_ignore_`,
+        `__module__`) and leaves a private `__name` a plain attribute, so a
+        string bound to one is no member's value.
+        """
+
+        return not name.startswith("__") and not (
+            name.startswith("_") and name.endswith("_")
+        )
+
     def resolved(self) -> ResolvedIdentity:
         return ResolvedIdentity(
             f"enum member `{self.enum.rpartition('.')[2]}.{self.member}`",
@@ -1435,7 +1505,8 @@ class DeclaredIdentities:
             module = owners.modules[qualified.rpartition(".")[0]]
             location = SourceLocation(module.file_path, declared.line, declared.name)
             for member, value in declared.constants:
-                found[value].append(EnumMember(qualified, member, location))
+                if EnumMember.names_member(member):
+                    found[value].append(EnumMember(qualified, member, location))
         return {value: tuple(members) for value, members in found.items()}
 
     def enum_named(self, file_path: str, name: str) -> str:
@@ -1778,9 +1849,9 @@ class IdentityPositions:
             for index, statement in enumerate(self.parsed_module.module.body)
         }
 
-    @cached_property
+    @property
     def name_bindings(self) -> NameBindings:
-        return NameBindings.of(self.parsed_module)
+        return self.parsed_module.fact(NameBindings)
 
     def holding(self, node_index: int) -> int | None:
         """The index of the top-level statement holding the node."""
@@ -1862,7 +1933,10 @@ class IdentityPositions:
             return
         if isinstance(subject, ast.Name):
             yield from self.typed_site(
-                literal_node, self.declared_parameter_type(node_index, subject.id)
+                literal_node,
+                LEXICAL_SCOPE_BINDING_AUTHORITY.parameter_annotation(
+                    subject, self.index.ancestor_nodes(self.node_indices[id(subject)])
+                ),
             )
         match subject:
             case ast.Attribute(attr=attribute) if (
@@ -1978,36 +2052,6 @@ class IdentityPositions:
         return Receiver(
             ast.unparse(receiver), self.called(receiver), class_object, instance
         )
-
-    def declared_parameter_type(self, node_index: int, name: str) -> ast.expr | None:
-        """The annotation of the parameter `name` this node reads, when nothing rebinds it.
-
-        The nearest function binding `name` must bind it as a parameter and bind
-        it nowhere in its body (an assignment, loop target, `with`, walrus or
-        nested definition), so the value read is still the one the annotation
-        declares.
-        """
-
-        for ancestor in reversed(self.index.ancestor_nodes(node_index)):
-            match ancestor:
-                case ast.FunctionDef(args=arguments, body=body) | ast.AsyncFunctionDef(
-                    args=arguments, body=body
-                ):
-                    rebound = any(
-                        name in ModuleReferenceScope.bound_names(node)
-                        for statement in body
-                        for node in ast.walk(statement)
-                    )
-                    for argument in (
-                        *arguments.posonlyargs,
-                        *arguments.args,
-                        *arguments.kwonlyargs,
-                    ):
-                        if argument.arg == name:
-                            return None if rebound else argument.annotation
-                    if rebound:
-                        return None
-        return None
 
     def declared_type(self, node_index: int, name: str) -> ast.expr | None:
         """The type the nearest binding of `name` around this node declares.
@@ -2155,24 +2199,11 @@ class IdentityPositions:
 
     # Enum value positions -------------------------------------------------------
 
-    @classmethod
-    def declared_name(cls, annotation: ast.expr | None) -> str:
-        """The bare name an annotation declares a value to be, through a `TypeQualifier` (`ClassVar[...]`, `Final[...]`)."""
-
-        match annotation:
-            case ast.Subscript(value=ast.Name(id=wrapper), slice=inner) if (
-                TypeQualifier.qualifies(wrapper)
-            ):
-                return cls.declared_name(inner)
-            case ast.Name(id=name):
-                return name
-        return ""
-
     def typed_site(
         self, value: ast.expr | None, annotation: ast.expr | None
     ) -> Iterator[tuple[ast.expr, tuple[str, ...]]]:
         literal = None if value is None else self.string(value)
-        name = self.declared_name(annotation)
+        name = self.parsed_module.fact(QualifiedNames).declared_name(annotation)
         if literal is None or value is None or not name:
             return
         holding = self.holding(self.node_indices[id(value)])

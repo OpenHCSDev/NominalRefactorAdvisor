@@ -523,15 +523,21 @@ class DeclarationReferenceFindingRecipeSynthesizer(
         ReferenceEnumMemberOperation,
     )
 
+    @staticmethod
+    def reference_metrics(finding: RefactorFinding) -> DeclarationReferenceMetrics:
+        """How the finding stands toward the scan's reference rewrites; a finding the detector gave no such record carries and is covered by none."""
+
+        metrics = finding.metrics
+        if isinstance(metrics, DeclarationReferenceMetrics):
+            return metrics
+        return DeclarationReferenceMetrics()
+
     def carried(
         self, finding: RefactorFinding
     ) -> tuple[tuple[type[DeclarationReferenceOperation], tuple[str, ...]], ...]:
-        metrics = finding.metrics
-        if not isinstance(metrics, DeclarationReferenceMetrics):
-            return ()
         return tuple(
             (operation, files)
-            for kind, files in metrics.carried_rewrites
+            for kind, files in self.reference_metrics(finding).carried_rewrites
             for operation in self.reference_operations
             if kind in operation.position_tags
         )
@@ -562,17 +568,7 @@ class DeclarationReferenceFindingRecipeSynthesizer(
             )
         carried = self.carried(finding)
         if not carried:
-            metrics = finding.metrics
-            if isinstance(metrics, DeclarationReferenceMetrics) and metrics.carried_by:
-                return self.covered_evaluation(
-                    ", ".join(
-                        f"the {kind} rewrite carried at {where}"
-                        for kind, where in metrics.carried_by
-                    )
-                )
-            return self.rejected_evaluation(
-                "no site of this finding can be written as its reference where it stands"
-            )
+            return self.reference_metrics(finding).uncarried_evaluation(self)
         recipe = RefactorRecipe(
             recipe_id=f"{finding.stable_id}-declaration-references",
             reason="Write the scan's spelled declarations as the references they spell.",

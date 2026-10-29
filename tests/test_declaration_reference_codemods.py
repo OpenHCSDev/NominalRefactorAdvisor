@@ -595,3 +595,67 @@ def test_a_parameter_rebound_before_it_is_compared_is_not_its_declared_enum(
     (source,) = rewritten.values()
     assert "    kind = str(kind).upper()\n    return kind == 'kind_a'\n" in source
     assert "def kept(kind: Kind):\n    return kind == Kind.A\n" in source
+
+
+def test_a_parameter_any_scope_form_rebinds_is_not_its_declared_enum(tmp_path: Path):
+    # `except ... as`, a match capture, a `for` target and a nested `nonlocal`
+    # all rebind the parameter; a nested function's own parameter of the same
+    # name is a different variable. None of these reads is the declared `Kind`.
+    rebinding = (
+        "def caught(kind: Kind):\n"
+        "    try:\n        pass\n    except ValueError as kind:\n        pass\n"
+        "    return kind == 'kind_a'\n\n\n"
+        "def captured(kind: Kind, value):\n"
+        "    match value:\n        case str() as kind:\n            pass\n"
+        "    return kind == 'kind_a'\n\n\n"
+        "def looped(kind: Kind, values):\n"
+        "    for kind in values:\n        pass\n"
+        "    return kind == 'kind_a'\n\n\n"
+        "def closed(kind: Kind):\n"
+        "    def reset():\n        nonlocal kind\n        kind = 'other'\n"
+        "    reset()\n"
+        "    return kind == 'kind_a'\n\n\n"
+        "def shadowed(kind: Kind):\n"
+        "    def inner(kind):\n        return kind == 'kind_a'\n"
+        "    return inner\n"
+    )
+    _write(
+        tmp_path,
+        {
+            "pkg/__init__": "",
+            "pkg/kinds": "from enum import StrEnum\n\n\nclass Kind(StrEnum):\n    A = 'kind_a'\n",
+            "pkg/use": "from pkg.kinds import Kind\n\n\n" + rebinding,
+        },
+    )
+    assert not any(
+        "enum member `Kind.A`" in finding.summary
+        for finding in _identity_findings(tmp_path)
+    )
+
+
+def test_only_the_typing_qualifiers_and_real_members_name_an_enum(tmp_path: Path):
+    # A class of the project's own named `Final` qualifies nothing, and an
+    # enum body's `_ignore_` string is reserved by `enum`, no member's value.
+    _write(
+        tmp_path,
+        {
+            "pkg/__init__": "",
+            "pkg/kinds": (
+                "from enum import StrEnum\n\n\n"
+                "class Kind(StrEnum):\n    _ignore_ = 'kind_ignored'\n    A = 'kind_a'\n\n\n"
+                "class Final:\n    def __class_getitem__(cls, item):\n        return cls\n"
+            ),
+            "pkg/use": (
+                "import typing\n\n"
+                "from pkg.kinds import Final, Kind\n\n"
+                "OWN: Final[Kind] = 'kind_a'\n"
+                "IGNORED: Kind = 'kind_ignored'\n"
+                "QUALIFIED: typing.Final[Kind] = 'kind_a'\n"
+            ),
+        },
+    )
+    _records, rewritten = _replayed(tmp_path)
+    (source,) = rewritten.values()
+    assert "OWN: Final[Kind] = 'kind_a'\n" in source
+    assert "IGNORED: Kind = 'kind_ignored'\n" in source
+    assert "QUALIFIED: typing.Final[Kind] = Kind.A\n" in source

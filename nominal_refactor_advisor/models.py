@@ -17,6 +17,7 @@ from dataclasses import (
 from enum import StrEnum
 from functools import cache
 from typing import (
+    TYPE_CHECKING,
     Callable,
     ClassVar,
     Self,
@@ -38,6 +39,9 @@ from .json_reports import (
 from .patterns import PatternId
 from .semantic_description_length import CompressionCertificate
 from .source_identity import source_path_text
+
+if TYPE_CHECKING:
+    from .codemod_runtime import FindingRecipeEvaluation, FindingRecipeEvaluator
 from .taxonomy import (
     CERTIFIED,
     HIGH_CONFIDENCE,
@@ -418,7 +422,8 @@ class DeclarationReferenceMetrics(FindingMetrics):
 
     Each rewrite kind is carried by one finding (`CarriedReferenceRewrites`);
     another finding whose sites it rewrites is covered by it
-    (`CoveredReferenceRewrites`). Each answer is empty unless the subclass gives it.
+    (`CoveredReferenceRewrites`). This base is a finding neither carries nor is
+    covered by any rewrite.
     """
 
     @property
@@ -427,11 +432,14 @@ class DeclarationReferenceMetrics(FindingMetrics):
 
         return ()
 
-    @property
-    def carried_by(self) -> tuple[tuple[str, str], ...]:
-        """The rewrite kinds other findings carry that rewrite this finding's sites, each with where its carrier stands."""
+    def uncarried_evaluation(
+        self, evaluator: FindingRecipeEvaluator
+    ) -> FindingRecipeEvaluation:
+        """The evaluation of this finding when it carries no rewrite: no site of it is rewritable."""
 
-        return ()
+        return evaluator.rejected_evaluation(
+            "no site of this finding can be written as its reference where it stands"
+        )
 
 
 @dataclass(frozen=True)
@@ -451,9 +459,16 @@ class CoveredReferenceRewrites(DeclarationReferenceMetrics):
 
     carriers: tuple[tuple[str, str], ...]
 
-    @property
-    def carried_by(self) -> tuple[tuple[str, str], ...]:
-        return self.carriers
+    def uncarried_evaluation(
+        self, evaluator: FindingRecipeEvaluator
+    ) -> FindingRecipeEvaluation:
+        """Covered by the rewrites other findings carry, each named with where its carrier stands."""
+
+        return evaluator.covered_evaluation(
+            ", ".join(
+                f"the {kind} rewrite carried at {where}" for kind, where in self.carriers
+            )
+        )
 
 
 @dataclass(frozen=True)
