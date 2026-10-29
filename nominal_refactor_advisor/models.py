@@ -17,6 +17,7 @@ from dataclasses import (
 from enum import StrEnum
 from functools import cache
 from typing import (
+    TYPE_CHECKING,
     Callable,
     ClassVar,
     Self,
@@ -38,6 +39,9 @@ from .json_reports import (
 from .patterns import PatternId
 from .semantic_description_length import CompressionCertificate
 from .source_identity import source_path_text
+
+if TYPE_CHECKING:
+    from .codemod_runtime import FindingRecipeEvaluation, FindingRecipeEvaluator
 from .taxonomy import (
     CERTIFIED,
     HIGH_CONFIDENCE,
@@ -414,9 +418,57 @@ class EmptyFindingMetrics(FindingMetrics):
 
 @dataclass(frozen=True)
 class DeclarationReferenceMetrics(FindingMetrics):
-    """The scan-wide reference rewrites this finding carries as their one candidate, each with its files."""
+    """How a restated-identity finding stands toward the scan-wide reference rewrites.
 
-    carried_rewrites: tuple[tuple[str, tuple[str, ...]], ...]
+    Each rewrite kind is carried by one finding (`CarriedReferenceRewrites`);
+    another finding whose sites it rewrites is covered by it
+    (`CoveredReferenceRewrites`). This base is a finding neither carries nor is
+    covered by any rewrite.
+    """
+
+    @property
+    def carried_rewrites(self) -> tuple[tuple[str, tuple[str, ...]], ...]:
+        """The rewrite kinds this finding carries, each with the files it rewrites."""
+
+        return ()
+
+    def uncarried_evaluation(
+        self, evaluator: FindingRecipeEvaluator
+    ) -> FindingRecipeEvaluation:
+        """The evaluation of this finding when it carries no rewrite: no site of it is rewritable."""
+
+        return evaluator.rejected_evaluation(
+            "no site of this finding can be written as its reference where it stands"
+        )
+
+
+@dataclass(frozen=True)
+class CarriedReferenceRewrites(DeclarationReferenceMetrics):
+    """The finding a scan-wide reference rewrite is offered on."""
+
+    rewrites: tuple[tuple[str, tuple[str, ...]], ...]
+
+    @property
+    def carried_rewrites(self) -> tuple[tuple[str, tuple[str, ...]], ...]:
+        return self.rewrites
+
+
+@dataclass(frozen=True)
+class CoveredReferenceRewrites(DeclarationReferenceMetrics):
+    """A finding whose sites rewrites carried by other findings remove."""
+
+    carriers: tuple[tuple[str, str], ...]
+
+    def uncarried_evaluation(
+        self, evaluator: FindingRecipeEvaluator
+    ) -> FindingRecipeEvaluation:
+        """Covered by the rewrites other findings carry, each named with where its carrier stands."""
+
+        return evaluator.covered_evaluation(
+            ", ".join(
+                f"the {kind} rewrite carried at {where}" for kind, where in self.carriers
+            )
+        )
 
 
 @dataclass(frozen=True)

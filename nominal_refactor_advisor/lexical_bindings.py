@@ -8,7 +8,7 @@ from abc import (
     ABC,
     abstractmethod,
 )
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import StrEnum
 from functools import cached_property
@@ -746,6 +746,93 @@ class LexicalScopeBindingAuthority:
         for node in nodes:
             collector.visit(node)
         return frozenset(collector.bound_names)
+
+    @classmethod
+    def parameter_annotation(
+        cls, read: ast.Name, ancestors: Sequence[ast.AST]
+    ) -> ast.expr | None:
+        """The annotation of the parameter a read of a name reads, when nothing rebinds it.
+
+        `ancestors` run from the module down to the read's parent. The read
+        resolves in the nearest enclosing scope that binds the name: a
+        comprehension targeting it, a class body it is read in directly, or a
+        function whose body holds the read (a read in a function's defaults,
+        decorators or annotations runs in the scope around it). The answer is
+        that function's annotation for the name only when the function declares
+        it a positional or keyword parameter and nothing rebinds it: no binding
+        in the function's own scope (assignment, augmented assignment, `del`, a
+        `for` or `with` target, a walrus, `except E as name`, a match capture,
+        an import, a nested `def` or `class`) and no nested scope declaring it
+        `nonlocal`. A read reaching any other binding answers None.
+        """
+
+        name = read.id
+        path = (*ancestors, read)
+        crossed_function = False
+        for depth in range(len(ancestors) - 1, -1, -1):
+            scope, child = path[depth], path[depth + 1]
+            match scope:
+                case ast.FunctionDef() | ast.AsyncFunctionDef() | ast.Lambda():
+                    body = scope.body if isinstance(scope.body, list) else [scope.body]
+                    if not any(child is statement for statement in body):
+                        continue
+                    crossed_function = True
+                    collector = ScopeBindingCollector()
+                    for statement in body:
+                        collector.visit(statement)
+                    if name in cls.argument_names(scope):
+                        rebound = name in collector.bound_names or any(
+                            isinstance(node, ast.Nonlocal) and name in node.names
+                            for statement in body
+                            for node in ast.walk(statement)
+                        )
+                        return None if rebound else cls.declared_annotation(scope, name)
+                    if name in (
+                        collector.bound_names
+                        | collector.global_names
+                        | collector.nonlocal_names
+                    ):
+                        return None
+                case ast.ListComp() | ast.SetComp() | ast.DictComp() | ast.GeneratorExp():
+                    if child is scope.generators[0].iter:
+                        continue
+                    crossed_function = True
+                    if name in cls.bound_names(
+                        generator.target for generator in scope.generators
+                    ):
+                        return None
+                case ast.ClassDef(body=body) if not crossed_function and any(
+                    child is statement for statement in body
+                ):
+                    if name in cls.bound_names(body):
+                        return None
+        return None
+
+    @staticmethod
+    def declared_annotation(
+        function: ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda, name: str
+    ) -> ast.expr | None:
+        """The annotation a function declares for its positional or keyword parameter `name`.
+
+        A lambda declares none, and `*args: T` / `**kwargs: T` annotate the
+        elements the parameter collects, not the parameter's value.
+        """
+
+        if isinstance(function, ast.Lambda):
+            return None
+        arguments = function.args
+        return next(
+            (
+                argument.annotation
+                for argument in (
+                    *arguments.posonlyargs,
+                    *arguments.args,
+                    *arguments.kwonlyargs,
+                )
+                if argument.arg == name
+            ),
+            None,
+        )
 
     @staticmethod
     def enclosing_comprehensions(

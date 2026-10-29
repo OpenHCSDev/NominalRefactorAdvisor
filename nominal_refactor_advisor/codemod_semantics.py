@@ -201,6 +201,11 @@ class FindingRecipeSynthesisStatus(StrEnum):
         "",
         FindingRecipeSynthesisDisposition.REJECTED,
     )
+    COVERED_BY_CANDIDATE = (
+        "covered_by_candidate",
+        "",
+        FindingRecipeSynthesisDisposition.UNCOUNTED,
+    )
 
     def __new__(
         cls,
