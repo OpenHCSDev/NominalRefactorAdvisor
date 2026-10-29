@@ -433,7 +433,7 @@ def test_a_new_import_may_take_submodules_from_the_running_package(tmp_path: Pat
     assert "send(NamedOwner.__name__)" in source
 
 
-def test_an_enum_value_spelled_as_a_string_becomes_its_member_value(tmp_path: Path):
+def test_a_string_in_a_position_typed_as_an_enum_becomes_its_member(tmp_path: Path):
     _write(
         tmp_path,
         {
@@ -444,19 +444,21 @@ def test_an_enum_value_spelled_as_a_string_becomes_its_member_value(tmp_path: Pa
                 "    REGISTRY = '__registry__'\n"
                 "    REGISTRY_KEY = 'registry_key'\n"
                 "    PLAIN = 'plain'\n\n\n"
-                "class Other:\n    pass\n"
+                "class OtherKey(str, Enum):\n    REGISTRY = '__registry__'\n"
             ),
             "pkg/use": (
-                "from pkg.attrs import Other\n\n"
-                "REGISTRY_NAME = '__registry__'\n\n\n"
-                "class Keyed:\n    __registry_key__ = 'registry_key'\n\n\n"
-                "def read(cls, attrs, kind: \"Literal['registry_key']\"):\n"
-                "    '''Reads __registry__.'''\n"
-                "    if '__registry__' in attrs:\n"
-                "        return attrs['__registry__']\n"
-                "    if getattr(cls, 'registry_key', None) == 'plain':\n"
-                "        return f'registry_key {cls}'\n"
-                "    return {'__registry__', '_registry'}\n"
+                "from typing import ClassVar\n\n"
+                "from pkg.attrs import RegistryAttribute\n\n"
+                "DEFAULT: RegistryAttribute = '__registry__'\n\n\n"
+                "class Keyed:\n"
+                "    key: ClassVar[RegistryAttribute] = 'registry_key'\n"
+                "    marker = 'registry_key'\n\n\n"
+                "def pick(kind: RegistryAttribute = 'registry_key') -> RegistryAttribute:\n"
+                "    if kind == 'plain':\n"
+                "        return '__registry__'\n"
+                "    return kind\n\n\n"
+                "def untyped(attrs, name: str = '__registry__'):\n"
+                "    return attrs['__registry__'], getattr(attrs, 'registry_key')\n"
             ),
         },
     )
@@ -471,27 +473,23 @@ def test_an_enum_value_spelled_as_a_string_becomes_its_member_value(tmp_path: Pa
         ReferenceEnumMemberOperation
     ]
     (source,) = rewritten.values()
-    # The enum is bound in its module before Other, so the statement that
-    # imports Other imports it too.
-    assert "from pkg.attrs import Other, RegistryAttribute\n" in source
-    assert "REGISTRY_NAME = RegistryAttribute.REGISTRY.value\n" in source
-    # A class body restates the value too; only the enum's own body declares it.
-    assert "__registry_key__ = RegistryAttribute.REGISTRY_KEY.value\n" in source
-    assert "if RegistryAttribute.REGISTRY.value in attrs:" in source
-    assert "return attrs[RegistryAttribute.REGISTRY.value]" in source
-    # A one-word value is an ordinary word; f-string text, a docstring and a
-    # string inside an annotation are not values.
+    # The declaration names the enum, so the member is the one of that enum,
+    # even where another enum shares the value, and even a one-word value.
+    assert "DEFAULT: RegistryAttribute = RegistryAttribute.REGISTRY\n" in source
+    assert "key: ClassVar[RegistryAttribute] = RegistryAttribute.REGISTRY_KEY\n" in source
     assert (
-        "getattr(cls, RegistryAttribute.REGISTRY_KEY.value, None) == 'plain'"
+        "def pick(kind: RegistryAttribute = RegistryAttribute.REGISTRY_KEY)"
         in source
     )
-    assert "return f'registry_key {cls}'" in source
-    assert "'''Reads __registry__.'''" in source
-    assert "kind: \"Literal['registry_key']\"" in source
-    assert "{RegistryAttribute.REGISTRY.value, '_registry'}" in source
+    assert "if kind == RegistryAttribute.PLAIN:" in source
+    assert "return RegistryAttribute.REGISTRY\n" in source
+    # Equal text where nothing types the position as the enum is not the enum.
+    assert "    marker = 'registry_key'\n" in source
+    assert "def untyped(attrs, name: str = '__registry__'):" in source
+    assert "return attrs['__registry__'], getattr(attrs, 'registry_key')" in source
 
 
-def test_an_installed_enum_is_added_to_the_statement_importing_its_package(
+def test_an_installed_enum_named_by_an_annotation_is_referenced_by_that_name(
     tmp_path: Path, monkeypatch
 ):
     site = tmp_path / "site" / "nra_test_attrs_pkg"
@@ -509,12 +507,12 @@ def test_an_installed_enum_is_added_to_the_statement_importing_its_package(
         {
             "pkg/__init__": "",
             "pkg/use": (
-                "from nra_test_attrs_pkg import Holder\n\n\n"
-                "def read(attrs):\n    return attrs['__registry__']\n"
+                "from nra_test_attrs_pkg import Attr as Key\n\n\n"
+                "def read(attrs, key: Key = '__registry__'):\n"
+                "    return attrs[key]\n"
             ),
         },
     )
     _records, rewritten = _replayed(root)
     (source,) = rewritten.values()
-    assert "from nra_test_attrs_pkg import Holder, Attr\n" in source
-    assert "return attrs[Attr.REGISTRY.value]" in source
+    assert "def read(attrs, key: Key = Key.REGISTRY):" in source

@@ -8,7 +8,8 @@ all resolve unquoted as the expression it spells;
 selects a module the file already imports eagerly or is the file's own
 package, as the module reference; `ReferenceClassNameOperation` writes a class
 name spelled as a value as `Name.__name__`, and `ReferenceEnumMemberOperation`
-an enum member's value spelled as a string as `Enum.MEMBER.value`. Where the
+a string in a position typed as an enum, equal to a member's value, as
+`Enum.MEMBER`. Where the
 names resolve is owned by `quoted_reference` and `class_identity_observations`,
 which the detector asks too.
 """
@@ -478,12 +479,11 @@ class ReferenceClassNameOperation(ReferenceNamedClassOperation):
 
 @dataclass(frozen=True, kw_only=True)
 class ReferenceEnumMemberOperation(ReferenceNamedClassOperation):
-    """Write a string equal to one enum member's value as `Enum.MEMBER.value`.
+    """Write a string in a position typed as an enum, equal to one of its members' values, as `Enum.MEMBER`.
 
-    `.value` is the member's string itself, so the rewritten expression equals
-    the literal wherever it stands, as a key, a comparison operand, an argument
-    or a match value; how the file binds the enum is
-    `ClassNameOwners.import_for`.
+    The declaration typing the position names the enum, so the file binds it
+    already (`DeclaredIdentities.binds`); the member is the value the position
+    is declared to hold, and a `str` enum member equals its string.
     """
 
     position_tags: ClassVar[frozenset[str]] = frozenset((EnumValueSpelling.tag,))
@@ -492,12 +492,11 @@ class ReferenceEnumMemberOperation(ReferenceNamedClassOperation):
     )
 
     def named(self, detail, identities, path):
-        _tag, holding, literal = detail
-        member = identities.enum_member(literal)
+        _tag, _holding, name, literal = detail
+        member = identities.typed_member(path, name, literal)
         if member is None:
             return None
-        how = identities.class_names.import_for(path, int(holding), member.enum)
-        return None if how is None else (member.reference, how)
+        return f"{name}.{member.member}", NameImport(name)
 
 
 class DeclarationReferenceFindingRecipeSynthesizer(

@@ -25,7 +25,7 @@ from collections.abc import Iterable, Iterator, Sequence
 from dataclasses import dataclass, field, replace
 from functools import cache, cached_property
 from pathlib import Path
-from typing import ClassVar
+from typing import ClassVar, Final
 
 from .lexical_bindings import ImportBoundNameProjection
 from .ast_projection import StatementValues
@@ -751,7 +751,7 @@ class ClassNameOwners:
         )
 
     def importable(
-        self, file_path: str, holding: int, literal: str, owner: str = ""
+        self, file_path: str, holding: int, literal: str
     ) -> FromImport | None:
         """A `from` statement of the file that can also import the literal's class, or None.
 
@@ -759,10 +759,7 @@ class ClassNameOwners:
         from a module that binds the class once, at top level, before some name
         the statement already imports: whenever the statement succeeds, the
         class is bound in that module, so adding it changes no import order and
-        fails nowhere the statement did not. A module outside the scan has run
-        to its end whenever its `from` statement returns, since no scanned
-        import can leave it half run, so any class it binds is bound then.
-        `owner`, when given, is the qualified class the name must reach.
+        fails nowhere the statement did not.
         """
 
         module = self.by_path.get(file_path)
@@ -772,15 +769,10 @@ class ClassNameOwners:
             source = self.modules.get(statement.module)
             bound = {} if source is None else dict(source.bound_after)
             line = bound.get(literal)
-            qualified = f"{statement.module}.{literal}"
             if (
                 line is not None
-                and self.references(qualified, literal)
-                and (not owner or self.canonical(qualified) == owner)
-                and (
-                    statement.module not in self.scanned
-                    or any(bound.get(name, 0) > line for name in statement.names)
-                )
+                and self.references(f"{statement.module}.{literal}", literal)
+                and any(bound.get(name, 0) > line for name in statement.names)
             ):
                 return statement
         return None
@@ -805,33 +797,6 @@ class ClassNameOwners:
             )
             for origin in declared.origins
         )
-
-    def import_for(
-        self, file_path: str, holding: int, owner: str
-    ) -> NameImport | None:
-        """How the file can name the class `owner` where its top-level statement `holding` runs, or None.
-
-        Already bound to it there; addable to a `from` statement before it
-        (`importable`); or importable by a new statement after the file's
-        imports (`new_import`).
-        """
-
-        module = self.by_path.get(file_path)
-        if module is None:
-            return None
-        name = owner.rpartition(".")[2]
-        binding, unbound = module.names.reference(holding, name)
-        if binding:
-            return NameImport(name) if self.canonical(binding) == owner else None
-        if not unbound:
-            return None
-        statement = self.importable(file_path, holding, name, owner)
-        if statement is not None:
-            return NameImport(name, statement=statement.index)
-        created = self.new_import(file_path, holding, name)
-        if created is not None and self.scanned_classes.get(name) == (owner,):
-            return NameImport(name, created=created)
-        return None
 
     def new_import(self, file_path: str, holding: int, literal: str) -> str | None:
         """The scanned module a new `from module import Literal` after the file's imports can come from, or None.
@@ -1151,35 +1116,33 @@ class LookupSpelling(IdentitySpelling):
 
 
 class EnumValueSpelling(IdentitySpelling):
-    """A dunder or multi-word string equal to one enum member's value: the member spelled again.
+    """A string in a position a declaration types as an enum, equal to one of its members' values.
 
-    The enum declares the string once; a literal of it anywhere else (compared,
-    passed, keyed, matched, returned, or assigned to a module constant) is a
-    copy that renaming the member's value misses. A one-word value (`plain`) is
-    also an ordinary word, so only a dunder or multi-word string is taken as
-    the member. The detail carries the index of the top-level statement holding
-    the literal, where the enum must be bound for `Enum.MEMBER.value` to stand
-    there (`ClassNameOwners.import_for`).
+    The position is the enum's by declaration: an annotated assignment or field
+    (`x: E = "a"`, through `ClassVar[...]` or `Final[...]`), a parameter
+    default, a `return` in a function declared `-> E`, or a comparison or match
+    against a parameter declared `E`. The literal then restates that member,
+    and `E.MEMBER` stands there. Equal text in a position nothing types as the
+    enum is no site: equal values are not one owner. The detail carries the
+    holding statement's index and the name the declaration types it by.
     """
 
     tag = "enum value"
 
     @classmethod
     def rewrite(cls, detail, identities, file_path):
-        _tag, holding, literal = detail
-        member = identities.enum_member(literal)
-        if member is None or not holding:
+        _tag, holding, name, literal = detail
+        if not holding or identities.typed_member(file_path, name, literal) is None:
             return ReferenceRewrite.NONE
-        if identities.class_names.import_for(file_path, int(holding), member.enum) is None:
+        if not identities.binds(file_path, int(holding), name):
             return ReferenceRewrite.NONE
         return ReferenceRewrite.ANY_INTERPRETER
 
     @classmethod
     def resolve(cls, site, identities):
-        member = identities.enum_member(site.detail[-1])
-        if member is None or member.declares(site):
-            return None
-        return member.resolved()
+        _tag, _holding, name, literal = site.detail
+        member = identities.typed_member(site.file_path, name, literal)
+        return None if member is None else member.resolved()
 
 
 EnumValueSpelling.rewrite_kind = EnumValueSpelling
@@ -1193,19 +1156,10 @@ class EnumMember:
     member: str
     declared_at: SourceLocation
 
-    @property
-    def reference(self) -> str:
-        return f"{self.enum.rpartition('.')[2]}.{self.member}.value"
-
     def resolved(self) -> ResolvedIdentity:
-        return ResolvedIdentity(f"enum member `{self.reference}`", (self.declared_at,))
-
-    def declares(self, site: RestatingSite) -> bool:
-        """Whether the site is in the enum's own body, where its members are declared."""
-
-        return (
-            site.file_path == self.declared_at.file_path
-            and site.symbol == self.declared_at.symbol
+        return ResolvedIdentity(
+            f"enum member `{self.enum.rpartition('.')[2]}.{self.member}`",
+            (self.declared_at,),
         )
 
 
@@ -1277,7 +1231,8 @@ class DeclaredIdentities:
     """Every identity the scan declares: classes, modules, member spellings, lookups and enum values.
 
     `enum_values` are the string values of the members of every enum the scan
-    reads, its own and the installed ones `ClassNameOwners` reads for it.
+    reads, its own and the installed ones `ClassNameOwners` reads for it; a
+    literal names one only in a position typed as its enum (`typed_member`).
     """
 
     classes: dict[str, tuple[SourceLocation, ...]]
@@ -1392,11 +1347,39 @@ class DeclaredIdentities:
                 found[value].append(EnumMember(qualified, member, location))
         return {value: tuple(members) for value, members in found.items()}
 
-    def enum_member(self, literal: str) -> EnumMember | None:
-        """The one enum member whose value the literal is; two enums sharing it name neither."""
+    def enum_named(self, file_path: str, name: str) -> str:
+        """The enum a name the file binds at top level resolves to, or empty."""
 
-        members = self.enum_values.get(literal, ())
-        return members[0] if len(members) == 1 else None
+        module = self.class_names.by_path.get(file_path)
+        bound = None if module is None else module.names.by_name.get(name)
+        if bound is None:
+            return ""
+        found = self.class_names.canonical(bound[1])
+        return found if found is not None and self.class_names.is_enum(found) else ""
+
+    def typed_member(self, file_path: str, name: str, literal: str) -> EnumMember | None:
+        """The member of the enum `name` resolves to in the file whose value the literal is."""
+
+        enum = self.enum_named(file_path, name)
+        return next(
+            (
+                member
+                for member in self.enum_values.get(literal, ())
+                if enum and member.enum == enum
+            ),
+            None,
+        )
+
+    def binds(self, file_path: str, holding: int, name: str) -> bool:
+        """Whether `name` is bound to its enum where the top-level statement `holding` runs."""
+
+        module = self.class_names.by_path.get(file_path)
+        if module is None:
+            return False
+        binding, _unbound = module.names.reference(holding, name)
+        return bool(binding) and self.class_names.canonical(binding) == self.enum_named(
+            file_path, name
+        )
 
     def with_family_values(
         self, explicit: Iterable[tuple[str, str, SourceLocation]]
@@ -1764,6 +1747,10 @@ class IdentityPositions:
         literal = self.string(literal_node)
         if literal is None or isinstance(subject, ast.Constant):
             return
+        if isinstance(subject, ast.Name):
+            yield from self.typed_site(
+                literal_node, self.declared_type(node_index, subject.id)
+            )
         match subject:
             case ast.Attribute(attr=attribute) if (
                 attribute in self.CLASS_NAME_ATTRIBUTES
@@ -2025,51 +2012,72 @@ class IdentityPositions:
 
     # Enum value positions -------------------------------------------------------
 
-    TEXT_PARENTS: ClassVar[tuple[type[ast.AST], ...]] = (ast.Expr, ast.JoinedStr)
+    WRAPPERS: ClassVar[frozenset[str]] = frozenset(
+        (ClassVar.__name__, Final.__name__)
+    )
 
-    @cached_property
-    def annotated(self) -> frozenset[int]:
-        """The nodes inside an annotation, where a string is a type, never a value."""
+    @classmethod
+    def declared_name(cls, annotation: ast.expr | None) -> str:
+        """The bare name an annotation declares a value to be, through `ClassVar[...]` or `Final[...]`."""
 
-        return frozenset(
-            id(inner)
-            for node in ast.walk(self.parsed_module.module)
-            for annotation in (
-                (node.annotation,)
-                if isinstance(node, (ast.arg, ast.AnnAssign)) and node.annotation
-                else (node.returns,)
-                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-                and node.returns
-                else ()
-            )
-            for inner in ast.walk(annotation)
+        match annotation:
+            case ast.Subscript(value=ast.Name(id=wrapper), slice=inner) if (
+                wrapper in cls.WRAPPERS
+            ):
+                return cls.declared_name(inner)
+            case ast.Name(id=name):
+                return name
+        return ""
+
+    def typed_site(
+        self, value: ast.expr | None, annotation: ast.expr | None
+    ) -> Iterator[tuple[ast.expr, tuple[str, ...]]]:
+        literal = None if value is None else self.string(value)
+        name = self.declared_name(annotation)
+        if literal is None or value is None or not name:
+            return
+        holding = self.holding(self.node_indices[id(value)])
+        yield self.site(
+            value,
+            EnumValueSpelling.detail(
+                "" if holding is None else str(holding), name, literal
+            ),
         )
 
     def enum_value_sites(self) -> Iterator[tuple[ast.expr, tuple[str, ...]]]:
-        """Every dunder or multi-word string used as a value.
+        """Strings in positions a declaration types: annotated values, parameter defaults, returns.
 
-        Not a docstring or f-string text, and not a type inside an annotation.
-        A class body's constants are sites too: only the enum's own members
-        declare its values (`EnumMember.declares`).
+        Comparisons and matches against a parameter declared as the type are
+        `compared`'s.
         """
 
-        for node_index, node in self.index.indexed_nodes_of_type(ast.Constant):
-            literal = self.string(node)
-            if literal is None or not (
-                self.multiword(literal) or DeclaredIdentities.protocol_name(literal)
-            ):
-                continue
-            ancestors = self.index.ancestor_nodes(node_index)
-            parent = ancestors[-1]
-            if isinstance(parent, self.TEXT_PARENTS) or id(node) in self.annotated:
-                continue
-            holding = self.holding(node_index)
-            yield self.site(
-                node,
-                EnumValueSpelling.detail(
-                    "" if holding is None else str(holding), literal
+        for _node_index, node in self.index.indexed_nodes_of_type(ast.AnnAssign):
+            yield from self.typed_site(node.value, node.annotation)
+        for kind in (ast.FunctionDef, ast.AsyncFunctionDef):
+            for _node_index, function in self.index.indexed_nodes_of_type(kind):
+                arguments = function.args
+                positional = [*arguments.posonlyargs, *arguments.args]
+                for argument, default in (
+                    *zip(
+                        positional[len(positional) - len(arguments.defaults) :],
+                        arguments.defaults,
+                    ),
+                    *zip(arguments.kwonlyargs, arguments.kw_defaults),
+                ):
+                    yield from self.typed_site(default, argument.annotation)
+        for node_index, returned in StatementValues.keyed(
+            self.index.indexed_nodes_of_type(ast.Return)
+        ).supplied:
+            function = next(
+                (
+                    ancestor
+                    for ancestor in reversed(self.index.ancestor_nodes(node_index))
+                    if isinstance(ancestor, (ast.FunctionDef, ast.AsyncFunctionDef))
                 ),
+                None,
             )
+            if function is not None:
+                yield from self.typed_site(returned.value, function.returns)
 
 
 class IdentitySpellingFamily(RestatingSiteFamily[RestatingSiteModule]):
