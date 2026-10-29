@@ -1177,7 +1177,9 @@ class EnumValueSpelling(IdentitySpelling):
     @classmethod
     def resolve(cls, site, identities):
         member = identities.enum_member(site.detail[-1])
-        return None if member is None else member.resolved()
+        if member is None or member.declares(site):
+            return None
+        return member.resolved()
 
 
 EnumValueSpelling.rewrite_kind = EnumValueSpelling
@@ -1197,6 +1199,14 @@ class EnumMember:
 
     def resolved(self) -> ResolvedIdentity:
         return ResolvedIdentity(f"enum member `{self.reference}`", (self.declared_at,))
+
+    def declares(self, site: RestatingSite) -> bool:
+        """Whether the site is in the enum's own body, where its members are declared."""
+
+        return (
+            site.file_path == self.declared_at.file_path
+            and site.symbol == self.declared_at.symbol
+        )
 
 
 # A finding names this many declaring sites of one identity.
@@ -2038,9 +2048,9 @@ class IdentityPositions:
     def enum_value_sites(self) -> Iterator[tuple[ast.expr, tuple[str, ...]]]:
         """Every dunder or multi-word string used as a value.
 
-        Not a docstring or f-string text, not a type inside an annotation, and
-        not a constant a class body declares: those declare spellings rather
-        than use them.
+        Not a docstring or f-string text, and not a type inside an annotation.
+        A class body's constants are sites too: only the enum's own members
+        declare its values (`EnumMember.declares`).
         """
 
         for node_index, node in self.index.indexed_nodes_of_type(ast.Constant):
@@ -2052,12 +2062,6 @@ class IdentityPositions:
             ancestors = self.index.ancestor_nodes(node_index)
             parent = ancestors[-1]
             if isinstance(parent, self.TEXT_PARENTS) or id(node) in self.annotated:
-                continue
-            if (
-                isinstance(parent, (ast.Assign, ast.AnnAssign))
-                and len(ancestors) >= 2
-                and isinstance(ancestors[-2], ast.ClassDef)
-            ):
                 continue
             holding = self.holding(node_index)
             yield self.site(

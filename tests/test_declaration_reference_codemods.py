@@ -449,6 +449,7 @@ def test_an_enum_value_spelled_as_a_string_becomes_its_member_value(tmp_path: Pa
             "pkg/use": (
                 "from pkg.attrs import Other\n\n"
                 "REGISTRY_NAME = '__registry__'\n\n\n"
+                "class Keyed:\n    __registry_key__ = 'registry_key'\n\n\n"
                 "def read(cls, attrs, kind: \"Literal['registry_key']\"):\n"
                 "    '''Reads __registry__.'''\n"
                 "    if '__registry__' in attrs:\n"
@@ -474,6 +475,8 @@ def test_an_enum_value_spelled_as_a_string_becomes_its_member_value(tmp_path: Pa
     # imports Other imports it too.
     assert "from pkg.attrs import Other, RegistryAttribute\n" in source
     assert "REGISTRY_NAME = RegistryAttribute.REGISTRY.value\n" in source
+    # A class body restates the value too; only the enum's own body declares it.
+    assert "__registry_key__ = RegistryAttribute.REGISTRY_KEY.value\n" in source
     assert "if RegistryAttribute.REGISTRY.value in attrs:" in source
     assert "return attrs[RegistryAttribute.REGISTRY.value]" in source
     # A one-word value is an ordinary word; f-string text, a docstring and a
