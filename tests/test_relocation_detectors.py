@@ -75,28 +75,15 @@ def test_relocation_patterns_continue_the_stable_sequence():
         (FOLD_BINDING, LambdaFoldDetector, "`fold_binding` folds over its callables"),
         (DECLARED_ANNOTATIONS, ZeroOneTupleDetector, "`declared_annotations` encodes absence as a 0/1 tuple"),
         (GRAPH_PARAMETERS, ThreadedAbsenceDetector, "takes `cached_semantic_descent_graph` as `X | None`"),
+        # Read off a local, a loop variable and `self.authority`: the declared
+        # receiver typing reaches them (#143).
+        (DECLARES_DATACLASS, ConstantSubtypeAnswerDetector, "`declares_dataclass` is answered by a constant in 2 members"),
+        (KEYED_METACLASS_FAMILY, OwnStateBranchAnswerDetector, "`AutoRegisterClassAuthority.keyed_metaclass_family` (property) probes `self.registry_key_attribute`"),
     ),
 )
 def test_each_historical_relocation_is_flagged(tmp_path, relocation, detector, flagged):
     summaries = [finding.summary for finding in _findings(detector, relocation.write(tmp_path))]
     assert any(flagged in summary for summary in summaries), summaries
-
-
-@pytest.mark.parametrize(
-    ("relocation", "detector"),
-    (
-        (DECLARES_DATACLASS, ConstantSubtypeAnswerDetector),
-        (KEYED_METACLASS_FAMILY, OwnStateBranchAnswerDetector),
-    ),
-)
-def test_a_historical_relocation_read_only_off_undeclared_receivers_is_not_flagged(
-    tmp_path, relocation, detector
-):
-    # Their branch tests read the member off an attribute chain or a local
-    # (`self.authority`, `base_class.dataclass_declaration`), which no
-    # declaration resolves without the type checker (#143), so no consumer is
-    # proved to branch on this family's answer.
-    assert _findings(detector, relocation.write(tmp_path)) == []
 
 
 def test_a_constant_answer_read_off_a_declared_family_receiver_is_flagged(tmp_path):

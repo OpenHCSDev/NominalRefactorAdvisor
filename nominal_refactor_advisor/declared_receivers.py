@@ -71,6 +71,10 @@ class DeclaredType(ABC):
         """The scanned classes a value of this type is an instance of: none unless a class."""
         return ()
 
+    def class_object(self) -> DeclaredType:
+        """`type[T]` for this T: the class object, when T is one scanned class."""
+        return UndeclaredType(f"`type[...]` of {self.spelled()} is no scanned class object")
+
     def why_no_class(self) -> str:
         """Why a value of this type is no instance of a scanned class."""
         return f"the receiver is declared as {self.spelled()}, no scanned class instance"
@@ -140,6 +144,12 @@ class DeclaredInstance(DeclaredType):
     def class_symbols(self) -> tuple[str, ...]:
         return self.symbols
 
+    def class_object(self) -> DeclaredType:
+        match self.symbols:
+            case (symbol,):
+                return DeclaredClassObject(symbol)
+        return super().class_object()
+
     def spelled(self) -> str:
         return " | ".join(f"`{symbol}`" for symbol in self.symbols)
 
@@ -158,21 +168,23 @@ class DeclaredForeignInstance(DeclaredType):
     declared, so it is no class of the scan's.
     """
 
-    qualified_name: str
+    qualified_names: tuple[str, ...]
 
     def class_symbols(self) -> tuple[str, ...]:
-        return (self.qualified_name,)
+        return self.qualified_names
 
     def spelled(self) -> str:
-        return f"`{self.qualified_name}`"
+        return " | ".join(f"`{name}`" for name in self.qualified_names)
 
     def join(self, other, typing):
         return other.join_foreign(self)
 
     def join_foreign(self, other: DeclaredForeignInstance) -> DeclaredType:
-        if other == self:
-            return self
-        return self.heterogeneous(other)
+        """Classes outside the scan make no family claim: their union is just declared."""
+
+        return DeclaredForeignInstance(
+            tuple(sorted({*self.qualified_names, *other.qualified_names}))
+        )
 
 
 @dataclass(frozen=True)
@@ -186,6 +198,13 @@ class DeclaredClassObject(DeclaredType):
 
     def called(self, typing, name):
         return typing.method_call(self.symbol, name, DeclaredInstance((self.symbol,)))
+
+    def element(self, typing):
+        """Iterating an enum class yields its members."""
+        return typing.enum_members(self.symbol)
+
+    def class_symbols(self) -> tuple[str, ...]:
+        return (CLASS_OBJECT_TYPE,)
 
     def spelled(self) -> str:
         return f"the class `{self.symbol}`"
@@ -211,6 +230,9 @@ class DeclaredCollection(DeclaredType):
 
     def sliced(self, typing):
         return self
+
+    def class_symbols(self) -> tuple[str, ...]:
+        return (ITERABLE_TYPE,)
 
     def spelled(self) -> str:
         return f"a collection of {self.item.spelled()}"
@@ -241,6 +263,9 @@ class DeclaredTuple(DeclaredType):
 
     def sliced(self, typing):
         return DeclaredCollection(typing.joined(self.items))
+
+    def class_symbols(self) -> tuple[str, ...]:
+        return (TUPLE_TYPE,)
 
     def spelled(self) -> str:
         return f"tuple[{', '.join(item.spelled() for item in self.items)}]"
@@ -285,6 +310,9 @@ class DeclaredMapping(DeclaredType):
         if name in self.MAPPING_VIEWS:
             return self.value
         return super().called(typing, name)
+
+    def class_symbols(self) -> tuple[str, ...]:
+        return (MAPPING_TYPE,)
 
     def spelled(self) -> str:
         return f"a mapping of {self.key.spelled()} to {self.value.spelled()}"
@@ -474,6 +502,7 @@ class DeclaredReceiverTyping:
     aliases_by_module: Mapping[str, Mapping[str, str]]
     definitions_by_module: Mapping[str, frozenset[str]]
     function_returns: Mapping[str, tuple[CompactAnnotatedFunctionReturn, ...]]
+    type_variables_by_module: Mapping[str, tuple[str, ...]]
 
     @classmethod
     def from_projections(
@@ -501,6 +530,10 @@ class DeclaredReceiverTyping:
                 for projection in projections
             },
             function_returns={name: tuple(found) for name, found in returns.items()},
+            type_variables_by_module={
+                projection.module_name: projection.type_variable_names
+                for projection in projections
+            },
         )
 
     # members and calls ---------------------------------------------------
@@ -527,33 +560,159 @@ class DeclaredReceiverTyping:
                 f"`{function_symbol}` declares no single return annotation"
             )
         return self.annotation_source_type(
-            module, declared[0].return_annotation_expression, UNDECLARED_SELF
+            module, declared[0].return_annotation_expression, OUTSIDE_METHOD
         )
+
+    @cached_property
+    def type_variables(self) -> frozenset[str]:
+        return frozenset(
+            f"{module}.{name}"
+            for module, names in self.type_variables_by_module.items()
+            for name in names
+        )
+
+    def type_parameters(self, symbol: str) -> tuple[str, ...]:
+        """A generic class's type variables, qualified, in declaration order.
+
+        `class C[T]:` declares them; otherwise a `Generic[...]` or
+        `Protocol[...]` base lists them; otherwise they are the type variables
+        its bases' arguments name, in order.
+        """
+
+        declaration = self.class_index.class_for(symbol)
+        if declaration is None:
+            return ()
+        module = declaration.module_name
+        if declaration.type_parameter_names:
+            return tuple(f"{module}.{name}" for name in declaration.type_parameter_names)
+        named: list[str] = []
+        for reference, arguments in zip(
+            declaration.base_references, declaration.base_argument_sources, strict=False
+        ):
+            variables = [
+                qualified
+                for argument in arguments
+                if (qualified := self._argument_name(module, argument)) in self.type_variables
+            ]
+            if reference.qualified_name in GENERIC_DECLARERS:
+                return tuple(variables)
+            named.extend(variable for variable in variables if variable not in named)
+        return tuple(named)
+
+    def _argument_name(self, module_name: str, argument: str) -> str:
+        try:
+            expression = ast.parse(argument, mode="eval").body
+        except SyntaxError:
+            return ""
+        parts = _reference_parts(expression)
+        return self.qualified(module_name, parts) if parts else ""
+
+    def generic_arguments(self, symbol: str, owner_symbol: str) -> Mapping[str, DeclaredType]:
+        """The types `symbol`'s bases bind `owner_symbol`'s type variables to.
+
+        Walks the declared bases from `symbol` up to the owner, evaluating each
+        subscripted base's arguments where the subscript is written, under the
+        bindings already made below it.
+        """
+
+        pending: list[tuple[str, Mapping[str, DeclaredType]]] = [(symbol, {})]
+        seen: set[str] = set()
+        for _step in range(len(self.class_index.classes_by_symbol) + 1):
+            if not pending:
+                break
+            current, bound = pending.pop(0)
+            if current == owner_symbol:
+                return bound
+            if current in seen:
+                continue
+            seen.add(current)
+            declaration = self.class_index.class_for(current)
+            if declaration is None:
+                continue
+            scope = AnnotationScope(DeclaredInstance((symbol,)), bound)
+            for reference, arguments in zip(
+                declaration.base_references, declaration.base_argument_sources, strict=False
+            ):
+                base = self.chased(reference.qualified_name)
+                if base is None:
+                    continue
+                parameters = self.type_parameters(base)
+                pending.append(
+                    (
+                        base,
+                        dict(
+                            zip(
+                                parameters,
+                                (
+                                    self.annotation_source_type(
+                                        declaration.module_name, argument, scope
+                                    )
+                                    for argument in arguments
+                                ),
+                                strict=False,
+                            )
+                        )
+                        if len(parameters) == len(arguments)
+                        else {},
+                    )
+                )
+        return {}
+
+    def enum_members(self, symbol: str) -> DeclaredType:
+        declaration = self.class_index.class_for(symbol)
+        if declaration is not None and declaration.direct_enum_member_names:
+            return DeclaredInstance((symbol,))
+        return UndeclaredType(f"the class `{symbol}` is no enum, not a declared collection")
+
+    def class_symbol(self, module_name: str, parts: tuple[str, ...]) -> str | None:
+        """The scanned class a module-level name chain names, through re-exports.
+
+        An import of `pkg.Name` where `pkg` itself imports `Name` from
+        `pkg._impl` names `pkg._impl.Name`: each hop follows a binding the
+        importing module declares, never a spelling.
+        """
+
+        symbol = self.resolver.symbol_for(
+            module_name=module_name,
+            reference_parts=parts,
+            allow_unique_unqualified=False,
+        )
+        if symbol is not None:
+            return symbol
+        return self.chased(self.qualified(module_name, parts))
+
+    def chased(self, qualified: str) -> str | None:
+        """The scanned class a qualified name binds, following re-exporting imports."""
+
+        for _hop in range(REEXPORT_HOPS):
+            if qualified in self.class_index.classes_by_symbol:
+                return qualified
+            owner, _, name = qualified.rpartition(".")
+            following = self.aliases_by_module.get(owner, {}).get(name)
+            if following is None or following == qualified:
+                return None
+            qualified = following
+        return None
 
     # references -------------------------------------------------------------
 
     def reference(self, module_name: str, parts: tuple[str, ...]) -> DeclaredType:
         """A module-level name chain: a scanned class, as the class object."""
 
-        symbol = self.resolver.symbol_for(
-            module_name=module_name,
-            reference_parts=parts,
-            allow_unique_unqualified=False,
-        )
-        if symbol is None:
+        symbol = self.class_symbol(module_name, parts)
+        if symbol is not None:
+            return DeclaredClassObject(symbol)
+        qualified = self.qualified(module_name, parts)
+        if qualified.partition(".")[0] in self.scanned_roots:
             return UndeclaredType(f"`{'.'.join(parts)}` names no scanned class")
-        return DeclaredClassObject(symbol)
+        return DeclaredForeignInstance((qualified,))
 
     def called_reference(
         self, module_name: str, parts: tuple[str, ...]
     ) -> DeclaredType:
         """`C(...)` constructs a C; `f(...)` is f's declared return; `C.m(...)` is m's."""
 
-        symbol = self.resolver.symbol_for(
-            module_name=module_name,
-            reference_parts=parts,
-            allow_unique_unqualified=False,
-        )
+        symbol = self.class_symbol(module_name, parts)
         if symbol is not None:
             return DeclaredInstance((symbol,))
         function = self.qualified(module_name, parts)
@@ -585,66 +744,64 @@ class DeclaredReceiverTyping:
     # annotations ---------------------------------------------------------------
 
     def annotation_source_type(
-        self, module_name: str, source: str, self_type: DeclaredType
+        self, module_name: str, source: str, scope: AnnotationScope
     ) -> DeclaredType:
         try:
             expression = ast.parse(source, mode="eval").body
         except SyntaxError:
             return UndeclaredType(f"annotation `{source}` does not parse")
-        return self.annotation_type(module_name, expression, self_type)
+        return self.annotation_type(module_name, expression, scope)
 
     def annotation_type(
-        self, module_name: str, annotation: ast.expr, self_type: DeclaredType
+        self, module_name: str, annotation: ast.expr, scope: AnnotationScope
     ) -> DeclaredType:
         match annotation:
             case ast.Constant(value=str() as source):
-                return self.annotation_source_type(module_name, source, self_type)
+                return self.annotation_source_type(module_name, source, scope)
             case ast.Constant(value=None):
                 return DeclaredNone()
             case ast.BinOp(left=left, op=ast.BitOr(), right=right):
-                return self.annotation_type(module_name, left, self_type).join(
-                    self.annotation_type(module_name, right, self_type), self
+                return self.annotation_type(module_name, left, scope).join(
+                    self.annotation_type(module_name, right, scope), self
                 )
             case ast.Subscript(value=head, slice=arguments):
-                return self.subscripted_type(module_name, head, arguments, self_type)
+                return self.subscripted_type(module_name, head, arguments, scope)
             case ast.Name() | ast.Attribute():
-                return self.named_type(module_name, annotation, self_type)
+                return self.named_type(module_name, annotation, scope)
         return UndeclaredType(f"annotation `{ast.unparse(annotation)}` names no type")
 
     def named_type(
         self,
         module_name: str,
         annotation: ast.Name | ast.Attribute,
-        self_type: DeclaredType,
+        scope: AnnotationScope,
     ) -> DeclaredType:
         parts = _reference_parts(annotation)
         if not parts:
             return UndeclaredType(f"annotation `{ast.unparse(annotation)}` names no type")
-        if DeclaredHead.SELF in DeclaredHead.spelled_as(self.qualified(module_name, parts)):
-            return self_type
-        symbol = self.resolver.symbol_for(
-            module_name=module_name,
-            reference_parts=parts,
-            allow_unique_unqualified=False,
-        )
+        qualified = self.qualified(module_name, parts)
+        if qualified in scope.parameters:
+            return scope.parameters[qualified]
+        if DeclaredHead.SELF in DeclaredHead.spelled_as(qualified):
+            return scope.self_type
+        symbol = self.class_symbol(module_name, parts)
         if symbol is not None:
             return DeclaredInstance((symbol,))
-        qualified = self.qualified(module_name, parts)
         if qualified.partition(".")[0] in self.scanned_roots:
             return UndeclaredType(f"`{'.'.join(parts)}` is no scanned class")
-        return DeclaredForeignInstance(qualified)
+        return DeclaredForeignInstance((qualified,))
 
     def subscripted_type(
         self,
         module_name: str,
         head: ast.expr,
         arguments: ast.expr,
-        self_type: DeclaredType,
+        scope: AnnotationScope,
     ) -> DeclaredType:
         items = list(arguments.elts) if isinstance(arguments, ast.Tuple) else [arguments]
         parts = _reference_parts(head)
         heads = DeclaredHead.spelled_as(self.qualified(module_name, parts)) if parts else ()
-        typed = [self.annotation_type(module_name, item, self_type) for item in items]
+        typed = [self.annotation_type(module_name, item, scope) for item in items]
         match heads:
             case (DeclaredHead.OPTIONAL,):
                 return typed[0].join(DeclaredNone(), self)
@@ -653,9 +810,7 @@ class DeclaredReceiverTyping:
             case (DeclaredHead.QUALIFIER,):
                 return typed[0]
             case (DeclaredHead.CLASS_OBJECT,):
-                return UndeclaredType(
-                    f"`{ast.unparse(head)}[...]` declares a class object, not an instance"
-                )
+                return typed[0].class_object()
             case (DeclaredHead.HOMOGENEOUS,):
                 return DeclaredCollection(typed[0])
             case (DeclaredHead.TUPLE,):
@@ -667,7 +822,7 @@ class DeclaredReceiverTyping:
             case (DeclaredHead.MAPPING,) if len(typed) == 2:
                 return DeclaredMapping(typed[0], typed[1])
         if isinstance(head, ast.Name | ast.Attribute):
-            return self.named_type(module_name, head, self_type)
+            return self.named_type(module_name, head, scope)
         return UndeclaredType(f"annotation `{ast.unparse(head)}[...]` names no type")
 
     # joins -----------------------------------------------------------------------
@@ -698,7 +853,30 @@ class DeclaredReceiverTyping:
         return DeclaredInstance(symbols)
 
 
-UNDECLARED_SELF = UndeclaredType("`Self` outside a method names no class")
+REEXPORT_HOPS = 8
+GENERIC_DECLARERS = frozenset(
+    f"{module}.{name}"
+    for module in ("typing", "typing_extensions")
+    for name in ("Generic", "Protocol")
+)
+CLASS_OBJECT_TYPE = "builtins.type"
+ITERABLE_TYPE = "collections.abc.Iterable"
+TUPLE_TYPE = "builtins.tuple"
+MAPPING_TYPE = "collections.abc.Mapping"
+@dataclass(frozen=True)
+class AnnotationScope:
+    """What an annotation's free type names mean where it is read.
+
+    `self_type` is what `Self` names; `parameters` maps a generic class's type
+    variables, by qualified name, to the types a subclass's base arguments
+    bind them to.
+    """
+
+    self_type: DeclaredType
+    parameters: Mapping[str, DeclaredType] = field(default_factory=dict)
+
+
+OUTSIDE_METHOD = AnnotationScope(UndeclaredType("`Self` outside a method names no class"))
 
 
 @dataclass(frozen=True)
@@ -711,11 +889,27 @@ class _MemberRead(ClassMemberAnswersABC[DeclaredType]):
     receiver: DeclaredInstance
 
     def assigned(self, owner, declaration):
-        return _assigned_type(self.typing, owner, declaration, self.name)
+        if self.name in owner.direct_enum_member_names:
+            return DeclaredInstance((owner.symbol,))
+        match declaration.annotation_expression:
+            case str() as source:
+                return self.typing.annotation_source_type(
+                    owner.module_name, source, self.scope(owner)
+                )
+        return UndeclaredType(
+            f"`{owner.symbol}.{self.name}` is assigned without an annotation"
+        )
+
+    def scope(self, owner: CompactIndexedClass) -> AnnotationScope:
+        """`Self` is the receiver; the owner's type variables are what the receiver's bases bind."""
+
+        return AnnotationScope(
+            self.receiver, self.typing.generic_arguments(self.symbol, owner.symbol)
+        )
 
     def annotated_property(self, owner, declaration):
         return self.typing.annotation_source_type(
-            owner.module_name, declaration.return_annotation_expression, self.receiver
+            owner.module_name, declaration.return_annotation_expression, self.scope(owner)
         )
 
     def annotated_method(self, owner, declaration):
@@ -748,22 +942,8 @@ class _MethodCall(_MemberRead):
 
     def annotated_method(self, owner, declaration):
         return self.typing.annotation_source_type(
-            owner.module_name, declaration.return_annotation_expression, self.receiver
+            owner.module_name, declaration.return_annotation_expression, self.scope(owner)
         )
-
-
-def _assigned_type(
-    typing: DeclaredReceiverTyping,
-    owner: CompactIndexedClass,
-    declaration: CompactClassMemberDeclaration,
-    name: str,
-) -> DeclaredType:
-    match declaration.annotation_expression:
-        case str() as source:
-            return typing.annotation_source_type(
-                owner.module_name, source, DeclaredInstance((owner.symbol,))
-            )
-    return UndeclaredType(f"`{owner.symbol}.{name}` is assigned without an annotation")
 
 
 def _reference_parts(node: ast.expr) -> tuple[str, ...]:
@@ -814,7 +994,7 @@ class AnnotatedRoot(ReceiverRoot):
 
     def declared(self, typing):
         return typing.annotation_source_type(
-            self.module_name, self.annotation, UNDECLARED_SELF
+            self.module_name, self.annotation, OUTSIDE_METHOD
         )
 
 
@@ -826,7 +1006,9 @@ class MethodAnnotatedRoot(AnnotatedRoot):
 
     def declared(self, typing):
         return typing.annotation_source_type(
-            self.module_name, self.annotation, DeclaredInstance((self.class_symbol,))
+            self.module_name,
+            self.annotation,
+            AnnotationScope(DeclaredInstance((self.class_symbol,))),
         )
 
 
@@ -902,7 +1084,11 @@ class AgreeingRoot(ReceiverRoot):
     def declared(self, typing):
         """A binding to `None` is the absent arm, which reading the receiver excludes."""
 
-        types = {binding.declared(typing) for binding in self.bindings} - {DeclaredNone()}
+        declared = [binding.declared(typing) for binding in self.bindings]
+        for found in declared:
+            if not found.class_symbols() and found != DeclaredNone():
+                return UndeclaredType(f"`{self.name}` has a binding no declaration types: {found.why_no_class()}")
+        types = set(declared) - {DeclaredNone()}
         if len(types) == 1:
             return next(iter(types))
         return UndeclaredType(f"`{self.name}` is rebound to a different type")
@@ -946,6 +1132,27 @@ class CollectionDisplayRoot(ReceiverRoot):
         return DeclaredCollection(
             typing.joined(element.declared(typing) for element in self.elements)
         )
+
+
+@dataclass(frozen=True)
+class LiteralRoot(ReceiverRoot):
+    """A literal: an instance of its builtin class."""
+
+    qualified_name: str
+
+    def declared(self, typing):
+        return DeclaredForeignInstance((self.qualified_name,))
+
+
+@dataclass(frozen=True)
+class MappingDisplayRoot(ReceiverRoot):
+    """A dict comprehension: a mapping of its key's type to its value's."""
+
+    key: ReceiverPath
+    value: ReceiverPath
+
+    def declared(self, typing):
+        return DeclaredMapping(self.key.declared(typing), self.value.declared(typing))
 
 
 @dataclass(frozen=True)
@@ -1181,6 +1388,14 @@ class ReceiverPathBuilder:
                 return base.then(SubscriptStep())
             case ast.Constant(value=None):
                 return ReceiverPath(NoneRoot())
+            case ast.Constant(value=value):
+                return ReceiverPath(LiteralRoot(f"builtins.{type(value).__name__}"))
+            case ast.JoinedStr():
+                return ReceiverPath(LiteralRoot("builtins.str"))
+            case ast.DictComp(key=key, value=value):
+                return ReceiverPath(
+                    MappingDisplayRoot(self._path(key, pending), self._path(value, pending))
+                )
             case ast.IfExp(body=body, orelse=orelse):
                 return ReceiverPath(
                     UnionRoot((self._path(body, pending), self._path(orelse, pending)))
@@ -1191,12 +1406,10 @@ class ReceiverPathBuilder:
                 return ReceiverPath(
                     TupleDisplayRoot(tuple(self._path(item, pending) for item in items))
                 )
-            case ast.List(elts=items) | ast.Set(elts=items) if items and not any(
-                isinstance(item, ast.Starred) for item in items
-            ):
+            case ast.List(elts=items) | ast.Set(elts=items) | ast.Tuple(elts=items) if items:
                 return ReceiverPath(
                     CollectionDisplayRoot(
-                        tuple(self._path(item, pending) for item in items)
+                        tuple(self._display_element(item, pending) for item in items)
                     )
                 )
             case ast.ListComp(elt=element) | ast.SetComp(elt=element) | ast.GeneratorExp(
@@ -1208,6 +1421,14 @@ class ReceiverPathBuilder:
         return unresolved(
             f"`{ast.unparse(expression)}` is a {type(expression).__name__} expression"
         )
+
+    def _display_element(self, item: ast.expr, pending: Pending) -> ReceiverPath:
+        """A display item's element type: a starred iterable contributes its elements."""
+
+        match item:
+            case ast.Starred(value=iterable):
+                return self._path(iterable, pending).then(ElementStep())
+        return self._path(item, pending)
 
     def module_call(
         self,

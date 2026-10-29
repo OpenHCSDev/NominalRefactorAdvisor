@@ -32,7 +32,9 @@ from __future__ import annotations
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from functools import cached_property
-from typing import Self
+from typing import Generic, Self, TypeVar
+
+T = TypeVar("T")
 
 
 class Shape:
@@ -88,6 +90,14 @@ class Board:
         return self.by_name[name]
 
 
+class Index(Generic[T]):
+    by_symbol: dict[str, T]
+
+
+class ShapeIndex(Index[Shape]):
+    pass
+
+
 def make_board() -> Board:
     raise NotImplementedError
 
@@ -104,9 +114,11 @@ def _typed(tmp_path: Path, body: str) -> dict[int, object]:
     package.mkdir()
     (package / "__init__.py").write_text("")
     (package / "models.py").write_text(MODELS)
+    (package / "api.py").write_text("from pkg.models import Square\n")
     (package / "use.py").write_text(
         "from __future__ import annotations\n"
-        "from pkg.models import Board, Shape, Square, make_board, unannotated_board\n\n"
+        "from pkg.models import Board, Shape, ShapeIndex, Square, make_board, unannotated_board\n"
+        "from pkg.api import Square as Exported\n\n"
         + body
     )
     with ScanCache.scope():
@@ -258,6 +270,16 @@ def _symbols(tmp_path: Path, body: str) -> list[tuple[str, ...]]:
             id="rebound to the same type",
         ),
         pytest.param(
+            "def f(index: ShapeIndex, k: str):\n    index.by_symbol[k].marker\n",
+            ("Shape",),
+            id="a generic base's type variable bound by the subclass",
+        ),
+        pytest.param(
+            "def f(square: Exported):\n    square.marker\n",
+            ("Square",),
+            id="a class re-exported by another module",
+        ),
+        pytest.param(
             "class Holder:\n"
             "    def f(self) -> None:\n"
             "        self.marker\n",
@@ -289,7 +311,7 @@ def test_each_declared_form_resolves(tmp_path, body, expected):
         ),
         pytest.param(
             "def f():\n    board = unannotated_board()\n    board.marker\n",
-            "declares no single return annotation",
+            "calls no scanned class or annotated function",
             id="unannotated callee",
         ),
         pytest.param(
@@ -363,8 +385,8 @@ def test_callable_member_declarations_skip_overloads_and_setters(tmp_path):
     (projection,) = projections
     (holder,) = projection.classes
     assert holder.callable_member_declarations == (
-        CompactAnnotatedProperty("value", 3, "int"),
-        CompactUnannotatedCallable("pick", 8),
+        CompactAnnotatedProperty("value", 4, "int"),
+        CompactUnannotatedCallable("pick", 9),
     )
 
 

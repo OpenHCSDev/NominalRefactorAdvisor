@@ -1315,6 +1315,10 @@ class CompactIndexedClass(CompactClassHeader):
     end_line: int | None = None
     method_names: tuple[str, ...] = ()
     callable_member_declarations: tuple[CompactCallableMemberDeclaration, ...] = ()
+    base_argument_sources: tuple[tuple[str, ...], ...] = ()
+    """Each referenced base's subscript arguments (`Base[A, B]`), aligned with its base references."""
+    type_parameter_names: tuple[str, ...] = ()
+    """The class's own `class C[T]:` type parameters."""
     abstract_method_names: tuple[str, ...] = ()
     is_abstract: bool = False
     is_registration_authority: bool = False
@@ -1961,6 +1965,8 @@ class CompactModuleClassProjection(
     manual_selector_axes: tuple[CompactManualSelectorAxis, ...] = ()
     top_level_definitions: tuple[tuple[str, int], ...] = ()
     annotated_function_returns: tuple[CompactAnnotatedFunctionReturn, ...] = ()
+    type_variable_names: tuple[str, ...] = ()
+    """Module-level names bound to a `TypeVar`, `ParamSpec` or `TypeVarTuple` call."""
     repeated_keyed_family_roots: tuple[CompactRepeatedKeyedFamilyRoot, ...] = ()
     manual_subclass_roster_roots: tuple[CompactManualSubclassRosterRoot, ...] = ()
     latent_rosters: tuple[LatentRosterObservation, ...] = ()
@@ -5379,6 +5385,21 @@ def _compact_base_references(
     )
 
 
+def _compact_base_argument_sources(node: ast.ClassDef) -> tuple[tuple[str, ...], ...]:
+    """The subscript arguments of each referenced base, aligned with its base references."""
+
+    sources: list[tuple[str, ...]] = []
+    for base, _parts in _referenced_bases(node):
+        match base:
+            case ast.Subscript(slice=ast.Tuple(elts=arguments)):
+                sources.append(tuple(ast.unparse(argument) for argument in arguments))
+            case ast.Subscript(slice=argument):
+                sources.append((ast.unparse(argument),))
+            case _:
+                sources.append(())
+    return tuple(sources)
+
+
 def _compact_base_key_type_names(node: ast.ClassDef) -> tuple[str | None, ...]:
     """The key type each referenced base's subscript names first (`Family[Key]`), aligned with its base references."""
 
@@ -5524,6 +5545,8 @@ def _compact_indexed_classes(
                 parsed_module.source_segments.lines,
             ).is_reconstructible,
             base_key_type_names=_compact_base_key_type_names(node),
+            base_argument_sources=_compact_base_argument_sources(node),
+            type_parameter_names=tuple(parameter.name for parameter in node.type_params),
             is_final=any(
                 (isinstance(decorator, ast.Name) and decorator.id == "final")
                 or (isinstance(decorator, ast.Attribute) and decorator.attr == "final")
@@ -5869,6 +5892,7 @@ class CompactModuleClassProjectionFamily(CollectedFamily[CompactModuleClassProje
                         node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
                     )
                 ),
+                type_variable_names=_module_type_variable_names(parsed_module),
                 annotated_function_returns=tuple(
                     CompactAnnotatedFunctionReturn(
                         node.name, node.lineno, ast.unparse(returns)
@@ -8075,6 +8099,32 @@ def _compact_class_member_declarations(
             if isinstance(target, ast.Name)
         )
     return tuple(declarations)
+
+
+TYPE_VARIABLE_CONSTRUCTORS = frozenset(
+    f"{module}.{name}"
+    for module in ("typing", "typing_extensions")
+    for name in ("TypeVar", "ParamSpec", "TypeVarTuple")
+)
+
+
+def _module_type_variable_names(parsed_module: ParsedModule) -> tuple[str, ...]:
+    """Names the module binds at top level to a type variable constructor."""
+
+    aliases = module_import_aliases(parsed_module)
+    names: list[str] = []
+    for statement in parsed_module.module.body:
+        match statement:
+            case ast.Assign(targets=targets, value=ast.Call(func=constructor)):
+                parts = ExpressionReference.decoded(constructor).attribute_chain
+                if not parts or parts[0] not in aliases:
+                    continue
+                qualified = ".".join((aliases[parts[0]], *parts[1:]))
+                if qualified in TYPE_VARIABLE_CONSTRUCTORS:
+                    names.extend(
+                        target.id for target in targets if isinstance(target, ast.Name)
+                    )
+    return tuple(names)
 
 
 def _compact_callable_member_declarations(
