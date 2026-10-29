@@ -2210,7 +2210,12 @@ class RepeatedKeyedFamilyDetector(
         return self.build_finding(
             (
                 f"Registry roots {class_names} each repeat `{registry_keys}` + `_registry` + "
-                f"`{lookup_names}` over `{family_candidate.family_base_name}`."
+                f"`{lookup_names}` "
+                + (
+                    f"over `{family_candidate.family_base_name}`."
+                    if family_candidate.family_base_name
+                    else "with no shared base."
+                )
             ),
             evidence,
         )

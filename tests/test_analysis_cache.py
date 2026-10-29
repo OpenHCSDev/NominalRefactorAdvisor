@@ -4954,6 +4954,59 @@ def test_bounded_multi_family_joins_reuse_the_single_class_anchor(
     assert set(findings) == set(detector_types)
 
 
+def test_repeated_keyed_family_roots_are_found_by_shape_not_by_base_name(
+    tmp_path: Path,
+) -> None:
+    package_root = tmp_path / "pkg"
+    package_root.mkdir()
+    for module_name, class_name, bases in (
+        ("alpha", "AlphaPolicy", "KeyedShell, ABC"),
+        ("beta", "BetaPolicy", "KeyedShell"),
+        ("epsilon", "EpsilonPolicy", "KeyedShell"),
+        ("gamma", "GammaPolicy", "ABC"),
+        ("delta", "DeltaPolicy", "ABC"),
+        ("zeta", "ZetaPolicy", "ABC"),
+    ):
+        (package_root / f"{module_name}.py").write_text(
+            "from abc import ABC\n"
+            "from pkg.shell import KeyedShell\n"
+            "\n"
+            f"class {class_name}({bases}):\n"
+            f"    registry_key_attr = '{module_name}'\n"
+            "    _registry = {}\n"
+            "    @classmethod\n"
+            f"    def for_{module_name}(cls, key):\n"
+            "        try:\n"
+            "            return cls._registry[key]\n"
+            "        except KeyError as error:\n"
+            "            raise ValueError(key) from error\n",
+            encoding="utf-8",
+            newline="",
+        )
+    (package_root / "shell.py").write_text("class KeyedShell:\n    pass\n")
+    modules = parse_python_modules(package_root, use_parse_cache=False)
+    projections = (
+        systemic_detectors.RepeatedKeyedFamilyDetector.compact_module_projections(
+            modules
+        )
+    )
+
+    candidates = systemic_detectors.RepeatedKeyedFamilyDetector._candidates_from_compact_projections(
+        projections,
+        DetectorConfig(),
+    )
+
+    # Grouped by the bases the roots declare outside the standard library:
+    # `ABC` is no family, so three roots over `KeyedShell` and three over nothing.
+    assert {
+        candidate.family_base_name: tuple(root.class_name for root in candidate.roots)
+        for candidate in candidates
+    } == {
+        "KeyedShell": ("AlphaPolicy", "BetaPolicy", "EpsilonPolicy"),
+        "": ("DeltaPolicy", "GammaPolicy", "ZetaPolicy"),
+    }
+
+
 def test_compact_repeated_keyed_family_preserves_grouping_semantics(
     tmp_path: Path,
 ) -> None:

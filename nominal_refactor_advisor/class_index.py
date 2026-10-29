@@ -13,6 +13,7 @@ import builtins
 import copy
 import hashlib
 import re
+import sys
 from abc import ABC, abstractmethod
 from collections import defaultdict, deque
 from collections.abc import (
@@ -6755,14 +6756,9 @@ def _compact_repeated_keyed_family_roots(
     parsed_module: ParsedModule,
 ) -> tuple[CompactRepeatedKeyedFamilyRoot, ...]:
     roots: list[CompactRepeatedKeyedFamilyRoot] = []
+    aliases = module_import_aliases(parsed_module)
     for node in parsed_module.module.body:
         if not isinstance(node, ast.ClassDef):
-            continue
-        if "AutoRegisterByClassVar" not in {
-            terminal_name
-            for base in node.bases
-            if (terminal_name := _terminal_reference_name(base)) is not None
-        }:
             continue
         assignments = _direct_class_assignments(node)
         registry_key_attr_name = _string_constant(assignments.get("registry_key_attr"))
@@ -6791,7 +6787,7 @@ def _compact_repeated_keyed_family_roots(
                 file_path=parsed_module.file_path,
                 line=node.lineno,
                 class_name=node.name,
-                family_base_name="AutoRegisterByClassVar",
+                family_base_name=", ".join(_declared_family_base_names(node, aliases)),
                 registry_key_attr_name=registry_key_attr_name,
                 lookup_method_name=lookup_method.name,
                 lookup_style=lookup_shape.style,
@@ -7861,6 +7857,32 @@ def _compact_sorted_key_calls(
                 )
             )
     return tuple(calls)
+
+
+def _declared_family_base_names(
+    node: ast.ClassDef, aliases: dict[str, str]
+) -> tuple[str, ...]:
+    """The bases a class names outside the standard library, by terminal name, in declared order.
+
+    A base is the standard library's when its first name is a builtin or is
+    bound by an import from a standard-library module (`ABC`, `Generic[T]`,
+    `abc.ABC`); what remains is the family the class extends.
+    """
+
+    found: list[str] = []
+    for base in node.bases:
+        parts = ExpressionReference.decoded(
+            ClassSymbolResolutionAuthority.reference_node(base)
+        ).attribute_chain
+        if not parts:
+            continue
+        origin = aliases.get(parts[0], "")
+        if origin.partition(".")[0] in sys.stdlib_module_names or (
+            not origin and hasattr(builtins, parts[0])
+        ):
+            continue
+        found.append(parts[-1])
+    return tuple(found)
 
 
 def _terminal_reference_name(node: ast.AST) -> str | None:
