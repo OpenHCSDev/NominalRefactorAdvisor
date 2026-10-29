@@ -26,11 +26,15 @@ class ClassNameAlgebra:
 
     @staticmethod
     def declared_tokens(name: str) -> tuple[str, ...]:
-        """Split a declared identifier without applying semantic token filters."""
+        """Split a declared identifier without applying semantic token filters.
+
+        An upper-case run is a word when a capitalized word, an underscore or the
+        end follows it, so `FAST_MODE` is `FAST`, `MODE`.
+        """
 
         return tuple(
             re.findall(
-                "[A-Z]+(?=[A-Z][a-z0-9]|$)|[A-Z]?[a-z0-9]+",
+                "[A-Z]+(?=[A-Z][a-z0-9]|_|$)|[A-Z]?[a-z0-9]+",
                 name.lstrip("_"),
             )
         )

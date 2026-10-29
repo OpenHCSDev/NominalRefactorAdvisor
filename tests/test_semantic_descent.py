@@ -825,6 +825,101 @@ def test_class_family_mirror_needs_the_members_not_their_spellings(
     assert "BINDINGS" in mirrored
 
 
+def test_upper_snake_names_split_into_every_declared_word() -> None:
+    assert CLASS_NAME_ALGEBRA.declared_tokens("FAST_MODE") == ("FAST", "MODE")
+    assert CLASS_NAME_ALGEBRA.names_several_words("FAST_MODE")
+    assert CLASS_NAME_ALGEBRA.declared_tokens("HTTPServer") == ("HTTP", "Server")
+    assert not CLASS_NAME_ALGEBRA.names_several_words("Left")
+
+
+def _editor_command_mirrors(root: Path, commands: str, projections: dict[str, str]) -> set[str]:
+    (root / "commands.py").write_text(commands, encoding="utf-8")
+    for module_name, source in projections.items():
+        (root / f"{module_name}.py").write_text(source, encoding="utf-8")
+    return {
+        finding.metrics.plan_registry_name
+        for finding in SemanticMirrorWithoutDescentDetector().detect(
+            parse_python_modules(root),
+            DetectorConfig(),
+        )
+    }
+
+
+def test_class_family_mirror_is_named_by_the_members_declared_keys(
+    tmp_path: Path,
+) -> None:
+    # A string a member declares as its own key (`key = "move_left"`) names
+    # that member exactly; a dict keyed by those strings mirrors the family.
+    mirrored = _editor_command_mirrors(
+        tmp_path,
+        "class EditorCommand:\n"
+        "    key = 'command'\n"
+        "\n"
+        "class Left(EditorCommand):\n    key = 'move_left'\n\n"
+        "class Right(EditorCommand):\n    key = 'move_right'\n\n"
+        "class Up(EditorCommand):\n    key = 'move_up'\n\n"
+        "class Down(EditorCommand):\n    key = 'move_down'\n",
+        {
+            "help": (
+                "COMMAND_HELP = {\n"
+                "    'move_left': 'cursor one column left',\n"
+                "    'move_right': 'cursor one column right',\n"
+                "    'move_up': 'cursor one line up',\n"
+                "    'move_down': 'cursor one line down',\n"
+                "}\n"
+            ),
+        },
+    )
+
+    assert "COMMAND_HELP" in mirrored
+
+
+def test_class_family_mirror_links_qualified_member_references(
+    tmp_path: Path,
+) -> None:
+    # Qualified references to the member classes resolve to their symbols, so
+    # they link through `ProjectionClassSymbolFactMatcher`, not by spelling.
+    mirrored = _editor_command_mirrors(
+        tmp_path,
+        "class Command:\n"
+        "    pass\n"
+        "\n"
+        "class EditorCommand:\n"
+        "    class Left(Command):\n        pass\n\n"
+        "    class Right(Command):\n        pass\n\n"
+        "    class Up(Command):\n        pass\n\n"
+        "    class Down(Command):\n        pass\n\n"
+        "class Home(Command):\n    pass\n\n"
+        "class End(Command):\n    pass\n\n"
+        "class PageUp(Command):\n    pass\n\n"
+        "class PageDown(Command):\n    pass\n",
+        {
+            "module_bindings": (
+                "import commands\n"
+                "\n"
+                "MODULE_BINDINGS = {\n"
+                "    'g': commands.Home,\n"
+                "    'G': commands.End,\n"
+                "    'b': commands.PageUp,\n"
+                "    'f': commands.PageDown,\n"
+                "}\n"
+            ),
+            "class_bindings": (
+                "from commands import EditorCommand\n"
+                "\n"
+                "CLASS_BINDINGS = {\n"
+                "    'h': EditorCommand.Left,\n"
+                "    'l': EditorCommand.Right,\n"
+                "    'k': EditorCommand.Up,\n"
+                "    'j': EditorCommand.Down,\n"
+                "}\n"
+            ),
+        },
+    )
+
+    assert {"MODULE_BINDINGS", "CLASS_BINDINGS"} <= mirrored
+
+
 def test_class_family_mirror_requires_affinity_for_reused_crosscutting_facts(
     tmp_path: Path,
 ) -> None:

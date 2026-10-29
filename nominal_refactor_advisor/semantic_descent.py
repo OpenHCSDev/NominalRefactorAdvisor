@@ -1967,7 +1967,6 @@ class SemanticAuthorityMirrorPolicy(ABC, metaclass=AutoRegisterMeta):
 
     authority_kind: ClassVar[SemanticAuthorityKind | None] = None
     authority_qualified_token_reference_admitted: ClassVar[bool] = True
-    foreign_qualified_attribute_token_reference_admitted: ClassVar[bool] = False
     dataclass_authority_selected: ClassVar[bool] = False
 
     @classmethod
@@ -2034,23 +2033,23 @@ class SemanticAuthorityMirrorPolicy(ABC, metaclass=AutoRegisterMeta):
 class ClassFamilyLikeMirrorPolicy(SemanticAuthorityMirrorPolicy):
     """Shared policy for class-family authorities and AutoRegister families."""
 
-    foreign_qualified_attribute_token_reference_admitted = True
-
     def token_names_fact(self, token: PresentationToken, fact: SemanticFact) -> bool:
-        """A member class is named by a string of its exact multi-word `__name__`.
+        """A member class is named by a string of its exact multi-word `__name__`,
+        or by a string constant the member declares (`key = "move_left"`).
 
         Any other spelling only resembles the class: `"left"` in a terminal key
         map is not the `Left` editor command, and a one-word `"Left"` is also an
-        ordinary word (`ClassNameAlgebra.names_several_words`). A projection
-        holding the class itself links through `ProjectionClassSymbolFactMatcher`,
-        by resolved symbol.
+        ordinary word (`ClassNameAlgebra.names_several_words`). A declared
+        constant is the member's own key, so its exact text names it. A
+        projection holding the class itself links through
+        `ProjectionClassSymbolFactMatcher`, by resolved symbol.
         """
 
-        return (
-            token.kind.is_string_literal
-            and token.written == fact.name
-            and CLASS_NAME_ALGEBRA.names_several_words(token.written)
-        )
+        if not token.kind.is_string_literal:
+            return False
+        if token.written == fact.name:
+            return CLASS_NAME_ALGEBRA.names_several_words(token.written)
+        return token.written in fact.aliases
 
     def semantic_mirror_metrics(
         self,
@@ -6496,13 +6495,7 @@ class SemanticMirrorResolver(SemanticDescentGraphSpace):
             return tuple(
                 ref for ref in refs if ref.authority_id in allowed_authority_ids
             )
-        return tuple(
-            ref
-            for ref in refs
-            if self.policy_catalog.policy_for_authority_id(
-                ref.authority_id
-            ).foreign_qualified_attribute_token_reference_admitted
-        )
+        return ()
 
     def _resolution_for(
         self,

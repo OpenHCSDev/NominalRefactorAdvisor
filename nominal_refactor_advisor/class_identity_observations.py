@@ -1515,8 +1515,6 @@ class IdentityPositions:
             return "", ""
         return "", str(holding)
 
-    multiword = staticmethod(CLASS_NAME_ALGEBRA.names_several_words)
-
     @staticmethod
     def string(node: ast.AST) -> str | None:
         match node:
@@ -1590,7 +1588,7 @@ class IdentityPositions:
                         literal,
                     ),
                 )
-        if self.multiword(literal):
+        if CLASS_NAME_ALGEBRA.names_several_words(literal):
             yield self.site(
                 literal_node,
                 ComparedWordSpelling.detail(
@@ -1652,7 +1650,7 @@ class IdentityPositions:
     ) -> Iterator[tuple[ast.expr, tuple[str, ...]]]:
         for passed in self.passed_values(value):
             literal = self.string(passed)
-            if literal is not None and self.multiword(literal):
+            if literal is not None and CLASS_NAME_ALGEBRA.names_several_words(literal):
                 yield self.site(
                     passed,
                     WordSpelling.detail(
