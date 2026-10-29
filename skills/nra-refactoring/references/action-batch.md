@@ -59,8 +59,7 @@ mechanism in real code before introducing another.
 
 The shared response algorithm and concrete classes are **authored source** supplied
 to existing insertion/patch operations. `DispatchToPolymorphismOperation` does not
-support this async method or multi-statement effectful arms; a test checks that it
-rejects the target. Five successful stages do not upgrade that proof scope.
+support this async method; a test checks that it rejects the target. Five successful stages do not upgrade that proof scope.
 
 ## 3. Bind this rehearsal to its actual source, not just an old method
 

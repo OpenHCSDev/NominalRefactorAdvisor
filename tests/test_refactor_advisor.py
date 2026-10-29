@@ -207,6 +207,7 @@ from nominal_refactor_advisor.codemod import (
     DeriveCandidateCollectorOperation,
     TypedMirror,
     DispatchToPolymorphismOperation,
+    RefactorRecipeSimulation,
     EnsureImportOperation,
     DeclareCandidateFindingRendererOperation,
     DeclareDetectorClassOperation,
@@ -6915,34 +6916,258 @@ def test_dispatch_refactor_guard_rejects_later_branch_reintroduction(
     )
 
 
-def test_refactor_recipe_rejects_attribute_literal_dispatch_axis(
+def _dispatch_simulation(
+    tmp_path: Path,
+    source: str,
+    qualname: str,
+) -> tuple[Path, RefactorRecipeSimulation]:
+    module_path = tmp_path / "pkg/mod.py"
+    _write_module(tmp_path, "pkg/mod.py", source)
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    target = next(
+        target
+        for target in snapshot.source_index.ast_targets
+        if target.qualname == qualname
+    )
+    simulation = (
+        RefactorRecipe(recipe_id="widened-dispatch-shape")
+        .with_operation(
+            DispatchToPolymorphismOperation(
+                target=SourceRewriteTarget(target_id=target.target_id),
+            )
+        )
+        .simulate(snapshot, backend=CodemodBackend.AST_SPAN)
+    )
+    return module_path, simulation
+
+
+def _exec_namespace(source_text: str, module_path: Path) -> dict[str, object]:
+    namespace: dict[str, object] = {}
+    exec(compile(source_text, module_path.as_posix(), "exec"), namespace)
+    return namespace
+
+
+def test_dispatch_to_polymorphism_derives_attribute_chain_axis(
     tmp_path: Path,
 ) -> None:
-    module_path = tmp_path / "pkg/mod.py"
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        '\ndef walk(node):\n    if node.kind == "alpha":\n        return node.alpha()\n    if node.kind == "beta":\n        return node.beta()\n    return None\n',
+    source = (
+        "\nclass Kind:\n"
+        "    def __init__(self, name):\n"
+        "        self.name = name\n\n\n"
+        "class Node:\n"
+        "    def __init__(self, name):\n"
+        "        self.kind = Kind(name)\n\n\n"
+        "def walk(node, value):\n"
+        '    if node.kind.name == "alpha":\n'
+        "        return value + 1\n"
+        '    if node.kind.name == "beta":\n'
+        "        return value + 2\n"
+        "    return None\n"
     )
-    source_index = build_source_index(parse_python_modules(tmp_path), ())
-    source_by_path = {module_path.as_posix(): module_path.read_text()}
-    walk_target = next(
-        target for target in source_index.ast_targets if target.qualname == "walk"
-    )
+    module_path, simulation = _dispatch_simulation(tmp_path, source, "walk")
+    rewritten = simulation.simulation.rewritten_sources[module_path.as_posix()]
 
-    recipe = RefactorRecipe(
-        recipe_id="attribute-dispatch-must-remain-unplanned"
-    ).with_operation(
-        DispatchToPolymorphismOperation(
-            target=SourceRewriteTarget(target_id=walk_target.target_id),
-        )
-    )
+    assert simulation.is_clean
+    assert "WalkDispatchCase.__registry__.get(node.kind.name)" in rewritten
+    assert 'if node.kind.name == "alpha"' not in rewritten
+    for namespace in (
+        _exec_namespace(source, module_path),
+        _exec_namespace(rewritten, module_path),
+    ):
+        walk, node = namespace["walk"], namespace["Node"]
+        assert callable(walk) and callable(node)
+        assert (walk(node("alpha"), 1), walk(node("beta"), 1)) == (2, 3)
+        assert walk(node("gamma"), 1) is None
 
-    with pytest.raises(ValueError, match="not a supported literal dispatch"):
-        recipe.simulate(
-            _indexed_snapshot(source_index, source_by_path),
-            backend=CodemodBackend.AST_SPAN,
+
+def test_dispatch_to_polymorphism_lifts_terminal_statement_case_bodies(
+    tmp_path: Path,
+) -> None:
+    source = (
+        "\ndef render(kind, value):\n"
+        '    if kind == "csv":\n'
+        "        text = str(value)\n"
+        "        if value > 1:\n"
+        '            return text + "!"\n'
+        "        else:\n"
+        "            return text\n"
+        '    elif kind == "json":\n'
+        "        items = [value]\n"
+        "        if not items:\n"
+        "            raise ValueError(kind)\n"
+        "        return repr(items)\n"
+        "    message = f'unknown {kind}'\n"
+        "    raise ValueError(message)\n"
+    )
+    module_path, simulation = _dispatch_simulation(tmp_path, source, "render")
+    rewritten = simulation.simulation.rewritten_sources[module_path.as_posix()]
+
+    assert simulation.is_clean
+    assert "        text = str(value)" in rewritten
+    for namespace in (
+        _exec_namespace(source, module_path),
+        _exec_namespace(rewritten, module_path),
+    ):
+        render = namespace["render"]
+        assert callable(render)
+        assert (render("csv", 1), render("csv", 2), render("json", 3)) == (
+            "1",
+            "2!",
+            "[3]",
         )
+        with pytest.raises(ValueError, match="unknown xml"):
+            render("xml", 1)
+
+
+def test_dispatch_to_polymorphism_lifts_top_level_method_before_its_class(
+    tmp_path: Path,
+) -> None:
+    source = (
+        "import ast\n\n\n"
+        "class Store:\n"
+        "    def calls(self, call, tracked):\n"
+        "        if not isinstance(call.func, ast.Attribute):\n"
+        "            return False\n"
+        "        match call.func.attr:\n"
+        '            case "setdefault" | "__setitem__":\n'
+        "                return len(call.args) >= 2 and self.tracked(call.args[-1], tracked)\n"
+        '            case "update":\n'
+        "                return any(self.tracked(k.value, tracked) for k in call.keywords)\n"
+        "        return False\n\n"
+        "    @staticmethod\n"
+        "    def tracked(expression, tracked):\n"
+        "        return isinstance(expression, ast.Name) and expression.id in tracked\n\n\n"
+        "class Other:\n"
+        "    def calls(self, kind):\n"
+        '        if kind == "a":\n'
+        "            return 1\n"
+        '        if kind == "b":\n'
+        "            return 2\n"
+        "        return 0\n"
+    )
+    module_path, simulation = _dispatch_simulation(tmp_path, source, "Store.calls")
+    rewritten = simulation.simulation.rewritten_sources[module_path.as_posix()]
+    module = ast.parse(rewritten)
+    top_level_classes = [
+        statement.name for statement in module.body if isinstance(statement, ast.ClassDef)
+    ]
+
+    assert simulation.is_clean
+    assert top_level_classes.index("StoreCallsDispatchCase") < top_level_classes.index(
+        "Store"
+    )
+    assert "    def apply(_dispatch_strategy, self, call, tracked):" in rewritten
+    assert rewritten.count("self.tracked(call.args[-1], tracked)") == 1
+    assert (
+        "class SetitemStoreCallsDispatchCase(SetdefaultStoreCallsDispatchCase):\n"
+        "    case = '__setitem__'\n"
+    ) in rewritten
+    assert (
+        "        if not isinstance(call.func, ast.Attribute):\n"
+        "            return False\n"
+        "        _dispatch_case_type = StoreCallsDispatchCase.__registry__.get("
+        "call.func.attr)"
+    ) in rewritten
+    probes = (
+        "d.setdefault(k, v)",
+        "d.__setitem__(k, v)",
+        "d.update(x=v)",
+        "d.update(x=w)",
+        "d.pop(v)",
+        "f(v)",
+    )
+    for namespace in (
+        _exec_namespace(source, module_path),
+        _exec_namespace(rewritten, module_path),
+    ):
+        store = namespace["Store"]
+        assert callable(store)
+        assert tuple(
+            store().calls(ast.parse(probe, mode="eval").body, frozenset({"v"}))
+            for probe in probes
+        ) == (True, True, True, False, False, False)
+
+
+@pytest.mark.parametrize(
+    ("source", "qualname", "error_fragment"),
+    (
+        pytest.param(
+            "\nclass Base:\n    def go(self, kind):\n        return kind\n\n\n"
+            "class Store(Base):\n    def go(self, kind):\n"
+            '        if kind == "a":\n            return super().go(kind)\n'
+            '        if kind == "b":\n            return 2\n        return 0\n',
+            "Store.go",
+            "class cell",
+            id="zero-argument-super",
+        ),
+        pytest.param(
+            "\nclass Store:\n    def go(self, kind):\n"
+            '        if kind == "a":\n            return self.__secret\n'
+            '        if kind == "b":\n            return 2\n        return 0\n',
+            "Store.go",
+            "class-mangled names",
+            id="name-mangled-attribute",
+        ),
+        pytest.param(
+            "\nimport functools\n\n\nclass Store:\n    @functools.cache\n"
+            "    def go(self, kind):\n"
+            '        if kind == "a":\n            return 1\n'
+            '        if kind == "b":\n            return 2\n        return 0\n',
+            "Store.go",
+            "is decorated",
+            id="decorated-method",
+        ),
+        pytest.param(
+            "\nclass Outer:\n    class Store:\n        def go(self, kind):\n"
+            '            if kind == "a":\n                return 1\n'
+            '            if kind == "b":\n                return 2\n'
+            "            return 0\n",
+            "Outer.Store.go",
+            "top-level module class",
+            id="nested-class-method",
+        ),
+        pytest.param(
+            "\ndef go(kind, out):\n"
+            '    if kind == "a":\n        out.append(1)\n'
+            '    elif kind == "b":\n        return 2\n    return 0\n',
+            "go",
+            "not a supported literal dispatch",
+            id="non-terminal-case-body",
+        ),
+        pytest.param(
+            "\ndef go(node):\n"
+            '    if node.left == "a":\n        return 1\n'
+            '    elif node.right == "b":\n        return 2\n    return 0\n',
+            "go",
+            "not a supported literal dispatch",
+            id="differing-axis-chains",
+        ),
+        pytest.param(
+            "\ndef go(node):\n"
+            '    if node.kind == "a":\n        node = node.parent\n        return node\n'
+            '    elif node.kind == "b":\n        return 2\n    return 0\n',
+            "go",
+            "not a supported literal dispatch",
+            id="case-rebinds-axis-root",
+        ),
+        pytest.param(
+            "\ndef go(kind):\n"
+            '    if kind == "a":\n        y = 1\n        return y\n'
+            '    if kind == "b":\n        return y\n    return 0\n',
+            "go",
+            "not a supported literal dispatch",
+            id="case-reads-foreign-local",
+        ),
+    ),
+)
+def test_dispatch_to_polymorphism_refuses_unliftable_shapes(
+    tmp_path: Path,
+    source: str,
+    qualname: str,
+    error_fragment: str,
+) -> None:
+    with pytest.raises(CodemodOperationPreflightError, match=error_fragment):
+        _dispatch_simulation(tmp_path, source, qualname)
 
 
 @pytest.mark.parametrize(
@@ -25007,7 +25232,7 @@ def test_numeric_literal_dispatch_goal_proves_one_target_only_replay(
     assert "base_name" not in payload
 
 
-def test_numeric_literal_dispatch_method_rejection_uses_evidence_target(
+def test_numeric_literal_dispatch_method_target_uses_evidence_target(
     tmp_path: Path,
 ) -> None:
     _write_module(
@@ -25032,14 +25257,52 @@ def test_numeric_literal_dispatch_method_rejection_uses_evidence_target(
 
     plan = codemod_plan_from_findings((finding,), selector_context=snapshot)
 
+    assert plan.records[0].status is FindingRecipeSynthesisStatus.EXECUTABLE_CANDIDATE
+    operation = plan.document.recipes[0].operations[0]
+    method_target = next(
+        target
+        for target in snapshot.source_index.ast_targets
+        if target.qualname == "Renderer.render"
+    )
+    assert isinstance(operation, DispatchToPolymorphismOperation)
+    assert operation.target.target_id == method_target.target_id
+
+
+def test_literal_dispatch_synthesis_refuses_class_cell_method(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "\nclass Base:\n"
+        "    def render(self, pattern_id, value):\n"
+        "        return value\n\n\n"
+        "class Renderer(Base):\n"
+        "    def render(self, pattern_id, value):\n"
+        "        if pattern_id == 3:\n"
+        "            return super().render(pattern_id, value)\n"
+        "        elif pattern_id == 5:\n"
+        "            return value + 2\n"
+        "        raise ValueError(pattern_id)\n",
+    )
+    findings = analyze_path(tmp_path)
+    finding = next(
+        finding
+        for finding in findings
+        if finding.detector_id == "numeric_literal_dispatch"
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(
+        parse_python_modules(tmp_path), findings
+    )
+
+    plan = codemod_plan_from_findings((finding,), selector_context=snapshot)
+
     assert (
         plan.records[0].status is FindingRecipeSynthesisStatus.REJECTED_BY_SAFETY_CHECK
     )
-    assert (
-        plan.records[0].reason
-        == "literal dispatch: dispatch_to_polymorphism rewrites module functions; "
-        "method target 'Renderer.render' requires extracting or owning the "
-        "closed-axis authority at the class boundary first"
+    assert plan.records[0].reason == (
+        "literal dispatch: method target 'Renderer.render' uses the class cell "
+        "(super or __class__), which a module strategy leaf cannot bind"
     )
 
 
