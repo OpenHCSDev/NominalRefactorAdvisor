@@ -119,6 +119,7 @@ from .product_flow import (
 )
 from .class_creation_store import CreatedClassStore
 from .installed_source import InstalledModule
+from .registry_identity import REGISTRY_ATTRIBUTE_NAME, REGISTRY_KEY_ATTRIBUTE_NAME
 from .source_execution import SourceModuleExecution
 from .semantic_algebra import DirectedGraph
 from .source_geometry import ClassHeaderSourceSpan as ClassHeaderSourceSpan
@@ -7218,49 +7219,19 @@ def _compact_class_syntax_facets(
     )
 
 
-def _registration_authority_base_name(base_name: str) -> bool:
-    tokens = frozenset(
-        token.lower()
-        for token in re.findall(
-            r"[A-Z]+(?=[A-Z][a-z0-9]|$)|[A-Z]?[a-z0-9]+",
-            base_name,
-        )
-        if token
-    )
-    return bool(
-        tokens & {"autoregister", "registered", "registry"}
-        or (
-            "registration" in tokens
-            and bool(tokens & {"authority", "base", "family", "meta", "root"})
-        )
-        or ("stable" in tokens and bool(tokens & {"axis", "key"}))
-        or ("key" in tokens and "family" in tokens)
-        or (
-            "nominal" in tokens
-            and "base" in tokens
-            and bool(tokens & {"axis", "family", "formula", "policy"})
-        )
-    )
-
-
 def _is_registration_authority(node: ast.ClassDef) -> bool:
+    """Whether the class declares the registry protocol itself: a registry and its key attribute.
+
+    A class whose metaclass registers the classes it creates is an authority
+    too; the index adds that from what the metaclass does
+    (`RegisteringMetaclassAuthority`, `with_registering_metaclass`). A class's
+    name is no evidence either way.
+    """
+
     assignments = _direct_class_assignments(node)
-    inherits_named_authority = any(
-        _registration_authority_base_name(terminal_name)
-        for base in node.bases
-        if (terminal_name := _terminal_reference_name(base)) is not None
-    )
-    declares_named_authority = (
-        "AutoRegister" in node.name
-        or "Registered" in node.name
-        or node.name.endswith("KeyFamily")
-        or _registration_authority_base_name(node.name)
-    )
-    return bool(
-        inherits_named_authority
-        or declares_named_authority
-        or ("__registry__" in assignments and "__registry_key__" in assignments)
-        or "stable_key_axis" in assignments
+    return (
+        REGISTRY_ATTRIBUTE_NAME in assignments
+        and REGISTRY_KEY_ATTRIBUTE_NAME in assignments
     )
 
 
