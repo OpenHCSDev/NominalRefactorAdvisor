@@ -13,7 +13,7 @@ from __future__ import annotations
 import ast
 from abc import ABC, abstractmethod
 from collections import defaultdict
-from collections.abc import Iterable, Iterator, Mapping, Sequence
+from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import dataclass
 from enum import StrEnum
 from functools import cached_property
@@ -46,7 +46,6 @@ from .declared_family import ForeignAdapter
 from .foreign_family import ForeignFamily
 from .json_reports import SemanticRecord, json_report_property
 from .observation_families import TypeArgumentResolver, type_test_shapes
-from .observation_shapes import TypeTestShape
 from .type_checker_session import SourceTexts, TypeCheckerSession
 
 
@@ -291,24 +290,6 @@ class MemberCensusSource(ABC):
     def observations(self) -> Iterator[MemberObservation]:
         raise NotImplementedError
 
-    def shapes(self, module: ParsedModule) -> Iterator[TypeTestShape]:
-        """The module's type tests and class patterns whose classes resolve."""
-
-        yield from type_test_shapes(module)
-        index = module.syntax_index
-        resolver = self.corpus.resolvers[module.file_path]
-        for node_index, pattern in index.indexed_nodes_of_type(ast.MatchClass):
-            ancestors = index.ancestor_nodes(node_index)
-            name = resolver.qualified_class_at(pattern.cls, ancestors)
-            if name is not None and name.rpartition(".")[0]:
-                yield TypeTestShape(
-                    file_path=module.file_path,
-                    lineno=pattern.lineno,
-                    symbol=index.lexical_symbol(node_index),
-                    type_names=(name,),
-                    subject=_matched_subject(ancestors),
-                )
-
 
 def _own_definitions(owner: type) -> frozenset[tuple[str, str]]:
     """The owner and every class below it, as (module, qualname): the decoder code."""
@@ -319,24 +300,6 @@ def _own_definitions(owner: type) -> frozenset[tuple[str, str]]:
             yield from below(child)
 
     return frozenset((klass.__module__, klass.__qualname__) for klass in below(owner))
-
-
-def _matched_subject(ancestors: Sequence[ast.AST]) -> str:
-    """The value a class pattern tests: the match subject, or a part of it.
-
-    A pattern nested inside another class, sequence or mapping pattern tests an
-    attribute or element of the subject, so it is keyed apart from the top-level
-    patterns of the same match.
-    """
-
-    parts: list[str] = []
-    for ancestor in reversed(ancestors):
-        match ancestor:
-            case ast.MatchClass() | ast.MatchSequence() | ast.MatchMapping():
-                parts.append(f"{ancestor.lineno}:{ancestor.col_offset}")
-            case ast.Match(subject=subject):
-                return ast.dump(subject) + "".join(f"@{part}" for part in parts)
-    return "@".join(parts)
 
 
 def _public_method_names(owner: type) -> frozenset[str]:
@@ -371,7 +334,7 @@ class ForeignModuleSource(MemberCensusSource):
 
     def observations(self) -> Iterator[MemberObservation]:
         for module in self.corpus.modules:
-            for shape in self.shapes(module):
+            for shape in type_test_shapes(module):
                 match tuple(shape.owners):
                     case (owner,) if owner and shape.is_foreign_to(self.corpus.module_names):
                         yield MemberObservation(
@@ -476,7 +439,7 @@ class OwnClassSource(MemberCensusSource):
 
         tested: dict[tuple[str, str, str], set[str]] = defaultdict(set)
         for module in self.corpus.modules:
-            for shape in self.shapes(module):
+            for shape in type_test_shapes(module):
                 if set(shape.type_names) <= self.class_index.classes_by_symbol.keys():
                     tested[shape.file_path, shape.symbol, shape.subject].update(shape.type_names)
         for (file_path, symbol, subject), names in sorted(tested.items()):

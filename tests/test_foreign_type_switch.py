@@ -34,7 +34,10 @@ def test_ast_tests_with_a_narrower_set_diverge_from_the_wider_one(tmp_path: Path
     assert finding.pattern_id is PatternId.FOREIGN_TYPE_SWITCH_LEAD
     assert len(finding.evidence) == 3
     assert "`ast`" in finding.summary
-    assert "3 isinstance/issubclass sites in 3 module(s)" in finding.summary
+    assert (
+        "3 type tests (isinstance/issubclass, class patterns, type(x) is C) in 3 module(s)"
+        in finding.summary
+    )
     assert "`ast.AsyncFunctionDef | ast.FunctionDef` x2" in finding.summary
     assert (
         "1 sites test a class without its same-shape twin (possible missed case): "

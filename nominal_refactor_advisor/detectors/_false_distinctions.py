@@ -28,7 +28,7 @@ from ..false_distinction_observations import (
     UndistinguishedTypeArmsSiteFamily,
 )
 from ..patterns import PatternId
-from ..restated_fact_observations import RestatingSite
+from ..observation_shapes import RestatingSite
 from ..taxonomy import ObservationTag
 from ._restated_facts import (
     JoinedRestatedFactDetector,

@@ -19,6 +19,7 @@ from nominal_refactor_advisor.detectors import (
     ForwardingFacadeDetector,
     LegacyPathMarkerDetector,
     NamedAttributeDetector,
+    OwnTypeTestDetector,
     RestatedIdentityDetector,
     StringKindDispatchDetector,
 )
@@ -33,6 +34,7 @@ DETECTORS = (
     DeadModuleDetector,
     ForwardingFacadeDetector,
     RestatedIdentityDetector,
+    OwnTypeTestDetector,
 )
 
 
@@ -770,3 +772,135 @@ def test_a_quoted_type_checking_name_is_restated_where_annotations_are_lazy(
     )
     findings = _findings(tmp_path, RestatedIdentityDetector, {"pkg/load": source})
     assert len(findings) == found
+
+
+# ---- type tests on the scan's own classes
+
+OWN_CLASSES = (
+    "class Shape:\n    pass\n"
+    "class Circle(Shape):\n    pass\n"
+    "class Square(Shape):\n    pass\n"
+    "DEFAULT_MODE = object()\n"
+)
+OWN_TESTS = (
+    "from shapes import Circle, DEFAULT_MODE, Square\n"
+    "def area(shape, mode):\n"
+    "    if isinstance(shape, Circle):\n        return 1\n"
+    "    if type(shape) is Square:\n        return 2\n"
+    "    if mode is DEFAULT_MODE:\n        return 3\n"
+    "    if isinstance(shape, int):\n        return 4\n"
+    "    if type(shape) is int:\n        return 5\n"
+    "    return 0\n"
+    "def kind(cls):\n"
+    "    if cls is Circle:\n        return 'c'\n"
+    "    if cls is not Square:\n        return 'n'\n"
+    "    return 's' if cls in (Circle, Square) else '?'\n"
+    "def matched(shape):\n"
+    "    match shape:\n"
+    "        case Circle():\n            return 1\n"
+    "    return 0\n"
+)
+
+
+def test_every_form_of_type_test_on_an_own_class_is_a_finding(tmp_path: Path):
+    findings = _findings(
+        tmp_path, OwnTypeTestDetector, {"shapes": OWN_CLASSES, "use": OWN_TESTS}
+    )
+
+    assert _lines(findings) == [3, 5, 15, 17, 19, 22]
+    assert {finding.evidence[0].symbol for finding in findings} == {"area", "kind", "matched"}
+
+
+def test_a_constant_compared_by_identity_is_not_a_type_test(tmp_path: Path):
+    findings = _findings(
+        tmp_path,
+        OwnTypeTestDetector,
+        {"shapes": OWN_CLASSES, "use": "from shapes import DEFAULT_MODE\ndef f(mode):\n    return mode is DEFAULT_MODE\n"},
+    )
+
+    assert findings == []
+
+
+def test_a_class_imported_inside_the_function_resolves_through_that_import(tmp_path: Path):
+    findings = _findings(
+        tmp_path,
+        OwnTypeTestDetector,
+        {
+            "shapes": OWN_CLASSES,
+            "use": (
+                "def area(shape):\n"
+                "    from shapes import Circle\n"
+                "    if type(shape) is not Circle:\n"
+                "        return 0\n"
+                "    return 1\n"
+            ),
+        },
+    )
+
+    assert _lines(findings) == [3]
+
+
+def test_a_local_import_rebound_in_the_function_still_hides_the_name(tmp_path: Path):
+    findings = _findings(
+        tmp_path,
+        OwnTypeTestDetector,
+        {
+            "shapes": OWN_CLASSES,
+            "use": (
+                "def area(shape, other):\n"
+                "    from shapes import Circle\n"
+                "    Circle = other\n"
+                "    return isinstance(shape, Circle)\n"
+            ),
+        },
+    )
+
+    assert findings == []
+
+
+def test_a_test_on_a_value_annotated_object_is_the_decoder_not_slop(tmp_path: Path):
+    findings = _findings(
+        tmp_path,
+        OwnTypeTestDetector,
+        {
+            "shapes": OWN_CLASSES,
+            "use": (
+                "from shapes import Circle, Shape\n"
+                "class Ring(Circle):\n"
+                "    def __eq__(self, other: object) -> bool:\n"
+                "        if not isinstance(other, Circle):\n"
+                "            return NotImplemented\n"
+                "        return True\n"
+                "def decode(value: object) -> Shape:\n"
+                "    if type(value) is Circle:\n"
+                "        return value\n"
+                "    raise TypeError(value)\n"
+                "def area(shape: Shape) -> int:\n"
+                "    return 1 if isinstance(shape, Circle) else 0\n"
+            ),
+        },
+    )
+
+    assert _lines(findings) == [12]
+
+
+def test_identity_on_a_sentinel_class_is_not_a_type_test(tmp_path: Path):
+    # `class MISSING: pass` extends no scanned class and no scanned class
+    # extends it: `value is MISSING` asks which object the value is, not which
+    # family member. The membership test beside it still tests `Circle`.
+    findings = _findings(
+        tmp_path,
+        OwnTypeTestDetector,
+        {
+            "shapes": OWN_CLASSES + "class MISSING:\n    pass\n",
+            "use": (
+                "from shapes import MISSING, Circle\n"
+                "def get(value=MISSING):\n"
+                "    if value is MISSING:\n        return None\n"
+                "    if value in (MISSING, Circle):\n        return 0\n"
+                "    return value\n"
+            ),
+        },
+    )
+
+    assert _lines(findings) == [5]

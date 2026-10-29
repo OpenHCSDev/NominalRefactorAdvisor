@@ -4,6 +4,7 @@ Importing `_implementations` registers every concrete detector; the names
 below are the ones code and tests read through this package.
 """
 
+from .. import export_tools as _export_tools
 from . import _implementations as _implementations
 from ._base import (
     CompactClassRepositoryContext,
@@ -62,6 +63,7 @@ from ._restated_facts import (
     ForwardingFacadeDetector,
     LegacyPathMarkerDetector,
     NamedAttributeDetector,
+    OwnTypeTestDetector,
     StringKindDispatchDetector,
 )
 from ._restated_identity import (
@@ -90,59 +92,13 @@ from ._systemic import (
     ResidualClosedAxisIndirectionDetector,
 )
 
-__all__ = (
-    "AutoRegisterExplicitPriorityOrderingDetector",
-    "ClosedParameterConveyorDetector",
-    "CompactClassRepositoryContext",
-    "CompactFindingStream",
-    "CompactModuleProjectionDetectorMixin",
-    "CompactMultiModuleProjectionDetectorMixin",
-    "CompactProjectionContextBuilder",
-    "CompactProjectionGroupContextBuilder",
-    "CompactProjectionGroups",
-    "ContextualGlobalCacheContract",
-    "ContextualModuleIssueDetector",
-    "CrossModuleCandidateDetector",
-    "DeadModuleDetector",
-    "DeclarativeDetectorClassDetector",
-    "DeclaredCarrierExpansionDetector",
-    "default_detectors",
-    "DetectorCacheGranularity",
-    "DetectorConfig",
-    "DirectBuildFindingRendererDetector",
-    "DuplicateClassDetector",
-    "EnvironmentBooleanAuthorityDriftDetector",
-    "ExactKeySetDetector",
-    "HandRolledRegistrationDetector",
-    "IdenticalArmsDetector",
-    "NameOnlySubclassDetector",
-    "UndistinguishedEnumMembersDetector",
-    "UndistinguishedTypeTestDetector",
-    "ExactLeafMethodAncestorPromotionDetector",
-    "ExternalEnumCaseRecoveryDetector",
-    "ForeignAbsenceProbeDetector",
-    "ForwardingFacadeDetector",
-    "InheritedAutoRegisterConfigBoilerplateDetector",
-    "IssueDetector",
-    "LegacyPathMarkerDetector",
-    "ManualClassRegistrationDetector",
-    "MissingMixinDetector",
-    "NamedAttributeDetector",
-    "NumericLiteralDispatchDetector",
-    "PerModuleIssueDetector",
-    "RedundantTypeCheckDetector",
-    "ResidualClosedAxisIndirectionDetector",
-    "RestatedIdentityDetector",
-    "ConstantSubtypeAnswerDetector",
-    "LambdaFoldDetector",
-    "OwnStateBranchAnswerDetector",
-    "ThreadedAbsenceDetector",
-    "ZeroOneTupleDetector",
-    "SemanticDescentGraphIssueDetector",
-    "SemanticMirrorIssueDetector",
-    "SemanticMirrorWithoutDescentDetector",
-    "SourceLocalIssueDetectorMixin",
-    "SsotAuthorityBoundaryDetector",
-    "StringKindDispatchDetector",
-    "UnmodeledRecordShapeDetector",
+__all__ = _export_tools.derive_public_exports(
+    globals(),
+    _export_tools.PublicExportPolicy(
+        module_name=__name__,
+        types_only=False,
+        allow_callables=True,
+        include_enums=True,
+        package_reexports=True,
+    ),
 )
