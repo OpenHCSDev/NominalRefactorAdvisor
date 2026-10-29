@@ -20,7 +20,12 @@ from .annotation_semantics import TypeWrapper
 from .ast_field_decoders import variadic_parameters
 from .ast_projection import ExpressionReference
 from .ast_tools import ParsedModule
-from .class_index import ModuleNominalBindingAuthority, ModuleNominalBindingSnapshot
+from .class_index import (
+    ABSTRACT_METHOD_DECORATOR,
+    PROPERTY_DECORATORS,
+    ModuleNominalBindingAuthority,
+    ModuleNominalBindingSnapshot,
+)
 from .observation_families import ShapeFamily
 from .probe_owner import (
     ProbeOwner,
@@ -34,10 +39,6 @@ from .restated_fact_observations import (
 from .observation_shapes import RestatingSite
 
 DEFINITION_TYPES = (ast.FunctionDef, ast.AsyncFunctionDef)
-PROPERTY_DECORATORS = frozenset(
-    {"property", "cached_property", "functools.cached_property"}
-)
-ABSTRACT_DECORATORS = frozenset({"abstractmethod", "abc.abstractmethod"})
 
 
 
@@ -101,13 +102,18 @@ def scoped_classes(module: ast.Module) -> Iterator[tuple[str, ast.ClassDef]]:
                 yield f"{prefix}{nested.name}", nested
 
 
-def decorator_names(
-    node: ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef,
-) -> frozenset[str]:
-    return frozenset(
-        ast.unparse(decorator.func if isinstance(decorator, ast.Call) else decorator)
-        for decorator in node.decorator_list
+def bound_classes(
+    parsed_module: ParsedModule,
+) -> Iterator[tuple[str, ast.ClassDef, ModuleNominalBindingSnapshot]]:
+    """Every class in the module with its dotted name and the module bindings its
+    body's decorators resolve through, taken in one pass."""
+
+    classes = tuple(scoped_classes(parsed_module.module))
+    snapshots = ModuleNominalBindingAuthority(parsed_module).snapshots_before(
+        node.lineno for _qualname, node in classes
     )
+    for qualname, node in classes:
+        yield qualname, node, snapshots[node.lineno]
 
 
 def statements_after_docstring(body: list[ast.stmt]) -> list[ast.stmt]:
@@ -126,10 +132,12 @@ def takes_only_receiver(node: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
     )
 
 
-def declares_abstract(node: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
+def declares_abstract(
+    node: ast.FunctionDef | ast.AsyncFunctionDef, bindings: ModuleNominalBindingSnapshot
+) -> bool:
     """An abstract declaration asks the question; it answers nothing."""
 
-    if decorator_names(node) & ABSTRACT_DECORATORS:
+    if bindings.decorated_by(node, (ABSTRACT_METHOD_DECORATOR,)):
         return True
     match statements_after_docstring(node.body):
         case [] | [ast.Pass()] | [ast.Expr(value=ast.Constant(value=builtins.Ellipsis))]:
@@ -242,6 +250,7 @@ class ClassBodyReading:
     answer nothing; every other declaration is computed.
     """
 
+    bindings: ModuleNominalBindingSnapshot
     answers: list[ConstantAnswer]
     computed: set[str]
     declared: set[str]
@@ -249,8 +258,10 @@ class ClassBodyReading:
     arities: list[TupleArity]
 
     @classmethod
-    def of(cls, node: ast.ClassDef) -> ClassBodyReading:
-        reading = cls([], set(), set(), [], [])
+    def of(
+        cls, node: ast.ClassDef, bindings: ModuleNominalBindingSnapshot
+    ) -> ClassBodyReading:
+        reading = cls(bindings, [], set(), set(), [], [])
         for statement in node.body:
             reading.read(statement)
         return reading
@@ -285,7 +296,7 @@ class ClassBodyReading:
         arities = absence_tuple_arities(statement)
         if arities:
             self.arities.append(TupleArity(name, arities, statement.lineno))
-        if declares_abstract(statement):
+        if declares_abstract(statement, self.bindings):
             return
         parameters = [
             argument.arg
@@ -322,9 +333,13 @@ class ClassShape:
 
     @classmethod
     def of(
-        cls, parsed_module: ParsedModule, qualname: str, node: ast.ClassDef
+        cls,
+        parsed_module: ParsedModule,
+        qualname: str,
+        node: ast.ClassDef,
+        bindings: ModuleNominalBindingSnapshot,
     ) -> ClassShape:
-        reading = ClassBodyReading.of(node)
+        reading = ClassBodyReading.of(node, bindings)
         return cls(
             symbol=f"{parsed_module.module_name}.{qualname}",
             declared=frozenset(reading.declared),
@@ -349,8 +364,8 @@ class ClassShapeFamily(ShapeFamily[ClassShapesModule]):
             ClassShapesModule(
                 parsed_module.module_name,
                 tuple(
-                    ClassShape.of(parsed_module, qualname, node)
-                    for qualname, node in scoped_classes(parsed_module.module)
+                    ClassShape.of(parsed_module, qualname, node, bindings)
+                    for qualname, node, bindings in bound_classes(parsed_module)
                 ),
             )
         ]
@@ -512,8 +527,8 @@ class ConstantAnswerSiteFamily(RestatingSiteFamily[RestatingSiteModule]):
 
     @classmethod
     def sites(cls, parsed_module: ParsedModule) -> Iterator[RestatingSite]:
-        for qualname, node in scoped_classes(parsed_module.module):
-            for answer in ClassBodyReading.of(node).answers:
+        for qualname, node, bindings in bound_classes(parsed_module):
+            for answer in ClassBodyReading.of(node, bindings).answers:
                 yield RestatingSite(
                     parsed_module.file_path,
                     answer.lineno,
@@ -627,7 +642,9 @@ class OwnStateBoolSiteFamily(RestatingSiteFamily[RestatingSiteModule]):
                     case [first, *_]:
                         accessed = (
                             "property"
-                            if decorator_names(statement) & PROPERTY_DECORATORS
+                            if bindings.snapshot_before(node.lineno).decorated_by(
+                                statement, PROPERTY_DECORATORS
+                            )
                             else "method"
                         )
                         yield RestatingSite(
@@ -650,8 +667,8 @@ class LambdaFoldSiteFamily(RestatingSiteFamily[RestatingSiteModule]):
 
     @classmethod
     def sites(cls, parsed_module: ParsedModule) -> Iterator[RestatingSite]:
-        for qualname, node in scoped_classes(parsed_module.module):
-            for fold in ClassBodyReading.of(node).folds:
+        for qualname, node, bindings in bound_classes(parsed_module):
+            for fold in ClassBodyReading.of(node, bindings).folds:
                 yield RestatingSite(
                     parsed_module.file_path,
                     fold.lineno,

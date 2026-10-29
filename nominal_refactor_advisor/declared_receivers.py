@@ -32,11 +32,14 @@ from .ast_field_decoders import declared_annotations, variadic_parameters
 from .class_index import (
     ClassMemberAnswersABC,
     CompactAnnotatedFunctionReturn,
+    CompactAnnotatedMethod,
+    CompactAnnotatedProperty,
     CompactClassFamilyIndex,
     CompactClassMemberDeclaration,
     CompactClassReferenceResolver,
     CompactIndexedClass,
     CompactModuleClassProjection,
+    CompactUnannotatedCallable,
 )
 
 FunctionNode = ast.FunctionDef | ast.AsyncFunctionDef
@@ -130,12 +133,12 @@ class DeclaredInstance(DeclaredType):
 
     symbols: tuple[str, ...]
 
-    def attribute(self, typing, name):
+    def attribute(self, typing: DeclaredReceiverTyping, name: str) -> DeclaredType:
         return typing.joined(
             typing.member_read(symbol, name, self) for symbol in self.symbols
         )
 
-    def called(self, typing, name):
+    def called(self, typing: DeclaredReceiverTyping, name: str) -> DeclaredType:
         return typing.joined(
             typing.method_call(symbol, name, self) for symbol in self.symbols
         )
@@ -152,10 +155,10 @@ class DeclaredInstance(DeclaredType):
     def spelled(self) -> str:
         return " | ".join(f"`{symbol}`" for symbol in self.symbols)
 
-    def join(self, other, typing):
+    def join(self, other: DeclaredType, typing: DeclaredReceiverTyping) -> DeclaredType:
         return other.join_instance(self, typing)
 
-    def join_instance(self, other, typing):
+    def join_instance(self, other: DeclaredInstance, typing: DeclaredReceiverTyping) -> DeclaredType:
         return typing.family_join(self, other)
 
 
@@ -175,7 +178,7 @@ class DeclaredForeignInstance(DeclaredType):
     def spelled(self) -> str:
         return " | ".join(f"`{name}`" for name in self.qualified_names)
 
-    def join(self, other, typing):
+    def join(self, other: DeclaredType, typing: DeclaredReceiverTyping) -> DeclaredType:
         return other.join_foreign(self)
 
     def join_foreign(self, other: DeclaredForeignInstance) -> DeclaredType:
@@ -192,13 +195,13 @@ class DeclaredClassObject(DeclaredType):
 
     symbol: str
 
-    def attribute(self, typing, name):
+    def attribute(self, typing: DeclaredReceiverTyping, name: str) -> DeclaredType:
         return typing.member_read(self.symbol, name, DeclaredInstance((self.symbol,)))
 
-    def called(self, typing, name):
+    def called(self, typing: DeclaredReceiverTyping, name: str) -> DeclaredType:
         return typing.method_call(self.symbol, name, DeclaredInstance((self.symbol,)))
 
-    def element(self, typing):
+    def element(self, typing: DeclaredReceiverTyping) -> DeclaredType:
         """Iterating an enum class yields its members."""
         return typing.enum_members(self.symbol)
 
@@ -209,7 +212,7 @@ class DeclaredClassObject(DeclaredType):
     def spelled(self) -> str:
         return f"the class `{self.symbol}`"
 
-    def join(self, other, typing):
+    def join(self, other: DeclaredType, typing: DeclaredReceiverTyping) -> DeclaredType:
         return self.heterogeneous(other)
 
 
@@ -219,16 +222,16 @@ class DeclaredCollection(DeclaredType):
 
     item: DeclaredType
 
-    def element(self, typing):
+    def element(self, typing: DeclaredReceiverTyping) -> DeclaredType:
         return self.item
 
     def indexed(self, position: int) -> DeclaredType:
         return self.item
 
-    def subscripted(self, typing):
+    def subscripted(self, typing: DeclaredReceiverTyping) -> DeclaredType:
         return self.item
 
-    def sliced(self, typing):
+    def sliced(self, typing: DeclaredReceiverTyping) -> DeclaredType:
         return self
 
     def class_symbols(self) -> tuple[str, ...]:
@@ -237,10 +240,10 @@ class DeclaredCollection(DeclaredType):
     def spelled(self) -> str:
         return f"a collection of {self.item.spelled()}"
 
-    def join(self, other, typing):
+    def join(self, other: DeclaredType, typing: DeclaredReceiverTyping) -> DeclaredType:
         return other.join_collection(self, typing)
 
-    def join_collection(self, other, typing):
+    def join_collection(self, other: DeclaredCollection, typing: DeclaredReceiverTyping) -> DeclaredType:
         return DeclaredCollection(self.item.join(other.item, typing))
 
 
@@ -250,7 +253,7 @@ class DeclaredTuple(DeclaredType):
 
     items: tuple[DeclaredType, ...]
 
-    def element(self, typing):
+    def element(self, typing: DeclaredReceiverTyping) -> DeclaredType:
         return typing.joined(self.items)
 
     def indexed(self, position: int) -> DeclaredType:
@@ -258,10 +261,10 @@ class DeclaredTuple(DeclaredType):
             return self.items[position]
         return UndeclaredType(f"{self.spelled()} has no position {position}")
 
-    def subscripted(self, typing):
+    def subscripted(self, typing: DeclaredReceiverTyping) -> DeclaredType:
         return typing.joined(self.items)
 
-    def sliced(self, typing):
+    def sliced(self, typing: DeclaredReceiverTyping) -> DeclaredType:
         return DeclaredCollection(typing.joined(self.items))
 
     def class_symbols(self) -> tuple[str, ...]:
@@ -270,10 +273,10 @@ class DeclaredTuple(DeclaredType):
     def spelled(self) -> str:
         return f"tuple[{', '.join(item.spelled() for item in self.items)}]"
 
-    def join(self, other, typing):
+    def join(self, other: DeclaredType, typing: DeclaredReceiverTyping) -> DeclaredType:
         return other.join_tuple(self, typing)
 
-    def join_tuple(self, other, typing):
+    def join_tuple(self, other: DeclaredTuple, typing: DeclaredReceiverTyping) -> DeclaredType:
         if len(self.items) != len(other.items):
             return self.heterogeneous(other)
         return DeclaredTuple(
@@ -291,13 +294,13 @@ class DeclaredMapping(DeclaredType):
     key: DeclaredType
     value: DeclaredType
 
-    def element(self, typing):
+    def element(self, typing: DeclaredReceiverTyping) -> DeclaredType:
         return self.key
 
-    def subscripted(self, typing):
+    def subscripted(self, typing: DeclaredReceiverTyping) -> DeclaredType:
         return self.value
 
-    def called(self, typing, name):
+    def called(self, typing: DeclaredReceiverTyping, name: str) -> DeclaredType:
         for view in MappingMethod.__subclasses__():
             if name in view.names:
                 return view.of(self)
@@ -309,10 +312,10 @@ class DeclaredMapping(DeclaredType):
     def spelled(self) -> str:
         return f"a mapping of {self.key.spelled()} to {self.value.spelled()}"
 
-    def join(self, other, typing):
+    def join(self, other: DeclaredType, typing: DeclaredReceiverTyping) -> DeclaredType:
         return other.join_mapping(self, typing)
 
-    def join_mapping(self, other, typing):
+    def join_mapping(self, other: DeclaredMapping, typing: DeclaredReceiverTyping) -> DeclaredType:
         return DeclaredMapping(
             self.key.join(other.key, typing), self.value.join(other.value, typing)
         )
@@ -370,19 +373,19 @@ class DeclaredNone(DeclaredType):
     def spelled(self) -> str:
         return "`None`"
 
-    def join(self, other, typing):
+    def join(self, other: DeclaredType, typing: DeclaredReceiverTyping) -> DeclaredType:
         return other.join_none(self)
 
-    def join_instance(self, other, typing):
+    def join_instance(self, other: DeclaredInstance, typing: DeclaredReceiverTyping) -> DeclaredType:
         return other
 
-    def join_collection(self, other, typing):
+    def join_collection(self, other: DeclaredCollection, typing: DeclaredReceiverTyping) -> DeclaredType:
         return other
 
-    def join_tuple(self, other, typing):
+    def join_tuple(self, other: DeclaredTuple, typing: DeclaredReceiverTyping) -> DeclaredType:
         return other
 
-    def join_mapping(self, other, typing):
+    def join_mapping(self, other: DeclaredMapping, typing: DeclaredReceiverTyping) -> DeclaredType:
         return other
 
     def join_none(self, other: DeclaredNone) -> DeclaredType:
@@ -398,22 +401,22 @@ class UndeclaredType(DeclaredType):
 
     reason: str
 
-    def attribute(self, typing, name):
+    def attribute(self, typing: DeclaredReceiverTyping, name: str) -> DeclaredType:
         return self
 
-    def called(self, typing, name):
+    def called(self, typing: DeclaredReceiverTyping, name: str) -> DeclaredType:
         return self
 
-    def element(self, typing):
+    def element(self, typing: DeclaredReceiverTyping) -> DeclaredType:
         return self
 
     def indexed(self, position: int) -> DeclaredType:
         return self
 
-    def subscripted(self, typing):
+    def subscripted(self, typing: DeclaredReceiverTyping) -> DeclaredType:
         return self
 
-    def sliced(self, typing):
+    def sliced(self, typing: DeclaredReceiverTyping) -> DeclaredType:
         return self
 
     def spelled(self) -> str:
@@ -422,19 +425,19 @@ class UndeclaredType(DeclaredType):
     def why_no_class(self) -> str:
         return self.reason
 
-    def join(self, other, typing):
+    def join(self, other: DeclaredType, typing: DeclaredReceiverTyping) -> DeclaredType:
         return other.join_undeclared(self)
 
-    def join_instance(self, other, typing):
+    def join_instance(self, other: DeclaredInstance, typing: DeclaredReceiverTyping) -> DeclaredType:
         return self
 
-    def join_collection(self, other, typing):
+    def join_collection(self, other: DeclaredCollection, typing: DeclaredReceiverTyping) -> DeclaredType:
         return self
 
-    def join_tuple(self, other, typing):
+    def join_tuple(self, other: DeclaredTuple, typing: DeclaredReceiverTyping) -> DeclaredType:
         return self
 
-    def join_mapping(self, other, typing):
+    def join_mapping(self, other: DeclaredMapping, typing: DeclaredReceiverTyping) -> DeclaredType:
         return self
 
     def join_none(self, other: DeclaredNone) -> DeclaredType:
@@ -486,14 +489,14 @@ def _typing_names(*names: str) -> frozenset[str]:
 class OptionalHead(AnnotationHead):
     spellings = _typing_names("Optional")
 
-    def declared(self, items, typed, typing, named):
+    def declared(self, items: Sequence[ast.expr], typed: Sequence[DeclaredType], typing: DeclaredReceiverTyping, named: Callable[[], DeclaredType]) -> DeclaredType:
         return typed[0].join(DeclaredNone(), typing)
 
 
 class UnionHead(AnnotationHead):
     spellings = _typing_names("Union")
 
-    def declared(self, items, typed, typing, named):
+    def declared(self, items: Sequence[ast.expr], typed: Sequence[DeclaredType], typing: DeclaredReceiverTyping, named: Callable[[], DeclaredType]) -> DeclaredType:
         return typing.joined(typed)
 
 
@@ -502,14 +505,14 @@ class QualifierHead(AnnotationHead):
 
     spellings = _typing_names("ClassVar", "Final", "Annotated")
 
-    def declared(self, items, typed, typing, named):
+    def declared(self, items: Sequence[ast.expr], typed: Sequence[DeclaredType], typing: DeclaredReceiverTyping, named: Callable[[], DeclaredType]) -> DeclaredType:
         return typed[0]
 
 
 class ClassObjectHead(AnnotationHead):
     spellings = frozenset(("builtins.type", "typing.Type"))
 
-    def declared(self, items, typed, typing, named):
+    def declared(self, items: Sequence[ast.expr], typed: Sequence[DeclaredType], typing: DeclaredReceiverTyping, named: Callable[[], DeclaredType]) -> DeclaredType:
         return typed[0].class_object()
 
 
@@ -552,7 +555,7 @@ class HomogeneousHead(AnnotationHead):
         )
     )
 
-    def declared(self, items, typed, typing, named):
+    def declared(self, items: Sequence[ast.expr], typed: Sequence[DeclaredType], typing: DeclaredReceiverTyping, named: Callable[[], DeclaredType]) -> DeclaredType:
         return DeclaredCollection(typed[0])
 
 
@@ -561,7 +564,7 @@ class TupleHead(AnnotationHead):
 
     spellings = frozenset(("builtins.tuple", "typing.Tuple"))
 
-    def declared(self, items, typed, typing, named):
+    def declared(self, items: Sequence[ast.expr], typed: Sequence[DeclaredType], typing: DeclaredReceiverTyping, named: Callable[[], DeclaredType]) -> DeclaredType:
         match items:
             case [_, ast.Constant(value=builtins.Ellipsis)]:
                 return DeclaredCollection(typed[0])
@@ -581,7 +584,7 @@ class MappingHead(AnnotationHead):
         )
     )
 
-    def declared(self, items, typed, typing, named):
+    def declared(self, items: Sequence[ast.expr], typed: Sequence[DeclaredType], typing: DeclaredReceiverTyping, named: Callable[[], DeclaredType]) -> DeclaredType:
         if len(typed) != 2:
             return UndeclaredType("a mapping annotation takes a key and a value type")
         return DeclaredMapping(typed[0], typed[1])
@@ -592,7 +595,7 @@ class ClassHead(AnnotationHead):
 
     spellings = frozenset()
 
-    def declared(self, items, typed, typing, named):
+    def declared(self, items: Sequence[ast.expr], typed: Sequence[DeclaredType], typing: DeclaredReceiverTyping, named: Callable[[], DeclaredType]) -> DeclaredType:
         return named()
 
 
@@ -979,7 +982,7 @@ class _MemberRead(ClassMemberAnswersABC[DeclaredType]):
     name: str
     receiver: DeclaredInstance
 
-    def assigned(self, owner, declaration):
+    def assigned(self, owner: CompactIndexedClass, declaration: CompactClassMemberDeclaration) -> DeclaredType:
         if self.name in owner.direct_enum_member_names:
             return DeclaredInstance((owner.symbol,))
         match declaration.annotation_expression:
@@ -998,26 +1001,26 @@ class _MemberRead(ClassMemberAnswersABC[DeclaredType]):
             self.receiver, self.typing.generic_arguments(self.symbol, owner.symbol)
         )
 
-    def annotated_property(self, owner, declaration):
+    def annotated_property(self, owner: CompactIndexedClass, declaration: CompactAnnotatedProperty) -> DeclaredType:
         return self.typing.annotation_source_type(
             owner.module_name, declaration.return_annotation_expression, self.scope(owner)
         )
 
-    def annotated_method(self, owner, declaration):
+    def annotated_method(self, owner: CompactIndexedClass, declaration: CompactAnnotatedMethod) -> DeclaredType:
         return UndeclaredType(f"`{self.name}` read uncalled is a bound method")
 
-    def unannotated_callable(self, owner, declaration):
+    def unannotated_callable(self, owner: CompactIndexedClass, declaration: CompactUnannotatedCallable) -> DeclaredType:
         return UndeclaredType(
             f"`{owner.symbol}.{self.name}` declares no return annotation"
         )
 
-    def missing(self):
+    def missing(self) -> DeclaredType:
         return UndeclaredType(f"no class in `{self.symbol}`'s MRO declares `{self.name}`")
 
-    def ambiguous(self):
+    def ambiguous(self) -> DeclaredType:
         return UndeclaredType(f"`{self.name}` is bound more than once on `{self.symbol}`")
 
-    def open(self):
+    def open(self) -> DeclaredType:
         return UndeclaredType(f"`{self.symbol}`'s MRO is open before `{self.name}`")
 
 
@@ -1025,13 +1028,13 @@ class _MemberRead(ClassMemberAnswersABC[DeclaredType]):
 class _MethodCall(_MemberRead):
     """Calling `receiver.name(...)`: the method's declared return, `Self` the receiver."""
 
-    def assigned(self, owner, declaration):
+    def assigned(self, owner: CompactIndexedClass, declaration: CompactClassMemberDeclaration) -> DeclaredType:
         return UndeclaredType(f"`{self.name}` is assigned, not a declared method")
 
-    def annotated_property(self, owner, declaration):
+    def annotated_property(self, owner: CompactIndexedClass, declaration: CompactAnnotatedProperty) -> DeclaredType:
         return UndeclaredType(f"`{self.name}` is a property; calling its value")
 
-    def annotated_method(self, owner, declaration):
+    def annotated_method(self, owner: CompactIndexedClass, declaration: CompactAnnotatedMethod) -> DeclaredType:
         return self.typing.annotation_source_type(
             owner.module_name, declaration.return_annotation_expression, self.scope(owner)
         )
@@ -1083,7 +1086,7 @@ class AnnotatedRoot(ReceiverRoot):
     module_name: str
     annotation: str
 
-    def declared(self, typing):
+    def declared(self, typing: DeclaredReceiverTyping) -> DeclaredType:
         return typing.annotation_source_type(
             self.module_name, self.annotation, OUTSIDE_METHOD
         )
@@ -1095,7 +1098,7 @@ class MethodAnnotatedRoot(AnnotatedRoot):
 
     class_symbol: str
 
-    def declared(self, typing):
+    def declared(self, typing: DeclaredReceiverTyping) -> DeclaredType:
         return typing.annotation_source_type(
             self.module_name,
             self.annotation,
@@ -1109,7 +1112,7 @@ class OwnInstanceRoot(ReceiverRoot):
 
     class_symbol: str
 
-    def declared(self, typing):
+    def declared(self, typing: DeclaredReceiverTyping) -> DeclaredType:
         return DeclaredInstance((self.class_symbol,))
 
 
@@ -1119,10 +1122,10 @@ class OwnClassRoot(ReceiverRoot):
 
     class_symbol: str
 
-    def declared(self, typing):
+    def declared(self, typing: DeclaredReceiverTyping) -> DeclaredType:
         return DeclaredClassObject(self.class_symbol)
 
-    def call_of(self, path, builder, arguments, pending):
+    def call_of(self, path: ReceiverPath, builder: ReceiverPathBuilder, arguments: Sequence[ast.expr], pending: Pending) -> ReceiverPath:
         if path.steps:
             return super().call_of(path, builder, arguments, pending)
         return ReceiverPath(OwnInstanceRoot(self.class_symbol))
@@ -1135,20 +1138,20 @@ class ReferenceRoot(ReceiverRoot):
     module_name: str
     parts: tuple[str, ...]
 
-    def declared(self, typing):
+    def declared(self, typing: DeclaredReceiverTyping) -> DeclaredType:
         return typing.reference(self.module_name, self.parts)
 
-    def attribute_of(self, path, name):
+    def attribute_of(self, path: ReceiverPath, name: str) -> ReceiverPath:
         if path.steps:
             return super().attribute_of(path, name)
         return ReceiverPath(ReferenceRoot(self.module_name, (*self.parts, name)))
 
-    def method_call_of(self, path, name):
+    def method_call_of(self, path: ReceiverPath, name: str) -> ReceiverPath:
         if path.steps:
             return super().method_call_of(path, name)
         return ReceiverPath(CalledReferenceRoot(self.module_name, (*self.parts, name)))
 
-    def call_of(self, path, builder, arguments, pending):
+    def call_of(self, path: ReceiverPath, builder: ReceiverPathBuilder, arguments: Sequence[ast.expr], pending: Pending) -> ReceiverPath:
         if path.steps:
             return super().call_of(path, builder, arguments, pending)
         return builder.module_call(self.parts, arguments, pending)
@@ -1161,7 +1164,7 @@ class CalledReferenceRoot(ReceiverRoot):
     module_name: str
     parts: tuple[str, ...]
 
-    def declared(self, typing):
+    def declared(self, typing: DeclaredReceiverTyping) -> DeclaredType:
         return typing.called_reference(self.module_name, self.parts)
 
 
@@ -1172,7 +1175,7 @@ class AgreeingRoot(ReceiverRoot):
     name: str
     bindings: tuple[ReceiverPath, ...]
 
-    def declared(self, typing):
+    def declared(self, typing: DeclaredReceiverTyping) -> DeclaredType:
         """A binding to `None` is the absent arm, which reading the receiver excludes."""
 
         declared = [binding.declared(typing) for binding in self.bindings]
@@ -1189,7 +1192,7 @@ class AgreeingRoot(ReceiverRoot):
 class NoneRoot(ReceiverRoot):
     """The literal `None`."""
 
-    def declared(self, typing):
+    def declared(self, typing: DeclaredReceiverTyping) -> DeclaredType:
         return DeclaredNone()
 
 
@@ -1199,7 +1202,7 @@ class UnionRoot(ReceiverRoot):
 
     arms: tuple[ReceiverPath, ...]
 
-    def declared(self, typing):
+    def declared(self, typing: DeclaredReceiverTyping) -> DeclaredType:
         return typing.joined(arm.declared(typing) for arm in self.arms)
 
 
@@ -1209,7 +1212,7 @@ class TupleDisplayRoot(ReceiverRoot):
 
     items: tuple[ReceiverPath, ...]
 
-    def declared(self, typing):
+    def declared(self, typing: DeclaredReceiverTyping) -> DeclaredType:
         return DeclaredTuple(tuple(item.declared(typing) for item in self.items))
 
 
@@ -1219,7 +1222,7 @@ class CollectionDisplayRoot(ReceiverRoot):
 
     elements: tuple[ReceiverPath, ...]
 
-    def declared(self, typing):
+    def declared(self, typing: DeclaredReceiverTyping) -> DeclaredType:
         return DeclaredCollection(
             typing.joined(element.declared(typing) for element in self.elements)
         )
@@ -1231,7 +1234,7 @@ class LiteralRoot(ReceiverRoot):
 
     qualified_name: str
 
-    def declared(self, typing):
+    def declared(self, typing: DeclaredReceiverTyping) -> DeclaredType:
         return DeclaredForeignInstance((self.qualified_name,))
 
 
@@ -1242,7 +1245,7 @@ class MappingDisplayRoot(ReceiverRoot):
     key: ReceiverPath
     value: ReceiverPath
 
-    def declared(self, typing):
+    def declared(self, typing: DeclaredReceiverTyping) -> DeclaredType:
         return DeclaredMapping(self.key.declared(typing), self.value.declared(typing))
 
 
@@ -1252,7 +1255,7 @@ class UnresolvedRoot(ReceiverRoot):
 
     reason: str
 
-    def declared(self, typing):
+    def declared(self, typing: DeclaredReceiverTyping) -> DeclaredType:
         return UndeclaredType(self.reason)
 
 
@@ -1270,7 +1273,7 @@ class ReceiverStep(ABC):
 class AttributeStep(ReceiverStep):
     name: str
 
-    def applied(self, declared, typing):
+    def applied(self, declared: DeclaredType, typing: DeclaredReceiverTyping) -> DeclaredType:
         return declared.attribute(typing, self.name)
 
 
@@ -1278,7 +1281,7 @@ class AttributeStep(ReceiverStep):
 class CallStep(ReceiverStep):
     name: str
 
-    def applied(self, declared, typing):
+    def applied(self, declared: DeclaredType, typing: DeclaredReceiverTyping) -> DeclaredType:
         return declared.called(typing, self.name)
 
 
@@ -1286,7 +1289,7 @@ class CallStep(ReceiverStep):
 class ElementStep(ReceiverStep):
     """Iterating the value: `for x in E` binds an element of E."""
 
-    def applied(self, declared, typing):
+    def applied(self, declared: DeclaredType, typing: DeclaredReceiverTyping) -> DeclaredType:
         return declared.element(typing)
 
 
@@ -1296,7 +1299,7 @@ class IndexStep(ReceiverStep):
 
     position: int
 
-    def applied(self, declared, typing):
+    def applied(self, declared: DeclaredType, typing: DeclaredReceiverTyping) -> DeclaredType:
         return declared.indexed(self.position)
 
 
@@ -1304,7 +1307,7 @@ class IndexStep(ReceiverStep):
 class SubscriptStep(ReceiverStep):
     """`E[k]` with any other key: a collection's element or a mapping's value."""
 
-    def applied(self, declared, typing):
+    def applied(self, declared: DeclaredType, typing: DeclaredReceiverTyping) -> DeclaredType:
         return declared.subscripted(typing)
 
 
@@ -1312,7 +1315,7 @@ class SubscriptStep(ReceiverStep):
 class SliceStep(ReceiverStep):
     """`E[i:j]`: a sequence of E's elements."""
 
-    def applied(self, declared, typing):
+    def applied(self, declared: DeclaredType, typing: DeclaredReceiverTyping) -> DeclaredType:
         return declared.sliced(typing)
 
 
@@ -1320,7 +1323,7 @@ class SliceStep(ReceiverStep):
 class CollectedStep(ReceiverStep):
     """`sorted(E)`, `list(E)`, `tuple(E)`, `set(E)`, `frozenset(E)`, `reversed(E)`."""
 
-    def applied(self, declared, typing):
+    def applied(self, declared: DeclaredType, typing: DeclaredReceiverTyping) -> DeclaredType:
         return DeclaredCollection(declared.element(typing))
 
 
@@ -1328,7 +1331,7 @@ class CollectedStep(ReceiverStep):
 class EnumeratedStep(ReceiverStep):
     """`enumerate(E)`: pairs of a count and an element of E."""
 
-    def applied(self, declared, typing):
+    def applied(self, declared: DeclaredType, typing: DeclaredReceiverTyping) -> DeclaredType:
         return DeclaredCollection(
             DeclaredTuple((UndeclaredType("an enumerate count"), declared.element(typing)))
         )

@@ -390,6 +390,31 @@ def test_callable_member_declarations_skip_overloads_and_setters(tmp_path):
     )
 
 
+def test_decorators_are_the_objects_their_names_bind(tmp_path):
+    projections, _index_ = _index(
+        tmp_path,
+        "import abc\n"
+        "import typing as t\n"
+        "from functools import cached_property as cp\n\n\n"
+        "def property(function):\n    return function\n\n\n"
+        "@t.final\n"
+        "class Holder:\n"
+        "    @property\n    def local(self) -> int: ...\n"
+        "    @cp\n    def cached(self) -> int: ...\n"
+        "    @abc.abstractmethod\n    def asked(self) -> int: ...\n",
+    )
+    (projection,) = projections
+    (holder,) = projection.classes
+    # The module's own `property` is a plain function, so `local` is a method.
+    assert holder.callable_member_declarations == (
+        CompactAnnotatedMethod("local", 13, "int"),
+        CompactAnnotatedProperty("cached", 15, "int"),
+        CompactAnnotatedMethod("asked", 17, "int"),
+    )
+    assert holder.abstract_method_names == ("asked",)
+    assert holder.is_final
+
+
 def test_a_cached_class_projection_carries_the_declared_returns(tmp_path):
     source_root = tmp_path / "src"
     source_root.mkdir()

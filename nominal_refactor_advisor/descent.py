@@ -30,7 +30,11 @@ from .ast_tools import (
     ParsedModule,
     PythonSourcePathPolicy,
 )
-from .class_index import CompactModuleClassProjectionFamily
+from .class_index import (
+    PROPERTY_DECORATOR,
+    CompactModuleClassProjectionFamily,
+    ModuleNominalBindingAuthority,
+)
 from .codemod_architecture_guards import (
     ArchitectureGuardRule,
     ArchitectureGuardTargetScope,
@@ -174,6 +178,20 @@ class EnumDeclaration:
     members: tuple[Member, ...]
     new: ast.FunctionDef | None
     methods: tuple[ast.FunctionDef | ast.AsyncFunctionDef, ...]
+
+    @cached_property
+    def properties(self) -> tuple[ast.FunctionDef, ...]:
+        """The methods whose one decorator is `@property`, through the module's bindings."""
+
+        bindings = ModuleNominalBindingAuthority(self.module).snapshot_before(self.node.lineno)
+        properties: list[ast.FunctionDef] = []
+        for function in self.methods:
+            match function, bindings.decorator_references(function):
+                case ast.FunctionDef() as definition, (decorator,) if decorator.has_bound_name(
+                    PROPERTY_DECORATOR
+                ):
+                    properties.append(definition)
+        return tuple(properties)
 
     @classmethod
     def decoded(cls, module: ParsedModule, node: ast.ClassDef) -> EnumDeclaration:

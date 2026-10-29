@@ -14,6 +14,7 @@ import copy
 import hashlib
 import re
 import sys
+import typing
 from abc import ABC, abstractmethod
 from collections import defaultdict, deque
 from collections.abc import (
@@ -45,7 +46,11 @@ from .annotation_semantics import (
     NOMINAL_ANNOTATION_SOURCE_AUTHORITY,
     TypeWrapper,
 )
-from .ast_field_decoders import ParameterAnnotations, declared_annotations
+from .ast_field_decoders import (
+    TYPE_PARAMETERS,
+    ParameterAnnotations,
+    declared_annotations,
+)
 from .ast_projection import ExpressionReference
 from .ast_projection import (
     CallKeywords,
@@ -660,7 +665,7 @@ class CompactAnnotatedProperty(CompactCallableMemberDeclaration):
 
     return_annotation_expression: str
 
-    def answer(self, owner, answers):
+    def answer(self, owner: CompactIndexedClass, answers: ClassMemberAnswersABC[MemberAnswerT]) -> MemberAnswerT:
         return answers.annotated_property(owner, self)
 
 
@@ -670,7 +675,7 @@ class CompactAnnotatedMethod(CompactCallableMemberDeclaration):
 
     return_annotation_expression: str
 
-    def answer(self, owner, answers):
+    def answer(self, owner: CompactIndexedClass, answers: ClassMemberAnswersABC[MemberAnswerT]) -> MemberAnswerT:
         return answers.annotated_method(owner, self)
 
 
@@ -678,7 +683,7 @@ class CompactAnnotatedMethod(CompactCallableMemberDeclaration):
 class CompactUnannotatedCallable(CompactCallableMemberDeclaration):
     """A method or property that declares no return type."""
 
-    def answer(self, owner, answers):
+    def answer(self, owner: CompactIndexedClass, answers: ClassMemberAnswersABC[MemberAnswerT]) -> MemberAnswerT:
         return answers.unannotated_callable(owner, self)
 
 
@@ -737,7 +742,7 @@ class AssignedClassMember(ClassMemberLookup):
     owner: CompactIndexedClass
     declaration: CompactClassMemberDeclaration
 
-    def answer(self, answers):
+    def answer(self, answers: ClassMemberAnswersABC[MemberAnswerT]) -> MemberAnswerT:
         return answers.assigned(self.owner, self.declaration)
 
 
@@ -748,28 +753,28 @@ class CallableClassMember(ClassMemberLookup):
     owner: CompactIndexedClass
     declaration: CompactCallableMemberDeclaration
 
-    def answer(self, answers):
+    def answer(self, answers: ClassMemberAnswersABC[MemberAnswerT]) -> MemberAnswerT:
         return self.declaration.answer(self.owner, answers)
 
 
 class MissingClassMember(ClassMemberLookup):
     """No class of the MRO binds the name in its body."""
 
-    def answer(self, answers):
+    def answer(self, answers: ClassMemberAnswersABC[MemberAnswerT]) -> MemberAnswerT:
         return answers.missing()
 
 
 class AmbiguousClassMember(ClassMemberLookup):
     """The first class binding the name binds it more than once."""
 
-    def answer(self, answers):
+    def answer(self, answers: ClassMemberAnswersABC[MemberAnswerT]) -> MemberAnswerT:
         return answers.ambiguous()
 
 
 class OpenClassMember(ClassMemberLookup):
     """The class does not bind the name and its MRO is open, so no ancestor is known to."""
 
-    def answer(self, answers):
+    def answer(self, answers: ClassMemberAnswersABC[MemberAnswerT]) -> MemberAnswerT:
         return answers.open()
 
 
@@ -1242,6 +1247,17 @@ class CompactClassHeader(ClassDeclaration):
 @dataclass(frozen=True)
 class CompactIndexedClass(CompactClassHeader):
     """AST-free class declaration used to reconstruct inheritance globally."""
+
+    @property
+    def bound_member_names(self) -> frozenset[str]:
+        """Every name the class body binds, by assignment or by `def`."""
+
+        return frozenset(
+            (
+                *(declaration.name for declaration in self.direct_member_declarations),
+                *(declaration.name for declaration in self.callable_member_declarations),
+            )
+        )
 
     def resolved_past_star_imports(
         self, exposure: RepositoryPublicExposureAuthority
@@ -3405,13 +3421,7 @@ class CompactClassFamilyIndex(ClassDeclarationIndex[CompactIndexedClass]):
 
     @staticmethod
     def _binds_member(owner: CompactIndexedClass, member_name: str) -> bool:
-        return any(
-            declaration.name == member_name
-            for declaration in (
-                *owner.direct_member_declarations,
-                *owner.callable_member_declarations,
-            )
-        )
+        return member_name in owner.bound_member_names
 
     @classmethod
     def from_modules(
@@ -3985,6 +3995,11 @@ class CompactNominalBinding:
     kind: CompactNominalBindingKind
 
 
+DecoratedDefinition: TypeAlias = (
+    ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef | FunctionDefinition
+)
+
+
 @dataclass(frozen=True)
 class ModuleNominalBindingSnapshot:
     """Exact known and unresolved bindings before one module source position."""
@@ -4015,6 +4030,34 @@ class ModuleNominalBindingSnapshot:
                 kind=CompactNominalBindingKind.BUILTIN,
             )
         return CompactNominalReference.bound_as(parts, binding)
+
+    def decorator_references(
+        self, node: DecoratedDefinition
+    ) -> tuple[CompactNominalReference, ...]:
+        """What each decorator of the definition names through these bindings, in
+        order; a decorator that is no name path (`@registry[key]`) is unbound."""
+
+        return tuple(self._decorator_reference(decorator) for decorator in node.decorator_list)
+
+    def decorated_by(
+        self,
+        node: DecoratedDefinition,
+        identities: Collection[str],
+    ) -> bool:
+        """Whether a decorator of the definition binds one of these objects."""
+
+        return any(
+            reference.has_bound_name(identity)
+            for reference in self.decorator_references(node)
+            for identity in identities
+        )
+
+    def _decorator_reference(self, decorator: ast.expr) -> CompactNominalReference:
+        callee = decorator.func if isinstance(decorator, ast.Call) else decorator
+        match ExpressionReference.decoded(callee).attribute_chain:
+            case (str(), *_) as parts:
+                return self.reference_for(parts)
+        return UnboundNominalReference((ast.unparse(decorator),))
 
     def resolves_unshadowed_builtin(
         self,
@@ -5540,27 +5583,24 @@ def _compact_indexed_classes(
             ).is_reconstructible,
             base_key_type_names=_compact_base_key_type_names(node),
             base_argument_sources=_compact_base_argument_sources(node),
-            type_parameter_names=tuple(parameter.name for parameter in node.type_params),
-            is_final=any(
-                (isinstance(decorator, ast.Name) and decorator.id == "final")
-                or (isinstance(decorator, ast.Attribute) and decorator.attr == "final")
-                for decorator in node.decorator_list
-            ),
+            type_parameter_names=TYPE_PARAMETERS.names(node),
+            is_final=binding_snapshots[node.lineno].decorated_by(node, (FINAL_DECORATOR,)),
             end_line=node.end_lineno,
             method_names=tuple(
                 statement.name
                 for statement in FunctionDefinition.within(node.body)
             ),
-            callable_member_declarations=_compact_callable_member_declarations(node),
+            callable_member_declarations=_compact_callable_member_declarations(
+                node, binding_snapshots[node.lineno]
+            ),
             abstract_method_names=sorted_tuple(
                 statement.name
                 for statement in FunctionDefinition.within(node.body)
-                if any(
-                    _terminal_reference_name(decorator) == "abstractmethod"
-                    for decorator in statement.decorator_list
+                if binding_snapshots[node.lineno].decorated_by(
+                    statement, (ABSTRACT_METHOD_DECORATOR,)
                 )
             ),
-            is_abstract=_is_abstract_class(node),
+            is_abstract=_is_abstract_class(node, binding_snapshots[node.lineno]),
             dataclass_declaration=binding_facets.dataclass_declaration,
             enum_declaration=binding_facets.enum_declaration,
             registry_facts=ClassRegistryFacts.of_class(
@@ -7555,7 +7595,9 @@ def _is_registration_authority(node: ast.ClassDef) -> bool:
     )
 
 
-def _is_abstract_class(node: ast.ClassDef) -> bool:
+def _is_abstract_class(
+    node: ast.ClassDef, module_binding_snapshot: ModuleNominalBindingSnapshot
+) -> bool:
     if {"ABC", "ABCMeta"} & {
         terminal_name
         for base in node.bases
@@ -7563,9 +7605,8 @@ def _is_abstract_class(node: ast.ClassDef) -> bool:
     }:
         return True
     return any(
-        _terminal_reference_name(decorator) == "abstractmethod"
+        module_binding_snapshot.decorated_by(statement, (ABSTRACT_METHOD_DECORATOR,))
         for statement in FunctionDefinition.within(node.body)
-        for decorator in statement.decorator_list
     )
 
 
@@ -8122,26 +8163,29 @@ def _module_type_variable_names(parsed_module: ParsedModule) -> tuple[str, ...]:
 
 
 def _compact_callable_member_declarations(
-    node: ast.ClassDef,
+    node: ast.ClassDef, module_binding_snapshot: ModuleNominalBindingSnapshot
 ) -> tuple[CompactCallableMemberDeclaration, ...]:
-    """Each `def` of the class body, except overload stubs and property setters/deleters,
-    which rebind no new member type."""
+    """Each `def` of the class body, except overload stubs and a property's
+    setter or deleter, which rebind no new member type."""
 
     declarations: list[CompactCallableMemberDeclaration] = []
+    property_names: set[str] = set()
     for statement in node.body:
         if not isinstance(statement, ast.FunctionDef | ast.AsyncFunctionDef):
             continue
-        decorators = {
-            _terminal_reference_name(decorator) for decorator in statement.decorator_list
-        }
-        if decorators & CALLABLE_MEMBER_REDEFINITION_DECORATORS:
+        if module_binding_snapshot.decorated_by(
+            statement, (OVERLOAD_DECORATOR,)
+        ) or _redefines_property(statement, property_names):
             continue
+        reads_as_property = module_binding_snapshot.decorated_by(
+            statement, PROPERTY_DECORATORS
+        )
+        if reads_as_property:
+            property_names.add(statement.name)
         declared = tuple(
-            (
-                CompactAnnotatedProperty
-                if decorators & PROPERTY_DECORATOR_NAMES
-                else CompactAnnotatedMethod
-            )(statement.name, statement.lineno, ast.unparse(returns))
+            (CompactAnnotatedProperty if reads_as_property else CompactAnnotatedMethod)(
+                statement.name, statement.lineno, ast.unparse(returns)
+            )
             for returns in declared_annotations(statement)
         )
         declarations.extend(
@@ -8150,8 +8194,37 @@ def _compact_callable_member_declarations(
     return tuple(declarations)
 
 
-PROPERTY_DECORATOR_NAMES = frozenset((property.__name__, cached_property.__name__))
-CALLABLE_MEMBER_REDEFINITION_DECORATORS = frozenset(("overload", "setter", "deleter"))
+def _redefines_property(
+    statement: ast.FunctionDef | ast.AsyncFunctionDef, property_names: Collection[str]
+) -> bool:
+    """`@name.setter` or `@name.deleter` on a property the class body declared above."""
+
+    return any(
+        isinstance(decorator, ast.Attribute)
+        and isinstance(decorator.value, ast.Name)
+        and decorator.value.id in property_names
+        and decorator.attr in PROPERTY_REDEFINITION_ATTRIBUTES
+        for decorator in statement.decorator_list
+    )
+
+
+def native_identity(value: Callable[..., object]) -> str:
+    """The qualified name a binding resolves a native object to."""
+
+    return f"{value.__module__}.{value.__qualname__}"
+
+
+PROPERTY_DECORATOR = native_identity(property)
+PROPERTY_DECORATORS = frozenset((PROPERTY_DECORATOR, native_identity(cached_property)))
+"""The descriptors whose read is the decorated function's return."""
+PROPERTY_REDEFINITION_ATTRIBUTES = frozenset(
+    (property.setter.__name__, property.deleter.__name__)
+)
+ABSTRACT_METHOD_DECORATOR = native_identity(abstractmethod)
+FINAL_DECORATOR = native_identity(typing.final)
+OVERLOAD_DECORATOR = native_identity(typing.overload)
+STATIC_METHOD_DECORATOR = native_identity(staticmethod)
+CLASS_METHOD_DECORATOR = native_identity(classmethod)
 
 
 def _compact_sorted_key_calls(

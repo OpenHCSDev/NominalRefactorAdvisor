@@ -42,6 +42,8 @@ from .captured_reference import (
 from .closed_world import ClosedWorldPremise
 from .class_index import (
     ClassMemberAnswersABC,
+    CompactAnnotatedMethod,
+    CompactAnnotatedProperty,
     CompactClassFamilyIndex,
     CompactClassMemberDeclaration,
     CompactClassReferenceResolver,
@@ -52,6 +54,7 @@ from .class_index import (
     CompactModuleStarImportOrigin,
     CompactProductAuthority,
     CompactPublicNameExposure,
+    CompactUnannotatedCallable,
     CompactRepositoryPublicExposureIndex,
     FunctionNominalParameterBindingAuthority,
     ModuleNominalBindingAuthority,
@@ -432,28 +435,35 @@ class _ClassMemberViolation(_CompactClassMemberResolution):
 class _ProductMemberAnswers(ClassMemberAnswersABC[_CompactClassMemberResolution]):
     """Product flow reads a member's assignment; a def or no single binding is no declaration."""
 
-    def assigned(self, owner, declaration):
+    def assigned(self, owner: CompactIndexedClass, declaration: CompactClassMemberDeclaration) -> _CompactClassMemberResolution:
         return _ResolvedClassMember(owner, declaration)
 
-    def annotated_property(self, owner, declaration):
+    def annotated_property(
+        self, owner: CompactIndexedClass, declaration: CompactAnnotatedProperty
+    ) -> _CompactClassMemberResolution:
+        return self.missing()
+
+    def annotated_method(
+        self, owner: CompactIndexedClass, declaration: CompactAnnotatedMethod
+    ) -> _CompactClassMemberResolution:
+        return self.missing()
+
+    def unannotated_callable(
+        self, owner: CompactIndexedClass, declaration: CompactUnannotatedCallable
+    ) -> _CompactClassMemberResolution:
+        return self.missing()
+
+    def missing(self) -> _CompactClassMemberResolution:
         return _ClassMemberViolation(
             CompactFunctionTargetResolutionViolation.MISSING_DECLARATION
         )
 
-    annotated_method = annotated_property
-    unannotated_callable = annotated_property
-
-    def missing(self):
-        return _ClassMemberViolation(
-            CompactFunctionTargetResolutionViolation.MISSING_DECLARATION
-        )
-
-    def ambiguous(self):
+    def ambiguous(self) -> _CompactClassMemberResolution:
         return _ClassMemberViolation(
             CompactFunctionTargetResolutionViolation.AMBIGUOUS_DECLARATION
         )
 
-    def open(self):
+    def open(self) -> _CompactClassMemberResolution:
         return _ClassMemberViolation(
             CompactFunctionTargetResolutionViolation.INCOMPLETE_RECEIVER_FAMILY
         )
