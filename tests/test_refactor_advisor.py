@@ -25037,9 +25037,9 @@ def test_numeric_literal_dispatch_method_rejection_uses_evidence_target(
     )
     assert (
         plan.records[0].reason
-        == "dispatch_to_polymorphism currently rewrites module functions; "
+        == "literal dispatch: dispatch_to_polymorphism rewrites module functions; "
         "method target 'Renderer.render' requires extracting or owning the "
-        "closed-axis authority at the class boundary first."
+        "closed-axis authority at the class boundary first"
     )
 
 
