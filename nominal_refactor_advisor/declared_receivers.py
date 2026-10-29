@@ -22,6 +22,9 @@ from __future__ import annotations
 
 import ast
 import builtins
+import importlib
+import importlib.util
+import types
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -40,12 +43,66 @@ from .class_index import (
     CompactIndexedClass,
     CompactModuleClassProjection,
     CompactUnannotatedCallable,
+    native_identity,
 )
 
 FunctionNode = ast.FunctionDef | ast.AsyncFunctionDef
 
 
 # --- declared types ----------------------------------------------------------
+
+
+class ContainerClass(ABC):
+    """The class a declared collection is an instance of, as its declaration
+    names it: never an abstract base it only reaches by `register()`."""
+
+    def class_symbols(self) -> tuple[str, ...]:
+        return ()
+
+    def joined(self, other: ContainerClass) -> ContainerClass:
+        return self if self == other else UNNAMED_CONTAINER
+
+
+@dataclass(frozen=True)
+class NamedContainer(ContainerClass):
+    """The container's own class, by the qualified name of the class object."""
+
+    qualified_name: str
+
+    def class_symbols(self) -> tuple[str, ...]:
+        return (self.qualified_name,)
+
+
+@dataclass(frozen=True)
+class UnnamedContainer(ContainerClass):
+    """No declaration names the container's class (a view, `sorted(...)`, a join
+    of two container classes)."""
+
+
+UNNAMED_CONTAINER = UnnamedContainer()
+
+
+def container_of(value: object) -> ContainerClass:
+    """The class an object constructs: a class constructs itself, a typing alias
+    its origin class; a function declares no class here."""
+
+    match value:
+        case type() as constructed:
+            return NamedContainer(native_identity(constructed))
+    match getattr(value, "__origin__", None):
+        case type() as origin:
+            return NamedContainer(native_identity(origin))
+    return UNNAMED_CONTAINER
+
+
+def container_named(qualified: str) -> ContainerClass:
+    """The container class an annotation head's qualified name binds, read off
+    the module that defines it; a module not installed names no class."""
+
+    module, _, name = qualified.rpartition(".")
+    if importlib.util.find_spec(module) is None:
+        return UNNAMED_CONTAINER
+    return container_of(vars(importlib.import_module(module)).get(name))
 
 
 class DeclaredType(ABC):
@@ -112,6 +169,11 @@ class DeclaredType(ABC):
     ) -> DeclaredType:
         return self.heterogeneous(other)
 
+    def join_class_object(
+        self, other: DeclaredClassObject, typing: DeclaredReceiverTyping
+    ) -> DeclaredType:
+        return self.heterogeneous(other)
+
     def join_none(self, other: DeclaredNone) -> DeclaredType:
         return self
 
@@ -127,8 +189,30 @@ class DeclaredType(ABC):
         )
 
 
+class DeclaredScannedClasses(DeclaredType):
+    """Scanned classes of one family, as instances or as class objects: two of
+    the same kind join when the scan gives their classes one common family."""
+
+    symbols: tuple[str, ...]
+
+    def class_symbols(self) -> tuple[str, ...]:
+        return self.symbols
+
+    @abstractmethod
+    def with_symbols(self, symbols: tuple[str, ...]) -> DeclaredType:
+        raise NotImplementedError
+
+    def family_joined(
+        self, other: DeclaredScannedClasses, typing: DeclaredReceiverTyping
+    ) -> DeclaredType:
+        symbols = tuple(sorted({*self.symbols, *other.symbols}))
+        if typing.one_family(symbols):
+            return self.with_symbols(symbols)
+        return self.heterogeneous(other)
+
+
 @dataclass(frozen=True)
-class DeclaredInstance(DeclaredType):
+class DeclaredInstance(DeclaredScannedClasses):
     """An instance of one of these scanned classes, all of one family."""
 
     symbols: tuple[str, ...]
@@ -143,14 +227,11 @@ class DeclaredInstance(DeclaredType):
             typing.method_call(symbol, name, self) for symbol in self.symbols
         )
 
-    def class_symbols(self) -> tuple[str, ...]:
-        return self.symbols
+    def with_symbols(self, symbols: tuple[str, ...]) -> DeclaredType:
+        return DeclaredInstance(symbols)
 
     def class_object(self) -> DeclaredType:
-        match self.symbols:
-            case (symbol,):
-                return DeclaredClassObject(symbol)
-        return super().class_object()
+        return DeclaredClassObject(self.symbols)
 
     def spelled(self) -> str:
         return " | ".join(f"`{symbol}`" for symbol in self.symbols)
@@ -159,7 +240,7 @@ class DeclaredInstance(DeclaredType):
         return other.join_instance(self, typing)
 
     def join_instance(self, other: DeclaredInstance, typing: DeclaredReceiverTyping) -> DeclaredType:
-        return typing.family_join(self, other)
+        return self.family_joined(other, typing)
 
 
 @dataclass(frozen=True)
@@ -190,30 +271,42 @@ class DeclaredForeignInstance(DeclaredType):
 
 
 @dataclass(frozen=True)
-class DeclaredClassObject(DeclaredType):
-    """A scanned class itself, not an instance: calling its methods passes it as `cls`."""
+class DeclaredClassObject(DeclaredScannedClasses):
+    """Scanned classes themselves, not instances: calling their methods passes
+    the class as `cls`. Their `class_symbols` are the classes they denote, so a
+    class-level answer read off one is that class's."""
 
-    symbol: str
+    symbols: tuple[str, ...]
 
     def attribute(self, typing: DeclaredReceiverTyping, name: str) -> DeclaredType:
-        return typing.member_read(self.symbol, name, DeclaredInstance((self.symbol,)))
+        return typing.joined(
+            typing.member_read(symbol, name, DeclaredInstance((symbol,)))
+            for symbol in self.symbols
+        )
 
     def called(self, typing: DeclaredReceiverTyping, name: str) -> DeclaredType:
-        return typing.method_call(self.symbol, name, DeclaredInstance((self.symbol,)))
+        return typing.joined(
+            typing.method_call(symbol, name, DeclaredInstance((symbol,)))
+            for symbol in self.symbols
+        )
 
     def element(self, typing: DeclaredReceiverTyping) -> DeclaredType:
         """Iterating an enum class yields its members."""
-        return typing.enum_members(self.symbol)
+        return typing.joined(typing.enum_members(symbol) for symbol in self.symbols)
 
-    def class_symbols(self) -> tuple[str, ...]:
-        """The class the receiver denotes: a class-level answer read off it is the class's."""
-        return (self.symbol,)
+    def with_symbols(self, symbols: tuple[str, ...]) -> DeclaredType:
+        return DeclaredClassObject(symbols)
 
     def spelled(self) -> str:
-        return f"the class `{self.symbol}`"
+        return " | ".join(f"the class `{symbol}`" for symbol in self.symbols)
 
     def join(self, other: DeclaredType, typing: DeclaredReceiverTyping) -> DeclaredType:
-        return self.heterogeneous(other)
+        return other.join_class_object(self, typing)
+
+    def join_class_object(
+        self, other: DeclaredClassObject, typing: DeclaredReceiverTyping
+    ) -> DeclaredType:
+        return self.family_joined(other, typing)
 
 
 @dataclass(frozen=True)
@@ -221,6 +314,7 @@ class DeclaredCollection(DeclaredType):
     """An iterable whose every element is declared as one type."""
 
     item: DeclaredType
+    container: ContainerClass
 
     def element(self, typing: DeclaredReceiverTyping) -> DeclaredType:
         return self.item
@@ -235,7 +329,7 @@ class DeclaredCollection(DeclaredType):
         return self
 
     def class_symbols(self) -> tuple[str, ...]:
-        return (ITERABLE_TYPE,)
+        return self.container.class_symbols()
 
     def spelled(self) -> str:
         return f"a collection of {self.item.spelled()}"
@@ -244,7 +338,9 @@ class DeclaredCollection(DeclaredType):
         return other.join_collection(self, typing)
 
     def join_collection(self, other: DeclaredCollection, typing: DeclaredReceiverTyping) -> DeclaredType:
-        return DeclaredCollection(self.item.join(other.item, typing))
+        return DeclaredCollection(
+            self.item.join(other.item, typing), self.container.joined(other.container)
+        )
 
 
 @dataclass(frozen=True)
@@ -265,10 +361,10 @@ class DeclaredTuple(DeclaredType):
         return typing.joined(self.items)
 
     def sliced(self, typing: DeclaredReceiverTyping) -> DeclaredType:
-        return DeclaredCollection(typing.joined(self.items))
+        return DeclaredCollection(typing.joined(self.items), TUPLE_CONTAINER)
 
     def class_symbols(self) -> tuple[str, ...]:
-        return (TUPLE_TYPE,)
+        return TUPLE_CONTAINER.class_symbols()
 
     def spelled(self) -> str:
         return f"tuple[{', '.join(item.spelled() for item in self.items)}]"
@@ -293,6 +389,7 @@ class DeclaredMapping(DeclaredType):
 
     key: DeclaredType
     value: DeclaredType
+    container: ContainerClass
 
     def element(self, typing: DeclaredReceiverTyping) -> DeclaredType:
         return self.key
@@ -307,7 +404,7 @@ class DeclaredMapping(DeclaredType):
         return super().called(typing, name)
 
     def class_symbols(self) -> tuple[str, ...]:
-        return (MAPPING_TYPE,)
+        return self.container.class_symbols()
 
     def spelled(self) -> str:
         return f"a mapping of {self.key.spelled()} to {self.value.spelled()}"
@@ -317,7 +414,9 @@ class DeclaredMapping(DeclaredType):
 
     def join_mapping(self, other: DeclaredMapping, typing: DeclaredReceiverTyping) -> DeclaredType:
         return DeclaredMapping(
-            self.key.join(other.key, typing), self.value.join(other.value, typing)
+            self.key.join(other.key, typing),
+            self.value.join(other.value, typing),
+            self.container.joined(other.container),
         )
 
 
@@ -337,7 +436,7 @@ class MappingKeys(MappingMethod):
 
     @staticmethod
     def of(mapping: DeclaredMapping) -> DeclaredType:
-        return DeclaredCollection(mapping.key)
+        return DeclaredCollection(mapping.key, UNNAMED_CONTAINER)
 
 
 class MappingValues(MappingMethod):
@@ -345,7 +444,7 @@ class MappingValues(MappingMethod):
 
     @staticmethod
     def of(mapping: DeclaredMapping) -> DeclaredType:
-        return DeclaredCollection(mapping.value)
+        return DeclaredCollection(mapping.value, UNNAMED_CONTAINER)
 
 
 class MappingItems(MappingMethod):
@@ -353,7 +452,9 @@ class MappingItems(MappingMethod):
 
     @staticmethod
     def of(mapping: DeclaredMapping) -> DeclaredType:
-        return DeclaredCollection(DeclaredTuple((mapping.key, mapping.value)))
+        return DeclaredCollection(
+            DeclaredTuple((mapping.key, mapping.value)), UNNAMED_CONTAINER
+        )
 
 
 class MappingValueLookup(MappingMethod):
@@ -386,6 +487,11 @@ class DeclaredNone(DeclaredType):
         return other
 
     def join_mapping(self, other: DeclaredMapping, typing: DeclaredReceiverTyping) -> DeclaredType:
+        return other
+
+    def join_class_object(
+        self, other: DeclaredClassObject, typing: DeclaredReceiverTyping
+    ) -> DeclaredType:
         return other
 
     def join_none(self, other: DeclaredNone) -> DeclaredType:
@@ -440,6 +546,11 @@ class UndeclaredType(DeclaredType):
     def join_mapping(self, other: DeclaredMapping, typing: DeclaredReceiverTyping) -> DeclaredType:
         return self
 
+    def join_class_object(
+        self, other: DeclaredClassObject, typing: DeclaredReceiverTyping
+    ) -> DeclaredType:
+        return self
+
     def join_none(self, other: DeclaredNone) -> DeclaredType:
         return self
 
@@ -459,6 +570,15 @@ class AnnotationHead(ABC):
 
     spellings: ClassVar[frozenset[str]]
 
+    def __init__(self, qualified: str) -> None:
+        self.qualified = qualified
+
+    @cached_property
+    def container(self) -> ContainerClass:
+        """The class the head's spelling binds, when it declares a collection."""
+
+        return container_named(self.qualified)
+
     @abstractmethod
     def declared(
         self,
@@ -476,8 +596,8 @@ class AnnotationHead(ABC):
 
         for head in cls.__subclasses__():
             if qualified in head.spellings:
-                return head()
-        return ClassHead()
+                return head(qualified)
+        return ClassHead(qualified)
 
 
 def _typing_names(*names: str) -> frozenset[str]:
@@ -556,7 +676,7 @@ class HomogeneousHead(AnnotationHead):
     )
 
     def declared(self, items: Sequence[ast.expr], typed: Sequence[DeclaredType], typing: DeclaredReceiverTyping, named: Callable[[], DeclaredType]) -> DeclaredType:
-        return DeclaredCollection(typed[0])
+        return DeclaredCollection(typed[0], self.container)
 
 
 class TupleHead(AnnotationHead):
@@ -567,7 +687,7 @@ class TupleHead(AnnotationHead):
     def declared(self, items: Sequence[ast.expr], typed: Sequence[DeclaredType], typing: DeclaredReceiverTyping, named: Callable[[], DeclaredType]) -> DeclaredType:
         match items:
             case [_, ast.Constant(value=builtins.Ellipsis)]:
-                return DeclaredCollection(typed[0])
+                return DeclaredCollection(typed[0], self.container)
         return DeclaredTuple(tuple(typed))
 
 
@@ -587,7 +707,7 @@ class MappingHead(AnnotationHead):
     def declared(self, items: Sequence[ast.expr], typed: Sequence[DeclaredType], typing: DeclaredReceiverTyping, named: Callable[[], DeclaredType]) -> DeclaredType:
         if len(typed) != 2:
             return UndeclaredType("a mapping annotation takes a key and a value type")
-        return DeclaredMapping(typed[0], typed[1])
+        return DeclaredMapping(typed[0], typed[1], self.container)
 
 
 class ClassHead(AnnotationHead):
@@ -704,20 +824,13 @@ class DeclaredReceiverTyping:
             variables = [
                 qualified
                 for argument in arguments
-                if (qualified := self._argument_name(module, argument)) in self.type_variables
+                if (parts := _reference_parts(ast.parse(argument, mode="eval").body))
+                and (qualified := self.qualified(module, parts)) in self.type_variables
             ]
             if reference.qualified_name in GENERIC_DECLARERS:
                 return tuple(variables)
             named.extend(variable for variable in variables if variable not in named)
         return tuple(named)
-
-    def _argument_name(self, module_name: str, argument: str) -> str:
-        try:
-            expression = ast.parse(argument, mode="eval").body
-        except SyntaxError:
-            return ""
-        parts = _reference_parts(expression)
-        return self.qualified(module_name, parts) if parts else ""
 
     def generic_arguments(self, symbol: str, owner_symbol: str) -> Mapping[str, DeclaredType]:
         """The types `symbol`'s bases bind `owner_symbol`'s type variables to.
@@ -745,29 +858,20 @@ class DeclaredReceiverTyping:
             for reference, arguments in zip(
                 declaration.base_references, declaration.base_argument_sources, strict=False
             ):
-                base = self.chased(reference.qualified_name)
-                if base is None:
-                    continue
-                parameters = self.type_parameters(base)
-                pending.append(
-                    (
-                        base,
-                        dict(
-                            zip(
-                                parameters,
-                                (
-                                    self.annotation_source_type(
-                                        declaration.module_name, argument, scope
-                                    )
-                                    for argument in arguments
-                                ),
-                                strict=False,
-                            )
-                        )
-                        if len(parameters) == len(arguments)
-                        else {},
-                    )
-                )
+                def bindings(
+                    parameters: tuple[str, ...],
+                    arguments: tuple[str, ...] = arguments,
+                    module: str = declaration.module_name,
+                    scope: AnnotationScope = scope,
+                ) -> Mapping[str, DeclaredType]:
+                    if len(parameters) != len(arguments):
+                        return {}
+                    return {
+                        parameter: self.annotation_source_type(module, argument, scope)
+                        for parameter, argument in zip(parameters, arguments, strict=True)
+                    }
+
+                self.chased(reference.qualified_name).pend_base(pending, bindings, self)
         return {}
 
     def enum_members(self, symbol: str) -> DeclaredType:
@@ -776,7 +880,7 @@ class DeclaredReceiverTyping:
             return DeclaredInstance((symbol,))
         return UndeclaredType(f"the class `{symbol}` is no enum, not a declared collection")
 
-    def class_symbol(self, module_name: str, parts: tuple[str, ...]) -> str | None:
+    def class_symbol(self, module_name: str, parts: tuple[str, ...]) -> ScannedClassLookup:
         """The scanned class a module-level name chain names, through re-exports.
 
         An import of `pkg.Name` where `pkg` itself imports `Name` from
@@ -784,49 +888,57 @@ class DeclaredReceiverTyping:
         importing module declares, never a spelling.
         """
 
-        symbol = self.resolver.symbol_for(
+        match self.resolver.symbol_for(
             module_name=module_name,
             reference_parts=parts,
             allow_unique_unqualified=False,
-        )
-        if symbol is not None:
-            return symbol
+        ):
+            case str() as symbol:
+                return ScannedClass(symbol)
         return self.chased(self.qualified(module_name, parts))
 
-    def chased(self, qualified: str) -> str | None:
+    def chased(self, qualified: str) -> ScannedClassLookup:
         """The scanned class a qualified name binds, following re-exporting imports."""
 
+        spelled = qualified
         for _hop in range(REEXPORT_HOPS):
             if qualified in self.class_index.classes_by_symbol:
-                return qualified
+                return ScannedClass(qualified)
             owner, _, name = qualified.rpartition(".")
-            following = self.aliases_by_module.get(owner, {}).get(name)
-            if following is None or following == qualified:
-                return None
+            following = self.aliases_by_module.get(owner, {}).get(name, qualified)
+            if following == qualified:
+                break
             qualified = following
-        return None
+        return UnscannedName(spelled)
+
+    def unscanned(self, qualified: str) -> DeclaredType:
+        """A name no scanned class binds: undeclared inside the scanned packages,
+        a declared foreign class outside them."""
+
+        if qualified.partition(".")[0] in self.scanned_roots:
+            return UndeclaredType(f"`{qualified}` names no scanned class")
+        return DeclaredForeignInstance((qualified,))
 
     # references -------------------------------------------------------------
 
     def reference(self, module_name: str, parts: tuple[str, ...]) -> DeclaredType:
         """A module-level name chain: a scanned class, as the class object."""
 
-        symbol = self.class_symbol(module_name, parts)
-        if symbol is not None:
-            return DeclaredClassObject(symbol)
-        qualified = self.qualified(module_name, parts)
-        if qualified.partition(".")[0] in self.scanned_roots:
-            return UndeclaredType(f"`{'.'.join(parts)}` names no scanned class")
-        return DeclaredForeignInstance((qualified,))
+        return self.class_symbol(module_name, parts).class_object(self)
 
     def called_reference(
         self, module_name: str, parts: tuple[str, ...]
     ) -> DeclaredType:
         """`C(...)` constructs a C; `f(...)` is f's declared return; `C.m(...)` is m's."""
 
-        symbol = self.class_symbol(module_name, parts)
-        if symbol is not None:
-            return DeclaredInstance((symbol,))
+        return self.class_symbol(module_name, parts).constructed(self, module_name, parts)
+
+    def called_unscanned(
+        self, module_name: str, parts: tuple[str, ...]
+    ) -> DeclaredType:
+        """A call of a name no scanned class binds: a declared function's return,
+        or a method of the reference before it."""
+
         function = self.qualified(module_name, parts)
         if function in self.function_returns:
             return self.function_result(function)
@@ -896,12 +1008,7 @@ class DeclaredReceiverTyping:
             return scope.parameters[qualified]
         if qualified in SELF_SPELLINGS:
             return scope.self_type
-        symbol = self.class_symbol(module_name, parts)
-        if symbol is not None:
-            return DeclaredInstance((symbol,))
-        if qualified.partition(".")[0] in self.scanned_roots:
-            return UndeclaredType(f"`{'.'.join(parts)}` is no scanned class")
-        return DeclaredForeignInstance((qualified,))
+        return self.class_symbol(module_name, parts).instance(self)
 
     def subscripted_type(
         self,
@@ -931,21 +1038,85 @@ class DeclaredReceiverTyping:
             result = result.join(other, self)
         return result
 
-    def family_join(
-        self, first: DeclaredInstance, second: DeclaredInstance
-    ) -> DeclaredType:
-        """Two instance types join when the scan gives them one common class family."""
+    def one_family(self, symbols: tuple[str, ...]) -> bool:
+        """Whether the scan gives these classes one common class family."""
 
-        symbols = tuple(sorted({*first.symbols, *second.symbols}))
-        common = set.intersection(
-            *(
-                {symbol, *self.class_index.ancestor_symbols(symbol)}
-                for symbol in symbols
+        return bool(
+            set.intersection(
+                *(
+                    {symbol, *self.class_index.ancestor_symbols(symbol)}
+                    for symbol in symbols
+                )
             )
         )
-        if not common:
-            return first.heterogeneous(second)
-        return DeclaredInstance(symbols)
+
+
+class ScannedClassLookup(ABC):
+    """Which scanned class a name chain binds, if any; each use asks it for the
+    type it declares."""
+
+    @abstractmethod
+    def instance(self, typing: DeclaredReceiverTyping) -> DeclaredType:
+        """The name used as an annotation."""
+
+    @abstractmethod
+    def class_object(self, typing: DeclaredReceiverTyping) -> DeclaredType:
+        """The name read as a value."""
+
+    @abstractmethod
+    def constructed(
+        self, typing: DeclaredReceiverTyping, module_name: str, parts: tuple[str, ...]
+    ) -> DeclaredType:
+        """The name called."""
+
+    def pend_base(
+        self,
+        pending: list[tuple[str, Mapping[str, DeclaredType]]],
+        bindings: Callable[[tuple[str, ...]], Mapping[str, DeclaredType]],
+        typing: DeclaredReceiverTyping,
+    ) -> None:
+        """Queue this base for a generic-argument walk: a base outside the scan
+        binds nothing the walk can follow."""
+
+
+@dataclass(frozen=True)
+class ScannedClass(ScannedClassLookup):
+    symbol: str
+
+    def instance(self, typing: DeclaredReceiverTyping) -> DeclaredType:
+        return DeclaredInstance((self.symbol,))
+
+    def class_object(self, typing: DeclaredReceiverTyping) -> DeclaredType:
+        return DeclaredClassObject((self.symbol,))
+
+    def constructed(
+        self, typing: DeclaredReceiverTyping, module_name: str, parts: tuple[str, ...]
+    ) -> DeclaredType:
+        return DeclaredInstance((self.symbol,))
+
+    def pend_base(
+        self,
+        pending: list[tuple[str, Mapping[str, DeclaredType]]],
+        bindings: Callable[[tuple[str, ...]], Mapping[str, DeclaredType]],
+        typing: DeclaredReceiverTyping,
+    ) -> None:
+        pending.append((self.symbol, bindings(typing.type_parameters(self.symbol))))
+
+
+@dataclass(frozen=True)
+class UnscannedName(ScannedClassLookup):
+    qualified: str
+
+    def instance(self, typing: DeclaredReceiverTyping) -> DeclaredType:
+        return typing.unscanned(self.qualified)
+
+    def class_object(self, typing: DeclaredReceiverTyping) -> DeclaredType:
+        return typing.unscanned(self.qualified)
+
+    def constructed(
+        self, typing: DeclaredReceiverTyping, module_name: str, parts: tuple[str, ...]
+    ) -> DeclaredType:
+        return typing.called_unscanned(module_name, parts)
 
 
 REEXPORT_HOPS = 8
@@ -954,9 +1125,6 @@ GENERIC_DECLARERS = frozenset(
     for module in ("typing", "typing_extensions")
     for name in ("Generic", "Protocol")
 )
-ITERABLE_TYPE = "collections.abc.Iterable"
-TUPLE_TYPE = "builtins.tuple"
-MAPPING_TYPE = "collections.abc.Mapping"
 @dataclass(frozen=True)
 class AnnotationScope:
     """What an annotation's free type names mean where it is read.
@@ -1123,7 +1291,7 @@ class OwnClassRoot(ReceiverRoot):
     class_symbol: str
 
     def declared(self, typing: DeclaredReceiverTyping) -> DeclaredType:
-        return DeclaredClassObject(self.class_symbol)
+        return DeclaredClassObject((self.class_symbol,))
 
     def call_of(self, path: ReceiverPath, builder: ReceiverPathBuilder, arguments: Sequence[ast.expr], pending: Pending) -> ReceiverPath:
         if path.steps:
@@ -1170,22 +1338,16 @@ class CalledReferenceRoot(ReceiverRoot):
 
 @dataclass(frozen=True)
 class AgreeingRoot(ReceiverRoot):
-    """A local bound more than once: declared only when every binding declares one type."""
+    """A local bound more than once: the join of every binding's declared type."""
 
     name: str
     bindings: tuple[ReceiverPath, ...]
 
     def declared(self, typing: DeclaredReceiverTyping) -> DeclaredType:
-        """A binding to `None` is the absent arm, which reading the receiver excludes."""
+        """Its bindings join as a union does; a binding to `None` is the absent
+        arm, which reading the receiver excludes."""
 
-        declared = [binding.declared(typing) for binding in self.bindings]
-        for found in declared:
-            if not found.class_symbols() and found != DeclaredNone():
-                return UndeclaredType(f"`{self.name}` has a binding no declaration types: {found.why_no_class()}")
-        types = set(declared) - {DeclaredNone()}
-        if len(types) == 1:
-            return next(iter(types))
-        return UndeclaredType(f"`{self.name}` is rebound to a different type")
+        return typing.joined(binding.declared(typing) for binding in self.bindings)
 
 
 @dataclass(frozen=True)
@@ -1221,10 +1383,12 @@ class CollectionDisplayRoot(ReceiverRoot):
     """`[a, b]`, `{a, b}`, or a comprehension: a collection of its elements' joined type."""
 
     elements: tuple[ReceiverPath, ...]
+    container: ContainerClass
 
     def declared(self, typing: DeclaredReceiverTyping) -> DeclaredType:
         return DeclaredCollection(
-            typing.joined(element.declared(typing) for element in self.elements)
+            typing.joined(element.declared(typing) for element in self.elements),
+            self.container,
         )
 
 
@@ -1246,7 +1410,9 @@ class MappingDisplayRoot(ReceiverRoot):
     value: ReceiverPath
 
     def declared(self, typing: DeclaredReceiverTyping) -> DeclaredType:
-        return DeclaredMapping(self.key.declared(typing), self.value.declared(typing))
+        return DeclaredMapping(
+            self.key.declared(typing), self.value.declared(typing), DICT_CONTAINER
+        )
 
 
 @dataclass(frozen=True)
@@ -1321,10 +1487,13 @@ class SliceStep(ReceiverStep):
 
 @dataclass(frozen=True)
 class CollectedStep(ReceiverStep):
-    """`sorted(E)`, `list(E)`, `tuple(E)`, `set(E)`, `frozenset(E)`, `reversed(E)`."""
+    """`sorted(E)`, `list(E)`, `tuple(E)`, `set(E)`, `frozenset(E)`, `reversed(E)`,
+    `iter(E)`: E's elements, in the class the call constructs."""
+
+    container: ContainerClass
 
     def applied(self, declared: DeclaredType, typing: DeclaredReceiverTyping) -> DeclaredType:
-        return DeclaredCollection(declared.element(typing))
+        return DeclaredCollection(declared.element(typing), self.container)
 
 
 @dataclass(frozen=True)
@@ -1333,7 +1502,8 @@ class EnumeratedStep(ReceiverStep):
 
     def applied(self, declared: DeclaredType, typing: DeclaredReceiverTyping) -> DeclaredType:
         return DeclaredCollection(
-            DeclaredTuple((UndeclaredType("an enumerate count"), declared.element(typing)))
+            DeclaredTuple((UndeclaredType("an enumerate count"), declared.element(typing))),
+            container_of(enumerate),
         )
 
 
@@ -1377,6 +1547,17 @@ def unresolved(reason: str) -> ReceiverPath:
 
 Pending = frozenset[tuple[int, str]]
 PathThunk = Callable[[], ReceiverPath]
+TUPLE_CONTAINER = container_of(tuple)
+DICT_CONTAINER = container_of(dict)
+DISPLAY_CLASSES: Mapping[type[ast.expr], type] = {
+    ast.List: list,
+    ast.ListComp: list,
+    ast.Set: set,
+    ast.SetComp: set,
+    ast.Tuple: tuple,
+    ast.GeneratorExp: types.GeneratorType,
+}
+"""The class each display or comprehension constructs."""
 COLLECTING_BUILTINS = frozenset(
     ("sorted", "list", "tuple", "set", "frozenset", "reversed")
 )
@@ -1503,14 +1684,18 @@ class ReceiverPathBuilder:
             case ast.List(elts=items) | ast.Set(elts=items) | ast.Tuple(elts=items) if items:
                 return ReceiverPath(
                     CollectionDisplayRoot(
-                        tuple(self._display_element(item, pending) for item in items)
+                        tuple(self._display_element(item, pending) for item in items),
+                        container_of(DISPLAY_CLASSES[type(expression)]),
                     )
                 )
             case ast.ListComp(elt=element) | ast.SetComp(elt=element) | ast.GeneratorExp(
                 elt=element
             ):
                 return ReceiverPath(
-                    CollectionDisplayRoot((self._path(element, pending),))
+                    CollectionDisplayRoot(
+                        (self._path(element, pending),),
+                        container_of(DISPLAY_CLASSES[type(expression)]),
+                    )
                 )
         return unresolved(
             f"`{ast.unparse(expression)}` is a {type(expression).__name__} expression"
@@ -1536,14 +1721,18 @@ class ReceiverPathBuilder:
         if name not in self.module_names and name in COLLECTING_BUILTINS:
             if len(arguments) != 1:
                 return unresolved(f"`{name}(...)` takes no single iterable")
-            return self._path(arguments[0], pending).then(CollectedStep())
+            return self._path(arguments[0], pending).then(
+                CollectedStep(container_of(vars(builtins)[name]))
+            )
         if name not in self.module_names and name in ELEMENT_BUILTINS:
             match arguments:
                 case [iterable] | [iterable, ast.Constant(value=None)]:
                     return self._path(iterable, pending).then(ElementStep())
             return unresolved(f"`{name}(...)` has a default of another type")
         if name not in self.module_names and name == "iter" and len(arguments) == 1:
-            return self._path(arguments[0], pending).then(CollectedStep())
+            return self._path(arguments[0], pending).then(
+                CollectedStep(container_of(vars(builtins)[name]))
+            )
         if name not in self.module_names and name == ENUMERATE_BUILTIN:
             if not arguments:
                 return unresolved("`enumerate()` has no iterable")
