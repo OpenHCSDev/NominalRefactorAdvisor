@@ -335,7 +335,9 @@ class ClassDeclaration(QualifiedDeclaration):
     ) -> Self:
         return replace(self, resolved_base_symbols=resolved_base_symbols)
 
-    def with_registering_metaclass(self, registers: bool) -> Self:
+    def with_registering_metaclass(self, registers: bool, inherited: bool) -> Self:
+        """`inherited` (a base is created by a registering metaclass) is the compact record's authority fact; this record keeps only its own metaclass."""
+
         return replace(self, declares_autoregister_meta=registers)
 
 
@@ -1114,11 +1116,13 @@ class CompactIndexedClass(CompactClassHeader):
             star_resolution=None,
         )
 
-    def with_registering_metaclass(self, registers: bool) -> Self:
+    def with_registering_metaclass(self, registers: bool, inherited: bool) -> Self:
         return replace(
             self,
             declares_autoregister_meta=registers,
-            is_registration_authority=self.is_registration_authority or registers,
+            is_registration_authority=(
+                self.is_registration_authority or registers or inherited
+            ),
         )
 
     @property
@@ -7938,6 +7942,44 @@ class RegisteringMetaclassAuthority(Generic[ClassDeclarationT]):
             )
         return False
 
+    @cached_property
+    def registering(self) -> dict[str, bool]:
+        """`registers`, remembered per class symbol while ancestors are walked."""
+
+        return {}
+
+    def inherits_registering(self, declaration: ClassDeclaration) -> bool:
+        """Whether a class it inherits from is created by a registering metaclass.
+
+        Python creates a subclass with its bases' metaclass, so a class whose
+        ancestor's metaclass registers is registered too, whatever it declares
+        itself. Bases resolve as `declaration_for` resolves them; an ancestor
+        that cannot be read is not known to register.
+        """
+
+        pending = [
+            (base, declaration.module_name)
+            for base in declaration.registry_facts.base_references
+        ]
+        seen: set[str] = set()
+        for _step in range(self.MAX_ANCESTORS):
+            if not pending:
+                break
+            reference, module_name = pending.pop()
+            found = self.declaration_for(reference, module_name)
+            if found is None or found.symbol in seen:
+                continue
+            seen.add(found.symbol)
+            if found.symbol not in self.registering:
+                self.registering[found.symbol] = self.registers(found)
+            if self.registering[found.symbol]:
+                return True
+            pending.extend(
+                (base, found.module_name)
+                for base in found.registry_facts.base_references
+            )
+        return False
+
     def declaration_for(
         self, reference: CompactNominalReference, module_name: str
     ) -> ClassDeclaration | None:
@@ -7976,7 +8018,9 @@ class RegisteringMetaclassAuthority(Generic[ClassDeclarationT]):
 
     def resolved(self) -> dict[str, ClassDeclarationT]:
         return {
-            symbol: declaration.with_registering_metaclass(self.registers(declaration))
+            symbol: declaration.with_registering_metaclass(
+                self.registers(declaration), self.inherits_registering(declaration)
+            )
             for symbol, declaration in self.scanned.items()
         }
 
@@ -8385,7 +8429,10 @@ class ClassFamilyIndexBuilder:
         return ClassFamilyIndex(
             classes_by_symbol={
                 symbol: (
-                    record.with_registering_metaclass(authority.registers(record))
+                    record.with_registering_metaclass(
+                        authority.registers(record),
+                        authority.inherits_registering(record),
+                    )
                     if record.module_name in rebuilt
                     else record
                 )

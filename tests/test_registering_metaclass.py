@@ -82,6 +82,36 @@ def test_the_compact_index_resolves_each_metaclass_and_reads_it() -> None:
     assert index.classes_by_symbol["pkg.registry_family.Family"].is_registration_authority
 
 
+def test_a_subclass_of_a_registering_family_is_an_authority_by_inheritance() -> None:
+    """Python creates a subclass with its base's metaclass; a name is no evidence (#139)."""
+
+    source = (
+        "from metaclass_registry import AutoRegisterMeta\n\n\n"
+        "class Root(metaclass=AutoRegisterMeta):\n    pass\n\n\n"
+        "class Member(Root):\n    pass\n\n\n"
+        "class Grandchild(Member):\n    pass\n\n\n"
+        "class StringRegistryConstant:\n    value: str\n"
+    )
+    path = Path("pkg/inherited.py")
+    module = ParsedModule(
+        path=path,
+        module_name="pkg.inherited",
+        module=ast.parse(source, filename=str(path)),
+        source=source,
+    )
+    index = build_compact_class_family_index(
+        CompactModuleClassProjectionFamily.collect_modules((module,))
+    )
+    classes = index.classes_by_symbol
+    assert {
+        name: classes[f"pkg.inherited.{name}"].is_registration_authority
+        for name in ("Root", "Member", "Grandchild", "StringRegistryConstant")
+    } == {"Root": True, "Member": True, "Grandchild": True, "StringRegistryConstant": False}
+    # Only the root declares the metaclass; the subclasses inherit it.
+    assert classes["pkg.inherited.Root"].declares_autoregister_meta
+    assert not classes["pkg.inherited.Member"].declares_autoregister_meta
+
+
 def test_the_source_index_gives_the_same_answer() -> None:
     index = build_class_family_index([_module()])
 
