@@ -14,6 +14,7 @@ from nominal_refactor_advisor.codemod import (
 )
 from nominal_refactor_advisor.codemod_declaration_reference import (
     ReferenceClassNameOperation,
+    ReferenceEnumMemberOperation,
     ReferenceImportedModuleOperation,
     UnquoteResolvedTypeNamesOperation,
 )
@@ -430,3 +431,87 @@ def test_a_new_import_may_take_submodules_from_the_running_package(tmp_path: Pat
     (source,) = rewritten.values()
     assert "import sys\nfrom pkg.owner import NamedOwner\n" in source
     assert "send(NamedOwner.__name__)" in source
+
+
+def test_an_enum_value_spelled_as_a_string_becomes_its_member_value(tmp_path: Path):
+    _write(
+        tmp_path,
+        {
+            "pkg/__init__": "",
+            "pkg/attrs": (
+                "from enum import Enum\n\n\n"
+                "class RegistryAttribute(str, Enum):\n"
+                "    REGISTRY = '__registry__'\n"
+                "    REGISTRY_KEY = 'registry_key'\n"
+                "    PLAIN = 'plain'\n\n\n"
+                "class Other:\n    pass\n"
+            ),
+            "pkg/use": (
+                "from pkg.attrs import Other\n\n"
+                "REGISTRY_NAME = '__registry__'\n\n\n"
+                "def read(cls, attrs, kind: \"Literal['registry_key']\"):\n"
+                "    '''Reads __registry__.'''\n"
+                "    if '__registry__' in attrs:\n"
+                "        return attrs['__registry__']\n"
+                "    if getattr(cls, 'registry_key', None) == 'plain':\n"
+                "        return f'registry_key {cls}'\n"
+                "    return {'__registry__', '_registry'}\n"
+            ),
+        },
+    )
+    records, rewritten = _replayed(tmp_path)
+    operations = [
+        operation
+        for record in records
+        for recipe in record.candidate_recipes
+        for operation in recipe.operations
+    ]
+    assert [type(operation) for operation in operations] == [
+        ReferenceEnumMemberOperation
+    ]
+    (source,) = rewritten.values()
+    # The enum is bound in its module before Other, so the statement that
+    # imports Other imports it too.
+    assert "from pkg.attrs import Other, RegistryAttribute\n" in source
+    assert "REGISTRY_NAME = RegistryAttribute.REGISTRY.value\n" in source
+    assert "if RegistryAttribute.REGISTRY.value in attrs:" in source
+    assert "return attrs[RegistryAttribute.REGISTRY.value]" in source
+    # A one-word value is an ordinary word; f-string text, a docstring and a
+    # string inside an annotation are not values.
+    assert (
+        "getattr(cls, RegistryAttribute.REGISTRY_KEY.value, None) == 'plain'"
+        in source
+    )
+    assert "return f'registry_key {cls}'" in source
+    assert "'''Reads __registry__.'''" in source
+    assert "kind: \"Literal['registry_key']\"" in source
+    assert "{RegistryAttribute.REGISTRY.value, '_registry'}" in source
+
+
+def test_an_installed_enum_is_added_to_the_statement_importing_its_package(
+    tmp_path: Path, monkeypatch
+):
+    site = tmp_path / "site" / "nra_test_attrs_pkg"
+    site.mkdir(parents=True)
+    (site / "__init__.py").write_text("from .core import Attr, Holder\n")
+    (site / "core.py").write_text(
+        "from enum import Enum\n\n\n"
+        "class Attr(str, Enum):\n    REGISTRY = '__registry__'\n\n\n"
+        "class Holder:\n    pass\n"
+    )
+    monkeypatch.syspath_prepend(str(site.parent))
+    root = tmp_path / "scan"
+    _write(
+        root,
+        {
+            "pkg/__init__": "",
+            "pkg/use": (
+                "from nra_test_attrs_pkg import Holder\n\n\n"
+                "def read(attrs):\n    return attrs['__registry__']\n"
+            ),
+        },
+    )
+    _records, rewritten = _replayed(root)
+    (source,) = rewritten.values()
+    assert "from nra_test_attrs_pkg import Holder, Attr\n" in source
+    assert "return attrs[Attr.REGISTRY.value]" in source

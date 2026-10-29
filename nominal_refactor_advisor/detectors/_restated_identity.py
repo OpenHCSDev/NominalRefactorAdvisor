@@ -1,4 +1,4 @@
-"""Restated identity: a string that spells a class, module or family member the scan declares."""
+"""Restated identity: a string that spells a class, module, family member or enum value the scan declares."""
 
 from __future__ import annotations
 
@@ -15,6 +15,7 @@ from ..class_identity_observations import (
 from ..codemod_declaration_reference import (
     DeclarationReferenceFindingRecipeSynthesizer,
     ReferenceClassNameOperation,
+    ReferenceEnumMemberOperation,
     ReferenceImportedModuleOperation,
     UnquoteResolvedTypeNamesOperation,
 )
@@ -38,24 +39,25 @@ class RestatedIdentityDetector(
     JoinedRestatedFactDetector[DeclaredIdentities, RestatingSite],
     DeclarationReferenceFindingRecipeSynthesizer,
 ):
-    """A string literal that spells a declared class, module or family member in a position that uses it."""
+    """A string literal that spells a declared class, module, family member or enum value in a position that uses it."""
 
     module_projection_families = (IdentitySpellingFamily, DeclaredIdentityFamily)
     restated = RestatedFact(
-        fact="The string spells a declared identity (a class name, a module's dotted name, or a family member's distinct spelling), a second copy of it that a rename or a same-spelled sibling breaks silently.",
-        owner="The owner is the declaration itself: the class object, the imported module, or a method the family declares.",
-        factoring="Reference the declaration instead of spelling it: name the class (an unquoted annotation, or the class object passed or compared), import the module and pass it or its `__name__`, and replace a comparison of member spellings with the member class or a method the family declares; keep the spelling only in the family's boundary decoder.",
+        fact="The string spells a declared identity (a class name, a module's dotted name, a family member's distinct spelling, or an enum member's value), a second copy of it that a rename or a same-spelled sibling breaks silently.",
+        owner="The owner is the declaration itself: the class object, the imported module, a method the family declares, or the enum member.",
+        factoring="Reference the declaration instead of spelling it: name the class (an unquoted annotation, or the class object passed or compared), import the module and pass it or its `__name__`, and replace a comparison of member spellings with the member class or a method the family declares, and write an enum member's value as `Enum.MEMBER.value`; keep the spelling only in the family's boundary decoder.",
         operations=(
             UnquoteResolvedTypeNamesOperation,
             ReferenceImportedModuleOperation,
             ReferenceClassNameOperation,
+            ReferenceEnumMemberOperation,
         ),
     )
     finding_spec = restated.spec(
         PatternId.RESTATED_IDENTITY,
         "A string restates a declared identity",
         "the declared class, module or family member referenced directly instead of spelled",
-        "a string literal equal to a class name, a scanned module's dotted name or a family member's distinct class keyword or constant, in a type, comparison, match, argument, return or importer position",
+        "a string literal equal to a class name, a scanned module's dotted name, a family member's distinct class keyword or constant, or a dunder or multi-word enum member value, in a type, comparison, match, argument, return, key, module constant or importer position",
         (CapabilityTag.NOMINAL_IDENTITY,),
         (ObservationTag.SEMANTIC_STRING_LITERAL,),
     )

@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import ast
 import builtins
+import enum
 import re
 import sys
 from abc import ABC, abstractmethod
@@ -92,6 +93,87 @@ class DeclaredClass:
 
 
 @dataclass(frozen=True)
+class NameBindings:
+    """What a name means where a top-level statement of one module runs.
+
+    `bound` are the names a top-level class statement or `from` import binds
+    and nothing else in the module binds, so no scope can shadow them, each
+    with its binding statement's index and the qualified name it binds;
+    `named` every name the module binds or reads anywhere; `starred` whether a
+    `from module import *` binds names no source lists.
+    """
+
+    bound: tuple[tuple[str, int, str], ...] = ()
+    named: frozenset[str] = frozenset()
+    starred: bool = False
+
+    @classmethod
+    def of(cls, parsed_module: ParsedModule) -> NameBindings:
+        counts = Counter(
+            bound
+            for node in ast.walk(parsed_module.module)
+            for bound in ModuleReferenceScope.bound_names(node)
+        )
+        imports = module_import_aliases(parsed_module)
+        found: dict[str, tuple[int, str]] = {}
+        for index, statement in enumerate(parsed_module.module.body):
+            match statement:
+                case ast.ClassDef(name=name):
+                    found[name] = (index, f"{parsed_module.module_name}.{name}")
+                case ast.ImportFrom(names=aliases):
+                    for alias in aliases:
+                        bound = ImportBoundNameProjection(statement).alias_bound_name(alias)
+                        if bound in imports:
+                            found[bound] = (index, imports[bound])
+        return cls(
+            bound=tuple(
+                (name, index, qualified)
+                for name, (index, qualified) in sorted(found.items())
+                if counts[name] == 1
+            ),
+            named=frozenset(
+                name
+                for node in ast.walk(parsed_module.module)
+                for name in (
+                    *ModuleReferenceScope.bound_names(node),
+                    *((node.id,) if isinstance(node, ast.Name) else ()),
+                )
+            ),
+            starred=any(
+                alias.name == DeclaredIdentityFamily.STAR
+                for node in ast.walk(parsed_module.module)
+                if isinstance(node, ast.ImportFrom)
+                for alias in node.names
+            ),
+        )
+
+    @cached_property
+    def by_name(self) -> dict[str, tuple[int, str]]:
+        return {name: (index, qualified) for name, index, qualified in self.bound}
+
+    def reference(self, holding: int | None, name: str) -> tuple[str, str]:
+        """What `name` is where the top-level statement `holding` runs: its binding, and where an import could go.
+
+        The first is the qualified name a top-level class statement or import
+        binds it to, when that runs before the holding statement, so the name is
+        bound whenever the statement runs. The second, when the module binds and
+        reads the name nowhere and it is no builtin, is the holding statement's
+        index: a `from` statement before it could import the name. Both are empty
+        otherwise, and in a module with a star import, whose bindings no source
+        lists.
+        """
+
+        if holding is None or self.starred:
+            return "", ""
+        bound = self.by_name.get(name)
+        if bound is not None:
+            return (bound[1] if bound[0] < holding else ""), ""
+        if name in self.named or hasattr(builtins, name):
+            return "", ""
+        return "", str(holding)
+
+
+@dataclass(frozen=True)
 class FromImport:
     """A top-level `from module import a, b` statement: its index in the module body, the module, the names."""
 
@@ -113,7 +195,8 @@ class ModuleDeclarations:
     `setattr(X, "__name__", ...)`); `imported` each module any of its import
     statements names, wherever the statement stands, with the names a `from`
     statement takes from it (none for `import module`), and `last_import` the
-    index of its last top-level import statement (-1 without one).
+    index of its last top-level import statement (-1 without one); `names`
+    what each name means where a top-level statement runs (`NameBindings`).
     """
 
     module_name: str
@@ -126,6 +209,7 @@ class ModuleDeclarations:
     renamed: tuple[str, ...] = ()
     imported: tuple[tuple[str, tuple[str, ...]], ...] = ()
     last_import: int = -1
+    names: NameBindings = NameBindings()
 
 
 class DeclaredIdentityFamily(ShapeFamily[ModuleDeclarations]):
@@ -196,6 +280,7 @@ class DeclaredIdentityFamily(ShapeFamily[ModuleDeclarations]):
                     ),
                     default=-1,
                 ),
+                names=NameBindings.of(parsed_module),
             )
         ]
 
@@ -473,6 +558,15 @@ class QualifiedNames:
 
 
 @dataclass(frozen=True)
+class NameImport:
+    """How a file comes to bind a class name: already bound, added to its `from` statement `statement`, or by a new `from created import name`."""
+
+    name: str
+    statement: int | None = None
+    created: str = ""
+
+
+@dataclass(frozen=True)
 class ClassNameOwners:
     """Which qualified names reach a class whose `__name__` is its statement's name.
 
@@ -506,7 +600,7 @@ class ClassNameOwners:
         for _round in range(cls.MAX_REEXPORTS):
             missing = {
                 module
-                for origin in owners.foreign_origins()
+                for origin in (*owners.foreign_origins(), *owners.foreign_imports())
                 if (module := owners.missing_module(origin)) is not None
                 and module not in tried
             }
@@ -582,6 +676,18 @@ class ClassNameOwners:
                 ):
                     yield origin
 
+    def foreign_imports(self) -> Iterator[str]:
+        """Names the scanned modules import from outside the scan and the standard library."""
+
+        for name in self.scanned:
+            for qualified in self.imports[name].values():
+                if (
+                    qualified.partition(".")[0] not in self.scanned_roots
+                    and not self.standard(qualified)
+                    and self.canonical(qualified) is None
+                ):
+                    yield qualified
+
     def missing_module(self, qualified: str) -> str | None:
         """The first module a qualified name's re-export chain needs that is not read here."""
 
@@ -645,7 +751,7 @@ class ClassNameOwners:
         )
 
     def importable(
-        self, file_path: str, holding: int, literal: str
+        self, file_path: str, holding: int, literal: str, owner: str = ""
     ) -> FromImport | None:
         """A `from` statement of the file that can also import the literal's class, or None.
 
@@ -653,7 +759,10 @@ class ClassNameOwners:
         from a module that binds the class once, at top level, before some name
         the statement already imports: whenever the statement succeeds, the
         class is bound in that module, so adding it changes no import order and
-        fails nowhere the statement did not.
+        fails nowhere the statement did not. A module outside the scan has run
+        to its end whenever its `from` statement returns, since no scanned
+        import can leave it half run, so any class it binds is bound then.
+        `owner`, when given, is the qualified class the name must reach.
         """
 
         module = self.by_path.get(file_path)
@@ -663,12 +772,65 @@ class ClassNameOwners:
             source = self.modules.get(statement.module)
             bound = {} if source is None else dict(source.bound_after)
             line = bound.get(literal)
+            qualified = f"{statement.module}.{literal}"
             if (
                 line is not None
-                and self.references(f"{statement.module}.{literal}", literal)
-                and any(bound.get(name, 0) > line for name in statement.names)
+                and self.references(qualified, literal)
+                and (not owner or self.canonical(qualified) == owner)
+                and (
+                    statement.module not in self.scanned
+                    or any(bound.get(name, 0) > line for name in statement.names)
+                )
             ):
                 return statement
+        return None
+
+    ENUMS: ClassVar[frozenset[str]] = frozenset(
+        f"{enum.__name__}.{name}"
+        for name, value in vars(enum).items()
+        if isinstance(value, type) and issubclass(value, enum.Enum)
+    )
+
+    def is_enum(self, qualified: str, visiting: frozenset[str] = frozenset()) -> bool:
+        """Whether the class reaches one of the standard library's enum classes through its bases."""
+
+        declared = self.classes.get(qualified)
+        if declared is None or qualified in visiting:
+            return False
+        return any(
+            origin in self.ENUMS
+            or (
+                (found := self.canonical(origin)) is not None
+                and self.is_enum(found, visiting | {qualified})
+            )
+            for origin in declared.origins
+        )
+
+    def import_for(
+        self, file_path: str, holding: int, owner: str
+    ) -> NameImport | None:
+        """How the file can name the class `owner` where its top-level statement `holding` runs, or None.
+
+        Already bound to it there; addable to a `from` statement before it
+        (`importable`); or importable by a new statement after the file's
+        imports (`new_import`).
+        """
+
+        module = self.by_path.get(file_path)
+        if module is None:
+            return None
+        name = owner.rpartition(".")[2]
+        binding, unbound = module.names.reference(holding, name)
+        if binding:
+            return NameImport(name) if self.canonical(binding) == owner else None
+        if not unbound:
+            return None
+        statement = self.importable(file_path, holding, name, owner)
+        if statement is not None:
+            return NameImport(name, statement=statement.index)
+        created = self.new_import(file_path, holding, name)
+        if created is not None and self.scanned_classes.get(name) == (owner,):
+            return NameImport(name, created=created)
         return None
 
     def new_import(self, file_path: str, holding: int, literal: str) -> str | None:
@@ -988,6 +1150,55 @@ class LookupSpelling(IdentitySpelling):
         return identities.member_looked_up(receiver, method, literal)
 
 
+class EnumValueSpelling(IdentitySpelling):
+    """A dunder or multi-word string equal to one enum member's value: the member spelled again.
+
+    The enum declares the string once; a literal of it anywhere else (compared,
+    passed, keyed, matched, returned, or assigned to a module constant) is a
+    copy that renaming the member's value misses. A one-word value (`plain`) is
+    also an ordinary word, so only a dunder or multi-word string is taken as
+    the member. The detail carries the index of the top-level statement holding
+    the literal, where the enum must be bound for `Enum.MEMBER.value` to stand
+    there (`ClassNameOwners.import_for`).
+    """
+
+    tag = "enum value"
+
+    @classmethod
+    def rewrite(cls, detail, identities, file_path):
+        _tag, holding, literal = detail
+        member = identities.enum_member(literal)
+        if member is None or not holding:
+            return ReferenceRewrite.NONE
+        if identities.class_names.import_for(file_path, int(holding), member.enum) is None:
+            return ReferenceRewrite.NONE
+        return ReferenceRewrite.ANY_INTERPRETER
+
+    @classmethod
+    def resolve(cls, site, identities):
+        member = identities.enum_member(site.detail[-1])
+        return None if member is None else member.resolved()
+
+
+EnumValueSpelling.rewrite_kind = EnumValueSpelling
+
+
+@dataclass(frozen=True)
+class EnumMember:
+    """One enum member whose value is a string: the enum's qualified name, the member's name, and where the enum is declared."""
+
+    enum: str
+    member: str
+    declared_at: SourceLocation
+
+    @property
+    def reference(self) -> str:
+        return f"{self.enum.rpartition('.')[2]}.{self.member}.value"
+
+    def resolved(self) -> ResolvedIdentity:
+        return ResolvedIdentity(f"enum member `{self.reference}`", (self.declared_at,))
+
+
 # A finding names this many declaring sites of one identity.
 LISTED_DECLARATIONS = 4
 
@@ -1053,7 +1264,11 @@ class MemberSpellings:
 
 @dataclass(frozen=True)
 class DeclaredIdentities:
-    """Every identity the scan declares: classes, modules, member spellings and lookups."""
+    """Every identity the scan declares: classes, modules, member spellings, lookups and enum values.
+
+    `enum_values` are the string values of the members of every enum the scan
+    reads, its own and the installed ones `ClassNameOwners` reads for it.
+    """
 
     classes: dict[str, tuple[SourceLocation, ...]]
     modules: dict[str, SourceLocation]
@@ -1062,12 +1277,14 @@ class DeclaredIdentities:
     bases: dict[str, tuple[str, ...]]
     instance_attributes: dict[str, frozenset[str]]
     class_names: ClassNameOwners
+    enum_values: dict[str, tuple[EnumMember, ...]] = field(default_factory=dict)
     carriers: dict[tuple[str, str, str], tuple[str, ...]] = field(default_factory=dict)
     rewritten_files: dict[str, tuple[str, ...]] = field(default_factory=dict)
 
     @classmethod
     def from_modules(cls, modules: Iterable[ModuleDeclarations]) -> DeclaredIdentities:
         modules = tuple(modules)
+        class_names = ClassNameOwners.from_modules(modules)
         classes: dict[str, list[SourceLocation]] = defaultdict(list)
         module_locations: dict[str, SourceLocation] = {}
         siblings: dict[tuple[str, str, bool], list[tuple[str, SourceLocation]]] = (
@@ -1149,8 +1366,27 @@ class DeclaredIdentities:
             instance_attributes={
                 name: frozenset(found) for name, found in instance_attributes.items()
             },
-            class_names=ClassNameOwners.from_modules(modules),
+            class_names=class_names,
+            enum_values=cls.enum_values_of(class_names),
         ).with_family_values(explicit)
+
+    @staticmethod
+    def enum_values_of(owners: ClassNameOwners) -> dict[str, tuple[EnumMember, ...]]:
+        found: dict[str, list[EnumMember]] = defaultdict(list)
+        for qualified, declared in owners.classes.items():
+            if not owners.is_enum(qualified):
+                continue
+            module = owners.modules[qualified.rpartition(".")[0]]
+            location = SourceLocation(module.file_path, declared.line, declared.name)
+            for member, value in declared.constants:
+                found[value].append(EnumMember(qualified, member, location))
+        return {value: tuple(members) for value, members in found.items()}
+
+    def enum_member(self, literal: str) -> EnumMember | None:
+        """The one enum member whose value the literal is; two enums sharing it name neither."""
+
+        members = self.enum_values.get(literal, ())
+        return members[0] if len(members) == 1 else None
 
     def with_family_values(
         self, explicit: Iterable[tuple[str, str, SourceLocation]]
@@ -1430,33 +1666,6 @@ class IdentityPositions:
             )
 
     @cached_property
-    def class_bindings(self) -> dict[str, tuple[int, str]]:
-        """Each name a top-level class statement or `from` import binds, and nothing else does.
-
-        The value is the binding statement's index in the module body and the
-        qualified name it binds; a name bound anywhere else too (a parameter, a
-        local, a second import) is left out, so no scope can shadow it.
-        """
-
-        counts = Counter(
-            bound
-            for node in ast.walk(self.parsed_module.module)
-            for bound in ModuleReferenceScope.bound_names(node)
-        )
-        imports = module_import_aliases(self.parsed_module)
-        found: dict[str, tuple[int, str]] = {}
-        for index, statement in enumerate(self.parsed_module.module.body):
-            match statement:
-                case ast.ClassDef(name=name):
-                    found[name] = (index, f"{self.parsed_module.module_name}.{name}")
-                case ast.ImportFrom(names=aliases):
-                    for alias in aliases:
-                        bound = ImportBoundNameProjection(statement).alias_bound_name(alias)
-                        if bound in imports:
-                            found[bound] = (index, imports[bound])
-        return {name: bound for name, bound in found.items() if counts[name] == 1}
-
-    @cached_property
     def statement_indices(self) -> dict[int, int]:
         return {
             id(statement): index
@@ -1464,43 +1673,13 @@ class IdentityPositions:
         }
 
     @cached_property
-    def named_anywhere(self) -> frozenset[str]:
-        """Every name the module binds or reads anywhere."""
+    def name_bindings(self) -> NameBindings:
+        return NameBindings.of(self.parsed_module)
 
-        return frozenset(
-            name
-            for node in ast.walk(self.parsed_module.module)
-            for name in (
-                *ModuleReferenceScope.bound_names(node),
-                *((node.id,) if isinstance(node, ast.Name) else ()),
-            )
-        )
+    def holding(self, node_index: int) -> int | None:
+        """The index of the top-level statement holding the node."""
 
-    @cached_property
-    def star_imported(self) -> bool:
-        """Whether a `from module import *` binds names this module cannot list."""
-
-        return any(
-            alias.name == DeclaredIdentityFamily.STAR
-            for node in ast.walk(self.parsed_module.module)
-            if isinstance(node, ast.ImportFrom)
-            for alias in node.names
-        )
-
-    def class_reference(self, node_index: int, literal: str) -> tuple[str, str]:
-        """What the literal's name is where the literal runs: its binding, and where an import could go.
-
-        The first is the qualified name a top-level class statement or import
-        binds it to, when that runs before the top-level statement holding the
-        literal, so the name is bound whenever the literal is evaluated. The
-        second, when the file binds and reads the name nowhere and it is no
-        builtin, is
-        that holding statement's index: a `from` statement before it could
-        import the class. Both are empty otherwise, and in a module with a star
-        import, whose bindings no source lists.
-        """
-
-        holding = next(
+        return next(
             (
                 index
                 for ancestor in self.index.ancestor_nodes(node_index)
@@ -1508,14 +1687,11 @@ class IdentityPositions:
             ),
             None,
         )
-        if holding is None or self.star_imported:
-            return "", ""
-        bound = self.class_bindings.get(literal)
-        if bound is not None:
-            return (bound[1] if bound[0] < holding else ""), ""
-        if literal in self.named_anywhere or hasattr(builtins, literal):
-            return "", ""
-        return "", str(holding)
+
+    def class_reference(self, node_index: int, literal: str) -> tuple[str, str]:
+        """What the literal's name is where the literal runs (`NameBindings.reference`)."""
+
+        return self.name_bindings.reference(self.holding(node_index), literal)
 
     @classmethod
     def multiword(cls, literal: str) -> bool:
@@ -1546,6 +1722,7 @@ class IdentityPositions:
         ).supplied:
             yield from self.passed_sites(node_index, returned.value, "return")
         yield from self.module_sites()
+        yield from self.enum_value_sites()
 
     # Type positions -----------------------------------------------------------
 
@@ -1832,6 +2009,61 @@ class IdentityPositions:
                 spelled.literal,
                 ModuleSpelling.detail(
                     self.references.module_rewrite(spelled), spelled.name
+                ),
+            )
+
+
+    # Enum value positions -------------------------------------------------------
+
+    TEXT_PARENTS: ClassVar[tuple[type[ast.AST], ...]] = (ast.Expr, ast.JoinedStr)
+
+    @cached_property
+    def annotated(self) -> frozenset[int]:
+        """The nodes inside an annotation, where a string is a type, never a value."""
+
+        return frozenset(
+            id(inner)
+            for node in ast.walk(self.parsed_module.module)
+            for annotation in (
+                (node.annotation,)
+                if isinstance(node, (ast.arg, ast.AnnAssign)) and node.annotation
+                else (node.returns,)
+                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+                and node.returns
+                else ()
+            )
+            for inner in ast.walk(annotation)
+        )
+
+    def enum_value_sites(self) -> Iterator[tuple[ast.expr, tuple[str, ...]]]:
+        """Every dunder or multi-word string used as a value.
+
+        Not a docstring or f-string text, not a type inside an annotation, and
+        not a constant a class body declares: those declare spellings rather
+        than use them.
+        """
+
+        for node_index, node in self.index.indexed_nodes_of_type(ast.Constant):
+            literal = self.string(node)
+            if literal is None or not (
+                self.multiword(literal) or DeclaredIdentities.protocol_name(literal)
+            ):
+                continue
+            ancestors = self.index.ancestor_nodes(node_index)
+            parent = ancestors[-1]
+            if isinstance(parent, self.TEXT_PARENTS) or id(node) in self.annotated:
+                continue
+            if (
+                isinstance(parent, (ast.Assign, ast.AnnAssign))
+                and len(ancestors) >= 2
+                and isinstance(ancestors[-2], ast.ClassDef)
+            ):
+                continue
+            holding = self.holding(node_index)
+            yield self.site(
+                node,
+                EnumValueSpelling.detail(
+                    "" if holding is None else str(holding), literal
                 ),
             )
 
