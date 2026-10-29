@@ -41,6 +41,7 @@ from .captured_reference import (
 )
 from .closed_world import ClosedWorldPremise
 from .class_index import (
+    ClassMemberAnswersABC,
     CompactClassFamilyIndex,
     CompactClassMemberDeclaration,
     CompactClassReferenceResolver,
@@ -426,6 +427,39 @@ class _ClassMemberViolation(_CompactClassMemberResolution):
         return repository.attribute_target(
             target.method_name, candidate_symbols, self.violation
         )
+
+
+class _ProductMemberAnswers(ClassMemberAnswersABC[_CompactClassMemberResolution]):
+    """Product flow reads a member's assignment; a def or no single binding is no declaration."""
+
+    def assigned(self, owner, declaration):
+        return _ResolvedClassMember(owner, declaration)
+
+    def annotated_property(self, owner, declaration):
+        return _ClassMemberViolation(
+            CompactFunctionTargetResolutionViolation.MISSING_DECLARATION
+        )
+
+    annotated_method = annotated_property
+    unannotated_callable = annotated_property
+
+    def missing(self):
+        return _ClassMemberViolation(
+            CompactFunctionTargetResolutionViolation.MISSING_DECLARATION
+        )
+
+    def ambiguous(self):
+        return _ClassMemberViolation(
+            CompactFunctionTargetResolutionViolation.AMBIGUOUS_DECLARATION
+        )
+
+    def open(self):
+        return _ClassMemberViolation(
+            CompactFunctionTargetResolutionViolation.INCOMPLETE_RECEIVER_FAMILY
+        )
+
+
+_PRODUCT_MEMBER_ANSWERS = _ProductMemberAnswers()
 
 
 class CompactFunctionCallResolution(ABC):
@@ -1891,36 +1925,8 @@ class ProductFlowRepository(
         owner_symbol: str,
         member_name: str,
     ) -> _CompactClassMemberResolution:
-        owner = self.class_index.class_for(owner_symbol)
-        if owner is None:
-            return _ClassMemberViolation(
-                CompactFunctionTargetResolutionViolation.MISSING_DECLARATION
-            )
-        # A direct declaration already owns the member, independent of inherited order.
-        owners = (owner,)
-        if not any(
-            member.name == member_name for member in owner.direct_member_declarations
-        ):
-            mro = self.class_index.mro_authority.resolve(owner_symbol).mro_type
-            if mro is None:
-                return _ClassMemberViolation(
-                    CompactFunctionTargetResolutionViolation.INCOMPLETE_RECEIVER_FAMILY,
-                )
-            owners = mro.declarations
-        for current in owners:
-            declarations = tuple(
-                declaration
-                for declaration in current.direct_member_declarations
-                if declaration.name == member_name
-            )
-            if len(declarations) == 1:
-                return _ResolvedClassMember(current, declarations[0])
-            if declarations:
-                return _ClassMemberViolation(
-                    CompactFunctionTargetResolutionViolation.AMBIGUOUS_DECLARATION
-                )
-        return _ClassMemberViolation(
-            CompactFunctionTargetResolutionViolation.MISSING_DECLARATION
+        return self.class_index.member_in_mro(owner_symbol, member_name).answer(
+            _PRODUCT_MEMBER_ANSWERS
         )
 
     def _lexical_binding_exists(

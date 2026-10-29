@@ -293,15 +293,18 @@ def test_each_probe_names_its_line_and_the_declared_owner_or_why_not(tmp_path: P
         "owner unresolved: the type checker infers `Any`, not one class"
         in by_receiver["other"]
     )
-    assert (
+    # `make` declares its return, so the declarations type `made` without the
+    # type checker.
+    assert by_receiver["made"].endswith(
         f"owner `owner.Goal` ({tmp_path / 'owner.py'}:5) declares "
-        "`paused_at: int | None` (the type checker infers `owner.Goal`)"
-    ) in by_receiver["made"]
+        "`paused_at: int | None`."
+    )
 
 
+# `make` declares no return type: only the type checker types `made`.
 _INFERRED_PROBE = (
     "from owner import Goal\n\n\n"
-    "def make() -> Goal:\n    return Goal()\n\n\n"
+    "def make():\n    return Goal()\n\n\n"
     "def f() -> bool:\n    made = make()\n    return made.paused_at is None\n"
 )
 _GOAL = "class Goal:\n    paused_at: int | None = None\n"

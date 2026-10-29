@@ -45,7 +45,7 @@ from .annotation_semantics import (
     NOMINAL_ANNOTATION_SOURCE_AUTHORITY,
     TypeWrapper,
 )
-from .ast_field_decoders import ParameterAnnotations
+from .ast_field_decoders import ParameterAnnotations, declared_annotations
 from .ast_projection import ExpressionReference
 from .ast_projection import (
     CallKeywords,
@@ -76,7 +76,7 @@ from .collection_algebra import (
     UniqueIdentityIndexAuthority,
     sorted_tuple,
 )
-from .class_mro import ClassMroAuthority
+from .class_mro import ClassMroAuthority, DeclarationMroType, DeclaredBases
 from .overlap_receipts import OverlapReceiptKind
 from .foreign_family import (
     AssignmentStatement,
@@ -630,6 +630,158 @@ class CompactClassMemberDeclaration(NamedTuple):
         return NOMINAL_ANNOTATION_SOURCE_AUTHORITY.reference_parts_or_none(annotation)
 
 
+MemberAnswerT = TypeVar("MemberAnswerT")
+
+
+@dataclass(frozen=True)
+class CompactCallableMemberDeclaration(ABC):
+    """One `def` a class body binds: a method or a property, with what it declares it returns.
+
+    A property's return annotation is the type of reading the member; a
+    method's is the type of calling it. A def with no return annotation
+    declares neither.
+    """
+
+    name: str
+    line: int
+
+    @abstractmethod
+    def answer(
+        self,
+        owner: CompactIndexedClass,
+        answers: ClassMemberAnswersABC[MemberAnswerT],
+    ) -> MemberAnswerT:
+        raise NotImplementedError
+
+
+@dataclass(frozen=True)
+class CompactAnnotatedProperty(CompactCallableMemberDeclaration):
+    """`@property` or `@cached_property` with a return annotation: reading it has that type."""
+
+    return_annotation_expression: str
+
+    def answer(self, owner, answers):
+        return answers.annotated_property(owner, self)
+
+
+@dataclass(frozen=True)
+class CompactAnnotatedMethod(CompactCallableMemberDeclaration):
+    """A method with a return annotation: calling it has that type."""
+
+    return_annotation_expression: str
+
+    def answer(self, owner, answers):
+        return answers.annotated_method(owner, self)
+
+
+@dataclass(frozen=True)
+class CompactUnannotatedCallable(CompactCallableMemberDeclaration):
+    """A method or property that declares no return type."""
+
+    def answer(self, owner, answers):
+        return answers.unannotated_callable(owner, self)
+
+
+class ClassMemberAnswersABC(ABC, Generic[MemberAnswerT]):
+    """What a consumer makes of each outcome of looking a member up through a class's MRO."""
+
+    @abstractmethod
+    def assigned(
+        self, owner: CompactIndexedClass, declaration: CompactClassMemberDeclaration
+    ) -> MemberAnswerT:
+        raise NotImplementedError
+
+    @abstractmethod
+    def annotated_property(
+        self, owner: CompactIndexedClass, declaration: CompactAnnotatedProperty
+    ) -> MemberAnswerT:
+        raise NotImplementedError
+
+    @abstractmethod
+    def annotated_method(
+        self, owner: CompactIndexedClass, declaration: CompactAnnotatedMethod
+    ) -> MemberAnswerT:
+        raise NotImplementedError
+
+    @abstractmethod
+    def unannotated_callable(
+        self, owner: CompactIndexedClass, declaration: CompactUnannotatedCallable
+    ) -> MemberAnswerT:
+        raise NotImplementedError
+
+    @abstractmethod
+    def missing(self) -> MemberAnswerT:
+        raise NotImplementedError
+
+    @abstractmethod
+    def ambiguous(self) -> MemberAnswerT:
+        raise NotImplementedError
+
+    @abstractmethod
+    def open(self) -> MemberAnswerT:
+        raise NotImplementedError
+
+
+class ClassMemberLookup(ABC):
+    """A member name looked up through a class's MRO: its one binding, or why there is none."""
+
+    @abstractmethod
+    def answer(self, answers: ClassMemberAnswersABC[MemberAnswerT]) -> MemberAnswerT:
+        raise NotImplementedError
+
+
+@dataclass(frozen=True)
+class AssignedClassMember(ClassMemberLookup):
+    """The first class in the MRO binding the name assigns or annotates it in its body."""
+
+    owner: CompactIndexedClass
+    declaration: CompactClassMemberDeclaration
+
+    def answer(self, answers):
+        return answers.assigned(self.owner, self.declaration)
+
+
+@dataclass(frozen=True)
+class CallableClassMember(ClassMemberLookup):
+    """The first class in the MRO binding the name defines it with `def`."""
+
+    owner: CompactIndexedClass
+    declaration: CompactCallableMemberDeclaration
+
+    def answer(self, answers):
+        return self.declaration.answer(self.owner, answers)
+
+
+class MissingClassMember(ClassMemberLookup):
+    """No class of the MRO binds the name in its body."""
+
+    def answer(self, answers):
+        return answers.missing()
+
+
+class AmbiguousClassMember(ClassMemberLookup):
+    """The first class binding the name binds it more than once."""
+
+    def answer(self, answers):
+        return answers.ambiguous()
+
+
+class OpenClassMember(ClassMemberLookup):
+    """The class does not bind the name and its MRO is open, so no ancestor is known to."""
+
+    def answer(self, answers):
+        return answers.open()
+
+
+@dataclass(frozen=True)
+class CompactAnnotatedFunctionReturn:
+    """A module-level `def` and the return type it declares."""
+
+    name: str
+    line: int
+    return_annotation_expression: str
+
+
 class CompactProductAuthorityViolation(StrEnum):
     """One typed reason a dataclass declaration cannot prove a plain product."""
 
@@ -1162,6 +1314,7 @@ class CompactIndexedClass(CompactClassHeader):
     """The key type of the first subscripted base that is a registry family; set by the index."""
     end_line: int | None = None
     method_names: tuple[str, ...] = ()
+    callable_member_declarations: tuple[CompactCallableMemberDeclaration, ...] = ()
     abstract_method_names: tuple[str, ...] = ()
     is_abstract: bool = False
     is_registration_authority: bool = False
@@ -1807,6 +1960,7 @@ class CompactModuleClassProjection(
     keyed_table_axes: tuple[CompactKeyedTableAxis, ...] = ()
     manual_selector_axes: tuple[CompactManualSelectorAxis, ...] = ()
     top_level_definitions: tuple[tuple[str, int], ...] = ()
+    annotated_function_returns: tuple[CompactAnnotatedFunctionReturn, ...] = ()
     repeated_keyed_family_roots: tuple[CompactRepeatedKeyedFamilyRoot, ...] = ()
     manual_subclass_roster_roots: tuple[CompactManualSubclassRosterRoot, ...] = ()
     latent_rosters: tuple[LatentRosterObservation, ...] = ()
@@ -3175,6 +3329,89 @@ class CompactClassFamilyIndex(ClassDeclarationIndex[CompactIndexedClass]):
     @cached_property
     def mro_authority(self) -> ClassMroAuthority:
         return ClassMroAuthority(self.classes_by_symbol)
+
+    @cached_property
+    def declared_mro_authority(self) -> ClassMroAuthority:
+        """The MRO the declarations state, for reading declared member types (`DeclaredBases`)."""
+
+        return ClassMroAuthority(self.classes_by_symbol, DeclaredBases())
+
+    def member_in_mro(self, owner_symbol: str, member_name: str) -> ClassMemberLookup:
+        """The binding of `member_name` that an instance of `owner_symbol` reads at runtime."""
+
+        return self._member_along(owner_symbol, member_name, self.mro_authority)
+
+    def declared_member(self, owner_symbol: str, member_name: str) -> ClassMemberLookup:
+        """The binding of `member_name` the declarations give an instance of `owner_symbol`."""
+
+        return self._member_along(owner_symbol, member_name, self.declared_mro_authority)
+
+    def _member_along(
+        self, owner_symbol: str, member_name: str, authority: ClassMroAuthority
+    ) -> ClassMemberLookup:
+        """The first binding of `member_name` along `authority`'s MRO of `owner_symbol`.
+
+        A class binding the name in its own body owns it, whatever its MRO; any
+        other class reads the first binding along its closed MRO, and a lookup
+        that reaches a base whose members nothing declares learns nothing past
+        it. Assignments, annotations and defs all bind; a class binding the
+        name twice, or by both an assignment and a def, is ambiguous.
+        """
+
+        owner = self.class_for(owner_symbol)
+        if owner is None:
+            return MissingClassMember()
+        owners: tuple[CompactIndexedClass, ...] = (owner,)
+        if not self._binds_member(owner, member_name):
+            mro = authority.resolve(owner_symbol).mro_type
+            if mro is None:
+                return OpenClassMember()
+            known: list[CompactIndexedClass] = []
+            for entry in mro.__mro__:
+                if authority.is_opaque(entry):
+                    break
+                if isinstance(entry, DeclarationMroType):
+                    known.append(entry.declaration)
+            owners = tuple(known)
+        for current in owners:
+            assigned = tuple(
+                declaration
+                for declaration in current.direct_member_declarations
+                if declaration.name == member_name
+            )
+            defined = tuple(
+                declaration
+                for declaration in current.callable_member_declarations
+                if declaration.name == member_name
+            )
+            match assigned, defined:
+                case (), ():
+                    continue
+                case (declaration,), ():
+                    return AssignedClassMember(current, declaration)
+                case (), (declaration,):
+                    return CallableClassMember(current, declaration)
+            return AmbiguousClassMember()
+        if not self._binds_member(owner, member_name) and self._reaches_opaque_base(
+            owner_symbol, authority
+        ):
+            return OpenClassMember()
+        return MissingClassMember()
+
+    @staticmethod
+    def _reaches_opaque_base(owner_symbol: str, authority: ClassMroAuthority) -> bool:
+        mro = authority.resolve(owner_symbol).mro_type
+        return mro is not None and any(authority.is_opaque(entry) for entry in mro.__mro__)
+
+    @staticmethod
+    def _binds_member(owner: CompactIndexedClass, member_name: str) -> bool:
+        return any(
+            declaration.name == member_name
+            for declaration in (
+                *owner.direct_member_declarations,
+                *owner.callable_member_declarations,
+            )
+        )
 
     @classmethod
     def from_modules(
@@ -5297,6 +5534,7 @@ def _compact_indexed_classes(
                 statement.name
                 for statement in FunctionDefinition.within(node.body)
             ),
+            callable_member_declarations=_compact_callable_member_declarations(node),
             abstract_method_names=sorted_tuple(
                 statement.name
                 for statement in FunctionDefinition.within(node.body)
@@ -5630,6 +5868,14 @@ class CompactModuleClassProjectionFamily(CollectedFamily[CompactModuleClassProje
                     if isinstance(
                         node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
                     )
+                ),
+                annotated_function_returns=tuple(
+                    CompactAnnotatedFunctionReturn(
+                        node.name, node.lineno, ast.unparse(returns)
+                    )
+                    for node in parsed_module.module.body
+                    if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef)
+                    for returns in declared_annotations(node)
                 ),
                 exact_type_guards=syntax_facets.exact_type_guards,
                 autoregister_reference_index=(
@@ -7829,6 +8075,39 @@ def _compact_class_member_declarations(
             if isinstance(target, ast.Name)
         )
     return tuple(declarations)
+
+
+def _compact_callable_member_declarations(
+    node: ast.ClassDef,
+) -> tuple[CompactCallableMemberDeclaration, ...]:
+    """Each `def` of the class body, except overload stubs and property setters/deleters,
+    which rebind no new member type."""
+
+    declarations: list[CompactCallableMemberDeclaration] = []
+    for statement in node.body:
+        if not isinstance(statement, ast.FunctionDef | ast.AsyncFunctionDef):
+            continue
+        decorators = {
+            _terminal_reference_name(decorator) for decorator in statement.decorator_list
+        }
+        if decorators & CALLABLE_MEMBER_REDEFINITION_DECORATORS:
+            continue
+        declared = tuple(
+            (
+                CompactAnnotatedProperty
+                if decorators & PROPERTY_DECORATOR_NAMES
+                else CompactAnnotatedMethod
+            )(statement.name, statement.lineno, ast.unparse(returns))
+            for returns in declared_annotations(statement)
+        )
+        declarations.extend(
+            declared or (CompactUnannotatedCallable(statement.name, statement.lineno),)
+        )
+    return tuple(declarations)
+
+
+PROPERTY_DECORATOR_NAMES = frozenset((property.__name__, cached_property.__name__))
+CALLABLE_MEMBER_REDEFINITION_DECORATORS = frozenset(("overload", "setter", "deleter"))
 
 
 def _compact_sorted_key_calls(
