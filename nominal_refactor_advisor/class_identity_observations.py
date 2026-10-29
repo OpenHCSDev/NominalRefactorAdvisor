@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import ast
 import builtins
-import re
 import sys
 from abc import ABC, abstractmethod
 from collections import Counter, defaultdict
@@ -27,6 +26,7 @@ from pathlib import Path
 from typing import ClassVar
 
 from .lexical_bindings import ImportBoundNameProjection
+from .name_algebra import CLASS_NAME_ALGEBRA
 from .ast_projection import StatementValues
 from .ast_projection import CallKeywords
 from .ast_tools import (
@@ -1379,8 +1379,6 @@ class DeclaredIdentities:
 class IdentityPositions:
     """Which expressions of one module are identity positions, and what each says."""
 
-    MULTIWORD = re.compile(r"[A-Z]+(?![a-z])|[A-Z]?[a-z0-9]+")
-    IDENTIFIER = re.compile(r"[A-Za-z_]\w*")
     CLASS_NAME_ATTRIBUTES = frozenset(("__name__", "__qualname__"))
     COLLECTIONS = frozenset(
         (
@@ -1517,12 +1515,7 @@ class IdentityPositions:
             return "", ""
         return "", str(holding)
 
-    @classmethod
-    def multiword(cls, literal: str) -> bool:
-        return (
-            cls.IDENTIFIER.fullmatch(literal) is not None
-            and len(cls.MULTIWORD.findall(literal)) >= 2
-        )
+    multiword = staticmethod(CLASS_NAME_ALGEBRA.names_several_words)
 
     @staticmethod
     def string(node: ast.AST) -> str | None:

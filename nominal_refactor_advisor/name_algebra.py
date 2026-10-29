@@ -35,6 +35,16 @@ class ClassNameAlgebra:
             )
         )
 
+    def names_several_words(self, name: str) -> bool:
+        """Whether the string is an identifier of two or more declared words.
+
+        `ObservationMode` can only be that declaration's name; a one-word name
+        (`Read`, `left`) is also an ordinary word, so equal text alone does not
+        say it names the declaration.
+        """
+
+        return name.isidentifier() and len(self.declared_tokens(name)) >= 2
+
     def shared_declared_suffix(self, values: tuple[str, ...]) -> str:
         """Return the exact common class-name suffix used for generated names."""
 

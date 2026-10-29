@@ -555,6 +555,7 @@ def test_constructed_dataclass_inverse_index_matches_pairwise_resolution(
         value="value",
         kind=semantic_descent_module.PresentationTokenKind.QUALIFIED_ATTRIBUTE,
         role=PresentationTokenRole.DICT_VALUE,
+        written="value",
         qualifier="external",
     )
     resolver._candidate_refs_for_token(qualified_token)
@@ -778,6 +779,50 @@ def test_semantic_mirror_detector_reports_authority_and_projection(
         "LoadStep='load'",
         "SaveStep='save'",
     )
+
+
+def test_class_family_mirror_needs_the_members_not_their_spellings(
+    tmp_path: Path,
+) -> None:
+    # Issue #61: a terminal key map shares the words left/right/up/down with an
+    # editor command family. The keys it decodes are not the commands, so equal
+    # spelling is no mirror; a table holding the command classes is one.
+    (tmp_path / "commands.py").write_text(
+        "class EditorCommand:\n"
+        "    pass\n"
+        "\n"
+        "class Left(EditorCommand):\n    pass\n\n"
+        "class Right(EditorCommand):\n    pass\n\n"
+        "class Up(EditorCommand):\n    pass\n\n"
+        "class Down(EditorCommand):\n    pass\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "terminal.py").write_text(
+        "TERMINAL_KEY_MAP = {\n"
+        "    '\\x1b[D': 'left',\n"
+        "    '\\x1b[C': 'right',\n"
+        "    '\\x1b[A': 'up',\n"
+        "    '\\x1b[B': 'down',\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "bindings.py").write_text(
+        "from commands import Down, Left, Right, Up\n"
+        "\n"
+        "BINDINGS = {'h': Left, 'l': Right, 'k': Up, 'j': Down}\n",
+        encoding="utf-8",
+    )
+
+    mirrored = {
+        finding.metrics.plan_registry_name
+        for finding in SemanticMirrorWithoutDescentDetector().detect(
+            parse_python_modules(tmp_path),
+            DetectorConfig(),
+        )
+    }
+
+    assert "TERMINAL_KEY_MAP" not in mirrored
+    assert "BINDINGS" in mirrored
 
 
 def test_class_family_mirror_requires_affinity_for_reused_crosscutting_facts(
