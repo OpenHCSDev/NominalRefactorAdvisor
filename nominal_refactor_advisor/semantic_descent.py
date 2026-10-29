@@ -1217,11 +1217,16 @@ class AuthorityClaimResolver:
 
 @dataclass(frozen=True)
 class PresentationToken:
-    """One token observed inside a presentation-level syntax surface."""
+    """One token observed inside a presentation-level syntax surface.
+
+    `value` is one normalized variant of `written`, the literal, identifier or
+    attribute name exactly as the source spells it.
+    """
 
     value: str
     kind: PresentationTokenKind
     role: PresentationTokenRole
+    written: str
     qualifier: str | None = None
 
 
@@ -1962,7 +1967,6 @@ class SemanticAuthorityMirrorPolicy(ABC, metaclass=AutoRegisterMeta):
 
     authority_kind: ClassVar[SemanticAuthorityKind | None] = None
     authority_qualified_token_reference_admitted: ClassVar[bool] = True
-    foreign_qualified_attribute_token_reference_admitted: ClassVar[bool] = False
     dataclass_authority_selected: ClassVar[bool] = False
 
     @classmethod
@@ -1990,6 +1994,15 @@ class SemanticAuthorityMirrorPolicy(ABC, metaclass=AutoRegisterMeta):
         relation: SemanticMirrorMetricRelation,
     ) -> FindingMetrics:
         raise NotImplementedError
+
+    def token_names_fact(self, token: PresentationToken, fact: SemanticFact) -> bool:
+        """Whether a projection token spelling one of the fact's names names the fact.
+
+        A field-like authority's facts are names, so spelling one names it.
+        """
+
+        del token, fact
+        return True
 
     def edge_is_admissible(
         self,
@@ -2020,7 +2033,23 @@ class SemanticAuthorityMirrorPolicy(ABC, metaclass=AutoRegisterMeta):
 class ClassFamilyLikeMirrorPolicy(SemanticAuthorityMirrorPolicy):
     """Shared policy for class-family authorities and AutoRegister families."""
 
-    foreign_qualified_attribute_token_reference_admitted = True
+    def token_names_fact(self, token: PresentationToken, fact: SemanticFact) -> bool:
+        """A member class is named by a string of its exact multi-word `__name__`,
+        or by a string constant the member declares (`key = "move_left"`).
+
+        Any other spelling only resembles the class: `"left"` in a terminal key
+        map is not the `Left` editor command, and a one-word `"Left"` is also an
+        ordinary word (`ClassNameAlgebra.names_several_words`). A declared
+        constant is the member's own key, so its exact text names it. A
+        projection holding the class itself links through
+        `ProjectionClassSymbolFactMatcher`, by resolved symbol.
+        """
+
+        if not token.kind.is_string_literal:
+            return False
+        if token.written == fact.name:
+            return CLASS_NAME_ALGEBRA.names_several_words(token.written)
+        return token.written in fact.aliases
 
     def semantic_mirror_metrics(
         self,
@@ -3299,6 +3328,7 @@ class FindingBackedSemanticDescent:
                     value=fact.name,
                     kind=PresentationTokenKind.STRING_LITERAL,
                     role=PresentationTokenRole.COLLECTION_ITEM,
+                    written=fact.name,
                 )
                 for fact in self.facts
             ),
@@ -4983,6 +5013,7 @@ class _ProjectionVisitor(ClassFunctionStackNodeVisitor):
                                 key,
                                 PresentationTokenKind.STRING_LITERAL,
                                 PresentationTokenRole.DICT_KEY,
+                                written=key,
                             )
                             for key in keys
                         ),
@@ -6372,6 +6403,10 @@ class SemanticMirrorResolver(SemanticDescentGraphSpace):
                     and ref.authority_id not in constructed_dataclass_authority_ids
                 ):
                     continue
+                if not self.policy_catalog.policy_for_authority_id(
+                    ref.authority_id
+                ).token_names_fact(token, ref):
+                    continue
                 matches_by_authority.setdefault(ref.authority_id, {}).setdefault(
                     ref.fact_id,
                     set(),
@@ -6460,13 +6495,7 @@ class SemanticMirrorResolver(SemanticDescentGraphSpace):
             return tuple(
                 ref for ref in refs if ref.authority_id in allowed_authority_ids
             )
-        return tuple(
-            ref
-            for ref in refs
-            if self.policy_catalog.policy_for_authority_id(
-                ref.authority_id
-            ).foreign_qualified_attribute_token_reference_admitted
-        )
+        return ()
 
     def _resolution_for(
         self,
@@ -6646,7 +6675,12 @@ class ConstantPresentationTokenProjector(PresentationTokenNodeProjector):
         if not PresentationTokenProjection.looks_like_semantic_literal(node.value):
             return ()
         return tuple(
-            PresentationToken(value, PresentationTokenKind.STRING_LITERAL, role)
+            PresentationToken(
+                value,
+                PresentationTokenKind.STRING_LITERAL,
+                role,
+                written=node.value,
+            )
             for value in normalized_name_variants(node.value)
         )
 
@@ -6666,7 +6700,9 @@ class NamePresentationTokenProjector(PresentationTokenNodeProjector):
         if not isinstance(node, ast.Name):
             raise TypeError(f"Expected ast.Name, got {type(node)!r}")
         return tuple(
-            PresentationToken(value, PresentationTokenKind.NAME_REFERENCE, role)
+            PresentationToken(
+                value, PresentationTokenKind.NAME_REFERENCE, role, written=node.id
+            )
             for value in normalized_name_variants(node.id)
         )
 
@@ -6693,12 +6729,15 @@ class AttributePresentationTokenProjector(PresentationTokenNodeProjector):
                     value,
                     PresentationTokenKind.QUALIFIED_ATTRIBUTE,
                     role,
+                    written=chain[-1],
                     qualifier=qualifier,
                 )
                 for value in normalized_name_variants(chain[-1])
             )
         return tuple(
-            PresentationToken(value, PresentationTokenKind.NAME_REFERENCE, role)
+            PresentationToken(
+                value, PresentationTokenKind.NAME_REFERENCE, role, written=node.attr
+            )
             for value in normalized_name_variants(node.attr)
         )
 
@@ -6804,6 +6843,7 @@ class CallPresentationTokenProjector(PresentationTokenNodeProjector):
                         value,
                         PresentationTokenKind.STRING_LITERAL,
                         PresentationTokenRole.CALL_KEYWORD_NAME,
+                        written=name,
                     )
                     for value in normalized_name_variants(name)
                 )

@@ -26,14 +26,28 @@ class ClassNameAlgebra:
 
     @staticmethod
     def declared_tokens(name: str) -> tuple[str, ...]:
-        """Split a declared identifier without applying semantic token filters."""
+        """Split a declared identifier without applying semantic token filters.
+
+        An upper-case run is a word when a capitalized word, an underscore or the
+        end follows it, so `FAST_MODE` is `FAST`, `MODE`.
+        """
 
         return tuple(
             re.findall(
-                "[A-Z]+(?=[A-Z][a-z0-9]|$)|[A-Z]?[a-z0-9]+",
+                "[A-Z]+(?=[A-Z][a-z0-9]|_|$)|[A-Z]?[a-z0-9]+",
                 name.lstrip("_"),
             )
         )
+
+    def names_several_words(self, name: str) -> bool:
+        """Whether the string is an identifier of two or more declared words.
+
+        `ObservationMode` can only be that declaration's name; a one-word name
+        (`Read`, `left`) is also an ordinary word, so equal text alone does not
+        say it names the declaration.
+        """
+
+        return name.isidentifier() and len(self.declared_tokens(name)) >= 2
 
     def shared_declared_suffix(self, values: tuple[str, ...]) -> str:
         """Return the exact common class-name suffix used for generated names."""

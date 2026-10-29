@@ -17,7 +17,6 @@ from __future__ import annotations
 import ast
 import builtins
 import enum
-import re
 import sys
 from abc import ABC, abstractmethod
 from collections import Counter, defaultdict
@@ -28,6 +27,7 @@ from pathlib import Path
 from typing import ClassVar
 
 from .lexical_bindings import LEXICAL_SCOPE_BINDING_AUTHORITY, ImportBoundNameProjection
+from .name_algebra import CLASS_NAME_ALGEBRA
 from .ast_projection import StatementValues
 from .ast_projection import CallKeywords
 from .ast_tools import (
@@ -1792,8 +1792,6 @@ class DeclaredIdentities:
 class IdentityPositions:
     """Which expressions of one module are identity positions, and what each says."""
 
-    MULTIWORD = re.compile(r"[A-Z]+(?![a-z])|[A-Z]?[a-z0-9]+")
-    IDENTIFIER = re.compile(r"[A-Za-z_]\w*")
     CLASS_NAME_ATTRIBUTES = frozenset(("__name__", "__qualname__"))
     COLLECTIONS = frozenset(
         (
@@ -1869,13 +1867,6 @@ class IdentityPositions:
         """What the literal's name is where the literal runs (`NameBindings.reference`)."""
 
         return self.name_bindings.reference(self.holding(node_index), literal)
-
-    @classmethod
-    def multiword(cls, literal: str) -> bool:
-        return (
-            cls.IDENTIFIER.fullmatch(literal) is not None
-            and len(cls.MULTIWORD.findall(literal)) >= 2
-        )
 
     @staticmethod
     def string(node: ast.AST) -> str | None:
@@ -1958,7 +1949,7 @@ class IdentityPositions:
                         literal,
                     ),
                 )
-        if self.multiword(literal):
+        if CLASS_NAME_ALGEBRA.names_several_words(literal):
             yield self.site(
                 literal_node,
                 ComparedWordSpelling.detail(
@@ -2020,7 +2011,7 @@ class IdentityPositions:
     ) -> Iterator[tuple[ast.expr, tuple[str, ...]]]:
         for passed in self.passed_values(value):
             literal = self.string(passed)
-            if literal is not None and self.multiword(literal):
+            if literal is not None and CLASS_NAME_ALGEBRA.names_several_words(literal):
                 yield self.site(
                     passed,
                     WordSpelling.detail(
