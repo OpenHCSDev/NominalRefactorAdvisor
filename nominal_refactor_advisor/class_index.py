@@ -76,7 +76,7 @@ from .collection_algebra import (
     UniqueIdentityIndexAuthority,
     sorted_tuple,
 )
-from .class_mro import ClassMroAuthority, DeclarationMroType, DeclaredBases
+from .class_mro import ClassMroAuthority, DeclaredBases
 from .overlap_receipts import OverlapReceiptKind
 from .foreign_family import (
     AssignmentStatement,
@@ -3372,13 +3372,7 @@ class CompactClassFamilyIndex(ClassDeclarationIndex[CompactIndexedClass]):
             mro = authority.resolve(owner_symbol).mro_type
             if mro is None:
                 return OpenClassMember()
-            known: list[CompactIndexedClass] = []
-            for entry in mro.__mro__:
-                if authority.is_opaque(entry):
-                    break
-                if isinstance(entry, DeclarationMroType):
-                    known.append(entry.declaration)
-            owners = tuple(known)
+            owners = mro.declarations_before(authority.bases.is_opaque)
         for current in owners:
             assigned = tuple(
                 declaration
@@ -3407,7 +3401,7 @@ class CompactClassFamilyIndex(ClassDeclarationIndex[CompactIndexedClass]):
     @staticmethod
     def _reaches_opaque_base(owner_symbol: str, authority: ClassMroAuthority) -> bool:
         mro = authority.resolve(owner_symbol).mro_type
-        return mro is not None and any(authority.is_opaque(entry) for entry in mro.__mro__)
+        return mro is not None and any(authority.bases.is_opaque(entry) for entry in mro.__mro__)
 
     @staticmethod
     def _binds_member(owner: CompactIndexedClass, member_name: str) -> bool:

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from abc import ABC, ABCMeta, abstractmethod
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import (
@@ -59,11 +59,20 @@ class DeclarationMroType(ABCMeta, Generic[MroDeclarationT]):
 
     @property
     def declarations(self) -> tuple[MroDeclarationT, ...]:
-        return tuple(
-            owner.declaration
-            for owner in self.__mro__
-            if isinstance(owner, DeclarationMroType)
-        )
+        return self.declarations_before(lambda entry: False)
+
+    def declarations_before(
+        self, stops: Callable[[type], bool]
+    ) -> tuple[MroDeclarationT, ...]:
+        """The declarations along this MRO up to the first entry `stops` marks."""
+
+        found: list[MroDeclarationT] = []
+        for owner in self.__mro__:
+            if stops(owner):
+                break
+            if isinstance(owner, DeclarationMroType):
+                found.append(owner.declaration)
+        return tuple(found)
 
 
 @dataclass(frozen=True)
@@ -208,8 +217,6 @@ class ClassMroAuthority:
         default_factory=dict, init=False, repr=False, compare=False
     )
 
-    def is_opaque(self, entry: type) -> bool:
-        return self.bases.is_opaque(entry)
 
     def resolve(self, symbol: str) -> ClassMroResolution:
         return self._resolve(symbol, frozenset())
@@ -242,7 +249,7 @@ class ClassMroAuthority:
             if declaration is None:
                 break
             prefix.append(declaration)
-            if not self._creation_is_static(declaration):
+            if not self.bases.creation_is_static(declaration):
                 break
             if not declaration.base_references_are_complete:
                 break
@@ -254,14 +261,12 @@ class ClassMroAuthority:
             symbol = declaration.resolved_base_symbols[0]
         return tuple(prefix)
 
-    def _creation_is_static(self, declaration: CompactIndexedClass) -> bool:
-        return self.bases.creation_is_static(declaration)
 
     def _derive(self, symbol: str, pending: frozenset[str]) -> ClassMroResolution:
         declaration = self.classes_by_symbol.get(symbol)
         if declaration is None:
             return MissingDeclaration(symbol)
-        if not self._creation_is_static(declaration):
+        if not self.bases.creation_is_static(declaration):
             return DynamicClassDeclaration(symbol)
         native_bases = tuple(
             (

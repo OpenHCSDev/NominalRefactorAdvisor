@@ -25,7 +25,6 @@ import builtins
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
-from enum import Enum
 from functools import cached_property
 from typing import ClassVar
 
@@ -204,7 +203,8 @@ class DeclaredClassObject(DeclaredType):
         return typing.enum_members(self.symbol)
 
     def class_symbols(self) -> tuple[str, ...]:
-        return (CLASS_OBJECT_TYPE,)
+        """The class the receiver denotes: a class-level answer read off it is the class's."""
+        return (self.symbol,)
 
     def spelled(self) -> str:
         return f"the class `{self.symbol}`"
@@ -291,8 +291,6 @@ class DeclaredMapping(DeclaredType):
     key: DeclaredType
     value: DeclaredType
 
-    MAPPING_VIEWS: ClassVar[frozenset[str]] = frozenset(("get", "pop", "setdefault"))
-
     def element(self, typing):
         return self.key
 
@@ -300,15 +298,9 @@ class DeclaredMapping(DeclaredType):
         return self.value
 
     def called(self, typing, name):
-        match name:
-            case "keys":
-                return DeclaredCollection(self.key)
-            case "values":
-                return DeclaredCollection(self.value)
-            case "items":
-                return DeclaredCollection(DeclaredTuple((self.key, self.value)))
-        if name in self.MAPPING_VIEWS:
-            return self.value
+        for view in MappingMethod.__subclasses__():
+            if name in view.names:
+                return view.of(self)
         return super().called(typing, name)
 
     def class_symbols(self) -> tuple[str, ...]:
@@ -324,6 +316,51 @@ class DeclaredMapping(DeclaredType):
         return DeclaredMapping(
             self.key.join(other.key, typing), self.value.join(other.value, typing)
         )
+
+
+class MappingMethod(ABC):
+    """A `Mapping` method by its names, and the type it returns."""
+
+    names: ClassVar[frozenset[str]]
+
+    @staticmethod
+    @abstractmethod
+    def of(mapping: DeclaredMapping) -> DeclaredType:
+        raise NotImplementedError
+
+
+class MappingKeys(MappingMethod):
+    names = frozenset(("keys",))
+
+    @staticmethod
+    def of(mapping: DeclaredMapping) -> DeclaredType:
+        return DeclaredCollection(mapping.key)
+
+
+class MappingValues(MappingMethod):
+    names = frozenset(("values",))
+
+    @staticmethod
+    def of(mapping: DeclaredMapping) -> DeclaredType:
+        return DeclaredCollection(mapping.value)
+
+
+class MappingItems(MappingMethod):
+    names = frozenset(("items",))
+
+    @staticmethod
+    def of(mapping: DeclaredMapping) -> DeclaredType:
+        return DeclaredCollection(DeclaredTuple((mapping.key, mapping.value)))
+
+
+class MappingValueLookup(MappingMethod):
+    """`get`, `pop`, `setdefault`: a value, or the absent arm a receiver read excludes."""
+
+    names = frozenset(("get", "pop", "setdefault"))
+
+    @staticmethod
+    def of(mapping: DeclaredMapping) -> DeclaredType:
+        return mapping.value
 
 
 @dataclass(frozen=True)
@@ -413,41 +450,89 @@ class UndeclaredType(DeclaredType):
 # --- annotation heads ----------------------------------------------------------
 
 
-class DeclaredHead(Enum):
-    """A typing or builtin subscript head, by the qualified names that spell it."""
+class AnnotationHead(ABC):
+    """A typing or builtin subscript head, by the qualified names that spell it,
+    and the type its subscript declares."""
 
-    OPTIONAL = frozenset(("typing.Optional", "typing_extensions.Optional"))
-    UNION = frozenset(("typing.Union", "typing_extensions.Union"))
-    QUALIFIER = frozenset(
-        (
-            "typing.ClassVar",
-            "typing.Final",
-            "typing.Annotated",
-            "typing_extensions.Final",
-            "typing_extensions.Annotated",
-        )
+    spellings: ClassVar[frozenset[str]]
+
+    @abstractmethod
+    def declared(
+        self,
+        items: Sequence[ast.expr],
+        typed: Sequence[DeclaredType],
+        typing: DeclaredReceiverTyping,
+        named: Callable[[], DeclaredType],
+    ) -> DeclaredType:
+        """`named` is the head read as a plain class annotation."""
+        raise NotImplementedError
+
+    @classmethod
+    def spelled_as(cls, qualified: str) -> AnnotationHead:
+        """The head a qualified name spells; a scanned generic class names itself."""
+
+        for head in cls.__subclasses__():
+            if qualified in head.spellings:
+                return head()
+        return ClassHead()
+
+
+def _typing_names(*names: str) -> frozenset[str]:
+    return frozenset(
+        f"{module}.{name}" for module in ("typing", "typing_extensions") for name in names
     )
-    CLASS_OBJECT = frozenset(("builtins.type", "typing.Type"))
-    HOMOGENEOUS = frozenset(
+
+
+class OptionalHead(AnnotationHead):
+    spellings = _typing_names("Optional")
+
+    def declared(self, items, typed, typing, named):
+        return typed[0].join(DeclaredNone(), typing)
+
+
+class UnionHead(AnnotationHead):
+    spellings = _typing_names("Union")
+
+    def declared(self, items, typed, typing, named):
+        return typing.joined(typed)
+
+
+class QualifierHead(AnnotationHead):
+    """`ClassVar[T]`, `Final[T]`, `Annotated[T, ...]`: a value of T."""
+
+    spellings = _typing_names("ClassVar", "Final", "Annotated")
+
+    def declared(self, items, typed, typing, named):
+        return typed[0]
+
+
+class ClassObjectHead(AnnotationHead):
+    spellings = frozenset(("builtins.type", "typing.Type"))
+
+    def declared(self, items, typed, typing, named):
+        return typed[0].class_object()
+
+
+class HomogeneousHead(AnnotationHead):
+    """A collection whose every element is its first argument."""
+
+    spellings = frozenset(
         (
             *(f"builtins.{name}" for name in ("list", "set", "frozenset")),
-            *(
-                f"typing.{name}"
-                for name in (
-                    "List",
-                    "Set",
-                    "FrozenSet",
-                    "Sequence",
-                    "MutableSequence",
-                    "Iterable",
-                    "Iterator",
-                    "Collection",
-                    "AbstractSet",
-                    "MutableSet",
-                    "Reversible",
-                    "Deque",
-                    "Generator",
-                )
+            *_typing_names(
+                "List",
+                "Set",
+                "FrozenSet",
+                "Sequence",
+                "MutableSequence",
+                "Iterable",
+                "Iterator",
+                "Collection",
+                "AbstractSet",
+                "MutableSet",
+                "Reversible",
+                "Deque",
+                "Generator",
             ),
             *(
                 f"collections.abc.{name}"
@@ -466,15 +551,28 @@ class DeclaredHead(Enum):
             "collections.deque",
         )
     )
-    TUPLE = frozenset(("builtins.tuple", "typing.Tuple"))
-    MAPPING = frozenset(
+
+    def declared(self, items, typed, typing, named):
+        return DeclaredCollection(typed[0])
+
+
+class TupleHead(AnnotationHead):
+    """`tuple[A, ...]` is homogeneous; `tuple[A, B]` positional."""
+
+    spellings = frozenset(("builtins.tuple", "typing.Tuple"))
+
+    def declared(self, items, typed, typing, named):
+        match items:
+            case [_, ast.Constant(value=builtins.Ellipsis)]:
+                return DeclaredCollection(typed[0])
+        return DeclaredTuple(tuple(typed))
+
+
+class MappingHead(AnnotationHead):
+    spellings = frozenset(
         (
             "builtins.dict",
-            "typing.Dict",
-            "typing.Mapping",
-            "typing.MutableMapping",
-            "typing.DefaultDict",
-            "typing.OrderedDict",
+            *_typing_names("Dict", "Mapping", "MutableMapping", "DefaultDict", "OrderedDict"),
             "collections.abc.Mapping",
             "collections.abc.MutableMapping",
             "collections.defaultdict",
@@ -482,12 +580,23 @@ class DeclaredHead(Enum):
             "types.MappingProxyType",
         )
     )
-    SELF = frozenset(("typing.Self", "typing_extensions.Self"))
 
-    @classmethod
-    def spelled_as(cls, qualified: str) -> tuple[DeclaredHead, ...]:
-        """The one head a qualified name spells, or none."""
-        return tuple(head for head in cls if qualified in head.value)
+    def declared(self, items, typed, typing, named):
+        if len(typed) != 2:
+            return UndeclaredType("a mapping annotation takes a key and a value type")
+        return DeclaredMapping(typed[0], typed[1])
+
+
+class ClassHead(AnnotationHead):
+    """A subscripted class (`Family[Key]`): an instance of the class itself."""
+
+    spellings = frozenset()
+
+    def declared(self, items, typed, typing, named):
+        return named()
+
+
+SELF_SPELLINGS = _typing_names("Self")
 
 
 # --- evaluation ---------------------------------------------------------------------
@@ -782,7 +891,7 @@ class DeclaredReceiverTyping:
         qualified = self.qualified(module_name, parts)
         if qualified in scope.parameters:
             return scope.parameters[qualified]
-        if DeclaredHead.SELF in DeclaredHead.spelled_as(qualified):
+        if qualified in SELF_SPELLINGS:
             return scope.self_type
         symbol = self.class_symbol(module_name, parts)
         if symbol is not None:
@@ -800,30 +909,13 @@ class DeclaredReceiverTyping:
     ) -> DeclaredType:
         items = list(arguments.elts) if isinstance(arguments, ast.Tuple) else [arguments]
         parts = _reference_parts(head)
-        heads = DeclaredHead.spelled_as(self.qualified(module_name, parts)) if parts else ()
+        if not parts:
+            return UndeclaredType(f"annotation `{ast.unparse(head)}[...]` names no type")
         typed = [self.annotation_type(module_name, item, scope) for item in items]
-        match heads:
-            case (DeclaredHead.OPTIONAL,):
-                return typed[0].join(DeclaredNone(), self)
-            case (DeclaredHead.UNION,):
-                return self.joined(typed)
-            case (DeclaredHead.QUALIFIER,):
-                return typed[0]
-            case (DeclaredHead.CLASS_OBJECT,):
-                return typed[0].class_object()
-            case (DeclaredHead.HOMOGENEOUS,):
-                return DeclaredCollection(typed[0])
-            case (DeclaredHead.TUPLE,):
-                if len(items) == 2 and isinstance(items[1], ast.Constant) and (
-                    items[1].value is Ellipsis
-                ):
-                    return DeclaredCollection(typed[0])
-                return DeclaredTuple(tuple(typed))
-            case (DeclaredHead.MAPPING,) if len(typed) == 2:
-                return DeclaredMapping(typed[0], typed[1])
-        if isinstance(head, ast.Name | ast.Attribute):
-            return self.named_type(module_name, head, scope)
-        return UndeclaredType(f"annotation `{ast.unparse(head)}[...]` names no type")
+        assert isinstance(head, ast.Name | ast.Attribute)
+        return AnnotationHead.spelled_as(self.qualified(module_name, parts)).declared(
+            items, typed, self, lambda: self.named_type(module_name, head, scope)
+        )
 
     # joins -----------------------------------------------------------------------
 
@@ -859,7 +951,6 @@ GENERIC_DECLARERS = frozenset(
     for module in ("typing", "typing_extensions")
     for name in ("Generic", "Protocol")
 )
-CLASS_OBJECT_TYPE = "builtins.type"
 ITERABLE_TYPE = "collections.abc.Iterable"
 TUPLE_TYPE = "builtins.tuple"
 MAPPING_TYPE = "collections.abc.Mapping"
@@ -1546,18 +1637,15 @@ class ReceiverPathBuilder:
 
     def _parameter_paths(self, function: FunctionNode, name: str) -> list[ReceiverPath]:
         arguments = function.args
-        decorators = {_decorator_name(decorator) for decorator in function.decorator_list}
-        owners = self._method_owners(function)
+        placement = self._placement(function)
         for index, parameter in enumerate(
             (*arguments.posonlyargs, *arguments.args, *arguments.kwonlyargs)
         ):
             if parameter.arg != name:
                 continue
-            if index == 0 and owners and "staticmethod" not in decorators:
-                (owner,) = owners
-                if "classmethod" in decorators:
-                    return [ReceiverPath(OwnClassRoot(owner))]
-                return [ReceiverPath(OwnInstanceRoot(owner))]
+            if index == 0:
+                for own in placement.first_parameter(function):
+                    return [own]
             return [
                 self._annotated(function, annotation)
                 for annotation in declared_annotations(parameter)
@@ -1567,19 +1655,17 @@ class ReceiverPathBuilder:
         return []
 
     def _annotated(self, function: FunctionNode, annotation: ast.expr) -> ReceiverPath:
-        for owner in self._method_owners(function):
-            return ReceiverPath(
-                MethodAnnotatedRoot(self.module_name, ast.unparse(annotation), owner)
-            )
-        return ReceiverPath(AnnotatedRoot(self.module_name, ast.unparse(annotation)))
+        return ReceiverPath(
+            self._placement(function).annotated(self.module_name, ast.unparse(annotation))
+        )
 
-    def _method_owners(self, function: FunctionNode) -> tuple[str, ...]:
-        """The class symbol a function is a method of: one when it is a method."""
-
+    def _placement(self, function: FunctionNode) -> FunctionPlacement:
         match self.parents.get(id(function)):
             case ast.ClassDef() as owner:
-                return (f"{self.module_name}.{self.class_qualnames[id(owner)]}",)
-        return ()
+                return MethodPlacement(
+                    f"{self.module_name}.{self.class_qualnames[id(owner)]}"
+                )
+        return FreeFunctionPlacement()
 
     def _binding_paths(
         self, function: FunctionNode, node: ast.AST, name: str, pending: Pending
@@ -1648,6 +1734,48 @@ class ReceiverPathBuilder:
                     if found:
                         return found
         return []
+
+
+class FunctionPlacement(ABC):
+    """Where a function is defined: what its first parameter and `Self` are."""
+
+    @abstractmethod
+    def first_parameter(self, function: FunctionNode) -> Iterator[ReceiverPath]:
+        """The first parameter's path when the placement fixes it, else nothing."""
+        raise NotImplementedError
+
+    @abstractmethod
+    def annotated(self, module_name: str, annotation: str) -> ReceiverRoot:
+        raise NotImplementedError
+
+
+@dataclass(frozen=True)
+class MethodPlacement(FunctionPlacement):
+    """A def in a class body: its first parameter is the instance, or the class for a classmethod."""
+
+    class_symbol: str
+
+    def first_parameter(self, function: FunctionNode) -> Iterator[ReceiverPath]:
+        decorators = {_decorator_name(decorator) for decorator in function.decorator_list}
+        if "staticmethod" in decorators:
+            return
+        if "classmethod" in decorators:
+            yield ReceiverPath(OwnClassRoot(self.class_symbol))
+            return
+        yield ReceiverPath(OwnInstanceRoot(self.class_symbol))
+
+    def annotated(self, module_name: str, annotation: str) -> ReceiverRoot:
+        return MethodAnnotatedRoot(module_name, annotation, self.class_symbol)
+
+
+class FreeFunctionPlacement(FunctionPlacement):
+    """A def outside a class body: no parameter is fixed and `Self` names nothing."""
+
+    def first_parameter(self, function: FunctionNode) -> Iterator[ReceiverPath]:
+        return iter(())
+
+    def annotated(self, module_name: str, annotation: str) -> ReceiverRoot:
+        return AnnotatedRoot(module_name, annotation)
 
 
 def _value_thunk(
