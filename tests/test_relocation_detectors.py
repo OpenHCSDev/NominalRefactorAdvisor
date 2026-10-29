@@ -366,4 +366,6 @@ def test_a_parameter_rebound_by_a_capture_is_uncounted_but_a_nested_parameter_is
     counted, _, uncounted = finding.summary.partition("Not counted")
     assert "1 branch test(s) read the name:" in counted
     assert f"/m.py:{nested_line}." in counted
-    assert all(f"/m.py:{line}." in uncounted for line in rebound_lines), finding.summary
+    assert all(
+        any(f"/m.py:{line}{end}" in uncounted for end in ",.") for line in rebound_lines
+    ), finding.summary
