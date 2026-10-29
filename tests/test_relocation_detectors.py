@@ -196,3 +196,31 @@ def test_two_own_fields_compared_are_a_relation_not_a_kind(tmp_path):
         "def use(span):\n    if span.single_line or span.renamed:\n        return 1\n"
     )
     assert _findings(OwnStateBranchAnswerDetector, _sources(tmp_path, {"m": source})) == []
+
+
+def test_a_branch_read_links_by_its_receivers_class_never_by_the_bare_name(tmp_path):
+    # pkg_b never imports pkg_a: its `.visible` reads are another class's
+    # member, whether its receiver is declared (`Cursor`) or not (`cursor`).
+    for name, source in {
+        "pkg_a/__init__": "",
+        "pkg_a/roles": (
+            "class Role:\n    visible = False\n\n"
+            "class Shown(Role):\n    visible = True\n\n"
+            "class Hidden(Role):\n    visible = False\n\n"
+            "def paint(role: Role):\n    if role.visible:\n        return 1\n"
+        ),
+        "pkg_b/__init__": "",
+        "pkg_b/viewer": (
+            "class Cursor:\n    visible = True\n\n"
+            "def draw(cursor):\n    if cursor.visible:\n        return 2\n\n"
+            "def blink(cursor: Cursor):\n    if cursor.visible:\n        return 3\n"
+        ),
+    }.items():
+        path = tmp_path / f"{name}.py"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(source)
+    (finding,) = _findings(ConstantSubtypeAnswerDetector, tmp_path)
+    assert "1 branch test(s) read the name:" in finding.summary
+    assert "pkg_a/roles.py:" in finding.summary
+    assert "viewer.py" not in finding.summary
+    assert all("viewer.py" not in location.file_path for location in finding.evidence)

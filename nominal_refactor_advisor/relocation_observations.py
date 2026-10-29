@@ -20,8 +20,10 @@ from .annotation_semantics import TypeWrapper
 from .ast_field_decoders import variadic_parameters
 from .ast_projection import ExpressionReference
 from .ast_tools import ParsedModule
+from .class_identity_observations import DeclaredIdentityFamily, QualifiedNames
 from .class_index import ModuleNominalBindingAuthority, ModuleNominalBindingSnapshot
 from .observation_families import ShapeFamily
+from .quoted_reference import ModuleReferenceScope
 from .restated_fact_observations import (
     RestatingSite,
     RestatingSiteFamily,
@@ -355,32 +357,90 @@ class ClassShapeFamily(ShapeFamily[ClassShapesModule]):
 
 
 @dataclass(frozen=True)
-class BranchRead:
-    """`x.member` (or `x.member()`) read in a test that selects a branch."""
+class MemberUse:
+    """`x.member` used by a consumer: where, and what `x` is declared to be.
+
+    `receiver` is the module-qualified class `x` is declared as, the key the
+    compact class index resolves under: the enclosing class for a method's
+    first parameter, a parameter's annotation otherwise; empty when nothing
+    declares it, or the function rebinds the name. `module` is the module
+    holding the use.
+    """
 
     file_path: str
     lineno: int
     symbol: str
     member: str
+    receiver: str
+    module: str
+
+
+@dataclass(frozen=True)
+class BranchRead(MemberUse):
+    """`x.member` (or `x.member()`) read in a test that selects a branch."""
+
     called: bool
 
 
 @dataclass(frozen=True)
-class LambdaCall:
+class LambdaCall(MemberUse):
     """`x.member(...)` called with two or more lambdas."""
 
-    file_path: str
-    lineno: int
-    symbol: str
-    member: str
     lambdas: int
 
 
 @dataclass(frozen=True)
 class ConsumerShapesModule:
+    """A module's member uses, and the modules its import statements name (with each `from` name as a submodule)."""
+
     module_name: str
     branch_reads: tuple[BranchRead, ...]
     lambda_calls: tuple[LambdaCall, ...]
+    imported: tuple[str, ...] = ()
+
+
+def declared_receivers(parsed_module: ParsedModule) -> dict[int, dict[str, str]]:
+    """For each node of a function's own body, the classes its parameters are declared as.
+
+    A method's first parameter (not under `staticmethod`) is its class; a
+    parameter annotated with a bare or dotted name is the class that name
+    resolves to (`QualifiedNames`). A parameter the body rebinds anywhere is
+    left out: the value read may no longer be the one declared.
+    """
+
+    names = QualifiedNames.of(parsed_module)
+    classes = {qualname for qualname, _node in scoped_classes(parsed_module.module)}
+    found: dict[int, dict[str, str]] = {}
+    for prefix, scope in walk_scopes(parsed_module.module):
+        if not isinstance(scope, DEFINITION_TYPES):
+            continue
+        rebound = {
+            name
+            for statement in scope.body
+            for node in ast.walk(statement)
+            for name in ModuleReferenceScope.bound_names(node)
+        }
+        parameters = [*scope.args.posonlyargs, *scope.args.args, *scope.args.kwonlyargs]
+        owner = prefix.rstrip(".").rpartition(".")[0]
+        declared: dict[str, str] = {}
+        if (
+            owner in classes
+            and parameters
+            and staticmethod.__name__ not in decorator_names(scope)
+        ):
+            declared[parameters[0].arg] = f"{parsed_module.module_name}.{owner}"
+        for parameter in parameters:
+            if isinstance(parameter.annotation, (ast.Name, ast.Attribute)):
+                qualified = names.qualified(parameter.annotation)
+                if qualified and not qualified.startswith(f"{builtins.__name__}."):
+                    declared.setdefault(parameter.arg, qualified)
+        declared = {
+            name: receiver for name, receiver in declared.items() if name not in rebound
+        }
+        for statement in statements_of(scope):
+            for node in scope_nodes(statement):
+                found[id(node)] = declared
+    return found
 
 
 def branch_tests(node: ast.AST) -> Iterator[ast.expr]:
@@ -432,18 +492,38 @@ class ConsumerShapeFamily(ShapeFamily[ConsumerShapesModule]):
 
     item_type = ConsumerShapesModule
 
+    @staticmethod
+    def receiver(node: ast.expr, declared: dict[str, str]) -> str:
+        """The declared class of the object `node.member` or `node.member()` is read from."""
+
+        match node:
+            case ast.Attribute(value=ast.Name(id=name)) | ast.Call(
+                func=ast.Attribute(value=ast.Name(id=name))
+            ):
+                return declared.get(name, "")
+        return ""
+
     @classmethod
     def collect(cls, parsed_module: ParsedModule) -> list[ConsumerShapesModule]:
         symbols = enclosing_symbols(parsed_module.module)
+        receivers = declared_receivers(parsed_module)
+        module = parsed_module.module_name
         reads = []
         calls = []
         for node in ast.walk(parsed_module.module):
             symbol = symbols.get(id(node), "<module>")
+            declared = receivers.get(id(node), {})
             for test in branch_tests(node):
                 for read, member, called in tested_reads(test):
                     reads.append(
                         BranchRead(
-                            parsed_module.file_path, read.lineno, symbol, member, called
+                            parsed_module.file_path,
+                            read.lineno,
+                            symbol,
+                            member,
+                            cls.receiver(read, declared),
+                            module,
+                            called,
                         )
                     )
             match node:
@@ -455,11 +535,35 @@ class ConsumerShapeFamily(ShapeFamily[ConsumerShapesModule]):
                     if lambdas >= 2:
                         calls.append(
                             LambdaCall(
-                                parsed_module.file_path, node.lineno, symbol, member, lambdas
+                                parsed_module.file_path,
+                                node.lineno,
+                                symbol,
+                                member,
+                                cls.receiver(node, declared),
+                                module,
+                                lambdas,
                             )
                         )
         return [
-            ConsumerShapesModule(parsed_module.module_name, tuple(reads), tuple(calls))
+            ConsumerShapesModule(
+                module,
+                tuple(reads),
+                tuple(calls),
+                tuple(
+                    sorted(
+                        {
+                            found
+                            for imported, taken in DeclaredIdentityFamily.imported(
+                                parsed_module
+                            )
+                            for found in (
+                                imported,
+                                *(f"{imported}.{name}" for name in taken),
+                            )
+                        }
+                    )
+                ),
+            )
         ]
 
 
