@@ -63,6 +63,7 @@ from .product_flow import (
     CompactBranchPredicateResolverABC,
     CompactCallableReferenceUse,
     CompactFlowContext,
+    CompactFlowPosition,
     CompactFunctionFlow,
     CompactFunctionCall,
     compact_function_flow_projection,
@@ -70,7 +71,6 @@ from .product_flow import (
     SourceFlowOperation,
 )
 from .scan_cache import ScanCache
-from .source_geometry import SourceByteSpan
 from .registry_identity import mro_registry_value
 
 if TYPE_CHECKING:
