@@ -5007,6 +5007,86 @@ def test_repeated_keyed_family_roots_are_found_by_shape_not_by_base_name(
     }
 
 
+def _keyed_family_root_candidates(
+    scan_root: Path, package: str, roots: tuple[tuple[str, str, str], ...]
+) -> list[tuple[str, tuple[str, ...]]]:
+    package_root = scan_root / package
+    package_root.mkdir()
+    for module_name, class_name, base_import in roots:
+        (package_root / f"{module_name}.py").write_text(
+            f"{base_import}\n"
+            "\n"
+            f"class {class_name}(Base):\n"
+            f"    registry_key_attr = '{module_name}'\n"
+            "    _registry = {}\n"
+            "    @classmethod\n"
+            f"    def for_{module_name}(cls, key):\n"
+            "        try:\n"
+            "            return cls._registry[key]\n"
+            "        except KeyError as error:\n"
+            "            raise ValueError(key) from error\n",
+            encoding="utf-8",
+            newline="",
+        )
+    detector = systemic_detectors.RepeatedKeyedFamilyDetector
+    candidates = detector._candidates_from_compact_projections(
+        detector.compact_module_projections(
+            parse_python_modules(scan_root, use_parse_cache=False)
+        ),
+        DetectorConfig(),
+    )
+    return sorted(
+        (
+            candidate.family_base_name,
+            tuple(root.class_name for root in candidate.roots),
+        )
+        for candidate in candidates
+    )
+
+
+def test_repeated_keyed_family_roots_group_by_base_symbol_not_base_name(
+    tmp_path: Path,
+) -> None:
+    """Two unrelated classes named `Base` are two families, both shown as `Base`."""
+
+    (tmp_path / "pkg").mkdir()
+    for module_name in ("one", "two"):
+        (tmp_path / "pkg" / f"{module_name}.py").write_text("class Base:\n    pass\n")
+    candidates = _keyed_family_root_candidates(
+        tmp_path,
+        "roots",
+        tuple(
+            (f"{origin}_{index}", f"{origin.title()}{index}Policy", f"from pkg.{origin} import Base")
+            for origin in ("one", "two")
+            for index in range(3)
+        ),
+    )
+
+    assert candidates == [
+        ("Base", ("One0Policy", "One1Policy", "One2Policy")),
+        ("Base", ("Two0Policy", "Two1Policy", "Two2Policy")),
+    ]
+
+
+def test_a_scanned_module_named_like_the_standard_library_is_a_family_base(
+    tmp_path: Path,
+) -> None:
+    """A scanned top-level `code` module is the project's, not the standard library's."""
+
+    (tmp_path / "code").mkdir()
+    (tmp_path / "code" / "__init__.py").write_text("class Base:\n    pass\n")
+    candidates = _keyed_family_root_candidates(
+        tmp_path,
+        "roots",
+        tuple(
+            (f"root_{index}", f"Root{index}Policy", "from code import Base")
+            for index in range(3)
+        ),
+    )
+
+    assert candidates == [("Base", ("Root0Policy", "Root1Policy", "Root2Policy"))]
+
+
 def test_compact_repeated_keyed_family_preserves_grouping_semantics(
     tmp_path: Path,
 ) -> None:

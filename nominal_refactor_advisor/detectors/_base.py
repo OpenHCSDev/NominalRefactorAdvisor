@@ -137,6 +137,7 @@ from ..class_index import (
     CompactModuleClassProjection,
     CompactModuleClassProjectionFamily,
     CompactRepeatedKeyedFamilyRoot,
+    DeclaredFamilyBase,
     IndexedClass,
     LatentRosterMatch,
     LatentRosterObservation,
@@ -3286,20 +3287,6 @@ class SyntaxProjectionAuthority:
             if value_name in param_names:
                 assigned[attr_name] = value_name
         return assigned
-
-    def keyed_family_key_type_name(self, node: ast.ClassDef) -> str | None:
-        for base in node.bases:
-            if not isinstance(base, ast.Subscript):
-                continue
-            if (
-                ExpressionReference.decoded(base.value).terminal_name
-                != "KeyedNominalFamily"
-            ):
-                continue
-            type_names = annotation_type_names(base.slice)
-            if type_names:
-                return type_names[0]
-        return None
 
     def enum_member_refs_for_known_key_types(
         self, node: ast.AST, *, key_type_names: frozenset[str]
@@ -6666,24 +6653,37 @@ class RepeatedKeyedFamilyCandidate:
         cls,
         roots: Sequence[CompactRepeatedKeyedFamilyRoot],
         *,
+        scanned_roots: frozenset[str],
         minimum_root_count: int,
     ) -> tuple[Self, ...]:
+        """Roots grouped by the symbols of the bases they declare outside the standard library.
+
+        `ABC` and `Generic[T]` are no family; two classes named `Base` in
+        different modules are two families. `scanned_roots` are the scanned
+        top-level modules, which a standard-library name does not denote.
+        """
+
         grouped: dict[
-            tuple[str, RegistryLookupStyle],
+            tuple[tuple[DeclaredFamilyBase, ...], RegistryLookupStyle],
             list[CompactRepeatedKeyedFamilyRoot],
         ] = defaultdict(list)
         for root in roots:
-            grouped[root.family_base_name, root.lookup_style].append(root)
+            family = tuple(
+                base
+                for base in root.family_bases
+                if not base.is_standard_library(scanned_roots)
+            )
+            grouped[family, root.lookup_style].append(root)
         return tuple(
             cls(
-                family_base_name=family_base_name,
+                family_base_name=", ".join(base.name for base in family),
                 lookup_style=lookup_style,
                 roots=sorted_tuple(
                     items,
                     key=lambda item: (item.file_path, item.line, item.class_name),
                 ),
             )
-            for (family_base_name, lookup_style), items in sorted(grouped.items())
+            for (family, lookup_style), items in sorted(grouped.items())
             if len(items) >= minimum_root_count
         )
 

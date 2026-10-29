@@ -112,6 +112,39 @@ def test_a_subclass_of_a_registering_family_is_an_authority_by_inheritance() -> 
     assert not classes["pkg.inherited.Member"].declares_autoregister_meta
 
 
+def test_a_keyed_family_key_type_is_read_from_a_registry_family_base_only() -> None:
+    """`Family[Key]` names the key only when `Family` is a registry family, whatever its name."""
+
+    source = (
+        "from enum import Enum\n"
+        "from typing import Generic, TypeVar\n\n"
+        "K = TypeVar('K')\n\n\n"
+        "class StoresMeta(type):\n"
+        "    def __init__(cls, name, bases, namespace):\n"
+        "        super().__init__(name, bases, namespace)\n"
+        "        cls.__registry__[namespace.get('key')] = cls\n\n\n"
+        "class Family(Generic[K], metaclass=StoresMeta):\n    pass\n\n\n"
+        "class KeyedNominalFamily(Generic[K]):\n    pass\n\n\n"
+        "class Mode(Enum):\n    ALPHA = 1\n\n\n"
+        "class Keyed(Family[Mode]):\n    registry_key_attr = 'mode'\n\n\n"
+        "class NamedLikeOne(KeyedNominalFamily[Mode]):\n    registry_key_attr = 'mode'\n"
+    )
+    path = Path("pkg/keyed.py")
+    module = ParsedModule(
+        path=path,
+        module_name="pkg.keyed",
+        module=ast.parse(source, filename=str(path)),
+        source=source,
+    )
+    classes = build_compact_class_family_index(
+        CompactModuleClassProjectionFamily.collect_modules((module,))
+    ).classes_by_symbol
+    assert {
+        name: classes[f"pkg.keyed.{name}"].keyed_family_key_type_name
+        for name in ("Keyed", "NamedLikeOne", "Family")
+    } == {"Keyed": "Mode", "NamedLikeOne": None, "Family": None}
+
+
 def test_the_source_index_gives_the_same_answer() -> None:
     index = build_class_family_index([_module()])
 
