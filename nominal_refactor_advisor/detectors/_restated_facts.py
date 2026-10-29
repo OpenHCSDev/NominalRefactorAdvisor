@@ -25,8 +25,14 @@ from ..codemod import (
 from ..class_index import (
     CompactModuleClassProjectionFamily,
 )
-from ..probe_owner import ProbeOwnerContext, ScannedClasses
-from ..type_checker_session import TypeCheckerSession
+from ..ast_tools import ParsedModuleSet
+from ..probe_owner import ProbeOwnerContext, ReceiverSpan, ScannedClasses
+from ..type_checker_session import (
+    SourceFiles,
+    SourceTexts,
+    TypeCheckerSession,
+    TypeCheckerSources,
+)
 from ..codemod_legacy_path_recipe import LegacyPathErasureFindingRecipeSynthesizer
 from ..codemod_optional_ast_field import (
     OptionalAstFieldDecoderFindingRecipeSynthesizer,
@@ -406,38 +412,63 @@ class ExactKeySetDetector(JoinedRestatedFactDetector[DeclaredRecords, RestatingS
         return {} if not declared else {"authority_evidence": declared[0]}
 
 
-def _probe_owner_context(
-    projections_by_family: CompactProjectionGroups,
-) -> ProbeOwnerContext:
-    """The scan's classes, and the type checker's owner for each unannotated receiver.
+@dataclass(frozen=True)
+class ProbeOwnerQuery:
+    """The scan's classes, and the receivers that declare no annotation.
 
-    The type checker runs only when some receiver declares no annotation.
+    An owner resolves only to a scanned class, so its declaring file is a
+    source of the type checker's build too.
     """
 
-    classes = ScannedClasses(
-        {
-            indexed_class.symbol: indexed_class
-            for projection in CompactModuleClassProjectionFamily.modules_in(projections_by_family)
-            for indexed_class in projection.classes
-        }
-    )
-    spans = tuple(
-        span
-        for module in ForeignAbsenceSiteFamily.modules_in(projections_by_family)
-        for site in module.sites
-        for span in site.owner.type_checker_spans()
-    )
-    if not spans:
-        return ProbeOwnerContext(classes, {})
-    # An owner resolves only to a scanned class, so its declaring file is a source too.
-    with TypeCheckerSession.session(
-        {span.file_path for span in spans}
-        | {indexed_class.file_path for indexed_class in classes.by_symbol.values()}
-    ) as session:
-        answers = session.receiver_types(spans)
-    return ProbeOwnerContext(
-        classes, {span: answer.owner(classes) for span, answer in answers.items()}
-    )
+    classes: ScannedClasses
+    spans: tuple[ReceiverSpan, ...]
+
+    @classmethod
+    def of(cls, projections_by_family: CompactProjectionGroups) -> ProbeOwnerQuery:
+        return cls(
+            ScannedClasses(
+                {
+                    indexed_class.symbol: indexed_class
+                    for projection in CompactModuleClassProjectionFamily.modules_in(
+                        projections_by_family
+                    )
+                    for indexed_class in projection.classes
+                }
+            ),
+            tuple(
+                span
+                for module in ForeignAbsenceSiteFamily.modules_in(projections_by_family)
+                for site in module.sites
+                for span in site.owner.type_checker_spans()
+            ),
+        )
+
+    @property
+    def file_paths(self) -> frozenset[str]:
+        return frozenset(span.file_path for span in self.spans) | frozenset(
+            indexed_class.file_path for indexed_class in self.classes.by_symbol.values()
+        )
+
+    def answered(self, sources: TypeCheckerSources) -> ProbeOwnerContext:
+        """The type checker's owner for each receiver; it runs only when there is one."""
+
+        if not self.spans:
+            return ProbeOwnerContext(self.classes, {})
+        with TypeCheckerSession.session(sources) as session:
+            answers = session.receiver_types(self.spans)
+        return ProbeOwnerContext(
+            self.classes,
+            {span: answer.owner(self.classes) for span, answer in answers.items()},
+        )
+
+
+def _probe_owner_context_from_files(
+    projections_by_family: CompactProjectionGroups,
+) -> ProbeOwnerContext:
+    """The compact roots path holds projections, not parsed text: it types the files it read."""
+
+    query = ProbeOwnerQuery.of(projections_by_family)
+    return query.answered(SourceFiles(query.file_paths))
 
 
 class ForeignAbsenceProbeDetector(
@@ -451,7 +482,7 @@ class ForeignAbsenceProbeDetector(
         CompactModuleClassProjectionFamily,
     )
 
-    compact_shared_group_context_builder = staticmethod(_probe_owner_context)
+    compact_shared_group_context_builder = staticmethod(_probe_owner_context_from_files)
 
     restated = RestatedFact(
         fact="Each probe restates a state of the other object's type, a second copy of that type's state that the type does not declare.",
@@ -467,6 +498,24 @@ class ForeignAbsenceProbeDetector(
         (),
         (ObservationTag.ATTRIBUTE_PROBE,),
     )
+
+    def _collect_findings(
+        self, modules: ParsedModuleSet, config: DetectorConfig
+    ) -> list[RefactorFinding]:
+        """Parsed modules type as their own text, so a state held only in memory
+        types as itself, not as the files on disk."""
+
+        projections_by_family = type(self).compact_module_projection_groups(modules)
+        query = ProbeOwnerQuery.of(projections_by_family)
+        return self._findings_from_compact_projection_groups_context(
+            projections_by_family,
+            query.answered(
+                SourceTexts(
+                    tuple(module for module in modules if module.file_path in query.file_paths)
+                )
+            ),
+            config,
+        )
 
     def describe(
         self, sites: Sequence[ForeignAbsenceSite], context: ProbeOwnerContext

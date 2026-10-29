@@ -1445,6 +1445,25 @@ class CodemodWorkflowScan:
     def source_snapshot(self) -> CodemodSourceSnapshot:
         return CodemodSourceSnapshot.from_modules(self.modules, self.findings)
 
+    @classmethod
+    def parsed(
+        cls,
+        roots: tuple[Path, ...],
+        config: DetectorConfig,
+        *,
+        cache_dir: Path | None,
+        use_parse_cache: bool,
+        parse_workers: int,
+    ) -> CodemodWorkflowScan:
+        """Parse ``roots`` and run every detector over them."""
+        modules = parse_python_module_roots(
+            roots,
+            cache_dir=cache_dir,
+            use_parse_cache=use_parse_cache,
+            parse_workers=parse_workers,
+        )
+        return cls(modules=modules, findings=analyze_modules(modules, config))
+
 
 @dataclass(frozen=True)
 class CodemodSimulationFindingProjection:
@@ -1660,16 +1679,14 @@ class CodemodRefactorGoalRunner:
         )
 
     def fresh_scan(self) -> CodemodWorkflowScan:
-        modules = parse_python_module_roots(
+        scan = CodemodWorkflowScan.parsed(
             self.roots,
+            self.config,
             cache_dir=self.resolved_dir,
             use_parse_cache=self.enabled,
             parse_workers=self.parse_workers,
         )
-        return CodemodWorkflowScan(
-            modules=modules,
-            findings=self.report_scoped_findings(analyze_modules(modules, self.config)),
-        )
+        return replace(scan, findings=self.report_scoped_findings(scan.findings))
 
     def projected_scan(
         self,
