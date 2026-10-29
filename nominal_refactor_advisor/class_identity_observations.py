@@ -66,7 +66,8 @@ class DeclaredClass:
     `instance_attributes` are the names it declares as per-object state (an
     annotated field that is not a ClassVar, or `self.name = ...` in a method);
     `lookups` are its classmethods that return a member class of the family for
-    an argument.
+    an argument. `defines` are the names its body binds with a `def` or an
+    assignment to a bare name: the methods it overrides.
 
     What decides whether the class object's `__name__` is the statement's name:
     `top_level` (a module-level statement, so `module.Name` is its qualified
@@ -86,6 +87,7 @@ class DeclaredClass:
     constants: tuple[tuple[str, str], ...]
     instance_attributes: tuple[str, ...]
     lookups: tuple[str, ...]
+    defines: tuple[str, ...] = ()
     top_level: bool = False
     decorators: tuple[str, ...] = ()
     origins: tuple[str, ...] = ()
@@ -430,6 +432,22 @@ class DeclaredIdentityFamily(ShapeFamily[ModuleDeclarations]):
             ),
             lookups=tuple(
                 method.name for method in methods if cls.is_lookup(method, node.name)
+            ),
+            defines=tuple(
+                sorted(
+                    {method.name for method in methods}
+                    | {
+                        target.id
+                        for statement in node.body
+                        if isinstance(statement, (ast.Assign, ast.AnnAssign))
+                        for target in (
+                            statement.targets
+                            if isinstance(statement, ast.Assign)
+                            else (statement.target,)
+                        )
+                        if isinstance(target, ast.Name)
+                    }
+                )
             ),
             top_level=top_level,
             decorators=tuple(
@@ -794,12 +812,50 @@ class ClassNameOwners:
         and not value.__members__
         and issubclass(value, str)
     )
-    """The standard enums whose members are their values as strings: equal, hashed,
-    `str()` and `format()` alike (`StrEnum`). A `(str, Enum)` mixin's member is
-    equal but formats as `Enum.MEMBER`; a plain `Enum`'s is not even equal."""
+    """The standard enums whose members answer `==`, `hash()`, `str()` and
+    `format()` as their string values do (`StrEnum`). A `(str, Enum)` mixin's
+    member is equal but formats as `Enum.MEMBER`; a plain `Enum`'s is not even
+    equal. No member is its string: `type()`, `repr()`, pickling and `is` still
+    tell them apart."""
+
+    STRING_ANSWERS: ClassVar[frozenset[str]] = frozenset(
+        method.__name__
+        for method in (str.__new__, str.__eq__, str.__hash__, str.__str__, str.__format__)
+    )
+    """The methods behind the answers a `VALUE_ENUMS` member shares with its
+    string, and `__new__`, which decides the member's value."""
 
     def is_enum(self, qualified: str) -> bool:
         return self.reaches(qualified, self.ENUMS)
+
+    def answers_as_string(
+        self, qualified: str, visiting: frozenset[str] = frozenset()
+    ) -> bool:
+        """Whether the enum's members answer `STRING_ANSWERS` as their values do.
+
+        Every base and metaclass on the way is a `VALUE_ENUMS` class or a
+        scanned class that defines none of `STRING_ANSWERS` and answers so in
+        turn. One overriding class anywhere in the bases, or one base nothing
+        scanned declares, decides the answer for every member through the MRO,
+        so reaching `StrEnum` along one path is not enough.
+        """
+
+        declared = self.classes.get(qualified)
+        if (
+            declared is None
+            or qualified in visiting
+            or not declared.origins
+            or not self.STRING_ANSWERS.isdisjoint(declared.defines)
+        ):
+            return False
+        return all(
+            origin in self.VALUE_ENUMS
+            or (
+                (found := self.canonical(origin)) is not None
+                and self.answers_as_string(found, visiting | {qualified})
+            )
+            for origin in declared.origins
+        )
 
     def reaches(
         self,
@@ -1146,9 +1202,11 @@ class EnumValueSpelling(IdentitySpelling):
     default, a `return` in a function declared `-> E`, or a comparison or match
     against a parameter declared `E` that its function never rebinds. The
     literal then restates that member. `E.MEMBER` replaces it only where the
-    member behaves as the string does wherever the value goes (an enum reaching
-    `ClassNameOwners.VALUE_ENUMS`); for any other enum the finding stands and
-    no rewrite is offered. Equal text in a position nothing types as the enum is
+    member answers `==`, `hash()`, `str()` and `format()` as the string does
+    (`ClassNameOwners.answers_as_string`); for any other enum the finding stands
+    and no rewrite is offered. The rewrite does change `type()`, `repr()`,
+    pickling and `is` on the value, to the member the declaration already says
+    the position holds. Equal text in a position nothing types as the enum is
     no site: equal values are not one owner. The detail carries the holding
     statement's index and the name the declaration types it by.
     """
@@ -1161,9 +1219,7 @@ class EnumValueSpelling(IdentitySpelling):
         member = identities.typed_member(file_path, name, literal)
         if not holding or member is None:
             return ReferenceRewrite.NONE
-        if not identities.class_names.reaches(
-            member.enum, ClassNameOwners.VALUE_ENUMS
-        ):
+        if not identities.class_names.answers_as_string(member.enum):
             return ReferenceRewrite.NONE
         if not identities.binds(file_path, int(holding), name):
             return ReferenceRewrite.NONE

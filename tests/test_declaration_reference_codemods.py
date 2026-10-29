@@ -536,26 +536,37 @@ def test_an_enum_whose_members_do_not_behave_as_their_strings_keeps_its_spelling
     tmp_path: Path,
 ):
     # A (str, Enum) member is equal to its string but formats as `Mixed.A`; a
-    # plain Enum member is not even equal. Both still restate the member, but
+    # plain Enum member is not even equal; a StrEnum that overrides `__eq__`,
+    # or composes a base that overrides `__format__` ahead of StrEnum in its
+    # MRO, answers as that override does. All still restate the member, but
     # writing the member there would change what the program does.
     _write(
         tmp_path,
         {
             "pkg/__init__": "",
             "pkg/kinds": (
-                "from enum import Enum\n\n\n"
+                "from enum import Enum, StrEnum\n\n\n"
                 "class Mixed(str, Enum):\n    A = 'mixed_a'\n\n\n"
-                "class Plain(Enum):\n    A = 'plain_a'\n"
+                "class Plain(Enum):\n    A = 'plain_a'\n\n\n"
+                "class Folded(StrEnum):\n    A = 'folded_a'\n\n"
+                "    def __eq__(self, other):\n"
+                "        return str(self).casefold() == str(other).casefold()\n\n"
+                "    __hash__ = StrEnum.__hash__\n\n\n"
+                "class Shouting:\n"
+                "    def __format__(self, spec):\n        return str(self).upper()\n\n\n"
+                "class Loud(Shouting, StrEnum):\n    A = 'loud_a'\n"
             ),
             "pkg/use": (
-                "from pkg.kinds import Mixed, Plain\n\n"
+                "from pkg.kinds import Folded, Loud, Mixed, Plain\n\n"
                 "MIXED: Mixed = 'mixed_a'\n"
                 "PLAIN: Plain = 'plain_a'\n"
+                "FOLDED: Folded = 'folded_a'\n"
+                "LOUD: Loud = 'loud_a'\n"
             ),
         },
     )
     findings = _identity_findings(tmp_path)
-    for member in ("`Mixed.A`", "`Plain.A`"):
+    for member in ("`Mixed.A`", "`Plain.A`", "`Folded.A`", "`Loud.A`"):
         assert any(f"enum member {member}" in finding.summary for finding in findings)
     records, rewritten = _replayed(tmp_path)
     assert not any(record.candidate_recipes for record in records)

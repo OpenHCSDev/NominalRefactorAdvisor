@@ -483,7 +483,9 @@ class ReferenceEnumMemberOperation(ReferenceNamedClassOperation):
 
     The declaration typing the position names the enum, so the file binds it
     already (`DeclaredIdentities.binds`); the member is the value the position
-    is declared to hold, and a `str` enum member equals its string.
+    is declared to hold, and it answers `==`, `hash()`, `str()` and `format()`
+    as its string (`ClassNameOwners.answers_as_string`). `type()`, `repr()`,
+    pickling and `is` see the member instead.
     """
 
     position_tags: ClassVar[frozenset[str]] = frozenset((EnumValueSpelling.tag,))
