@@ -414,9 +414,14 @@ class EmptyFindingMetrics(FindingMetrics):
 
 @dataclass(frozen=True)
 class DeclarationReferenceMetrics(FindingMetrics):
-    """The scan-wide reference rewrites this finding carries as their one candidate, each with its files."""
+    """The scan-wide reference rewrites this finding carries, each with its files, or those that carry its sites.
+
+    `carried_by` names, for a finding whose rewritable sites another finding's
+    recipe rewrites, each such rewrite and where that finding stands.
+    """
 
     carried_rewrites: tuple[tuple[str, tuple[str, ...]], ...]
+    carried_by: tuple[tuple[str, str], ...] = ()
 
 
 @dataclass(frozen=True)

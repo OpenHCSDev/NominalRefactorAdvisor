@@ -2320,6 +2320,21 @@ class RejectedRecipeEvaluation(DeclaredRecipeEvaluation):
 
 
 @dataclass(frozen=True, kw_only=True)
+class CoveredRecipeEvaluation(DeclaredRecipeEvaluation):
+    """A finding another finding's executable recipe removes: neither a candidate nor rejected.
+
+    `covering` names that recipe's rewrite and where its carrying finding stands.
+    """
+
+    status = FindingRecipeSynthesisStatus.COVERED_BY_CANDIDATE
+    covering: str
+
+    @property
+    def rejection_reason(self) -> str:
+        return f"covered by {self.covering}"
+
+
+@dataclass(frozen=True, kw_only=True)
 class RejectedRecipeProposalEvaluation(DeclaredRecipeEvaluation):
     """An inspectable proposal with failed proof, never an executable candidate."""
 
@@ -2764,6 +2779,12 @@ class FindingRecipeEvaluator(ABC):
     def rejected_evaluation(self, reason: str) -> RejectedRecipeEvaluation:
         return RejectedRecipeEvaluation(
             reason=reason,
+            evaluation_declaration_type=type(self),
+        )
+
+    def covered_evaluation(self, covering: str) -> CoveredRecipeEvaluation:
+        return CoveredRecipeEvaluation(
+            covering=covering,
             evaluation_declaration_type=type(self),
         )
 

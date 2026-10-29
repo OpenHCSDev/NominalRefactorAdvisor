@@ -153,7 +153,10 @@ def test_a_module_the_file_does_not_import_keeps_its_prescription(tmp_path: Path
     (finding,) = _identity_findings(tmp_path)
     records, rewritten = _replayed(tmp_path)
     (record,) = records
-    assert record.status is not FindingRecipeSynthesisStatus.EXECUTABLE_CANDIDATE
+    assert record.status is FindingRecipeSynthesisStatus.REJECTED_BY_SAFETY_CHECK
+    assert record.reason == (
+        "no site of this finding can be written as its reference where it stands"
+    )
     assert rewritten == {}
     assert "a site no recipe rewrites keeps this prescription" in finding.summary
 
@@ -203,6 +206,17 @@ def test_the_scan_rewrite_is_one_candidate_with_one_operation_per_file(
         if record.status is FindingRecipeSynthesisStatus.EXECUTABLE_CANDIDATE
     ]
     assert len(executable) == 1
+    # Every other finding is removed by that one recipe: covered, naming where
+    # its carrier stands, never reported as rejected.
+    others = [record for record in records if record not in executable]
+    assert others
+    assert {record.status for record in others} == {
+        FindingRecipeSynthesisStatus.COVERED_BY_CANDIDATE
+    }
+    assert all(
+        record.reason.startswith("covered by the type rewrite carried at ")
+        for record in others
+    )
     operations = executable[0].candidate_recipes[0].operations
     assert sorted(
         Path(operation.target.file_path).name for operation in operations

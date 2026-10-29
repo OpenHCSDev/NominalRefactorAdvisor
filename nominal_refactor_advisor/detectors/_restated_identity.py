@@ -102,7 +102,10 @@ class RestatedIdentityDetector(
         self, sites: Sequence[RestatingSite], context: DeclaredIdentities
     ) -> dict[str, object]:
         carried = context.carried_rewrites(sites)
-        return {"metrics": DeclarationReferenceMetrics(carried)} if carried else {}
+        covering = () if carried else context.covering_rewrites(sites)
+        if not (carried or covering):
+            return {}
+        return {"metrics": DeclarationReferenceMetrics(carried, covering)}
 
 
 __all__ = ("RestatedIdentityDetector",)

@@ -1244,6 +1244,9 @@ class DeclaredIdentities:
     class_names: ClassNameOwners
     enum_values: dict[str, tuple[EnumMember, ...]] = field(default_factory=dict)
     carriers: dict[tuple[str, str, str], tuple[str, ...]] = field(default_factory=dict)
+    covered: dict[tuple[str, str, str], tuple[tuple[str, str], ...]] = field(
+        default_factory=dict
+    )
     rewritten_files: dict[str, tuple[str, ...]] = field(default_factory=dict)
 
     @classmethod
@@ -1556,6 +1559,7 @@ class DeclaredIdentities:
         positions = IdentitySpelling.positions()
         first: dict[str, RestatingSite] = {}
         files: dict[str, set[str]] = defaultdict(set)
+        rewritable: dict[tuple[str, str, str], set[str]] = defaultdict(set)
         for site in sites:
             position = positions[site.detail[0]]
             if not position.rewrite(site.detail, self, site.file_path).rewritable(
@@ -1564,6 +1568,7 @@ class DeclaredIdentities:
                 continue
             kind = position.rewrite_kind.tag
             files[kind].add(site.file_path)
+            rewritable[(site.file_path, site.symbol, site.group)].add(kind)
             current = first.get(kind)
             if current is None or (site.file_path, site.lineno, site.group) < (
                 current.file_path,
@@ -1572,14 +1577,34 @@ class DeclaredIdentities:
             ):
                 first[kind] = site
         carriers: dict[tuple[str, str, str], list[str]] = defaultdict(list)
+        carrying: dict[str, tuple[str, str, str]] = {}
         for kind, site in sorted(first.items()):
-            carriers[(site.file_path, site.symbol, site.group)].append(kind)
+            carrying[kind] = (site.file_path, site.symbol, site.group)
+            carriers[carrying[kind]].append(kind)
         return replace(
             self,
             carriers={key: tuple(found) for key, found in carriers.items()},
+            covered={
+                key: tuple(
+                    (kind, f"{first[kind].file_path}:{first[kind].lineno}")
+                    for kind in sorted(kinds)
+                    if carrying[kind] != key
+                )
+                for key, kinds in rewritable.items()
+                if any(carrying[kind] != key for kind in kinds)
+            },
             rewritten_files={
                 kind: tuple(sorted(found)) for kind, found in files.items()
             },
+        )
+
+    def covering_rewrites(
+        self, sites: Sequence[RestatingSite]
+    ) -> tuple[tuple[str, str], ...]:
+        """The rewrites another finding carries that rewrite this finding's sites, with where it stands."""
+
+        return self.covered.get(
+            (sites[0].file_path, sites[0].symbol, sites[0].group), ()
         )
 
     def carried_rewrites(

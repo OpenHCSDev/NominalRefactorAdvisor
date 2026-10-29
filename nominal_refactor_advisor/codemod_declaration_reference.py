@@ -507,7 +507,8 @@ class DeclarationReferenceFindingRecipeSynthesizer(
     The detector names one finding per rewrite kind and the files that rewrite
     touches (`DeclarationReferenceMetrics`). Its recipe holds one proved
     operation per file, so the whole rewrite is one candidate; every other
-    finding it removes is rejected here as carried by that one.
+    finding it removes is covered by that one (`carried_by`), and a finding
+    with no rewritable site is rejected.
     """
 
     reference_operations: tuple[type[DeclarationReferenceOperation], ...] = (
@@ -556,9 +557,16 @@ class DeclarationReferenceFindingRecipeSynthesizer(
             )
         carried = self.carried(finding)
         if not carried:
+            metrics = finding.metrics
+            if isinstance(metrics, DeclarationReferenceMetrics) and metrics.carried_by:
+                return self.covered_evaluation(
+                    ", ".join(
+                        f"the {kind} rewrite carried at {where}"
+                        for kind, where in metrics.carried_by
+                    )
+                )
             return self.rejected_evaluation(
-                "no recipe rewrites this site, or its rewrite is carried by the "
-                "finding at the scan's first rewritable site"
+                "no site of this finding can be written as its reference where it stands"
             )
         recipe = RefactorRecipe(
             recipe_id=f"{finding.stable_id}-declaration-references",
