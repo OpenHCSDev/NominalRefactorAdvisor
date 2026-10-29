@@ -14,7 +14,7 @@ import os
 import sys
 from abc import ABC, abstractmethod
 from collections.abc import Callable
-from dataclasses import dataclass, field, fields, replace
+from dataclasses import Field, dataclass, field, fields, replace
 from enum import Enum, StrEnum
 from functools import cached_property
 from pathlib import Path
@@ -186,6 +186,7 @@ from .structural_overlap import (
 )
 from .amortization import IntrospectionSource
 from .member_census import MemberAwarenessCensus, build_member_awareness_census
+from .refactor_search import ScoredMove, SearchBudget, SearchTurn, build_refactor_search
 from .refactor_concepts import RefactorConcept
 
 MEMBER_AWARENESS_LISTING_LIMIT = 20
@@ -234,6 +235,54 @@ class CliArgumentSpec:
             if self.value_type is not None:
                 kwargs["type"] = self.value_type
         parser.add_argument(*self.flags, **kwargs)
+
+
+class SearchBudgetArguments:
+    """One `--search-<field>` flag per `SearchBudget` field, each refused without
+    --search-refactors; an unsupplied flag leaves the field's default."""
+
+    @staticmethod
+    def flag(budget_field: Field[object]) -> str:
+        return f"--search-{budget_field.name.replace('_', '-')}"
+
+    @classmethod
+    def specs(cls) -> tuple[CliArgumentSpec, ...]:
+        return tuple(
+            CliArgumentSpec(
+                flags=(cls.flag(budget_field),),
+                value_type=int,
+                help=(
+                    f"With --search-refactors: {budget_field.metadata['cli_help']} "
+                    f"(default {budget_field.default})."
+                ),
+            )
+            for budget_field in fields(SearchBudget)
+        )
+
+    @staticmethod
+    def supplied(args: argparse.Namespace) -> dict[str, int]:
+        return {
+            budget_field.name: value
+            for budget_field in fields(SearchBudget)
+            if (value := getattr(args, f"search_{budget_field.name}")) is not None
+        }
+
+    @classmethod
+    def require_search(
+        cls, parser: argparse.ArgumentParser, args: argparse.Namespace
+    ) -> None:
+        supplied = cls.supplied(args)
+        if supplied and not args.search_refactors:
+            flags = ", ".join(
+                cls.flag(budget_field)
+                for budget_field in fields(SearchBudget)
+                if budget_field.name in supplied
+            )
+            parser.error(f"{flags} require --search-refactors")
+
+    @classmethod
+    def budget(cls, args: argparse.Namespace) -> SearchBudget:
+        return SearchBudget(**cls.supplied(args))
 
 
 def _config_argument_specs() -> tuple[CliArgumentSpec, ...]:
@@ -421,6 +470,17 @@ _CLI_ARGUMENT_SPECS = (
                 "for the field uses generic introspection derives."
             ),
         ),
+        CliArgumentSpec(
+            flags=("--search-refactors",),
+            action="store_true",
+            help=(
+                "Play every refactor concept's goal search in memory, score each "
+                "end state on slop removed per token of its diff, add-member edits "
+                "removed and members made derived, and keep the moves no other "
+                "move beats, looking --search-depth moves ahead."
+            ),
+        ),
+        *SearchBudgetArguments.specs(),
         CliArgumentSpec(
             flags=("--detector-capabilities",),
             action="store_true",
@@ -2034,6 +2094,34 @@ class MarkdownReportRenderer(ABC):
             )
         return "\n".join(lines)
 
+    def refactor_search(self, turn: SearchTurn) -> str:
+        lines = [
+            "Refactor search:",
+            f"   - Start: {turn.start.findings} finding(s), "
+            f"{turn.start.derived} derived, {turn.start.add_member_edits} add-member edit(s)",
+        ]
+        front = turn.front
+        lines.extend(self.search_moves(front, "   "))
+        lines.extend(
+            f"   - {said}" for move in turn.moves for said in move.off_front(front)
+        )
+        return "\n".join(lines)
+
+    def search_moves(self, moves: tuple[ScoredMove, ...], indent: str) -> list[str]:
+        lines: list[str] = []
+        for move in moves:
+            lines.append(
+                f"{indent}- {move.concept} ({move.stages} stage(s), {move.tokens} "
+                f"token(s)): -{move.findings_removed} finding(s), "
+                f"-{move.add_member_edits_removed} add-member edit(s), "
+                f"+{move.derived_gained} derived; line "
+                f"{move.slop_per_kilotoken:.1f} finding(s) per 1k tokens, "
+                f"-{move.line_add_member_edits_removed} add-member, "
+                f"+{move.line_derived_gained} derived"
+            )
+            lines.extend(self.search_moves(move.following, indent + "   "))
+        return lines
+
     def member_awareness(self, report: MemberAwarenessCensus) -> str:
         lines = [
             "Member awareness census:",
@@ -2218,7 +2306,9 @@ class CliArguments:
         )
         for spec in _CLI_ARGUMENT_SPECS:
             spec.add_to_parser(parser)
-        return cls(parser, parser.parse_args(argv))
+        args = parser.parse_args(argv)
+        SearchBudgetArguments.require_search(parser, args)
+        return cls(parser, args)
 
     @cached_property
     def selected_command_type(self) -> type[CliCommand] | None:
@@ -2485,6 +2575,30 @@ class MemberAwarenessCliCommand(SingleRootReportCliCommand):
     @property
     def markdown(self) -> str:
         return MARKDOWN_RENDERER.member_awareness(self.report)
+
+
+class RefactorSearchCliCommand(SingleRootReportCliCommand):
+    command_id = "search_refactors"
+
+    @classmethod
+    def requested(cls, args: argparse.Namespace) -> bool:
+        return args.search_refactors
+
+    @cached_property
+    def report(self) -> SearchTurn:
+        return build_refactor_search(
+            self.root,
+            config=self.detector_config,
+            cache_dir=self.configured_parse_cache_dir,
+            use_parse_cache=self.args.use_parse_cache,
+            parse_workers=self.args.parse_workers,
+            budget=SearchBudgetArguments.budget(self.args),
+            introspection=IntrospectionSource.from_argument(self.args.introspection_trace),
+        )
+
+    @property
+    def markdown(self) -> str:
+        return MARKDOWN_RENDERER.refactor_search(self.report)
 
 
 class EconomicsProofCliCommand(SingleRootReportCliCommand):
