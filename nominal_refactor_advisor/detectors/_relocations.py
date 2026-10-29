@@ -15,7 +15,7 @@ from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from functools import cached_property
 from operator import attrgetter
-from typing import TypeVar
+from typing import Generic, TypeVar
 
 from ..class_index import (
     CompactClassFamilyIndex,
@@ -50,6 +50,43 @@ from ._restated_facts import (
 
 
 UseT = TypeVar("UseT", bound=MemberUse)
+
+
+@dataclass(frozen=True)
+class ReachingUses(Generic[UseT]):
+    """The uses of one member that reach its family, and the ones shown but not counted.
+
+    `counted` read the member off a receiver declared as a class whose
+    declarations of it are the family. `uncounted` read it off a receiver no
+    declaration resolves to a closed class, in a file holding a counted use or
+    one of the family's declarations: shown as detail, never admitting a finding.
+    """
+
+    counted: tuple[UseT, ...]
+    uncounted: tuple[UseT, ...]
+
+    def locations(self) -> tuple[SourceLocation, ...]:
+        """Where the first counted uses stand: the finding's consumer evidence."""
+
+        return tuple(
+            SourceLocation(use.file_path, use.lineno, use.symbol)
+            for use in self.counted[:EVIDENCED_CONSUMERS]
+        )
+
+    def text(self, what: str) -> str:
+        """The counted uses as `what`, then the uncounted ones as detail."""
+
+        if not self.counted:
+            return f"no scanned {what}."
+        located = _listed(f"{use.file_path}:{use.lineno}" for use in self.counted)
+        shown = (
+            " Not counted, their receiver resolves to no closed class: "
+            + _listed(f"{use.file_path}:{use.lineno}" for use in self.uncounted)
+            + "."
+            if self.uncounted
+            else ""
+        )
+        return f"{len(self.counted)} {what}: {located}.{shown}"
 
 
 @dataclass
@@ -109,63 +146,46 @@ class MemberFamilies:
 
 @dataclass
 class RelocationIndex:
-    """The scan's member families, the consumers that use members, and what each module imports."""
+    """The scan's member families and the consumers that use members."""
 
     families: MemberFamilies
     branch_reads: dict[str, list[BranchRead]]
     lambda_calls: dict[str, list[LambdaCall]]
-    imports: dict[str, frozenset[str]]
-
-    def module_of(self, symbol: str) -> str:
-        found = self.families.class_index.classes_by_symbol.get(symbol)
-        return "" if found is None else found.module_name
-
-    def imports_any(self, module: str, declaring: frozenset[str]) -> bool:
-        """Whether the module is, or one of its import statements names, a module declaring the family."""
-
-        imported = self.imports.get(module, frozenset())
-        return module in declaring or any(
-            name == target or target.startswith(f"{name}.")
-            for name in imported
-            for target in declaring
-        )
 
     def reaching(
         self, uses: Iterable[UseT], sites: Sequence[RestatingSite]
-    ) -> list[UseT]:
-        """The uses of the sites' member that reach their family, never by name alone.
+    ) -> ReachingUses[UseT]:
+        """The uses of the sites' member whose receiver is declared as a class of their family.
 
-        A use whose receiver is declared as a class reaches it when that class's
-        declarations of the member are the sites' family (`MemberFamilies.family`).
-        A use whose receiver nothing declares, or whose class is open, reaches it
-        only from a module that is, or imports, a module declaring the family; it
-        stays unresolved (`MemberUse.receiver` empty) in the report.
+        A use links by the class its receiver is declared as
+        (`MemberUse.receiver`), never by the member's name: a closed class
+        whose declarations of the member are the sites' family
+        (`MemberFamilies.family`) counts it, any other class excludes it, and
+        an unresolved receiver or open class only shows it, uncounted.
         """
 
         member = sites[0].group
         family = self.families.family(sites[0].detail[0], member)
-        declaring = frozenset(
-            module
-            for site in sites
-            if (module := self.module_of(site.detail[0]))
+        counted: list[UseT] = []
+        unresolved: list[UseT] = []
+        for use in uses:
+            match use.receiver.class_symbols():
+                case (symbol,) if not self.families.is_open(symbol):
+                    if self.families.family(symbol, member) == family:
+                        counted.append(use)
+                case _:
+                    unresolved.append(use)
+        shown = {use.file_path for use in counted} | {site.file_path for site in sites}
+        return ReachingUses(
+            tuple(counted),
+            tuple(use for use in unresolved if use.file_path in shown),
         )
-        return [
-            use
-            for use in uses
-            if (
-                self.families.family(use.receiver, member) == family
-                if use.receiver and not self.families.is_open(use.receiver)
-                else self.imports_any(use.module, declaring)
-            )
-        ]
 
 
 def _relocation_index(projections_by_family: CompactProjectionGroups) -> RelocationIndex:
     reads: dict[str, list[BranchRead]] = defaultdict(list)
     calls: dict[str, list[LambdaCall]] = defaultdict(list)
-    imports: dict[str, frozenset[str]] = {}
     for module in ConsumerShapeFamily.modules_in(projections_by_family):
-        imports[module.module_name] = frozenset(module.imported)
         for read in module.branch_reads:
             reads[read.member].append(read)
         for call in module.lambda_calls:
@@ -181,30 +201,7 @@ def _relocation_index(projections_by_family: CompactProjectionGroups) -> Relocat
         ),
         dict(reads),
         dict(calls),
-        imports,
     )
-
-
-def _consumer_locations(
-    consumers: Sequence[MemberUse],
-) -> tuple[SourceLocation, ...]:
-    return tuple(
-        SourceLocation(consumer.file_path, consumer.lineno, consumer.symbol)
-        for consumer in consumers[:EVIDENCED_CONSUMERS]
-    )
-
-
-def _consumer_text(consumers: Sequence[MemberUse], what: str) -> str:
-    if not consumers:
-        return f"no scanned {what}."
-    located = _listed(f"{consumer.file_path}:{consumer.lineno}" for consumer in consumers)
-    unresolved = sum(1 for consumer in consumers if not consumer.receiver)
-    receivers = (
-        f" ({unresolved} on a receiver whose class nothing declares, in a module importing the family)"
-        if unresolved
-        else ""
-    )
-    return f"{len(consumers)} {what}{receivers}: {located}."
 
 
 class RelocationDetector(
@@ -289,12 +286,12 @@ class ConstantSubtypeAnswerDetector(FamilyMemberRelocationDetector):
         return (
             len(sites) >= 2
             and not self.computed_elsewhere(sites, context)
-            and bool(self.consumers(sites, context))
+            and bool(self.consumers(sites, context).counted)
         )
 
     def consumers(
         self, sites: Sequence[RestatingSite], context: RelocationIndex
-    ) -> list[BranchRead]:
+    ) -> ReachingUses[BranchRead]:
         return context.reaching(context.branch_reads.get(sites[0].group, ()), sites)
 
     def describe(self, sites: Sequence[RestatingSite], context: RelocationIndex) -> str:
@@ -304,7 +301,7 @@ class ConstantSubtypeAnswerDetector(FamilyMemberRelocationDetector):
         return (
             f"`{sites[0].group}` is answered by a constant in {len(sites)} members "
             f"of one family ({answers}); "
-            f"{_consumer_text(self.consumers(sites, context), 'branch test(s) read the name')}"
+            f"{self.consumers(sites, context).text('branch test(s) read the name')}"
         )
 
     def evidence(
@@ -312,7 +309,7 @@ class ConstantSubtypeAnswerDetector(FamilyMemberRelocationDetector):
     ) -> tuple[SourceLocation, ...]:
         return (
             *super().evidence(sites, context),
-            *_consumer_locations(self.consumers(sites, context)),
+            *self.consumers(sites, context).locations(),
         )
 
 
@@ -344,7 +341,7 @@ class OwnStateBranchAnswerDetector(RelocationDetector):
 
     def consumers(
         self, sites: Sequence[RestatingSite], context: RelocationIndex
-    ) -> list[BranchRead]:
+    ) -> ReachingUses[BranchRead]:
         called = sites[0].detail[1] == "method"
         return context.reaching(
             (
@@ -356,13 +353,13 @@ class OwnStateBranchAnswerDetector(RelocationDetector):
         )
 
     def admits(self, sites: Sequence[RestatingSite], context: RelocationIndex) -> bool:
-        return bool(self.consumers(sites, context))
+        return bool(self.consumers(sites, context).counted)
 
     def describe(self, sites: Sequence[RestatingSite], context: RelocationIndex) -> str:
         site = sites[0]
         return (
             f"`{site.symbol}` ({site.detail[1]}) {site.detail[2]}; "
-            f"{_consumer_text(self.consumers(sites, context), 'branch test(s) select on it')}"
+            f"{self.consumers(sites, context).text('branch test(s) select on it')}"
         )
 
     def evidence(
@@ -370,7 +367,7 @@ class OwnStateBranchAnswerDetector(RelocationDetector):
     ) -> tuple[SourceLocation, ...]:
         return (
             *super().evidence(sites, context),
-            *_consumer_locations(self.consumers(sites, context)),
+            *self.consumers(sites, context).locations(),
         )
 
 
@@ -399,12 +396,12 @@ class LambdaFoldDetector(FamilyMemberRelocationDetector):
 
     def calls(
         self, sites: Sequence[RestatingSite], context: RelocationIndex
-    ) -> list[LambdaCall]:
+    ) -> ReachingUses[LambdaCall]:
         return context.reaching(context.lambda_calls.get(sites[0].group, ()), sites)
 
     def admits(self, sites: Sequence[RestatingSite], context: RelocationIndex) -> bool:
         return len({site.detail[1] for site in sites}) >= 2 and bool(
-            self.calls(sites, context)
+            self.calls(sites, context).counted
         )
 
     def describe(self, sites: Sequence[RestatingSite], context: RelocationIndex) -> str:
@@ -413,7 +410,7 @@ class LambdaFoldDetector(FamilyMemberRelocationDetector):
         )
         return (
             f"`{sites[0].group}` folds over its callables ({overrides}); "
-            f"{_consumer_text(self.calls(sites, context), 'call(s) pass lambdas')}"
+            f"{self.calls(sites, context).text('call(s) pass lambdas')}"
         )
 
     def evidence(
@@ -421,7 +418,7 @@ class LambdaFoldDetector(FamilyMemberRelocationDetector):
     ) -> tuple[SourceLocation, ...]:
         return (
             *super().evidence(sites, context),
-            *_consumer_locations(self.calls(sites, context)),
+            *self.calls(sites, context).locations(),
         )
 
 

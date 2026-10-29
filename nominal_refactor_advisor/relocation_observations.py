@@ -20,9 +20,14 @@ from .annotation_semantics import TypeWrapper
 from .ast_field_decoders import variadic_parameters
 from .ast_projection import ExpressionReference
 from .ast_tools import ParsedModule
-from .class_identity_observations import DeclaredIdentityFamily, QualifiedNames
 from .class_index import ModuleNominalBindingAuthority, ModuleNominalBindingSnapshot
 from .observation_families import ShapeFamily
+from .probe_owner import (
+    ProbeOwner,
+    ProbeOwnerResolver,
+    ResolvedProbeOwner,
+    UnresolvedProbeOwner,
+)
 from .quoted_reference import ModuleReferenceScope
 from .restated_fact_observations import (
     RestatingSite,
@@ -360,19 +365,19 @@ class ClassShapeFamily(ShapeFamily[ClassShapesModule]):
 class MemberUse:
     """`x.member` used by a consumer: where, and what `x` is declared to be.
 
-    `receiver` is the module-qualified class `x` is declared as, the key the
-    compact class index resolves under: the enclosing class for a method's
-    first parameter, a parameter's annotation otherwise; empty when nothing
-    declares it, or the function rebinds the name. `module` is the module
-    holding the use.
+    `receiver` is the class `x` is declared as, a `ResolvedProbeOwner` keyed
+    the way the compact class index resolves classes: the enclosing class for
+    a method's first parameter, a parameter's annotation otherwise
+    (`ProbeOwnerResolver.annotation_owner`). Anything else is an
+    `UnresolvedProbeOwner` saying why: nothing declares the name, or the
+    function rebinds it.
     """
 
     file_path: str
     lineno: int
     symbol: str
     member: str
-    receiver: str
-    module: str
+    receiver: ProbeOwner
 
 
 @dataclass(frozen=True)
@@ -391,26 +396,29 @@ class LambdaCall(MemberUse):
 
 @dataclass(frozen=True)
 class ConsumerShapesModule:
-    """A module's member uses, and the modules its import statements name (with each `from` name as a submodule)."""
+    """A module's member uses."""
 
     module_name: str
     branch_reads: tuple[BranchRead, ...]
     lambda_calls: tuple[LambdaCall, ...]
-    imported: tuple[str, ...] = ()
 
 
-def declared_receivers(parsed_module: ParsedModule) -> dict[int, dict[str, str]]:
-    """For each node of a function's own body, the classes its parameters are declared as.
+def declared_receivers(
+    parsed_module: ParsedModule,
+) -> dict[int, dict[str, ProbeOwner]]:
+    """For each node of a function's own body, what its parameters are declared as.
 
-    A method's first parameter (not under `staticmethod`) is its class; a
-    parameter annotated with a bare or dotted name is the class that name
-    resolves to (`QualifiedNames`). A parameter the body rebinds anywhere is
-    left out: the value read may no longer be the one declared.
+    A method's first parameter (not under `staticmethod`) is its class; an
+    annotated parameter is what its annotation resolves to
+    (`ProbeOwnerResolver.annotation_owner`). A parameter the body rebinds
+    anywhere is unresolved: the value read may no longer be the one declared.
     """
 
-    names = QualifiedNames.of(parsed_module)
+    resolver = ProbeOwnerResolver(
+        parsed_module.file_path, ModuleNominalBindingAuthority(parsed_module)
+    )
     classes = {qualname for qualname, _node in scoped_classes(parsed_module.module)}
-    found: dict[int, dict[str, str]] = {}
+    found: dict[int, dict[str, ProbeOwner]] = {}
     for prefix, scope in walk_scopes(parsed_module.module):
         if not isinstance(scope, DEFINITION_TYPES):
             continue
@@ -422,20 +430,27 @@ def declared_receivers(parsed_module: ParsedModule) -> dict[int, dict[str, str]]
         }
         parameters = [*scope.args.posonlyargs, *scope.args.args, *scope.args.kwonlyargs]
         owner = prefix.rstrip(".").rpartition(".")[0]
-        declared: dict[str, str] = {}
+        declared: dict[str, ProbeOwner] = {}
         if (
             owner in classes
             and parameters
             and staticmethod.__name__ not in decorator_names(scope)
         ):
-            declared[parameters[0].arg] = f"{parsed_module.module_name}.{owner}"
+            declared[parameters[0].arg] = ResolvedProbeOwner(
+                f"{parsed_module.module_name}.{owner}"
+            )
         for parameter in parameters:
-            if isinstance(parameter.annotation, (ast.Name, ast.Attribute)):
-                qualified = names.qualified(parameter.annotation)
-                if qualified and not qualified.startswith(f"{builtins.__name__}."):
-                    declared.setdefault(parameter.arg, qualified)
+            if parameter.annotation is not None:
+                declared.setdefault(
+                    parameter.arg, resolver.annotation_owner(parameter.annotation)
+                )
         declared = {
-            name: receiver for name, receiver in declared.items() if name not in rebound
+            name: (
+                UnresolvedProbeOwner(f"`{name}` is rebound in its function")
+                if name in rebound
+                else receiver
+            )
+            for name, receiver in declared.items()
         }
         for statement in statements_of(scope):
             for node in scope_nodes(statement):
@@ -493,21 +508,24 @@ class ConsumerShapeFamily(ShapeFamily[ConsumerShapesModule]):
     item_type = ConsumerShapesModule
 
     @staticmethod
-    def receiver(node: ast.expr, declared: dict[str, str]) -> str:
-        """The declared class of the object `node.member` or `node.member()` is read from."""
+    def receiver(node: ast.expr, declared: dict[str, ProbeOwner]) -> ProbeOwner:
+        """What the object `node.member` or `node.member()` is read from is declared as."""
 
         match node:
             case ast.Attribute(value=ast.Name(id=name)) | ast.Call(
                 func=ast.Attribute(value=ast.Name(id=name))
             ):
-                return declared.get(name, "")
-        return ""
+                return declared.get(
+                    name, UnresolvedProbeOwner(f"nothing declares `{name}`")
+                )
+        return UnresolvedProbeOwner(
+            f"`{ast.unparse(node)}` is not read off a declared name"
+        )
 
     @classmethod
     def collect(cls, parsed_module: ParsedModule) -> list[ConsumerShapesModule]:
         symbols = enclosing_symbols(parsed_module.module)
         receivers = declared_receivers(parsed_module)
-        module = parsed_module.module_name
         reads = []
         calls = []
         for node in ast.walk(parsed_module.module):
@@ -522,7 +540,6 @@ class ConsumerShapeFamily(ShapeFamily[ConsumerShapesModule]):
                             symbol,
                             member,
                             cls.receiver(read, declared),
-                            module,
                             called,
                         )
                     )
@@ -540,29 +557,12 @@ class ConsumerShapeFamily(ShapeFamily[ConsumerShapesModule]):
                                 symbol,
                                 member,
                                 cls.receiver(node, declared),
-                                module,
                                 lambdas,
                             )
                         )
         return [
             ConsumerShapesModule(
-                module,
-                tuple(reads),
-                tuple(calls),
-                tuple(
-                    sorted(
-                        {
-                            found
-                            for imported, taken in DeclaredIdentityFamily.imported(
-                                parsed_module
-                            )
-                            for found in (
-                                imported,
-                                *(f"{imported}.{name}" for name in taken),
-                            )
-                        }
-                    )
-                ),
+                parsed_module.module_name, tuple(reads), tuple(calls)
             )
         ]
 

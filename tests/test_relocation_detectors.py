@@ -71,8 +71,6 @@ def test_relocation_patterns_continue_the_stable_sequence():
 @pytest.mark.parametrize(
     ("relocation", "detector", "flagged"),
     (
-        (DECLARES_DATACLASS, ConstantSubtypeAnswerDetector, "`declares_dataclass` is answered by a constant in 2 members"),
-        (KEYED_METACLASS_FAMILY, OwnStateBranchAnswerDetector, "`AutoRegisterClassAuthority.keyed_metaclass_family` (property) probes `self.registry_key_attribute`"),
         (SPELLS_AS_CLAUSE, OwnStateBranchAnswerDetector, "`ImportAlias.spells_as_clause` (property) probes `self.asname`"),
         (FOLD_BINDING, LambdaFoldDetector, "`fold_binding` folds over its callables"),
         (DECLARED_ANNOTATIONS, ZeroOneTupleDetector, "`declared_annotations` encodes absence as a 0/1 tuple"),
@@ -82,6 +80,61 @@ def test_relocation_patterns_continue_the_stable_sequence():
 def test_each_historical_relocation_is_flagged(tmp_path, relocation, detector, flagged):
     summaries = [finding.summary for finding in _findings(detector, relocation.write(tmp_path))]
     assert any(flagged in summary for summary in summaries), summaries
+
+
+@pytest.mark.parametrize(
+    ("relocation", "detector"),
+    (
+        (DECLARES_DATACLASS, ConstantSubtypeAnswerDetector),
+        (KEYED_METACLASS_FAMILY, OwnStateBranchAnswerDetector),
+    ),
+)
+def test_a_historical_relocation_read_only_off_undeclared_receivers_is_not_flagged(
+    tmp_path, relocation, detector
+):
+    # Their branch tests read the member off a name nothing declares, so no
+    # consumer is proved to branch on this family's answer.
+    assert _findings(detector, relocation.write(tmp_path)) == []
+
+
+def test_a_constant_answer_read_off_a_declared_family_receiver_is_flagged(tmp_path):
+    source = (
+        "class Declaration:\n    declares_dataclass = False\n\n"
+        "class DataclassDeclaration(Declaration):\n    declares_dataclass = True\n\n"
+        "class PlainDeclaration(Declaration):\n    declares_dataclass = False\n\n"
+        "def fields(declaration: Declaration):\n"
+        "    if declaration.declares_dataclass:\n        return 1\n\n"
+        "def guess(declaration):\n"
+        "    if declaration.declares_dataclass:\n        return 2\n"
+    )
+    (finding,) = _findings(ConstantSubtypeAnswerDetector, _sources(tmp_path, {"m": source}))
+    counted, _, uncounted = finding.summary.partition("Not counted")
+    assert "1 branch test(s) read the name:" in counted
+    assert "m.py:11." in counted and "m.py:15" not in counted
+    assert "m.py:15." in uncounted
+    assert all(location.line != 15 for location in finding.evidence)
+
+
+def test_an_own_state_answer_branched_on_through_self_is_flagged(tmp_path):
+    source = (
+        "from dataclasses import dataclass\n\n"
+        "@dataclass(frozen=True)\n"
+        "class Authority:\n"
+        "    registry_key_attribute: str | None\n\n"
+        "    @property\n"
+        "    def keyed_metaclass_family(self) -> bool:\n"
+        "        return self.registry_key_attribute is not None\n\n"
+        "    def describe(self):\n"
+        "        if self.keyed_metaclass_family:\n            return 1\n"
+    )
+    summaries = [
+        finding.summary
+        for finding in _findings(OwnStateBranchAnswerDetector, _sources(tmp_path, {"m": source}))
+    ]
+    assert any(
+        "`Authority.keyed_metaclass_family` (property) probes `self.registry_key_attribute`" in summary
+        for summary in summaries
+    ), summaries
 
 
 # ---- what each detector leaves alone
