@@ -33,6 +33,7 @@ from .ast_projection import CallKeywords
 from .ast_tools import ParsedModule, is_docstring_statement
 from .class_index import (
     CLASS_METHOD_OWNERSHIP_HOOK_NAMES,
+    NATIVE_METACLASS_BASES,
     ClassReferenceRole,
     CompactIndexedClass,
     module_import_aliases,
@@ -96,8 +97,6 @@ from .owner_candidates import (
 )
 from .refactor_concepts import ClassBodyCompositionConcept
 from .semantic_descent import AuthorityClaim, SemanticAuthorityKind
-
-NATIVE_METACLASS_BASES = frozenset(("builtins.type", "abc.ABCMeta"))
 
 
 @dataclass(frozen=True)

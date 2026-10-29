@@ -71,8 +71,6 @@ def test_relocation_patterns_continue_the_stable_sequence():
 @pytest.mark.parametrize(
     ("relocation", "detector", "flagged"),
     (
-        (DECLARES_DATACLASS, ConstantSubtypeAnswerDetector, "`declares_dataclass` is answered by a constant in 2 members"),
-        (KEYED_METACLASS_FAMILY, OwnStateBranchAnswerDetector, "`AutoRegisterClassAuthority.keyed_metaclass_family` (property) probes `self.registry_key_attribute`"),
         (SPELLS_AS_CLAUSE, OwnStateBranchAnswerDetector, "`ImportAlias.spells_as_clause` (property) probes `self.asname`"),
         (FOLD_BINDING, LambdaFoldDetector, "`fold_binding` folds over its callables"),
         (DECLARED_ANNOTATIONS, ZeroOneTupleDetector, "`declared_annotations` encodes absence as a 0/1 tuple"),
@@ -82,6 +80,63 @@ def test_relocation_patterns_continue_the_stable_sequence():
 def test_each_historical_relocation_is_flagged(tmp_path, relocation, detector, flagged):
     summaries = [finding.summary for finding in _findings(detector, relocation.write(tmp_path))]
     assert any(flagged in summary for summary in summaries), summaries
+
+
+@pytest.mark.parametrize(
+    ("relocation", "detector"),
+    (
+        (DECLARES_DATACLASS, ConstantSubtypeAnswerDetector),
+        (KEYED_METACLASS_FAMILY, OwnStateBranchAnswerDetector),
+    ),
+)
+def test_a_historical_relocation_read_only_off_undeclared_receivers_is_not_flagged(
+    tmp_path, relocation, detector
+):
+    # Their branch tests read the member off an attribute chain or a local
+    # (`self.authority`, `base_class.dataclass_declaration`), which no
+    # declaration resolves without the type checker (#143), so no consumer is
+    # proved to branch on this family's answer.
+    assert _findings(detector, relocation.write(tmp_path)) == []
+
+
+def test_a_constant_answer_read_off_a_declared_family_receiver_is_flagged(tmp_path):
+    source = (
+        "class Declaration:\n    declares_dataclass = False\n\n"
+        "class DataclassDeclaration(Declaration):\n    declares_dataclass = True\n\n"
+        "class PlainDeclaration(Declaration):\n    declares_dataclass = False\n\n"
+        "def fields(declaration: Declaration):\n"
+        "    if declaration.declares_dataclass:\n        return 1\n\n"
+        "def guess(declaration):\n"
+        "    if declaration.declares_dataclass:\n        return 2\n"
+    )
+    (finding,) = _findings(ConstantSubtypeAnswerDetector, _sources(tmp_path, {"m": source}))
+    counted, _, uncounted = finding.summary.partition("Not counted")
+    assert "1 branch test(s) read the name:" in counted
+    assert "m.py:11." in counted and "m.py:15" not in counted
+    assert "m.py:15." in uncounted
+    assert all(location.line != 15 for location in finding.evidence)
+
+
+def test_an_own_state_answer_branched_on_through_self_is_flagged(tmp_path):
+    source = (
+        "from dataclasses import dataclass\n\n"
+        "@dataclass(frozen=True)\n"
+        "class Authority:\n"
+        "    registry_key_attribute: str | None\n\n"
+        "    @property\n"
+        "    def keyed_metaclass_family(self) -> bool:\n"
+        "        return self.registry_key_attribute is not None\n\n"
+        "    def describe(self):\n"
+        "        if self.keyed_metaclass_family:\n            return 1\n"
+    )
+    summaries = [
+        finding.summary
+        for finding in _findings(OwnStateBranchAnswerDetector, _sources(tmp_path, {"m": source}))
+    ]
+    assert any(
+        "`Authority.keyed_metaclass_family` (property) probes `self.registry_key_attribute`" in summary
+        for summary in summaries
+    ), summaries
 
 
 # ---- what each detector leaves alone
@@ -196,3 +251,121 @@ def test_two_own_fields_compared_are_a_relation_not_a_kind(tmp_path):
         "def use(span):\n    if span.single_line or span.renamed:\n        return 1\n"
     )
     assert _findings(OwnStateBranchAnswerDetector, _sources(tmp_path, {"m": source})) == []
+
+
+def test_a_branch_read_links_by_its_receivers_class_never_by_the_bare_name(tmp_path):
+    # pkg_b never imports pkg_a: its `.visible` reads are another class's
+    # member, whether its receiver is declared (`Cursor`) or not (`cursor`).
+    for name, source in {
+        "pkg_a/__init__": "",
+        "pkg_a/roles": (
+            "class Role:\n    visible = False\n\n"
+            "class Shown(Role):\n    visible = True\n\n"
+            "class Hidden(Role):\n    visible = False\n\n"
+            "def paint(role: Role):\n    if role.visible:\n        return 1\n"
+        ),
+        "pkg_b/__init__": "",
+        "pkg_b/viewer": (
+            "class Cursor:\n    visible = True\n\n"
+            "def draw(cursor):\n    if cursor.visible:\n        return 2\n\n"
+            "def blink(cursor: Cursor):\n    if cursor.visible:\n        return 3\n"
+        ),
+    }.items():
+        path = tmp_path / f"{name}.py"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(source)
+    (finding,) = _findings(ConstantSubtypeAnswerDetector, tmp_path)
+    assert "1 branch test(s) read the name:" in finding.summary
+    assert "pkg_a/roles.py:" in finding.summary
+    assert "viewer.py" not in finding.summary
+    assert all("viewer.py" not in location.file_path for location in finding.evidence)
+
+
+_DECLARATION_FAMILY = (
+    "class Declaration:\n    declares_dataclass = False\n\n"
+    "class DataclassDeclaration(Declaration):\n    declares_dataclass = True\n\n"
+    "class PlainDeclaration(Declaration):\n    declares_dataclass = False\n\n"
+)
+
+
+def _branch_lines(source: str) -> list[int]:
+    return [
+        number
+        for number, line in enumerate(source.splitlines(), start=1)
+        if "if declaration.declares_dataclass" in line or "if cls.declares_dataclass" in line
+    ]
+
+
+def test_an_own_state_answer_of_an_open_class_branched_on_through_self_is_flagged(tmp_path):
+    # `Generic[T]` leaves the class open; `self` in its own method is still it.
+    source = (
+        "from dataclasses import dataclass\n"
+        "from typing import Generic, TypeVar\n\n"
+        "T = TypeVar('T')\n\n"
+        "@dataclass(frozen=True)\n"
+        "class Authority(Generic[T]):\n"
+        "    registry_key_attribute: T | None\n\n"
+        "    @property\n"
+        "    def keyed_metaclass_family(self) -> bool:\n"
+        "        return self.registry_key_attribute is not None\n\n"
+        "    def describe(self):\n"
+        "        if self.keyed_metaclass_family:\n            return 1\n"
+    )
+    summaries = [
+        finding.summary
+        for finding in _findings(OwnStateBranchAnswerDetector, _sources(tmp_path, {"m": source}))
+    ]
+    assert any(
+        "`Authority.keyed_metaclass_family` (property) probes `self.registry_key_attribute`" in summary
+        and "1 branch test(s) select on it:" in summary
+        and "/m.py:15." in summary
+        for summary in summaries
+    ), summaries
+
+
+def test_a_metaclass_methods_class_parameter_is_shown_never_counted_or_dropped(tmp_path):
+    # `cls` in a metaclass method is a class the metaclass creates, not the metaclass.
+    source = _DECLARATION_FAMILY + (
+        "class Registering(type):\n"
+        "    def __init__(cls, name, bases, namespace):\n"
+        "        if cls.declares_dataclass:\n            pass\n\n"
+        "def fields(declaration: Declaration):\n"
+        "    if declaration.declares_dataclass:\n        return 1\n"
+    )
+    metaclass_line, counted_line = _branch_lines(source)
+    (finding,) = _findings(ConstantSubtypeAnswerDetector, _sources(tmp_path, {"m": source}))
+    counted, _, uncounted = finding.summary.partition("Not counted")
+    assert "1 branch test(s) read the name:" in counted
+    assert f"/m.py:{counted_line}." in counted
+    assert f"/m.py:{metaclass_line}." in uncounted
+
+
+def test_a_parameter_rebound_by_a_capture_is_uncounted_but_a_nested_parameter_is_not_a_rebind(
+    tmp_path,
+):
+    source = _DECLARATION_FAMILY + (
+        "def caught(declaration: Declaration):\n"
+        "    try:\n        pass\n"
+        "    except Exception as declaration:\n        pass\n"
+        "    if declaration.declares_dataclass:\n        return 1\n\n"
+        "def captured(declaration: Declaration, value):\n"
+        "    match value:\n        case int() as declaration:\n            pass\n"
+        "    if declaration.declares_dataclass:\n        return 2\n\n"
+        "def starred(declaration: Declaration, value):\n"
+        "    match value:\n        case [*declaration]:\n            pass\n"
+        "    if declaration.declares_dataclass:\n        return 3\n\n"
+        "def rest(declaration: Declaration, value):\n"
+        "    match value:\n        case {'k': _, **declaration}:\n            pass\n"
+        "    if declaration.declares_dataclass:\n        return 4\n\n"
+        "def nested(declaration: Declaration):\n"
+        "    def inner(declaration):\n        return declaration\n"
+        "    if declaration.declares_dataclass:\n        return 5\n"
+    )
+    *rebound_lines, nested_line = _branch_lines(source)
+    (finding,) = _findings(ConstantSubtypeAnswerDetector, _sources(tmp_path, {"m": source}))
+    counted, _, uncounted = finding.summary.partition("Not counted")
+    assert "1 branch test(s) read the name:" in counted
+    assert f"/m.py:{nested_line}." in counted
+    assert all(
+        any(f"/m.py:{line}{end}" in uncounted for end in ",.") for line in rebound_lines
+    ), finding.summary

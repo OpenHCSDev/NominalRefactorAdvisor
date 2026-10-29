@@ -3230,6 +3230,8 @@ ClosedLeafMethodAuthorityPredicate: TypeAlias = Callable[
     bool,
 ]
 CLASS_METHOD_OWNERSHIP_HOOK_NAMES = frozenset(("__init_subclass__",))
+# The metaclasses Python provides: a class reaching one creates classes.
+NATIVE_METACLASS_BASES = frozenset(("builtins.type", "abc.ABCMeta"))
 
 
 class ClosedLeafMethodAuthorityViolation(StrEnum):
