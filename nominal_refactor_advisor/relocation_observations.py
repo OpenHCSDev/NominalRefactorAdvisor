@@ -21,6 +21,7 @@ from .ast_field_decoders import variadic_parameters
 from .ast_projection import ExpressionReference
 from .ast_tools import ParsedModule
 from .class_index import ModuleNominalBindingAuthority, ModuleNominalBindingSnapshot
+from .lexical_bindings import LEXICAL_SCOPE_BINDING_AUTHORITY
 from .observation_families import ShapeFamily
 from .probe_owner import (
     ProbeOwner,
@@ -28,7 +29,6 @@ from .probe_owner import (
     ResolvedProbeOwner,
     UnresolvedProbeOwner,
 )
-from .quoted_reference import ModuleReferenceScope
 from .restated_fact_observations import (
     RestatingSite,
     RestatingSiteFamily,
@@ -369,8 +369,8 @@ class MemberUse:
     the way the compact class index resolves classes: the enclosing class for
     a method's first parameter, a parameter's annotation otherwise
     (`ProbeOwnerResolver.annotation_owner`). Anything else is an
-    `UnresolvedProbeOwner` saying why: nothing declares the name, or the
-    function rebinds it.
+    `UnresolvedProbeOwner` saying why: nothing declares the name, the
+    parameter declares no annotation, or the function rebinds it.
     """
 
     file_path: str
@@ -410,8 +410,12 @@ def declared_receivers(
 
     A method's first parameter (not under `staticmethod`) is its class; an
     annotated parameter is what its annotation resolves to
-    (`ProbeOwnerResolver.annotation_owner`). A parameter the body rebinds
-    anywhere is unresolved: the value read may no longer be the one declared.
+    (`ProbeOwnerResolver.annotation_owner`); an unannotated one is unresolved,
+    since its type is only the type checker's to infer. A parameter the
+    function's own scope rebinds (`LexicalScopeBindingAuthority.bound_names`:
+    assignments, `except ... as`, `case ... as` and the other captures, never a
+    nested function's parameters) is unresolved: the value read may no longer
+    be the one declared.
     """
 
     resolver = ProbeOwnerResolver(
@@ -422,12 +426,7 @@ def declared_receivers(
     for prefix, scope in walk_scopes(parsed_module.module):
         if not isinstance(scope, DEFINITION_TYPES):
             continue
-        rebound = {
-            name
-            for statement in scope.body
-            for node in ast.walk(statement)
-            for name in ModuleReferenceScope.bound_names(node)
-        }
+        rebound = LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(scope.body)
         parameters = [*scope.args.posonlyargs, *scope.args.args, *scope.args.kwonlyargs]
         owner = prefix.rstrip(".").rpartition(".")[0]
         declared: dict[str, ProbeOwner] = {}
@@ -440,10 +439,12 @@ def declared_receivers(
                 f"{parsed_module.module_name}.{owner}"
             )
         for parameter in parameters:
-            if parameter.annotation is not None:
-                declared.setdefault(
-                    parameter.arg, resolver.annotation_owner(parameter.annotation)
-                )
+            declared.setdefault(
+                parameter.arg,
+                UnresolvedProbeOwner(f"`{parameter.arg}` declares no annotation")
+                if parameter.annotation is None
+                else resolver.annotation_owner(parameter.annotation),
+            )
         declared = {
             name: (
                 UnresolvedProbeOwner(f"`{name}` is rebound in its function")
@@ -561,9 +562,7 @@ class ConsumerShapeFamily(ShapeFamily[ConsumerShapesModule]):
                             )
                         )
         return [
-            ConsumerShapesModule(
-                parsed_module.module_name, tuple(reads), tuple(calls)
-            )
+            ConsumerShapesModule(parsed_module.module_name, tuple(reads), tuple(calls))
         ]
 
 

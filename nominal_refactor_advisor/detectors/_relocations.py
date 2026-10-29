@@ -18,6 +18,7 @@ from operator import attrgetter
 from typing import Generic, TypeVar
 
 from ..class_index import (
+    NATIVE_METACLASS_BASES,
     CompactClassFamilyIndex,
     CompactModuleClassProjectionFamily,
 )
@@ -58,8 +59,9 @@ class ReachingUses(Generic[UseT]):
 
     `counted` read the member off a receiver declared as a class whose
     declarations of it are the family. `uncounted` read it off a receiver no
-    declaration resolves to a closed class, in a file holding a counted use or
-    one of the family's declarations: shown as detail, never admitting a finding.
+    declaration resolves to a closed class, or one declared as a metaclass, in a
+    file holding a counted use or one of the family's declarations: shown as
+    detail, never admitting a finding.
     """
 
     counted: tuple[UseT, ...]
@@ -110,6 +112,21 @@ class MemberFamilies:
             for lineage in (symbol, *self.class_index.ancestor_symbols(symbol))
         )
 
+    def creates_classes(self, symbol: str) -> bool:
+        """Whether `symbol` is a metaclass: its lineage has a base naming one Python provides.
+
+        An object declared as a metaclass is a class that metaclass creates,
+        and no declaration names which one.
+        """
+
+        classes = self.class_index.classes_by_symbol
+        return any(
+            reference.builtin_qualified_name in NATIVE_METACLASS_BASES
+            for lineage in (symbol, *self.class_index.ancestor_symbols(symbol))
+            if lineage in classes
+            for reference in classes[lineage].base_references
+        )
+
     def declares(self, symbol: str, member: str) -> bool:
         return symbol in self.shapes and member in self.shapes[symbol].declared
 
@@ -158,10 +175,13 @@ class RelocationIndex:
         """The uses of the sites' member whose receiver is declared as a class of their family.
 
         A use links by the class its receiver is declared as
-        (`MemberUse.receiver`), never by the member's name: a closed class
-        whose declarations of the member are the sites' family
-        (`MemberFamilies.family`) counts it, any other class excludes it, and
-        an unresolved receiver or open class only shows it, uncounted.
+        (`MemberUse.receiver`), never by the member's name: the sites' own
+        class counts it, open or not, since the receiver is that class; a
+        closed class whose declarations of the member are the sites' family
+        (`MemberFamilies.family`) counts it; any other class excludes it. An
+        unresolved receiver, an open class, or a metaclass
+        (`MemberFamilies.creates_classes`: the receiver is a class it creates,
+        not itself) only shows it, uncounted.
         """
 
         member = sites[0].group
@@ -170,6 +190,10 @@ class RelocationIndex:
         unresolved: list[UseT] = []
         for use in uses:
             match use.receiver.class_symbols():
+                case (symbol,) if self.families.creates_classes(symbol):
+                    unresolved.append(use)
+                case (symbol,) if symbol == sites[0].detail[0]:
+                    counted.append(use)
                 case (symbol,) if not self.families.is_open(symbol):
                     if self.families.family(symbol, member) == family:
                         counted.append(use)
