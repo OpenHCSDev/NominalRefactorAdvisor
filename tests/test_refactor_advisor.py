@@ -7023,6 +7023,7 @@ def test_dispatch_to_polymorphism_lifts_top_level_method_before_its_class(
     tmp_path: Path,
 ) -> None:
     source = (
+        "from __future__ import annotations\n\n"
         "import ast\n\n\n"
         "class Store:\n"
         "    def calls(self, call, tracked):\n"
@@ -7057,6 +7058,9 @@ def test_dispatch_to_polymorphism_lifts_top_level_method_before_its_class(
         "Store"
     )
     assert "    def apply(_dispatch_strategy, self, call, tracked):" in rewritten
+    assert (
+        "__registry__: ClassVar[dict[object, type[StoreCallsDispatchCase]]] = {}"
+    ) in rewritten
     assert rewritten.count("self.tracked(call.args[-1], tracked)") == 1
     assert (
         "class SetitemStoreCallsDispatchCase(SetdefaultStoreCallsDispatchCase):\n"

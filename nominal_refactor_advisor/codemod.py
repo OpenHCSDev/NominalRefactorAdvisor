@@ -4427,7 +4427,10 @@ class ClassMethodDispatchHost(DispatchPolymorphismHost):
 
     @staticmethod
     def identifiers(node: ast.FunctionDef) -> frozenset[str]:
-        """Every identifier the compiler resolves or mangles inside the method."""
+        """Every identifier the compiler resolves or mangles inside the method.
+
+        Call keyword names are left out: the compiler does not mangle them.
+        """
 
         names: set[str] = set()
         for child in ast.walk(node):
@@ -4436,8 +4439,6 @@ class ClassMethodDispatchHost(DispatchPolymorphismHost):
             elif isinstance(child, ast.Attribute):
                 names.add(child.attr)
             elif isinstance(child, ast.arg):
-                names.add(child.arg)
-            elif isinstance(child, ast.keyword) and child.arg is not None:
                 names.add(child.arg)
             elif isinstance(child, ast.alias):
                 names.add(child.asname or child.name)
@@ -4578,21 +4579,26 @@ class DispatchPolymorphismSource:
             )
         return sorted_tuple(conflicts)
 
-    def family_source(self) -> str:
+    def family_source(self, *, self_reference_resolves: bool) -> str:
+        """The strategy family; the base names itself unquoted where that resolves."""
+
         return "\n\n\n".join(
             (
-                self.base_source(),
+                self.base_source(self_reference_resolves=self_reference_resolves),
                 *(self.case_source(case) for case in self.extraction.cases),
             )
         )
 
-    def base_source(self) -> str:
+    def base_source(self, *, self_reference_resolves: bool) -> str:
+        base_reference = (
+            self.base_name if self_reference_resolves else f'"{self.base_name}"'
+        )
         return "\n".join(
             (
                 f"class {self.base_name}(ABC, metaclass=AutoRegisterMeta):",
                 (
                     "    __registry__: ClassVar[dict[object, "
-                    f'type["{self.base_name}"]]] = {{}}'
+                    f"type[{base_reference}]]] = {{}}"
                 ),
                 f'    __registry_key__ = "{self.case_key_attribute}"',
                 "    __skip_if_no_key__ = True",
@@ -4780,14 +4786,24 @@ class DispatchToPolymorphismOperation(SourceReprovedOperation):
             raise ValueError(
                 f"Dispatch literals derive duplicate class names: {source.class_names!r}"
             )
+        insertion_line = NamedDeclarationSourceAuthority(
+            source.host.insertion_anchor,
+            context.sources_by_file_path[target_digest.file_path],
+        ).declaration_line_span.start_line
+        self_reference_resolves = ModuleReferenceScope(
+            context.module_nodes_by_file_path[target_digest.file_path]
+        ).resolves(
+            source.base_name,
+            insertion_line,
+            annotation=True,
+            interpreter=DeclaredInterpreter.of(Path(target_digest.file_path)),
+        )
         return SourceInsertion(
             file_path=target_digest.file_path,
-            insertion_line=NamedDeclarationSourceAuthority(
-                source.host.insertion_anchor,
-                context.sources_by_file_path[target_digest.file_path],
-            ).declaration_line_span.start_line,
+            insertion_line=insertion_line,
             inserted_lines=SourceTargetEditor.source_lines(
-                f"{source.family_source()}\n\n\n"
+                source.family_source(self_reference_resolves=self_reference_resolves)
+                + "\n\n\n"
             ),
             rationale=self.rationale_text(
                 f"Insert dispatch strategy family {source.base_name!r}."
