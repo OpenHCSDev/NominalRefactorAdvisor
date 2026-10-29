@@ -29,6 +29,8 @@ from .observation_shapes import (
     DynamicMethodInjectionObservation,
     FieldObservation,
     ClassIdentityTestShape,
+    ForeignSubject,
+    SubjectReading,
     TypeTestModule,
     TypeTestShape,
     LiteralDispatchObservation,
@@ -1210,6 +1212,27 @@ def _matched_subject(ancestors: Sequence[ast.AST]) -> str:
 
 
 
+def _subject_reading(subject: ast.expr, ancestors: Sequence[ast.AST]) -> SubjectReading:
+    """`ForeignSubject` when the tested value is the innermost enclosing function's
+    parameter annotated `object`; otherwise the value is held as itself."""
+
+    match subject:
+        case ast.Name(id=name):
+            for function in reversed(tuple(FunctionDefinition.within(ancestors))):
+                arguments = (
+                    *function.args.posonlyargs,
+                    *function.args.args,
+                    *function.args.kwonlyargs,
+                )
+                for argument in arguments:
+                    if argument.arg == name:
+                        match argument.annotation:
+                            case ast.Name(id="object") | ast.Constant(value="object"):
+                                return ForeignSubject()
+                        return SubjectReading()
+    return SubjectReading()
+
+
 def type_test_shapes(parsed_module: ParsedModule) -> Iterator[TypeTestShape]:
     """Every type test whose classes resolve: `isinstance`/`issubclass`, a class
     pattern, `type(x) <op> C`, and `x is C` / `x in (A, B)`."""
@@ -1258,6 +1281,7 @@ def type_test_shapes(parsed_module: ParsedModule) -> Iterator[TypeTestShape]:
                 symbol=index.lexical_symbol(node_index),
                 group=ast.dump(subject),
                 detail=names,
+                reading=_subject_reading(subject, index.ancestor_nodes(node_index)),
             )
     for node_index, node in index.indexed_nodes_of_type(ast.Call):
         arguments = BuiltinCallName.type_test_arguments(node)
@@ -1273,6 +1297,7 @@ def type_test_shapes(parsed_module: ParsedModule) -> Iterator[TypeTestShape]:
                 symbol=index.lexical_symbol(node_index),
                 group=ast.dump(arguments[0]),
                 detail=names,
+                reading=_subject_reading(arguments[0], index.ancestor_nodes(node_index)),
             )
 
 

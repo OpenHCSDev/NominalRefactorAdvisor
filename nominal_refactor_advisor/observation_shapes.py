@@ -402,6 +402,27 @@ class RestatingSite:
 
 
 @dataclass(frozen=True)
+class SubjectReading:
+    """What a type test's subject is before the test: a value the code already
+    holds as itself, so dispatch on it would answer what the test asks."""
+
+    def restated(self, names: tuple[str, ...]) -> tuple[str, ...]:
+        """The tested classes whose membership the test restates."""
+
+        return names
+
+
+@dataclass(frozen=True)
+class ForeignSubject(SubjectReading):
+    """A parameter annotated `object`: the value is foreign until this test
+    decodes it (`__eq__(self, other: object)`, a codec's input). Nothing in the
+    language derives its membership, so the test is the decoder and restates nothing."""
+
+    def restated(self, names: tuple[str, ...]) -> tuple[str, ...]:
+        return ()
+
+
+@dataclass(frozen=True)
 class TypeTestShape(RestatingSite):
     """One `isinstance`/`issubclass` site or class pattern whose classes resolved.
 
@@ -411,6 +432,7 @@ class TypeTestShape(RestatingSite):
     told from sites testing a part of it.
     """
 
+    reading: SubjectReading = SubjectReading()
     type_names = AliasProperty[tuple[str, ...]]("detail")
     subject = AliasProperty[str]("group")
 
@@ -420,16 +442,21 @@ class TypeTestShape(RestatingSite):
 
         return frozenset(name.rpartition(".")[0] for name in self.type_names)
 
-    def own_type_names(self, scope: DeclaredClassScope) -> tuple[str, ...]:
+    def declared_type_names(self, scope: DeclaredClassScope) -> tuple[str, ...]:
         """The tested classes declared in the scan's modules: the syntax already
         proves each is a class."""
 
         return tuple(name for name in self.type_names if scope.declares_module_of(name))
 
+    def own_type_names(self, scope: DeclaredClassScope) -> tuple[str, ...]:
+        """The declared tested classes whose membership this test restates."""
+
+        return self.reading.restated(self.declared_type_names(scope))
+
     def is_foreign_to(self, scanned_module_names: Sequence[str]) -> bool:
         """Whether no tested class is declared in the scan."""
 
-        return not self.own_type_names(DeclaredClassScope(tuple(scanned_module_names)))
+        return not self.declared_type_names(DeclaredClassScope(tuple(scanned_module_names)))
 
 
 @dataclass(frozen=True)
@@ -441,7 +468,7 @@ class ClassIdentityTestShape(TypeTestShape):
     name is never proved a class.
     """
 
-    def own_type_names(self, scope: DeclaredClassScope) -> tuple[str, ...]:
+    def declared_type_names(self, scope: DeclaredClassScope) -> tuple[str, ...]:
         return tuple(name for name in self.type_names if name in scope.class_symbols)
 
     def is_foreign_to(self, scanned_module_names: Sequence[str]) -> bool:

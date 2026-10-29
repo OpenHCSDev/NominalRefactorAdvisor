@@ -856,3 +856,29 @@ def test_a_local_import_rebound_in_the_function_still_hides_the_name(tmp_path: P
     )
 
     assert findings == []
+
+
+def test_a_test_on_a_value_annotated_object_is_the_decoder_not_slop(tmp_path: Path):
+    findings = _findings(
+        tmp_path,
+        OwnTypeTestDetector,
+        {
+            "shapes": OWN_CLASSES,
+            "use": (
+                "from shapes import Circle, Shape\n"
+                "class Ring(Circle):\n"
+                "    def __eq__(self, other: object) -> bool:\n"
+                "        if not isinstance(other, Circle):\n"
+                "            return NotImplemented\n"
+                "        return True\n"
+                "def decode(value: object) -> Shape:\n"
+                "    if type(value) is Circle:\n"
+                "        return value\n"
+                "    raise TypeError(value)\n"
+                "def area(shape: Shape) -> int:\n"
+                "    return 1 if isinstance(shape, Circle) else 0\n"
+            ),
+        },
+    )
+
+    assert _lines(findings) == [12]
