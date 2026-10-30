@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import sys
 from pathlib import Path
 
 import pytest
@@ -20,12 +21,19 @@ from nominal_refactor_advisor.class_index import (
     OpenClassMember,
     module_import_aliases,
 )
+from nominal_refactor_advisor import declared_receivers
 from nominal_refactor_advisor.declared_receivers import (
     DeclaredReceiverTyping,
     ReceiverPathBuilder,
+    ScannedClass,
     UndeclaredType,
 )
 from nominal_refactor_advisor.scan_cache import ScanCache
+from nominal_refactor_advisor.typeshed_stubs import (
+    AbsentStubRoot,
+    RunningInterpreterBranches,
+    installed_stub_root,
+)
 
 MODELS = """
 from __future__ import annotations
@@ -507,3 +515,99 @@ def test_a_cached_class_projection_carries_the_declared_returns(tmp_path):
         assert [declared.name for declared in loaded.annotated_function_returns] == [
             "build"
         ]
+
+
+STUB_FIELD_READS = (
+    "import ast\n\n"
+    "def f(\n"
+    "    assigned: ast.AnnAssign,\n"
+    "    handler: ast.ExceptHandler,\n"
+    "    case: ast.match_case,\n"
+    "    statement: ast.stmt,\n"
+    "):\n"
+    "    assigned.value.marker\n"
+    "    handler.type.marker\n"
+    "    case.guard.marker\n"
+    "    statement.end_lineno.marker\n"
+)
+
+
+def test_a_stdlib_class_is_read_from_its_typeshed_stub(tmp_path):
+    """`ast.AnnAssign.value: expr | None` is typeshed's declaration, read where
+    it is declared; reading the receiver excludes the None arm."""
+
+    assert _symbols(tmp_path, STUB_FIELD_READS) == [
+        ("ast.expr",),
+        ("ast.expr",),
+        ("ast.expr",),
+        ("builtins.int",),
+    ]
+
+
+def test_the_stub_member_is_its_declared_optional(tmp_path):
+    with ScanCache.scope():
+        typing = DeclaredReceiverTyping.from_projections(*_index(tmp_path, "x = 1\n"))
+        assert typing.chased("ast.AnnAssign") == ScannedClass("ast.AnnAssign")
+        stubs = typing.declaring("ast.AnnAssign")
+        assert stubs is not typing
+        for symbol, name, annotation in (
+            ("ast.AnnAssign", "value", "expr | None"),
+            ("ast.ExceptHandler", "type", "expr | None"),
+            ("ast.match_case", "guard", "expr | None"),
+            ("ast.stmt", "end_lineno", "int | None"),
+        ):
+            stubs.chased(symbol)
+            found = stubs.class_index.declared_member(symbol, name)
+            assert isinstance(found, AssignedClassMember)
+            assert found.declaration.annotation_expression == annotation
+            assert installed_stub_root().holds(found.owner.file_path)
+
+
+def test_without_typeshed_the_stdlib_class_names_the_absent_stubs(tmp_path, monkeypatch):
+    monkeypatch.setattr(declared_receivers, "installed_stub_root", AbsentStubRoot)
+    declared = _typed(tmp_path, STUB_FIELD_READS)
+    assert {type(found) for found in declared.values()} == {UndeclaredType}
+    assert {found.reason for found in declared.values()} == {
+        "no typeshed stubs installed for `ast`"
+    }
+
+
+@pytest.mark.parametrize(
+    ("condition", "taken"),
+    (
+        pytest.param("sys.version_info >= (3, 0)", "kept", id="version at least"),
+        pytest.param("sys.version_info < (3, 0)", "other", id="version below"),
+        pytest.param(f"sys.platform == {sys.platform!r}", "kept", id="this platform"),
+        pytest.param(f"sys.platform != {sys.platform!r}", "other", id="another platform"),
+        pytest.param(
+            f"sys.version_info >= (3, 0) and sys.platform != {sys.platform!r}",
+            "other",
+            id="conjunction",
+        ),
+    ),
+)
+def test_stub_branches_resolve_against_the_running_interpreter(condition, taken):
+    resolved = RunningInterpreterBranches().visit(
+        ast.parse(
+            f"class Holder:\n    if {condition}:\n        kept: int\n    else:\n        other: int\n"
+        )
+    )
+    (holder,) = resolved.body
+    (member,) = holder.body
+    assert isinstance(member, ast.AnnAssign) and ast.unparse(member.target) == taken
+
+
+def test_an_empty_resolved_branch_leaves_a_body():
+    resolved = RunningInterpreterBranches().visit(
+        ast.parse("class Holder:\n    if sys.version_info < (3, 0):\n        old: int\n")
+    )
+    (holder,) = resolved.body
+    assert [type(statement) for statement in holder.body] == [ast.Pass]
+
+
+def test_an_undecidable_branch_keeps_both_arms():
+    resolved = RunningInterpreterBranches().visit(
+        ast.parse("if FLAG:\n    a: int\nelse:\n    b: int\n")
+    )
+    (branch,) = resolved.body
+    assert isinstance(branch, ast.If)
