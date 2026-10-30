@@ -53,7 +53,10 @@ class SurfaceDocument(Document):
 
     @property
     def surface_id(self) -> str:
-        return self.id_pattern.match(self.name).group(1)
+        match self.id_pattern.match(self.name):
+            case re.Match() as found:
+                return found.group(1)
+        raise ValueError(f"{self.name} is not named by a surface ID")
 
     @cached_property
     def declared_abstractions(self) -> frozenset[str] | None:

@@ -76,7 +76,7 @@ def main() -> int:
     print("merges adding the most debt (weighted):")
     for review in sorted(reviews, key=lambda r: -r.added())[: args.top]:
         print(f"  {review.added():>5}  {review.origin.label()}  {review.rose(4)}")
-    by_kind = collections.Counter()
+    by_kind: collections.Counter[str] = collections.Counter()
     for review in reviews:
         by_kind[review.origin.branch_kind] += review.added()
     print("\nweighted debt added, by branch kind: " + ", ".join(f"{k} {v}" for k, v in by_kind.most_common() if v))

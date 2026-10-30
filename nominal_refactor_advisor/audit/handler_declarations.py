@@ -22,7 +22,7 @@ class BuiltinHandlerDeclarations:
         return not repo.owns_mechanism(path)
 
     @classmethod
-    def count_module(cls, node: ast.Module) -> int:
+    def module_occurrences(cls, node: ast.Module) -> int:
         bindings: dict[str, str] = {}
         for statement in node.body:
             match statement:

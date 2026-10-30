@@ -9,22 +9,23 @@ from typing import Annotated
 
 from metaclass_registry.mro_dispatch import MroDispatch, handles
 
-from .measures import Headline, NodeCount
+from .measures import Headline, WholeModule
 from .project import Project
 from .gate import LocatedSource, OccurrenceMeasure, PerFileMeasure
 from .typing_names import TypingImports, TypingReference
 
+type Enclosing = tuple[ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef, ...]
 
-class StringSubscript(OccurrenceMeasure, Headline):
+
+class StringSubscript(WholeModule, OccurrenceMeasure, Headline):
     """A container read by a literal string key, ``x["key"]``. A subscript of a typing form,
     such as ``Literal["a"]``, is a type, not a read: the module's typing bindings decide which,
     so the census reads the whole module too."""
 
     weight = 1
-    node_types = (ast.Module,)
 
     @classmethod
-    def module_lines(cls, tree: ast.AST) -> list[int]:
+    def module_lines(cls, tree: ast.Module) -> list[int]:
         imports = TypingImports.of(tree)
         found = []
         for node in ast.walk(tree):
@@ -40,8 +41,8 @@ class StringSubscript(OccurrenceMeasure, Headline):
         return cls.module_lines(cls.tree(source, filename))
 
     @classmethod
-    def occurrences(cls, node: ast.AST) -> int:
-        return len(cls.module_lines(node))
+    def module_occurrences(cls, module: ast.Module) -> int:
+        return len(cls.module_lines(module))
 
 
 class AnyReference(TypingReference):
@@ -133,7 +134,7 @@ class DeclaredTypeSites(MroDispatch):
         self.counted: set[ast.AST] = set()
 
     def read(self, tree: ast.Module) -> None:
-        pending: list[tuple[ast.AST, tuple[ast.AST, ...]]] = [(tree, ())]
+        pending: list[tuple[ast.AST, Enclosing]] = [(tree, ())]
         while pending:
             node, scope = pending.pop()
             self.dispatch_sync(node, scope)
@@ -141,7 +142,7 @@ class DeclaredTypeSites(MroDispatch):
                 scope = (*scope, node)
             pending.extend((child, scope) for child in ast.iter_child_nodes(node))
 
-    def declare(self, site: str, expression: ast.AST | None, scope: tuple[ast.AST, ...],
+    def declare(self, site: str, expression: ast.expr | None, scope: Enclosing,
                 quoted: bool = True) -> None:
         if expression is None:
             return
@@ -152,7 +153,7 @@ class DeclaredTypeSites(MroDispatch):
         self.uses.extend([AnyUse(expression.lineno, site, owner)] * counted.found)
 
     @handles(ast.Name, ast.Attribute)
-    def reference(self, node: ast.Name | ast.Attribute, scope: tuple[ast.AST, ...]) -> None:
+    def reference(self, node: ast.Name | ast.Attribute, scope: Enclosing) -> None:
         if not isinstance(node.ctx, ast.Load) or node in self.counted:
             return
         reference = AnyReference(self.imports)
@@ -163,50 +164,49 @@ class DeclaredTypeSites(MroDispatch):
             self.uses.append(AnyUse(node.lineno, "reference", owner))
 
     @staticmethod
-    def record_class(scope: tuple[ast.AST, ...]) -> bool:
-        """Whether the innermost scope is a class whose annotations are its fields."""
+    def record_class(owner: ast.ClassDef) -> bool:
+        """Whether the class's annotations are its fields."""
         def last_name(expression: ast.AST) -> str:
             match expression:
                 case ast.Call(func=called):
                     expression = called
             return ast.unparse(expression).rpartition(".")[2]
-        decorators = {last_name(decorator) for decorator in scope[-1].decorator_list}
-        bases = {last_name(base) for base in scope[-1].bases}
+        decorators = {last_name(decorator) for decorator in owner.decorator_list}
+        bases = {last_name(base) for base in owner.bases}
         return "dataclass" in decorators or bool(bases & {"NamedTuple", "TypedDict"})
 
-    def assignment_site(self, scope: tuple[ast.AST, ...]) -> str:
-        if not scope or not isinstance(scope[-1], ast.ClassDef):
-            return "variable"
-        return "dataclass field" if self.record_class(scope) else "class attribute"
+    def assignment_site(self, scope: Enclosing) -> str:
+        match scope:
+            case (*_, ast.ClassDef() as owner):
+                return "dataclass field" if self.record_class(owner) else "class attribute"
+        return "variable"
 
     @handles(ast.arg)
-    def parameter(self, node: ast.arg, scope: tuple[ast.AST, ...]) -> None:
+    def parameter(self, node: ast.arg, scope: Enclosing) -> None:
         self.declare("parameter", node.annotation, scope)
 
     @handles(ast.FunctionDef, ast.AsyncFunctionDef)
-    def result(self, node, scope: tuple[ast.AST, ...]) -> None:
+    def result(self, node, scope: Enclosing) -> None:
         self.declare("return", node.returns, (*scope, node))
 
     @handles(ast.AnnAssign)
-    def annotated(self, node: ast.AnnAssign, scope: tuple[ast.AST, ...]) -> None:
+    def annotated(self, node: ast.AnnAssign, scope: Enclosing) -> None:
         self.declare(self.assignment_site(scope), node.annotation, scope)
         alias = AnyInTypeExpression(self.imports, quoted=True).resolved(node.annotation)
         if alias is typing.TypeAlias:
             self.declare("alias", node.value, scope)
 
     @handles(ast.Assign)
-    def alias(self, node: ast.Assign, scope: tuple[ast.AST, ...]) -> None:
+    def alias(self, node: ast.Assign, scope: Enclosing) -> None:
         # ``Payload = dict[str, Any]`` names a type. A bare member list such as
         # ``(Any, object)`` is a runtime collection, and runtime strings are not
         # forward references.
         if not isinstance(node.value, (ast.Tuple, ast.List)):
             self.declare("alias", node.value, scope, quoted=False)
 
-    # Honor the package's Python 3.11 contract without inventing parser nodes.
-    if hasattr(ast, "TypeAlias"):
-        @handles(ast.TypeAlias)
-        def alias_statement(self, node, scope: tuple[ast.AST, ...]) -> None:
-            self.declare("alias", node.value, scope)
+    @handles(ast.TypeAlias)
+    def alias_statement(self, node: ast.TypeAlias, scope: Enclosing) -> None:
+        self.declare("alias", node.value, scope)
 
 
 class AnyName(PerFileMeasure, LocatedSource):

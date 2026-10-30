@@ -29,7 +29,7 @@ from metaclass_registry.mro_dispatch import MroDispatch, handles
 
 from .family import Family
 from .lexical import DecoratorBinding, ModuleScope, NominalProof, UnprovedIdentity
-from .measures import Measure, parsed, scoped
+from .measures import Measure, WholeModule, parsed, scoped
 from .project import Project
 from .repository import ChangedPaths, ChangedSource
 
@@ -474,6 +474,14 @@ class PerFileMeasure(CountedSource):
                 {key: head.get(key, 0) for key in identities})
 
 
+class PerFileModuleMeasure(PerFileMeasure, WholeModule):
+    """A whole-module count, kept separately for each file the measure admits."""
+
+    @classmethod
+    def count(cls, repo: Project, source: bytes, filename: str) -> int:
+        return cls.module_occurrences(cls.tree(source, filename)) if cls.admits(repo, filename) else 0
+
+
 class PerFileOccurrenceMeasure(PerFileMeasure, OccurrenceMeasure):
     """A per-node count, kept separately for each file."""
 
@@ -680,9 +688,9 @@ class ProvedMove(Family, ABC, root=True, affix="Move"):
         credited: Counter[ast.AST] = Counter()
         counted: dict[ModuleScope, set[int]] = {}
         for move in changed.moves:
-            sites = [counted.setdefault(declared.module, {id(node) for node in measure.sites(
-                         repo, declared.module)}) for declared in (move.left, move.reached)]
-            ProvedMove.transfer(measure, move, *sites, departed, credited)
+            gone, came = (counted.setdefault(declared.module, {id(node) for node in measure.sites(
+                              repo, declared.module)}) for declared in (move.left, move.reached))
+            ProvedMove.transfer(measure, move, gone, came, departed, credited)
         return credited
 
     @staticmethod

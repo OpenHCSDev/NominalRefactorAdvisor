@@ -11,8 +11,7 @@ from metaclass_registry.mro_dispatch import MroDispatch, handles
 
 from .handler_declarations import BuiltinHandlerDeclarations
 from .measures import NodeCount
-from .project import Project
-from .gate import PerFileMeasure, PerFileOccurrenceMeasure
+from .gate import PerFileModuleMeasure, PerFileOccurrenceMeasure
 
 
 class MatchArms:
@@ -70,7 +69,7 @@ class DispatchCases(MroDispatch):
 
 class LiteralDispatchCases(MatchArms, DispatchCases):
     @staticmethod
-    def literal(node: ast.AST) -> bool:
+    def literal(node: ast.AST) -> typing.TypeGuard[ast.Constant]:
         return (isinstance(node, ast.Constant)
                 and isinstance(node.value, (str, int, float))
                 and not isinstance(node.value, bool))
@@ -193,7 +192,7 @@ class TypeSwitch(DispatchMeasure):
         return TypeDispatchCases()
 
 
-class DispatchArms:
+class DispatchArms(DispatchMeasure):
     """Capability: count distinct arms through the same collector, so growing an existing
     candidate is visible too. The same three-arm threshold applies; this is a screen, not a
     proof of domain ownership or a complete no-new-case guard."""
@@ -213,7 +212,7 @@ class TypeSwitchArms(DispatchArms, TypeSwitch):
     """Distinct type arms in the type-switch candidates."""
 
 
-class BuiltinHandlerTypeSwitch(BuiltinHandlerDeclarations, PerFileMeasure, NodeCount):
+class BuiltinHandlerTypeSwitch(BuiltinHandlerDeclarations, PerFileModuleMeasure):
     """Primitive MroDispatch arms outside the codec, even one per method; per-file counts
     prevent moving primitive debt.
 
@@ -223,14 +222,3 @@ class BuiltinHandlerTypeSwitch(BuiltinHandlerDeclarations, PerFileMeasure, NodeC
     """
 
     weight = 5
-    node_types = (ast.Module,)
-
-    @classmethod
-    def occurrences(cls, node: ast.AST) -> int:
-        return cls.count_module(node)
-
-    @classmethod
-    def count(cls, repo: Project, source: bytes, filename: str) -> int:
-        if not cls.admits(repo, filename):
-            return 0
-        return cls.count_module(cls.tree(source, filename))

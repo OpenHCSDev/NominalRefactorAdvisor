@@ -96,7 +96,15 @@ class TypeParameterSyntax:
 
     def names(self, node: TypeParameterDefinition) -> tuple[str, ...]:
         """The names of the definition's type parameters, in order."""
-        return tuple(parameter.name for parameter in node.type_params)
+        return tuple(self.name(parameter) for parameter in node.type_params)
+
+    @staticmethod
+    def name(parameter: ast.type_param) -> str:
+        """The name a type parameter binds, whichever of the three kinds it is."""
+        match parameter:
+            case ast.TypeVar(name=name) | ast.ParamSpec(name=name) | ast.TypeVarTuple(name=name):
+                return name
+        raise TypeError(f"unknown type parameter syntax {type(parameter).__name__}")
 
     def expressions(self, node: TypeParameterDefinition) -> tuple[ast.expr, ...]:
         """The bounds, constraints and defaults the type parameters evaluate."""

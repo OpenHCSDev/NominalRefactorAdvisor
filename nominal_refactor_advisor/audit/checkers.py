@@ -75,7 +75,7 @@ class SideCounts(Compared):
                 subject = typing.cast(FileCount, key).path
                 left = Counter(site.message for site in taken[BaseSide]
                                if changed.at_head(site.path) == subject)
-                added = []
+                added: list[Site] = []
                 for site in taken[HeadSide]:
                     if site.path == subject:
                         if left[site.message]:
@@ -321,7 +321,7 @@ class GodClassExcess(Advisory, InventoryMeasure[dict[MemberCount, int]]):
         values = {}
         def visit(node: ast.AST, path: str, scope: tuple[str, ...]) -> None:
             match node:
-                case ast.ClassDef(name=name, lineno=start, end_lineno=end, decorator_list=decorators):
+                case ast.ClassDef(name=name, lineno=start, end_lineno=int() as end, decorator_list=decorators):
                     scope = (*scope, name)
                     start = min([start, *(decorator.lineno for decorator in decorators)])
                     values[cls.at(path).member(".".join(scope))] = max(0, end - start + 1 - cls.threshold)

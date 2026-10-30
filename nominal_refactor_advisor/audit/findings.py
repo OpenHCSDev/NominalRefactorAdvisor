@@ -120,8 +120,8 @@ class Package:
             collected = []
             for node in ast.walk(module.tree):
                 match node:
-                    case ast.FunctionDef(name=name, lineno=start, end_lineno=end) | \
-                         ast.AsyncFunctionDef(name=name, lineno=start, end_lineno=end):
+                    case ast.FunctionDef(name=name, lineno=start, end_lineno=int() as end) | \
+                         ast.AsyncFunctionDef(name=name, lineno=start, end_lineno=int() as end):
                         visitor = FunctionFacts(node, f"{module.path}::{name}", end - start + 1)
                         visitor.generic_visit(node)
                         collected.append(visitor)
@@ -146,15 +146,15 @@ class Package:
         for module in self.modules:
             for node in ast.walk(module.tree):
                 match node:
-                    case ast.ClassDef(name=name, lineno=start, end_lineno=end) | \
-                         ast.FunctionDef(name=name, lineno=start, end_lineno=end) | \
-                         ast.AsyncFunctionDef(name=name, lineno=start, end_lineno=end):
+                    case ast.ClassDef(name=name, lineno=start, end_lineno=int() as end) | \
+                         ast.FunctionDef(name=name, lineno=start, end_lineno=int() as end) | \
+                         ast.AsyncFunctionDef(name=name, lineno=start, end_lineno=int() as end):
                         sizes[f"{module.path}::{name}"] = end - start + 1
         return sizes
 
     @cached_property
     def imported(self) -> frozenset[str]:
-        names = set()
+        names: set[str] = set()
         for module in self.modules:
             for node in ast.walk(module.tree):
                 match node:
@@ -230,6 +230,7 @@ class Listed:
     """Capability: shown in detail, not only counted."""
 
 
+@dataclass(frozen=True)
 class Finding(Family, ABC, root=True):
     title: ClassVar[str]
 
@@ -502,10 +503,12 @@ class GodObject(PerNodeFinding, Listed):
 
     @classmethod
     def from_node(cls, node: ast.AST, module: ParsedModule) -> Iterator[Self]:
-        if isinstance(node, cls.node_types):
-            size = node.end_lineno - node.lineno + 1
-            if size > cls.threshold():
-                yield cls(f"{module.path}::{node.name}", size)
+        match node:
+            case (ast.ClassDef(name=name, lineno=start, end_lineno=int() as end)
+                  | ast.FunctionDef(name=name, lineno=start, end_lineno=int() as end)
+                  | ast.AsyncFunctionDef(name=name, lineno=start, end_lineno=int() as end)
+                  ) if isinstance(node, cls.node_types) and end - start + 1 > cls.threshold():
+                yield cls(f"{module.path}::{name}", end - start + 1)
 
     def identity(self) -> tuple:
         return (self.family_name, self.qualname)
@@ -541,8 +544,14 @@ class GodFunction(GodObject):
         return LongFunction.lines
 
 
+@dataclass(frozen=True)
 class PerLineFinding(Finding):
     pattern: ClassVar[re.Pattern]
+    location: str
+    text: str
+
+    def identity(self) -> tuple:
+        return (self.family_name, self.location.rpartition(":")[0], self.text)
 
     @classmethod
     def detect(cls, package: Package) -> Iterator[Self]:
@@ -556,33 +565,18 @@ class PerLineFinding(Finding):
 class LegacyMarker(PerLineFinding):
     title = "LEGACY MARKERS"
     pattern = re.compile(r"legacy|compat\w*|deprecat\w*|backward|fallback|shim", re.I)
-    location: str
-    text: str
-
-    def identity(self) -> tuple:
-        return (self.family_name, self.location.rpartition(":")[0], self.text)
 
 
 @dataclass(frozen=True)
 class PositionalInsert(PerLineFinding):
     title = "POSITIONAL INSERTS (column order implied)"
     pattern = re.compile(r"INSERT(?:\s+OR\s+\w+)?\s+INTO\s+\w+\s+VALUES", re.I)
-    location: str
-    text: str
-
-    def identity(self) -> tuple:
-        return (self.family_name, self.location.rpartition(":")[0], self.text)
 
 
 @dataclass(frozen=True)
 class ColumnInsert(PerLineFinding):
     title = "INSERTS WITH COLUMN LISTS"
     pattern = re.compile(r"INSERT(?:\s+OR\s+\w+)?\s+INTO\s+\w+\s*\(", re.I)
-    location: str
-    text: str
-
-    def identity(self) -> tuple:
-        return (self.family_name, self.location.rpartition(":")[0], self.text)
 
 
 @dataclass(frozen=True)

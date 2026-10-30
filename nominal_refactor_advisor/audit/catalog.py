@@ -38,7 +38,10 @@ class Rung:
 
     @property
     def title(self) -> str:
-        return self.TITLE.match(self.text)[1].removesuffix(" rung")
+        match self.TITLE.match(self.text):
+            case re.Match() as found:
+                return found[1].removesuffix(" rung")
+        raise ValueError(f"{self.path} does not open with its '# Title' line")
 
     @property
     def entries(self) -> tuple[Entry, ...]:

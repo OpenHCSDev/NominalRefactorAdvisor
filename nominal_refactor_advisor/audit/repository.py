@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import ClassVar
 
 from .family import Family
+from .lexical import ModuleScope
 from .measures import Measured, MeasuredRevisions, ParseOutcome, Tally, Unparsed, scoped
 
 

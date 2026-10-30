@@ -27,7 +27,11 @@ class DirectChange(ChangeKind, Attributed): ...
 
 class ModuleOrigin(ABC):
     merged_at: int
-    branch_kind: str
+
+    @property
+    @abstractmethod
+    def branch_kind(self) -> str:
+        """The kind of branch the module arrived on."""
 
     @abstractmethod
     def kind(self, refactor_branches: re.Pattern) -> type[ChangeKind]: ...

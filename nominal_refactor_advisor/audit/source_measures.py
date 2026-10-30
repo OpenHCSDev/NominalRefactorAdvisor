@@ -26,7 +26,7 @@ from .measures import (ForeignAbsenceSyntax, ForeignAttributeProbe, Headline, Me
                        MechanismOwners, NodeCount, PatternMeasure)
 from .project import Project
 from .gate import (CleanChangedLines, LocatedSource, NamePosition, OccurrenceMeasure,
-                      PerFileMeasure, PerFileOccurrenceMeasure, RosterPosition)
+                      PerFileMeasure, PerFileModuleMeasure, PerFileOccurrenceMeasure, RosterPosition)
 from .repository import ChangedSource
 
 
@@ -196,8 +196,8 @@ class BannedVocabulary(CleanChangedLines, PerFileOccurrenceMeasure):
         for node in ast.walk(source.head.tree):
             if isinstance(node, (ast.Module, ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
                 match node.body:
-                    case [ast.Expr(value=ast.Constant(value=str()) as value), *_]:
-                        docstrings.update(range(value.lineno, value.end_lineno + 1))
+                    case [ast.Expr(value=ast.Constant(value=str(), lineno=first, end_lineno=int() as last)), *_]:
+                        docstrings.update(range(first, last + 1))
         found: set[int] = set()
         for token in source.tokens:
             if token.type == tokenize.COMMENT or (
@@ -506,7 +506,7 @@ class BroadSwallow(CleanChangedLines, BroadExceptDefault):
         return 0
 
 
-class FamilyFlattened(PerFileMeasure, NodeCount):
+class FamilyFlattened(PerFileModuleMeasure):
     """Screen name transport and string redispatch, not declaration-owned identity.
 
     A pure property projecting its receiver's declaration name supplies identity,
@@ -516,7 +516,6 @@ class FamilyFlattened(PerFileMeasure, NodeCount):
     The census and the gate take one count: the module as FlatteningProjection reads it,
     plus its codec detours, in every module but the project's mechanism modules.
     """
-    node_types = (ast.Module,)
     weight = 3
     names: ClassVar[frozenset[str]] = frozenset({"declared_name", "family_name"})
 
@@ -553,9 +552,7 @@ class FamilyFlattened(PerFileMeasure, NodeCount):
         return body[0] if isinstance(owner, ast.Name) and owner.id == parameters[0].arg else None
 
     @classmethod
-    def flattened(cls, node: ast.AST) -> tuple[ast.AST, ...]:
-        if not isinstance(node, ast.Module):
-            return ()
+    def flattened(cls, node: ast.Module) -> tuple[ast.AST, ...]:
         nodes = tuple(ast.walk(node))
         # Only unique, literal module declarations are admitted as string values.
         # Writes/parameters/imports in any scope conservatively keep a name open.
@@ -573,7 +570,7 @@ class FamilyFlattened(PerFileMeasure, NodeCount):
                     if writes[name] == 1:
                         strings[name] = value
         properties = {"property"} if not writes["property"] else set()
-        builtins = set()
+        builtins: set[str] = set()
         for statement in node.body:
             if isinstance(statement, ast.ImportFrom) and statement.module == "builtins":
                 properties.update(alias.asname or alias.name for alias in statement.names
@@ -592,13 +589,13 @@ class FamilyFlattened(PerFileMeasure, NodeCount):
                 return strings[value.id]
             return None
 
-        found = []
+        found: list[ast.AST] = []
         for item in nodes:
             match item:
                 case ast.Call(args=args, keywords=keywords):
                     found.extend([item] * (sum(cls._flattened(a) for a in args) + sum(cls._flattened(k.value) for k in keywords)))
-                case ast.Return(value=value) if item not in identities:
-                    found.extend([item] * cls._flattened(value))
+                case ast.Return(value=result) if item not in identities:
+                    found.extend([item] * cls._flattened(result))
                 case ast.Compare(left=left, ops=operators, comparators=rights):
                     for operator, right in zip(operators, rights, strict=True):
                         left_string, right_string = string_value(left), string_value(right)
@@ -616,15 +613,11 @@ class FamilyFlattened(PerFileMeasure, NodeCount):
         return not repo.owns_mechanism(path)
 
     @classmethod
-    def occurrences(cls, node: ast.AST) -> int:
+    def module_occurrences(cls, module: ast.Module) -> int:
         # The projection rewrites the module it reads, and the census and the syntax passes
         # share one parsed tree, so it reads a copy.
         projection = FlatteningProjection()
-        return len(cls.flattened(projection.visit(copy.deepcopy(node)))) + projection.round_trips
-
-    @classmethod
-    def count(cls, repo: Project, source: bytes, filename: str) -> int:
-        return cls.occurrences(cls.tree(source, filename)) if cls.admits(repo, filename) else 0
+        return len(cls.flattened(projection.visit(copy.deepcopy(module)))) + projection.round_trips
 
 
 class FlatteningProjection(ast.NodeTransformer):

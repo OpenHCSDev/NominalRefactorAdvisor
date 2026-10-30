@@ -63,6 +63,24 @@ class Headline(NodeCount, ABC):
     """Capability: the measures behind the headline density."""
 
 
+class WholeModule(NodeCount, ABC):
+    """Capability: the census reads this measure once per file, from the whole module."""
+
+    node_types = (ast.Module,)
+
+    @classmethod
+    def occurrences(cls, node: ast.AST) -> int:
+        match node:
+            case ast.Module():
+                return cls.module_occurrences(node)
+        return 0
+
+    @classmethod
+    @abstractmethod
+    def module_occurrences(cls, module: ast.Module) -> int:
+        """The whole module's count."""
+
+
 @lru_cache(maxsize=4)
 def parsed(source: bytes, filename: str) -> ast.Module:
     """A file's syntax, parsed once while every pass counts it."""
@@ -213,7 +231,7 @@ class LongFunction(PatternMeasure):
     @classmethod
     def matches(cls, node: ast.AST) -> bool:
         match node:
-            case ast.FunctionDef(lineno=start, end_lineno=end) | ast.AsyncFunctionDef(lineno=start, end_lineno=end):
+            case ast.FunctionDef(lineno=start, end_lineno=int() as end) | ast.AsyncFunctionDef(lineno=start, end_lineno=int() as end):
                 return end - start + 1 > cls.lines
         return False
 
@@ -321,13 +339,13 @@ class NodeTable:
     """The census's measures by the node types they inspect, read from the family once per
     census, so a census counts every measure declared when it starts."""
 
-    measures: tuple[type[Measure], ...]
-    by_node: dict[type[ast.AST], tuple[type[Measure], ...]]
+    measures: tuple[type[NodeCount], ...]
+    by_node: dict[type[ast.AST], tuple[type[NodeCount], ...]]
 
     @classmethod
     def of_family(cls) -> NodeTable:
         measures = NodeCount.members()
-        table: dict[type[ast.AST], list[type[Measure]]] = collections.defaultdict(list)
+        table: dict[type[ast.AST], list[type[NodeCount]]] = collections.defaultdict(list)
         for measure in measures:
             for node_type in measure.node_types:
                 table[node_type].append(measure)
