@@ -103,7 +103,9 @@ def read(editor, unknown):
     def test_identity_projection_is_not_string_redispatch(self):
         for header, decorator in (("", "property"),
                                   ("from builtins import property as identity", "identity"),
-                                  ("import builtins as native", "native.property")):
+                                  ("import builtins as native", "native.property"),
+                                  ("from functools import cached_property", "cached_property"),
+                                  ("import functools", "functools.cached_property")):
             source = header + f'''
 SEND_TOOL = "comms_send"
 class CodingCall:

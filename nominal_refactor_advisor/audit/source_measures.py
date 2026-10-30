@@ -520,6 +520,10 @@ class FamilyFlattened(PerFileModuleMeasure):
     """
     weight = 3
     names: ClassVar[frozenset[str]] = frozenset({"declared_name", "family_name"})
+    # Standard-library read-only descriptors whose getter result is the attribute's value.
+    descriptors: ClassVar[frozenset[tuple[str, str]]] = frozenset({
+        ("builtins", "property"), ("functools", "cached_property"),
+    })
 
     @classmethod
     def _flattened(cls, node: ast.AST | None) -> int:
@@ -531,13 +535,14 @@ class FamilyFlattened(PerFileModuleMeasure):
         return 0
 
     @classmethod
-    def identity_return(cls, function: ast.FunctionDef, properties: set[str], builtins: set[str]) -> ast.Return | None:
+    def identity_return(cls, function: ast.FunctionDef, properties: set[str],
+                        modules: dict[str, str]) -> ast.Return | None:
         if len(function.decorator_list) != 1:
             return None
         decorator = function.decorator_list[0]
         if not (isinstance(decorator, ast.Name) and decorator.id in properties
-                or isinstance(decorator, ast.Attribute) and decorator.attr == "property"
-                and isinstance(decorator.value, ast.Name) and decorator.value.id in builtins):
+                or isinstance(decorator, ast.Attribute) and isinstance(decorator.value, ast.Name)
+                and (modules.get(decorator.value.id), decorator.attr) in cls.descriptors):
             return None
         parameters = (*function.args.posonlyargs, *function.args.args)
         body = function.body
@@ -572,17 +577,19 @@ class FamilyFlattened(PerFileModuleMeasure):
                     if writes[name] == 1:
                         strings[name] = value
         properties = {"property"} if not writes["property"] else set()
-        builtins: set[str] = set()
+        modules: dict[str, str] = {}
+        sources = {module for module, _ in cls.descriptors}
         for statement in node.body:
-            if isinstance(statement, ast.ImportFrom) and statement.module == "builtins":
+            if isinstance(statement, ast.ImportFrom):
                 properties.update(alias.asname or alias.name for alias in statement.names
-                                  if alias.name == "property" and writes[alias.asname or alias.name] == 1)
+                                  if (statement.module, alias.name) in cls.descriptors
+                                  and writes[alias.asname or alias.name] == 1)
             elif isinstance(statement, ast.Import):
-                builtins.update(alias.asname or alias.name for alias in statement.names
-                                if alias.name == "builtins" and writes[alias.asname or alias.name] == 1)
+                modules.update((alias.asname or alias.name, alias.name) for alias in statement.names
+                               if alias.name in sources and writes[alias.asname or alias.name] == 1)
         identities = {returned for item in nodes
                       if isinstance(item, ast.FunctionDef)
-                      and (returned := cls.identity_return(item, properties, builtins)) is not None}
+                      and (returned := cls.identity_return(item, properties, modules)) is not None}
 
         def string_value(value: ast.AST) -> str | None:
             if isinstance(value, ast.Constant) and isinstance(value.value, str):
