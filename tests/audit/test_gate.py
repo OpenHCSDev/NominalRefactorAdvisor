@@ -1502,3 +1502,20 @@ def test_a_stored_format_compares_required_keys_as_sets_at_every_depth():
     defaulted = StoredFormat.declared(
         1, {"row": {"type": "object", "default": {"required": ["b", "a"]}}}, ["row"])
     assert defaulted.fields == {"row": {"type": "object", "default": {"required": ["b", "a"]}}}
+
+
+def test_a_stored_format_that_only_adds_alternatives_widens():
+    """agent-comms #3643: StoppingThreadStatus adds {"kind": "stopping"} to the registry's
+    status union while every file still holds an earlier member, so the format widens and
+    needs no carry; a dropped alternative, a changed field or a new required key does not."""
+    stopped = {"type": "object", "properties": {"kind": {"const": "stopped"}}}
+    stopping = {"type": "object", "properties": {"kind": {"const": "stopping"}}}
+    before = StoredFormat.declared(1, {"status": {"oneOf": [stopped]}}, ["status"])
+    added = StoredFormat.declared(1, {"status": {"oneOf": [stopped, stopping]}}, ["status"])
+    assert added.widens(before)
+    assert before.widens(before)
+    assert not before.widens(added)
+    assert not StoredFormat.declared(1, {"status": {"type": "string"}}, ["status"]).widens(before)
+    assert not StoredFormat.declared(
+        1, {"status": {"oneOf": [stopped, stopping]}, "since": {"type": "number"}},
+        ["status", "since"]).widens(before)
