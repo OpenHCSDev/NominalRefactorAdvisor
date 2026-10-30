@@ -53,7 +53,7 @@ from .class_index import (
     CompactUnannotatedCallable,
     native_identity,
 )
-from .typeshed_stubs import StubRoot, installed_stub_root
+from .typeshed_stubs import AnswerT, StubAnswers, StubRoot, installed_stub_root
 
 FunctionNode = ast.FunctionDef | ast.AsyncFunctionDef
 
@@ -1199,35 +1199,24 @@ class StubDeclarations:
     projections: dict[str, CompactModuleClassProjection] = field(default_factory=dict)
     built: list[DeclaredReceiverTyping] = field(default_factory=list)
 
+    def answered(self, qualified: str, answers: StubAnswers[AnswerT]) -> AnswerT:
+        """The stub root's answer for a name, unless the scan holds its package."""
+
+        if qualified.partition(".")[0] in self.shadowed_roots:
+            return answers.undeclared(qualified)
+        return self.root.answer(qualified, answers)
+
     def chased(self, qualified: str) -> ScannedClassLookup:
-        if self.reaches(qualified):
-            return self.typing.bound(qualified)
-        return UnscannedName(qualified)
+        return self.answered(qualified, StubChase(self))
 
     def unbound(self, qualified: str) -> DeclaredType:
         """A name neither the scan nor a stub binds to a class."""
 
-        missing = self.root.missing(qualified)
-        if missing is not None:
-            return UndeclaredType(missing)
-        stub = self.declaring_stub(qualified)
-        if stub is not None and stub.module_name != qualified:
-            return UndeclaredType(
-                f"`{qualified}` names no class the `{stub.module_name}` stub declares"
-            )
-        return DeclaredForeignInstance((qualified,))
+        return self.answered(qualified, StubUnbound())
 
-    def declaring_stub(self, qualified: str) -> ParsedModule | None:
-        if qualified.partition(".")[0] in self.shadowed_roots:
-            return None
-        return self.root.declaring_module(qualified)
+    def load(self, stub: ParsedModule) -> None:
+        """Index `stub`, and the stubs its classes' bases live in."""
 
-    def reaches(self, qualified: str) -> bool:
-        """Load the stub declaring `qualified`, and its classes' bases' stubs; whether one does."""
-
-        stub = self.declaring_stub(qualified)
-        if stub is None:
-            return False
         pending = [stub]
         for module in iter(pending):
             if module.module_name in self.projections:
@@ -1239,10 +1228,8 @@ class StubDeclarations:
                 base_stub
                 for indexed_class in projection.classes
                 for reference in indexed_class.base_references
-                if (base_stub := self.declaring_stub(reference.qualified_name)) is not None
-                and base_stub.module_name not in self.projections
+                for base_stub in self.answered(reference.qualified_name, StubModules())
             )
-        return True
 
     @property
     def typing(self) -> DeclaredReceiverTyping:
@@ -1256,6 +1243,54 @@ class StubDeclarations:
                 )
             )
         return self.built[0]
+
+
+@dataclass(frozen=True)
+class StubChase(StubAnswers[ScannedClassLookup]):
+    """The stub class a name binds: its module loaded, then bound in the stubs' index."""
+
+    declarations: StubDeclarations
+
+    def declared_in(self, stub: ParsedModule, qualified: str) -> ScannedClassLookup:
+        self.declarations.load(stub)
+        return self.declarations.typing.bound(qualified)
+
+    def undeclared(self, qualified: str) -> ScannedClassLookup:
+        return UnscannedName(qualified)
+
+    def unstubbed(self, qualified: str, reason: str) -> ScannedClassLookup:
+        return UnscannedName(qualified)
+
+
+class StubUnbound(StubAnswers[DeclaredType]):
+    """What a name no class binds is: a stub module's non-class name is
+    undeclared, a stdlib name without stubs says so, anything else is foreign."""
+
+    def declared_in(self, stub: ParsedModule, qualified: str) -> DeclaredType:
+        if stub.module_name == qualified:
+            return DeclaredForeignInstance((qualified,))
+        return UndeclaredType(
+            f"`{qualified}` names no class the `{stub.module_name}` stub declares"
+        )
+
+    def undeclared(self, qualified: str) -> DeclaredType:
+        return DeclaredForeignInstance((qualified,))
+
+    def unstubbed(self, qualified: str, reason: str) -> DeclaredType:
+        return UndeclaredType(reason)
+
+
+class StubModules(StubAnswers[tuple[ParsedModule, ...]]):
+    """The stub module a name lives in, as the stubs to load for it."""
+
+    def declared_in(self, stub: ParsedModule, qualified: str) -> tuple[ParsedModule, ...]:
+        return (stub,)
+
+    def undeclared(self, qualified: str) -> tuple[ParsedModule, ...]:
+        return ()
+
+    def unstubbed(self, qualified: str, reason: str) -> tuple[ParsedModule, ...]:
+        return ()
 
 
 @cache

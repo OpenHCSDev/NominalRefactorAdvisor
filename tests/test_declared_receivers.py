@@ -32,7 +32,6 @@ from nominal_refactor_advisor.scan_cache import ScanCache
 from nominal_refactor_advisor.typeshed_stubs import (
     AbsentStubRoot,
     RunningInterpreterBranches,
-    installed_stub_root,
 )
 
 MODELS = """
@@ -560,7 +559,7 @@ def test_the_stub_member_is_its_declared_optional(tmp_path):
             found = stubs.class_index.declared_member(symbol, name)
             assert isinstance(found, AssignedClassMember)
             assert found.declaration.annotation_expression == annotation
-            assert installed_stub_root().holds(found.owner.file_path)
+            assert Path(found.owner.file_path).name == "ast.pyi"
 
 
 def test_without_typeshed_the_stdlib_class_names_the_absent_stubs(tmp_path, monkeypatch):
