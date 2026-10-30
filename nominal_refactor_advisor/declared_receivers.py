@@ -16,6 +16,11 @@ evaluates the path over the class index: members are looked up through the
 declared MRO (`CompactClassFamilyIndex.declared_member`), returns through the
 declared return annotations the class projections carry. The result is a
 `DeclaredType`; anything not declared is an `UndeclaredType` naming why.
+
+A class the scan does not hold is read from the installed typeshed stub that
+declares it (`StubDeclarations`): `ast.AnnAssign.value` is the stub's
+`expr | None`. The stub modules a scan reaches are indexed apart from the
+scan's, declaration-only; a name the scan binds is always the scan's.
 """
 
 from __future__ import annotations
@@ -28,23 +33,27 @@ import types
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
-from functools import cached_property
+from functools import cache, cached_property
 from typing import ClassVar
 
 from .ast_field_decoders import declared_annotations, variadic_parameters
+from .ast_tools import ParsedModule, collect_family_items
 from .class_index import (
     ClassMemberAnswersABC,
     CompactAnnotatedFunctionReturn,
     CompactAnnotatedMethod,
     CompactAnnotatedProperty,
     CompactClassFamilyIndex,
+    CompactClassFamilyIndexBuilder,
     CompactClassMemberDeclaration,
     CompactClassReferenceResolver,
     CompactIndexedClass,
     CompactModuleClassProjection,
+    CompactModuleClassProjectionFamily,
     CompactUnannotatedCallable,
     native_identity,
 )
+from .typeshed_stubs import AnswerT, StubAnswers, StubRoot, installed_stub_root
 
 FunctionNode = ast.FunctionDef | ast.AsyncFunctionDef
 
@@ -245,10 +254,11 @@ class DeclaredInstance(DeclaredScannedClasses):
 
 @dataclass(frozen=True)
 class DeclaredForeignInstance(DeclaredType):
-    """An instance of a class the scan does not hold, by its qualified name.
+    """An instance of a class neither the scan nor an installed stub declares,
+    by its qualified name.
 
-    Its members are not declared here, so nothing past it is typed; but it is
-    declared, so it is no class of the scan's.
+    Its members are declared nowhere NRA reads, so nothing past it is typed;
+    but it is declared, so it is no class of the scan's.
     """
 
     qualified_names: tuple[str, ...]
@@ -720,6 +730,7 @@ class ClassHead(AnnotationHead):
 
 
 SELF_SPELLINGS = _typing_names("Self")
+ANY_SPELLINGS = _typing_names("Any")
 
 
 # --- evaluation ---------------------------------------------------------------------
@@ -735,12 +746,33 @@ class DeclaredReceiverTyping:
     definitions_by_module: Mapping[str, frozenset[str]]
     function_returns: Mapping[str, tuple[CompactAnnotatedFunctionReturn, ...]]
     type_variables_by_module: Mapping[str, tuple[str, ...]]
+    declarations: StubDeclarations
 
     @classmethod
     def from_projections(
         cls,
         projections: Sequence[CompactModuleClassProjection],
         class_index: CompactClassFamilyIndex,
+    ) -> DeclaredReceiverTyping:
+        """The scan's typing; a class it does not hold is read from the installed stubs."""
+
+        return cls.declared_over(
+            projections,
+            class_index,
+            StubDeclarations(
+                installed_stub_root(),
+                frozenset(
+                    projection.module_name.partition(".")[0] for projection in projections
+                ),
+            ),
+        )
+
+    @classmethod
+    def declared_over(
+        cls,
+        projections: Sequence[CompactModuleClassProjection],
+        class_index: CompactClassFamilyIndex,
+        declarations: StubDeclarations,
     ) -> DeclaredReceiverTyping:
         returns: dict[str, list[CompactAnnotatedFunctionReturn]] = {}
         for projection in projections:
@@ -766,22 +798,34 @@ class DeclaredReceiverTyping:
                 projection.module_name: projection.type_variable_names
                 for projection in projections
             },
+            declarations=declarations,
         )
 
     # members and calls ---------------------------------------------------
 
+    def declaring(self, symbol: str) -> DeclaredReceiverTyping:
+        """The typing whose index holds `symbol`: this one, else the stubs'.
+
+        `chased` yields only symbols one of the two holds."""
+
+        if symbol in self.class_index.classes_by_symbol:
+            return self
+        return self.declarations.typing
+
     def member_read(
         self, symbol: str, name: str, receiver: DeclaredInstance
     ) -> DeclaredType:
-        return self.class_index.declared_member(symbol, name).answer(
-            _MemberRead(self, symbol, name, receiver)
+        typing = self.declaring(symbol)
+        return typing.class_index.declared_member(symbol, name).answer(
+            _MemberRead(typing, symbol, name, receiver)
         )
 
     def method_call(
         self, symbol: str, name: str, receiver: DeclaredInstance
     ) -> DeclaredType:
-        return self.class_index.declared_member(symbol, name).answer(
-            _MethodCall(self, symbol, name, receiver)
+        typing = self.declaring(symbol)
+        return typing.class_index.declared_member(symbol, name).answer(
+            _MethodCall(typing, symbol, name, receiver)
         )
 
     def function_result(self, function_symbol: str) -> DeclaredType:
@@ -875,7 +919,7 @@ class DeclaredReceiverTyping:
         return {}
 
     def enum_members(self, symbol: str) -> DeclaredType:
-        declaration = self.class_index.class_for(symbol)
+        declaration = self.declaring(symbol).class_index.class_for(symbol)
         if declaration is not None and declaration.direct_enum_member_names:
             return DeclaredInstance((symbol,))
         return UndeclaredType(f"the class `{symbol}` is no enum, not a declared collection")
@@ -898,7 +942,14 @@ class DeclaredReceiverTyping:
         return self.chased(self.qualified(module_name, parts))
 
     def chased(self, qualified: str) -> ScannedClassLookup:
-        """The scanned class a qualified name binds, following re-exporting imports."""
+        """The class a qualified name binds: the scan's when the scan binds it,
+        else the class an installed stub declares by it."""
+
+        return self.bound(qualified).declared_by(self.declarations)
+
+    def bound(self, qualified: str) -> ScannedClassLookup:
+        """The class this typing's own index binds a qualified name to,
+        following re-exporting imports."""
 
         spelled = qualified
         for _hop in range(REEXPORT_HOPS):
@@ -912,12 +963,12 @@ class DeclaredReceiverTyping:
         return UnscannedName(spelled)
 
     def unscanned(self, qualified: str) -> DeclaredType:
-        """A name no scanned class binds: undeclared inside the scanned packages,
-        a declared foreign class outside them."""
+        """A name no scanned or stub class binds: undeclared inside the scanned
+        packages and the stub modules, a declared foreign class outside them."""
 
         if qualified.partition(".")[0] in self.scanned_roots:
             return UndeclaredType(f"`{qualified}` names no scanned class")
-        return DeclaredForeignInstance((qualified,))
+        return self.declarations.unbound(qualified)
 
     # references -------------------------------------------------------------
 
@@ -1008,6 +1059,8 @@ class DeclaredReceiverTyping:
             return scope.parameters[qualified]
         if qualified in SELF_SPELLINGS:
             return scope.self_type
+        if qualified in ANY_SPELLINGS:
+            return UndeclaredType("`Any` declares no type")
         return self.class_symbol(module_name, parts).instance(self)
 
     def subscripted_type(
@@ -1044,7 +1097,7 @@ class DeclaredReceiverTyping:
         return bool(
             set.intersection(
                 *(
-                    {symbol, *self.class_index.ancestor_symbols(symbol)}
+                    {symbol, *self.declaring(symbol).class_index.ancestor_symbols(symbol)}
                     for symbol in symbols
                 )
             )
@@ -1078,6 +1131,10 @@ class ScannedClassLookup(ABC):
         """Queue this base for a generic-argument walk: a base outside the scan
         binds nothing the walk can follow."""
 
+    @abstractmethod
+    def declared_by(self, declarations: StubDeclarations) -> ScannedClassLookup:
+        """This lookup, or the stub class the declarations hold where the scan binds none."""
+
 
 @dataclass(frozen=True)
 class ScannedClass(ScannedClassLookup):
@@ -1102,6 +1159,9 @@ class ScannedClass(ScannedClassLookup):
     ) -> None:
         pending.append((self.symbol, bindings(typing.type_parameters(self.symbol))))
 
+    def declared_by(self, declarations: StubDeclarations) -> ScannedClassLookup:
+        return self
+
 
 @dataclass(frozen=True)
 class UnscannedName(ScannedClassLookup):
@@ -1117,6 +1177,128 @@ class UnscannedName(ScannedClassLookup):
         self, typing: DeclaredReceiverTyping, module_name: str, parts: tuple[str, ...]
     ) -> DeclaredType:
         return typing.called_unscanned(module_name, parts)
+
+    def declared_by(self, declarations: StubDeclarations) -> ScannedClassLookup:
+        return declarations.chased(self.qualified)
+
+
+@dataclass
+class StubDeclarations:
+    """The installed stub modules a scan's names reach, indexed apart from the scan.
+
+    A stub module is loaded when a name the scan does not bind lives in it,
+    with the stub modules its classes' bases live in, so each stub class's
+    declared MRO is as closed as the stubs make it. A top-level package the
+    scan holds is never read from a stub: the scan's own module wins. Stub
+    classes are read here and nowhere else: they are never scanned modules,
+    so no detector or codemod sees them.
+    """
+
+    root: StubRoot
+    shadowed_roots: frozenset[str]
+    projections: dict[str, CompactModuleClassProjection] = field(default_factory=dict)
+    built: list[DeclaredReceiverTyping] = field(default_factory=list)
+
+    def answered(self, qualified: str, answers: StubAnswers[AnswerT]) -> AnswerT:
+        """The stub root's answer for a name, unless the scan holds its package."""
+
+        if qualified.partition(".")[0] in self.shadowed_roots:
+            return answers.undeclared(qualified)
+        return self.root.answer(qualified, answers)
+
+    def chased(self, qualified: str) -> ScannedClassLookup:
+        return self.answered(qualified, StubChase(self))
+
+    def unbound(self, qualified: str) -> DeclaredType:
+        """A name neither the scan nor a stub binds to a class."""
+
+        return self.answered(qualified, StubUnbound())
+
+    def load(self, stub: ParsedModule) -> None:
+        """Index `stub`, and the stubs its classes' bases live in."""
+
+        pending = [stub]
+        for module in iter(pending):
+            if module.module_name in self.projections:
+                continue
+            projection = stub_projection(module)
+            self.projections[module.module_name] = projection
+            self.built.clear()
+            pending.extend(
+                base_stub
+                for indexed_class in projection.classes
+                for reference in indexed_class.base_references
+                for base_stub in self.answered(reference.qualified_name, StubModules())
+            )
+
+    @property
+    def typing(self) -> DeclaredReceiverTyping:
+        """The typing over the stub modules loaded so far, rebuilt when one is added."""
+
+        if not self.built:
+            projections = tuple(self.projections.values())
+            self.built.append(
+                DeclaredReceiverTyping.declared_over(
+                    projections, CompactClassFamilyIndexBuilder(projections).build(), self
+                )
+            )
+        return self.built[0]
+
+
+@dataclass(frozen=True)
+class StubChase(StubAnswers[ScannedClassLookup]):
+    """The stub class a name binds: its module loaded, then bound in the stubs' index."""
+
+    declarations: StubDeclarations
+
+    def declared_in(self, stub: ParsedModule, qualified: str) -> ScannedClassLookup:
+        self.declarations.load(stub)
+        return self.declarations.typing.bound(qualified)
+
+    def undeclared(self, qualified: str) -> ScannedClassLookup:
+        return UnscannedName(qualified)
+
+    def unstubbed(self, qualified: str, reason: str) -> ScannedClassLookup:
+        return UnscannedName(qualified)
+
+
+class StubUnbound(StubAnswers[DeclaredType]):
+    """What a name no class binds is: a stub module's non-class name is
+    undeclared, a stdlib name without stubs says so, anything else is foreign."""
+
+    def declared_in(self, stub: ParsedModule, qualified: str) -> DeclaredType:
+        if stub.module_name == qualified:
+            return DeclaredForeignInstance((qualified,))
+        return UndeclaredType(
+            f"`{qualified}` names no class the `{stub.module_name}` stub declares"
+        )
+
+    def undeclared(self, qualified: str) -> DeclaredType:
+        return DeclaredForeignInstance((qualified,))
+
+    def unstubbed(self, qualified: str, reason: str) -> DeclaredType:
+        return UndeclaredType(reason)
+
+
+class StubModules(StubAnswers[tuple[ParsedModule, ...]]):
+    """The stub module a name lives in, as the stubs to load for it."""
+
+    def declared_in(self, stub: ParsedModule, qualified: str) -> tuple[ParsedModule, ...]:
+        return (stub,)
+
+    def undeclared(self, qualified: str) -> tuple[ParsedModule, ...]:
+        return ()
+
+    def unstubbed(self, qualified: str, reason: str) -> tuple[ParsedModule, ...]:
+        return ()
+
+
+@cache
+def stub_projection(stub: ParsedModule) -> CompactModuleClassProjection:
+    """A stub module's class declarations, projected once per process."""
+
+    (projection,) = collect_family_items(stub, CompactModuleClassProjectionFamily)
+    return projection
 
 
 REEXPORT_HOPS = 8
@@ -1399,7 +1581,7 @@ class LiteralRoot(ReceiverRoot):
     qualified_name: str
 
     def declared(self, typing: DeclaredReceiverTyping) -> DeclaredType:
-        return DeclaredForeignInstance((self.qualified_name,))
+        return typing.chased(self.qualified_name).instance(typing)
 
 
 @dataclass(frozen=True)
