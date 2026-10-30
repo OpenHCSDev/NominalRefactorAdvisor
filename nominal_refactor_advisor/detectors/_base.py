@@ -192,7 +192,6 @@ from ..observation_graph import (
     StructuralObservationCarrier,
 )
 from ..patterns import PatternId
-from ..typeshed_stubs import installed_stub_root
 from ..taxonomy import (
     HIGH_CONFIDENCE,
     MEDIUM_CONFIDENCE,
@@ -675,28 +674,8 @@ class IssueDetector(RequiredRelationDeclaration, metaclass=AutoRegisterMeta):
     def _normalize_findings(
         findings: list[RefactorFinding], config: DetectorConfig
     ) -> list[RefactorFinding]:
-        """Apply the common detector output contract to one finding stream.
+        """Apply the common detector output contract to one finding stream."""
 
-        A declaration-only stub (`typeshed_stubs.StubRoot.holds`) is read, never
-        edited: a finding citing one is a defect, refused here for every detector.
-        """
-
-        stubs = installed_stub_root()
-        for finding in findings:
-            cited = (
-                *finding.evidence,
-                *(
-                    location
-                    for location in (finding.projection_evidence, finding.authority_evidence)
-                    if location is not None
-                ),
-            )
-            stub_sites = [location for location in cited if stubs.holds(location.file_path)]
-            if stub_sites:
-                raise ValueError(
-                    f"{finding.detector_id} cites declaration-only stub "
-                    f"{stub_sites[0].file_path}:{stub_sites[0].line}"
-                )
         if config.excluded_pattern_ids:
             findings = [
                 f for f in findings if f.pattern_id not in config.excluded_pattern_ids
