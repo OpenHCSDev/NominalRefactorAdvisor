@@ -15,6 +15,8 @@ from functools import cached_property
 from pathlib import Path
 from typing import ClassVar, Iterator, Self
 
+from ..ast_tools import ParsedModule
+from ..python_module_identity import PythonModulePathIdentity
 from .chain_terms import ChainProfile
 from .checkers import GodClassExcess
 from .dispatch import DispatchMeasure, StringDispatch as LiteralDispatch, TypeSwitch
@@ -24,18 +26,6 @@ from .repository import Repository
 
 
 # ---------------------------------------------------------------- parsed package
-
-@dataclass(frozen=True)
-class ParsedModule:
-    path: str
-    text: str
-    tree: ast.Module
-    name: str
-
-    @property
-    def package(self) -> str:
-        return self.name if self.path.endswith("__init__.py") else self.name.rpartition(".")[0]
-
 
 @dataclass
 class FunctionFacts(ast.NodeVisitor):
@@ -105,10 +95,9 @@ class Package:
         modules, unparsed = [], []
         for path in sorted(repo.python_paths(rev, root)):
             text = repo.source(rev, path)
-            relative = Path(path).relative_to(parent).with_suffix("")
-            name = ".".join(relative.parts[:-1] if relative.name == "__init__" else relative.parts)
+            name = PythonModulePathIdentity.import_name_of(Path(path).relative_to(parent))
             try:
-                modules.append(ParsedModule(path, text, ast.parse(text), name))
+                modules.append(ParsedModule(path=Path(path), module_name=name, module=ast.parse(text), source=text))
             except SyntaxError:
                 unparsed.append(path)
         return cls(repo, rev, root, tuple(modules), tuple(unparsed))
@@ -118,52 +107,54 @@ class Package:
         facts: dict[str, tuple[FunctionFacts, ...]] = {}
         for module in self.modules:
             collected = []
-            for node in ast.walk(module.tree):
+            for node in ast.walk(module.module):
                 match node:
                     case ast.FunctionDef(name=name, lineno=start, end_lineno=int() as end) | \
                          ast.AsyncFunctionDef(name=name, lineno=start, end_lineno=int() as end):
-                        visitor = FunctionFacts(node, f"{module.path}::{name}", end - start + 1)
+                        visitor = FunctionFacts(node, f"{module.file_path}::{name}", end - start + 1)
                         visitor.generic_visit(node)
                         collected.append(visitor)
-            facts[module.path] = tuple(collected)
+            facts[module.file_path] = tuple(collected)
         return facts
 
     @cached_property
     def class_fields(self) -> dict[str, frozenset[str]]:
         index = {}
         for module in self.modules:
-            for node in ast.walk(module.tree):
+            for node in ast.walk(module.module):
                 match node:
                     case ast.ClassDef(name=name, body=body):
                         names = frozenset(ast.unparse(item.target) for item in body if isinstance(item, ast.AnnAssign))
                         if len(names) >= 2:
-                            index[f"{module.path}::{name}"] = names
+                            index[f"{module.file_path}::{name}"] = names
         return index
 
     @cached_property
     def sizes(self) -> dict[str, int]:
         sizes = {}
         for module in self.modules:
-            for node in ast.walk(module.tree):
+            for node in ast.walk(module.module):
                 match node:
                     case ast.ClassDef(name=name, lineno=start, end_lineno=int() as end) | \
                          ast.FunctionDef(name=name, lineno=start, end_lineno=int() as end) | \
                          ast.AsyncFunctionDef(name=name, lineno=start, end_lineno=int() as end):
-                        sizes[f"{module.path}::{name}"] = end - start + 1
+                        sizes[f"{module.file_path}::{name}"] = end - start + 1
         return sizes
 
     @cached_property
     def imported(self) -> frozenset[str]:
         names: set[str] = set()
         for module in self.modules:
-            for node in ast.walk(module.tree):
+            for node in ast.walk(module.module):
                 match node:
                     case ast.Import(names=aliases):
                         names.update(alias.name for alias in aliases)
                     case ast.ImportFrom(module=target, level=level, names=aliases):
-                        base = _absolute(module.package, target, level)
-                        names.add(base)
-                        names.update(f"{base}.{alias.name}" for alias in aliases)
+                        match module.module_path_identity.resolve_import_from_module(
+                                imported_module=target, level=level):
+                            case str() as base:
+                                names.add(base)
+                                names.update(f"{base}.{alias.name}" for alias in aliases)
         return frozenset(names)
 
     @cached_property
@@ -172,15 +163,7 @@ class Package:
 
     @cached_property
     def all_text(self) -> str:
-        return "\n".join(module.text for module in self.modules)
-
-
-def _absolute(package: str, target: str | None, level: int) -> str:
-    if not level:
-        return target or ""
-    parts = package.split(".")
-    parts = parts[: len(parts) - (level - 1)] if level > 1 else parts
-    return ".".join(parts + ([target] if target else []))
+        return "\n".join(module.source for module in self.modules)
 
 
 # ---------------------------------------------------------------- origins against a baseline
@@ -416,7 +399,7 @@ class PerNodeFinding(Finding):
     @classmethod
     def detect(cls, package: Package) -> Iterator[Self]:
         for module in package.modules:
-            for node in ast.walk(module.tree):
+            for node in ast.walk(module.module):
                 yield from cls.from_node(node, module)
 
     @classmethod
@@ -433,7 +416,7 @@ class ExactKeySet(PerNodeFinding):
     def from_node(cls, node: ast.AST, module: ParsedModule) -> Iterator[Self]:
         match node:
             case ast.Compare(left=ast.Call(func=ast.Name(id="set")), comparators=[ast.Set(), *_], lineno=line):
-                yield cls(f"{module.path}:{line}")
+                yield cls(f"{module.file_path}:{line}")
 
     def identity(self) -> tuple:
         return (self.family_name, self.location)
@@ -449,7 +432,7 @@ class NamedAttribute(PerNodeFinding):
     def from_node(cls, node: ast.AST, module: ParsedModule) -> Iterator[Self]:
         match node:
             case ast.Call(args=[_, ast.Constant(value=str() as name), *_], lineno=line) if AttributeByName.matches(node):
-                yield cls(f"{module.path}:{line}", name)
+                yield cls(f"{module.file_path}:{line}", name)
 
     def identity(self) -> tuple:
         return (self.family_name, self.location.rpartition(":")[0], self.name)
@@ -473,7 +456,7 @@ class LongCondition(PerNodeFinding, Listed):
     def from_node(cls, node: ast.AST, module: ParsedModule) -> Iterator[Self]:
         match node:
             case ast.BoolOp(values=values, lineno=line) if len(values) >= cls.terms_threshold:
-                yield cls(f"{module.path}:{line}", len(values), ChainProfile.of(node), " ".join(ast.unparse(node).split())[:90])
+                yield cls(f"{module.file_path}:{line}", len(values), ChainProfile.of(node), " ".join(ast.unparse(node).split())[:90])
 
     def identity(self) -> tuple:
         return (self.family_name, self.location.rpartition(":")[0], self.text)
@@ -508,7 +491,7 @@ class GodObject(PerNodeFinding, Listed):
                   | ast.FunctionDef(name=name, lineno=start, end_lineno=int() as end)
                   | ast.AsyncFunctionDef(name=name, lineno=start, end_lineno=int() as end)
                   ) if isinstance(node, cls.node_types) and end - start + 1 > cls.threshold():
-                yield cls(f"{module.path}::{name}", end - start + 1)
+                yield cls(f"{module.file_path}::{name}", end - start + 1)
 
     def identity(self) -> tuple:
         return (self.family_name, self.qualname)
@@ -556,9 +539,9 @@ class PerLineFinding(Finding):
     @classmethod
     def detect(cls, package: Package) -> Iterator[Self]:
         for module in package.modules:
-            for number, text in enumerate(module.text.splitlines(), 1):
+            for number, text in enumerate(module.source.splitlines(), 1):
                 if cls.pattern.search(text):
-                    yield cls(f"{module.path}:{number}", text.strip()[:100])
+                    yield cls(f"{module.file_path}:{number}", text.strip()[:100])
 
 
 @dataclass(frozen=True)
@@ -590,7 +573,7 @@ class EmbeddedScript(PerNodeFinding):
     def from_node(cls, node: ast.AST, module: ParsedModule) -> Iterator[Self]:
         match node:
             case ast.Constant(value=str() as text, lineno=line) if len(text) > 200 and cls.javascript.search(text):
-                yield cls(f"{module.path}:{line}", len(text))
+                yield cls(f"{module.file_path}:{line}", len(text))
 
     def identity(self) -> tuple:
         return (self.family_name, self.location.rpartition(":")[0])
@@ -607,7 +590,7 @@ class ChildProcessSite(PerNodeFinding):
     def from_node(cls, node: ast.AST, module: ParsedModule) -> Iterator[Self]:
         match node:
             case ast.Call(func=function, lineno=line) if cls.calls.search(ast.unparse(function)):
-                yield cls(f"{module.path}:{line}", ast.unparse(function))
+                yield cls(f"{module.file_path}:{line}", ast.unparse(function))
 
     def identity(self) -> tuple:
         return (self.family_name, self.location.rpartition(":")[0], self.call)
@@ -647,12 +630,12 @@ class DeadModule(Finding, Listed):
     @classmethod
     def detect(cls, package: Package) -> Iterator[Self]:
         for module in package.modules:
-            if module.path.endswith(("__init__.py", "__main__.py")) or module.name in package.imported \
-                    or module.name in package.entry_points:
+            if module.file_path.endswith(("__init__.py", "__main__.py")) or module.module_name in package.imported \
+                    or module.module_name in package.entry_points:
                 continue
-            short = module.name.rpartition(".")[2]
-            mention = re.compile(rf"['\"]{re.escape(module.name)}['\"]|-m\s+{re.escape(module.name)}|['\"]{re.escape(short)}['\"]")
-            yield cls(module.path, module.text.count("\n"), bool(mention.search(package.all_text)))
+            short = module.module_name.rpartition(".")[2]
+            mention = re.compile(rf"['\"]{re.escape(module.module_name)}['\"]|-m\s+{re.escape(module.module_name)}|['\"]{re.escape(short)}['\"]")
+            yield cls(module.file_path, module.source.count("\n"), bool(mention.search(package.all_text)))
 
     def identity(self) -> tuple:
         return (self.family_name, self.path)

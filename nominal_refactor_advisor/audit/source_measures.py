@@ -19,7 +19,8 @@ from typing import ClassVar
 
 from metaclass_registry.mro_dispatch import MroDispatch, handles
 
-from .findings import Package, ParsedModule, RawShape
+from ..ast_tools import ParsedModule
+from .findings import Package, RawShape
 from .identity import TypePositions
 from .lexical import DecoratorBinding, ModuleScope
 from .measures import (ForeignAbsenceSyntax, ForeignAttributeProbe, Headline, Measure,
@@ -314,7 +315,8 @@ class RawRecordShapes(PerFileMeasure):
     @classmethod
     def count(cls, repo: Project, source: bytes, filename: str) -> int:
         text = source.decode()
-        module = ParsedModule(filename, text, cls.tree(source, filename), filename)
+        module = ParsedModule(path=Path(filename), module_name=filename,
+                              module=cls.tree(source, filename), source=text)
         package = Package(repo, "", filename, (module,), ())
         return sum(1 for facts in package.functions[filename]
                    for _finding in RawShape.from_facts(facts, package))
