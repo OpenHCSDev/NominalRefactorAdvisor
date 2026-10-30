@@ -90,7 +90,7 @@ class InstalledStubRoot(StubRoot):
         path = self.stub_paths[module_name]
         source = path.read_text(encoding="utf-8")
         module = RunningInterpreterBranches().visit(ast.parse(source, str(path)))
-        return ParsedModule(path, module_name, module, source)
+        return ParsedModule(path=path, module_name=module_name, module=module, source=source)
 
 
 @dataclass(frozen=True)
