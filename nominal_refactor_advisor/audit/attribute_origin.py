@@ -1,0 +1,54 @@
+#!/usr/bin/env python3
+"""Attribute new modules to the pull request that created them.
+
+  attribute_origin.py --root src/pkg --since REV [--rev HEAD]
+                      [--refactor-branches REGEX] [--foundation src/pkg/module.py]
+
+Classifies each module added since REV by the branch of the first-parent merge that
+introduced it, and prints debt density per class and per pull request. With --foundation,
+reports whether each feature module reached the main line before or after that file did,
+which answers "was this written before the abstractions it should use?". Classify by
+origin, never by module name. Run with the project's Python.
+"""
+from __future__ import annotations
+
+import argparse
+import re
+import sys
+from pathlib import Path
+
+from nominal_refactor_advisor.audit.census import CensusRun, Undeclared
+from nominal_refactor_advisor.audit.measures import Measured, Unparsed
+from nominal_refactor_advisor.audit.origin import Attribution, origin_of
+from nominal_refactor_advisor.audit.repository import Repository
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--repo", type=Path, default=Path("."))
+    ap.add_argument("--root", required=True)
+    ap.add_argument("--since", required=True)
+    ap.add_argument("--rev", default="HEAD")
+    ap.add_argument("--refactor-branches", type=re.compile, default=re.compile(r"refactor|integration/"))
+    ap.add_argument("--foundation", default="")
+    args = ap.parse_args()
+    repo = Repository(args.repo)
+    census = CensusRun(repo, Undeclared())
+    existing = repo.python_paths(args.since, args.root)
+    foundation = origin_of(repo, args.rev, args.foundation) if args.foundation else None
+    attribution = Attribution(args.since, args.rev)
+    for path in sorted(repo.python_paths(args.rev, args.root)):
+        if path in existing:
+            continue
+        origin = origin_of(repo, args.rev, path)
+        match census.measure(args.rev, path):
+            case Measured() as measured:
+                attribution.record(origin, origin.kind(args.refactor_branches), measured, foundation)
+            case Unparsed():
+                attribution.unparsed.append(path)
+    print(attribution.render(args.foundation))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

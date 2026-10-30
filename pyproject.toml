@@ -13,11 +13,17 @@ dependencies = [
     "metaclass-registry>=0.4.0",
     "tree-sitter>=0.25,<0.26",
     "tree-sitter-python>=0.25,<0.26",
+    "typing_extensions",
 ]
 
 [project.scripts]
 nominal-refactor-advisor = "nominal_refactor_advisor.cli:process_main"
 nominal-refactor-benchmark = "nominal_refactor_advisor.benchmark:process_main"
+nra-census = "nominal_refactor_advisor.audit.census_cli:main"
+nra-overlay = "nominal_refactor_advisor.audit.overlay:main"
+nra-check-package = "nominal_refactor_advisor.audit.check_package:main"
+nra-merge-review = "nominal_refactor_advisor.audit.merge_review:main"
+nra-attribute-origin = "nominal_refactor_advisor.audit.attribute_origin:main"
 
 [project.optional-dependencies]
 dev = [
@@ -46,6 +52,7 @@ include = ["nominal_refactor_advisor*"]
 
 [tool.setuptools.package-data]
 nominal_refactor_advisor = ["py.typed"]
+"nominal_refactor_advisor.audit" = ["patterns/*.md"]
 
 [tool.black]
 line-length = 88
