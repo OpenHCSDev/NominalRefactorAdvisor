@@ -7,17 +7,23 @@ name = "nominal-refactor-advisor"
 version = "0.1.0"
 description = "AST-driven advisor for canonical nominal refactoring patterns"
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.12"
 authors = [{ name = "OpenHCSDev" }]
 dependencies = [
-    "metaclass-registry>=0.4.0",
-    "tree-sitter>=0.25,<0.26",
-    "tree-sitter-python>=0.25,<0.26",
+    "metaclass-registry @ git+https://github.com/OpenHCSDev/metaclass-registry@main",
+    "tree-sitter>=0.26",
+    "tree-sitter-python>=0.25",
+    "typing_extensions",
 ]
 
 [project.scripts]
 nominal-refactor-advisor = "nominal_refactor_advisor.cli:process_main"
 nominal-refactor-benchmark = "nominal_refactor_advisor.benchmark:process_main"
+nra-census = "nominal_refactor_advisor.audit.census_cli:main"
+nra-overlay = "nominal_refactor_advisor.audit.overlay:main"
+nra-check-package = "nominal_refactor_advisor.audit.check_package:main"
+nra-merge-review = "nominal_refactor_advisor.audit.merge_review:main"
+nra-attribute-origin = "nominal_refactor_advisor.audit.attribute_origin:main"
 
 [project.optional-dependencies]
 dev = [
@@ -28,6 +34,7 @@ dev = [
     "pytest>=8",
     "pytest-cov>=5",
     "pytest-xdist>=3.8",
+    "ruff>=0.6",
     "Sphinx>=8.0",
 ]
 docs = [
@@ -46,10 +53,11 @@ include = ["nominal_refactor_advisor*"]
 
 [tool.setuptools.package-data]
 nominal_refactor_advisor = ["py.typed"]
+"nominal_refactor_advisor.audit" = ["patterns/*.md"]
 
 [tool.black]
 line-length = 88
-target-version = ["py311"]
+target-version = ["py312"]
 
 [tool.pytest.ini_options]
 pythonpath = ["."]

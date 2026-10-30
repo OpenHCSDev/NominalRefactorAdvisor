@@ -1,0 +1,369 @@
+"""Measures of structural debt, each owning how it recognizes its pattern.
+
+Every measure is one class in the Measure family. A measure the census counts declares the
+AST node types it inspects (NodeCount); dispatch is built from those declarations, so adding
+a measure is one class. A measure the gate compares across revisions is Compared (see
+gate.py); a measure that is both is one class with both capabilities. Counts are keyed by
+measure class. Parsing uses the running interpreter: run with the project's Python, because a
+file the parser cannot read is reported as Unparsed and contributes nothing.
+"""
+from __future__ import annotations
+
+import ast
+import collections
+import sys
+from abc import ABC, abstractmethod
+from dataclasses import dataclass, field
+from functools import lru_cache
+from typing import ClassVar
+
+from .family import Family
+from .lexical import ModuleScope
+
+
+class MechanismOwners(ABC):
+    """Capability: which modules own the codec and schema mechanism that measures of their
+    pattern exempt. A measured project names its own; a census of a repository that declares
+    no project answers for itself."""
+
+    @abstractmethod
+    def owns_mechanism(self, path: str) -> bool: ...
+
+
+class MeasuredRevisions(ABC):
+    """Capability: one file's census at a revision, which a change measures on both sides."""
+
+    @abstractmethod
+    def measure(self, rev: str, path: str) -> ParseOutcome: ...
+
+
+class Measure(Family, ABC, root=True):
+    """One kind of structural debt. Its capabilities say who counts it: the census (NodeCount),
+    the gate (Compared), or both."""
+
+
+class NodeCount(Measure, ABC):
+    """Capability: the census counts this measure per AST node of its declared types."""
+
+    node_types: ClassVar[tuple[type[ast.AST], ...]]
+    weight: ClassVar[int] = 0          # contribution to a file's ranking score
+
+    @classmethod
+    @abstractmethod
+    def occurrences(cls, node: ast.AST) -> int:
+        """This node's contribution, excluding its descendants."""
+
+    @classmethod
+    def admits(cls, repo: MechanismOwners, path: str) -> bool:
+        """Whether the measure reads this file of the repository."""
+        return True
+
+
+class Headline(NodeCount, ABC):
+    """Capability: the measures behind the headline density."""
+
+
+class WholeModule(NodeCount, ABC):
+    """Capability: the census reads this measure once per file, from the whole module."""
+
+    node_types = (ast.Module,)
+
+    @classmethod
+    def occurrences(cls, node: ast.AST) -> int:
+        match node:
+            case ast.Module():
+                return cls.module_occurrences(node)
+        return 0
+
+    @classmethod
+    @abstractmethod
+    def module_occurrences(cls, module: ast.Module) -> int:
+        """The whole module's count."""
+
+
+@lru_cache(maxsize=4)
+def parsed(source: bytes, filename: str) -> ast.Module:
+    """A file's syntax, parsed once while every pass counts it."""
+    return ast.parse(source, filename)
+
+
+@lru_cache(maxsize=4)
+def scoped(source: bytes, filename: str) -> ModuleScope:
+    """A file's syntax with its scopes, walked once while every measure reads it."""
+    return ModuleScope(parsed(source, filename), filename)
+
+
+class PatternMeasure(NodeCount):
+    """A measure that counts one per matching node."""
+
+    @classmethod
+    def occurrences(cls, node: ast.AST) -> int:
+        return int(cls.matches(node))
+
+    @classmethod
+    @abstractmethod
+    def matches(cls, node: ast.AST) -> bool: ...
+
+
+class ForeignAbsenceSyntax:
+    """Select explicit None comparisons; truth-value negation does not prove absence."""
+
+    @staticmethod
+    def attribute(node: ast.AST) -> ast.Attribute | None:
+        match node:
+            case ast.Compare(left=ast.Attribute() as attribute, ops=[ast.Is() | ast.IsNot()], comparators=[ast.Constant(value=None)]):
+                return attribute
+        return None
+
+
+class ForeignNegationSyntax:
+    """Select negated attributes without claiming what their truth value means."""
+
+    @staticmethod
+    def attribute(node: ast.AST) -> ast.Attribute | None:
+        match node:
+            case ast.UnaryOp(op=ast.Not(), operand=ast.Attribute() as attribute):
+                return attribute
+        return None
+
+
+class ForeignAttributeProbe(NodeCount):
+    @staticmethod
+    @abstractmethod
+    def attribute(node: ast.AST) -> ast.Attribute | None: ...
+
+    @classmethod
+    def occurrences(cls, node: ast.AST) -> int:
+        attribute = cls.attribute(node)
+        return int(attribute is not None and not _is_self(attribute.value))
+
+
+
+class ForeignNegation(ForeignNegationSyntax, ForeignAttributeProbe, Measure):
+    """Unresolved truth-value syntax is a reading lead, not ranked absence debt."""
+    node_types = (ast.UnaryOp,)
+
+
+def _is_self(node: ast.expr) -> bool:
+    match node:
+        case ast.Name(id="self"):
+            return True
+    return False
+
+
+
+class LiteralKeyGet(PatternMeasure):
+    weight = 1
+    node_types = (ast.Call,)
+
+    @classmethod
+    def matches(cls, node: ast.AST) -> bool:
+        match node:
+            case ast.Call(func=ast.Attribute(attr="get"), args=[ast.Constant(value=str()), *_]):
+                return True
+        return False
+
+
+class StringEquality(NodeCount):
+    weight = 1
+    node_types = (ast.Compare,)
+
+    @classmethod
+    def occurrences(cls, node: ast.AST) -> int:
+        match node:
+            case ast.Compare(ops=ops, comparators=comparators):
+                return sum(1 for op, cmp in zip(ops, comparators)
+                           if isinstance(op, (ast.Eq, ast.NotEq)) and _is_string_constant(cmp))
+        return 0
+
+
+class IsinstanceCall(PatternMeasure):
+    weight = 1
+    node_types = (ast.Call,)
+
+    @classmethod
+    def matches(cls, node: ast.AST) -> bool:
+        match node:
+            case ast.Call(func=ast.Name(id="isinstance")):
+                return True
+        return False
+
+
+class AttributeByName(PatternMeasure):
+    weight = 3
+    node_types = (ast.Call,)
+
+    @classmethod
+    def matches(cls, node: ast.AST) -> bool:
+        match node:
+            case ast.Call(func=ast.Name(id="getattr" | "hasattr"), args=[_, ast.Constant(value=str()), *_]):
+                return True
+        return False
+
+
+class GetattrDefault(PatternMeasure):
+    weight = 3
+    node_types = (ast.Call,)
+
+    @classmethod
+    def matches(cls, node: ast.AST) -> bool:
+        match node:
+            case ast.Call(func=ast.Name(id="getattr"), args=[_, ast.Constant(value=str()), _]):
+                return True
+        return False
+
+
+class JsonLoads(PatternMeasure):
+    node_types = (ast.Call,)
+
+    @classmethod
+    def matches(cls, node: ast.AST) -> bool:
+        match node:
+            case ast.Call(func=ast.Attribute(value=ast.Name(id="json"), attr="loads")):
+                return True
+        return False
+
+
+class LongFunction(PatternMeasure):
+    node_types = (ast.FunctionDef, ast.AsyncFunctionDef)
+    lines: ClassVar[int] = 100
+
+    @classmethod
+    def matches(cls, node: ast.AST) -> bool:
+        match node:
+            case ast.FunctionDef(lineno=start, end_lineno=int() as end) | ast.AsyncFunctionDef(lineno=start, end_lineno=int() as end):
+                return end - start + 1 > cls.lines
+        return False
+
+
+class ClassDefinition(PatternMeasure):
+    node_types = (ast.ClassDef,)
+
+    @classmethod
+    def matches(cls, node: ast.AST) -> bool:
+        return True
+
+
+class AbstractBase(PatternMeasure):
+    node_types = (ast.ClassDef,)
+
+    @classmethod
+    def matches(cls, node: ast.AST) -> bool:
+        match node:
+            case ast.ClassDef(bases=bases):
+                return any(_base_name(base) in ("ABC", "Protocol") for base in bases)
+        return False
+
+
+def _is_string_constant(node: ast.AST) -> bool:
+    match node:
+        case ast.Constant(value=str()):
+            return True
+    return False
+
+
+def _base_name(node: ast.AST) -> str:
+    match node:
+        case ast.Name(id=name) | ast.Attribute(attr=name):
+            return name
+    return ""
+
+
+
+
+@dataclass
+class Tally:
+    counts: collections.Counter = field(default_factory=collections.Counter)
+    code_lines: int = 0
+
+    def __add__(self, other: "Tally") -> "Tally":
+        counts = collections.Counter(self.counts)
+        counts.update(other.counts)        # Counter's + would drop negative totals; changes can be negative
+        return Tally(counts, self.code_lines + other.code_lines)
+
+    def __sub__(self, other: "Tally") -> "Tally":
+        counts = collections.Counter(self.counts)
+        counts.subtract(other.counts)
+        return Tally(counts, self.code_lines - other.code_lines)
+
+    def __getitem__(self, measure: type[Measure]) -> int:
+        return self.counts[measure]
+
+    def density(self, measure: type[Measure]) -> float:
+        return 1000 * self.counts[measure] / max(self.code_lines, 1)
+
+    def score(self) -> int:
+        return sum(measure.weight * count for measure, count in self.counts.items())
+
+    def headline(self) -> float:
+        return sum(self.density(measure) for measure in Headline.members())
+
+    def as_record(self, measures: tuple[type[Measure], ...]) -> dict[str, int]:
+        return {measure.family_name: self.counts[measure] for measure in measures} | {"code_lines": self.code_lines}
+
+
+@dataclass(frozen=True)
+class ParseOutcome(ABC):
+    path: str
+    code_lines: int
+
+    def measured(self) -> tuple[Measured, ...]:
+        return ()
+
+    def unparsed(self) -> tuple[Unparsed, ...]:
+        return ()
+
+
+@dataclass(frozen=True)
+class Measured(ParseOutcome):
+    tally: Tally
+
+    def measured(self) -> tuple[Measured, ...]:
+        return (self,)
+
+
+@dataclass(frozen=True)
+class Unparsed(ParseOutcome):
+    error: str
+
+    def unparsed(self) -> tuple[Unparsed, ...]:
+        return (self,)
+
+
+def code_lines(text: str) -> int:
+    return sum(1 for line in text.splitlines() if line.strip() and not line.lstrip().startswith("#"))
+
+
+@dataclass(frozen=True)
+class NodeTable:
+    """The census's measures by the node types they inspect, read from the family once per
+    census, so a census counts every measure declared when it starts."""
+
+    measures: tuple[type[NodeCount], ...]
+    by_node: dict[type[ast.AST], tuple[type[NodeCount], ...]]
+
+    @classmethod
+    def of_family(cls) -> NodeTable:
+        measures = NodeCount.members()
+        table: dict[type[ast.AST], list[type[NodeCount]]] = collections.defaultdict(list)
+        for measure in measures:
+            for node_type in measure.node_types:
+                table[node_type].append(measure)
+        return cls(measures, {node_type: tuple(found) for node_type, found in table.items()})
+
+    def measure(self, owners: MechanismOwners, path: str, text: str) -> ParseOutcome:
+        lines = code_lines(text)
+        try:
+            tree = ast.parse(text)
+        except SyntaxError as error:
+            return Unparsed(path, lines, str(error))
+        tally = Tally(code_lines=lines)
+        for node in ast.walk(tree):
+            for measure in self.by_node.get(type(node), ()):
+                if measure.admits(owners, path):
+                    tally.counts[measure] += measure.occurrences(node)
+        return Measured(path, lines, tally)
+
+
+def interpreter() -> str:
+    return sys.version.split()[0]

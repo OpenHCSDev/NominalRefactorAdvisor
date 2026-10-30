@@ -21,7 +21,7 @@ FLAGS = (
     "--strict-equality",
     "--ignore-missing-imports",
     "--python-version",
-    "3.11",
+    "3.12",
     "--no-error-summary",
     "--no-pretty",
 )
