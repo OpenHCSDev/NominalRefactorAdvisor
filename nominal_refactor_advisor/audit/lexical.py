@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from functools import cached_property
 from pathlib import Path
 
-Scope: typing.TypeAlias = ast.Module | ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef
+type Scope = ast.Module | ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef
 
 
 class ScopeNames(ast.NodeVisitor):

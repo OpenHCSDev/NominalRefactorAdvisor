@@ -293,7 +293,7 @@ class NoneAbsence(CleanChangedLines, PerFileOccurrenceMeasure):
         return spelling.found
 
 
-class NoneIdentity(Measure, NodeCount):
+class NoneIdentity(NodeCount):
     """``is None`` and ``is not None`` tests, read by NoneSpelling's own comparison arm."""
 
     weight = 1
@@ -672,7 +672,7 @@ class FlatteningProjection(ast.NodeTransformer):
         return self.generic_visit(node)
 
 
-class TypeIdentity(OccurrenceMeasure, NodeCount, Headline):
+class TypeIdentity(OccurrenceMeasure, Headline):
     """Each ``type(x) is`` or ``is not`` comparison: an identity test of a type (IMPL-2)."""
 
     weight = 3
@@ -699,7 +699,7 @@ class TypeIdentity(OccurrenceMeasure, NodeCount, Headline):
         )
 
 
-class LongBooleanChain(OccurrenceMeasure, NodeCount, Headline):
+class LongBooleanChain(OccurrenceMeasure, Headline):
     """A chain of four or more terms joined by one boolean operator."""
 
     weight = 5

@@ -28,8 +28,6 @@ from .measures import MechanismOwners
 from .repository import Repository
 
 AUDIT_PACKAGE = Path(__file__).resolve().parent
-Value = typing.TypeVar("Value")
-Guard = typing.TypeVar("Guard")
 
 
 @dataclass(frozen=True)
@@ -164,7 +162,7 @@ class ContentCache(ABC):
             if path.stat().st_mtime < horizon:
                 path.unlink(missing_ok=True)
 
-    def store(self, value: Value, *parts: str) -> Value:
+    def store[Value](self, value: Value, *parts: str) -> Value:
         path = self.cached(*parts)
         path.parent.mkdir(parents=True, exist_ok=True)
         with tempfile.NamedTemporaryFile(dir=path.parent, delete=False) as staged:
@@ -172,14 +170,14 @@ class ContentCache(ABC):
         os.replace(staged.name, path)
         return value
 
-    def memo(self, compute: Callable[[], Value], *parts: str) -> Value:
+    def memo[Value](self, compute: Callable[[], Value], *parts: str) -> Value:
         for value in self.stored(*parts):
             return typing.cast(Value, value)
         return self.store(compute(), *parts)
 
 
 @dataclass(frozen=True)
-class Project(ContentCache, MechanismOwners, Repository, ABC, typing.Generic[Guard]):
+class Project[Guard](ContentCache, MechanismOwners, Repository, ABC):
     """The measured repository and its own facts. Guard is the class of its standing guards."""
 
     @abstractmethod

@@ -8,8 +8,6 @@ asked ``node.field is None`` reads these instead.
 from __future__ import annotations
 
 import ast
-import sys
-from abc import ABC, abstractmethod
 from collections.abc import Iterable
 from dataclasses import dataclass
 
@@ -93,49 +91,24 @@ def variadic_parameters(arguments: ast.arguments) -> tuple[ast.arg, ...]:
 TypeParameterDefinition = ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef
 
 
-class TypeParameterSyntax(ABC):
-    """The PEP 695 type parameters a definition declares, as the running
-    interpreter's ast carries them: one member, chosen once at import."""
+class TypeParameterSyntax:
+    """The PEP 695 type parameters a definition declares, from its `type_params`."""
 
-    @abstractmethod
     def names(self, node: TypeParameterDefinition) -> tuple[str, ...]:
         """The names of the definition's type parameters, in order."""
+        return tuple(parameter.name for parameter in node.type_params)
 
-    @abstractmethod
     def expressions(self, node: TypeParameterDefinition) -> tuple[ast.expr, ...]:
         """The bounds, constraints and defaults the type parameters evaluate."""
+        return tuple(
+            expression
+            for parameter in node.type_params
+            for expression in ast.iter_child_nodes(parameter)
+            if isinstance(expression, ast.expr)
+        )
 
 
-class AbsentTypeParameterSyntax(TypeParameterSyntax):
-    """Before Python 3.12 no definition can declare type parameters."""
-
-    def names(self, node: TypeParameterDefinition) -> tuple[str, ...]:
-        return ()
-
-    def expressions(self, node: TypeParameterDefinition) -> tuple[ast.expr, ...]:
-        return ()
-
-
-TYPE_PARAMETERS: TypeParameterSyntax
-if sys.version_info >= (3, 12):
-
-    class NativeTypeParameterSyntax(TypeParameterSyntax):
-        """Python 3.12+ carries each definition's `type_params`."""
-
-        def names(self, node: TypeParameterDefinition) -> tuple[str, ...]:
-            return tuple(parameter.name for parameter in node.type_params)
-
-        def expressions(self, node: TypeParameterDefinition) -> tuple[ast.expr, ...]:
-            return tuple(
-                expression
-                for parameter in node.type_params
-                for expression in ast.iter_child_nodes(parameter)
-                if isinstance(expression, ast.expr)
-            )
-
-    TYPE_PARAMETERS = NativeTypeParameterSyntax()
-else:
-    TYPE_PARAMETERS = AbsentTypeParameterSyntax()
+TYPE_PARAMETERS = TypeParameterSyntax()
 
 
 __all__ = (

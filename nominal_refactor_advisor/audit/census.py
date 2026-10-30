@@ -84,8 +84,8 @@ class DensityTable:
                     "a ratio of changes to net lines is meaningless)")
         header = "per 1,000 code lines".ljust(24) + "".join(name.rjust(14) for name, _ in self.columns)
         rows = [measure.family_name.ljust(24) + "".join(f"{tally.density(measure):14.2f}" for _, tally in self.columns)
-                for measure in Measure.members_with(NodeCount)]
-        headline = " + ".join(m.family_name for m in Measure.members_with(Headline))
+                for measure in NodeCount.members()]
+        headline = " + ".join(m.family_name for m in Headline.members())
         rows.append("HEADLINE".ljust(24) + "".join(f"{tally.headline():14.1f}" for _, tally in self.columns) + f"   ({headline})")
         rows.append("code lines".ljust(24) + "".join(f"{tally.code_lines:14}" for _, tally in self.columns))
         return "\n".join([header, *rows])
@@ -97,6 +97,6 @@ class CountTable:
     tally: Tally
 
     def render(self) -> str:
-        rows = [f"  {measure.family_name:<24}{self.tally[measure]:>+8}" for measure in Measure.members_with(NodeCount)]
+        rows = [f"  {measure.family_name:<24}{self.tally[measure]:>+8}" for measure in NodeCount.members()]
         return "\n".join([f"change in counts ({self.label}): read these first when code was deleted as well as added",
                           *rows, f"  {'code lines':<24}{self.tally.code_lines:>+8}"])

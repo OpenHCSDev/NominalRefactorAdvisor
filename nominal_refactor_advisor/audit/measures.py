@@ -21,10 +21,6 @@ from .family import Family
 from .lexical import ModuleScope
 
 
-class Headline:
-    """Capability: the measures behind the headline density."""
-
-
 class MechanismOwners(ABC):
     """Capability: which modules own the codec and schema mechanism that measures of their
     pattern exempt. A measured project names its own; a census of a repository that declares
@@ -46,7 +42,7 @@ class Measure(Family, ABC, root=True):
     the gate (Compared), or both."""
 
 
-class NodeCount(ABC):
+class NodeCount(Measure, ABC):
     """Capability: the census counts this measure per AST node of its declared types."""
 
     node_types: ClassVar[tuple[type[ast.AST], ...]]
@@ -63,6 +59,10 @@ class NodeCount(ABC):
         return True
 
 
+class Headline(NodeCount, ABC):
+    """Capability: the measures behind the headline density."""
+
+
 @lru_cache(maxsize=4)
 def parsed(source: bytes, filename: str) -> ast.Module:
     """A file's syntax, parsed once while every pass counts it."""
@@ -75,7 +75,7 @@ def scoped(source: bytes, filename: str) -> ModuleScope:
     return ModuleScope(parsed(source, filename), filename)
 
 
-class PatternMeasure(Measure, NodeCount):
+class PatternMeasure(NodeCount):
     """A measure that counts one per matching node."""
 
     @classmethod
@@ -146,7 +146,7 @@ class LiteralKeyGet(PatternMeasure):
         return False
 
 
-class StringEquality(Measure, NodeCount):
+class StringEquality(NodeCount):
     weight = 1
     node_types = (ast.Compare,)
 
@@ -278,7 +278,7 @@ class Tally:
         return sum(measure.weight * count for measure, count in self.counts.items())
 
     def headline(self) -> float:
-        return sum(self.density(measure) for measure in Measure.members_with(Headline))
+        return sum(self.density(measure) for measure in Headline.members())
 
     def as_record(self, measures: tuple[type[Measure], ...]) -> dict[str, int]:
         return {measure.family_name: self.counts[measure] for measure in measures} | {"code_lines": self.code_lines}
@@ -326,7 +326,7 @@ class NodeTable:
 
     @classmethod
     def of_family(cls) -> NodeTable:
-        measures = Measure.members_with(NodeCount)
+        measures = NodeCount.members()
         table: dict[type[ast.AST], list[type[Measure]]] = collections.defaultdict(list)
         for measure in measures:
             for node_type in measure.node_types:

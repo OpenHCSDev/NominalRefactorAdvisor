@@ -236,10 +236,7 @@ class PhaseSiteCount(MeasureCount):
 
 
 # One revision's counts, each under the record of what it counts.
-Counts: typing.TypeAlias = dict[MeasureCount, int]
-Reading = typing.TypeVar("Reading")
-Count = typing.TypeVar("Count", bound=MeasureCount)
-Value = typing.TypeVar("Value")
+type Counts = dict[MeasureCount, int]
 
 
 class ChangeMeasure(Compared):
@@ -263,7 +260,7 @@ class ChangeMeasure(Compared):
         return before, after
 
 
-class InventoryReading(Runner, typing.Generic[Reading]):
+class InventoryReading[Reading](Runner):
     """A reading of every file a revision holds, not only the changed ones. A file the change
     did not touch reads the same at both revisions, so it is read once; the reading is split
     across processes."""
@@ -326,7 +323,7 @@ class InventoryReading(Runner, typing.Generic[Reading]):
                            for ref, own in ((base, before), (head, after))))
 
 
-class InventoryMeasure(InventoryReading[Reading], Compared):
+class InventoryMeasure[Reading](InventoryReading[Reading], Compared):
     """A measure of every file a revision holds."""
 
 
@@ -491,7 +488,7 @@ class SyntaxPasses(InventoryReading[dict[type[CountedSource], int]]):
 
     @staticmethod
     def passes() -> tuple[type[CountedSource], ...]:
-        return Measure.members_with(CountedSource)
+        return CountedSource.members()
 
     @classmethod
     def inventory(cls, repo: Project, ref: str, root: str) -> frozenset[str]:
@@ -827,7 +824,7 @@ class CleanChangedLines(OccurrenceMeasure):
         left = [ChangedSource.departed(repo, base, head, path) for path in departed_from]
         changed = ChangedModules(tuple(sources), tuple(left))
         found: dict[FileCount, list[int]] = {}
-        for measure in Compared.members_with(cls):
+        for measure in cls.members():
             departed: Counter[tuple[str, str]] = Counter()
             for source in left:
                 gone = measure.identities(repo, source.base)
@@ -915,7 +912,7 @@ class Comparison:
         return {name: value - self.base[name] for name, value in self.head.items()}
 
     @staticmethod
-    def keyed(counts: dict[Count, Value]) -> dict[str, Value]:
+    def keyed[Count: MeasureCount, Value](counts: dict[Count, Value]) -> dict[str, Value]:
         """The report's JSON keys: the one place a count's record becomes text."""
         return {identity.text: value for identity, value in counts.items()}
 
@@ -935,12 +932,12 @@ class Comparison:
     @property
     def missing(self) -> list[MeasureCount]:
         """Counts whose measure's required evidence the comparison lacks."""
-        return [key for measure in Measure.members_with(Compared)
+        return [key for measure in Compared.members()
                 for key in measure.missing(self.head, self.introduced)]
 
     @property
     def failed(self) -> bool:
-        return (any(measure.blocks(self.delta) for measure in Measure.members_with(Compared))
+        return (any(measure.blocks(self.delta) for measure in Compared.members())
                 or any(self.introduced.values()) or bool(self.missing))
 
 
@@ -1003,7 +1000,7 @@ def compare(repo: Project, base: str, head: str, root: str, workers: int,
                                                    changed).items()
              if any(asked.owns(key) for asked in measured)}
     # Only a grown measure is read for its sites, so a clean change pays for none.
-    grown = [measure for measure in LocatedSource.members_with(LocatedSource)
+    grown = [measure for measure in LocatedSource.members()
              if measure in measured and measure.grown(comparison.delta)]
     if grown:
         sources = repo.sources(head, paths & repo.python_paths(head, root))
@@ -1017,7 +1014,7 @@ def gate(repo: Project, base: str, head: str, root: str, workers: int) -> int:
     """Compare every declared measure, print the JSON report on stdout and what grew on
     stderr, and answer the exit status: 1 when the change grows a blocking measure."""
     repo.prune()
-    result = compare(repo, base, head, root, workers, Measure.members_with(Compared))
+    result = compare(repo, base, head, root, workers, Compared.members())
     # Flushed first: stdout is block-buffered into a pipe, and the growth lines must end the log.
     print(json.dumps(result.report(), indent=2), flush=True)
     # The failing step's last lines become check annotations (.github/run-step.sh merges

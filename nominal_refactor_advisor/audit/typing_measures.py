@@ -15,7 +15,7 @@ from .gate import LocatedSource, OccurrenceMeasure, PerFileMeasure
 from .typing_names import TypingImports, TypingReference
 
 
-class StringSubscript(OccurrenceMeasure, NodeCount, Headline):
+class StringSubscript(OccurrenceMeasure, Headline):
     """A container read by a literal string key, ``x["key"]``. A subscript of a typing form,
     such as ``Literal["a"]``, is a type, not a read: the module's typing bindings decide which,
     so the census reads the whole module too."""

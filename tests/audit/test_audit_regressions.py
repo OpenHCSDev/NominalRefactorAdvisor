@@ -73,7 +73,7 @@ def read(editor, unknown):
         self.assertEqual([t[FamilyFlattened] for t in tallies], [0, 1])
         self.assertEqual((tallies[1] - tallies[0])[FamilyFlattened], 1)
         self.assertEqual((tallies[0] - tallies[1])[FamilyFlattened], -1)
-        self.assertEqual(tallies[1].as_record(Measure.members_with(NodeCount))["family_flattened"], 1)
+        self.assertEqual(tallies[1].as_record(NodeCount.members())["family_flattened"], 1)
 
         for body, count in (
             ("emit(member.declared_name)", 1),
