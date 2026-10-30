@@ -32,7 +32,7 @@ from __future__ import annotations
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from functools import cached_property
-from typing import Generic, Self, TypeVar
+from typing import Generic, Optional, Self, TypeVar
 
 T = TypeVar("T")
 
@@ -74,6 +74,11 @@ class Board:
     mixed: Square | Circle
     foreign: Square | Unrelated
     maybe: Shape | None
+    kind: type[Square] | None
+    optional_kind: Optional[type[Square]]
+    none_first_kind: None | type[Square]
+    kinds: type[Square] | type[Circle]
+    alien_kinds: type[Square] | type[Unrelated]
 
     @property
     def first(self) -> Shape:
@@ -117,7 +122,9 @@ def _typed(tmp_path: Path, body: str) -> dict[int, object]:
     (package / "api.py").write_text("from pkg.models import Square\n")
     (package / "use.py").write_text(
         "from __future__ import annotations\n"
-        "from pkg.models import Board, Shape, ShapeIndex, Square, make_board, unannotated_board\n"
+        "from pkg.models import (\n"
+        "    Board, Shape, ShapeIndex, Square, Unrelated, make_board, unannotated_board,\n"
+        ")\n"
         "from pkg.api import Square as Exported\n\n"
         + body
     )
@@ -270,6 +277,60 @@ def _symbols(tmp_path: Path, body: str) -> list[tuple[str, ...]]:
             id="rebound to the same type",
         ),
         pytest.param(
+            "def f(board: Board, flag: bool):\n"
+            "    shape = board.pair[0]\n"
+            "    if flag:\n"
+            "        shape = board.pair[1]\n"
+            "    shape.marker\n",
+            ("Circle", "Square"),
+            id="rebound within one family joins as a union does",
+        ),
+        pytest.param(
+            "def f(board: Board):\n    board.kind.marker\n",
+            ("Square",),
+            id="type[A] | None",
+        ),
+        pytest.param(
+            "def f(board: Board):\n    board.optional_kind.marker\n",
+            ("Square",),
+            id="Optional[type[A]]",
+        ),
+        pytest.param(
+            "def f(board: Board):\n    board.none_first_kind.marker\n",
+            ("Square",),
+            id="None | type[A]",
+        ),
+        pytest.param(
+            "def f(board: Board):\n    board.kinds.marker\n",
+            ("Circle", "Square"),
+            id="type[A] | type[B] of one family",
+        ),
+        pytest.param(
+            "def f(board: Board):\n    board.listed.marker\n",
+            ("builtins.list",),
+            id="a declared list[A] is a builtins.list, not collections.abc.Iterable",
+        ),
+        pytest.param(
+            "def f(board: Board):\n    board.by_name.marker\n",
+            ("builtins.dict",),
+            id="a declared dict is a builtins.dict",
+        ),
+        pytest.param(
+            "def f(board: Board):\n    board.sequence.marker\n",
+            ("collections.abc.Sequence",),
+            id="a declared Sequence is the class it spells",
+        ),
+        pytest.param(
+            "def f(board: Board):\n    board.pair.marker\n",
+            ("builtins.tuple",),
+            id="a declared tuple is a builtins.tuple",
+        ),
+        pytest.param(
+            "def f(board: Board):\n    board.by_name.values().marker\n",
+            (),
+            id="a mapping view names no class",
+        ),
+        pytest.param(
             "def f(index: ShapeIndex, k: str):\n    index.by_symbol[k].marker\n",
             ("Shape",),
             id="a generic base's type variable bound by the subclass",
@@ -299,10 +360,15 @@ def test_each_declared_form_resolves(tmp_path, body, expected):
             "def f(board: Board, flag: bool):\n"
             "    shape = board.pair[0]\n"
             "    if flag:\n"
-            "        shape = board.pair[1]\n"
+            "        shape = Unrelated()\n"
             "    shape.marker\n",
-            "rebound to a different type",
-            id="rebound to a different type",
+            "no one family",
+            id="rebound to another family",
+        ),
+        pytest.param(
+            "def f(board: Board):\n    board.alien_kinds.marker\n",
+            "no one family",
+            id="type[A] | type[B] of two families",
         ),
         pytest.param(
             "def f(board: Board):\n    board.foreign.marker\n",
