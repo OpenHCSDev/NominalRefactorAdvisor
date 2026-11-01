@@ -63,6 +63,7 @@ from .native_class_mro import NativeClassMroDeclaration
 from .native_declarations import (
     NativeDeclaration,
     NativeDictionaryKey,
+    NativeFunctionParameters,
     NativeScalar,
     NativeConstantContentsABC,
     NativeScalarValueABC,
@@ -597,6 +598,14 @@ class NativeProducedValue(DataclassGraphNode, NativeCallSlotABC):
         """A transfer alone does not prove the contents of a source literal."""
         raise ValueError("Native literal construction contents remain unproved")
 
+    @property
+    def parameters(self) -> NativeFunctionParameters:
+        raise ValueError("Native function parameter storage layout remains unproved")
+
+    def attribute_operand(self, flag: int) -> NativeProducedValue:
+        """Original function metadata input, not a runtime attribute observation."""
+        raise ValueError("Native function attribute has no original attachment")
+
     def resolve(
         self, resolver: NativeValueResolverABC[NativeResolutionT]
     ) -> NativeResolutionT:
@@ -632,6 +641,25 @@ class NativeFunctionValue(DataclassGraphValue, NativeTypedValue):
 
 
 @dataclass(frozen=True, eq=False)
+class NativeRawFunctionValue(NativeFunctionValue):
+    """MAKE_FUNCTION operands with their actual code layout and native flag order."""
+
+    parameter_layout: NativeFunctionParameters
+    attribute_flags: tuple[int, ...]
+
+    parameters = AliasProperty[NativeFunctionParameters]("parameter_layout")
+
+    def attribute_operand(self, flag: int) -> NativeProducedValue:
+        if len(self.inputs) != len(self.attribute_flags) + 1:
+            raise ValueError("Native function metadata differs from its creation inputs")
+        try:
+            index = self.attribute_flags.index(flag)
+        except ValueError:
+            return super().attribute_operand(flag)
+        return self.inputs[index]
+
+
+@dataclass(frozen=True, eq=False)
 class NativeFunctionAttributeValue(NativeFunctionValue):
     """An attribute attachment retains its original function creation."""
 
@@ -642,6 +670,12 @@ class NativeFunctionAttributeValue(NativeFunctionValue):
         return cast(NativeFunctionValue, self.inputs[-1])
 
     creation = AliasProperty[NativeFunctionValue]("function.creation")
+    parameters = AliasProperty[NativeFunctionParameters]("function.parameters")
+
+    def attribute_operand(self, flag: int) -> NativeProducedValue:
+        if self.attribute_flag == flag:
+            return self.inputs[0]
+        return self.function.attribute_operand(flag)
 
 
 @dataclass(frozen=True, eq=False)
@@ -3303,7 +3337,15 @@ class MakeNativeFunction(NativeFunctionCreationOperation):
         ):
             raise ValueError("Native function creation has a different code operand")
         stack.stack.append(
-            stack.emit(NativeFunctionValue(instruction.offset, inputs), instruction)
+            stack.emit(
+                NativeRawFunctionValue(
+                    instruction.offset,
+                    inputs,
+                    NativeFunctionParameters.from_code(emission.code),
+                    stack.backend.creation_attribute_flags(instruction),
+                ),
+                instruction,
+            )
         )
 
     @classmethod
@@ -3520,6 +3562,12 @@ class NativeCreationBackend(ABC, metaclass=AutoRegisterMeta):
         prologue: NativeClassPrologue,
     ) -> NativeGeneratedClassFrame:
         raise ValueError("Generated class wrapper activation remains unproved")
+
+    def creation_attribute_flags(self, instruction: dis.Instruction) -> tuple[int, ...]:
+        raise ValueError("Native function creation metadata remains unproved")
+
+    def function_attribute_flag(self, name: str) -> int:
+        raise ValueError("Native function attribute ABI remains unproved")
 
     @property
     def call_operand_order(self) -> NativeCallOperandOrder:
@@ -3988,6 +4036,12 @@ class ContiguousNativeCreationBackend(NativeCreationBackend):
     class_capture_fallback = NativeExecutionUnavailable.NO_EMITTED_CODE
     attribute_flags: frozenset[int]
     application_prelude: tuple[type[NativeCreationOperation], ...]
+    native_attributes: tuple[str, ...]
+
+    def function_attribute_flag(self, name: str) -> int:
+        if self.native_attributes.count(name) != 1:
+            raise ValueError("Native function attribute requires one declared ABI field")
+        return 1 << self.native_attributes.index(name)
 
     def require_invocation(
         self, prelude: list[dis.Instruction], call: dis.Instruction
@@ -4530,6 +4584,16 @@ class CPython311CreationBackend(
 
     call_operand_order = NativeCallOperandOrder.NULL_CALLEE
 
+    def __init__(self) -> None:
+        self.native_attributes = dis.MAKE_FUNCTION_FLAGS
+
+    def creation_attribute_flags(self, instruction: dis.Instruction) -> tuple[int, ...]:
+        mask = instruction.arg
+        flags = tuple(1 << index for index, _ in enumerate(self.native_attributes))
+        if type(mask) is not int or mask < 0 or mask & ~sum(flags):
+            raise ValueError("MAKE_FUNCTION has unsupported native metadata flags")
+        return tuple(flag for flag in flags if mask & flag)
+
 
 class CPythonGeneratedClassBinding(StrEnum):
     """Compiler-owned class-body closure fields and their exact native types."""
@@ -4603,6 +4667,11 @@ class CPython314CreationBackend(
             raise RuntimeError(
                 "Admitted CPython 3.14 backend lacks unique annotate metadata"
             )
+
+    def creation_attribute_flags(self, instruction: dis.Instruction) -> tuple[int, ...]:
+        if instruction.arg is not None:
+            raise ValueError("MAKE_FUNCTION must use separate attribute attachments")
+        return ()
 
     @cached_property
     def binary_subscription_argument(self) -> int:

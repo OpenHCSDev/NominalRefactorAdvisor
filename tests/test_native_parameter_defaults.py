@@ -5,11 +5,14 @@ import dataclasses
 
 import pytest
 
+from nominal_refactor_advisor.ast_tools import SourceModule
 from nominal_refactor_advisor.call_binding import (
     CompactFunctionSignature,
     DefaultedFunctionParameter,
 )
+from nominal_refactor_advisor.native_compilation import NativeCreationBackend
 from nominal_refactor_advisor.native_declarations import NativeParameterDefault
+from nominal_refactor_advisor.source_geometry import SourceByteSpan
 from nominal_refactor_advisor.scan_cache import ScanCache
 from test_native_dataclass_factory import factory_environment
 
@@ -207,3 +210,32 @@ def test_current_default_observations_are_not_function_identity_cached():
         after.require_constant_contents(17)
         assert before is not after
         before.require_constant_contents(None)  # An observation, not current storage.
+
+
+@pytest.mark.parametrize('arguments,attached', (
+    ('first, /, second=0, *items, option=None, **options', ('defaults', 'kwdefaults')),
+    ('value=0', ('defaults',)),
+    ('*, option=None', ('kwdefaults',)),
+    ('value', ()),
+))
+def test_original_function_default_metadata_is_joined_to_native_storage(
+        tmp_path, arguments, attached):
+    """Only compile the subject: the stored inputs are not runtime default objects."""
+    path = tmp_path / 'unexecuted.py'
+    source = f'def selected({arguments}):\n    raise AssertionError("body executed")\n'
+    parsed = SourceModule.from_source_path(path, source).parse()
+    method, = (node for _, node in parsed.syntax_index.named_functions)
+    span = SourceByteSpan.require_node(method)
+    store = parsed.native_compilation.value_store_for(span, span, method.name)
+    function = store.value
+    backend = NativeCreationBackend.current()
+    for name, native_type in (('defaults', tuple), ('kwdefaults', dict)):
+        flag = backend.function_attribute_flag(name)
+        if name not in attached:
+            with pytest.raises(ValueError, match='no original attachment'):
+                function.attribute_operand(flag)
+        else:
+            operand = function.attribute_operand(flag)
+            store.require_value(operand)
+            assert operand.native_type is native_type
+    assert not path.exists()

@@ -18,6 +18,7 @@ from functools import cached_property, lru_cache
 import inspect
 from textwrap import dedent
 from types import (
+    CodeType,
     FunctionType,
     ModuleType,
 )
@@ -169,6 +170,26 @@ class NativeConstantContentsABC(ABC):
         self.require_constant_contents(other._native_constant_value())
 
 
+@dataclass(frozen=True)
+class NativeFunctionParameters:
+    """Parameter storage layout read from the original native code, not inspect.signature."""
+
+    positional: tuple[str, ...]
+    keyword_only: tuple[str, ...]
+
+    @classmethod
+    def from_code(cls, code: CodeType) -> Self:
+        return cls(
+            code.co_varnames[: code.co_argcount],
+            code.co_varnames[
+                code.co_argcount : code.co_argcount + code.co_kwonlyargcount
+            ],
+        )
+
+    def positional_default_names(self, count: int) -> tuple[str, ...]:
+        return self.positional[max(0, len(self.positional) - count) :]
+
+
 @dataclass(frozen=True, eq=False)
 class NativeParameterDefault(NativeConstantContentsABC):
     """One observed native default association, not source syntax or an effect proof.
@@ -201,21 +222,19 @@ class NativeParameterDefault(NativeConstantContentsABC):
         )
         if any(type(name) is not str for name, _ in keyword_items):
             raise ValueError("Native keyword default keys require exact string storage")
-        names = code.co_varnames[: code.co_argcount]
-        keyword_names = frozenset(
-            code.co_varnames[
-                code.co_argcount : code.co_argcount + code.co_kwonlyargcount
-            ]
-        )
+        parameters = NativeFunctionParameters.from_code(code)
+        names = parameters.positional_default_names(len(positional))
         return tuple(
             cls(name, value)
             for name, value in zip(
-                names[max(0, len(names) - len(positional)) :],
+                names,
                 positional[max(0, len(positional) - len(names)) :],
                 strict=True,
             )
         ) + tuple(
-            cls(name, value) for name, value in keyword_items if name in keyword_names
+            cls(name, value)
+            for name, value in keyword_items
+            if name in parameters.keyword_only
         )
 
 
