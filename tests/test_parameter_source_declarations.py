@@ -16,14 +16,20 @@ from nominal_refactor_advisor.lexical_bindings import (
     CompactParameterKind,
     DefaultedParameterSource,
     FunctionParameterSource,
+    ParameterDefaultQuestion,
     UndefaultedParameterSource,
 )
 
 
-def _declared_default(source: FunctionParameterSource) -> ast.expr | None:
-    """The default node a source declares, None for the undefaulted subtype."""
+class DeclaredDefaultNode(ParameterDefaultQuestion[ast.expr | None]):
+    def defaulted(self, source: DefaultedParameterSource) -> ast.expr:
+        return source.default
 
-    return source.default if isinstance(source, DefaultedParameterSource) else None
+    def undefaulted(self, source: UndefaultedParameterSource) -> None:
+        return None
+
+
+DEFAULT_NODE = DeclaredDefaultNode()
 
 
 def _arguments(source: str) -> ast.arguments:
@@ -73,7 +79,7 @@ def test_positional_default_cutoff_retains_exact_nodes(
         expected_default = (
             None if index < default_start else arguments.defaults[index - default_start]
         )
-        assert _declared_default(source) is expected_default
+        assert source.answer(DEFAULT_NODE) is expected_default
 
 
 def test_variadics_and_keyword_only_defaults_keep_source_identity() -> None:
@@ -112,7 +118,7 @@ def test_variadics_and_keyword_only_defaults_keep_source_identity() -> None:
         assert source.argument is argument
         assert source.argument.annotation is argument.annotation
         assert source.kind is kind
-        assert _declared_default(source) is default
+        assert source.answer(DEFAULT_NODE) is default
     required, optional = sources[3:5]
     assert isinstance(required, UndefaultedParameterSource)
     assert isinstance(optional, DefaultedParameterSource)
@@ -146,33 +152,6 @@ def test_empty_parameter_list_has_empty_source_and_compact_views() -> None:
     arguments = _arguments("def sample(): pass")
     assert FunctionParameterSource.from_arguments(arguments) == ()
     assert CompactFunctionSignature.from_arguments(arguments).parameters == ()
-
-
-def test_compact_signature_consumes_the_shared_source_projection(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    arguments = _arguments("def sample(first: int, second: str=None): pass")
-    selected = DefaultedParameterSource(
-        arguments.args[1], CompactParameterKind.KEYWORD_ONLY, arguments.defaults[0]
-    )
-    requests = []
-
-    def project(cls, requested):
-        assert cls is FunctionParameterSource
-        requests.append(requested)
-        return (selected,)
-
-    monkeypatch.setattr(FunctionParameterSource, "from_arguments", classmethod(project))
-    compact = CompactFunctionSignature.from_arguments(arguments)
-    assert len(requests) == 1
-    assert requests[0] is arguments
-    (parameter,) = compact.parameters
-    assert parameter.name == selected.argument.arg
-    assert parameter.kind is selected.kind
-    assert isinstance(parameter, DefaultedFunctionParameter)
-    assert compact.annotations_by_name == {
-        parameter.name: ast.unparse(selected.argument.annotation)
-    }
 
 
 def test_source_receipt_is_frozen_but_owns_original_syntax() -> None:

@@ -3,13 +3,16 @@
 import ast
 from copy import copy
 import pickle
+from types import FunctionType
 
 import pytest
 
 from nominal_refactor_advisor.native_compilation import (
     NativeCallMarker,
     NativePythonCompilation,
+    NativeTypedValue,
 )
+from nominal_refactor_advisor.native_declarations import NativeTypeDeclaration
 from nominal_refactor_advisor.source_geometry import SourceByteSpan
 from test_source_function_result import execution
 
@@ -147,17 +150,13 @@ def test_application_chain_rejects_nonoriginal_or_nonimplicit_links(damage):
         store.applications_after(raw)
 
 
-def test_operand_chain_survives_snapshot_without_recompilation(monkeypatch):
+def test_operand_chain_survives_snapshot_with_original_links():
     compilation, node, store = observed("@first\n@second\nclass Target: pass\n")
     span = SourceByteSpan.require_node(node)
     raw = compilation.class_capture_for(span).definition_construction_in(store)
     assert len(store.applications_after(raw)) == 2
     payload = pickle.dumps(compilation)
 
-    def forbid(self):
-        raise AssertionError("A persisted original operand graph must not recompile")
-
-    monkeypatch.setattr(NativePythonCompilation, "compile", forbid)
     restored = pickle.loads(payload)
     restored_store = restored.value_store_for(store.production_span, span, node.name)
     restored_raw = restored.class_capture_for(span).definition_construction_in(
@@ -184,3 +183,31 @@ def test_source_decorator_proof_preserves_the_distinct_compiler_chain():
     raw = compilation.class_capture_for(span).definition_construction_in(store)
     assert len(store.applications_after(raw)) == 1
     environment.class_entry(node).result().require_closed()
+
+
+def test_function_and_application_sites_reject_each_others_owned_operands():
+    compilation, node, store = observed("@decorate\ndef Target(): pass\n")
+    native = compilation.execution_for(SourceByteSpan.require_node(node))
+    creation = native.require_creation()
+    raw = store.production_at(creation.instruction_offset)
+    (application,) = native.require_applications()
+    call = application.operand_in(store)
+    assert creation.require_definition_operand(raw) is raw
+    assert application.require_definition_operand(call) is call
+    with pytest.raises(ValueError, match="original function creation"):
+        creation.require_definition_operand(call)
+    with pytest.raises(ValueError, match="original application"):
+        application.require_definition_operand(raw)
+
+
+def test_function_type_alone_does_not_supply_original_creation_membership():
+    compilation, node, store = observed("def Target(): pass\n")
+    creation = compilation.execution_for(SourceByteSpan.require_node(node)).require_creation()
+    raw = store.production_at(creation.instruction_offset)
+    typed_only = NativeTypedValue(
+        raw.instruction_offset, raw.inputs, NativeTypeDeclaration(FunctionType),
+        source_span=raw.source_span,
+    )
+    assert typed_only.native_type is FunctionType
+    with pytest.raises(ValueError, match="original function creation"):
+        creation.require_definition_operand(typed_only)

@@ -412,7 +412,27 @@ class NativeBindingTransferResolverABC(ABC, Generic[NativeResolutionT]):
         raise NotImplementedError
 
 
+class NativeOperandValueABC(NativeLiteralContentsABC):
+    """An original operand, including projections that are not instructions."""
+
+    @abstractmethod
+    def resolve_operand(
+        self, resolver: NativeValueResolverABC[NativeResolutionT]
+    ) -> NativeResolutionT:
+        raise NotImplementedError
+
+
 class NativeValueResolverABC(ABC, Generic[NativeResolutionT]):
+
+    def _produced_native_operand_resolution(
+        self, value: NativeProducedValue
+    ) -> NativeResolutionT:
+        raise ValueError("Native original operand/source join remains unproved")
+
+    def _constant_tuple_operand_resolution(
+        self, value: NativeConstantTupleElement
+    ) -> NativeResolutionT:
+        raise ValueError("Native folded constant/source join remains unproved")
 
     def _subscription_native_value_resolution(
         self, value: NativeSubscriptionValue
@@ -552,7 +572,7 @@ class NativeGlobalLoadForm(Enum):
 
 
 @dataclass(frozen=True)
-class NativeProducedValue(DataclassGraphNode, NativeCallSlotABC, NativeLiteralContentsABC):
+class NativeProducedValue(DataclassGraphNode, NativeCallSlotABC, NativeOperandValueABC):
     """One original native production and its inputs, not runtime identity."""
 
     instruction_offset: int
@@ -593,6 +613,30 @@ class NativeProducedValue(DataclassGraphNode, NativeCallSlotABC, NativeLiteralCo
                 )
         return values
 
+    def require_function_creation(self, offset: int) -> NativeFunctionValue:
+        raise ValueError("Native operand differs from its original function creation")
+
+    def require_definition_application(
+        self, site: NativeDefinitionApplication
+    ) -> NativeCallValue:
+        raise ValueError("Native operand differs from its original application")
+
+    def append_definition_application(
+        self, store: NativeValueStore, applications: list[NativeCallValue]
+    ) -> NativeProducedValue:
+        raise ValueError("Native definition has no application path to storage")
+
+    def class_constructions_for(self, span: SourceByteSpan) -> tuple[NativeCallValue, ...]:
+        return ()
+
+    def require_class_construction(
+        self, capture: ExactNativeClassCapture, store: NativeValueStore
+    ) -> NativeCallValue:
+        raise ValueError("Native class result has no original construction call")
+
+    def require_class_builder(self, site: NativeCaptureSite) -> None:
+        raise ValueError("Native class call differs from its original builder load")
+
     def require_scalar_store_value(self) -> NativeConstantValue:
         """A produced type or read alone does not establish scalar contents."""
         raise ValueError("Native scalar production remains unproved")
@@ -609,7 +653,7 @@ class NativeProducedValue(DataclassGraphNode, NativeCallSlotABC, NativeLiteralCo
         return cast(tuple[str, ...], names)
 
     @property
-    def tuple_elements(self) -> tuple[NativeLiteralContentsABC, ...]:
+    def tuple_elements(self) -> tuple[NativeOperandValueABC, ...]:
         raise ValueError("Native original tuple elements remain unproved")
 
     @property
@@ -634,6 +678,11 @@ class NativeProducedValue(DataclassGraphNode, NativeCallSlotABC, NativeLiteralCo
 
     def keyword_default_operands(self) -> tuple[NativeKeywordDefaultOperand, ...]:
         raise ValueError("Native keyword default association remains unproved")
+
+    def resolve_operand(
+        self, resolver: NativeValueResolverABC[NativeResolutionT]
+    ) -> NativeResolutionT:
+        return resolver._produced_native_operand_resolution(self)
 
     def resolve(
         self, resolver: NativeValueResolverABC[NativeResolutionT]
@@ -661,6 +710,11 @@ class NativeFunctionValue(DataclassGraphValue, NativeTypedValue):
 
     @property
     def creation(self) -> NativeFunctionValue:
+        return self
+
+    def require_function_creation(self, offset: int) -> NativeFunctionValue:
+        if self.creation.instruction_offset != offset:
+            raise ValueError("Native operand differs from its original function creation")
         return self
 
     def positional_default_operands(self) -> tuple[NativePositionalDefaultOperand, ...]:
@@ -702,8 +756,11 @@ class NativeParameterDefaultOperand(ABC):
 
     @property
     @abstractmethod
-    def value(self) -> NativeLiteralContentsABC:
+    def value(self) -> NativeOperandValueABC:
         raise NotImplementedError
+
+    def require_projection(self, value: NativeConstantTupleElement) -> None:
+        raise ValueError("Native default has no original folded tuple projection")
 
 
 @dataclass(frozen=True, eq=False)
@@ -711,8 +768,12 @@ class NativePositionalDefaultOperand(NativeParameterDefaultOperand):
     index: int
 
     @property
-    def value(self) -> NativeLiteralContentsABC:
+    def value(self) -> NativeOperandValueABC:
         return self.storage.tuple_elements[self.index]
+
+    def require_projection(self, value: NativeConstantTupleElement) -> None:
+        if value.storage is not self.storage or value.index != self.index:
+            raise ValueError("Folded default differs from its original storage slot")
 
 
 @dataclass(frozen=True, eq=False)
@@ -765,6 +826,49 @@ class NativeCallValue(DataclassGraphValue, NativeProducedValue):
     """Original invocation with ordered implicit and explicit Python arguments."""
 
     argument_slot: NativeCallSlotABC
+
+    def require_definition_application(
+        self, site: NativeDefinitionApplication
+    ) -> NativeCallValue:
+        if (
+            self.instruction_offset != site.instruction_offset
+            or self.source_span != site.source_span
+        ):
+            raise ValueError("Native operand differs from its original application")
+        return self
+
+    def append_definition_application(
+        self, store: NativeValueStore, applications: list[NativeCallValue]
+    ) -> NativeProducedValue:
+        argument = self.require_definition_argument()
+        for operand in self.inputs:
+            store.require_value(operand)
+            if operand.instruction_offset >= self.instruction_offset:
+                raise ValueError("Native application must follow its operands")
+        applications.append(self)
+        return argument
+
+    def class_constructions_for(self, span: SourceByteSpan) -> tuple[NativeCallValue, ...]:
+        return (self,) if self.source_span == span else ()
+
+    def require_class_construction(
+        self, capture: ExactNativeClassCapture, store: NativeValueStore
+    ) -> NativeCallValue:
+        store.require_value(self)
+        if (
+            store.frame is not capture.builder.frame
+            or capture.creation.frame is not store.frame
+        ):
+            raise ValueError("Native class result belongs to a different creator frame")
+        if self.source_span != capture.source_span:
+            raise ValueError("Native class result has no original construction call")
+        if self.argument_slot.implicit_arguments or len(self.positional_arguments) < 2:
+            raise ValueError("Native class construction requires its explicit body and name")
+        for operand in self.productions():
+            store.require_value(operand)
+        self.callee.require_class_builder(capture.builder)
+        capture.creation.require_definition_operand(self.arguments[0])
+        return self
 
     @property
     def callee(self) -> NativeProducedValue:
@@ -938,7 +1042,7 @@ class NativeTupleValue(NativeSequenceValue):
     declaration: ClassVar[NativeTypeDeclaration] = NativeTypeDeclaration(tuple)
 
     @property
-    def tuple_elements(self) -> tuple[NativeLiteralContentsABC, ...]:
+    def tuple_elements(self) -> tuple[NativeOperandValueABC, ...]:
         return self.inputs
 
     def resolve(
@@ -964,7 +1068,7 @@ class NativeConstantValue(NativeTypedValue):
         return cast(tuple[object, ...], self.value)
 
     @property
-    def tuple_elements(self) -> tuple[NativeLiteralContentsABC, ...]:
+    def tuple_elements(self) -> tuple[NativeOperandValueABC, ...]:
         return tuple(
             NativeConstantTupleElement(self, index)
             for index in range(len(self.constant_tuple_contents))
@@ -983,7 +1087,7 @@ class NativeConstantValue(NativeTypedValue):
 
 
 @dataclass(frozen=True, eq=False)
-class NativeConstantTupleElement(NativeConstantContentsABC):
+class NativeConstantTupleElement(NativeConstantContentsABC, NativeOperandValueABC):
     """A projection of an original constant, with no invented instruction offset."""
 
     storage: NativeConstantValue
@@ -991,6 +1095,11 @@ class NativeConstantTupleElement(NativeConstantContentsABC):
 
     def _native_constant_value(self) -> object:
         return self.storage.constant_tuple_contents[self.index]
+
+    def resolve_operand(
+        self, resolver: NativeValueResolverABC[NativeResolutionT]
+    ) -> NativeResolutionT:
+        return resolver._constant_tuple_operand_resolution(self)
 
 
 @dataclass(frozen=True)
@@ -1132,6 +1241,10 @@ class NativeClassBuilderValue(NativeProducedValue):
     """Original builtins-only builder load; its runtime identity remains unproved."""
 
     inputs: ClassVar[tuple[NativeProducedValue, ...]] = ()
+
+    def require_class_builder(self, site: NativeCaptureSite) -> None:
+        if self.instruction_offset != site.instruction_offset:
+            raise ValueError("Native class call differs from its original builder load")
 
 
 @dataclass(frozen=True)
@@ -2133,14 +2246,8 @@ class NativeCaptureSite:
     frame: NativeFrameOrigin
     instruction_offset: int
 
-    def require_definition_operand(self, value: NativeProducedValue) -> None:
-        if (
-            not isinstance(value, NativeFunctionValue)
-            or value.creation.instruction_offset != self.instruction_offset
-        ):
-            raise ValueError(
-                "Native operand differs from its original function creation"
-            )
+    def require_definition_operand(self, value: NativeProducedValue) -> NativeProducedValue:
+        return value.require_function_creation(self.instruction_offset)
 
 
 @dataclass(frozen=True, eq=False)
@@ -2156,20 +2263,14 @@ class NativeDefinitionApplication(DataclassGraphValue, NativeCaptureSite):
     prelude: tuple[NativeCaptureSite, ...]
     argument: NativeCaptureSite
 
-    def require_definition_operand(self, value: NativeProducedValue) -> None:
-        if (
-            not isinstance(value, NativeCallValue)
-            or value.instruction_offset != self.instruction_offset
-            or value.source_span != self.source_span
-        ):
-            raise ValueError("Native operand differs from its original application")
+    def require_definition_operand(self, value: NativeProducedValue) -> NativeCallValue:
+        return value.require_definition_application(self)
 
     def operand_in(self, store: NativeValueStore) -> NativeCallValue:
         if store.frame is not self.frame or self.argument.frame is not self.frame:
             raise ValueError("Native application operand belongs to a different frame")
         value = store.production_at(self.instruction_offset)
-        self.require_definition_operand(value)
-        call = cast(NativeCallValue, value)
+        call = self.require_definition_operand(value)
         argument = call.require_definition_argument()
         for operand in call.inputs:
             store.require_value(operand)
@@ -2207,7 +2308,7 @@ class ExactNativeClassCapture(NativeClassCapture):
 
     def construction_in(self, store: NativeValueStore) -> NativeCallValue:
         """Require direct raw construction as the stored result, without decorators."""
-        return self._require_construction_value(store, store.value)
+        return store.value.require_class_construction(self, store)
 
     def definition_construction_in(self, store: NativeValueStore) -> NativeCallValue:
         """Join raw construction to the stored definition's original application chain.
@@ -2216,46 +2317,14 @@ class ExactNativeClassCapture(NativeClassCapture):
         behavior or runtime class identity follows from this compiler relation.
         """
         candidates = tuple(
-            value
+            call
             for value in store.values
-            if isinstance(value, NativeCallValue)
-            and value.source_span == self.source_span
+            for call in value.class_constructions_for(self.source_span)
         )
         if len(candidates) != 1:
             raise ValueError("Native definition has no unique class construction")
-        value = self._require_construction_value(store, candidates[0])
+        value = candidates[0].require_class_construction(self, store)
         store.applications_after(value)
-        return value
-
-    def _require_construction_value(
-        self, store: NativeValueStore, value: NativeProducedValue
-    ) -> NativeCallValue:
-        store.require_value(value)
-        if (
-            store.frame is not self.builder.frame
-            or self.creation.frame is not store.frame
-        ):
-            raise ValueError("Native class result belongs to a different creator frame")
-        if (
-            not isinstance(value, NativeCallValue)
-            or value.source_span != self.source_span
-        ):
-            raise ValueError("Native class result has no original construction call")
-        if (
-            value.argument_slot.implicit_arguments
-            or len(value.positional_arguments) < 2
-        ):
-            raise ValueError(
-                "Native class construction requires its explicit body and name"
-            )
-        for operand in value.productions():
-            store.require_value(operand)
-        if (
-            not isinstance(value.callee, NativeClassBuilderValue)
-            or value.callee.instruction_offset != self.builder.instruction_offset
-        ):
-            raise ValueError("Native class call differs from its original builder load")
-        self.creation.require_definition_operand(value.arguments[0])
         return value
 
     def prologue_return_operand(
@@ -2453,18 +2522,10 @@ class NativeValueStore(DataclassGraphValue, NativeValueInventoryABC):
         """
         self.require_value(creation)
         current = self.value
-        applications = []
+        applications: list[NativeCallValue] = []
         while current is not creation:
             self.require_value(current)
-            if not isinstance(current, NativeCallValue):
-                raise ValueError("Native definition has no application path to storage")
-            argument = current.require_definition_argument()
-            for operand in current.inputs:
-                self.require_value(operand)
-                if operand.instruction_offset >= current.instruction_offset:
-                    raise ValueError("Native application must follow its operands")
-            applications.append(current)
-            current = argument
+            current = current.append_definition_application(self, applications)
         return tuple(reversed(applications))
 
     @property
@@ -3527,13 +3588,7 @@ class AttachNativeFunctionAttribute(
     ) -> None:
         inputs = stack.pop(2)
         function = inputs[-1]
-        if (
-            not isinstance(function, NativeFunctionValue)
-            or function.creation.instruction_offset != emission.creation.offset
-        ):
-            raise ValueError(
-                "Native function attachment has a different original function"
-            )
+        function.require_function_creation(emission.creation.offset)
         stack.stack.append(
             stack.emit(
                 NativeFunctionAttributeValue(

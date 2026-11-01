@@ -14,6 +14,7 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from functools import cached_property
 from typing import (
+    TYPE_CHECKING,
     ClassVar,
     Generic,
     Self,
@@ -26,6 +27,9 @@ from .ast_field_decoders import (
     declared_annotations,
 )
 from .python_module_identity import PythonModulePathIdentity
+
+if TYPE_CHECKING:
+    from .native_compilation import NativeParameterDefaultOperand, NativeProducedValue
 
 
 class CompactParameterKind(StrEnum):
@@ -130,11 +134,20 @@ class FunctionParameterSource(FunctionArgumentSource, ABC):
     ) -> tuple[FunctionParameterSource, ...]:
         positional = (*arguments.posonlyargs, *arguments.args)
         undefaulted = len(positional) - len(arguments.defaults)
-        defaults: dict[ast.arg, ast.expr] = dict(
-            zip(positional[undefaulted:], arguments.defaults, strict=True)
-        )
+        parameters = FunctionArgumentSource.from_arguments(arguments)
+        by_argument = {parameter.argument: parameter for parameter in parameters}
+        defaults: dict[ast.arg, DefaultedParameterSource] = {
+            argument: PositionalDefaultedParameterSource(
+                argument, by_argument[argument].kind, default
+            )
+            for argument, default in zip(
+                positional[undefaulted:], arguments.defaults, strict=True
+            )
+        }
         defaults.update(
-            (argument, default)
+            (argument, KeywordDefaultedParameterSource(
+                argument, by_argument[argument].kind, default
+            ))
             for argument, default in zip(
                 arguments.kwonlyargs, arguments.kw_defaults, strict=True
             )
@@ -142,17 +155,18 @@ class FunctionParameterSource(FunctionArgumentSource, ABC):
             if default is not None
         )
         return tuple(
-            DefaultedParameterSource(
-                parameter.argument, parameter.kind, defaults[parameter.argument]
-            )
+            defaults[parameter.argument]
             if parameter.argument in defaults
             else UndefaultedParameterSource(parameter.argument, parameter.kind)
-            for parameter in FunctionArgumentSource.from_arguments(arguments)
+            for parameter in parameters
         )
 
     @abstractmethod
     def answer(self, question: ParameterDefaultQuestion[DefaultAnswerT]) -> DefaultAnswerT:
         raise NotImplementedError
+
+    def declares_default(self, source: DefaultedParameterSource) -> bool:
+        return False
 
 
 @dataclass(frozen=True)
@@ -163,6 +177,46 @@ class DefaultedParameterSource(FunctionParameterSource):
 
     def answer(self, question: ParameterDefaultQuestion[DefaultAnswerT]) -> DefaultAnswerT:
         return question.defaulted(self)
+
+    def declares_default(self, source: DefaultedParameterSource) -> bool:
+        return (
+            self.argument is source.argument
+            and self.kind is source.kind
+            and self.default is source.default
+        )
+
+    def native_default_operand(
+        self, function: NativeProducedValue
+    ) -> NativeParameterDefaultOperand:
+        candidates = tuple(
+            operand
+            for operand in self._native_default_operands(function)
+            if operand.parameter_name == self.argument.arg
+        )
+        if len(candidates) != 1:
+            raise ValueError("Source default has no unique original native slot")
+        return candidates[0]
+
+    @abstractmethod
+    def _native_default_operands(
+        self, function: NativeProducedValue
+    ) -> tuple[NativeParameterDefaultOperand, ...]:
+        """Select this source storage shape, not a runtime default object."""
+        raise NotImplementedError
+
+
+class PositionalDefaultedParameterSource(DefaultedParameterSource):
+    def _native_default_operands(
+        self, function: NativeProducedValue
+    ) -> tuple[NativeParameterDefaultOperand, ...]:
+        return function.positional_default_operands()
+
+
+class KeywordDefaultedParameterSource(DefaultedParameterSource):
+    def _native_default_operands(
+        self, function: NativeProducedValue
+    ) -> tuple[NativeParameterDefaultOperand, ...]:
+        return function.keyword_default_operands()
 
 
 @dataclass(frozen=True)

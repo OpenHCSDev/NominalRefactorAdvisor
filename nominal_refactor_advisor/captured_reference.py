@@ -90,12 +90,14 @@ from .product_flow import (
 from .value_expression import LexicalValueReference, TargetResolutionT
 
 if TYPE_CHECKING:
+    from .native_compilation import NativeProducedValue, NativeTupleValue, NativeListValue
     from .native_call import CallAuthority, NativeDefinitionApplicationAuthorityABC
     from .native_reference import NativeReferenceEnvironment
     from .source_entry import SourceModuleEntryPremise
     from .source_execution import (
         SourceDefinitionDecoratorApplicationABC,
         SourceFunctionActivationABC,
+        SourceNativeExpressionABC,
     )
 
 
@@ -123,6 +125,22 @@ class CapturedReferenceRejection(ValueError):
 
 
 class CapturedReferenceResolution(NativeScalarValueABC):
+
+    def require_native_function_operand(self, value: NativeProducedValue) -> None:
+        self.require_closed()
+        raise ValueError("Native function requires original source creation evidence")
+
+    def require_native_tuple_operand(
+        self, value: NativeTupleValue, source: SourceNativeExpressionABC
+    ) -> None:
+        self.require_closed()
+        raise ValueError("Native tuple requires an original source tuple construction")
+
+    def require_native_list_operand(
+        self, value: NativeListValue, source: SourceNativeExpressionABC
+    ) -> None:
+        self.require_closed()
+        raise ValueError("Native list requires its original literal construction")
 
     def require_dictionary_key(self) -> NativeDictionaryKey:
         """Scalar contents supply a key; other identities need their own evidence."""

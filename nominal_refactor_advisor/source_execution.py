@@ -89,6 +89,8 @@ from .native_compilation import (
     NativeClassCaptureResolverABC,
     NativeClassPrologueResolverABC,
     NativeConstantStore,
+    NativeConstantTupleElement,
+    NativeParameterDefaultOperand,
     NativeDefinitionApplication,
     NativeCompletionResolverABC,
     NativeCreationBackend,
@@ -1645,6 +1647,17 @@ class SourceTupleCapture(NativeTypeCapture, OpaqueCapturedObjectOperations):
             value.require_closed()
         return values
 
+    def require_native_tuple_operand(
+        self, value: NativeTupleValue, source: SourceNativeExpressionABC
+    ) -> None:
+        inputs = self.production.inputs
+        if len(inputs) != len(value.inputs):
+            raise ValueError("Native tuple has different original source operands")
+        for use, operand in zip(inputs, value.inputs, strict=True):
+            SourceNativeOperandJoin(
+                source, CompactFlowValue(source.source_read.context, use)
+            ).require_join(operand)
+
     def require_closed(self) -> None:
         _ = self.production
         self.execution.required_prefix(self.read.context, self.read.use.position)
@@ -1683,6 +1696,13 @@ class SourceLiteralCapture(SourceReadCaptureABC):
     The analyzer's parsed value never supplies runtime-object identity.
     Release follows the native exact-type contract; other protocols stay open.
     """
+
+    def require_native_list_operand(
+        self, value: NativeListValue, source: SourceNativeExpressionABC
+    ) -> None:
+        for operand in value.productions():
+            source._require_native_production(operand)
+        value.require_literal_contents(self.literal_value)
 
     def _native_scalar_value(self) -> object:
         return self.literal_value
@@ -1983,6 +2003,11 @@ class SourceNativeExpressionABC(
 
     native_bindings: ClassVar[tuple[NativeBindingTransfer, ...]] = ()
 
+    def _produced_native_operand_resolution(
+        self, value: NativeProducedValue
+    ) -> CapturedReferenceResolution:
+        return self.require_join(value)
+
     def _call_native_value_resolution(
         self, value: NativeCallValue
     ) -> CapturedReferenceResolution:
@@ -2075,28 +2100,14 @@ class SourceNativeExpressionABC(
         self, value: NativeTupleValue
     ) -> CapturedReferenceResolution:
         source = self.source_value
-        if not isinstance(source, SourceTupleCapture):
-            raise ValueError(
-                "Native tuple requires an original source tuple construction"
-            )
-        inputs = source.production.inputs
-        if len(inputs) != len(value.inputs):
-            raise ValueError("Native tuple has different original source operands")
-        for use, operand in zip(inputs, value.inputs, strict=True):
-            SourceNativeOperandJoin(
-                self, CompactFlowValue(self.source_read.context, use)
-            ).require_join(operand)
+        source.require_native_tuple_operand(value, self)
         return source
 
     def _list_native_value_resolution(
         self, value: NativeListValue
     ) -> CapturedReferenceResolution:
         source = self.source_value
-        if not isinstance(source, SourceLiteralCapture):
-            raise ValueError("Native list requires its original literal construction")
-        for operand in value.productions():
-            self._require_native_production(operand)
-        value.require_literal_contents(source.literal_value)
+        source.require_native_list_operand(value, self)
         return source
 
     def _empty_dictionary_native_value_resolution(
@@ -2111,10 +2122,6 @@ class SourceNativeExpressionABC(
         value: NativeFunctionValue,
     ) -> CapturedReferenceResolution:
         source = self.source_value
-        if not isinstance(source, SourceFunctionCreationABC):
-            raise ValueError(
-                "Native function requires original source creation evidence"
-            )
         source.require_native_function_operand(value)
         return source
 
@@ -2147,6 +2154,59 @@ class SourceNativeOperandJoin(SourceNativeExpressionABC):
 
     def _require_native_production(self, value: NativeProducedValue) -> None:
         self.parent._require_native_production(value)
+
+
+@dataclass(frozen=True, eq=False)
+class SourceFunctionDefault(SourceNativeExpressionABC):
+    """An original header read and metadata slot, not runtime-object transport."""
+
+    function: SourceCreatedFunctionCapture
+    parameter: DefaultedParameterSource
+    prefix: AdmittedExecutionPrefixABC
+
+    execution = AliasProperty["SourceExecutionABC"]("function.execution")
+    source_completion_prefix = AliasProperty[AdmittedExecutionPrefixABC]("prefix")
+
+    @property
+    def source_read(self) -> CompactFlowValue:
+        self.function.require_original_operation()
+        parameters = FunctionParameterSource.from_arguments(self.function.node.args)
+        if not any(source.declares_default(self.parameter) for source in parameters):
+            raise ValueError("Default does not belong to the original function header")
+        read = self.execution.source.value_reads_by_node.get(self.parameter.default)
+        if read is None or read.context is not self.function.parent_context:
+            raise ValueError("Default has no original creation-frame read")
+        self.execution.source.value_operation(read)
+        return read
+
+    @property
+    def store(self) -> NativeValueStore:
+        _ = self.source_read
+        self.function.require_native_installation(self.prefix)
+        return self.function.native_result_store
+
+    @property
+    def operand(self) -> NativeParameterDefaultOperand:
+        store = self.store
+        operand = self.parameter.native_default_operand(store.value)
+        store.require_value(operand.storage)
+        return operand
+
+    def _require_native_production(self, value: NativeProducedValue) -> None:
+        self.store.require_value(value)
+
+    def _constant_tuple_operand_resolution(
+        self, value: NativeConstantTupleElement
+    ) -> CapturedReferenceResolution:
+        self.operand.require_projection(value)
+        self._require_native_production(value.storage)
+        source = self.source_value
+        source.require_closed()
+        source.require_same_native_constant(value)
+        return source
+
+    def result(self) -> CapturedReferenceResolution:
+        return self.operand.value.resolve_operand(self)
 
 
 class SourceStackEffectReturnABC(SourceEventReturnABC, SourceNativeExpressionABC):
