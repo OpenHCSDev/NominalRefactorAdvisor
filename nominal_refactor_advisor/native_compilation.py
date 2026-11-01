@@ -599,6 +599,11 @@ class NativeProducedValue(DataclassGraphNode, NativeCallSlotABC):
         raise ValueError("Native literal construction contents remain unproved")
 
     @property
+    def native_type(self) -> type:
+        """Untyped productions do not acquire a type from their consumer's expectation."""
+        raise ValueError("Native production type remains unproved")
+
+    @property
     def parameters(self) -> NativeFunctionParameters:
         raise ValueError("Native function parameter storage layout remains unproved")
 
