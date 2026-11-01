@@ -3795,6 +3795,12 @@ class NativeCreationBackend(ABC, metaclass=AutoRegisterMeta):
         """Conditional empty custom storage at raw native function creation only."""
         raise ValueError("Native fresh function namespace remains unproved")
 
+    def require_function_default_storage(
+        self, compilation: NativeCompilationIdentity
+    ) -> None:
+        """Conditional native retention of original birth operands, not later storage."""
+        raise ValueError("Native function birth-default storage remains unproved")
+
     def require_nonabstract_member_type(self, value_type: type) -> None:
         """Require inert absence of ABCMeta's marker in the native type lookup.
 
@@ -4561,16 +4567,32 @@ class CPythonFunctionConstruction(NativeCreationBackend):
     This is conditional on noninterfering external instrumentation and native
     API compliance; source activation must supply that execution restriction.
     Invoked source/dependency callbacks remain separate operation obligations.
+    3.11 MAKE_FUNCTION transfers the popped defaults tuple/dictionary directly
+    into func_defaults/func_kwdefaults. In 3.14 SET_FUNCTION_ATTRIBUTE transfers
+    the same operand pointer through _Py_FunctionAttributeOffsets (ceval.c).
+    The original compiler operand chain owns the selected attachment and slot;
+    this law introduces no field table or value reconstruction. The create
+    watcher runs before attachments, so external noninterference is essential.
     No later attribute state, abstractness lookup or callable behavior is proved.
     """
 
-    def require_fresh_function_namespace(
+    def _require_actual_function_compilation(
         self, compilation: NativeCompilationIdentity
     ) -> None:
         if compilation.interpreter != InterpreterBuild.running() or self.compiler_identity != CompilerIdentity.running():
             raise ValueError(
-                "Fresh function namespace requires its actual native interpreter backend"
+                "Native function birth requires its actual native interpreter backend"
             )
+
+    def require_fresh_function_namespace(
+        self, compilation: NativeCompilationIdentity
+    ) -> None:
+        self._require_actual_function_compilation(compilation)
+
+    def require_function_default_storage(
+        self, compilation: NativeCompilationIdentity
+    ) -> None:
+        self._require_actual_function_compilation(compilation)
 
 
 class CPythonStaticTypeRequirement(IntEnum):
@@ -5148,6 +5170,13 @@ class NativePythonCompilation(SourceLineSegmentAuthority):
             production_span, target_span, name
         )
 
+    def require_original_function_creation(
+        self, receipt: NativeFunctionExecution
+    ) -> None:
+        """Authenticate a compiler creation record, not an observed runtime birth."""
+        self.execution_outcome.require_function(receipt)
+        receipt.require_creation()
+
     def require_fresh_function_namespace(
         self, receipt: NativeFunctionExecution
     ) -> None:
@@ -5155,9 +5184,15 @@ class NativePythonCompilation(SourceLineSegmentAuthority):
         # Conditional initialization is not an observed target function or continued
         # emptiness through decorators, later writes or callbacks. Runtime activation
         # and noninterference remain the source execution owner's duties.
-        self.execution_outcome.require_function(receipt)
-        receipt.require_creation()
+        self.require_original_function_creation(receipt)
         NativeCreationBackend.current().require_fresh_function_namespace(self.identity)
+
+    def require_function_default_storage(
+        self, receipt: NativeFunctionExecution
+    ) -> None:
+        """Retain original birth operands; source admission/noninterference are separate."""
+        self.require_original_function_creation(receipt)
+        NativeCreationBackend.current().require_function_default_storage(self.identity)
 
     def constant_store_for(
         self, source_span: SourceByteSpan, name: str

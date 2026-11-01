@@ -2189,6 +2189,20 @@ class SourceFunctionDefault(SourceNativeExpressionABC):
         store.require_value(operand.storage)
         return operand
 
+    def require_birth_storage(self) -> NativeParameterDefaultOperand:
+        """Retain this original birth slot, not current storage or relocated objects.
+
+        The weaker source/slot query remains available without upgrading its
+        supplied entry premise. This stronger query requires noninterference
+        because native create watchers can see the function before attachment.
+        """
+        operand = self.operand
+        self.execution.entry.require_external_noninterference(self.prefix)
+        self.execution.module.native_compilation.require_function_default_storage(
+            self.function.native_execution
+        )
+        return operand
+
     def _require_native_production(self, value: NativeProducedValue) -> None:
         self.store.require_value(value)
 

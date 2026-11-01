@@ -16,6 +16,7 @@ from nominal_refactor_advisor.native_compilation import (
 from nominal_refactor_advisor.source_execution import SourceFunctionDefault
 from test_source_call_binding import source_call
 from test_source_function_installation import module_function
+from test_source_function_storage import SOURCE, prepared_function
 
 pytestmark = pytest.mark.native_proof
 
@@ -55,6 +56,34 @@ def test_original_default_joins_its_source_read_and_native_slot(
     # A matching endpoint is not the admitted original cut.
     with pytest.raises(ValueError):
         SourceFunctionDefault(join.function, join.parameter, copy(join.prefix)).result()
+
+
+@pytest.mark.parametrize("default", ("value=0", "*, value=None"))
+def test_birth_storage_requires_the_admitted_original_creation(default: str) -> None:
+    environment, entry, function = prepared_function(
+        source=SOURCE.replace("value=1", default)
+    )
+    parameter = next(
+        source
+        for source in FunctionParameterSource.from_arguments(function.node.args)
+        if source.argument.arg == "value"
+    )
+    assert isinstance(parameter, DefaultedParameterSource)
+    join = SourceFunctionDefault(function, parameter, entry.completion_prefix)
+    operand = join.require_birth_storage()
+    assert operand.storage is join.operand.storage
+    assert operand.parameter_name == "value"
+    with pytest.raises(ValueError):
+        SourceFunctionDefault(function, parameter, copy(join.prefix)).require_birth_storage()
+
+
+def test_slot_information_does_not_silently_declare_noninterference() -> None:
+    join = joined_default("value=0", "value")
+    join.result().require_constant_contents(0)
+    with pytest.raises(ValueError, match="External source interference remains unproved"):
+        join.require_birth_storage()
+    # Refusing the stronger question does not destroy the weaker information.
+    join.result().require_constant_contents(0)
 
 
 def test_equal_contents_do_not_join_a_different_positional_slot() -> None:
