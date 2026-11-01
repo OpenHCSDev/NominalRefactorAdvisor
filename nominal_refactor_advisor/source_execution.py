@@ -1613,18 +1613,15 @@ class SourceTupleCapture(NativeTypeCapture, OpaqueCapturedObjectOperations):
     def production(self) -> CompactTupleValue:
         operation = self.execution.source.value_operation(self.read)
         use = self.read.use
-        if not isinstance(use, CompactValueUse) or not isinstance(
-            use.value, CompactTupleValue
-        ):
-            raise ValueError("Tuple capture requires its original compact production")
+        production = use.require_tuple_production()
         if use.position.branch_path or use.position.evaluation_path:
             raise ValueError("Conditional or repeated tuple creation remains unproved")
         node = operation.node
         NativeCreationBackend.current().require_tuple_construction(node)
-        if len(use.value.inputs) != len(node.elts):
+        if len(production.inputs) != len(node.elts):
             raise ValueError("Tuple production has a different input count")
         previous = None
-        for element, input_use in zip(node.elts, use.value.inputs, strict=True):
+        for element, input_use in zip(node.elts, production.inputs, strict=True):
             original = self.execution.source.value_operation(
                 CompactFlowValue(self.read.context, input_use)
             )
@@ -1635,7 +1632,7 @@ class SourceTupleCapture(NativeTypeCapture, OpaqueCapturedObjectOperations):
             ):
                 raise ValueError("Tuple inputs have no original ordered completion")
             previous = input_use.position
-        return use.value
+        return production
 
     @cached_property
     def elements(self) -> tuple[CapturedReferenceResolution, ...]:

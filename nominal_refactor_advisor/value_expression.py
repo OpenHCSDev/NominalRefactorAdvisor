@@ -12,12 +12,17 @@ from collections.abc import (
 from dataclasses import dataclass
 from functools import singledispatch
 from typing import (
+    TYPE_CHECKING,
     Generic,
     Self,
     TypeAlias,
     TypeVar,
     cast,
 )
+
+if TYPE_CHECKING:
+    from .product_flow import CompactTupleValue
+
 
 ValueExpressionNode: TypeAlias = ast.expr | ast.Slice
 WriteT = TypeVar("WriteT")
@@ -101,6 +106,10 @@ class ValueExpressionResolverABC(ABC, Generic[ResolutionContextT, TargetResoluti
 
 class ValueExpressionShapeABC(ABC):
     """Retained lexical shape, independent of interpreter requirements."""
+
+    def require_tuple_production(self) -> CompactTupleValue:
+        """Tuple role alone supplies no occurrence, ordering or runtime identity."""
+        raise ValueError("Tuple capture requires its original compact production")
 
     @property
     @abstractmethod

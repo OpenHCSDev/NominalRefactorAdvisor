@@ -63,7 +63,9 @@ def test_compact_tuple_retains_actual_ordered_element_productions():
     environment = execution(BASE + "held = (Alpha, Beta)\n")
     node = tuple_node(environment)
     read = environment.source.value_reads_by_node[node]
-    production = read.use.value
+    production = read.use.require_tuple_production()
+    assert production is read.use.value
+    assert production.require_tuple_production() is production
     assert isinstance(production, CompactTupleValue)
     assert len(production.inputs) == 2
     for element, use in zip(node.elts, production.inputs, strict=True):
@@ -73,6 +75,17 @@ def test_compact_tuple_retains_actual_ordered_element_productions():
     assert production.inputs[0].position.dominates(production.inputs[1].position)
     unknown = object()
     assert production.resolve_value(ConservativeResolver(), unknown) is unknown
+
+
+@pytest.mark.parametrize("expression", ("0", "object"))
+def test_non_tuple_use_and_payload_do_not_supply_tuple_production(expression):
+    environment = execution(f"held={expression}\n")
+    node = environment.module.module.body[-1].value
+    read = environment.source.value_reads_by_node[node]
+    with pytest.raises(ValueError, match="original compact production"):
+        read.use.require_tuple_production()
+    with pytest.raises(ValueError):
+        SourceTupleCapture(environment, read, frozenset()).require_closed()
 
 
 @pytest.mark.native_proof

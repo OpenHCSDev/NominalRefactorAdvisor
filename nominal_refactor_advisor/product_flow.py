@@ -2307,6 +2307,9 @@ class CompactTupleValue(
 
     inputs: tuple[CompactValueUse, ...]
 
+    def require_tuple_production(self) -> CompactTupleValue:
+        return self
+
     def resolve_value(
         self,
         resolver: CompactValueResolverABC[ResolutionContextT, TargetResolutionT],
@@ -2402,6 +2405,9 @@ class CompactValueUse(DataclassGraphValue, CompactPositionedReference):
     lexical_reference = AliasProperty[LexicalValueReference | None](
         "value.lexical_reference"
     )
+
+    def require_tuple_production(self) -> CompactTupleValue:
+        return self.value.require_tuple_production()
 
     def resolve_value(
         self,
