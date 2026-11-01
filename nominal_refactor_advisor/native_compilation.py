@@ -5172,10 +5172,10 @@ class NativePythonCompilation(SourceLineSegmentAuthority):
 
     def require_original_function_creation(
         self, receipt: NativeFunctionExecution
-    ) -> None:
+    ) -> NativeCaptureSite:
         """Authenticate a compiler creation record, not an observed runtime birth."""
         self.execution_outcome.require_function(receipt)
-        receipt.require_creation()
+        return receipt.require_creation()
 
     def require_fresh_function_namespace(
         self, receipt: NativeFunctionExecution

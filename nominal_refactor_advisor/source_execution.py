@@ -518,10 +518,9 @@ class SourceFunctionCreationABC(
 
     def require_descriptor_argument(self) -> None:
         native = self.native_execution
-        self.execution.module.native_compilation.execution_outcome.require_function(
+        creation = self.execution.module.native_compilation.require_original_function_creation(
             native
         )
-        creation = native.require_creation()
         creation.frame.resolve(self)
         position = self.creation_position
         if position.branch_path or position.evaluation_path:
