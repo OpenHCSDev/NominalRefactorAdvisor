@@ -117,10 +117,53 @@ NativeConstantAtom: TypeAlias = NativeScalar | types.EllipsisType
 
 
 class NativeLiteralContentsABC(ABC):
-    """A literal-content question, not production, activation or object identity."""
+    """Literal contents/observed compiler sharing, never target object identity."""
 
     def require_literal_contents(self, expected: object) -> None:
         raise ValueError("Native literal construction contents remain unproved")
+
+    def compiler_constant_identity(self) -> NativeConstantIdentityABC:
+        return UnobservedNativeConstantIdentity()
+
+    def require_same_compiler_constant(self, other: NativeLiteralContentsABC) -> None:
+        """Require shared observed compiler storage, without comparing raw payloads."""
+        self.compiler_constant_identity().require_same(other.compiler_constant_identity())
+
+
+class NativeConstantIdentityABC(ABC):
+    """Compiler-graph sharing only; never identity with a target/external object."""
+
+    def require_same(self, other: NativeConstantIdentityABC) -> None:
+        raise ValueError("Native compiler constant alias remains unproved")
+
+    def require_original(self, expected: NativeConstantIdentity) -> None:
+        raise ValueError("Native compiler constant alias remains unproved")
+
+    def member(self, index: int) -> NativeConstantIdentityABC:
+        raise ValueError("Native compiler constant members remain unproved")
+
+
+class UnobservedNativeConstantIdentity(NativeConstantIdentityABC):
+    """Contents-only or immediate values have no observed pool identity."""
+
+
+@dataclass(frozen=True, eq=False)
+class NativeConstantIdentity(NativeConstantIdentityABC):
+    """One nominal alias node survives compact serialization by graph reference."""
+
+    members: tuple[NativeConstantIdentity, ...]
+
+    def require_same(self, other: NativeConstantIdentityABC) -> None:
+        other.require_original(self)
+
+    def require_original(self, expected: NativeConstantIdentity) -> None:
+        if self is not expected:
+            raise ValueError("Native constants have no shared original compiler identity")
+
+    def member(self, index: int) -> NativeConstantIdentity:
+        if not 0 <= index < len(self.members):
+            raise ValueError("Native compiler constant member is outside its original graph")
+        return self.members[index]
 
 
 class NativeConstantContentsABC(NativeLiteralContentsABC):

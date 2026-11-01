@@ -69,6 +69,9 @@ from .native_declarations import (
     NativeLiteralContentsABC,
     NativeScalar,
     NativeConstantContentsABC,
+    NativeConstantIdentityABC,
+    NativeConstantIdentity,
+    UnobservedNativeConstantIdentity,
     NativeScalarValueABC,
     NativeTypeDeclaration,
 )
@@ -123,6 +126,77 @@ class NativeExecutionUnavailable(StrEnum):
     UNJOINED_FRAME_ORIGIN = "unjoined_frame_origin"
 
     UNSUPPORTED_PROLOGUE = "unsupported_prologue"
+
+
+class NativeConstantGraphABC(ABC):
+    """One observation's compiler-alias authority, separate from constant contents."""
+
+    def identity_for(self, value: object) -> NativeConstantIdentityABC:
+        return UnobservedNativeConstantIdentity()
+
+
+class UnobservedNativeConstants(NativeConstantGraphABC):
+    """Synthetic/unsupported observations preserve contents but prove no aliases."""
+
+
+@dataclass(eq=False)
+class NativeConstantGraph(NativeConstantGraphABC):
+    """Transient code owner; only nominal alias nodes reach compact receipts.
+
+    Raw code/constants are foreign boundary data here. Their object identities
+    are consumed once, before serialization; retained payload identity is never
+    consulted. The resulting graph proves no link to an external target value.
+    """
+
+    code: CodeType
+    _identities: dict[int, NativeConstantIdentity] = field(default_factory=dict, init=False)
+
+    def _observe(self, value: object) -> NativeConstantIdentity:
+        identity = id(value)
+        if identity in self._identities:
+            return self._identities[identity]
+        if type(value) is CodeType:
+            children = (self._observe(value.co_consts),)
+        elif type(value) in (tuple, frozenset):
+            children = tuple(self._observe(item) for item in value)
+        else:
+            children = ()
+        result = NativeConstantIdentity(children)
+        self._identities[identity] = result
+        return result
+
+    @cached_property
+    def root(self) -> NativeConstantIdentity:
+        return self._observe(self.code)
+
+    def identity_for(self, value: object) -> NativeConstantIdentity:
+        _ = self.root
+        try:
+            return self._identities[id(value)]
+        except KeyError:
+            raise ValueError("Native constant is outside its original compiled graph") from None
+
+    @property
+    def alias_relations(self) -> tuple[int, ...]:
+        handles: dict[NativeConstantIdentity, int] = {}
+        relations: list[int] = []
+        pending = [self.root]
+        while pending:
+            node = pending.pop()
+            if node in handles:
+                relations.append(handles[node])
+                continue
+            handles[node] = len(handles)
+            relations.append(handles[node])
+            pending.extend(reversed(node.members))
+        return tuple(relations)
+
+
+@dataclass
+class NativeConstantContext:
+    """Shared compiler-alias lifetime carried by native observation capabilities."""
+
+    constants: NativeConstantGraphABC = field(default_factory=UnobservedNativeConstants, kw_only=True)
 
 
 @dataclass(frozen=True)
@@ -1057,6 +1131,12 @@ class NativeConstantValue(NativeTypedValue):
 
     declaration: ClassVar[NativeTypeDeclaration]
     value: object
+    # Contents equality is not provenance. Strong alias queries use this
+    # nominal graph reference only after original operand authentication.
+    origin: NativeConstantIdentityABC = field(default_factory=UnobservedNativeConstantIdentity, compare=False, repr=False, kw_only=True)
+
+    def compiler_constant_identity(self) -> NativeConstantIdentityABC:
+        return self.origin
 
     def _native_constant_value(self) -> object:
         return self.value
@@ -1095,6 +1175,12 @@ class NativeConstantTupleElement(NativeConstantContentsABC, NativeOperandValueAB
 
     def _native_constant_value(self) -> object:
         return self.storage.constant_tuple_contents[self.index]
+
+    def compiler_constant_identity(self) -> NativeConstantIdentityABC:
+        # Preserve the original storage/index projection, never a scalar's
+        # post-serialization Python identity or an invented load instruction.
+        _ = self._native_constant_value()
+        return self.storage.compiler_constant_identity().member(self.index)
 
     def resolve_operand(
         self, resolver: NativeValueResolverABC[NativeResolutionT]
@@ -1715,7 +1801,7 @@ class NativeCallOperandOrder(Enum):
 
 
 @dataclass
-class NativeOperandStack:
+class NativeOperandStack(NativeConstantContext):
     """Transient operand projection shared by native prefix and entry-store observations.
 
     Each production is retained once. Stores and dependent productions refer
@@ -1791,7 +1877,8 @@ class NativeOperandStack:
             )
         names = self.emit(
             NativeConstantValue(
-                instruction.offset, (), self.code.co_consts[instruction.arg]
+                instruction.offset, (), self.code.co_consts[instruction.arg],
+                origin=self.constants.identity_for(self.code.co_consts[instruction.arg]),
             ),
             instruction,
         )
@@ -1923,9 +2010,21 @@ class NativeOperandStack:
         instruction: dis.Instruction,
     ) -> None:
 
+        self._constant(instruction, self.constants.identity_for(instruction.argval))
+
+    def immediate_constant(
+        self, operation: NativePrimitiveOperation, instruction: dis.Instruction
+    ) -> None:
+        # An immediate opcode is not a constant-pool object, even when dis's
+        # boxed argval happens to share one in this analyzer process.
+        self._constant(instruction, UnobservedNativeConstantIdentity())
+
+    def _constant(
+        self, instruction: dis.Instruction, origin: NativeConstantIdentityABC
+    ) -> None:
         value = instruction.argval
         production = (
-            self.emit(NativeConstantValue(instruction.offset, (), value), instruction)
+            self.emit(NativeConstantValue(instruction.offset, (), value, origin=origin), instruction)
             if NativeConstantValue.supports_constant(value)
             else self.typed(instruction, type(value))
         )
@@ -1995,7 +2094,7 @@ class NativePrimitiveOperation(Enum):
     LOAD_ATTR = (auto(), NativeAttributeValue.capture)
     LOAD_GLOBAL = (auto(), NativeGlobalValue.capture)
     LOAD_CONST = (auto(), NativeOperandStack.constant)
-    LOAD_SMALL_INT = (auto(), NativeOperandStack.constant)
+    LOAD_SMALL_INT = (auto(), NativeOperandStack.immediate_constant)
     LOAD_FAST_BORROW = (auto(), NativeLocalValue.capture)
     BUILD_TUPLE = (auto(), NativeTupleValue.capture)
     BUILD_LIST = (auto(), NativeListValue.capture)
@@ -2149,7 +2248,7 @@ class NativePrimitiveOperation(Enum):
 
 
 @dataclass(eq=False)
-class NativeCodeObservation:
+class NativeCodeObservation(NativeConstantContext):
     """Transient native stream with one cached initial source-body boundary."""
 
     code: CodeType
@@ -2557,14 +2656,14 @@ class NativeEntryReturn(NativeReturn):
         return self
 
 
-class NativeOperandObservation(ABC):
+class NativeOperandObservation(NativeConstantContext, ABC):
     """The observation's original code supplies its transient operand interpreter."""
 
     code: CodeType | None
 
     @cached_property
     def operands(self) -> NativeOperandStack:
-        return NativeOperandStack(code=self.code)
+        return NativeOperandStack(code=self.code, constants=self.constants)
 
 
 @dataclass(eq=False)
@@ -2735,7 +2834,7 @@ class NativeContinuationWindow(NativeOperandObservation):
 
 
 @dataclass
-class NativeStoreStream:
+class NativeStoreStream(NativeConstantContext):
     """One continuation observer consuming original stores from their owners."""
 
     code: CodeType
@@ -2747,7 +2846,7 @@ class NativeStoreStream:
         context = self.creation_context
         if context is not None and context.code is not self.code:
             raise ValueError("Native stream has no original creation context")
-        return NativeContinuationWindow(code=self.code, creation_context=context)
+        return NativeContinuationWindow(code=self.code, creation_context=context, constants=self.constants)
 
     def record_store(self, binding: NativeBindingTransfer) -> NativeBindingTransfer:
         if self.continuation is None:
@@ -2835,11 +2934,11 @@ class NativeScopeObservation(NativeCodeObservation):
 
     @cached_property
     def entry_window(self) -> NativeEntryValueWindow:
-        return NativeEntryValueWindow(self.code, self.operations)
+        return NativeEntryValueWindow(self.code, self.operations, constants=self.constants)
 
     @cached_property
     def value_stream(self) -> NativeValueStoreStream:
-        return NativeValueStoreStream(self.code, self.operations, creation_context=self)
+        return NativeValueStoreStream(self.code, self.operations, creation_context=self, constants=self.constants)
 
     def observe_values(
         self,
@@ -2893,7 +2992,7 @@ class NativeScopeInventoryABC(ABC):
 
 
 @dataclass(eq=False)
-class NativeCreationInventory(NativeScopeInventoryABC):
+class NativeCreationInventory(NativeScopeInventoryABC, NativeConstantContext):
     """Transient results of the one complete emitted-code instruction walk."""
 
     root_code: CodeType
@@ -3715,25 +3814,7 @@ class NativeCreationBackend(ABC, metaclass=AutoRegisterMeta):
         equal serialized values alone would erase observable constant sharing.
         This projection does not identify any object with an external reference.
         """
-        payload = marshal.dumps(code, 2)
-        handles: dict[int, int] = {}
-        relations: list[int] = []
-
-        def visit(value: object) -> None:
-            identity = id(value)
-            if identity in handles:
-                relations.append(handles[identity])
-                return
-            handles[identity] = len(handles)
-            relations.append(handles[identity])
-            if type(value) is CodeType:
-                visit(value.co_consts)
-            elif type(value) in (tuple, frozenset):
-                for item in value:
-                    visit(item)
-
-        visit(code)
-        return payload, tuple(relations)
+        return marshal.dumps(code, 2), NativeConstantGraph(code).alias_relations
 
     def require_static_type_mro(self, value_type: type) -> tuple[type, ...]:
         """Authenticate each original native MRO owner once for lookup consumers."""
@@ -3924,6 +4005,7 @@ class NativeCreationBackend(ABC, metaclass=AutoRegisterMeta):
         self, code: CodeType, compilation: NativeCompilationIdentity
     ) -> NativeCreationInventory:
         """Observe creations, initial prefixes and entry stores in one native walk."""
+        constants = NativeConstantGraph(code)
         pending = [(code, False)]
         emissions: list[NativeCodeEmission] = []
         builders: list[NativeInstructionSite] = []
@@ -3934,7 +4016,7 @@ class NativeCreationBackend(ABC, metaclass=AutoRegisterMeta):
             has_children = any(
                 isinstance(value, CodeType) for value in parent.co_consts
             )
-            prefix = NativeScopeObservation(parent, self.primitive_operations)
+            prefix = NativeScopeObservation(parent, self.primitive_operations, constants=constants)
             prefixes[id(parent)] = prefix
             observations.append(prefix)
             parent_builders: set[SourceByteSpan] = set()
@@ -3972,6 +4054,7 @@ class NativeCreationBackend(ABC, metaclass=AutoRegisterMeta):
             tuple(builders),
             prefixes,
             tuple(observations),
+            constants=constants,
         )
 
     @abstractmethod
@@ -4318,7 +4401,7 @@ class ContiguousNativeCreationBackend(NativeCreationBackend):
             return OpenNativeClassPrologue(
                 NativeExecutionUnavailable.INCOMPLETE_SOURCE_RANGES
             )
-        stack = NativeOperandStack(code=prefix.code)
+        stack = NativeOperandStack(code=prefix.code, constants=prefix.constants)
         for instruction in initial:
             operation = self.primitive_operations.get(instruction.opcode)
             if instruction.is_jump_target:
