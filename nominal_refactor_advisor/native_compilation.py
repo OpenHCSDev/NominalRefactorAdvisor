@@ -5304,6 +5304,22 @@ class NativePythonCompilation(SourceLineSegmentAuthority):
             raise ValueError("Compiler filename belongs to a different source path")
         return compile(self.source, filename, "exec", dont_inherit=True, optimize=0)
 
+    def project_code(self, code: CodeType) -> _NativeCompilationOutcome:
+        """Project the supplied original module code, not another compiled specimen.
+
+        Contents establish source correspondence only. The caller must separately
+        declare that its entry executes this exact held CodeType. Returning this
+        projection does not establish an execution, a function birth or effects.
+        The entry must retain the code and this original projection together;
+        serialized compact payloads alone cannot recover the held objects.
+        """
+        if type(code) is not CodeType:
+            raise TypeError("Target compilation requires an exact native code object")
+        backend = NativeCreationBackend.current()
+        if backend.code_contents(code) != backend.code_contents(self.compile()):
+            raise ValueError("Target module code differs from its source compilation")
+        return backend.project(code, self.identity)
+
     @property
     def execution_outcome(self) -> _NativeCompilationOutcome:
         """Expose only the native observation belonging to this source owner."""

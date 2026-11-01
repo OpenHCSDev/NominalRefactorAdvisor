@@ -122,6 +122,10 @@ class NativeLiteralContentsABC(ABC):
     def require_literal_contents(self, expected: object) -> None:
         raise ValueError("Native literal construction contents remain unproved")
 
+    def _native_constant_value(self) -> object:
+        """Observed payload only; its relation to target execution is separate."""
+        raise ValueError("Native constant contents remain unproved")
+
     def compiler_constant_identity(self) -> NativeConstantIdentityABC:
         return UnobservedNativeConstantIdentity()
 
@@ -176,9 +180,6 @@ class NativeConstantContentsABC(NativeLiteralContentsABC):
     @staticmethod
     def supports_scalar(value: object) -> bool:
         return any(type(value) is declaration for declaration in get_args(NativeScalar))
-
-    def _native_constant_value(self) -> object:
-        raise ValueError("Native constant contents remain unproved")
 
     @staticmethod
     def _require_same_constant(left: object, right: object) -> None:

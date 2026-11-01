@@ -2202,6 +2202,23 @@ class SourceFunctionDefault(SourceNativeExpressionABC):
         )
         return operand
 
+    def require_target_birth_object(self) -> CapturedNativeObject:
+        """Conditional birth object from the entry's actual retained constant pool.
+
+        Source/compiler correspondence alone never supplies this answer. The
+        entry must declare its held target code, and birth/noninterference and
+        original source-slot admission must already hold. This does not observe
+        a current function/default, transport between executions, or the identity
+        of a fresh runtime-built value. Immediate/contents-only values refuse.
+        """
+        self.require_birth_storage()
+        target = self.execution.entry.target_store(self.store)
+        operand = self.parameter.native_default_operand(target.value)
+        target.require_value(operand.storage)
+        value = operand.value
+        value.require_same_compiler_constant(value)
+        return CapturedNativeObject(value._native_constant_value())
+
     def _require_native_production(self, value: NativeProducedValue) -> None:
         self.store.require_value(value)
 
@@ -4150,6 +4167,9 @@ class SourceFunctionEntry(
         self, prefix: AdmittedExecutionPrefixABC
     ) -> None:
         self.activation.callee.execution.entry.require_external_noninterference(prefix)
+
+    def target_store(self, original: NativeValueStore) -> NativeValueStore:
+        return self.activation.callee.execution.entry.target_store(original)
 
     def require_native_behavior(self, authority: SourceActivationAuthorityABC) -> None:
         self.activation.callee.execution.entry.require_native_behavior(authority)

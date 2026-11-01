@@ -21,7 +21,7 @@ from dataclasses import InitVar, dataclass, field
 from functools import cached_property, cache
 from importlib.machinery import SourceFileLoader
 from importlib.util import module_from_spec, spec_from_file_location
-from types import MappingProxyType
+from types import CodeType, MappingProxyType
 
 from .captured_reference import (
     AdmittedExecutionPrefixABC,
@@ -41,6 +41,7 @@ from .captured_reference import (
 )
 from .collection_algebra import UniqueIdentityIndexAuthority
 from .descriptor_algebra import AliasProperty
+from .native_compilation import NativeValueStore, _NativeCompilationOutcome
 from .native_declarations import (
     NativeDeclarationFamily,
     NativeLanguageFeature,
@@ -109,6 +110,10 @@ class SourceExecutionEntryABC(NamespaceEvidenceABC):
     initial: InitialNativeIsland
 
     bootstrap_binding_name = staticmethod(_native_exec_bootstrap_binding)
+
+    def target_store(self, original: NativeValueStore) -> NativeValueStore:
+        """A source fact table alone does not identify the code the target executes."""
+        raise ValueError("Source entry target compilation remains unproved")
 
     @property
     @abstractmethod
@@ -267,6 +272,37 @@ class SourceModuleEntryPremise(
 
     def _member(self, key: NativeDictionaryKey) -> CapturedReferenceResolution | None:
         return self.initial_entries.get(key)
+
+
+@dataclass(frozen=True, eq=False)
+class CompiledSourceModuleEntryPremise(SourceModuleEntryPremise):
+    """Supplied entry contract: this activation executes exactly the held code.
+
+    This is not an observed process or a claim inferred from code contents. The
+    caller supplies the actual target CodeType; the compiler owner only checks
+    its correspondence to this entry's original source and projects its held
+    operands. Ordinary source loaders never infer this stronger premise.
+    Noninterference, source effects, binding and invocation remain independent.
+    Native code is deliberately retained here: serializing compact operand
+    payloads cannot substitute for retaining these actual objects.
+    """
+
+    target_code: CodeType = field(kw_only=True, repr=False)
+
+    @cached_property
+    def target_outcome(self) -> _NativeCompilationOutcome:
+        return self.source.module.native_compilation.project_code(self.target_code)
+
+    def target_store(self, original: NativeValueStore) -> NativeValueStore:
+        compilation = self.source.module.native_compilation
+        canonical = compilation.value_store_for(
+            original.production_span, original.source_span, original.binding.name
+        )
+        if original is not canonical:
+            raise ValueError("Target projection requires its original source store")
+        return self.target_outcome.value_store_for(
+            original.production_span, original.source_span, original.binding.name
+        )
 
 
 class NoninterferingSourceModuleEntryPremise(SourceModuleEntryPremise):
