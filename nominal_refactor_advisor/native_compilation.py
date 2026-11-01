@@ -11,6 +11,7 @@ from collections.abc import (
     Hashable,
     Iterable,
     Iterator,
+    Mapping,
 )
 from dataclasses import (
     dataclass,
@@ -35,6 +36,7 @@ from operator import attrgetter
 from types import (
     CodeType,
     FunctionType,
+    MappingProxyType,
 )
 from typing import (
     ClassVar,
@@ -64,6 +66,7 @@ from .native_declarations import (
     NativeDeclaration,
     NativeDictionaryKey,
     NativeFunctionParameters,
+    NativeLiteralContentsABC,
     NativeScalar,
     NativeConstantContentsABC,
     NativeScalarValueABC,
@@ -549,7 +552,7 @@ class NativeGlobalLoadForm(Enum):
 
 
 @dataclass(frozen=True)
-class NativeProducedValue(DataclassGraphNode, NativeCallSlotABC):
+class NativeProducedValue(DataclassGraphNode, NativeCallSlotABC, NativeLiteralContentsABC):
     """One original native production and its inputs, not runtime identity."""
 
     instruction_offset: int
@@ -594,9 +597,24 @@ class NativeProducedValue(DataclassGraphNode, NativeCallSlotABC):
         """A produced type or read alone does not establish scalar contents."""
         raise ValueError("Native scalar production remains unproved")
 
-    def require_literal_contents(self, expected: object) -> None:
-        """A transfer alone does not prove the contents of a source literal."""
-        raise ValueError("Native literal construction contents remain unproved")
+    @property
+    def constant_tuple_contents(self) -> tuple[object, ...]:
+        raise ValueError("Native original constant tuple remains unproved")
+
+    @property
+    def name_tuple(self) -> tuple[str, ...]:
+        names = self.constant_tuple_contents
+        if any(type(name) is not str for name in names):
+            raise ValueError("Native metadata names require exact string contents")
+        return cast(tuple[str, ...], names)
+
+    @property
+    def tuple_elements(self) -> tuple[NativeLiteralContentsABC, ...]:
+        raise ValueError("Native original tuple elements remain unproved")
+
+    @property
+    def named_operands(self) -> Mapping[str, NativeProducedValue]:
+        raise ValueError("Native original named dictionary operands remain unproved")
 
     @property
     def native_type(self) -> type:
@@ -610,6 +628,12 @@ class NativeProducedValue(DataclassGraphNode, NativeCallSlotABC):
     def attribute_operand(self, flag: int) -> NativeProducedValue:
         """Original function metadata input, not a runtime attribute observation."""
         raise ValueError("Native function attribute has no original attachment")
+
+    def positional_default_operands(self) -> tuple[NativePositionalDefaultOperand, ...]:
+        raise ValueError("Native positional default association remains unproved")
+
+    def keyword_default_operands(self) -> tuple[NativeKeywordDefaultOperand, ...]:
+        raise ValueError("Native keyword default association remains unproved")
 
     def resolve(
         self, resolver: NativeValueResolverABC[NativeResolutionT]
@@ -639,10 +663,63 @@ class NativeFunctionValue(DataclassGraphValue, NativeTypedValue):
     def creation(self) -> NativeFunctionValue:
         return self
 
+    def positional_default_operands(self) -> tuple[NativePositionalDefaultOperand, ...]:
+        """Require original birth storage; absent metadata is not an empty proof."""
+        storage = self.attribute_operand(
+            NativeCreationBackend.current().function_attribute_flag("defaults")
+        )
+        elements = storage.tuple_elements
+        names = self.parameters.positional_default_names(len(elements))
+        if len(names) != len(elements):
+            raise ValueError("Original positional defaults exceed native parameters")
+        return tuple(
+            NativePositionalDefaultOperand(name, storage, index)
+            for index, name in enumerate(names)
+        )
+
+    def keyword_default_operands(self) -> tuple[NativeKeywordDefaultOperand, ...]:
+        """Join original exact-name dictionary entries, not current runtime storage."""
+        storage = self.attribute_operand(
+            NativeCreationBackend.current().function_attribute_flag("kwdefaults")
+        )
+        names = storage.named_operands
+        if any(name not in self.parameters.keyword_only for name in names):
+            raise ValueError("Original keyword defaults differ from native parameters")
+        return tuple(NativeKeywordDefaultOperand(name, storage) for name in names)
+
     def resolve(
         self, resolver: NativeValueResolverABC[NativeResolutionT]
     ) -> NativeResolutionT:
         return resolver._function_native_value_resolution(self)
+
+
+@dataclass(frozen=True, eq=False)
+class NativeParameterDefaultOperand(ABC):
+    """One original parameter/storage association, never an observed target object."""
+
+    parameter_name: str
+    storage: NativeProducedValue
+
+    @property
+    @abstractmethod
+    def value(self) -> NativeLiteralContentsABC:
+        raise NotImplementedError
+
+
+@dataclass(frozen=True, eq=False)
+class NativePositionalDefaultOperand(NativeParameterDefaultOperand):
+    index: int
+
+    @property
+    def value(self) -> NativeLiteralContentsABC:
+        return self.storage.tuple_elements[self.index]
+
+
+@dataclass(frozen=True, eq=False)
+class NativeKeywordDefaultOperand(NativeParameterDefaultOperand):
+    @property
+    def value(self) -> NativeProducedValue:
+        return self.storage.named_operands[self.parameter_name]
 
 
 @dataclass(frozen=True, eq=False)
@@ -735,7 +812,7 @@ class NativeCallValue(DataclassGraphValue, NativeProducedValue):
 class NativeKeywordCallValue(NativeCallValue):
     """Original keyword metadata and values, independent of source admission."""
 
-    keyword_names: NativeConstantValue = field(kw_only=True)
+    keyword_names: NativeProducedValue = field(kw_only=True)
 
     def __post_init__(self) -> None:
         self.names
@@ -746,11 +823,7 @@ class NativeKeywordCallValue(NativeCallValue):
 
     @property
     def names(self) -> tuple[str, ...]:
-        if not isinstance(self.keyword_names, NativeConstantValue):
-            raise ValueError("Native keyword names require original constant metadata")
-        names = self.keyword_names.value
-        if type(names) is not tuple or any(type(name) is not str for name in names):
-            raise ValueError("Native keyword names require an exact string tuple")
+        names = self.keyword_names.name_tuple
         if len(set(names)) != len(names) or len(names) > (
             len(self.arguments) - len(self.argument_slot.implicit_arguments)
         ):
@@ -864,6 +937,10 @@ class NativeTupleValue(NativeSequenceValue):
 
     declaration: ClassVar[NativeTypeDeclaration] = NativeTypeDeclaration(tuple)
 
+    @property
+    def tuple_elements(self) -> tuple[NativeLiteralContentsABC, ...]:
+        return self.inputs
+
     def resolve(
         self, resolver: NativeValueResolverABC[NativeResolutionT]
     ) -> NativeResolutionT:
@@ -880,8 +957,18 @@ class NativeConstantValue(NativeTypedValue):
     def _native_constant_value(self) -> object:
         return self.value
 
-    def require_literal_contents(self, expected: object) -> None:
-        self.require_constant_contents(expected)
+    @property
+    def constant_tuple_contents(self) -> tuple[object, ...]:
+        if type(self.value) is not tuple:
+            raise ValueError("Native original constant tuple requires exact tuple storage")
+        return cast(tuple[object, ...], self.value)
+
+    @property
+    def tuple_elements(self) -> tuple[NativeLiteralContentsABC, ...]:
+        return tuple(
+            NativeConstantTupleElement(self, index)
+            for index in range(len(self.constant_tuple_contents))
+        )
 
     def require_scalar_store_value(self) -> NativeConstantValue:
         self.require_native_scalar()
@@ -895,13 +982,73 @@ class NativeConstantValue(NativeTypedValue):
         return self.value
 
 
+@dataclass(frozen=True, eq=False)
+class NativeConstantTupleElement(NativeConstantContentsABC):
+    """A projection of an original constant, with no invented instruction offset."""
+
+    storage: NativeConstantValue
+    index: int
+
+    def _native_constant_value(self) -> object:
+        return self.storage.constant_tuple_contents[self.index]
+
+
 @dataclass(frozen=True)
-class NativeEmptyDictionaryValue(NativeTypedValue):
-    """Fresh exact empty-map production; source activation remains separate."""
+class NativeDictionaryValue(NativeTypedValue):
+    """Dict-typed production; only declared construction proves entry positions."""
 
     declaration: ClassVar[NativeTypeDeclaration] = NativeTypeDeclaration(dict)
 
+    @property
+    def named_keys(self) -> tuple[str, ...]:
+        raise ValueError("Native dictionary key names remain unproved")
+
+    @property
+    def entry_operands(self) -> tuple[NativeProducedValue, ...]:
+        raise ValueError("Native dictionary value positions remain unproved")
+
+    @property
+    def named_operands(self) -> Mapping[str, NativeProducedValue]:
+        # Exact strings use native dict overwrite/order semantics, without target callbacks.
+        return MappingProxyType(dict(zip(self.named_keys, self.entry_operands, strict=True)))
+
+
+class NativePairedDictionaryValue(NativeDictionaryValue):
+    @property
+    def named_keys(self) -> tuple[str, ...]:
+        return tuple(
+            key.require_scalar_store_value().require_native_text()
+            for key in self.inputs[::2]
+        )
+
+    @property
+    def entry_operands(self) -> tuple[NativeProducedValue, ...]:
+        return self.inputs[1::2]
+
+
+class NativeConstantKeyDictionaryValue(NativeDictionaryValue):
+    @property
+    def named_keys(self) -> tuple[str, ...]:
+        return self.inputs[-1].name_tuple
+
+    @property
+    def entry_operands(self) -> tuple[NativeProducedValue, ...]:
+        return self.inputs[:-1]
+
+
+@dataclass(frozen=True)
+class NativeEmptyDictionaryValue(NativeDictionaryValue):
+    """Fresh exact empty-map production; source activation remains separate."""
+
     inputs: ClassVar[tuple[NativeProducedValue, ...]] = ()
+
+    @property
+    def named_keys(self) -> tuple[str, ...]:
+        return ()
+
+    @property
+    def entry_operands(self) -> tuple[NativeProducedValue, ...]:
+        return ()
 
     def resolve(
         self, resolver: NativeValueResolverABC[NativeResolutionT]
@@ -910,14 +1057,13 @@ class NativeEmptyDictionaryValue(NativeTypedValue):
 
 
 @dataclass(frozen=True)
-class NativeAnnotationNamespaceValue(NativeTypedValue):
+class NativeAnnotationNamespaceValue(NativeDictionaryValue):
     """SETUP_ANNOTATIONS observes existing storage or creates an exact dictionary.
 
     Freshness requires independent absence at this original frame's entry.
     """
 
     namespace_name: ClassVar[str] = "__annotations__"
-    declaration: ClassVar[NativeTypeDeclaration] = NativeTypeDeclaration(dict)
     inputs: ClassVar[tuple[NativeProducedValue, ...]] = ()
 
     def resolve(
@@ -1543,10 +1689,6 @@ class NativeOperandStack:
         self, operation: NativePrimitiveOperation, instruction: dis.Instruction
     ) -> None:
         (names,) = self.pop(1)
-        if not isinstance(names, NativeConstantValue):
-            raise ValueError(
-                "Native keyword metadata requires its original constant tuple"
-            )
         self.call_factory = partial(NativeKeywordCallValue, keyword_names=names)
         self.invoke(operation, instruction)
 
@@ -1578,7 +1720,10 @@ class NativeOperandStack:
         if type(instruction.arg) is not int or instruction.arg < 0:
             raise ValueError("Native dictionary has no exact nonnegative input count")
         self.stack.append(
-            self.typed(instruction, dict, 2 * instruction.arg)
+            self.emit(
+                NativePairedDictionaryValue(instruction.offset, self.pop(2 * instruction.arg)),
+                instruction,
+            )
             if instruction.arg
             else self.emit(NativeEmptyDictionaryValue(instruction.offset), instruction)
         )
@@ -1590,19 +1735,13 @@ class NativeOperandStack:
             raise ValueError("Native dictionary has no exact nonnegative input count")
         inputs = self.pop(instruction.arg + 1)
         keys = inputs[-1]
-        if (
-            not isinstance(keys, NativeConstantValue)
-            or type(keys.value) is not tuple
-            or len(keys.value) != instruction.arg
-        ):
+        if len(keys.constant_tuple_contents) != instruction.arg:
             raise ValueError(
                 "Native dictionary requires its original constant key tuple"
             )
         self.stack.append(
             self.emit(
-                NativeTypedValue(
-                    instruction.offset, inputs, NativeTypeDeclaration(dict)
-                ),
+                NativeConstantKeyDictionaryValue(instruction.offset, inputs),
                 instruction,
             )
         )

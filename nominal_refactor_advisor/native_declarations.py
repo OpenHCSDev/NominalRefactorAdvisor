@@ -116,7 +116,14 @@ NativeDictionaryKey: TypeAlias = NativeScalar | type
 NativeConstantAtom: TypeAlias = NativeScalar | types.EllipsisType
 
 
-class NativeConstantContentsABC(ABC):
+class NativeLiteralContentsABC(ABC):
+    """A literal-content question, not production, activation or object identity."""
+
+    def require_literal_contents(self, expected: object) -> None:
+        raise ValueError("Native literal construction contents remain unproved")
+
+
+class NativeConstantContentsABC(NativeLiteralContentsABC):
     """Exact primitive, ellipsis and tuple contents, independent of object identity.
 
     Comparison consumes only declared exact atoms and exact tuples. It never
@@ -168,6 +175,9 @@ class NativeConstantContentsABC(ABC):
 
     def require_same_native_constant(self, other: NativeConstantContentsABC) -> None:
         self.require_constant_contents(other._native_constant_value())
+
+    def require_literal_contents(self, expected: object) -> None:
+        self.require_constant_contents(expected)
 
 
 @dataclass(frozen=True)

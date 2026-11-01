@@ -3,6 +3,7 @@
 import ast
 import dataclasses
 from pathlib import Path
+from typing import cast
 
 import pytest
 
@@ -11,7 +12,11 @@ from nominal_refactor_advisor.call_binding import (
     CompactFunctionSignature,
     DefaultedFunctionParameter,
 )
-from nominal_refactor_advisor.native_compilation import NativeCreationBackend
+from nominal_refactor_advisor.native_compilation import (
+    NativeConstantTupleElement,
+    NativeCreationBackend,
+    NativeValueStore,
+)
 from nominal_refactor_advisor.native_declarations import NativeParameterDefault
 from nominal_refactor_advisor.source_geometry import SourceByteSpan
 from nominal_refactor_advisor.scan_cache import ScanCache
@@ -213,30 +218,79 @@ def test_current_default_observations_are_not_function_identity_cached():
         before.require_constant_contents(None)  # An observation, not current storage.
 
 
-@pytest.mark.parametrize('arguments,attached', (
-    ('first, /, second=0, *items, option=None, **options', ('defaults', 'kwdefaults')),
-    ('value=0', ('defaults',)),
-    ('*, option=None', ('kwdefaults',)),
-    ('value', ()),
-))
-def test_original_function_default_metadata_is_joined_to_native_storage(
-        tmp_path: Path, arguments: str, attached: tuple[str, ...]) -> None:
-    """Only compile the subject: the stored inputs are not runtime default objects."""
+@pytest.fixture
+def original_default_store(tmp_path: Path, arguments: str) -> NativeValueStore:
+    """Compile original metadata without executing either the function or its defaults."""
     path = tmp_path / 'unexecuted.py'
-    source = f'def selected({arguments}):\n    raise AssertionError("body executed")\n'
+    source = (
+        'def make():\n    raise AssertionError("callback executed")\n'
+        f'def selected({arguments}):\n    raise AssertionError("body executed")\n'
+    )
     parsed = SourceModule.from_source_path(path, source).parse()
-    method, = (node for _, node in parsed.syntax_index.named_functions)
+    method = next(node for name, node in parsed.syntax_index.named_functions if name == 'selected')
     span = SourceByteSpan.require_node(method)
     store = parsed.native_compilation.value_store_for(span, span, method.name)
+    assert not path.exists()
+    return store
+
+
+@pytest.mark.parametrize('arguments,positional,keyword', (
+    ('first, /, second=0, *items, option=None, **options', ('second',), ('option',)),
+    ('value=0', ('value',), ()),
+    ('*, option=None', (), ('option',)),
+    ('value', (), ()),
+))
+def test_original_function_default_metadata_is_joined_to_native_storage(
+        original_default_store: NativeValueStore,
+        positional: tuple[str, ...], keyword: tuple[str, ...]) -> None:
+    store = original_default_store
     function = store.value
     backend = NativeCreationBackend.current()
-    for name, native_type in (('defaults', tuple), ('kwdefaults', dict)):
+    for name, native_type, query, names, expected in (
+        ('defaults', tuple, function.positional_default_operands, positional, 0),
+        ('kwdefaults', dict, function.keyword_default_operands, keyword, None),
+    ):
         flag = backend.function_attribute_flag(name)
-        if name not in attached:
+        if not names:
             with pytest.raises(ValueError):
                 function.attribute_operand(flag)
+            with pytest.raises(ValueError):
+                query()
         else:
             operand = function.attribute_operand(flag)
             store.require_value(operand)
             assert operand.native_type is native_type
-    assert not path.exists()
+            bindings = query()
+            assert tuple(binding.parameter_name for binding in bindings) == names
+            for binding in bindings:
+                assert binding.storage is operand
+                binding.value.require_literal_contents(expected)
+
+
+@pytest.mark.parametrize('arguments', ('left=make(), right=make(), *, option=None',))
+def test_default_callbacks_remain_original_unproved_productions(
+        original_default_store: NativeValueStore) -> None:
+    store = original_default_store
+    left, right = store.value.positional_default_operands()
+    assert (left.parameter_name, right.parameter_name) == ('left', 'right')
+    assert left.storage is right.storage
+    assert left.index != right.index
+    assert left.value is not right.value
+    for binding in (left, right):
+        store.require_value(binding.storage)
+        with pytest.raises(ValueError):
+            binding.value.require_literal_contents(None)
+
+
+@pytest.mark.parametrize('arguments', ('left=0, right=0',))
+def test_folded_default_slots_project_the_original_constant_without_new_productions(
+        original_default_store: NativeValueStore) -> None:
+    store = original_default_store
+    bindings = store.value.positional_default_operands()
+    assert tuple(binding.parameter_name for binding in bindings) == ('left', 'right')
+    for index, binding in enumerate(bindings):
+        element = cast(NativeConstantTupleElement, binding.value)
+        assert binding.index == element.index == index
+        assert binding.storage is element.storage
+        store.require_value(element.storage)
+        element.require_literal_contents(0)

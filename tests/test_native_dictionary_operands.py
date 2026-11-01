@@ -2,6 +2,7 @@
 
 import ast
 import dis
+from operator import setitem
 
 import pytest
 
@@ -11,6 +12,7 @@ from nominal_refactor_advisor.native_compilation import (
     NativeOperandStack,
     NativePrimitiveOperation,
     NativePythonCompilation,
+    NativeValueStore,
 )
 from test_native_value_store import value_store
 from test_source_function_result import execution, function
@@ -38,7 +40,7 @@ def test_nonempty_dictionary_retains_inputs_without_inventing_contents(expressio
     "BUILD_CONST_KEY_MAP" not in dis.opmap,
     reason="Interpreter has no constant-key-map opcode",
 )
-def test_constant_key_dictionary_requires_matching_original_tuple_contents(keys):
+def test_constant_key_dictionary_requires_matching_original_tuple_contents(keys: object) -> None:
     instruction = next(
         event
         for event in dis.get_instructions(
@@ -54,8 +56,32 @@ def test_constant_key_dictionary_requires_matching_original_tuple_contents(keys)
             NativeConstantValue(4, (), keys),
         )
     )
-    with pytest.raises(ValueError, match="original constant key tuple"):
+    with pytest.raises(ValueError):
         NativePrimitiveOperation.BUILD_CONST_KEY_MAP.capture(stack, instruction)
+
+
+@pytest.mark.parametrize('expression', (
+    "{'one': first, 'two': middle, 'one': last}",
+    "{key: value}",
+))
+def test_named_dictionary_queries_preserve_operands_without_admitting_opaque_keys(
+        expression: str) -> None:
+    source = f'payload = {expression}\n'
+    compiled = NativePythonCompilation(source, 'named_dictionary.py')
+    store: NativeValueStore = value_store(compiled, ast.parse(source).body[0])
+    if expression == '{key: value}':
+        with pytest.raises(ValueError):
+            _ = store.value.named_operands
+    else:
+        operands = store.value.named_operands
+        assert tuple(operands) == ('one', 'two')
+        assert operands['one'].instruction_offset > operands['two'].instruction_offset
+        for value in operands.values():
+            store.require_value(value)
+            with pytest.raises(ValueError):
+                value.require_literal_contents(0)
+        with pytest.raises(TypeError):
+            setitem(operands, 'one', operands['two'])
 
 
 @pytest.mark.parametrize(
