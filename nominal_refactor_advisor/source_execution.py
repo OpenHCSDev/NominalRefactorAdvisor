@@ -528,15 +528,9 @@ class SourceFunctionCreationABC(
             )
         _ = self.native_frame_prefix
 
-    def require_native_function_operand(self, value: NativeFunctionValue) -> None:
+    def require_native_function_operand(self, value: NativeProducedValue) -> None:
         self.require_descriptor_argument()
-        if (
-            value.creation.instruction_offset
-            != self.native_execution.require_creation().instruction_offset
-        ):
-            raise ValueError(
-                "Native operand has a different original function creation"
-            )
+        self.native_execution.require_creation().require_definition_operand(value)
 
 
 @dataclass(frozen=True, eq=False)
@@ -576,9 +570,14 @@ class SourceCreatedFunctionCapture(
     ) -> NativeBindingTransfer:
         """Join the original native store to its admitted source definition."""
         self.require_available_in(prefix)
-        return self.require_installation_name(
-            self.native_execution.require_installation()
+        native = self.native_execution
+        installation = native.require_installation()
+        store = self.native_result_store
+        store.require_original_installation(
+            installation, native.require_creation().frame
         )
+        self.require_native_function_operand(store.value)
+        return self.require_installation_name(installation)
 
     @property
     def declaration(self) -> CompactFunctionDeclaration:
@@ -961,13 +960,7 @@ class SourceNativeDecoratorApplication(
         native = self.creation.native_execution
         installed = native.require_applied_installation()
         store = self.production
-        if (
-            store.binding is not installed
-            or store.frame is not native.require_creation().frame
-        ):
-            raise ValueError(
-                "Decorator store differs from its original native installation"
-            )
+        store.require_original_installation(installed, native.require_creation().frame)
         raw = store.production_at(native.require_creation().instruction_offset)
         applications = tuple(
             application.operand_in(store)

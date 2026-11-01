@@ -2429,6 +2429,13 @@ class NativeValueStore(DataclassGraphValue, NativeValueInventoryABC):
             raise ValueError("Native store has no original target span")
         return span
 
+    def require_original_installation(
+        self, binding: NativeBindingTransfer, frame: NativeFrameOrigin
+    ) -> None:
+        """A matching observation cannot replace the original binding or frame."""
+        if self.binding is not binding or self.frame is not frame:
+            raise ValueError("Native value store has a different original installation")
+
     def require_return(self) -> NativeReturn:
         if self.continuation is None:
             raise ValueError("Native store has no proved straight-line return")

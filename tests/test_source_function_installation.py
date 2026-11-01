@@ -58,7 +58,11 @@ def test_prepared_root_final_method_joins_canonical_native_installation():
 
 @pytest.mark.native_proof
 @pytest.mark.parametrize(
-    "header", ("def chosen():", "async def chosen():", "def __chosen():")
+    "header", (
+        "def chosen():", "async def chosen():", "def __chosen():",
+        "def chosen(left=0, right=0):", "def chosen(*, option=None):",
+        "def chosen(first, /, second=0, *, option=None):",
+    )
 )
 def test_module_installation_uses_original_source_binding_without_name_conventions(
     header,
@@ -71,6 +75,27 @@ def test_module_installation_uses_original_source_binding_without_name_conventio
         installation.name == function.node.name == function.definition.target.bound_name
     )
     assert function.require_native_installation(prefix) is installation
+    store = function.native_result_store
+    assert store.binding is installation
+    assert store.frame is function.native_execution.require_creation().frame
+    function.require_native_function_operand(store.value)
+
+
+@pytest.mark.native_proof
+def test_warmed_function_store_cannot_replace_its_original_binding():
+    environment, function = module_function()
+    prefix = environment.required_prefix(environment.entry.context, None)
+    original = function.require_native_installation(prefix)
+    store = function.native_result_store
+    copied = replace(original)
+    original.require_observation(copied)  # An observation is not the original store.
+    object.__setattr__(store, "binding", copied)
+    try:
+        with pytest.raises(ValueError, match="original installation"):
+            function.require_native_installation(prefix)
+    finally:
+        object.__setattr__(store, "binding", original)
+    assert function.require_native_installation(prefix) is original
 
 
 @pytest.mark.native_proof
