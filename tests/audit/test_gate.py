@@ -1504,6 +1504,48 @@ def test_a_stored_format_compares_required_keys_as_sets_at_every_depth():
     assert defaulted.fields == {"row": {"type": "object", "default": {"required": ["b", "a"]}}}
 
 
+def test_a_stored_format_that_only_adds_optional_properties_widens():
+    """agent-comms #3999: StorageRoots gains an optional selected_checkouts key inside the
+    registry's ThreadStorage union while every stored row omits it, so the format widens and
+    needs no carry; a new required key, a dropped property, a changed property or a dropped
+    stored key does not."""
+    roots = {"type": "object", "properties": {"scratch": {"type": "string"}},
+             "required": ["scratch"]}
+    unassigned = {"type": "null"}
+    selected = {**roots, "properties": {**roots["properties"], "selected_checkouts": {
+        "type": "array", "items": {"$ref": "#/$defs/SelectedCheckout"}, "default": []}}}
+    defs = {"SelectedCheckout": {"type": "object", "properties": {"path": {"type": "string"}},
+                                 "required": ["path"]}}
+    row = {"type": "object", "properties": {"name": {"type": "string"},
+                                            "storage_roots": {"oneOf": [roots, unassigned]}},
+           "required": ["name"]}
+    grown = {**row, "properties": {**row["properties"],
+                                   "storage_roots": {"oneOf": [selected, unassigned]}}}
+    before = StoredFormat.declared(1, {"threads": {"type": "object", "additionalProperties": row,
+                                                   "$defs": {}}}, ["threads"])
+    after = StoredFormat.declared(1, {"threads": {"type": "object", "additionalProperties": grown,
+                                                  "$defs": defs}}, ["threads"])
+    assert after.widens(before)
+    assert not before.widens(after)
+    required = {**selected, "required": ["scratch", "selected_checkouts"]}
+    assert not StoredFormat.declared(1, {"threads": {
+        "type": "object", "additionalProperties": {**grown, "properties": {
+            **row["properties"], "storage_roots": {"oneOf": [required, unassigned]}}},
+        "$defs": defs}}, ["threads"]).widens(before)
+    changed = {**roots, "properties": {"scratch": {"type": "number"}}}
+    assert not StoredFormat.declared(1, {"threads": {
+        "type": "object", "additionalProperties": {**row, "properties": {
+            **row["properties"], "storage_roots": {"oneOf": [changed, unassigned]}}},
+        "$defs": {}}}, ["threads"]).widens(before)
+    optional_key = StoredFormat.declared(1, {"threads": before.fields["threads"],
+                                             "aliases": {"type": "object"}}, ["threads"])
+    assert optional_key.widens(before)
+    assert not before.widens(optional_key)
+    assert not StoredFormat.declared(1, {"threads": before.fields["threads"],
+                                         "aliases": {"type": "object"}},
+                                     ["threads", "aliases"]).widens(before)
+
+
 def test_a_stored_format_that_only_adds_alternatives_widens():
     """agent-comms #3643: StoppingThreadStatus adds {"kind": "stopping"} to the registry's
     status union while every file still holds an earlier member, so the format widens and

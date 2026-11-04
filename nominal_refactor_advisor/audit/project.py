@@ -56,6 +56,10 @@ class StoredFormat:
     # The JSON Schema keywords listing alternatives: a value valid under any one of them is
     # valid, so a format listing more alternatives still reads every earlier record.
     alternatives: typing.ClassVar[frozenset[str]] = frozenset({"oneOf", "anyOf"})
+    # The name-to-schema keywords a format may extend: a property every earlier record omitted
+    # is optional while the object's `required` keys stay the same, and a definition nothing
+    # earlier referenced constrains no earlier record.
+    extensible: typing.ClassVar[frozenset[str]] = frozenset({"properties", "$defs"})
 
     @classmethod
     def declared(cls, version: int, fields: dict[object, object],
@@ -86,22 +90,41 @@ class StoredFormat:
 
     def widens(self, earlier: StoredFormat) -> bool:
         """Every record the earlier format stored is one this format still reads: the same
-        stored and required keys, each field's schema the same except for alternatives it
-        added. Files on disk then hold nothing a carry could rewrite."""
-        return (self.required == earlier.required and self.fields.keys() == earlier.fields.keys()
-                and all(self.accepts(self.fields[name], schema)
-                        for name, schema in earlier.fields.items()))
+        required keys, every earlier stored key still stored, and each field's schema the same
+        except for alternatives and optional properties it added. Files on disk then hold
+        nothing a carry could rewrite."""
+        return (self.required == earlier.required
+                and self.accepts_names(self.fields, earlier.fields))
 
     @classmethod
     def accepts(cls, later: object, earlier: object) -> bool:
         """Whether a value valid under the earlier schema is valid under the later one, read
-        conservatively: only added alternatives widen; any other difference does not."""
+        conservatively: only added alternatives and added optional properties widen; any other
+        difference, a changed `required` list included, does not."""
         match later, earlier:
             case dict(), dict() if later.keys() == earlier.keys():
                 return all(
-                    all(option in later[key] for option in earlier[key]) if key in cls.alternatives
+                    cls.accepts_options(later[key], earlier[key]) if key in cls.alternatives
+                    else cls.accepts_names(later[key], earlier[key]) if key in cls.extensible
                     else cls.accepts(later[key], earlier[key])
                     for key in earlier)
+        return later == earlier
+
+    @classmethod
+    def accepts_options(cls, later: object, earlier: object) -> bool:
+        """Each earlier alternative is read by some later alternative."""
+        match later, earlier:
+            case list(), list():
+                return all(any(cls.accepts(option, old) for option in later) for old in earlier)
+        return later == earlier
+
+    @classmethod
+    def accepts_names(cls, later: object, earlier: object) -> bool:
+        """Every earlier name is still declared and read; the later map may add names."""
+        match later, earlier:
+            case dict(), dict():
+                return all(name in later and cls.accepts(later[name], schema)
+                           for name, schema in earlier.items())
         return later == earlier
 
     def wire(self) -> dict[str, object]:
