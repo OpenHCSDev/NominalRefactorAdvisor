@@ -1059,7 +1059,8 @@ IMPORTED = "from wire.encoding import encoder\n\n\n"
 BOUNDARY_SITES = {
     "imported": ("boundary.py", f"{IMPORTED}@encoder\ndef write(other):\n    {PROBE}\n", False),
     "aliased": ("boundary.py", f"from wire.encoding import encoder as marker\n\n\n@marker\ndef write(other):\n    {PROBE}\n", False),
-    "qualified": ("boundary.py", f"import wire.encoding\n\n\n@wire.encoding.encoder\ndef write(other):\n    {PROBE}\n", False),
+    "module": ("boundary.py", f"import wire.encoding\n\n\n@wire.encoding.encoder\ndef write(other):\n    {PROBE}\n", False),
+    "qualified": ("boundary.py", f"import wire.encoding as codec\n\n\n@codec.encoder\ndef write(other):\n    {PROBE}\n", False),
     "method": ("boundary.py", f"{IMPORTED}class Writer:\n    @encoder\n    def write(self, other):\n        {PROBE}\n", False),
     "relative": ("wire/boundary.py", f"from .encoding import encoder\n\n\n@encoder\ndef write(other):\n    {PROBE}\n", False),
     "undecorated": ("boundary.py", f"{IMPORTED}def write(other):\n    {PROBE}\n", True),
