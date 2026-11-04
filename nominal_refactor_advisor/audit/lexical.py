@@ -26,6 +26,7 @@ class ScopeNames(ast.NodeVisitor):
         self.scope = ""
         self.binds: dict[ast.AST, tuple[str, ...]] = {}
         self.declares: set[ast.AST] = set()
+        self.lambdas = 0
 
     @classmethod
     def of(cls, tree: ast.AST) -> ScopeNames:
@@ -111,6 +112,17 @@ class ScopeNames(ast.NodeVisitor):
     def visit_Nonlocal(self, node: ast.Nonlocal) -> None:
         self.binds[node] = tuple(node.names)
         self.generic_visit(node)
+
+    def visit_arg(self, node: ast.arg) -> None:
+        """A parameter binds in the function whose signature declares it; a lambda opens no
+        scope here, so its parameters bind nothing."""
+        self.binds[node] = () if self.lambdas else (node.arg,)
+        self.generic_visit(node)
+
+    def visit_Lambda(self, node: ast.Lambda) -> None:
+        self.lambdas += 1
+        self.generic_visit(node)
+        self.lambdas -= 1
 
     def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
         self.visit_named(node)
