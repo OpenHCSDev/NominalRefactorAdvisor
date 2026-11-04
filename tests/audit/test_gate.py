@@ -1004,6 +1004,53 @@ def test_a_moved_method_pays_once_and_an_extra_none_beside_it_is_written(repo):
     assert status == 1 and lines and set(lines) == {line}
 
 
+TWEET = ("def open_tweet_intent(text: str, url: str | None = None):\n    if url is not None:\n"
+         "        text = f'{text} {url}'\n    browse(text)\n    return text\n")
+SEARCH = ("class SettingsScreen:\n    def action_focus_search(self):\n"
+          "        if self.query is None:\n            return\n        self.focus()\n")
+
+
+@pytest.mark.parametrize(
+    ("base", "head", "written"),
+    [
+        ({"twitter.py": TWEET},
+         {"twitter.py": TWEET.replace("open_tweet_intent", "tweet_intent_url").replace("    browse(text)\n", "")},
+         0),
+        ({"settings.py": SEARCH},
+         {"settings.py": ("class SettingsScreen:\n    pass\n\n\nclass FocusSearchAction:\n    def available(self):\n"
+                          "        if self.query is None:\n            return\n        self.focus()\n")},
+         1),
+        ({"settings.py": SEARCH},
+         {"settings.py": SEARCH.replace("action_focus_search", "focus_search")},
+         0),
+        ({"twitter.py": TWEET},
+         {"twitter.py": TWEET.replace("open_tweet_intent", "tweet_intent_url").replace(
+             "    return text\n", "    if text is None:\n        return url\n    return text\n")},
+         1),
+        ({"twitter.py": TWEET},
+         {"twitter.py": TWEET.replace("open_tweet_intent", "first") + "\n\n" + TWEET.replace("open_tweet_intent", "second")},
+         4),
+        ({"twitter.py": "VALUE = 1\n", "gone.py": TWEET},
+         {"twitter.py": "VALUE = 1\n\n\n" + TWEET.replace("open_tweet_intent", "tweet_intent_url"), "gone.py": "VALUE = 2\n"},
+         2),
+    ],
+    ids=["renamed", "lifted_into_new_class", "method_renamed_in_its_class", "renamed_with_a_new_check",
+         "two_equal_replacements", "deleted_in_another_module"],
+)
+def test_a_definition_renamed_in_its_scope_carries_its_unchanged_parts(repo, base, head, written):
+    """A definition renamed in its own scope carries the parts it shares unchanged, its
+    parameters and statements; a body lifted into another class means something else there
+    and is written, as is a check added in the renamed definition. A tie between equally good
+    replacements proves nothing, and a deletion in another module pays for nothing."""
+    path = next(name for name in head if name != "gone.py")
+    before = repo.commit(base)
+    after = repo.commit(head)
+    status, report = repo.compare(before, after, NoneAbsence)
+    lines = report["introduced"][NoneAbsence.at(f"{repo.root}/{path}").text]
+    assert len(lines) == written
+    assert status == int(bool(written))
+
+
 def encoder(function):
     return function
 

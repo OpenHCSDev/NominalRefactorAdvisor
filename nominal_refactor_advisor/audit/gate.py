@@ -638,13 +638,43 @@ class DeclaredClass:
 
 @dataclass(frozen=True)
 class Move:
-    """One declaration proved moved unchanged: its parts in the class it left, paired in walk
-    order with its parts in the class it reached."""
+    """One declaration proved moved unchanged: its parts in the scope it left, paired in walk
+    order with its parts in the scope it reached."""
 
-    left: DeclaredClass
+    left: DeclaredClass | DeclaredDefinition
     gave: tuple[ast.AST, ...]
-    reached: DeclaredClass
+    reached: DeclaredClass | DeclaredDefinition
     took: tuple[ast.AST, ...]
+
+
+@dataclass(frozen=True)
+class DeclaredDefinition:
+    """One function definition of one changed module at one revision, read for the parts an
+    occurrence can stand in: decorators, parameters, return annotation and top-level body
+    statements."""
+
+    module: ModuleScope
+    node: ast.FunctionDef | ast.AsyncFunctionDef
+
+    @classmethod
+    def every(cls, module: ModuleScope) -> dict[str, DeclaredDefinition]:
+        """The module's definitions by the scope each opens; a scope two definitions open
+        names neither."""
+        found = [node for node in ast.walk(module.tree)
+                 if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))]
+        opened = Counter(module.scope(node) for node in found)
+        return {module.scope(node): cls(module, node) for node in found if opened[module.scope(node)] == 1}
+
+    @cached_property
+    def parts(self) -> tuple[ast.AST, ...]:
+        arguments = self.node.args
+        return tuple(part for part in (
+            *self.node.decorator_list, *arguments.posonlyargs, *arguments.args, arguments.vararg,
+            *arguments.kwonlyargs, arguments.kwarg, self.node.returns, *self.node.body) if part is not None)
+
+    @cached_property
+    def shapes(self) -> Counter[str]:
+        return Counter(ast.dump(part) for part in self.parts)
 
 
 @dataclass(frozen=True, eq=False)
@@ -749,6 +779,68 @@ class FieldExtraction(ProvedMove):
                     if (not owner.binds(field) and field in held.fields
                             and base.declared(field).same(held.declared(field))):
                         yield Move(base, tuple(base.compared(field)), held, tuple(held.compared(field)))
+
+
+class DefinitionRename(ProvedMove):
+    """A definition renamed in place: the parts it shares, unchanged, with the one new
+    definition that replaced it in the same scope.
+
+    The pairing is the provenance edge. In one changed module and one enclosing scope (the
+    module, a class or a function), a definition gone at the head and a definition new at the
+    head replace each other when each is the other's one best match by unchanged parts
+    (decorators, parameters, return annotation, top-level statements). The scope is the
+    same, so every name, ``self``, ``super`` and a mangled name mean what they meant; a body
+    moved into another class means something else and is written, as MemberRelocation
+    decides. Only the shared unchanged parts carry their occurrences: a part added or edited
+    is written, and a deletion elsewhere, or one that is nobody's unique match, pays nothing.
+    """
+
+    @classmethod
+    def moves(cls, changed: ChangedModules) -> Iterator[Move]:
+        for source in changed.sources:
+            before, after = DeclaredDefinition.every(source.base), DeclaredDefinition.every(source.head)
+            gone: dict[str, list[DeclaredDefinition]] = {}
+            new: dict[str, list[DeclaredDefinition]] = {}
+            for name in sorted(before.keys() - after.keys()):
+                gone.setdefault(name.rpartition(".")[0], []).append(before[name])
+            for name in sorted(after.keys() - before.keys()):
+                new.setdefault(name.rpartition(".")[0], []).append(after[name])
+            for scope in sorted(gone.keys() & new.keys()):
+                yield from cls.renamed(gone[scope], new[scope])
+
+    @classmethod
+    def renamed(cls, gone: list[DeclaredDefinition], new: list[DeclaredDefinition]) -> Iterator[Move]:
+        """The moves of each definition renamed inside one enclosing scope."""
+        for old, replacement in cls.replacements(gone, new):
+            pending = {shape: [part for part in old.parts if ast.dump(part) == shape]
+                       for shape in old.shapes}
+            for part in replacement.parts:
+                if pending.get(shape := ast.dump(part)):
+                    yield Move(old, (pending[shape].pop(0),), replacement, (part,))
+
+    @staticmethod
+    def replacements(gone: list[DeclaredDefinition], new: list[DeclaredDefinition],
+                     ) -> Iterator[tuple[DeclaredDefinition, DeclaredDefinition]]:
+        """Each gone definition paired with the new one that is its unique best match, and
+        whose unique best match it is in turn."""
+        shared = {(old, replacement): sum((old.shapes & replacement.shapes).values())
+                  for old in gone for replacement in new}
+        type Pair = tuple[DeclaredDefinition, DeclaredDefinition]
+
+        def best(candidates: list[Pair]) -> tuple[Pair, ...]:
+            """The one candidate sharing the most parts, or none on a tie or nothing shared."""
+            ranked = sorted(candidates, key=shared.__getitem__, reverse=True)
+            match ranked:
+                case [top, second, *_] if shared[top] == shared[second]:
+                    return ()
+                case [top, *_] if shared[top]:
+                    return (top,)
+            return ()
+
+        for old in gone:
+            for pair in best([(old, replacement) for replacement in new]):
+                if best([(other, pair[1]) for other in gone]) == (pair,):
+                    yield pair
 
 
 class MemberRelocation(ProvedMove):
