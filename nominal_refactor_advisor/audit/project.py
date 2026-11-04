@@ -93,8 +93,14 @@ class StoredFormat:
         required keys, every earlier stored key still stored, and each field's schema the same
         except for alternatives and optional properties it added. Files on disk then hold
         nothing a carry could rewrite."""
-        return (self.required == earlier.required
-                and self.accepts_names(self.fields, earlier.fields))
+        return not self.narrowed(earlier)
+
+    def narrowed(self, earlier: StoredFormat) -> tuple[str, ...]:
+        """What keeps this format from reading every earlier record: `required` when the keys
+        every record carries changed, then each earlier stored key it no longer reads."""
+        return (*(("required",) if self.required != earlier.required else ()),
+                *(str(name) for name, schema in earlier.fields.items()
+                  if name not in self.fields or not self.accepts(self.fields[name], schema)))
 
     @classmethod
     def accepts(cls, later: object, earlier: object) -> bool:
