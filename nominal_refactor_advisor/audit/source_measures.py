@@ -264,28 +264,43 @@ class NoneSpelling(MroDispatch):
                 self.found += self.absent(value)
 
 
-class NoneAbsence(CleanChangedLines, PerFileOccurrenceMeasure):
-    """Absence spelled as None: ``is None`` tests, annotations that allow None, ``default=None``.
+class OutsideAbsenceBoundaries(OccurrenceMeasure):
+    """Capability: an absence measure reads nothing inside a boundary that meets None from
+    outside, a decoder reading it or an encoder writing it, declared with one of the project's
+    absence boundary decorators.
 
-    Absence belongs to a declared null member that answers for itself. A boundary that meets
-    None from outside, a decoder reading it or an encoder writing it, declares itself with one
-    of the project's absence boundary decorators; its body is not counted.
+    A decorator is read in the scope that evaluates it: a class body sees its own bindings and
+    every enclosing function's, a function body only the functions', so a name rebound by a
+    class, a parameter or a local marks nothing.
     """
 
     @classmethod
     def sites(cls, repo: Project, module: ModuleScope) -> Iterator[ast.AST]:
-        markers = [DecoratorBinding.of(boundary, module) for boundary in repo.absence_boundaries()]
-        pending: list[ast.AST] = [module.tree]
+        markers = tuple(DecoratorBinding.of(boundary, module) for boundary in repo.absence_boundaries())
+        pending: list[tuple[ast.AST, tuple[DecoratorBinding, ...], tuple[DecoratorBinding, ...]]] = [
+            (module.tree, markers, markers)]
         while pending:
-            node = pending.pop()
+            node, decorating, enclosing = pending.pop()
             match node:
                 case ast.FunctionDef(decorator_list=decorators) | ast.AsyncFunctionDef(
                         decorator_list=decorators) if any(marker.marks(decorator)
-                                                          for marker in markers
+                                                          for marker in decorating
                                                           for decorator in decorators):
                     continue
+                case ast.FunctionDef() | ast.AsyncFunctionDef():
+                    decorating = enclosing = tuple(marker.seen_from(module, node) for marker in enclosing)
+                case ast.ClassDef():
+                    decorating = tuple(marker.seen_from(module, node) for marker in enclosing)
             yield node
-            pending.extend(ast.iter_child_nodes(node))
+            pending.extend((child, decorating, enclosing) for child in ast.iter_child_nodes(node))
+
+
+class NoneAbsence(CleanChangedLines, OutsideAbsenceBoundaries, PerFileOccurrenceMeasure):
+    """Absence spelled as None: ``is None`` tests, annotations that allow None, ``default=None``.
+
+    Absence belongs to a declared null member that answers for itself; an absence boundary's
+    body is not counted.
+    """
 
     @staticmethod
     def occurrences(node: ast.AST) -> int:
@@ -730,8 +745,10 @@ class BooleanChainTerms(PerFileOccurrenceMeasure, NodeCount):
         return 0
 
 
-class ForeignAbsenceProbe(ForeignAbsenceSyntax, ForeignAttributeProbe, PerFileOccurrenceMeasure):
-    """Explicit foreign None comparisons (IDEN-3), not boolean negation."""
+class ForeignAbsenceProbe(ForeignAbsenceSyntax, ForeignAttributeProbe, OutsideAbsenceBoundaries,
+                          PerFileOccurrenceMeasure):
+    """Explicit foreign None comparisons (IDEN-3), not boolean negation; an absence
+    boundary's body is not counted."""
 
     weight = 1
     node_types = (ast.Compare,)

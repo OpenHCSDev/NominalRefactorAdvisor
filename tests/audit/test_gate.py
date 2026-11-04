@@ -8,6 +8,7 @@ import os
 import subprocess
 import time
 from dataclasses import dataclass
+from pathlib import Path
 
 import black
 import pytest
@@ -1038,6 +1039,55 @@ def test_a_foreign_encoder_marker_is_an_absence_boundary(repo, imports, counted)
     status, report = repo.compare(base, head, NoneAbsence)
     assert status == int(counted)
     assert bool(report["introduced"][NoneAbsence.at(f"{repo.root}/wire.py").text]) is counted
+
+
+@dataclass(frozen=True)
+class PackageBoundaryProject(FixtureProject):
+    """A fixture project whose one absence boundary is an encoder in its own root's
+    ``wire.encoding``, the module a relative import inside ``wire`` resolves to."""
+
+    def absence_boundaries(self):
+        def encoder(function):
+            return function
+
+        encoder.__module__ = ".".join((*Path(self.root).parts[1:], "wire", "encoding"))
+        return (encoder,)
+
+
+PROBE = "return other.value is None"
+IMPORTED = "from wire.encoding import encoder\n\n\n"
+BOUNDARY_SITES = {
+    "imported": ("boundary.py", f"{IMPORTED}@encoder\ndef write(other):\n    {PROBE}\n", False),
+    "aliased": ("boundary.py", f"from wire.encoding import encoder as marker\n\n\n@marker\ndef write(other):\n    {PROBE}\n", False),
+    "qualified": ("boundary.py", f"import wire.encoding\n\n\n@wire.encoding.encoder\ndef write(other):\n    {PROBE}\n", False),
+    "method": ("boundary.py", f"{IMPORTED}class Writer:\n    @encoder\n    def write(self, other):\n        {PROBE}\n", False),
+    "relative": ("wire/boundary.py", f"from .encoding import encoder\n\n\n@encoder\ndef write(other):\n    {PROBE}\n", False),
+    "undecorated": ("boundary.py", f"{IMPORTED}def write(other):\n    {PROBE}\n", True),
+    "different_owner": ("boundary.py", f"from wire.decoding import encoder\n\n\n@encoder\ndef write(other):\n    {PROBE}\n", True),
+    "duplicate": ("boundary.py", f"from wire.encoding import encoder\n{IMPORTED}@encoder\ndef write(other):\n    {PROBE}\n", True),
+    "conditional": ("boundary.py", f"if VALUE:\n    from wire.encoding import encoder\n\n\n@encoder\ndef write(other):\n    {PROBE}\n", True),
+    "star": ("boundary.py", f"from wire.encoding import *\n\n\n@encoder\ndef write(other):\n    {PROBE}\n", True),
+    "class_shadowed": ("boundary.py", (f"{IMPORTED}class Writer:\n    encoder = staticmethod(print)\n\n"
+                                       f"    @encoder\n    def write(self, other):\n        {PROBE}\n"), True),
+    "parameter_shadowed": ("boundary.py", (f"{IMPORTED}def outer(encoder):\n    @encoder\n    def write(other):\n"
+                                           f"        {PROBE}\n    return write\n"), True),
+}
+
+
+@pytest.mark.parametrize("measure", [NoneAbsence, ForeignAbsenceProbe])
+@pytest.mark.parametrize("site", BOUNDARY_SITES)
+def test_an_absence_boundary_marker_is_read_from_the_scope_its_decorator_runs_in(repo, measure, site):
+    """Every absence measure skips a boundary's body, and a decorator is the marker only where
+    its spelling still binds the project's boundary: another owner, a name bound twice,
+    conditionally or by star, or rebound by a class body or an enclosing parameter, leaves the
+    body counted."""
+    path, source, counted = BOUNDARY_SITES[site]
+    project = PackageBoundaryProject if source.startswith("from .") else BoundaryProject
+    repo.project = project(repo.path, repo.root)
+    base = repo.commit({"wire/__init__.py": "VALUE = 1\n"})
+    head = repo.commit({path: source})
+    _, report = repo.compare(base, head, measure)
+    assert report["head"][measure.at(f"{repo.root}/{path}").text] == int(counted)
 
 
 def test_git_context_configuration_cannot_mark_unchanged_lines_as_new(repo):
