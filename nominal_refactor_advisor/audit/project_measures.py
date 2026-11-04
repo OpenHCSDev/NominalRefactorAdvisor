@@ -67,7 +67,7 @@ class UncarriedRecordFormat(ChangeMeasure):
         carried = repo.carried(base, head)
         before = cls.formats(repo, base, root, changed)
         after = cls.formats(repo, head, root, changed)
-        uncarried = {
+        uncarried: Counts = {
             UncarriedFormatCount(cls, name, form.narrowed(before[name])[0]): 1
             for name, form in after.items()
             if name in before and not form.widens(before[name])
