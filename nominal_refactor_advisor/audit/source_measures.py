@@ -277,31 +277,58 @@ class OutsideAbsenceBoundaries(OccurrenceMeasure):
 
     @classmethod
     def sites(cls, repo: Project, module: ModuleScope) -> Iterator[ast.AST]:
-        boundaries = repo.absence_boundaries()
-        pending: list[tuple[ast.AST, tuple[Scope, ...], tuple[Scope, ...]]] = [(module.tree, (), ())]
+        top = BoundaryView.of(repo, module)
+        pending: list[tuple[ast.AST, BoundaryView, BoundaryView]] = [(module.tree, top, top)]
         while pending:
             node, decorating, enclosing = pending.pop()
             match node:
                 case ast.FunctionDef(decorator_list=[_, *_]) | ast.AsyncFunctionDef(
-                        decorator_list=[_, *_]) if cls.boundary(module, boundaries, node, decorating):
+                        decorator_list=[_, *_]) if decorating.marks(node):
                     continue
                 case ast.FunctionDef() | ast.AsyncFunctionDef():
-                    decorating = enclosing = (*enclosing, node)
+                    decorating = enclosing = enclosing.entering(node)
                 case ast.ClassDef():
-                    decorating = (*enclosing, node)
+                    decorating = enclosing.entering(node)
             yield node
             pending.extend((child, decorating, enclosing) for child in ast.iter_child_nodes(node))
 
-    @staticmethod
-    def boundary(module: ModuleScope, boundaries: tuple[typing.Callable[..., object], ...],
-                 node: ast.FunctionDef | ast.AsyncFunctionDef, scopes: tuple[Scope, ...]) -> bool:
-        """Whether one of the def's decorators, read through ``scopes`` before the def binds
-        its own name, is a declared absence boundary."""
+
+@dataclass(frozen=True)
+class BoundaryView:
+    """The project's absence boundaries as one decorator-evaluating scope reads them: the
+    scopes a decorator there is evaluated through, and the markers still binding through them,
+    narrowed once per scope as the walk enters it."""
+
+    module: ModuleScope
+    boundaries: tuple[typing.Callable[..., object], ...]
+    scopes: tuple[Scope, ...]
+    markers: tuple[DecoratorBinding, ...]
+
+    @classmethod
+    def of(cls, repo: Project, module: ModuleScope) -> BoundaryView:
+        boundaries = repo.absence_boundaries()
+        return cls(module, boundaries, (), tuple(DecoratorBinding.of(boundary, module) for boundary in boundaries))
+
+    def entering(self, scope: Scope) -> BoundaryView:
+        return dataclasses.replace(self, scopes=(*self.scopes, scope),
+                                   markers=tuple(marker.seen_from(self.module, scope) for marker in self.markers))
+
+    def marks(self, node: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
+        """Whether one of the def's decorators is a declared absence boundary. The carried
+        markers answer unless a decorator is spelled from the def's own name, as in
+        ``@decode def decode``: only that spelling can have been hidden by the def's own
+        binding, so only then are the markers read again without it."""
+        if any(ast.unparse(decorator).split(".")[0] == node.name for decorator in node.decorator_list):
+            return self.unshadowed(node)
+        return any(marker.marks(decorator) for marker in self.markers for decorator in node.decorator_list)
+
+    def unshadowed(self, node: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
+        """The markers read through these scopes before the def binds its own name."""
         itself = frozenset({node})
-        for boundary in boundaries:
-            marker = DecoratorBinding.of(boundary, module, itself)
-            for scope in scopes:
-                marker = marker.seen_from(module, scope, itself)
+        for boundary in self.boundaries:
+            marker = DecoratorBinding.of(boundary, self.module, itself)
+            for scope in self.scopes:
+                marker = marker.seen_from(self.module, scope, itself)
             if any(marker.marks(decorator) for decorator in node.decorator_list):
                 return True
         return False
