@@ -1546,6 +1546,18 @@ def test_a_stored_format_that_only_adds_optional_properties_widens():
                                      ["threads", "aliases"]).widens(before)
 
 
+def test_a_narrowed_stored_format_names_what_it_no_longer_reads():
+    """The report names the key to look at, so a reader never has to diff two schemas by hand."""
+    earlier = StoredFormat.declared(
+        1, {"kept": {"type": "string"}, "changed": {"type": "string"}, "gone": {"type": "integer"}},
+        ["kept"])
+    later = StoredFormat.declared(1, {"kept": {"type": "string"}, "changed": {"type": "integer"}}, ["kept"])
+    assert later.narrowed(earlier) == ("changed", "gone")
+    required = StoredFormat.declared(1, earlier.fields, ["changed", "kept"])
+    assert required.narrowed(earlier) == ("required",)
+    assert earlier.narrowed(earlier) == ()
+
+
 def test_a_stored_format_that_only_adds_alternatives_widens():
     """agent-comms #3643: StoppingThreadStatus adds {"kind": "stopping"} to the registry's
     status union while every file still holds an earlier member, so the format widens and

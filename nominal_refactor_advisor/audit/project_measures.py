@@ -5,10 +5,24 @@ from __future__ import annotations
 
 import ast
 from collections.abc import Callable
+from dataclasses import dataclass
 from functools import partial
 
 from .project import Project, StoredFormat
-from .gate import ChangeMeasure, Compared, Counts, PhaseSiteCount
+from .gate import ChangeMeasure, Compared, Counts, MeasureCount, PhaseSiteCount
+
+
+@dataclass(frozen=True)
+class UncarriedFormatCount(MeasureCount):
+    """One record whose stored format narrowed without its version and carry, at the first key
+    that keeps it from reading its earlier records."""
+
+    record: str
+    key: str
+
+    @property
+    def text(self) -> str:
+        return f"{super().text}:{self.record}::{self.key}"
 
 
 class UncarriedRecordFormat(ChangeMeasure):
@@ -53,10 +67,12 @@ class UncarriedRecordFormat(ChangeMeasure):
         carried = repo.carried(base, head)
         before = cls.formats(repo, base, root, changed)
         after = cls.formats(repo, head, root, changed)
-        uncarried = sum(before[name].version == form.version or not carried
-                        for name, form in after.items()
-                        if name in before and not form.widens(before[name]))
-        return {cls.total(): 0}, {cls.total(): uncarried}
+        uncarried: Counts = {
+            UncarriedFormatCount(cls, name, form.narrowed(before[name])[0]): 1
+            for name, form in after.items()
+            if name in before and not form.widens(before[name])
+            and (before[name].version == form.version or not carried)}
+        return dict.fromkeys(uncarried, 0), uncarried
 
 
 class DonePhaseBroken(Compared):
