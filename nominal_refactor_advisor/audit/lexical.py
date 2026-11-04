@@ -204,11 +204,14 @@ class ModuleScope:
         classes are theirs, not this scope's."""
         return self.names.bindings(self.scope(scope))
 
-    def declarations(self, scope: ast.Module | ast.ClassDef) -> dict[str, tuple[ast.AST, ast.stmt]]:
+    def declarations(self, scope: ast.Module | ast.ClassDef,
+                     excluding: frozenset[ast.AST] = frozenset()) -> dict[str, tuple[ast.AST, ast.stmt]]:
         """Each name the scope binds exactly once, by a declaring node that is one of its body's
         statements or such a statement's direct child, with that statement. A star import
-        leaves no name proved."""
-        bindings = self.bindings(scope)
+        leaves no name proved. Bindings by ``excluding`` do not count, as a def's own name is
+        not yet bound when its decorators run."""
+        bindings = {name: kept for name, nodes in self.bindings(scope).items()
+                    if (kept := [node for node in nodes if node not in excluding])}
         if "*" in bindings:
             return {}
         owners = {child: statement for statement in scope.body
@@ -272,15 +275,19 @@ class DecoratorBinding:
     names: frozenset[str]
 
     @classmethod
-    def of(cls, decorator: typing.Callable[..., object], module: ModuleScope) -> DecoratorBinding:
-        return cls.named(decorator.__module__, decorator.__name__, module)
+    def of(cls, decorator: typing.Callable[..., object], module: ModuleScope,
+           excluding: frozenset[ast.AST] = frozenset()) -> DecoratorBinding:
+        return cls.named(decorator.__module__, decorator.__name__, module, excluding)
 
     @classmethod
-    def named(cls, owner: str, name: str, module: ModuleScope) -> DecoratorBinding:
-        """The spellings binding ``owner.name`` at the module's top level."""
+    def named(cls, owner: str, name: str, module: ModuleScope,
+              excluding: frozenset[ast.AST] = frozenset()) -> DecoratorBinding:
+        """The spellings binding ``owner.name`` at the module's top level, not counting the
+        bindings ``excluding`` makes."""
         package = module.module[:-1]
         names: set[str] = set()
-        for bound, (declaration, statement) in module.declared.items():
+        declared = module.declarations(module.tree, excluding) if excluding else module.declared
+        for bound, (declaration, statement) in declared.items():
             match statement, declaration:
                 case ast.ClassDef() | ast.FunctionDef() | ast.AsyncFunctionDef(), _ if (
                         ".".join(module.module) == owner and bound == name):
@@ -296,10 +303,12 @@ class DecoratorBinding:
                         names.add(bound)
         return cls(frozenset(names))
 
-    def seen_from(self, module: ModuleScope, scope: Scope) -> DecoratorBinding:
+    def seen_from(self, module: ModuleScope, scope: Scope,
+                  excluding: frozenset[ast.AST] = frozenset()) -> DecoratorBinding:
         """The spellings that still bind it as read from ``scope``: one whose root that scope
-        rebinds names something else there."""
-        hidden = module.bindings(scope)
+        rebinds, other than by ``excluding``, names something else there."""
+        hidden = {name for name, nodes in module.bindings(scope).items()
+                  if any(node not in excluding for node in nodes)}
         return DecoratorBinding(frozenset(spelling for spelling in self.names
                                           if spelling.split(".")[0] not in hidden))
 

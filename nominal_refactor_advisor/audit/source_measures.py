@@ -22,7 +22,7 @@ from metaclass_registry.mro_dispatch import MroDispatch, handles
 from ..ast_tools import ParsedModule
 from .findings import Package, RawShape
 from .identity import TypePositions
-from .lexical import DecoratorBinding, ModuleScope
+from .lexical import DecoratorBinding, ModuleScope, Scope
 from .measures import (ForeignAbsenceSyntax, ForeignAttributeProbe, Headline, Measure,
                        MechanismOwners, NodeCount, PatternMeasure)
 from .project import Project
@@ -271,28 +271,40 @@ class OutsideAbsenceBoundaries(OccurrenceMeasure):
 
     A decorator is read in the scope that evaluates it: a class body sees its own bindings and
     every enclosing function's, a function body only the functions', so a name rebound by a
-    class, a parameter or a local marks nothing.
+    class, a parameter or a local marks nothing. The decorated def's own name is bound only
+    after its decorators run, so that binding never hides its own marker.
     """
 
     @classmethod
     def sites(cls, repo: Project, module: ModuleScope) -> Iterator[ast.AST]:
-        markers = tuple(DecoratorBinding.of(boundary, module) for boundary in repo.absence_boundaries())
-        pending: list[tuple[ast.AST, tuple[DecoratorBinding, ...], tuple[DecoratorBinding, ...]]] = [
-            (module.tree, markers, markers)]
+        boundaries = repo.absence_boundaries()
+        pending: list[tuple[ast.AST, tuple[Scope, ...], tuple[Scope, ...]]] = [(module.tree, (), ())]
         while pending:
             node, decorating, enclosing = pending.pop()
             match node:
-                case ast.FunctionDef(decorator_list=decorators) | ast.AsyncFunctionDef(
-                        decorator_list=decorators) if any(marker.marks(decorator)
-                                                          for marker in decorating
-                                                          for decorator in decorators):
+                case ast.FunctionDef(decorator_list=[_, *_]) | ast.AsyncFunctionDef(
+                        decorator_list=[_, *_]) if cls.boundary(module, boundaries, node, decorating):
                     continue
                 case ast.FunctionDef() | ast.AsyncFunctionDef():
-                    decorating = enclosing = tuple(marker.seen_from(module, node) for marker in enclosing)
+                    decorating = enclosing = (*enclosing, node)
                 case ast.ClassDef():
-                    decorating = tuple(marker.seen_from(module, node) for marker in enclosing)
+                    decorating = (*enclosing, node)
             yield node
             pending.extend((child, decorating, enclosing) for child in ast.iter_child_nodes(node))
+
+    @staticmethod
+    def boundary(module: ModuleScope, boundaries: tuple[typing.Callable[..., object], ...],
+                 node: ast.FunctionDef | ast.AsyncFunctionDef, scopes: tuple[Scope, ...]) -> bool:
+        """Whether one of the def's decorators, read through ``scopes`` before the def binds
+        its own name, is a declared absence boundary."""
+        itself = frozenset({node})
+        for boundary in boundaries:
+            marker = DecoratorBinding.of(boundary, module, itself)
+            for scope in scopes:
+                marker = marker.seen_from(module, scope, itself)
+            if any(marker.marks(decorator) for decorator in node.decorator_list):
+                return True
+        return False
 
 
 class NoneAbsence(CleanChangedLines, OutsideAbsenceBoundaries, PerFileOccurrenceMeasure):
