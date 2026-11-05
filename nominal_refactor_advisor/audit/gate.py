@@ -670,7 +670,15 @@ class DeclaredDefinition:
         arguments = self.node.args
         return tuple(part for part in (
             *self.node.decorator_list, *arguments.posonlyargs, *arguments.args, arguments.vararg,
-            *arguments.kwonlyargs, arguments.kwarg, self.node.returns, *self.node.body) if part is not None)
+            *arguments.kwonlyargs, arguments.kwarg, self.node.returns, *self.statements) if part is not None)
+
+    @property
+    def statements(self) -> Iterator[ast.stmt]:
+        """Every statement of the body at every depth: a `finally` left unchanged under an
+        edited `try` is still the same statement, and `transfer` pays each occurrence once
+        however many enclosing statements also match."""
+        return (node for statement in self.node.body for node in ast.walk(statement)
+                if isinstance(node, ast.stmt))
 
     @cached_property
     def shapes(self) -> Counter[str]:

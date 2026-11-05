@@ -1006,6 +1006,8 @@ def test_a_moved_method_pays_once_and_an_extra_none_beside_it_is_written(repo):
 
 TWEET = ("def open_tweet_intent(text: str, url: str | None = None):\n    if url is not None:\n"
          "        text = f'{text} {url}'\n    browse(text)\n    return text\n")
+CLIP = ("def read_png(p):\n    try:\n        return None\n    finally:\n"
+        "        if p.returncode is None:\n            p.kill()\n")
 SEARCH = ("class SettingsScreen:\n    def action_focus_search(self):\n"
           "        if self.query is None:\n            return\n        self.focus()\n")
 
@@ -1038,9 +1040,17 @@ SEARCH = ("class SettingsScreen:\n    def action_focus_search(self):\n"
          {"probe.py": ("class Probe:\n    def third(self):\n        return self.up is None\n\n"
                        "    def fourth(self):\n        return self.down is None\n")},
          2),
+        ({"clip.py": CLIP},
+         {"clip.py": CLIP.replace("read_png", "read").replace("        return None\n", "        return Png()\n")},
+         0),
+        ({"clip.py": CLIP},
+         {"clip.py": CLIP.replace("read_png", "read").replace(
+             "        return None\n", "        if p.data is None:\n            return Empty()\n        return Png()\n")},
+         1),
     ],
     ids=["renamed", "lifted_into_new_class", "method_renamed_in_its_class", "renamed_with_a_new_check",
-         "two_equal_replacements", "deleted_in_another_module", "sharing_only_self"],
+         "two_equal_replacements", "deleted_in_another_module", "sharing_only_self",
+         "unchanged_finally_under_an_edited_try", "new_check_inside_the_edited_try"],
 )
 def test_a_definition_renamed_in_its_scope_carries_its_unchanged_parts(repo, base, head, written):
     """A definition renamed in its own scope carries the parts it shares unchanged, its
