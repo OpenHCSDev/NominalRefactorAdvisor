@@ -745,7 +745,9 @@ class ProvedMove(Family, ABC, root=True, affix="Move"):
                  departed: Counter[tuple[str, str]], credited: Counter[ast.AST]) -> None:
         """One move's occurrences, paid one for one by those that left the old declaration.
         The parts are proved the same, so they pair node for node in walk order; parts whose
-        raw shapes differ pair nothing."""
+        raw shapes differ pair nothing. A head node reached by two matching parts, such as a
+        statement and the unchanged block that holds it, takes only what it is still owed, so
+        it cannot spend the departure its twin elsewhere needs."""
         scope = move.left.module.scope(move.left.node)
         scopes = move.left.module.names.found
         for gave, took in zip(move.gave, move.took, strict=True):
@@ -753,7 +755,7 @@ class ProvedMove(Family, ABC, root=True, affix="Move"):
             if [type(node) for node in before] != [type(node) for node in after]:
                 continue
             for old, new in zip(before, after, strict=True):
-                if ((carried := min(measure.occurrences(old), measure.occurrences(new)))
+                if ((carried := min(measure.occurrences(old), measure.occurrences(new) - credited[new]))
                         and id(old) in gone and id(new) in came):
                     identity = scopes[old], ast.unparse(old)
                     if identity[0] == scope or identity[0].startswith(f"{scope}."):
