@@ -1033,9 +1033,14 @@ SEARCH = ("class SettingsScreen:\n    def action_focus_search(self):\n"
         ({"twitter.py": "VALUE = 1\n", "gone.py": TWEET},
          {"twitter.py": "VALUE = 1\n\n\n" + TWEET.replace("open_tweet_intent", "tweet_intent_url"), "gone.py": "VALUE = 2\n"},
          2),
+        ({"probe.py": ("class Probe:\n    def first(self):\n        return self.left is None\n\n"
+                       "    def second(self):\n        return self.right is None\n")},
+         {"probe.py": ("class Probe:\n    def third(self):\n        return self.up is None\n\n"
+                       "    def fourth(self):\n        return self.down is None\n")},
+         2),
     ],
     ids=["renamed", "lifted_into_new_class", "method_renamed_in_its_class", "renamed_with_a_new_check",
-         "two_equal_replacements", "deleted_in_another_module"],
+         "two_equal_replacements", "deleted_in_another_module", "sharing_only_self"],
 )
 def test_a_definition_renamed_in_its_scope_carries_its_unchanged_parts(repo, base, head, written):
     """A definition renamed in its own scope carries the parts it shares unchanged, its
