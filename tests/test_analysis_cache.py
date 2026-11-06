@@ -59,13 +59,15 @@ from nominal_refactor_advisor.analysis_cache import (
     SourceFileSignatureCache,
 )
 from nominal_refactor_advisor.ast_tools import (
-    BuilderCallShapeFamily,
     CollectedFamily,
-    RegistrationShapeFamily,
     SourceModule,
     collect_family_items,
     parse_python_module_roots,
     parse_python_modules,
+)
+from nominal_refactor_advisor.observation_families import (
+    BuilderCallShapeFamily,
+    RegistrationShapeFamily,
 )
 from nominal_refactor_advisor.native_syntax import NativePythonSyntaxIndex
 from nominal_refactor_advisor import ast_tools as ast_tools_module
