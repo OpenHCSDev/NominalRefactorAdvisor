@@ -103,21 +103,12 @@ from nominal_refactor_advisor.codemod_source_cache import (
     CodemodSourceContextCache,
     CodemodSourceContextCacheEntry,
 )
-from nominal_refactor_advisor.detectors import (
-    CrossModuleCandidateDetector,
-    DetectorCacheGranularity,
-    DetectorConfig,
-    IssueDetector,
-    PerModuleIssueDetector,
-    SemanticDescentGraphIssueDetector,
-)
+from nominal_refactor_advisor.detectors._base import (CrossModuleCandidateDetector, DetectorCacheGranularity, DetectorConfig, IssueDetector, PerModuleIssueDetector, SemanticDescentGraphIssueDetector)
 from nominal_refactor_advisor.detectors import _environment as environment_detectors
 from nominal_refactor_advisor.detectors import _base as base_detectors
 from nominal_refactor_advisor.detectors import _helpers as helper_detectors
 from nominal_refactor_advisor.detectors import _runtime as runtime_detectors
-from nominal_refactor_advisor.detectors import (
-    _semantic_descent as semantic_descent_detectors,
-)
+from nominal_refactor_advisor.detectors import _semantic_descent as semantic_descent_detectors
 from nominal_refactor_advisor.detectors import _structural as structural_detectors
 from nominal_refactor_advisor.detectors import _systemic as systemic_detectors
 from nominal_refactor_advisor.models import (
@@ -1393,7 +1384,7 @@ def test_detector_registry_signature_tracks_detector_module_source(
 
     def write_detector(helper_value: int) -> None:
         module_path.write_text(
-            "from nominal_refactor_advisor.detectors import IssueDetector\n"
+            "from nominal_refactor_advisor.detectors._base import IssueDetector\n"
             "\n"
             "class DynamicDetector(IssueDetector):\n"
             "    detector_id = 'dynamic_signature_detector'\n"

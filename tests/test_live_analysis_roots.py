@@ -14,7 +14,7 @@ from nominal_refactor_advisor.cache_checkout import (
     CacheCheckoutPathError,
     checkout_relative_path,
 )
-from nominal_refactor_advisor.detectors import DetectorConfig
+from nominal_refactor_advisor.detectors._base import DetectorConfig
 
 
 def _sources(root: Path) -> None:

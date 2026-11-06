@@ -18,7 +18,7 @@ from nominal_refactor_advisor.codemod_declaration_reference import (
     ReferenceImportedModuleOperation,
     UnquoteResolvedTypeNamesOperation,
 )
-from nominal_refactor_advisor.detectors import RestatedIdentityDetector
+from nominal_refactor_advisor.detectors._restated_identity import RestatedIdentityDetector
 from nominal_refactor_advisor.json_reports import json_report_object
 
 DETECTOR_ID = RestatedIdentityDetector.effective_detector_id()

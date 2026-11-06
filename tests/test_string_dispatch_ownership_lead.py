@@ -7,7 +7,7 @@ from nominal_refactor_advisor.analysis import analyze_path
 from nominal_refactor_advisor.ast_tools import SourceModule
 from nominal_refactor_advisor.cli import MARKDOWN_RENDERER
 from nominal_refactor_advisor.codemod import FindingRecipeEvaluator
-from nominal_refactor_advisor.detectors import DetectorConfig
+from nominal_refactor_advisor.detectors._base import DetectorConfig
 from nominal_refactor_advisor.detectors._runtime import (
     GuardedStringCaseOwnershipLeadDetector,
     StringLiteralDispatchOwnershipLeadDetector,

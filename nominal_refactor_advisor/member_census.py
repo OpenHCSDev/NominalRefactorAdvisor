@@ -35,7 +35,7 @@ from .class_index import (
     CompactIndexedClass,
     CompactModuleClassProjectionFamily,
 )
-from .detectors import DetectorConfig
+from .detectors._base import DetectorConfig
 from .detectors._base import CompactClassRepositoryContext
 from .detectors._systemic import (
     declared_cases,

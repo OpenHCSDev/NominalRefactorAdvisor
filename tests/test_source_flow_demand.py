@@ -6,10 +6,7 @@ from pathlib import Path
 import pytest
 
 from nominal_refactor_advisor.ast_tools import ParsedModule
-from nominal_refactor_advisor.detectors import (
-    ClosedParameterConveyorDetector,
-    DeclaredCarrierExpansionDetector,
-)
+from nominal_refactor_advisor.detectors._carrier_collapse import (ClosedParameterConveyorDetector, DeclaredCarrierExpansionDetector)
 from nominal_refactor_advisor.detectors._base import DetectorConfig
 from nominal_refactor_advisor.product_flow_authority import SourceProductFlowRepository
 

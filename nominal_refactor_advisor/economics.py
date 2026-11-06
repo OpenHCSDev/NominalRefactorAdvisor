@@ -18,7 +18,7 @@ from .ast_tools import ParsedModuleSet
 from .analysis import analyze_modules
 from .ast_tools import parse_python_modules
 from .collection_algebra import sorted_tuple
-from .detectors import DetectorConfig
+from .detectors._base import DetectorConfig
 from .models import ImpactDelta, RefactorFinding, RefactorPlan
 from .planner import build_refactor_plans
 from .json_reports import (

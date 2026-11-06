@@ -51,7 +51,7 @@ from .codemod_runtime import (
     FindingRecipeSynthesisRecord,
     FindingRecipeTrajectoryObstacle,
 )
-from .detectors import DetectorConfig, IssueDetector, SemanticDescentGraphIssueDetector
+from .detectors._base import (DetectorConfig, IssueDetector, SemanticDescentGraphIssueDetector)
 from .owner_picks import OwnerPickReport, OwnerPicks
 from .json_reports import (
     DataclassJsonReport,

@@ -10,7 +10,7 @@ import pytest
 
 from nominal_refactor_advisor import detectors
 from nominal_refactor_advisor.ast_tools import PythonSourcePathPolicy, parse_python_modules
-from nominal_refactor_advisor.detectors import DetectorConfig
+from nominal_refactor_advisor.detectors._base import DetectorConfig
 from nominal_refactor_advisor.installed_owners import (
     InstalledDistributionOwners,
     OwnerPackagesDeclaration,

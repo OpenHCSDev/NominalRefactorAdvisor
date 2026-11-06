@@ -11,11 +11,7 @@ import inspect
 
 from .codemod import FindingRecipeSynthesizer
 from .codemod_runtime import FindingRecipeEvaluator
-from .detectors import (
-    IssueDetector,
-    SemanticMirrorIssueDetector,
-    SsotAuthorityBoundaryDetector,
-)
+from .detectors._base import (IssueDetector, SemanticMirrorIssueDetector, SsotAuthorityBoundaryDetector)
 from .json_reports import (
     DataclassJsonReport,
     json_report_cached_property,

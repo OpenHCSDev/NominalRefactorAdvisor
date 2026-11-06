@@ -137,7 +137,7 @@ from .codemod_workflow import (
 )
 from .deadline import ScanDeadline, ScanDeadlineExceeded, enforce_scan_deadline
 from .detector_capabilities import DetectorRefactorCapabilityReport
-from .detectors import DetectorCacheGranularity, DetectorConfig
+from .detectors._base import (DetectorCacheGranularity, DetectorConfig)
 from .economics import (
     EconomicsProofReport,
     LineChangeBudget,

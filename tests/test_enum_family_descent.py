@@ -30,10 +30,8 @@ from nominal_refactor_advisor.codemod import (
 from nominal_refactor_advisor.codemod_runtime import CodemodSourceSnapshot
 from nominal_refactor_advisor.declared_root import DeclaredRoot
 from nominal_refactor_advisor.descent import CasesFold, Descent
-from nominal_refactor_advisor.detectors import (
-    DetectorConfig,
-    ExternalEnumCaseRecoveryDetector,
-)
+from nominal_refactor_advisor.detectors._base import DetectorConfig
+from nominal_refactor_advisor.detectors._systemic import ExternalEnumCaseRecoveryDetector
 from nominal_refactor_advisor.json_reports import json_report_object
 
 FIXTURES = Path(__file__).parent / "fixtures" / "enum_family"

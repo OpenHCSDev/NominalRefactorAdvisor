@@ -6,7 +6,7 @@ import runpy
 import pytest
 
 from nominal_refactor_advisor.codemod import RefactorRecipeOperation
-from nominal_refactor_advisor.detectors import IssueDetector
+from nominal_refactor_advisor.detectors._base import IssueDetector
 from nominal_refactor_advisor.native_declarations import NativeDeclaration
 
 

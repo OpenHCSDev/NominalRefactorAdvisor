@@ -274,8 +274,8 @@ from nominal_refactor_advisor.codemod import (
     detect_cancelable_composition_signals,
     evaluate_architecture_guards,
 )
-from nominal_refactor_advisor.detectors import DetectorConfig, IssueDetector
-from nominal_refactor_advisor.detectors import SemanticMirrorWithoutDescentDetector
+from nominal_refactor_advisor.detectors._base import (DetectorConfig, IssueDetector)
+from nominal_refactor_advisor.detectors._semantic_descent import SemanticMirrorWithoutDescentDetector
 from nominal_refactor_advisor.detectors import _base as base_detectors
 from nominal_refactor_advisor.detectors import _helpers as helper_detectors
 from nominal_refactor_advisor.detectors import _runtime as runtime_detectors

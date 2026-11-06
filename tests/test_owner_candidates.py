@@ -188,7 +188,7 @@ def test_a_star_imported_module_s_field_order_is_settled_the_same_way_on_every_p
 
     from nominal_refactor_advisor.ast_tools import collect_family_items
     from nominal_refactor_advisor.detectors._base import CompactClassRepositoryContext
-    from nominal_refactor_advisor.detectors import DetectorConfig
+    from nominal_refactor_advisor.detectors._base import DetectorConfig
 
     modules = (
         _module("pkg.base", '__all__ = ["Thing"]\n\n\nclass Thing:\n    pass\n'),

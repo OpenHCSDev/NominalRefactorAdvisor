@@ -26,7 +26,8 @@ from nominal_refactor_advisor.class_index import (
     _compact_class_member_declarations,
     build_compact_class_family_index,
 )
-from nominal_refactor_advisor.detectors import DetectorConfig, IssueDetector, _systemic
+from nominal_refactor_advisor.detectors import _systemic
+from nominal_refactor_advisor.detectors._base import (DetectorConfig, IssueDetector)
 from nominal_refactor_advisor.detectors._base import (
     _compact_keyed_family_axis_specs_from_index,
 )

@@ -20,7 +20,7 @@ from .lexical_bindings import ImportBoundNameProjection
 from .analysis import analyze_modules
 from .ast_projection import CallKeyword, StatementValue
 from .ast_tools import ParsedModule, parse_python_module_roots
-from .detectors import DetectorConfig
+from .detectors._base import DetectorConfig
 from .export_tools import PublicExportPolicy, derive_public_exports
 from .models import (
     RefactorFinding,

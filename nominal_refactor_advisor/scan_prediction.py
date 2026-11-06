@@ -12,7 +12,7 @@ from .ast_tools import ParsedModuleSet
 from .analysis import analyze_modules
 from .analysis_cache import AnalysisCacheStatus
 from .ast_tools import ParsedModule, parse_python_modules
-from .detectors import DetectorConfig
+from .detectors._base import DetectorConfig
 from .collection_algebra import sorted_tuple
 from .economics import TimedScan
 from .models import RefactorFinding

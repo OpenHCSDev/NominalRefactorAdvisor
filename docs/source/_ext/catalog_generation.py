@@ -10,7 +10,7 @@ from nominal_refactor_advisor.detector_capabilities import (
     DetectorRefactorCapability,
     DetectorRefactorCapabilityReport,
 )
-from nominal_refactor_advisor.detectors import IssueDetector
+from nominal_refactor_advisor.detectors._base import IssueDetector
 from nominal_refactor_advisor.models import NominalDeclarationIdentity
 from nominal_refactor_advisor.native_declarations import NativeDeclaration
 from nominal_refactor_advisor.patterns import PatternId

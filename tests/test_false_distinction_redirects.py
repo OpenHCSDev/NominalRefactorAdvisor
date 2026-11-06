@@ -22,11 +22,8 @@ from nominal_refactor_advisor.codemod_false_distinctions import (
     RedirectEmptySubclassOperation,
 )
 from nominal_refactor_advisor.false_distinction_observations import NameUse, NameUseKind
-from nominal_refactor_advisor.detectors import (
-    DetectorConfig,
-    NameOnlySubclassDetector,
-    UndistinguishedEnumMembersDetector,
-)
+from nominal_refactor_advisor.detectors._base import DetectorConfig
+from nominal_refactor_advisor.detectors._false_distinctions import (NameOnlySubclassDetector, UndistinguishedEnumMembersDetector)
 from nominal_refactor_advisor.patterns import PatternId
 from nominal_refactor_advisor.scan_cache import ScanCache
 

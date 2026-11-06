@@ -11,7 +11,7 @@ from nominal_refactor_advisor.ast_tools import ParsedModuleSet
 from nominal_refactor_advisor.analysis import analyze_modules
 from nominal_refactor_advisor.ast_tools import ParsedModule
 from nominal_refactor_advisor.class_index import CompactModuleClassProjectionFamily
-from nominal_refactor_advisor.detectors import DetectorConfig, IssueDetector
+from nominal_refactor_advisor.detectors._base import (DetectorConfig, IssueDetector)
 
 
 @pytest.mark.parametrize("use_alias", (False, True))

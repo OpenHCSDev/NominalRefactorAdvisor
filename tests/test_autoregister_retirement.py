@@ -19,7 +19,7 @@ from nominal_refactor_advisor.codemod_workflow import (
     CodemodRefactorGoalRunner,
     CodemodWorkflowStopReason,
 )
-from nominal_refactor_advisor.detectors import DetectorConfig, IssueDetector
+from nominal_refactor_advisor.detectors._base import (DetectorConfig, IssueDetector)
 
 
 def test_registry_observations_do_not_register_a_prescriptive_rent_detector() -> None:

@@ -6,13 +6,9 @@ from pathlib import Path
 
 from nominal_refactor_advisor.ast_tools import ParsedModuleSet
 from nominal_refactor_advisor.ast_tools import parse_python_modules
-from nominal_refactor_advisor.detectors import (
-    DetectorConfig,
-    IssueDetector,
-    RedundantTypeCheckDetector,
-    SemanticMirrorWithoutDescentDetector,
-    UnmodeledRecordShapeDetector,
-)
+from nominal_refactor_advisor.detectors._base import (DetectorConfig, IssueDetector)
+from nominal_refactor_advisor.detectors._record_checks import RedundantTypeCheckDetector
+from nominal_refactor_advisor.detectors._semantic_descent import (SemanticMirrorWithoutDescentDetector, UnmodeledRecordShapeDetector)
 from nominal_refactor_advisor.semantic_descent import (
     PresentationProjectionKind,
     build_semantic_descent_graph,

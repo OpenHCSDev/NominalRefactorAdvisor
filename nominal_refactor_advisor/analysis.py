@@ -86,23 +86,8 @@ from .class_index import (
     CompactModuleClassProjectionFamily,
 )
 from .ast_tools import ParsedModuleSet
-from .detectors import (
-    CompactClassRepositoryContext,
-    CompactFindingStream,
-    CompactModuleProjectionDetectorMixin,
-    CompactMultiModuleProjectionDetectorMixin,
-    CompactProjectionContextBuilder,
-    CompactProjectionGroupContextBuilder,
-    CompactProjectionGroups,
-    ContextualGlobalCacheContract,
-    ContextualModuleIssueDetector,
-    DetectorCacheGranularity,
-    DetectorConfig,
-    IssueDetector,
-    SemanticDescentGraphIssueDetector,
-    SourceLocalIssueDetectorMixin,
-    default_detectors,
-)
+from .detectors._base import (CompactClassRepositoryContext, CompactFindingStream, CompactModuleProjectionDetectorMixin, CompactMultiModuleProjectionDetectorMixin, CompactProjectionContextBuilder, CompactProjectionGroupContextBuilder, CompactProjectionGroups, ContextualGlobalCacheContract, ContextualModuleIssueDetector, DetectorCacheGranularity, DetectorConfig, IssueDetector, SemanticDescentGraphIssueDetector, SourceLocalIssueDetectorMixin)
+from .detectors._surface import default_detectors
 from .deadline import scan_deadline_checkpoint
 from .lean_export import findings_from_lean_export_path
 from .models import RefactorFinding, RefactorPlan

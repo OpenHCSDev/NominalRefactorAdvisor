@@ -30,7 +30,7 @@ from .codemod_workflow import (
     CodemodRefactorTrajectoryBudget,
     CodemodWorkflowScan,
 )
-from .detectors import DetectorConfig
+from .detectors._base import DetectorConfig
 from .json_reports import SemanticRecord, json_report_field, json_report_property
 from .member_census import CensusCorpus, MemberAwarenessCensusBuilder
 from .refactor_concepts import RefactorConcept

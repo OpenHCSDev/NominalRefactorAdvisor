@@ -21,7 +21,7 @@ from nominal_refactor_advisor.codemod import (
     SourceRewriteTarget,
     codemod_plan_from_findings,
 )
-from nominal_refactor_advisor.detectors import DeclaredCarrierExpansionDetector
+from nominal_refactor_advisor.detectors._carrier_collapse import DeclaredCarrierExpansionDetector
 from nominal_refactor_advisor.detectors._base import DetectorConfig
 from nominal_refactor_advisor.json_reports import json_report_object
 from nominal_refactor_advisor.models import ParameterThreadMetrics, SourceLocation

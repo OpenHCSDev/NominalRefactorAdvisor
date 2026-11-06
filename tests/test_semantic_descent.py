@@ -9,9 +9,7 @@ from nominal_refactor_advisor.ast_tools import ParsedModuleSet
 import nominal_refactor_advisor.semantic_descent as semantic_descent_module
 import nominal_refactor_advisor.semantic_refactor_gate as semantic_refactor_gate_module
 from nominal_refactor_advisor.json_reports import json_report_object
-from nominal_refactor_advisor.detectors import (
-    _semantic_descent as semantic_descent_detectors,
-)
+from nominal_refactor_advisor.detectors import _semantic_descent as semantic_descent_detectors
 from nominal_refactor_advisor.analysis import analyze_modules, analyze_path
 from nominal_refactor_advisor.ast_tools import parse_python_modules
 from nominal_refactor_advisor.codemod import (
@@ -32,12 +30,9 @@ from nominal_refactor_advisor.codemod import (
 )
 from nominal_refactor_advisor.codemod_source_cache import CodemodSourceContext
 from nominal_refactor_advisor.codemod_runtime import FindingRecipeSynthesisStatus
-from nominal_refactor_advisor.detectors import (
-    DetectorCacheGranularity,
-    DetectorConfig,
-    InheritedAutoRegisterConfigBoilerplateDetector,
-    SemanticMirrorWithoutDescentDetector,
-)
+from nominal_refactor_advisor.detectors._base import (DetectorCacheGranularity, DetectorConfig)
+from nominal_refactor_advisor.detectors._semantic_descent import SemanticMirrorWithoutDescentDetector
+from nominal_refactor_advisor.detectors._systemic import InheritedAutoRegisterConfigBoilerplateDetector
 from nominal_refactor_advisor.models import (
     BranchCountMetrics,
     ConstructorOwnedMappingMetrics,

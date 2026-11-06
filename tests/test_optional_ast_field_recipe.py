@@ -20,7 +20,7 @@ from nominal_refactor_advisor.codemod import codemod_plan_from_findings
 from nominal_refactor_advisor.codemod_runtime import CodemodSourceSnapshot
 from nominal_refactor_advisor.codemod_semantics import FindingRecipeSynthesisStatus
 from nominal_refactor_advisor.codemod_source_edits import SourceTextGeometry
-from nominal_refactor_advisor.detectors import DetectorConfig
+from nominal_refactor_advisor.detectors._base import DetectorConfig
 
 
 def _rewritten(

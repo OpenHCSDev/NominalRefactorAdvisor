@@ -5,7 +5,7 @@ from dataclasses import replace
 import pytest
 
 from nominal_refactor_advisor.descriptor_algebra import ClassAliasProperty
-from nominal_refactor_advisor.detectors import IssueDetector
+from nominal_refactor_advisor.detectors._base import IssueDetector
 from nominal_refactor_advisor.detectors._base import (
     CandidateCollectorScope,
     DetectorDeclaration,

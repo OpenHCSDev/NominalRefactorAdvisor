@@ -5,14 +5,8 @@ from pathlib import Path
 import pytest
 
 from nominal_refactor_advisor.ast_tools import parse_python_modules
-from nominal_refactor_advisor.detectors import (
-    ConstantSubtypeAnswerDetector,
-    DetectorConfig,
-    LambdaFoldDetector,
-    OwnStateBranchAnswerDetector,
-    ThreadedAbsenceDetector,
-    ZeroOneTupleDetector,
-)
+from nominal_refactor_advisor.detectors._base import DetectorConfig
+from nominal_refactor_advisor.detectors._relocations import (ConstantSubtypeAnswerDetector, LambdaFoldDetector, OwnStateBranchAnswerDetector, ThreadedAbsenceDetector, ZeroOneTupleDetector)
 from nominal_refactor_advisor.patterns import PatternId
 from nominal_refactor_advisor.scan_cache import ScanCache
 

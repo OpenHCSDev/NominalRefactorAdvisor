@@ -10,7 +10,7 @@ from registry_test_sources import keyed_registry_source
 from nominal_refactor_advisor.ast_tools import ParsedModuleSet
 from nominal_refactor_advisor.analysis import analyze_detector_types
 from nominal_refactor_advisor.ast_tools import ParsedModule
-from nominal_refactor_advisor.detectors import DetectorConfig, IssueDetector
+from nominal_refactor_advisor.detectors._base import (DetectorConfig, IssueDetector)
 
 
 @pytest.mark.parametrize("alias_keys", (False, True))
