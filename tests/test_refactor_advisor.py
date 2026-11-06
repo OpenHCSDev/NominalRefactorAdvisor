@@ -28,7 +28,6 @@ from native_use_test_support import (
     simulate_with_rendered_registry_creator_support,
 )
 
-import nominal_refactor_advisor as nominal_refactor_advisor_package
 import nominal_refactor_advisor.ast_tools as ast_tools_module
 import nominal_refactor_advisor.class_index as class_index_module
 import nominal_refactor_advisor.codemod_architecture_guards as codemod_architecture_guards_module
@@ -2680,10 +2679,6 @@ def test_delete_class_assignments_is_the_only_class_assignment_deletion_dsl() ->
         "delete_class_assignments"
     )
     assert "delete_class_assignment" not in RefactorRecipeOperation.__registry__
-    assert not hasattr(
-        nominal_refactor_advisor_package,
-        "DeleteClassAssignmentOperation",
-    )
 
 
 def test_recipe_snapshot_builds_target_node_index_once(
@@ -22021,49 +22016,26 @@ def test_codemod_workflow_reports_derive_json_from_declarations() -> None:
     )
 
 
-def test_codemod_workflow_types_are_public_package_exports() -> None:
-    import nominal_refactor_advisor as nra
-
-    from nominal_refactor_advisor import CodemodClassPlanProjectedDelta
-    from nominal_refactor_advisor import CodemodClassPlanProjectedDeltaReport
-    from nominal_refactor_advisor import CodemodClassPlanSiteProjectedDelta
-    from nominal_refactor_advisor import CodemodDetectorIdTransition
-    from nominal_refactor_advisor import CodemodFindingClassChange
-    from nominal_refactor_advisor import CodemodFindingClassDelta
-    from nominal_refactor_advisor import CodemodFindingClassStatus
-    from nominal_refactor_advisor import CodemodFindingDelta
-    from nominal_refactor_advisor import CodemodFindingIdTransition
-    from nominal_refactor_advisor import CodemodPlanSequence
-    from nominal_refactor_advisor import CodemodPlanSequenceContinuationReport
-    from nominal_refactor_advisor import CodemodPlanSequenceStageReport
-    from nominal_refactor_advisor import CodemodPlanSequenceSimulation
-    from nominal_refactor_advisor import CodemodProjectedFindingReport
-    from nominal_refactor_advisor import CodemodRefactorGoalProgress
-    from nominal_refactor_advisor import CodemodRefactorGoalReport
-    from nominal_refactor_advisor import CodemodRefactorGoalRunner
-    from nominal_refactor_advisor import CodemodRefactorGoalStage
-    from nominal_refactor_advisor import CodemodWorkflowStopReason
-    from nominal_refactor_advisor import CodemodSimulationFindingProjection
-    from nominal_refactor_advisor import CodemodSourceSnapshot
-    from nominal_refactor_advisor import CodemodWorkflowScan
-    from nominal_refactor_advisor import FindingRecipeClassPlan
-    from nominal_refactor_advisor import FindingRecipeClassPlanReport
-    from nominal_refactor_advisor import FindingRecipeProofObstacle
-    from nominal_refactor_advisor import FindingObligationClass
-    from nominal_refactor_advisor import NominalBoundaryConcept
-    from nominal_refactor_advisor import ProjectedScanModuleSet
-    from nominal_refactor_advisor import CarrierFieldProjection
-    from nominal_refactor_advisor import ReplaceFieldsWithCarrierOperation
-    from nominal_refactor_advisor import ReplaceTargetOperation
+def test_codemod_workflow_types_keep_their_family_relations() -> None:
+    from nominal_refactor_advisor.codemod import ReplaceTargetOperation
+    from nominal_refactor_advisor.codemod_workflow import (
+        CodemodClassPlanProjectedDelta,
+        CodemodClassPlanSiteProjectedDelta,
+        CodemodFindingClassChange,
+        CodemodFindingClassDelta,
+        CodemodFindingClassStatus,
+        CodemodFindingDelta,
+        CodemodFindingIdTransition,
+        CodemodRefactorGoalProgress,
+        CodemodWorkflowStopReason,
+    )
+    from nominal_refactor_advisor.refactor_concepts import NominalBoundaryConcept
 
     delta = CodemodFindingDelta(
         before_ids=("a", "b"),
         after_ids=("b", "c"),
         expected_removed_finding_ids=("a",),
     )
-    assert not hasattr(nra, "CodemodFindingChangeCarrier")
-    assert not hasattr(nra, "CodemodFindingChangeProjection")
-    assert CodemodFindingClassChange.__name__ == "CodemodFindingClassChange"
     assert issubclass(CodemodFindingClassChange, CodemodFindingDelta)
     assert issubclass(CodemodFindingDelta, CodemodFindingIdTransition)
     assert issubclass(CodemodRefactorGoalProgress, CodemodFindingIdTransition)
@@ -22076,22 +22048,7 @@ def test_codemod_workflow_types_are_public_package_exports() -> None:
         "before_ids",
         "after_ids",
     )
-    assert CodemodFindingIdTransition.__name__ == "CodemodFindingIdTransition"
-    assert CodemodDetectorIdTransition.__name__ == "CodemodDetectorIdTransition"
-    assert CodemodFindingClassDelta.__name__ == "CodemodFindingClassDelta"
-    assert FindingObligationClass.__name__ == "FindingObligationClass"
     assert CodemodFindingClassStatus.MOVED.value == "moved"
-    assert not hasattr(nra, "CodemodPlanJsonParser")
-    assert not hasattr(nra, "RefactorRecipeTargetShape")
-    assert CodemodClassPlanProjectedDelta.__name__ == "CodemodClassPlanProjectedDelta"
-    assert (
-        CodemodClassPlanProjectedDeltaReport.__name__
-        == "CodemodClassPlanProjectedDeltaReport"
-    )
-    assert (
-        CodemodClassPlanSiteProjectedDelta.__name__
-        == "CodemodClassPlanSiteProjectedDelta"
-    )
     assert issubclass(CodemodClassPlanProjectedDelta, CodemodFindingClassDelta)
     assert issubclass(
         CodemodClassPlanSiteProjectedDelta,
@@ -22104,55 +22061,9 @@ def test_codemod_workflow_types_are_public_package_exports() -> None:
             CodemodClassPlanSiteProjectedDelta,
         )
     )
-    assert FindingRecipeClassPlan.__name__ == "FindingRecipeClassPlan"
-    assert FindingRecipeClassPlanReport.__name__ == "FindingRecipeClassPlanReport"
-    assert FindingRecipeProofObstacle.__name__ == "FindingRecipeProofObstacle"
-    assert not hasattr(nra, "CodemodGuardedWorkflowRequest")
-    assert CodemodPlanSequence.__name__ == "CodemodPlanSequence"
-    assert (
-        CodemodPlanSequenceContinuationReport.__name__
-        == "CodemodPlanSequenceContinuationReport"
-    )
-    assert CodemodPlanSequenceStageReport.__name__ == "CodemodPlanSequenceStageReport"
-    assert CodemodPlanSequenceSimulation.__name__ == "CodemodPlanSequenceSimulation"
-    assert CodemodProjectedFindingReport.__name__ == "CodemodProjectedFindingReport"
-    assert nra.CodemodProjectedScanMode is CodemodProjectedScanMode
-    assert (
-        CodemodSimulationFindingProjection.__name__
-        == "CodemodSimulationFindingProjection"
-    )
-    assert CodemodSourceSnapshot.__name__ == "CodemodSourceSnapshot"
-    assert not hasattr(nra, "CodemodRefactorGoal")
-    assert not hasattr(nra, "CodemodRefactorGoalFindingSelector")
-    assert not hasattr(nra, "CodemodRefactorGoalSelectorCoverage")
-    assert not hasattr(nra, "CodemodRefactorGoalSelectorManifest")
-    assert CodemodRefactorGoalProgress.__name__ == "CodemodRefactorGoalProgress"
-    assert CodemodRefactorGoalReport.__name__ == "CodemodRefactorGoalReport"
-    assert CodemodRefactorGoalRunner.__name__ == "CodemodRefactorGoalRunner"
-    assert CodemodRefactorGoalStage.__name__ == "CodemodRefactorGoalStage"
     assert NominalBoundaryConcept.concept_key() == "nominal_boundary"
     assert ReplaceTargetOperation.operation_key() == "replace_target"
     assert CodemodWorkflowStopReason.ACHIEVED.value == "achieved"
-    assert CodemodWorkflowScan.__name__ == "CodemodWorkflowScan"
-    assert not hasattr(nra, "CodemodWorkflowReport")
-    assert not hasattr(nra, "CodemodWorkflowPlan")
-    assert not hasattr(nra, "CodemodWorkflowPlanJsonParser")
-    assert not hasattr(nra, "CodemodWorkflowPlanKind")
-    assert not hasattr(nra, "CodemodFixpointRunner")
-    assert not hasattr(nra, "CodemodFixpointWorkflowPlan")
-    assert not hasattr(nra, "CodemodRefactorGoalWorkflowPlan")
-    assert not hasattr(nra, "CodemodWorkflowRunContext")
-    assert not hasattr(nra, "ParseCacheRequest")
-    assert not hasattr(nra, "CodemodStrategyRegistry")
-    assert not hasattr(nra, "CodemodWorkflowScanRequest")
-    assert ProjectedScanModuleSet.__name__ == "ProjectedScanModuleSet"
-    assert CarrierFieldProjection.__name__ == "CarrierFieldProjection"
-    assert (
-        ReplaceFieldsWithCarrierOperation.__name__
-        == "ReplaceFieldsWithCarrierOperation"
-    )
-    assert not hasattr(nra, "SourceRewriteSimulationPayload")
-    assert not hasattr(delta, "finding_ids")
     assert delta.removed_ids == ("a",)
     assert delta.added_ids == ("c",)
     assert delta.fulfilled_expected_removals is True
@@ -26228,24 +26139,6 @@ def test_explicit_public_api_surface_is_not_a_semantic_mirror(tmp_path: Path) ->
     findings = analyze_path(tmp_path)
     assert not any(
         finding.detector_id == "manual_public_api_surface" for finding in findings
-    )
-
-
-def test_public_api_exports_semantic_axes_from_declaration_owner() -> None:
-    import nominal_refactor_advisor as public_api
-
-    assert public_api.CancelableCompositionKind is (
-        cancelable_composition_module.CancelableCompositionKind
-    )
-    public_names = (
-        "CodemodBackend",
-        "FindingRecipePlanningHorizon",
-        "FindingRecipeSynthesisStatus",
-    )
-
-    assert all(
-        getattr(public_api, name) is getattr(codemod_semantics_module, name)
-        for name in public_names
     )
 
 

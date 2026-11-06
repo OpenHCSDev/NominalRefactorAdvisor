@@ -16,7 +16,8 @@ from nominal_refactor_advisor import detectors
 from nominal_refactor_advisor import semantic_match
 from nominal_refactor_advisor.analysis import analyze_modules
 from nominal_refactor_advisor.ast_tools import parse_python_modules
-from nominal_refactor_advisor.models import DispatchCountMetrics
+from nominal_refactor_advisor.models import DispatchCountMetrics, RefactorFinding, SourceLocation
+from nominal_refactor_advisor.patterns import PatternId
 
 EXPECTED_EXECUTABLE_CONCEPTS = {
     codemod.RepeatedBuilderSourceProjectionAuthorityMethod: (
@@ -188,9 +189,9 @@ def test_detector_declarations_own_recipe_evaluation_through_mro() -> None:
         detector_id = detector_type.effective_detector_id()
         assert detector_id is not None
         assert detector_type.detector_declaration_type() is detector_type
-        finding = advisor.RefactorFinding(
+        finding = RefactorFinding(
             detector_id=detector_id,
-            pattern_id=advisor.PatternId.NOMINAL_BOUNDARY,
+            pattern_id=PatternId.NOMINAL_BOUNDARY,
             title="Recipe evaluation declaration",
             summary="The detector declaration owns evaluation through its MRO.",
             why="A separate evaluator registry would mirror detector identity.",
@@ -331,9 +332,9 @@ def test_unrelated_concepts_do_not_match() -> None:
 
 
 def test_nominal_boundary_does_not_select_unexecutable_ssot_detectors() -> None:
-    finding = advisor.RefactorFinding(
+    finding = RefactorFinding(
         detector_id="constant_property_default_bundle",
-        pattern_id=advisor.PatternId.AUTHORITATIVE_SCHEMA,
+        pattern_id=PatternId.AUTHORITATIVE_SCHEMA,
         title="Constant property defaults",
         summary="An SSOT detector without an executable declaration.",
         why="Detector roles do not prove executable migration ownership.",
@@ -350,9 +351,9 @@ def test_nominal_boundary_does_not_select_unexecutable_ssot_detectors() -> None:
 
 
 def test_registered_detector_cannot_infer_recipe_capability_from_metrics() -> None:
-    finding = advisor.RefactorFinding(
+    finding = RefactorFinding(
         detector_id="constant_property_default_bundle",
-        pattern_id=advisor.PatternId.AUTHORITATIVE_SCHEMA,
+        pattern_id=PatternId.AUTHORITATIVE_SCHEMA,
         title="Dispatch-shaped evidence",
         summary="Metrics cannot supply an undeclared recipe capability.",
         why="The registered detector declaration owns its executable semantics.",
@@ -368,10 +369,10 @@ def test_registered_detector_cannot_infer_recipe_capability_from_metrics() -> No
 
 
 def test_semantic_mirror_contract_requires_projection_and_preserves_unknown_authority() -> None:
-    projection = advisor.SourceLocation("module.py", 3, "ROLE_TABLE")
-    finding = advisor.RefactorFinding(
+    projection = SourceLocation("module.py", 3, "ROLE_TABLE")
+    finding = RefactorFinding(
         detector_id="semantic_mirror_without_descent",
-        pattern_id=advisor.PatternId.NOMINAL_BOUNDARY,
+        pattern_id=PatternId.NOMINAL_BOUNDARY,
         title="Semantic mirror",
         summary="A projection has no proven authority.",
         why="Projection semantics may drift.",

@@ -5,7 +5,7 @@ from pathlib import Path
 
 import nominal_refactor_advisor.semantic_inspection as semantic_inspection_module
 
-from nominal_refactor_advisor import (
+from nominal_refactor_advisor.semantic_inspection import (
     FunctionSummaryKind,
     ImportSummaryKind,
     SemanticInspectionIdentityKind,
