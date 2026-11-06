@@ -8,7 +8,7 @@ from nominal_refactor_advisor.ast_tools import ParsedModuleSet
 from nominal_refactor_advisor import analysis
 from nominal_refactor_advisor.analysis_cache import AnalysisEngineSignature
 from nominal_refactor_advisor.ast_tools import SourceModule
-from nominal_refactor_advisor.detectors import DetectorConfig
+from nominal_refactor_advisor.detectors._base import DetectorConfig
 from nominal_refactor_advisor.scan_cache import ScanCache
 
 

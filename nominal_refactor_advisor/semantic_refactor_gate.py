@@ -8,7 +8,8 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import ClassVar
 
-from .detectors import IssueDetector, SemanticMirrorWithoutDescentDetector
+from .detectors._base import IssueDetector
+from .detectors._semantic_descent import SemanticMirrorWithoutDescentDetector
 from .json_reports import (
     DataclassJsonReport,
     JsonReport,

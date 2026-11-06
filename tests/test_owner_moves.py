@@ -31,7 +31,7 @@ from nominal_refactor_advisor.codemod_workflow import (
     CodemodRefactorGoalRunner,
     CodemodWorkflowScan,
 )
-from nominal_refactor_advisor.detectors import DetectorConfig
+from nominal_refactor_advisor.detectors._base import DetectorConfig
 from nominal_refactor_advisor.json_reports import json_report_object
 from nominal_refactor_advisor.owner_candidates import OwnerPick
 from nominal_refactor_advisor.owner_picks import OwnerPicks

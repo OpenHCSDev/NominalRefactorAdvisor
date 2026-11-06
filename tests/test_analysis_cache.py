@@ -59,13 +59,15 @@ from nominal_refactor_advisor.analysis_cache import (
     SourceFileSignatureCache,
 )
 from nominal_refactor_advisor.ast_tools import (
-    BuilderCallShapeFamily,
     CollectedFamily,
-    RegistrationShapeFamily,
     SourceModule,
     collect_family_items,
     parse_python_module_roots,
     parse_python_modules,
+)
+from nominal_refactor_advisor.observation_families import (
+    BuilderCallShapeFamily,
+    RegistrationShapeFamily,
 )
 from nominal_refactor_advisor.native_syntax import NativePythonSyntaxIndex
 from nominal_refactor_advisor import ast_tools as ast_tools_module
@@ -101,21 +103,12 @@ from nominal_refactor_advisor.codemod_source_cache import (
     CodemodSourceContextCache,
     CodemodSourceContextCacheEntry,
 )
-from nominal_refactor_advisor.detectors import (
-    CrossModuleCandidateDetector,
-    DetectorCacheGranularity,
-    DetectorConfig,
-    IssueDetector,
-    PerModuleIssueDetector,
-    SemanticDescentGraphIssueDetector,
-)
+from nominal_refactor_advisor.detectors._base import (CrossModuleCandidateDetector, DetectorCacheGranularity, DetectorConfig, IssueDetector, PerModuleIssueDetector, SemanticDescentGraphIssueDetector)
 from nominal_refactor_advisor.detectors import _environment as environment_detectors
 from nominal_refactor_advisor.detectors import _base as base_detectors
 from nominal_refactor_advisor.detectors import _helpers as helper_detectors
 from nominal_refactor_advisor.detectors import _runtime as runtime_detectors
-from nominal_refactor_advisor.detectors import (
-    _semantic_descent as semantic_descent_detectors,
-)
+from nominal_refactor_advisor.detectors import _semantic_descent as semantic_descent_detectors
 from nominal_refactor_advisor.detectors import _structural as structural_detectors
 from nominal_refactor_advisor.detectors import _systemic as systemic_detectors
 from nominal_refactor_advisor.models import (
@@ -1391,7 +1384,7 @@ def test_detector_registry_signature_tracks_detector_module_source(
 
     def write_detector(helper_value: int) -> None:
         module_path.write_text(
-            "from nominal_refactor_advisor.detectors import IssueDetector\n"
+            "from nominal_refactor_advisor.detectors._base import IssueDetector\n"
             "\n"
             "class DynamicDetector(IssueDetector):\n"
             "    detector_id = 'dynamic_signature_detector'\n"

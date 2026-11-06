@@ -6,11 +6,8 @@ import pytest
 
 from nominal_refactor_advisor.ast_tools import ParsedModuleSet
 from nominal_refactor_advisor.ast_tools import SourceModule
-from nominal_refactor_advisor.detectors import (
-    DetectorConfig,
-    ExternalEnumCaseRecoveryDetector,
-    ResidualClosedAxisIndirectionDetector,
-)
+from nominal_refactor_advisor.detectors._base import DetectorConfig
+from nominal_refactor_advisor.detectors._systemic import (ExternalEnumCaseRecoveryDetector, ResidualClosedAxisIndirectionDetector)
 from nominal_refactor_advisor.taxonomy import CertificationLevel
 
 

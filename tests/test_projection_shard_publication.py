@@ -18,7 +18,7 @@ from nominal_refactor_advisor.ast_tools import (
     collect_family_items,
     collected_family_items_content_signature,
 )
-from nominal_refactor_advisor.detectors import DetectorConfig
+from nominal_refactor_advisor.detectors._base import DetectorConfig
 from nominal_refactor_advisor.class_index import CompactModuleClassProjectionFamily
 from nominal_refactor_advisor.product_flow import (
     CompactProductFlowModuleProjectionFamily,

@@ -12,17 +12,8 @@ from nominal_refactor_advisor.codemod import (
     EraseDeadCompatibilityOperation,
     FindingRecipeEvaluator,
 )
-from nominal_refactor_advisor.detectors import (
-    DeadModuleDetector,
-    ExactKeySetDetector,
-    ForeignAbsenceProbeDetector,
-    ForwardingFacadeDetector,
-    LegacyPathMarkerDetector,
-    NamedAttributeDetector,
-    OwnTypeTestDetector,
-    RestatedIdentityDetector,
-    StringKindDispatchDetector,
-)
+from nominal_refactor_advisor.detectors._restated_facts import (DeadModuleDetector, ExactKeySetDetector, ForeignAbsenceProbeDetector, ForwardingFacadeDetector, LegacyPathMarkerDetector, NamedAttributeDetector, OwnTypeTestDetector, StringKindDispatchDetector)
+from nominal_refactor_advisor.detectors._restated_identity import RestatedIdentityDetector
 from nominal_refactor_advisor.patterns import PatternId
 
 DETECTORS = (

@@ -4239,39 +4239,3 @@ def _class_name_from_expr(
     node: ast.AST, known_class_family: AstNameFamily
 ) -> str | None:
     return known_class_family.matching_name(node)
-
-
-from .observation_families import (
-    AssignmentRegistrationShapeSpec,
-    BuilderCallShapeFamily,
-    BuilderCallShapeSpec,
-    CallRegistrationShapeSpec,
-    ClassObservationSpec,
-    DataclassBodyFieldObservationSpec,
-    DecoratorRegistrationShapeSpec,
-    DynamicMethodInjectionObservationFamily,
-    DynamicMethodInjectionObservationSpec,
-    FieldObservationFamily,
-    FieldObservationSpec,
-    InitAssignmentFieldObservationSpec,
-    InlineLiteralDispatchObservationSpec,
-    InlineStringLiteralDispatchObservationFamily,
-    InlineStringLiteralDispatchObservationSpec,
-    KnownClassFamilyShapeSpec,
-    LiteralDispatchObservationSpec,
-    NumericLiteralDispatchObservationFamily,
-    NumericLiteralDispatchObservationSpec,
-    ObservationFamily,
-    RegistrationShapeFamily,
-    RegistrationShapeSpec,
-    SentinelTypeAssignmentObservationSpec,
-    SentinelTypeObservationFamily,
-    SentinelTypeObservationSpec,
-    SentinelTypeUsageObservationSpec,
-    ShapeFamily,
-    StandardDynamicMethodInjectionObservationSpec,
-    StringLiteralDispatchObservationFamily,
-    StringLiteralDispatchObservationSpec,
-    TypedLiteralObservationFamily,
-    TypedLiteralObservationSpec,
-)

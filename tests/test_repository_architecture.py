@@ -9,11 +9,8 @@ from nominal_refactor_advisor.detector_capabilities import (
     DetectorContributionRole,
     DetectorRefactorCapabilityReport,
 )
-from nominal_refactor_advisor.detectors import (
-    DetectorConfig,
-    ExternalEnumCaseRecoveryDetector,
-    IssueDetector,
-)
+from nominal_refactor_advisor.detectors._base import (DetectorConfig, IssueDetector)
+from nominal_refactor_advisor.detectors._systemic import ExternalEnumCaseRecoveryDetector
 from nominal_refactor_advisor.detectors._base import DerivedCandidateCollectorMixin
 from nominal_refactor_advisor.descriptor_algebra import ClassAliasProperty
 from nominal_refactor_advisor.detectors._runtime import (

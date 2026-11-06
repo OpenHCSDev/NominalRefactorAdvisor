@@ -13,7 +13,7 @@ from nominal_refactor_advisor.analysis_cache import (
     DetectorRegistrySignature,
     _module_source_signature,
 )
-from nominal_refactor_advisor.detectors import IssueDetector
+from nominal_refactor_advisor.detectors._base import IssueDetector
 from nominal_refactor_advisor.implementation_identity import ImplementationSource
 from nominal_refactor_advisor.scan_cache import ScanCache
 

@@ -15,9 +15,7 @@ from nominal_refactor_advisor.analysis_cache import (
     AnalysisEngineSignature,
     detector_module_source_hash,
 )
-from nominal_refactor_advisor.ast_tools import (
-    BuilderCallShapeFamily,
-)
+from nominal_refactor_advisor.observation_families import BuilderCallShapeFamily
 from nominal_refactor_advisor.implementation_identity import (
     ImplementationSource,
     declaration_implementation_module_names,

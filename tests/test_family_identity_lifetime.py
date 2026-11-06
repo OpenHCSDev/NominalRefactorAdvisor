@@ -9,10 +9,10 @@ import weakref
 import pytest
 
 from nominal_refactor_advisor.ast_tools import (
-    BuilderCallShapeFamily,
     CollectedFamilyCacheContext,
     CollectedFamilySchemaIdentity,
 )
+from nominal_refactor_advisor.observation_families import BuilderCallShapeFamily
 from nominal_refactor_advisor.scan_cache import ScanCache
 
 

@@ -34,11 +34,7 @@ from .cache_checkout import (
     semantic_root_labels,
 )
 from .case_root import Case
-from .detectors import (
-    CompactModuleProjectionDetectorMixin,
-    DetectorConfig,
-    IssueDetector,
-)
+from .detectors._base import (CompactModuleProjectionDetectorMixin, DetectorConfig, IssueDetector)
 from .finding_counts import FindingSummary
 from .implementation_identity import (
     ImplementationSource,

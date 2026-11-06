@@ -9,10 +9,10 @@ from dataclasses import dataclass, field, fields, make_dataclass, replace
 import pytest
 
 from nominal_refactor_advisor.ast_tools import (
-    BuilderCallShapeFamily,
     CollectedFamilyCacheContext,
     CollectedFamilySchemaIdentity,
 )
+from nominal_refactor_advisor.observation_families import BuilderCallShapeFamily
 from nominal_refactor_advisor.scan_cache import ScanCache
 from nominal_refactor_advisor.value_graph import CachedDataclassRepresentation
 

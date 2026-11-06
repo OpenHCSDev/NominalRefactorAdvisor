@@ -12,7 +12,7 @@ def test_detector_registry_lazy_discovery_imports_private_collectors() -> None:
             sys.executable,
             "-c",
             (
-                "from nominal_refactor_advisor.detectors import default_detectors; "
+                "from nominal_refactor_advisor.detectors._surface import default_detectors; "
                 "detectors = default_detectors(); "
                 "assert detectors"
             ),
@@ -27,11 +27,7 @@ def test_detector_registry_lazy_discovery_imports_private_collectors() -> None:
 
 
 def test_authority_boundary_relations_are_inherited_by_detector_families() -> None:
-    from nominal_refactor_advisor.detectors import (
-        IssueDetector,
-        SemanticMirrorIssueDetector,
-        SsotAuthorityBoundaryDetector,
-    )
+    from nominal_refactor_advisor.detectors._base import (IssueDetector, SemanticMirrorIssueDetector, SsotAuthorityBoundaryDetector)
 
     semantic_mirror_ids = IssueDetector.semantic_mirror_detector_ids()
     ssot_authority_ids = IssueDetector.ssot_authority_detector_ids()

@@ -28,7 +28,7 @@ from nominal_refactor_advisor.codemod_workflow import (
     CodemodWorkflowScan,
     CodemodWorkflowStopReason,
 )
-from nominal_refactor_advisor.detectors import ClosedParameterConveyorDetector
+from nominal_refactor_advisor.detectors._carrier_collapse import ClosedParameterConveyorDetector
 from nominal_refactor_advisor.detectors._base import DetectorConfig
 from nominal_refactor_advisor.json_reports import json_report_object
 from nominal_refactor_advisor.models import ParameterThreadMetrics, SourceLocation

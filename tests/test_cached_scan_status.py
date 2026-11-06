@@ -28,7 +28,7 @@ from nominal_refactor_advisor.analysis_cache import (
     Partial,
 )
 from nominal_refactor_advisor.ast_tools import PythonSourcePathPolicy
-from nominal_refactor_advisor.detectors import DetectorConfig
+from nominal_refactor_advisor.detectors._base import DetectorConfig
 from nominal_refactor_advisor.finding_counts import FindingSummary
 from nominal_refactor_advisor.models import FindingSpec, SourceLocation
 from nominal_refactor_advisor.patterns import PatternId

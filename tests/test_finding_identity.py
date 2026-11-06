@@ -3,7 +3,7 @@
 from pathlib import Path
 
 from nominal_refactor_advisor.ast_tools import ParsedModuleSet, SourceModule
-from nominal_refactor_advisor.detectors import DetectorConfig
+from nominal_refactor_advisor.detectors._base import DetectorConfig
 from nominal_refactor_advisor.detectors._heuristic_leads import (
     LongConditionFactoringLeadDetector,
 )

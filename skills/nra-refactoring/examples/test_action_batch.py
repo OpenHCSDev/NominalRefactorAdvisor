@@ -18,7 +18,7 @@ from nominal_refactor_advisor.codemod import (
     RefactorRecipe,
     SourceRewriteTarget,
 )
-from nominal_refactor_advisor.detectors import DetectorConfig
+from nominal_refactor_advisor.detectors._base import DetectorConfig
 from nominal_refactor_advisor.detectors._runtime import (
     StringLiteralDispatchOwnershipLeadDetector,
 )

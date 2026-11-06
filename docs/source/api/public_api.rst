@@ -4,13 +4,6 @@ Public API
 This page documents the import surface that downstream tooling should prefer.
 It does not restate every internal helper module.
 
-Package Surface
----------------
-
-.. automodule:: nominal_refactor_advisor
-   :members:
-
-
 CLI Entry Points
 ----------------
 

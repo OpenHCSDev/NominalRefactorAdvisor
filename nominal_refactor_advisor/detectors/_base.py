@@ -38,7 +38,7 @@ from typing import (
     cast,
 )
 
-from metaclass_registry import AutoRegisterMeta
+from metaclass_registry import AutoRegisterMeta, LazyDiscoveryDict, RegistryConfig
 
 from ..ast_field_decoders import ParameterAnnotations
 from ..ast_projection import ExpressionReference
@@ -100,28 +100,30 @@ from ..ast_tools import (
     BuiltinCallName,
     AstParentIndex,
     BuilderCallShape,
-    BuilderCallShapeFamily,
     ClassFunctionStackNodeVisitor,
     CollectedFamily,
     CollectedFamilyPresenceDemand,
     FieldObservation,
-    FieldObservationFamily,
     DynamicMethodInjectionObservation,
-    DynamicMethodInjectionObservationFamily,
     ParsedModule,
     SourceModule,
     RegistrationShape,
-    RegistrationShapeFamily,
     ScopedAstObservation,
     SentinelTypeObservation,
-    SentinelTypeObservationFamily,
     LiteralDispatchObservation,
-    NumericLiteralDispatchObservationFamily,
     collect_family_items,
     structural_ast_hash,
     walk_function_body_nodes,
     _walk_nodes,
     _builder_call_shape,
+)
+from ..observation_families import (
+    BuilderCallShapeFamily,
+    FieldObservationFamily,
+    DynamicMethodInjectionObservationFamily,
+    RegistrationShapeFamily,
+    SentinelTypeObservationFamily,
+    NumericLiteralDispatchObservationFamily,
 )
 from ..native_syntax import NativePythonSyntaxIndex
 from ..positional_forwarding import PositionalForwardingCall
@@ -497,11 +499,17 @@ class DetectorCacheGranularity(StrEnum):
 
 
 class IssueDetector(RequiredRelationDeclaration, metaclass=AutoRegisterMeta):
-    """Metaclass-registered detector base class."""
+    """Metaclass-registered detector base class. The registry imports every module of
+    this package on its first read, so no importer has to load the family by hand."""
 
-    __registry_key__ = "detector_id"
-    __key_extractor__ = staticmethod(_detector_id_from_class_name)
-    __skip_if_no_key__ = True
+    __registry_config__ = RegistryConfig(
+        registry_dict=LazyDiscoveryDict(),
+        key_attribute="detector_id",
+        key_extractor=_detector_id_from_class_name,
+        skip_if_no_key=True,
+        registry_name="detector",
+        discovery_package=__package__,
+    )
     detector_id: ClassVar[str | None] = None
     finding_spec: ClassVar[FindingSpec]
     detector_declaration: ClassVar[DetectorDeclaration[object] | None] = None

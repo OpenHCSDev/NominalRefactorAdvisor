@@ -6,7 +6,7 @@ from pathlib import Path
 
 from nominal_refactor_advisor.ast_tools import parse_python_modules
 from nominal_refactor_advisor.codemod import CodemodSourceSnapshot
-from nominal_refactor_advisor.detectors import DetectorConfig
+from nominal_refactor_advisor.detectors._base import DetectorConfig
 from nominal_refactor_advisor.detectors._runtime import ManualClassRegistrationDetector
 
 REGISTRY_MODULE = (

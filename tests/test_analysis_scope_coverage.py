@@ -7,7 +7,7 @@ import pytest
 from nominal_refactor_advisor.analysis import AnalysisPathScope
 from nominal_refactor_advisor.analysis_cache import AnalysisCacheIdentity
 from nominal_refactor_advisor.ast_tools import parse_python_module_roots
-from nominal_refactor_advisor.detectors import DetectorConfig
+from nominal_refactor_advisor.detectors._base import DetectorConfig
 
 
 @pytest.mark.parametrize("report_kind", ("same", "parent", "reordered", "redundant"))

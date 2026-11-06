@@ -14,10 +14,8 @@ from nominal_refactor_advisor.codemod import (
     CodemodSourceSnapshot,
     FindingRecipeSynthesisStatus,
 )
-from nominal_refactor_advisor.detectors import (
-    DetectorConfig,
-    EnvironmentBooleanAuthorityDriftDetector,
-)
+from nominal_refactor_advisor.detectors._base import DetectorConfig
+from nominal_refactor_advisor.detectors._environment import EnvironmentBooleanAuthorityDriftDetector
 from nominal_refactor_advisor.json_reports import json_report_object
 from nominal_refactor_advisor.models import (
     EnvironmentReadKind,

@@ -24,7 +24,7 @@ from nominal_refactor_advisor.analysis_cache import (
     DetectorRegistrySignature,
 )
 from nominal_refactor_advisor.ast_tools import parse_python_modules
-from nominal_refactor_advisor.detectors import DetectorConfig, IssueDetector
+from nominal_refactor_advisor.detectors._base import (DetectorConfig, IssueDetector)
 from nominal_refactor_advisor.deadline import (
     ScanDeadline,
     ScanDeadlineExceeded,

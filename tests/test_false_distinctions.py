@@ -12,11 +12,8 @@ from nominal_refactor_advisor.codemod_false_distinctions import (
     CollapseIdenticalArmsOperation,
     MergeTypeTestArmsOperation,
 )
-from nominal_refactor_advisor.detectors import (
-    DetectorConfig,
-    IdenticalArmsDetector,
-    UndistinguishedTypeTestDetector,
-)
+from nominal_refactor_advisor.detectors._base import DetectorConfig
+from nominal_refactor_advisor.detectors._false_distinctions import (IdenticalArmsDetector, UndistinguishedTypeTestDetector)
 from nominal_refactor_advisor.patterns import PatternId
 from nominal_refactor_advisor.scan_cache import ScanCache
 
