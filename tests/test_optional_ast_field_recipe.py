@@ -5,7 +5,10 @@ from pathlib import Path
 
 import pytest
 
-from nominal_refactor_advisor import ast_field_decoders, detectors
+from nominal_refactor_advisor import ast_field_decoders
+from nominal_refactor_advisor.detectors._registration_owners import HandRolledRegistrationDetector
+from nominal_refactor_advisor.detectors._restated_facts import ForeignAbsenceProbeDetector
+from nominal_refactor_advisor.detectors._runtime import ManualClassRegistrationDetector
 from nominal_refactor_advisor.ast_tools import SourceModule, parse_python_modules
 from nominal_refactor_advisor.codemod_optional_ast_field import (
     KeywordNameDecoder,
@@ -377,8 +380,8 @@ def test_generated_owners_register_nothing_by_hand(tmp_path: Path) -> None:
     assert [
         finding.summary
         for detector in (
-            detectors.HandRolledRegistrationDetector,
-            detectors.ManualClassRegistrationDetector,
+            HandRolledRegistrationDetector,
+            ManualClassRegistrationDetector,
         )
         for finding in detector().detect(modules, DetectorConfig())
     ] == []
@@ -399,7 +402,7 @@ def _capture_name_records(tmp_path: Path, other_source: str = ""):
     modules = parse_python_modules(tmp_path)
     findings = tuple(
         finding
-        for finding in detectors.ForeignAbsenceProbeDetector().detect(
+        for finding in ForeignAbsenceProbeDetector().detect(
             modules, DetectorConfig()
         )
         if finding.detector_id == "foreign_absence_probe"

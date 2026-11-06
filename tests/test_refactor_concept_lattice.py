@@ -12,7 +12,12 @@ from nominal_refactor_advisor.ast_tools import ParsedModuleSet
 import nominal_refactor_advisor as advisor
 from nominal_refactor_advisor import codemod
 from nominal_refactor_advisor import codemod_workflow
-from nominal_refactor_advisor import detectors
+from nominal_refactor_advisor.detectors._base import DetectorConfig, IssueDetector, SsotAuthorityBoundaryDetector
+from nominal_refactor_advisor.detectors._carrier_collapse import ClosedParameterConveyorDetector, DeclaredCarrierExpansionDetector
+from nominal_refactor_advisor.detectors._class_overlap import DuplicateClassDetector, MissingMixinDetector
+from nominal_refactor_advisor.detectors._runtime import ManualClassRegistrationDetector, NumericLiteralDispatchDetector
+from nominal_refactor_advisor.detectors._structural import ExactLeafMethodAncestorPromotionDetector
+from nominal_refactor_advisor.detectors._systemic import AutoRegisterExplicitPriorityOrderingDetector, DeclarativeDetectorClassDetector, DirectBuildFindingRendererDetector, InheritedAutoRegisterConfigBoilerplateDetector
 from nominal_refactor_advisor import semantic_match
 from nominal_refactor_advisor.analysis import analyze_modules
 from nominal_refactor_advisor.ast_tools import parse_python_modules
@@ -75,31 +80,31 @@ EXPECTED_EXECUTABLE_CONCEPTS = {
     codemod.RepeatedBuilderCallFindingRecipeSynthesizer: (
         codemod.ConstructorKwargCollapseConcept
     ),
-    detectors.ManualClassRegistrationDetector: (
+    ManualClassRegistrationDetector: (
         codemod.AutoRegisterClassRegistryConcept
     ),
-    detectors.ExactLeafMethodAncestorPromotionDetector: (
+    ExactLeafMethodAncestorPromotionDetector: (
         codemod.ClassFamilyAuthorityConcept
     ),
-    detectors.NumericLiteralDispatchDetector: (
+    NumericLiteralDispatchDetector: (
         codemod.AutoRegisterStrategyFamilyConcept
     ),
-    detectors.InheritedAutoRegisterConfigBoilerplateDetector: (
+    InheritedAutoRegisterConfigBoilerplateDetector: (
         codemod.AutoRegisterConcept
     ),
-    detectors.AutoRegisterExplicitPriorityOrderingDetector: (
+    AutoRegisterExplicitPriorityOrderingDetector: (
         codemod.AutoRegisterMroOrderingConcept
     ),
-    detectors.DeclarativeDetectorClassDetector: (
+    DeclarativeDetectorClassDetector: (
         codemod.ClassFamilyAuthorityConcept
     ),
-    detectors.DirectBuildFindingRendererDetector: (
+    DirectBuildFindingRendererDetector: (
         codemod.ClassFamilyAuthorityConcept
     ),
-    detectors.DuplicateClassDetector: codemod.ClassBodyCompositionConcept,
-    detectors.MissingMixinDetector: codemod.ClassBodyCompositionConcept,
-    detectors.ClosedParameterConveyorDetector: codemod.SemanticCarrierConcept,
-    detectors.DeclaredCarrierExpansionDetector: codemod.SemanticCarrierConcept,
+    DuplicateClassDetector: codemod.ClassBodyCompositionConcept,
+    MissingMixinDetector: codemod.ClassBodyCompositionConcept,
+    ClosedParameterConveyorDetector: codemod.SemanticCarrierConcept,
+    DeclaredCarrierExpansionDetector: codemod.SemanticCarrierConcept,
     codemod.EnumSubsetSemanticMirrorRecipeBuilder: (codemod.DerivedProjectionConcept),
     codemod.AutoregisterInstanceViewRecipeBuilder: (
         codemod.AutoRegisterClassRegistryConcept
@@ -162,7 +167,7 @@ def test_concept_taxonomy_is_derived_without_a_parallel_registry() -> None:
 
 
 def test_detector_declarations_own_recipe_evaluation_through_mro() -> None:
-    detector_types = detectors.IssueDetector.registered_detector_types()
+    detector_types = IssueDetector.registered_detector_types()
     evaluator_types = tuple(
         detector_type
         for detector_type in detector_types
@@ -181,7 +186,7 @@ def test_detector_declarations_own_recipe_evaluation_through_mro() -> None:
             for owner in detector_type.__mro__
             if "evaluate_recipe_for_finding" in vars(owner)
         )
-        assert not issubclass(evaluation_owner, detectors.IssueDetector)
+        assert not issubclass(evaluation_owner, IssueDetector)
         assert codemod.FindingRecipeEvaluator in evaluation_owner.__bases__
     assert "__registry__" not in vars(codemod.FindingRecipeSynthesizer)
     assert "__registry__" not in vars(codemod.FindingRecipeEvaluator)
@@ -382,14 +387,14 @@ def test_semantic_mirror_contract_requires_projection_and_preserves_unknown_auth
         projection_evidence=projection,
     )
 
-    assert detectors.SsotAuthorityBoundaryDetector._normalize_findings(
+    assert SsotAuthorityBoundaryDetector._normalize_findings(
         [finding],
-        detectors.DetectorConfig(),
+        DetectorConfig(),
     ) == [finding]
     with pytest.raises(TypeError, match="requires declared projection evidence"):
-        detectors.SsotAuthorityBoundaryDetector._normalize_findings(
+        SsotAuthorityBoundaryDetector._normalize_findings(
             [replace(finding, projection_evidence=None)],
-            detectors.DetectorConfig(),
+            DetectorConfig(),
         )
 
 

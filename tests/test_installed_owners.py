@@ -8,7 +8,8 @@ from pathlib import Path
 
 import pytest
 
-from nominal_refactor_advisor import detectors
+from nominal_refactor_advisor.detectors._registration_owners import HandRolledRegistrationDetector
+from nominal_refactor_advisor.detectors._runtime import ManualClassRegistrationDetector
 from nominal_refactor_advisor.ast_tools import PythonSourcePathPolicy, parse_python_modules
 from nominal_refactor_advisor.detectors._base import DetectorConfig
 from nominal_refactor_advisor.installed_owners import (
@@ -85,8 +86,8 @@ def test_owner_packages_absent_declares_nothing(tmp_path: Path) -> None:
     assert OwnerPackagesDeclaration.declared_for(
         root / "plugins" / "family.py"
     ) == OwnerPackagesDeclaration()
-    assert _summaries(root, detectors.HandRolledRegistrationDetector) == []
-    (manual,) = _summaries(root, detectors.ManualClassRegistrationDetector)
+    assert _summaries(root, HandRolledRegistrationDetector) == []
+    (manual,) = _summaries(root, ManualClassRegistrationDetector)
     assert "No installed dependency declares a class-creation registration owner (gap)" in manual
     assert "owner-packages: not declared" in manual
 
@@ -96,8 +97,8 @@ def test_a_declared_owner_package_names_the_installed_owner(tmp_path: Path) -> N
     root = _project(tmp_path / "repo", pyproject)
     digest = hashlib.sha256(pyproject.encode()).hexdigest()
 
-    (hand_rolled,) = _summaries(root, detectors.HandRolledRegistrationDetector)
-    (manual,) = _summaries(root, detectors.ManualClassRegistrationDetector)
+    (hand_rolled,) = _summaries(root, HandRolledRegistrationDetector)
+    (manual,) = _summaries(root, ManualClassRegistrationDetector)
 
     assert hand_rolled.startswith(
         "`RegistryMeta` stores each class it creates in a mapping. Installed owners "

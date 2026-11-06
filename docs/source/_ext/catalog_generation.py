@@ -124,11 +124,11 @@ def _render_detector_catalog(detector_types: tuple[type[IssueDetector], ...]) ->
         tuple(DetectorRefactorCapability(item) for item in detector_types)
     )
     lines = [
-        ".. This file is generated from nominal_refactor_advisor.detectors.IssueDetector.",
+        ".. This file is generated from nominal_refactor_advisor.detectors._base.IssueDetector.",
         ".. Do not edit manually.",
         "",
         "This catalog is generated from the registered detector family rooted at",
-        "``nominal_refactor_advisor.detectors.IssueDetector``. The registry order is the",
+        "``nominal_refactor_advisor.detectors._base.IssueDetector``. The registry order is the",
         "authoritative source for what the tool ships.",
         "",
         "Contribution roles",
@@ -198,7 +198,7 @@ def _render_detector_reference_index(
     detector_types: tuple[type[IssueDetector], ...],
 ) -> str:
     lines = [
-        ".. This file is generated from nominal_refactor_advisor.detectors.IssueDetector.",
+        ".. This file is generated from nominal_refactor_advisor.detectors._base.IssueDetector.",
         ".. Do not edit manually.",
         "",
         "These pages provide one generated reference page per registered detector.",
@@ -224,7 +224,7 @@ def _render_detector_reference_page(detector_type: type[IssueDetector]) -> str:
     finding_spec = detector_type.required_relation_finding_spec()
     capability = DetectorRefactorCapability(detector_type)
     lines = [
-        ".. This file is generated from nominal_refactor_advisor.detectors.IssueDetector.",
+        ".. This file is generated from nominal_refactor_advisor.detectors._base.IssueDetector.",
         ".. Do not edit manually.",
         "",
         title,
