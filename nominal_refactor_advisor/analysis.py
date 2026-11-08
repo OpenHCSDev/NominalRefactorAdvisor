@@ -1246,7 +1246,7 @@ class CompactGroupWorkerState:
     manifest: BoundedCompactProjectionManifest
     config: DetectorConfig
     groups: tuple[
-        tuple[tuple[type[CollectedFamily], ...], list[type[IssueDetector]]], ...
+        tuple[tuple[type[CollectedFamily], ...], tuple[type[IssueDetector], ...]], ...
     ]
     active: ClassVar[CompactGroupWorkerState | None] = None
 
@@ -1646,11 +1646,12 @@ class BoundedCompactProjectionManifest:
     ) -> dict[type[IssueDetector], list[RefactorFinding]]:
         """Join bounded families, optionally consuming detector shards eagerly.
 
-        A cold full scan (no cache filter) runs each family group in its own
-        forked worker: the groups are independent joins, and run one after
-        another they were a cold scan's whole analysis phase (42.9 s on
-        agent-comms, the longest group 17.9 s). A filtered scan stays serial:
-        its filter records cache identities the parent reads afterwards.
+        With a worker budget, each family group's join runs in a forked
+        worker: the groups are independent, and run one after another they
+        were a cold scan's whole analysis phase (42.9 s on agent-comms, the
+        longest group 17.9 s). The cache filter runs here in the parent, where
+        the identities it records are read, and only the detectors it leaves
+        are sent to a worker.
         """
 
         detector_types_by_families: dict[
@@ -1679,16 +1680,30 @@ class BoundedCompactProjectionManifest:
             work_item_count=len(detector_types_by_families),
             minimum_auto_work_items=2,
         )
-        if detector_type_filter is None and group_plan.uses_process_pool:
-            CompactGroupWorkerState.install(
-                CompactGroupWorkerState(
-                    self, config, tuple(detector_types_by_families.items())
+        if group_plan.uses_process_pool:
+            groups = tuple(
+                (families, selected)
+                for families, detector_types in detector_types_by_families.items()
+                if (
+                    selected := (
+                        tuple(detector_types)
+                        if detector_type_filter is None
+                        else detector_type_filter(
+                            tuple(detector_types),
+                            {
+                                family: self.deferred_projections_for_family(
+                                    family, derive_content_identity=True
+                                )
+                                for family in families
+                            },
+                        )
+                    )
                 )
             )
+            CompactGroupWorkerState.install(CompactGroupWorkerState(self, config, groups))
             try:
                 group_results = group_plan.map(
-                    CompactGroupWorkerState.analyze_group,
-                    range(len(detector_types_by_families)),
+                    CompactGroupWorkerState.analyze_group, range(len(groups))
                 )
             finally:
                 CompactGroupWorkerState.install(None)
