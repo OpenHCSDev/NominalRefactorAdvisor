@@ -21,6 +21,7 @@ from collections.abc import (
     Iterable,
     Iterator,
     Mapping,
+    Sequence,
 )
 from dataclasses import (
     dataclass,
@@ -1027,48 +1028,182 @@ class SourceFileDeletion:
 
 
 @dataclass(frozen=True, kw_only=True)
-class TextFileEdit:
-    """Span replacements in a file outside the Python source index that a move
-    must keep true: a project manifest naming a module, a data file read beside
-    its module. `source` is the text the spans index, as read when the edit was
-    planned; the writer refuses the edit once the file on disk differs from it."""
+class TextFileChange(ABC):
+    """One file outside the Python source index that an operation must keep true:
+    a span edit of a manifest naming a module, or one end of a data file carried
+    with the module that reads it. Changes of one file fold into one rewrite."""
 
     operation_type: type[RefactorRecipeOperation]
     file_path: str
-    source: str
-    replacements: tuple[SourceTextSpanReplacement, ...]
     rationale: str = ""
 
+    @classmethod
+    @abstractmethod
+    def folded(cls, changes: tuple[Self, ...]) -> tuple[TextFileRewrite, ...]:
+        """The rewrite every change of one file, all of this kind, makes together."""
+
     @staticmethod
-    def rewrites(edits: Iterable[TextFileEdit]) -> tuple[TextFileRewrite, ...]:
-        """Every edit of one file applied together. Edits of one file must read
-        the same text and touch disjoint spans."""
+    def rewrites(changes: Iterable[TextFileChange]) -> tuple[TextFileRewrite, ...]:
+        """Each file's changes folded by their kind; a file two kinds touch refuses."""
 
         rewrites: list[TextFileRewrite] = []
         for file_path, group in groupby(
-            sorted(edits, key=attrgetter("file_path")), key=attrgetter("file_path")
+            sorted(changes, key=attrgetter("file_path")), key=attrgetter("file_path")
         ):
-            file_edits = tuple(group)
-            sources = {edit.source for edit in file_edits}
-            if len(sources) != 1:
-                raise ValueError(f"Text edits of {file_path!r} read different texts")
-            (source,) = sources
-            spans = sorted(
-                {
-                    (replacement.start_offset, replacement.end_offset, replacement.replacement_source)
-                    for edit in file_edits
-                    for replacement in edit.replacements
-                }
-            )
-            for (_, first_end, _), (second_start, _, _) in pairwise(spans):
-                if second_start < first_end:
-                    raise ValueError(f"Text edits of {file_path!r} overlap at offset {second_start}")
-            rewritten = source
-            for start, end, replacement in reversed(spans):
-                rewritten = rewritten[:start] + replacement + rewritten[end:]
-            if rewritten != source:
-                rewrites.append(TextFileRewrite(file_path=file_path, before=source, after=rewritten))
+            file_changes = tuple(group)
+            kinds = {type(change) for change in file_changes}
+            if len(kinds) != 1:
+                raise ValueError(
+                    f"{file_path!r} is both edited and carried: "
+                    f"{tuple(sorted(kind.__name__ for kind in kinds))!r}"
+                )
+            (kind,) = kinds
+            rewrites.extend(kind.folded(file_changes))
         return tuple(rewrites)
+
+
+@dataclass(frozen=True, kw_only=True)
+class TextFileEdit(TextFileChange):
+    """Span replacements in a file outside the Python source index that a move
+    must keep true, such as a project manifest naming a module. `source` is the
+    text the spans index, as read when the edit was planned; the writer refuses
+    the edit once the file on disk differs from it."""
+
+    source: str
+    replacements: tuple[SourceTextSpanReplacement, ...]
+
+    @property
+    def rewritten(self) -> str:
+        """This edit's text with its own spans replaced."""
+        return self.applied(
+            self.source,
+            sorted(
+                (replacement.start_offset, replacement.end_offset, replacement.replacement_source)
+                for replacement in self.replacements
+            ),
+        )
+
+    @staticmethod
+    def applied(source: str, spans: Sequence[tuple[int, int, str]]) -> str:
+        rewritten = source
+        for start, end, replacement in reversed(spans):
+            rewritten = rewritten[:start] + replacement + rewritten[end:]
+        return rewritten
+
+    @classmethod
+    def folded(cls, changes: tuple[TextFileEdit, ...]) -> tuple[TextFileRewrite, ...]:
+        """Edits of one file must read the same text and touch disjoint spans."""
+
+        file_path = changes[0].file_path
+        sources = {edit.source for edit in changes}
+        if len(sources) != 1:
+            raise ValueError(f"Text edits of {file_path!r} read different texts")
+        (source,) = sources
+        spans = sorted(
+            {
+                (replacement.start_offset, replacement.end_offset, replacement.replacement_source)
+                for edit in changes
+                for replacement in edit.replacements
+            }
+        )
+        for (_, first_end, _), (second_start, _, _) in pairwise(spans):
+            if second_start < first_end:
+                raise ValueError(f"Text edits of {file_path!r} overlap at offset {second_start}")
+        rewritten = cls.applied(source, spans)
+        if rewritten == source:
+            return ()
+        return (
+            TextFileRewrite(
+                file_path=file_path,
+                before=PresentFileText(source),
+                after=PresentFileText(rewritten),
+            ),
+        )
+
+
+@dataclass(frozen=True, kw_only=True)
+class TextFileCarryEnd(TextFileChange, ABC):
+    """One end of a data file moving with the module that reads it: the file, as
+    read, appears at the destination and leaves the source. One carry per path."""
+
+    text: str
+
+    @classmethod
+    def carry(
+        cls,
+        operation: RefactorRecipeOperation,
+        *,
+        source_path: str,
+        destination_path: str,
+        text: str,
+    ) -> tuple[TextFileCarryEnd, ...]:
+        rationale = operation.rationale_text(
+            f"Carry {source_path!r} to {destination_path!r} with the module that reads it."
+        )
+        return (
+            TextFileCreation(
+                operation_type=type(operation), file_path=destination_path, text=text,
+                rationale=rationale,
+            ),
+            TextFileRemoval(
+                operation_type=type(operation), file_path=source_path, text=text,
+                rationale=rationale,
+            ),
+        )
+
+    @classmethod
+    def folded(cls, changes: tuple[Self, ...]) -> tuple[TextFileRewrite, ...]:
+        if len(changes) != 1:
+            raise ValueError(f"{changes[0].file_path!r} is carried more than once")
+        (change,) = changes
+        return (change.rewrite(),)
+
+    @abstractmethod
+    def rewrite(self) -> TextFileRewrite: ...
+
+
+@dataclass(frozen=True, kw_only=True)
+class TextFileCreation(TextFileCarryEnd):
+    """The carried file at its destination, which must not exist yet."""
+
+    def rewrite(self) -> TextFileRewrite:
+        return TextFileRewrite(
+            file_path=self.file_path, before=AbsentFileText(), after=PresentFileText(self.text)
+        )
+
+
+@dataclass(frozen=True, kw_only=True)
+class TextFileRemoval(TextFileCarryEnd):
+    """The carried file leaving its source, which must still hold the text read."""
+
+    def rewrite(self) -> TextFileRewrite:
+        return TextFileRewrite(
+            file_path=self.file_path, before=PresentFileText(self.text), after=AbsentFileText()
+        )
+
+
+class FileText(ABC):
+    """A file outside the Python source index at one end of a codemod: its text, or
+    no file at all. A carried data file is absent before at its destination and
+    absent after at its source."""
+
+    @abstractmethod
+    def sources(self, file_path: str) -> Mapping[str, str]:
+        """The file's text keyed by its path, empty when there is no file."""
+
+
+@dataclass(frozen=True)
+class PresentFileText(FileText):
+    text: str
+
+    def sources(self, file_path: str) -> Mapping[str, str]:
+        return {file_path: self.text}
+
+
+@dataclass(frozen=True)
+class AbsentFileText(FileText):
+    def sources(self, file_path: str) -> Mapping[str, str]:
+        return {}
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -1076,8 +1211,8 @@ class TextFileRewrite:
     """One file outside the Python source index, before and after a codemod."""
 
     file_path: str
-    before: str
-    after: str
+    before: FileText
+    after: FileText
 
 
 @dataclass(frozen=True)

@@ -101,7 +101,7 @@ from .codemod_source_edits import (
     SourceFileCreation,
     SourceFileDeletion,
     SourceInsertion,
-    TextFileEdit,
+    TextFileChange,
     TextFileRewrite,
     SourceRewriteContributor,
     SourceTargetEditor,
@@ -818,7 +818,7 @@ class RefactorRecipe(SourceRewriteReferences):
         if (
             self.created_source_paths(selector_context)
             or self.source_file_deletions(selector_context)
-            or self.text_file_edits(selector_context)
+            or self.text_file_changes(selector_context)
         ):
             return True
         return bool(self.source_rewrite_batch(selector_context.execution_snapshot()))
@@ -891,14 +891,14 @@ class RefactorRecipe(SourceRewriteReferences):
             for deletion in operation.source_file_deletions(context)
         )
 
-    def text_file_edits(
+    def text_file_changes(
         self,
         context: CodemodSelectorContext,
-    ) -> tuple[TextFileEdit, ...]:
+    ) -> tuple[TextFileChange, ...]:
         return tuple(
             edit
             for operation in self.operations
-            for edit in operation.text_file_edits(context)
+            for edit in operation.text_file_changes(context)
         )
 
     def rewrite_context(
@@ -1197,12 +1197,12 @@ class CodemodPlanDocument(SourceRewriteReferences, CodemodPlanRoot):
             for deletion in recipe.source_file_deletions(snapshot)
         )
 
-    def text_file_edits(
+    def text_file_changes(
         self,
         snapshot: CodemodSelectorContext,
-    ) -> tuple[TextFileEdit, ...]:
+    ) -> tuple[TextFileChange, ...]:
         return tuple(
-            edit for recipe in self.recipes for edit in recipe.text_file_edits(snapshot)
+            edit for recipe in self.recipes for edit in recipe.text_file_changes(snapshot)
         )
 
     def simulate(
@@ -1278,7 +1278,7 @@ class CodemodPlanDocumentPreflight:
             )
             .with_deletions(self.document.source_file_deletions(self.rewrite_snapshot))
             .with_text_file_rewrites(
-                TextFileEdit.rewrites(self.document.text_file_edits(self.rewrite_snapshot))
+                TextFileChange.rewrites(self.document.text_file_changes(self.rewrite_snapshot))
             )
             .with_base_snapshot(self.base_snapshot)
         )
@@ -1613,9 +1613,9 @@ class CodemodSimulationReport(DataclassJsonReport):
                 rewritten_sources.pop(file_path, None)
                 deleted_file_paths.add(file_path)
             for rewrite in report.text_file_rewrites:
-                active_source_hashes[rewrite.file_path] = CodemodSourceRevision.hash_source(
-                    rewrite.after
-                )
+                active_source_hashes[rewrite.file_path] = CodemodSourceRevision.from_sources(
+                    rewrite.file_path, rewrite.after.sources(rewrite.file_path)
+                ).source_hash
                 first = text_file_rewrites.get(rewrite.file_path, rewrite)
                 text_file_rewrites[rewrite.file_path] = replace(first, after=rewrite.after)
             validated_file_paths.update(report.validated_file_paths)
@@ -1675,7 +1675,12 @@ class CodemodSimulationReport(DataclassJsonReport):
             base_revisions=(
                 *self.base_revisions,
                 *CodemodSourceRevision.capture(
-                    {rewrite.file_path: rewrite.before for rewrite in rewrite_tuple}
+                    {
+                        file_path: text
+                        for rewrite in rewrite_tuple
+                        for file_path, text in rewrite.before.sources(rewrite.file_path).items()
+                    },
+                    required_paths=(rewrite.file_path for rewrite in rewrite_tuple),
                 ),
             ),
         )
@@ -1698,7 +1703,22 @@ class CodemodSimulationReport(DataclassJsonReport):
 
     @property
     def text_file_sources_before(self) -> Mapping[str, str]:
-        return {rewrite.file_path: rewrite.before for rewrite in self.text_file_rewrites}
+        return {
+            file_path: text
+            for rewrite in self.text_file_rewrites
+            for file_path, text in rewrite.before.sources(rewrite.file_path).items()
+        }
+
+    @property
+    def removed_file_paths(self) -> frozenset[str]:
+        """Every file the writer deletes: dissolved Python sources and carried data
+        leaving its source."""
+
+        return frozenset(self.deleted_file_paths).union(
+            rewrite.file_path
+            for rewrite in self.text_file_rewrites
+            if not rewrite.after.sources(rewrite.file_path)
+        )
 
     @property
     def written_sources(self) -> Mapping[str, str]:
@@ -1706,7 +1726,11 @@ class CodemodSimulationReport(DataclassJsonReport):
 
         return {
             **self.rewritten_sources,
-            **{rewrite.file_path: rewrite.after for rewrite in self.text_file_rewrites},
+            **{
+                file_path: text
+                for rewrite in self.text_file_rewrites
+                for file_path, text in rewrite.after.sources(rewrite.file_path).items()
+            },
         }
 
     @property
@@ -1740,7 +1764,7 @@ class CodemodSimulationReport(DataclassJsonReport):
     def rewritten_source(self, file_path: str) -> str | None:
         """The file's source after the rewrite; None when the rewrite deletes it."""
 
-        if file_path in self.deleted_file_paths:
+        if file_path in self.removed_file_paths:
             return None
         return self.written_sources[file_path]
 
@@ -3905,7 +3929,7 @@ class CodemodSimulationWriter:
                 revision = self.simulation.base_revision_by_file_path[file_path]
                 committed_sources.append(
                     self.commit_deletion(revision)
-                    if file_path in self.simulation.deleted_file_paths
+                    if file_path in self.simulation.removed_file_paths
                     else self.commit_source(revision, staged_paths[file_path])
                 )
         except BaseException:

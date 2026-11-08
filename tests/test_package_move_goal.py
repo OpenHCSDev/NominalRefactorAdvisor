@@ -503,3 +503,54 @@ def test_a_merge_into_a_renamed_module_moves_its_target_first(tmp_path: Path) ->
     )
     assert imported.returncode == 0, imported.stderr
     assert imported.stdout.strip() == "(1, 2)"
+
+
+def _module_with_helper_data(root: Path) -> None:
+    """`fork.py` reads `_helpers/fork.mjs` beside itself, its only reader."""
+
+    _write(root, "pkg/__init__.py", "")
+    _write(root, "pkg/planning/__init__.py", "")
+    _write(root, "pkg/_helpers/fork.mjs", "export const fork = 'forked';\n")
+    _write(
+        root,
+        "pkg/fork.py",
+        "from pathlib import Path\n\n\nclass Fork:\n"
+        "    script = Path(__file__).with_name('_helpers') / 'fork.mjs'\n\n"
+        "    @classmethod\n    def text(cls) -> str:\n        return cls.script.read_text()\n",
+    )
+    _write(root, "pkg/app.py", "from pkg.fork import Fork\n\nVALUE = Fork.text().strip()\n")
+
+
+def test_a_module_carries_the_data_it_reads_beside_itself(tmp_path: Path) -> None:
+    _module_with_helper_data(tmp_path)
+    report = _goal(tmp_path, "| `planning` | `fork.py` | |\n")
+
+    assert report.stop_reason is CodemodWorkflowStopReason.ACHIEVED, report.to_markdown()
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    replay = report.replay_sequence.simulate(snapshot)
+    assert replay.is_clean
+    replay.apply()
+    assert not (tmp_path / "pkg/_helpers").exists() or not any((tmp_path / "pkg/_helpers").iterdir())
+    assert (tmp_path / "pkg/planning/_helpers/fork.mjs").read_text() == "export const fork = 'forked';\n"
+    imported = subprocess.run(
+        [sys.executable, "-c", "from pkg.app import VALUE; print(VALUE)"],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert imported.returncode == 0, imported.stderr
+    assert imported.stdout.strip() == "export const fork = 'forked';"
+
+
+def test_data_another_module_also_reads_stays_and_refuses(tmp_path: Path) -> None:
+    _module_with_helper_data(tmp_path)
+    _write(
+        tmp_path,
+        "pkg/other.py",
+        "from pathlib import Path\n\nSCRIPT = Path(__file__).with_name('_helpers')\n",
+    )
+    report = _goal(tmp_path, "| `planning` | `fork.py` | |\n")
+
+    assert report.stages == ()
+    assert "__file__ (" in report.to_markdown() and "also names" in report.to_markdown()

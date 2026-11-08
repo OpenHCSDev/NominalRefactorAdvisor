@@ -139,7 +139,7 @@ class RefactorRecipeOperation(
         del context
         return ()
 
-    def text_file_edits(
+    def text_file_changes(
         self,
         context: CodemodSelectorContext,
     ) -> tuple[TextFileEdit, ...]:
