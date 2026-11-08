@@ -48,6 +48,7 @@ from .analysis_cache import (
 from .collection_algebra import DeferredBatchSequence
 from .python_module_identity import PythonModulePathIdentity
 from .scan_cache import ScanCache
+from .type_checker_session import TypeCheckerTiming, TypeCheckerTimingLedger
 from .source_geometry import read_source_text
 from .ast_tools import (
     CollectedFamily,
@@ -1260,9 +1261,11 @@ class CompactGroupWorkerState:
     ) -> tuple[
         tuple[tuple[type[IssueDetector], list[RefactorFinding]], ...],
         dict[tuple[type[CollectedFamily], str], int],
+        TypeCheckerTiming,
     ]:
         """One group's findings, materialized to cross the process boundary,
-        and the projection counts its families loaded."""
+        the projection counts its families loaded, and its type-checker time:
+        the worker's ledger is its own, so the parent records what it spent."""
 
         state = CompactGroupWorkerState.active
         if state is None:
@@ -1276,17 +1279,22 @@ class CompactGroupWorkerState:
             for family in families
         }
         collected: list[tuple[type[IssueDetector], list[RefactorFinding]]] = []
-        _compact_findings_by_detector(
-            tuple(detector_types),
-            projections_by_family,
-            state.config,
-            shared_contexts={},
-            finding_consumer=lambda detector_type, detector_findings: collected.append(
-                (detector_type, list(detector_findings))
-            ),
-            retain_findings=False,
+        with TypeCheckerTimingLedger.scope() as ledger:
+            _compact_findings_by_detector(
+                tuple(detector_types),
+                projections_by_family,
+                state.config,
+                shared_contexts={},
+                finding_consumer=lambda detector_type, detector_findings: (
+                    collected.append((detector_type, list(detector_findings)))
+                ),
+                retain_findings=False,
+            )
+        return (
+            tuple(collected),
+            dict(manifest._materialized_source_counts),
+            ledger.timing,
         )
-        return tuple(collected), dict(manifest._materialized_source_counts)
 
 
 @dataclass
@@ -1707,8 +1715,9 @@ class BoundedCompactProjectionManifest:
                 )
             finally:
                 CompactGroupWorkerState.install(None)
-            for group_findings, materialized_counts in group_results:
+            for group_findings, materialized_counts, timing in group_results:
                 self._materialized_source_counts.update(materialized_counts)
+                TypeCheckerTimingLedger.active().record(timing)
                 for detector_type, detector_findings in group_findings:
                     accept_detector_findings(detector_type, detector_findings)
             return findings
