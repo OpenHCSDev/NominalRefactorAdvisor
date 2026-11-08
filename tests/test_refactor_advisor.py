@@ -7720,6 +7720,36 @@ def test_relocation_leaves_a_retained_record_as_written(tmp_path: Path) -> None:
     assert "destination import Moved" in rewritten[(tmp_path / "pkg/reader.py").as_posix()]
 
 
+def test_relocation_moves_an_attribute_docstring_with_its_assignment(
+    tmp_path: Path,
+) -> None:
+    """A string right under a module constant documents it: it moves with the
+    constant, and the source keeps none of it."""
+
+    for relative_path, source in {
+        "pkg/__init__.py": "",
+        "pkg/source.py": "class Kept:\n    pass\n\n\n"
+        "LIMIT = 3\n\"\"\"The most retries a caller may ask for.\"\"\"\n",
+        "pkg/destination.py": "",
+    }.items():
+        _write_module(tmp_path, relative_path, source)
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    operation = RelocateSymbolsToModuleOperation(
+        target=SourceRewriteTarget(file_path=(tmp_path / "pkg/source.py").as_posix()),
+        symbol_qualnames=("LIMIT",),
+        destination_path=(tmp_path / "pkg/destination.py").as_posix(),
+    )
+
+    simulation = RefactorRecipe("relocate-documented").with_operation(operation).simulate(snapshot)
+
+    assert simulation.is_clean
+    rewritten = simulation.simulation.rewritten_sources
+    assert "retries" not in rewritten[(tmp_path / "pkg/source.py").as_posix()]
+    assert rewritten[(tmp_path / "pkg/destination.py").as_posix()].strip() == (
+        'LIMIT = 3\n"""The most retries a caller may ask for."""'
+    )
+
+
 def test_refactor_recipe_relocates_symbol_and_rewrites_consumers(
     tmp_path: Path,
 ) -> None:
