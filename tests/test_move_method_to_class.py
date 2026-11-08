@@ -113,7 +113,8 @@ def test_a_method_moves_onto_the_class_it_builds_and_only_its_receivers_follow(t
         ({"threads": THREADS + "\n\nclass Loud(Thread):\n    def environment(self, root: str) -> dict[str, str]:\n        return {}\n",
           "requests": REQUESTS, "config": CONFIG}, "override 'environment'"),
         ({"threads": THREADS, "requests": REQUESTS,
-          "config": CONFIG + "\n\nNAME = 'environment'\n"}, "names 'environment' in a string"),
+          "config": CONFIG + "\n\ndef dynamic(thread):\n    return getattr(thread, 'environment')\n"},
+         "reaches 'environment' by a string"),
         ({"threads": THREADS, "requests": REQUESTS,
           "config": CONFIG + "\n\ndef pick(thread: Thread):\n    return thread.environment\n"},
          "other than by calling it"),
@@ -190,9 +191,11 @@ IDENTITY = (
     "        \"\"\"Read the identity its evidence names.\"\"\"\n"
     "        return cls(evidence.header(), evidence.path)\n\n"
     "    @classmethod\n"
-    "    def proof_for(cls, session: str):\n"
+    "    def proof_for(cls, session: str,\n"
+    "                  file: str = 'f'):\n"
     "        from pkg.proof import Proof\n\n"
-    "        return Proof(session, 'f')\n"
+    "        return Proof(session,\n"
+    "                     file)\n"
 )
 PROOF = (
     "from __future__ import annotations\n\n"
@@ -212,7 +215,7 @@ USE = (
     "from pkg.proof import Evidence, Proof\n\n\n"
     "def run() -> str:\n"
     "    proof = Proof('s', 'f')\n"
-    "    one = Identity.from_proof(proof)\n"
+    "    one = Identity.from_proof(\n        proof,\n    )\n"
     "    one.require(proof)\n"
     "    two = Identity.from_evidence(Evidence('p'))\n"
     "    three = Identity.proof_for('x')\n"
@@ -246,13 +249,14 @@ def _runs(root: Path, result) -> str:
     (
         ("Identity.from_proof", "Proof", "identity",
          "    def identity(self) -> Identity:\n        return Identity(self.session, self.file)\n",
-         "one = proof.identity()"),
+         "one = proof.identity()\n"),
         ("Identity.from_evidence", "Evidence", "identity",
          "    def identity(self) -> Identity:\n        \"\"\"Read the identity its evidence names.\"\"\"\n"
          "        return Identity(self.header(), self.path)\n",
          "two = Evidence('p').identity()"),
         ("Identity.proof_for", "Proof", None,
-         "    @classmethod\n    def proof_for(cls, session: str):\n        return cls(session, 'f')\n",
+         "    @classmethod\n    def proof_for(cls, session: str,\n                  file: str = 'f'):\n"
+         "        return cls(session,\n                   file)\n",
          "three = Proof.proof_for('x')"),
     ),
 )
@@ -280,8 +284,14 @@ def test_a_static_method_call_inside_its_class_moves_with_it(tmp_path: Path) -> 
 @pytest.mark.parametrize(
     "identity,qualname,fields,refusal",
     (
-        (IDENTITY + "\n\nclass Child(Identity):\n    pass\n", "Identity.from_evidence",
-         {"destination_name": "identity"}, "class with descendants"),
+        (IDENTITY + "\n\nclass Child(Identity):\n    pass\n\n\nCHILD = Child.from_evidence\n",
+         "Identity.from_evidence", {"destination_name": "identity"}, "other than by calling it"),
+        (IDENTITY + "\n\nclass Child(Identity):\n    @classmethod\n    def read(cls, evidence):\n"
+         "        return cls.from_evidence(evidence)\n", "Identity.from_evidence",
+         {"destination_name": "identity"}, "through cls or self, which may bind cls to a descendant"),
+        (IDENTITY + "\n\nclass Child(Identity):\n    pass\n\n\ndef read(evidence):\n"
+         "    return Child.from_evidence(evidence)\n", "Identity.from_evidence",
+         {"destination_name": "identity"}, "on a class named outright, which may bind cls"),
         (IDENTITY, "Identity.from_proof", {"receiver_parameter": "identity"},
          "is a staticmethod; receiver_parameter is not taken"),
     ),
@@ -294,3 +304,42 @@ def test_moving_a_class_bound_method_refuses_what_would_change(
 
     with pytest.raises(CodemodOperationPreflightError, match=refusal):
         _class_bound(tmp_path, qualname, destination, **fields)
+
+
+@pytest.mark.native_proof
+def test_descendants_only_matter_where_a_call_could_bind_cls_to_one(tmp_path: Path) -> None:
+    identity = IDENTITY + "\n\nclass Child(Identity):\n    pass\n"
+    _write(tmp_path, {"identity": identity, "proof": PROOF, "use": USE})
+
+    reads_cls = _class_bound(tmp_path, "Identity.from_evidence", "Evidence", destination_name="identity")
+    unread_cls = _class_bound(tmp_path, "Identity.proof_for", "Proof")
+
+    assert "two = Evidence('p').identity()" in _source(tmp_path, reads_cls, "use")
+    assert "three = Proof.proof_for('x')" in _source(tmp_path, unread_cls, "use")
+
+
+@pytest.mark.native_proof
+def test_another_class_s_method_of_the_same_name_and_an_alike_binding_do_not_refuse(tmp_path: Path) -> None:
+    proof = PROOF.replace("from dataclasses import dataclass\n", "from dataclasses import dataclass, field\n")
+    use = USE + (
+        "\n\nclass Codec:\n    @staticmethod\n    def proof_for(value: str) -> str:\n        return value\n\n\n"
+        "READER = Codec.proof_for\nNOTE = 'proof_for'\n\n\n"
+        "def stdlib_named(value: bytes) -> str:\n    from codecs import decode as proof_for\n\n"
+        "    from json import JSONDecoder\n    return JSONDecoder.proof_for if False else proof_for(value)\n\n\n"
+        "def scanned_named(value: str) -> str:\n    from pkg.use import Codec\n\n    return Codec.proof_for(value)\n\n\n"
+        "def shadowed(value: str) -> str:\n    from pkg.use import Codec as Identity\n\n"
+        "    return Identity.proof_for(value)\n"
+    )
+    identity = IDENTITY.replace(
+        "        from pkg.proof import Proof\n\n        return Proof(session,\n                     file)\n",
+        "        from pkg.proof import Proof\n\n        return Proof(session,\n                     field.__name__[0])\n",
+    ).replace("from dataclasses import dataclass\n", "from dataclasses import dataclass, field\n")
+    _write(tmp_path, {"identity": identity, "proof": proof, "use": use})
+    result = _class_bound(tmp_path, "Identity.proof_for", "Proof")
+
+    assert result.is_clean is True
+    use = _source(tmp_path, result, "use")
+    assert "READER = Codec.proof_for" in use
+    assert "    return Identity.proof_for(value)\n" in use and "three = Proof.proof_for('x')" in use
+    assert "from dataclasses import dataclass, field\n" in _source(tmp_path, result, "proof")
+    assert _runs(tmp_path, result) == "s/s-p/x"

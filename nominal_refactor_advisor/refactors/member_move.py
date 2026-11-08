@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import ast
 import builtins
-import copy
+import re
 from dataclasses import dataclass
 from functools import cached_property
 from typing import ClassVar
@@ -126,6 +126,43 @@ class MovedMethod:
         return self.descendants | {self.symbol}
 
     @cached_property
+    def family_declarations(self) -> dict[tuple[str, str], str]:
+        """Each family class by the file and qualname that declare it."""
+
+        classes = self.snapshot.required_class_family_index.classes_by_symbol
+        return {
+            (classes[symbol].file_path, classes[symbol].qualname): symbol
+            for symbol in self.family if symbol in classes
+        }
+
+    def named_class(self, file_path: str, name: str, scopes: tuple[ast.AST, ...]) -> ClassBinding | None:
+        """What a name binds where a call reads it, when that says whether it is the family: a
+        family class, another class the scan declares, a module, or an import from outside the
+        scan. The innermost of `scopes` (the call's enclosing functions, then its module) that
+        binds the name decides; a name it binds any other way is typed as an instance."""
+
+        for scope in scopes:
+            binding = _ScopeBindings(scope).binding(name)
+            if binding is None:
+                continue
+            return binding.class_binding(self, file_path, scope)
+        return None
+
+    def declared_class(self, file_path: str, qualname: str) -> ClassBinding | None:
+        """A class the scan declares at this file and qualname: the family's, or another's."""
+
+        family = self.family_declarations.get((file_path, qualname))
+        if family is not None:
+            return NamedClass(family)
+        other = self.class_declarations.get((file_path, qualname))
+        return None if other is None else OtherClass(other)
+
+    @cached_property
+    def class_declarations(self) -> dict[tuple[str, str], str]:
+        classes = self.snapshot.required_class_family_index.classes_by_symbol
+        return {(declaration.file_path, declaration.qualname): symbol for symbol, declaration in classes.items()}
+
+    @cached_property
     def locals(self) -> frozenset[str]:
         return LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(self.method.body) | frozenset(
             argument.arg for argument in ast.walk(self.method.args) if isinstance(argument, ast.arg)
@@ -187,54 +224,63 @@ class MovedMethod:
         raise ValueError(f"{where} calls {self.name!r} on a receiver typed {symbols!r}")
 
     def destination_source(self) -> str:
-        """The method as its destination member: a header built from its new parameters, and
-        its body with the member's renames applied."""
+        """The method as its destination member: its own header and body text, with only what
+        the member changes rewritten, re-indented for the destination class."""
 
         source = self.snapshot.sources_by_file_path[self.source_class.file_path]
         geometry = SourceTextGeometry(source)
+        definition = geometry.required_node_offsets(self.method)[0]
         body_start = geometry.line_offsets[self.method.body[0].lineno - 1]
         end = method_deletion_offsets(geometry, self.method)[1]
-        renames = sorted(
-            (
-                (*geometry.required_node_offsets(node), replacement)
-                for node, replacement in self.member.body_renames()
-            ),
-            reverse=True,
+        signature = SignatureText(geometry, self.method)
+        header = _edited(source, definition, body_start, (
+            *self.member.signature_edits(signature),
+            *signature.renamed(self.new_name),
+        ))
+        body_renames = tuple(
+            (*geometry.required_node_offsets(node), replacement, node)
+            for node, replacement in self.member.body_renames()
         )
-        text = source[body_start:end]
-        for node_start, node_end, replacement in renames:
-            text = text[: node_start - body_start] + replacement + text[node_end - body_start:]
+        body = _edited(source, body_start, end, tuple(edit[:3] for edit in body_renames))
+        shifts = self.continuation_shifts(body_renames)
         source_indent = " " * self.method.col_offset
         destination_indent = " " * (self.destination.node.body[0].col_offset)
-        lines = [
-            line.removeprefix(source_indent) if line.strip() else line
-            for line in text.splitlines(keepends=True)
-        ]
         dropped = self.destination_self_imports
         kept: list[str] = []
         previous_dropped = False
-        for number, line in enumerate(lines, start=self.method.body[0].lineno):
+        for number, line in enumerate(body.splitlines(keepends=True), start=self.method.body[0].lineno):
             if number in dropped or (previous_dropped and not line.strip()):
                 previous_dropped = number in dropped
                 continue
             previous_dropped = False
-            kept.append(line)
-        body = "".join(destination_indent + line if line.strip() else line for line in kept)
-        return (
-            f"\n{self.member.decorator(destination_indent)}"
-            f"{destination_indent}{self.header()}\n{body.rstrip()}\n"
-        )
+            kept.append(_shifted(line, shifts.get(number, 0)))
+        lines = [
+            destination_indent + line.removeprefix(source_indent) if line.strip() else line
+            for line in (*header.splitlines(keepends=True), *kept)
+        ]
+        return f"\n{self.member.decorator(destination_indent)}{''.join(lines).rstrip()}\n"
 
-    def header(self) -> str:
-        definition = type(self.method)(
-            name=self.new_name,
-            args=self.member.arguments(),
-            body=[ast.Pass()],
-            decorator_list=[],
-            returns=copy.deepcopy(self.method.returns),
-            type_params=list(getattr(self.method, "type_params", [])),
-        )
-        return ast.unparse(ast.fix_missing_locations(definition)).splitlines()[0]
+    def continuation_shifts(self, renames: tuple[tuple[int, int, str, ast.AST], ...]) -> dict[int, int]:
+        """Lines aligned under a call whose head a rename changed move by the same columns: a
+        call whose first argument shares its opening line aligns its continuation to it."""
+
+        shifts: dict[int, int] = {}
+        calls = tuple(node for node in ast.walk(self.method) if isinstance(node, ast.Call))
+        for start, end, replacement, node in renames:
+            delta = len(replacement) - (end - start)
+            if not delta:
+                continue
+            for call in calls:
+                passed: tuple[ast.expr | ast.keyword, ...] = (*call.args, *call.keywords)
+                if not (
+                    passed and call.end_lineno and call.end_lineno > call.lineno
+                    and min(each.lineno for each in passed) == call.lineno
+                    and any(each is node for each in ast.walk(call.func))
+                ):
+                    continue
+                for line in range(call.lineno + 1, call.end_lineno + 1):
+                    shifts[line] = shifts.get(line, 0) + delta
+        return shifts
 
     @cached_property
     def destination_self_imports(self) -> frozenset[int]:
@@ -275,6 +321,14 @@ class MovedMethod:
         graph = snapshot.module_import_graph
         imports: list[ModuleImportMutation] = []
         for name in sorted(self.free_names()):
+            if name in destination_names:
+                if _binding(snapshot, destination_path, name) != _binding(
+                    snapshot, self.source_class.file_path, name,
+                ):
+                    raise ValueError(
+                        f"{self.name!r} reads {name!r}, which {destination_path} binds to something else"
+                    )
+                continue
             statement = next(
                 (
                     statement for statement in source_module.body
@@ -287,10 +341,6 @@ class MovedMethod:
                 alias = next(alias for alias in statement.names if (alias.asname or alias.name) == name)
                 spelled = alias.name if alias.asname is None else f"{alias.name} as {alias.asname}"
                 import_source = f"from {statement.module} import {spelled}\n"
-            elif name in destination_names:
-                raise ValueError(
-                    f"{self.name!r} reads {name!r}, which {destination_path} binds to something else"
-                )
             else:
                 import_source = graph.required_import_source(
                     importing_file_path=destination_path,
@@ -361,10 +411,19 @@ class SourceShape:
     def free_names(self) -> frozenset[str]:
         return frozenset()
 
-    def class_receiver(self, receiver: ast.expr, file_path: str, enclosing: str | None) -> bool:
-        """Whether a call receiver is the source class itself."""
+    def bound_class(
+        self, receiver: ast.expr, file_path: str, enclosing: str | None, scopes: tuple[ast.AST, ...],
+    ) -> ClassBinding | None:
+        """The class a call receiver names by its binding, when it names one: a family class,
+        or a class, module or import from outside the scan, which no family class is, whatever
+        its attribute is called."""
 
-        return False
+        if not isinstance(receiver, ast.Name):
+            return None
+        return self.moved.named_class(file_path, receiver.id, scopes)
+
+    def admits(self, binding: ReceiverBinding, where: str) -> None:
+        """Refuse a call whose receiver would change what the moved method means."""
 
 
 @dataclass(frozen=True)
@@ -390,21 +449,12 @@ class ClassBoundSource(SourceShape):
     """A staticmethod or classmethod: calls are spelled on the class itself, by its binding, or
     inside it on cls or self; the destination member takes no receiver from them."""
 
-    def class_receiver(self, receiver: ast.expr, file_path: str, enclosing: str | None) -> bool:
-        if not isinstance(receiver, ast.Name):
-            return False
-        if receiver.id in {"cls", "self"}:
-            return enclosing == self.moved.symbol
-        snapshot = self.moved.snapshot
-        name = self.moved.source_class.name
-        if file_path == self.moved.source_class.file_path:
-            return receiver.id == name
-        return any(
-            isinstance(statement, ast.ImportFrom)
-            and any(alias.name == name and (alias.asname or alias.name) == receiver.id for alias in statement.names)
-            and _imported_file(snapshot, file_path, statement) == self.moved.source_class.file_path
-            for statement in ast.walk(snapshot.module_nodes_by_file_path[file_path])
-        )
+    def bound_class(
+        self, receiver: ast.expr, file_path: str, enclosing: str | None, scopes: tuple[ast.AST, ...],
+    ) -> ClassBinding | None:
+        if isinstance(receiver, ast.Name) and receiver.id in {"cls", "self"}:
+            return None if enclosing not in self.moved.family else ImplicitClass(enclosing)
+        return super().bound_class(receiver, file_path, enclosing, scopes)
 
 
 @dataclass(frozen=True)
@@ -417,19 +467,22 @@ class StaticSource(ClassBoundSource):
 
 @dataclass(frozen=True)
 class ClassSource(ClassBoundSource):
-    """A classmethod: its cls is the source class, which a descendant would change, so the move
-    requires a class without descendants; on the destination cls reads become that class."""
+    """A classmethod: on the destination its cls reads become the source class, so a call that
+    could bind cls to a descendant refuses (`admits`)."""
 
     decorators: ClassVar[tuple[str, ...] | None] = ("classmethod",)
     leading_name: ClassVar[str | None] = "cls"
     describes: ClassVar[str] = "a classmethod"
 
-    def __post_init__(self) -> None:
-        super().__post_init__()
-        if self.moved.descendants:
+    def admits(self, binding: ReceiverBinding, where: str) -> None:
+        """cls becomes the source class on the destination, which changes the method only where
+        its body reads cls and a call may bind cls to a descendant: one naming a descendant, or
+        through cls, self or an instance, whose class is known only at run time."""
+
+        if self.moved.body_reads("cls") and self.moved.descendants and not binding.names(self.moved.symbol):
             raise ValueError(
-                f"{self.moved.name!r} is a classmethod of a class with descendants; "
-                "cls would stop naming them"
+                f"{where} calls {self.moved.name!r} {binding.describes}, which may bind cls to a "
+                f"descendant of {self.moved.source_class.name}; move that caller first or call the class"
             )
 
     def body_renames(self) -> tuple[tuple[ast.AST, str], ...]:
@@ -437,6 +490,62 @@ class ClassSource(ClassBoundSource):
 
     def free_names(self) -> frozenset[str]:
         return frozenset({self.moved.source_class.name}) if self.moved.body_reads("cls") else frozenset()
+
+
+@dataclass(frozen=True)
+class ReceiverBinding:
+    """What a call's receiver says about the class the moved method runs on."""
+
+    symbol: str
+    describes: ClassVar[str] = "on an instance"
+
+    def names(self, symbol: str) -> bool:
+        """Whether the receiver fixes the runtime class to exactly this one."""
+
+        return False
+
+
+@dataclass(frozen=True)
+class ClassBinding(ReceiverBinding):
+    """A receiver that is a class rather than an instance of one."""
+
+    def reaches_family(self) -> bool:
+        return True
+
+
+@dataclass(frozen=True)
+class ForeignClass(ClassBinding):
+    """A class that is not the family's: its attribute of the method's name is its own."""
+
+    def reaches_family(self) -> bool:
+        return False
+
+
+@dataclass(frozen=True)
+class OutsideScan(ForeignClass):
+    """A name imported from outside the scan (the standard library, a dependency)."""
+
+
+@dataclass(frozen=True)
+class OtherClass(ForeignClass):
+    """Another class the scan declares."""
+
+
+@dataclass(frozen=True)
+class NamedClass(ClassBinding):
+    """The class spelled by its binding: the runtime class is exactly it."""
+
+    describes: ClassVar[str] = "on a class named outright"
+
+    def names(self, symbol: str) -> bool:
+        return self.symbol == symbol
+
+
+@dataclass(frozen=True)
+class ImplicitClass(ClassBinding):
+    """cls or self inside a family class: the runtime class is that class or any descendant."""
+
+    describes: ClassVar[str] = "through cls or self"
 
 
 @dataclass(frozen=True)
@@ -464,8 +573,8 @@ class DestinationMember:
 
     moved: MovedMethod
 
-    def arguments(self) -> ast.arguments:
-        """The member's parameters, as its header declares them."""
+    def signature_edits(self, signature: SignatureText) -> tuple[_Edit, ...]:
+        """What the member changes in the method's own parameter list."""
 
         raise NotImplementedError
 
@@ -499,25 +608,6 @@ class DestinationMember:
         if not self.moved.source.keeps_receiver and _calls(call.attribute.value):
             raise ValueError(f"{call.where}: the receiver calls, and the moved call no longer evaluates it")
 
-    def parameters(self, leading: list[ast.arg], kept: tuple[ast.arg, ...]) -> ast.arguments:
-        """The method's arguments with its leading parameters replaced and only `kept` left."""
-
-        original = self.moved.method.args
-        everything = original.posonlyargs + original.args
-        defaults = dict(zip(everything[len(everything) - len(original.defaults):], original.defaults))
-        positional = [argument for argument in everything if argument in kept]
-        keywords = [argument for argument in original.kwonlyargs if argument in kept]
-        keyword_defaults = dict(zip(original.kwonlyargs, original.kw_defaults))
-        return ast.arguments(
-            posonlyargs=[],
-            args=leading + [copy.deepcopy(argument) for argument in positional],
-            vararg=copy.deepcopy(original.vararg),
-            kwonlyargs=[copy.deepcopy(argument) for argument in keywords],
-            kw_defaults=[copy.deepcopy(keyword_defaults[argument]) for argument in keywords],
-            kwarg=copy.deepcopy(original.kwarg),
-            defaults=[copy.deepcopy(defaults[argument]) for argument in positional if argument in defaults],
-        )
-
 
 @dataclass(frozen=True)
 class DestinationInstanceMethod(DestinationMember):
@@ -539,19 +629,16 @@ class DestinationInstanceMethod(DestinationMember):
         if has_default:
             raise ValueError(f"{self.moved.name!r}'s {self.parameter.arg!r} has a default; calls may omit it")
 
-    def arguments(self) -> ast.arguments:
-        source = self.moved.source
+    def signature_edits(self, signature: SignatureText) -> tuple[_Edit, ...]:
         receiver = self.moved.receiver_parameter
-        if receiver is None:
-            return self.parameters(
-                [ast.arg("self")],
-                tuple(argument for argument in source.call_parameters if argument is not self.parameter),
-            )
-        arguments = self.parameters([ast.arg("self")], source.call_parameters)
-        for argument in arguments.args + arguments.kwonlyargs:
-            if argument.arg == self.parameter.arg:
-                argument.arg, argument.annotation = receiver, None
-        return arguments
+        if receiver is not None:
+            return (signature.replaced(self.parameter, receiver),)
+        leading = signature.leading(self.moved.source.leading_name)
+        return (
+            signature.removed(self.parameter),
+            signature.replaced(leading, "self") if leading is not None
+            else signature.prepended("self", without=self.parameter),
+        )
 
     def body_renames(self) -> tuple[tuple[ast.AST, str], ...]:
         return super().body_renames() + tuple(
@@ -618,11 +705,19 @@ class DestinationInstanceMethod(DestinationMember):
                 end_offset=geometry.required_node_offsets(passed[index + 1])[0],
                 replacement_source="",
             ))
-        else:
+        elif index:
             replacements.append(SourceTextSpanReplacement.from_offsets(
-                start_offset=geometry.required_node_offsets(passed[index - 1])[1] if index else argument_start,
+                start_offset=geometry.required_node_offsets(passed[index - 1])[1],
                 end_offset=argument_end,
                 replacement_source="",
+            ))
+        else:
+            # The only argument: the parentheses close on it, with no line left for it.
+            call_end = geometry.required_node_offsets(call.call)[1]
+            attribute_end = geometry.required_node_offsets(call.attribute)[1]
+            opening = attribute_end + geometry.source[attribute_end:call_end].index("(") + 1
+            replacements.append(SourceTextSpanReplacement.from_offsets(
+                start_offset=opening, end_offset=call_end - 1, replacement_source="",
             ))
         return tuple(replacements)
 
@@ -638,11 +733,12 @@ class DestinationClassMethod(DestinationMember):
         if "cls" in LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(self.moved.method.body):
             raise ValueError(f"{self.moved.name!r} already binds 'cls'")
 
-    def arguments(self) -> ast.arguments:
-        leading = [ast.arg("cls")]
-        if self.moved.receiver_parameter is not None:
-            leading.append(ast.arg(self.moved.receiver_parameter))
-        return self.parameters(leading, self.moved.source.call_parameters)
+    def signature_edits(self, signature: SignatureText) -> tuple[_Edit, ...]:
+        receiver = self.moved.receiver_parameter
+        leading = signature.leading(self.moved.source.leading_name)
+        if receiver is not None and leading is not None:
+            return (signature.replaced(leading, f"cls, {receiver}"),)
+        return () if leading is not None else (signature.prepended("cls"),)
 
     def body_renames(self) -> tuple[tuple[ast.AST, str], ...]:
         return super().body_renames() + tuple((node, "cls") for node in self.moved.destination_reads)
@@ -686,6 +782,93 @@ class DestinationClassMethod(DestinationMember):
         return tuple(replacements)
 
 
+type _Edit = tuple[int, int, str]
+
+
+def _edited(source: str, start: int, end: int, edits: tuple[_Edit, ...]) -> str:
+    """source[start:end] with each edit's offsets replaced, the latest first."""
+
+    text = source[start:end]
+    for edit_start, edit_end, replacement in sorted(edits, reverse=True):
+        text = text[: edit_start - start] + replacement + text[edit_end - start:]
+    return text
+
+
+def _shifted(line: str, shift: int) -> str:
+    if shift >= 0:
+        return " " * shift + line if line.strip() else line
+    return line[min(-shift, len(line) - len(line.lstrip(" "))):]
+
+
+@dataclass(frozen=True)
+class SignatureText:
+    """A method's header as written: edits replace, remove or add one parameter at a time and
+    leave every other character, line break and default as the source has it."""
+
+    geometry: SourceTextGeometry
+    method: ast.FunctionDef | ast.AsyncFunctionDef
+
+    @property
+    def source(self) -> str:
+        return self.geometry.source
+
+    @cached_property
+    def name_span(self) -> tuple[int, int]:
+        start = self.source.index(self.method.name, self.geometry.required_node_offsets(self.method)[0])
+        return start, start + len(self.method.name)
+
+    @cached_property
+    def opening(self) -> int:
+        return self.source.index("(", self.name_span[1]) + 1
+
+    @cached_property
+    def parameters(self) -> tuple[ast.arg, ...]:
+        arguments = self.method.args
+        return tuple(
+            argument for argument in (
+                *arguments.posonlyargs, *arguments.args, arguments.vararg,
+                *arguments.kwonlyargs, arguments.kwarg,
+            ) if argument is not None
+        )
+
+    def leading(self, name: str | None) -> ast.arg | None:
+        """The self or cls the source shape leads with, when it leads with one."""
+
+        return None if name is None else self.parameters[0]
+
+    def renamed(self, name: str) -> tuple[_Edit, ...]:
+        return () if name == self.method.name else ((*self.name_span, name),)
+
+    def replaced(self, parameter: ast.arg, text: str) -> _Edit:
+        return (*self.geometry.required_node_offsets(parameter), text)
+
+    def removed(self, parameter: ast.arg) -> _Edit:
+        """A parameter and its separator: its whole line when it stands alone on one."""
+
+        start, end = self.geometry.required_node_offsets(parameter)
+        line_start = self.source.rfind("\n", 0, start) + 1
+        rest = re.match(r"[ \t]*,?[ \t]*\n", self.source[end:])
+        if not self.source[line_start:start].strip() and rest is not None:
+            return line_start, end + rest.end(), ""
+        following = re.match(r"\s*,\s*", self.source[end:])
+        if following is not None and self.source[end + following.end()] != ")":
+            return start, end + following.end(), ""
+        comma = self.source.rfind(",", self.opening, start)
+        return (comma if comma >= 0 else start), end, ""
+
+    def prepended(self, text: str, without: ast.arg | None = None) -> _Edit:
+        """A new first parameter, on its own line when the first one stands on its own."""
+
+        remaining = tuple(parameter for parameter in self.parameters if parameter is not without)
+        if not remaining:
+            return self.opening, self.opening, text
+        first = remaining[0]
+        first_start = self.geometry.required_node_offsets(first)[0]
+        if "\n" in self.source[self.opening:first_start]:
+            return first_start, first_start, f"{text},\n{' ' * first.col_offset}"
+        return first_start, first_start, f"{text}, "
+
+
 @dataclass(frozen=True)
 class _ClassBody:
     bound_names_of_body: frozenset[str]
@@ -715,6 +898,144 @@ def _imported_file(snapshot: CodemodSourceSnapshot, file_path: str, statement: a
     return provider.file_path
 
 
+def _binding(snapshot: CodemodSourceSnapshot, file_path: str, name: str) -> tuple[str, str] | None:
+    """The declaration a module-level name resolves to: the module and name it imports or
+    declares, so two modules binding one object by different statements, relative or absolute,
+    compare equal."""
+
+    source_file = snapshot.module_import_graph.source_file_for_path(file_path)
+    if source_file is None:
+        raise ValueError(f"{file_path} is outside the scan")
+    identity = source_file.module_path_identity
+    for statement in snapshot.module_nodes_by_file_path[file_path].body:
+        if isinstance(statement, ast.ImportFrom):
+            for alias in statement.names:
+                if (alias.asname or alias.name) == name:
+                    module = identity.resolve_import_from_module(
+                        imported_module=statement.module, level=statement.level,
+                    )
+                    return str(module), alias.name
+        elif isinstance(statement, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)) and statement.name == name:
+            return str(snapshot.module_import_graph.module_name_for_file_path(file_path)), name
+    return None
+
+
+@dataclass(frozen=True)
+class OtherModule(ForeignClass):
+    """A module bound by `import`: its attribute of the method's name is its own."""
+
+
+@dataclass(frozen=True)
+class NameBinding:
+    """How one scope binds a name: by default as a value, typed as an instance."""
+
+    def class_binding(self, moved: MovedMethod, file_path: str, scope: ast.AST) -> ClassBinding | None:
+        return None
+
+
+@dataclass(frozen=True)
+class ImportedName(NameBinding):
+    """`from module import name`: the class it resolves to, or outside the scan."""
+
+    statement: ast.ImportFrom
+    alias: ast.alias
+
+    def class_binding(self, moved: MovedMethod, file_path: str, scope: ast.AST) -> ClassBinding | None:
+        graph = moved.snapshot.module_import_graph
+        source_file = graph.source_file_for_path(file_path)
+        if source_file is None:
+            return None
+        module = source_file.module_path_identity.resolve_import_from_module(
+            imported_module=self.statement.module, level=self.statement.level,
+        )
+        provider = None if module is None else graph.unique_source_file_for_module_name(module)
+        if provider is None:
+            return OutsideScan(str(module))
+        return moved.declared_class(provider.file_path, self.alias.name)
+
+
+@dataclass(frozen=True)
+class ImportedModule(NameBinding):
+    """`import module`: a module, never a family class."""
+
+    alias: ast.alias
+
+    def class_binding(self, moved: MovedMethod, file_path: str, scope: ast.AST) -> ClassBinding | None:
+        return OtherModule(self.alias.name)
+
+
+@dataclass(frozen=True)
+class DeclaredClass(NameBinding):
+    """`class Name:` in the scope: the class the index declares there, when it is top-level."""
+
+    node: ast.ClassDef
+
+    def class_binding(self, moved: MovedMethod, file_path: str, scope: ast.AST) -> ClassBinding | None:
+        return moved.declared_class(file_path, self.node.name) if isinstance(scope, ast.Module) else None
+
+
+_NESTED_SCOPES = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)
+
+
+@dataclass(frozen=True)
+class _ScopeBindings:
+    """The names one scope binds itself, without the scopes nested in it."""
+
+    scope: ast.AST
+
+    def nodes(self) -> list[ast.AST]:
+        found: list[ast.AST] = []
+        pending = list(ast.iter_child_nodes(self.scope))
+        while pending:
+            node = pending.pop()
+            found.append(node)
+            if not isinstance(node, _NESTED_SCOPES):
+                pending.extend(ast.iter_child_nodes(node))
+        return found
+
+    def binding(self, name: str) -> NameBinding | None:
+        last: NameBinding | None = None
+        for node in self.nodes():
+            if isinstance(node, ast.ImportFrom):
+                for alias in node.names:
+                    if (alias.asname or alias.name) == name:
+                        last = ImportedName(node, alias)
+            elif isinstance(node, ast.Import):
+                for alias in node.names:
+                    if (alias.asname or alias.name.partition(".")[0]) == name:
+                        last = ImportedModule(alias)
+            elif isinstance(node, ast.ClassDef) and node.name == name:
+                last = DeclaredClass(node)
+            elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == name:
+                last = NameBinding()
+            elif isinstance(node, ast.Name) and node.id == name and isinstance(node.ctx, ast.Store):
+                last = NameBinding()
+            elif isinstance(node, ast.arg) and node.arg == name:
+                last = NameBinding()
+        return last
+
+
+def _name_scopes(node: ast.AST, parents: dict[ast.AST, ast.AST]) -> tuple[ast.AST, ...]:
+    """The scopes a name read at `node` resolves through: enclosing functions innermost first,
+    a class body only when the read sits directly in it, then the module."""
+
+    scopes: list[ast.AST] = []
+    current = parents.get(node)
+    direct = True
+    while current is not None:
+        if isinstance(current, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+            scopes.append(current)
+            direct = False
+        elif isinstance(current, ast.ClassDef):
+            if direct:
+                scopes.append(current)
+            direct = False
+        elif isinstance(current, ast.Module):
+            scopes.append(current)
+        current = parents.get(current)
+    return tuple(scopes)
+
+
 def _enclosing_class(
     snapshot: CodemodSourceSnapshot, file_path: str, node: ast.AST, parents: dict[ast.AST, ast.AST],
 ) -> str | None:
@@ -737,8 +1058,30 @@ def _enclosing_class(
 
 
 @dataclass(frozen=True)
+class MethodReference:
+    """One attribute reference by the method's name, called or not, before its receiver is typed."""
+
+    file_path: str
+    attribute: ast.Attribute
+    call: ast.Call | None
+
+    @property
+    def where(self) -> str:
+        return f"{self.file_path}:{self.attribute.lineno}"
+
+    def answered(self, moved: MovedMethod, binding: ReceiverBinding) -> MethodCall:
+        """The reference as a call the moved method answers: one that is not a call would lose
+        the method, and the source shape may refuse the binding."""
+
+        if self.call is None:
+            raise ValueError(f"{self.where} uses {moved.name!r} other than by calling it")
+        moved.source.admits(binding, self.where)
+        return MethodCall(self.file_path, self.call, self.attribute)
+
+
+@dataclass(frozen=True)
 class MethodCall:
-    """One call by the method's name, and the receiver it is called on."""
+    """One call the moved method answers, and the receiver it is called on."""
 
     file_path: str
     call: ast.Call
@@ -747,6 +1090,18 @@ class MethodCall:
     @property
     def where(self) -> str:
         return f"{self.file_path}:{self.call.lineno}"
+
+
+_DYNAMIC_ACCESS = frozenset({"getattr", "hasattr", "setattr", "delattr"})
+
+
+def _dynamic_access(node: ast.AST, name: str) -> bool:
+    """Whether a node reaches an attribute of this name by a string, past any receiver typing."""
+
+    return (
+        isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id in _DYNAMIC_ACCESS
+        and len(node.args) > 1 and isinstance(node.args[1], ast.Constant) and node.args[1].value == name
+    )
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -839,7 +1194,7 @@ class MoveMethodToClassOperation(RepositorySourceReprovedOperation):
 
         typing = snapshot.declared_receiver_typing
         answering: list[MethodCall] = []
-        undeclared: dict[ReceiverSpan, MethodCall] = {}
+        undeclared: dict[ReceiverSpan, MethodReference] = {}
         for parsed in snapshot.parsed_modules:
             if moved.name not in parsed.source:
                 continue
@@ -850,30 +1205,37 @@ class MoveMethodToClassOperation(RepositorySourceReprovedOperation):
             resolver = ProbeOwnerResolver.of(parsed)
             for node in ast.walk(parsed.module):
                 where = f"{parsed.file_path}:{getattr(node, 'lineno', 0)}"
-                if isinstance(node, ast.Constant) and node.value == moved.name:
-                    raise ValueError(f"{where} names {moved.name!r} in a string")
+                if _dynamic_access(node, moved.name):
+                    raise ValueError(f"{where} reaches {moved.name!r} by a string")
                 if node is moved.method or not (
                     isinstance(node, ast.Attribute) and node.attr == moved.name
                 ):
                     continue
-                call = parents.get(node)
-                if not (isinstance(call, ast.Call) and call.func is node):
-                    raise ValueError(f"{where} uses {moved.name!r} other than by calling it")
+                parent = parents.get(node)
+                site = MethodReference(
+                    parsed.file_path, node,
+                    parent if isinstance(parent, ast.Call) and parent.func is node else None,
+                )
+                enclosing = _enclosing_class(snapshot, parsed.file_path, node, parents)
                 if isinstance(node.value, ast.Call) and isinstance(node.value.func, ast.Name) and (
                     node.value.func.id == "super"
                 ):
-                    raise ValueError(f"{where} calls {moved.name!r} through super()")
-                site = MethodCall(parsed.file_path, call, node)
-                enclosing = _enclosing_class(snapshot, parsed.file_path, node, parents)
-                if moved.source.class_receiver(node.value, parsed.file_path, enclosing):
-                    answering.append(site)
+                    if enclosing in moved.family:
+                        raise ValueError(f"{where} reaches {moved.name!r} through super()")
+                    continue
+                bound = moved.source.bound_class(
+                    node.value, parsed.file_path, enclosing, _name_scopes(node, parents),
+                )
+                if bound is not None:
+                    if bound.reaches_family():
+                        answering.append(site.answered(moved, bound))
                     continue
                 owner = resolver.owner(node.value).resolved(typing)
                 spans = owner.type_checker_spans()
                 if spans:
                     undeclared[spans[0]] = site
                 elif moved.answers(tuple(getattr(owner, "class_symbols", tuple)()), where):
-                    answering.append(site)
+                    answering.append(site.answered(moved, ReceiverBinding(moved.symbol)))
         if undeclared:
             with TypeCheckerSession.session(SourceTexts(snapshot.parsed_modules)) as session:
                 answers = session.receiver_types(undeclared)
@@ -882,7 +1244,7 @@ class MoveMethodToClassOperation(RepositorySourceReprovedOperation):
                 if not isinstance(answer, InferredReceiverType):
                     raise ValueError(f"{site.where}: the type checker gives no type for the receiver")
                 if moved.answers(answer.classes, site.where):
-                    answering.append(site)
+                    answering.append(site.answered(moved, ReceiverBinding(moved.symbol)))
         nested = [
             site for site in answering
             for other in answering
