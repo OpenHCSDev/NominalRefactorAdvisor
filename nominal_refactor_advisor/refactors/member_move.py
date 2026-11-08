@@ -136,13 +136,13 @@ class MovedMethod:
         }
 
     def named_class(self, file_path: str, name: str) -> ClassBinding | None:
-        """What a module-level name in a file binds, when that says whether it is the family:
-        a family class declared there or imported from where it is declared, or an import from
-        outside the scan. A name the module binds otherwise is typed as an instance."""
+        """What a name in a file binds by its declaration or import (module-level or local), when
+        that says whether it is the family: a family class, another class the scan declares, or an
+        import from outside the scan. A name bound otherwise is typed as an instance."""
 
-        local = self.family_declarations.get((file_path, name))
+        local = self.declared_class(file_path, name)
         if local is not None:
-            return NamedClass(local)
+            return local
         graph = self.snapshot.module_import_graph
         source_file = graph.source_file_for_path(file_path)
         if source_file is None:
@@ -159,10 +159,24 @@ class MovedMethod:
                 provider = None if module is None else graph.unique_source_file_for_module_name(module)
                 if provider is None:
                     return OutsideScan(str(module))
-                imported = self.family_declarations.get((provider.file_path, alias.name))
+                imported = self.declared_class(provider.file_path, alias.name)
                 if imported is not None:
-                    return NamedClass(imported)
+                    return imported
         return None
+
+    def declared_class(self, file_path: str, qualname: str) -> ClassBinding | None:
+        """A class the scan declares at this file and qualname: the family's, or another's."""
+
+        family = self.family_declarations.get((file_path, qualname))
+        if family is not None:
+            return NamedClass(family)
+        other = self.class_declarations.get((file_path, qualname))
+        return None if other is None else OtherClass(other)
+
+    @cached_property
+    def class_declarations(self) -> dict[tuple[str, str], str]:
+        classes = self.snapshot.required_class_family_index.classes_by_symbol
+        return {(declaration.file_path, declaration.qualname): symbol for symbol, declaration in classes.items()}
 
     @cached_property
     def locals(self) -> frozenset[str]:
@@ -507,11 +521,21 @@ class ClassBinding(ReceiverBinding):
 
 
 @dataclass(frozen=True)
-class OutsideScan(ClassBinding):
-    """A name imported from outside the scan: its attribute of the method's name is its own."""
+class ForeignClass(ClassBinding):
+    """A class that is not the family's: its attribute of the method's name is its own."""
 
     def reaches_family(self) -> bool:
         return False
+
+
+@dataclass(frozen=True)
+class OutsideScan(ForeignClass):
+    """A name imported from outside the scan (the standard library, a dependency)."""
+
+
+@dataclass(frozen=True)
+class OtherClass(ForeignClass):
+    """Another class the scan declares."""
 
 
 @dataclass(frozen=True)
@@ -710,11 +734,19 @@ class DestinationInstanceMethod(DestinationMember):
                 end_offset=geometry.required_node_offsets(passed[index + 1])[0],
                 replacement_source="",
             ))
-        else:
+        elif index:
             replacements.append(SourceTextSpanReplacement.from_offsets(
-                start_offset=geometry.required_node_offsets(passed[index - 1])[1] if index else argument_start,
+                start_offset=geometry.required_node_offsets(passed[index - 1])[1],
                 end_offset=argument_end,
                 replacement_source="",
+            ))
+        else:
+            # The only argument: the parentheses close on it, with no line left for it.
+            call_end = geometry.required_node_offsets(call.call)[1]
+            attribute_end = geometry.required_node_offsets(call.attribute)[1]
+            opening = attribute_end + geometry.source[attribute_end:call_end].index("(") + 1
+            replacements.append(SourceTextSpanReplacement.from_offsets(
+                start_offset=opening, end_offset=call_end - 1, replacement_source="",
             ))
         return tuple(replacements)
 
