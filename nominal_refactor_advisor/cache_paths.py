@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import os
 import shutil
 from dataclasses import dataclass
@@ -40,11 +39,9 @@ class AdvisorCacheLayout:
     ast_parse_entry_name: str = "ast"
     analysis_entry_name: str = "analysis"
     semantic_descent_entry_name: str = "semantic_descent"
-
-    def base_for(self, root: Path) -> Path:
-        if root.is_file():
-            return root.parent
-        return root
+    shared_entry_name: str = "shared"
+    """Every checkout's entries live here together: they are keyed by content
+    and checkout-relative paths, so a new worktree reads what another paid for."""
 
     def persistent_cache_home(self) -> Path:
         explicit_cache_home = os.environ.get(self.environment_cache_home_name)
@@ -55,24 +52,17 @@ class AdvisorCacheLayout:
             return Path(xdg_cache_home) / self.application_cache_dir_name
         return Path.home() / ".cache" / self.application_cache_dir_name
 
-    def root_identity_path(self, root: Path) -> Path:
-        base_path = self.base_for(root).resolve()
-        digest = hashlib.blake2s(
-            str(base_path).encode("utf-8"), digest_size=8
-        ).hexdigest()
-        return Path(f"{base_path.name}-{digest}")
+    def persistent_cache_base(self) -> Path:
+        return self.persistent_cache_home() / self.shared_entry_name
 
-    def persistent_cache_base(self, root: Path) -> Path:
-        return self.persistent_cache_home() / self.root_identity_path(root)
+    def parse_cache_dir(self) -> Path:
+        return self.persistent_cache_base() / self.ast_parse_entry_name
 
-    def parse_cache_dir(self, root: Path) -> Path:
-        return self.persistent_cache_base(root) / self.ast_parse_entry_name
+    def analysis_cache_dir(self) -> Path:
+        return self.persistent_cache_base() / self.analysis_entry_name
 
-    def analysis_cache_dir(self, root: Path) -> Path:
-        return self.persistent_cache_base(root) / self.analysis_entry_name
-
-    def semantic_descent_cache_dir(self, root: Path) -> Path:
-        return self.persistent_cache_base(root) / self.semantic_descent_entry_name
+    def semantic_descent_cache_dir(self) -> Path:
+        return self.persistent_cache_base() / self.semantic_descent_entry_name
 
     def analysis_sibling(self, parse_cache_dir: Path) -> Path:
         if parse_cache_dir.name == self.ast_parse_entry_name:
@@ -315,37 +305,31 @@ class AdvisorCacheRetention:
         return True
 
 
-def default_cache_base(root: Path) -> Path:
-    """Return the filesystem root that should own default advisor cache state."""
-
-    return advisor_cache_layout.persistent_cache_base(root)
-
-
-def maintain_default_cache(root: Path) -> AdvisorCacheMaintenanceReport:
-    """Touch the active default root and periodically enforce retention bounds."""
+def maintain_default_cache() -> AdvisorCacheMaintenanceReport:
+    """Touch the shared default cache and periodically enforce retention bounds."""
 
     cache_home = advisor_cache_layout.persistent_cache_home()
     return AdvisorCacheRetention(cache_home).maintain(
-        advisor_cache_layout.persistent_cache_base(root)
+        advisor_cache_layout.persistent_cache_base()
     )
 
 
-def default_parse_cache_dir(root: Path) -> Path:
-    """Return the default persistent AST cache directory for one scan root."""
+def default_parse_cache_dir() -> Path:
+    """Return the shared persistent AST cache directory."""
 
-    return advisor_cache_layout.parse_cache_dir(root)
-
-
-def default_analysis_cache_dir(root: Path) -> Path:
-    """Return the default persistent finding cache directory for one scan root."""
-
-    return advisor_cache_layout.analysis_cache_dir(root)
+    return advisor_cache_layout.parse_cache_dir()
 
 
-def default_semantic_descent_cache_dir(root: Path) -> Path:
-    """Return the default semantic-descent graph cache directory for one scan root."""
+def default_analysis_cache_dir() -> Path:
+    """Return the shared persistent finding cache directory."""
 
-    return advisor_cache_layout.semantic_descent_cache_dir(root)
+    return advisor_cache_layout.analysis_cache_dir()
+
+
+def default_semantic_descent_cache_dir() -> Path:
+    """Return the shared semantic-descent graph cache directory."""
+
+    return advisor_cache_layout.semantic_descent_cache_dir()
 
 
 def analysis_cache_sibling(parse_cache_dir: Path) -> Path:

@@ -1329,7 +1329,7 @@ class BoundedCompactProjectionManifest:
             if source_signature is None:
                 source_signature = self._indexed_content_signature(source, family)
             if source_signature is None:
-                source_signature = collected_family_items_content_signature(
+                source_signature = source.items_content_signature(
                     tuple(source_projections)
                 )
             self._record_content_signature(source, family, source_signature)
@@ -4035,14 +4035,12 @@ def load_analysis_summary_for_roots(
     return summary_lookup.payload
 
 
-def analysis_cache_dir_for_root(
-    root: Path, parse_cache_dir: Path | None, use_cache: bool
-) -> Path | None:
+def analysis_cache_dir_for(parse_cache_dir: Path | None, use_cache: bool) -> Path | None:
     if not use_cache:
         return None
     if parse_cache_dir is not None:
         return analysis_cache_sibling(parse_cache_dir)
-    return default_analysis_cache_dir(root)
+    return default_analysis_cache_dir()
 
 
 def semantic_descent_source_for_parse_cache(
@@ -4088,8 +4086,7 @@ class CachedPathAnalysisRequest(ParseCacheDirectory):
 
     @property
     def analysis_cache_dir(self) -> Path | None:
-        return analysis_cache_dir_for_root(
-            self.roots[0],
+        return analysis_cache_dir_for(
             self.parse_cache_dir,
             self.use_parse_cache,
         )

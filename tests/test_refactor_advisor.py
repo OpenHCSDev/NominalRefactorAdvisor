@@ -12694,7 +12694,7 @@ def test_parse_python_modules_uses_default_ast_cache(
     assert [module.module_name for module in first_modules] == ["mod"]
     assert [module.module_name for module in second_modules] == ["mod"]
     assert parse_calls == 1
-    assert default_parse_cache_dir(tmp_path / "pkg").is_dir()
+    assert default_parse_cache_dir().is_dir()
 
 
 def test_analysis_finding_cache_invalidates_after_source_change(tmp_path: Path) -> None:
@@ -24452,7 +24452,7 @@ def test_module_cli_auto_context_root_keeps_global_cache_for_file_scope(
         "LocalEnvelope",
         "RequestCarrier",
     }
-    assert any(default_parse_cache_dir(package_root).glob("*.pickle"))
+    assert any(default_parse_cache_dir().glob("*.pickle"))
 
 
 def test_module_cli_agent_payload_reuses_cached_semantic_graph_for_file_scope(
@@ -24627,7 +24627,7 @@ def test_module_cli_can_disable_auto_context_root_for_file_scope(
     assert {
         target["qualname"] for target in ast_targets if target["node_type"] == "class"
     } == {"ComposedRequest", "LocalEnvelope"}
-    assert any(default_parse_cache_dir(focused_path).glob("*.pickle"))
+    assert any(default_parse_cache_dir().glob("*.pickle"))
 
 
 def test_source_index_caches_lookup_maps_and_finding_target_keys(

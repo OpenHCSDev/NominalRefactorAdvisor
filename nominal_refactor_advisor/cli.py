@@ -53,7 +53,7 @@ from .analysis import (
     SemanticDescentGraphQuestion,
     SortedFindingsAuthority,
     UnpersistedAnalysisResult,
-    analysis_cache_dir_for_root,
+    analysis_cache_dir_for,
     analyze_compact_roots_with_cache,
     analyze_lean_export,
     analyze_module_detector_types_with_cache,
@@ -2791,7 +2791,7 @@ class ParseCacheDirAuthority(ParseCachePolicy):
             return None
         if self.requested_parse_cache_dir is not None:
             return self.requested_parse_cache_dir
-        return default_parse_cache_dir(self.root)
+        return default_parse_cache_dir()
 
 
 @dataclass(frozen=True)
@@ -4459,9 +4459,8 @@ def _main_without_deadline(invocation: CliArguments) -> int:
     root = path_scope.primary_analysis_root
     parse_cache_dir = invocation.configured_parse_cache_dir
     if args.use_parse_cache and args.cache_dir is None:
-        maintain_default_cache(root)
-    analysis_cache_dir = analysis_cache_dir_for_root(
-        root,
+        maintain_default_cache()
+    analysis_cache_dir = analysis_cache_dir_for(
         parse_cache_dir,
         args.use_parse_cache,
     )

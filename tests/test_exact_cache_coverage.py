@@ -11,7 +11,7 @@ import pytest
 from nominal_refactor_advisor.analysis import (
     AnalysisCacheIdentityAuthority,
     HeldNothingForRequest,
-    analysis_cache_dir_for_root,
+    analysis_cache_dir_for,
     analyze_compact_roots_with_cache,
     default_detector_types_for_analysis,
     load_analysis_cache_for_roots,
@@ -184,7 +184,7 @@ def test_cli_full_scan_rejects_subset_aggregate(
     source_root: Path, tmp_path: Path, profile: str
 ) -> None:
     ast_cache = tmp_path / "cache" / "ast"
-    analysis_cache = analysis_cache_dir_for_root(source_root, ast_cache, True)
+    analysis_cache = analysis_cache_dir_for(ast_cache, True)
     analyze_compact_roots_with_cache(
         (source_root,),
         detector_types=default_detector_types_for_analysis()[:1],

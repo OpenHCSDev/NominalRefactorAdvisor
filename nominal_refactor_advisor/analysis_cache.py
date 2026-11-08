@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from collections.abc import Callable, Iterable, Iterator
+from collections.abc import Callable, Iterable, Iterator, MutableMapping
 from dataclasses import dataclass, field, replace
 from enum import StrEnum
 import hashlib
@@ -26,6 +26,7 @@ from .ast_tools import (
 )
 from .cache_checkout import (
     CacheCheckoutPathError,
+    CheckoutRelocation,
     checkout_relative_path,
     inferred_checkout_roots,
     lexical_absolute_path,
@@ -1415,8 +1416,18 @@ class AnalysisCacheStorage:
     def partial_path(self, identity: AnalysisCacheIdentity) -> Path:
         return self.cache_file_path(f"{identity.cache_token}.partial.pickle")
 
-    def source_signature_cache_path(self) -> Path:
-        return self.cache_file_path("source-file-signatures.pickle")
+    def source_signature_cache_path(self, checkout: CheckoutRelocation | None) -> Path:
+        """One stat shortcut file per checkout: its entries are keyed by path,
+        so a cache home shared by many checkouts keeps each checkout's apart."""
+
+        shard = (
+            "unrooted"
+            if checkout is None
+            else hashlib.blake2s(
+                checkout.root_texts[0].encode("utf-8"), digest_size=8
+            ).hexdigest()
+        )
+        return self.cache_file_path(f"source-file-signatures-{shard}.pickle")
 
     def rebuild_lock_path(self, identity: AnalysisCacheIdentity) -> Path:
         return self.cache_file_path(f"{identity.cache_token}.lock")
@@ -1673,13 +1684,79 @@ class AnalysisCacheStorage:
         self.store_typed_payload_atomic(cache_path, payload)
 
 
+class CheckoutShardedSourceSignatures(MutableMapping[str, CachedSourceFileSignature]):
+    """Path-keyed signatures, loaded and stored per checkout on first touch."""
+
+    def __init__(self, storage: AnalysisCacheStorage | None) -> None:
+        self._storage = storage
+        self._shards: dict[
+            CheckoutRelocation | None, dict[str, CachedSourceFileSignature]
+        ] = {}
+        self._dirty: set[CheckoutRelocation | None] = set()
+
+    def _shard(self, path_text: str) -> dict[str, CachedSourceFileSignature]:
+        return self._loaded(CheckoutRelocation.containing(path_text))
+
+    def _loaded(
+        self, checkout: CheckoutRelocation | None
+    ) -> dict[str, CachedSourceFileSignature]:
+        shard = self._shards.get(checkout)
+        if shard is None:
+            payload = (
+                None
+                if self._storage is None
+                else self._storage.load_typed_payload(
+                    self._storage.source_signature_cache_path(checkout),
+                    SourceFileSignatureCachePayload,
+                )
+            )
+            shard = (None if payload is None else payload.current_entries_by_path()) or {}
+            self._shards[checkout] = shard
+        return shard
+
+    def __getitem__(self, path_text: str) -> CachedSourceFileSignature:
+        return self._shard(path_text)[path_text]
+
+    def __setitem__(self, path_text: str, entry: CachedSourceFileSignature) -> None:
+        checkout = CheckoutRelocation.containing(path_text)
+        self._loaded(checkout)[path_text] = entry
+        self._dirty.add(checkout)
+
+    def __delitem__(self, path_text: str) -> None:
+        checkout = CheckoutRelocation.containing(path_text)
+        del self._loaded(checkout)[path_text]
+        self._dirty.add(checkout)
+
+    def __iter__(self) -> Iterator[str]:
+        return (path for shard in tuple(self._shards.values()) for path in shard)
+
+    def __len__(self) -> int:
+        return sum(len(shard) for shard in self._shards.values())
+
+    def store_dirty(self) -> None:
+        if self._storage is None:
+            return
+        for checkout in tuple(self._dirty):
+            payload = SourceFileSignatureCachePayload(
+                schema=source_file_signature_cache_schema,
+                entries=tuple(
+                    sorted(self._shards[checkout].values(), key=lambda entry: entry.path)
+                ),
+            )
+            try:
+                self._storage.store_typed_payload_atomic(
+                    self._storage.source_signature_cache_path(checkout), payload
+                )
+            except OSError:
+                continue
+            self._dirty.discard(checkout)
+
+
 class SourceFileSignatureCache:
     """Persist source-content hashes behind cheap stat invalidation."""
 
     def __init__(self, storage: AnalysisCacheStorage | None) -> None:
-        self._storage = storage
-        self._entries_by_path: dict[str, CachedSourceFileSignature] | None = None
-        self._dirty = False
+        self.entries_by_path = CheckoutShardedSourceSignatures(storage)
 
     def source_file_signatures(
         self,
@@ -1703,7 +1780,6 @@ class SourceFileSignatureCache:
             source_hash,
         )
         self.entries_by_path[cache_key] = updated_signature
-        self._dirty = True
         return updated_signature.source_file_signature()
 
     def semantic_source_hash(
@@ -1743,46 +1819,10 @@ class SourceFileSignatureCache:
         ):
             raise ValueError(f"Source changed before semantic publication: {path}")
         self.entries_by_path[signature.path] = signature
-        self._dirty = True
         return signature.semantic_hash
 
-    @property
-    def entries_by_path(self) -> dict[str, CachedSourceFileSignature]:
-        if self._entries_by_path is None:
-            self._entries_by_path = self._load_entries()
-        return self._entries_by_path
-
-    def _load_entries(self) -> dict[str, CachedSourceFileSignature]:
-        if self._storage is None:
-            return {}
-        payload = self._storage.load_typed_payload(
-            self._storage.source_signature_cache_path(),
-            SourceFileSignatureCachePayload,
-        )
-        if payload is None:
-            return {}
-        return payload.current_entries_by_path() or {}
-
     def store_if_dirty(self) -> None:
-        if not self._dirty or self._storage is None:
-            return
-        payload = SourceFileSignatureCachePayload(
-            schema=source_file_signature_cache_schema,
-            entries=tuple(
-                sorted(
-                    self.entries_by_path.values(),
-                    key=lambda entry: entry.path,
-                )
-            ),
-        )
-        try:
-            self._storage.store_typed_payload_atomic(
-                self._storage.source_signature_cache_path(),
-                payload,
-            )
-        except OSError:
-            return
-        self._dirty = False
+        self.entries_by_path.store_dirty()
 
 
 @dataclass(frozen=True)

@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+import io
 import os
+import pickle
 from dataclasses import dataclass
-from pathlib import Path, PurePosixPath
+from functools import cached_property
+from pathlib import Path, PurePath, PurePosixPath
+from typing import BinaryIO
 
 from .scan_cache import ScanCache
 
@@ -183,3 +187,107 @@ def _validate_relative_text(relative_text: str) -> None:
 def lexical_absolute_path(path: Path | str) -> Path:
     """Canonicalize current spelling without dereferencing a source symlink."""
     return _absolute_path_value(os.path.abspath(os.fspath(path)))
+
+
+@dataclass(frozen=True)
+class CheckoutRelocation:
+    """One checkout's paths, stored relative to it so every checkout of the tree reads them.
+
+    A checkout is the nearest directory holding `.git` (a linked worktree holds a
+    `.git` file). Derived state about a module names the module's own checkout as
+    strings and paths beginning with the checkout root; stored relative and rebased
+    on load, an entry computed in one worktree is the entry every other worktree at
+    the same content would compute. A payload that still spells the root after
+    relocation (inside a longer string, say) is not portable and stays bound to
+    the checkout that wrote it.
+    """
+
+    root: Path
+
+    @classmethod
+    def containing(cls, path: Path | str) -> CheckoutRelocation | None:
+        return _checkout_containing(str(lexical_absolute_path(path).parent))
+
+    @cached_property
+    def root_texts(self) -> tuple[str, ...]:
+        """Lexical spelling first, then the resolved one when a link differs."""
+
+        lexical = str(self.root)
+        resolved = str(self.root.resolve())
+        return (lexical,) if lexical == resolved else (lexical, resolved)
+
+    def relative_text(self, path: Path | str) -> str:
+        return f"checkout:{lexical_absolute_path(path).relative_to(self.root).as_posix()}"
+
+    def relative_id(self, value: object) -> tuple[object, ...] | None:
+        if type(value) is str:
+            text, kind = value, None
+        elif isinstance(value, PurePath):
+            text, kind = str(value), type(value)
+        else:
+            return None
+        for root in self.root_texts:
+            if text.startswith(root) and (
+                len(text) == len(root) or text[len(root)] == "/"
+            ):
+                return ("checkout", kind, text[len(root) :])
+        return None
+
+    def restored(self, relative_id: tuple[object, ...]) -> object:
+        marker, kind, suffix = relative_id
+        if marker != "checkout" or not isinstance(suffix, str):
+            raise pickle.UnpicklingError("unknown persistent checkout reference")
+        text = self.root_texts[0] + suffix
+        return text if kind is None else kind(text)
+
+    def is_mentioned_in(self, data: bytes) -> bool:
+        return any(root.encode("utf-8") in data for root in self.root_texts)
+
+    def portable_dumps(self, value: object) -> tuple[bytes, bool]:
+        """The relocated pickle, or the plain one when relocation leaves the root."""
+
+        buffer = io.BytesIO()
+        _RelocatingPickler(buffer, self).dump(value)
+        data = buffer.getvalue()
+        if not self.is_mentioned_in(data):
+            return data, True
+        return pickle.dumps(value, protocol=pickle.HIGHEST_PROTOCOL), False
+
+    def load(self, handle: BinaryIO) -> object:
+        return _RelocatingUnpickler(handle, self).load()
+
+
+class _RelocatingPickler(pickle.Pickler):
+    def __init__(self, handle: BinaryIO, relocation: CheckoutRelocation) -> None:
+        super().__init__(handle, protocol=pickle.HIGHEST_PROTOCOL)
+        self._relocation = relocation
+
+    def persistent_id(self, obj: object) -> tuple[object, ...] | None:
+        return self._relocation.relative_id(obj)
+
+
+class _RelocatingUnpickler(pickle.Unpickler):
+    def __init__(self, handle: BinaryIO, relocation: CheckoutRelocation) -> None:
+        super().__init__(handle)
+        self._relocation = relocation
+
+    def persistent_load(self, pid: object) -> object:
+        if not isinstance(pid, tuple) or len(pid) != 3:
+            raise pickle.UnpicklingError("unknown persistent reference")
+        return self._relocation.restored(pid)
+
+
+def checkout_identity_text(path: Path | str) -> str:
+    """A path as identity: where it sits in its checkout, else its absolute spelling."""
+
+    checkout = CheckoutRelocation.containing(path)
+    return str(path) if checkout is None else checkout.relative_text(path)
+
+
+@ScanCache.cached
+def _checkout_containing(directory_text: str) -> CheckoutRelocation | None:
+    directory = Path(directory_text)
+    for candidate in (directory, *directory.parents):
+        if (candidate / ".git").exists():
+            return CheckoutRelocation(candidate)
+    return None
