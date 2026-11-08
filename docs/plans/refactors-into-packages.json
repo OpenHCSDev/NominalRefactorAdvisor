@@ -1,0 +1,848 @@
+{
+ "stages": [
+  {
+   "recipes": [
+    {
+     "recipe_id": "relocate-dataclass-constructor-projection",
+     "operations": [
+      {
+       "operation": "relocate_symbols_to_new_module",
+       "file_path": "nominal_refactor_advisor/refactors/dataclass_projection.py",
+       "symbol_qualnames": [
+        "DataclassConstructorFieldArgument",
+        "DataclassConstructorProjectionTarget",
+        "DataclassConstructorProjectionMethod",
+        "DataclassConstructorProjectionCandidate",
+        "DataclassConstructorProjectionDerivation",
+        "DeriveDataclassConstructorProjectionOperation",
+        "DataclassConstructorProjectionMappingRecipeBuilder"
+       ],
+       "destination_path": "nominal_refactor_advisor/refactors/dataclass_constructor_projection.py"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "recipes": [
+    {
+     "recipe_id": "relocate-dataclass-key-value-projection",
+     "operations": [
+      {
+       "operation": "relocate_symbols_to_new_module",
+       "file_path": "nominal_refactor_advisor/refactors/dataclass_projection.py",
+       "symbol_qualnames": [
+        "DataclassKeyValueSequenceProjectionCandidate",
+        "DataclassKeyValueSequenceProjectionDerivation",
+        "DeriveDataclassKeyValueSequenceProjectionOperation",
+        "DataclassKeyValueSequenceProjectionMappingRecipeBuilder"
+       ],
+       "destination_path": "nominal_refactor_advisor/refactors/dataclass_key_value_projection.py"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "recipes": [
+    {
+     "recipe_id": "relocate-dataclass-payload-projection",
+     "operations": [
+      {
+       "operation": "relocate_symbols_to_new_module",
+       "file_path": "nominal_refactor_advisor/refactors/dataclass_projection.py",
+       "symbol_qualnames": [
+        "DataclassPayloadProjectionCandidate",
+        "DataclassPayloadProjectionDerivation",
+        "DeriveDataclassPayloadProjectionOperation",
+        "DataclassPayloadProjectionMappingRecipeBuilder"
+       ],
+       "destination_path": "nominal_refactor_advisor/refactors/dataclass_payload_projection.py"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "recipes": [
+    {
+     "recipe_id": "relocate-dataclass-field-name-projection",
+     "operations": [
+      {
+       "operation": "relocate_symbols_to_new_module",
+       "file_path": "nominal_refactor_advisor/refactors/dataclass_projection.py",
+       "symbol_qualnames": [
+        "DataclassFieldNameCollectionProjectionDerivation",
+        "DeriveDataclassFieldNameCollectionProjectionOperation",
+        "DataclassFieldNameCollectionProjectionMappingRecipeBuilder"
+       ],
+       "destination_path": "nominal_refactor_advisor/refactors/dataclass_field_name_projection.py"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "recipes": [
+    {
+     "recipe_id": "relocate-function-projection-targets",
+     "operations": [
+      {
+       "operation": "relocate_symbols_to_new_module",
+       "file_path": "nominal_refactor_advisor/refactors/dataclass_projection.py",
+       "symbol_qualnames": [
+        "ProductFieldValue",
+        "ReturnFieldValue",
+        "ReturnDictFieldValue",
+        "FunctionProjectionTarget",
+        "ResolvedFunctionProjectionTarget",
+        "FunctionReturnProjectionTarget",
+        "ProjectionTargetT",
+        "ReturnDictProjectionTarget",
+        "ReturnKeyValueSequenceFieldValue",
+        "ReturnKeyValueSequenceProjectionTarget",
+        "ReturnCollectionProjectionTarget",
+        "ReturnDictFieldValueExtractor",
+        "ReturnDictProjectionTargetAuthority",
+        "ReturnKeyValueSequenceProjectionTargetAuthority"
+       ],
+       "destination_path": "nominal_refactor_advisor/refactors/function_projection_targets.py"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "recipes": [
+    {
+     "recipe_id": "delete-module-location-test",
+     "operations": [
+      {
+       "operation": "delete_target",
+       "file_path": "tests/test_assignment_replacement_codemod.py",
+       "target_qualname": "test_assignment_operations_share_nominal_source_authority"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "recipes": [
+    {
+     "recipe_id": "relocate-cases-family",
+     "operations": [
+      {
+       "operation": "relocate_symbols_to_new_module",
+       "file_path": "nominal_refactor_advisor/cases_family.py",
+       "symbol_qualnames": [
+        "BOOLEAN_CALLS",
+        "CallbackName",
+        "Unknown",
+        "UNKNOWN",
+        "Comparison",
+        "ValueComparison",
+        "IdentityComparison",
+        "EqualComparison",
+        "NotEqualComparison",
+        "LessComparison",
+        "LessEqualComparison",
+        "GreaterComparison",
+        "GreaterEqualComparison",
+        "ContainsComparison",
+        "NotContainsComparison",
+        "IsComparison",
+        "IsNotComparison",
+        "handback",
+        "ENUM_BODY_STATEMENT_UNMODELED",
+        "EnumBodyAnnotation",
+        "body_without_docstring",
+        "docstring",
+        "class_bindings",
+        "ENUM_METHOD_DECORATORS",
+        "is_name",
+        "loaded_names",
+        "stored_names",
+        "module_bound_names",
+        "literal_constant",
+        "negated",
+        "rebuilt",
+        "plain_lambda",
+        "applied",
+        "is_boolean",
+        "type_positions",
+        "member_type",
+        "Folding",
+        "indented",
+        "outermost",
+        "parameter_sources",
+        "argument_source",
+        "segment",
+        "signature",
+        "authored_header",
+        "header_end",
+        "Datum",
+        "MethodBodies",
+        "CaseModel",
+        "CasesFamily",
+        "provably_text",
+        "declared_type",
+        "mapping_value_type",
+        "TYPE_WRAPPERS",
+        "held_type",
+        "scope_walk",
+        "may_carry_value",
+        "CONTAINERS",
+        "DeclaredType",
+        "Typed",
+        "UnknownType",
+        "UNKNOWN_TYPE",
+        "DeclaredClass",
+        "KnownClass",
+        "UnknownClass",
+        "UNKNOWN_CLASS",
+        "Scope",
+        "FunctionScope",
+        "MethodScope",
+        "ModuleScope",
+        "MODULE_SCOPE",
+        "Enclosure",
+        "ClassBody",
+        "FreeBody",
+        "FREE_BODY",
+        "ScopeCollector",
+        "DeclaredTypes",
+        "ValueReads",
+        "MemberValueRead",
+        "literal_value",
+        "annotations_of",
+        "SourceLines",
+        "Site",
+        "Block",
+        "Guard"
+       ],
+       "destination_path": "nominal_refactor_advisor/refactors/cases_family.py"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "recipes": [
+    {
+     "recipe_id": "dissolve-cases-family",
+     "operations": [
+      {
+       "operation": "dissolve_module",
+       "file_path": "nominal_refactor_advisor/cases_family.py",
+       "successor_path": "nominal_refactor_advisor/refactors/cases_family.py"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "recipes": [
+    {
+     "recipe_id": "relocate-class-member-authority",
+     "operations": [
+      {
+       "operation": "relocate_symbols_to_new_module",
+       "file_path": "nominal_refactor_advisor/class_member_authority_codemod.py",
+       "symbol_qualnames": [
+        "ClassMemberPromotionTargets",
+        "ExactLeafMethodAncestorPromotionTargets",
+        "ParallelMirroredLeafFamilyTargets",
+        "ClassMemberSetSpec",
+        "ClassMemberPromotionSpec",
+        "ClassMemberDeletionReplacementPlan",
+        "ClassBaseAdditionReplacementPlan",
+        "ClassMemberPromotionReplacementPlanABC",
+        "ClassMemberSourceSelection",
+        "LayoutNeutralClassMemberPromotionReplacementPlan",
+        "DataclassFieldPromotionReplacementPlan",
+        "_ExactLeafMethodAncestorPromotionSourceRewrite",
+        "NamedClassMemberAuthoritySourceRewriteABC",
+        "ExactDataclassFieldEvidence",
+        "_ExactDataclassFieldAuthoritySourceRewrite",
+        "FactorNamedClassMemberAuthorityOperationABC",
+        "FactorExactDataclassFieldAuthorityOperation",
+        "ExistingDataclassFieldAuthorityTargets",
+        "ModuleDeclarationRelocation",
+        "_ExistingDataclassFieldAuthoritySourceRewrite",
+        "PromoteExactDataclassFieldsToExistingAuthorityOperation",
+        "_ExactMethodRoleSourceRewrite",
+        "FactorExactMethodRoleOperation",
+        "PromoteExactLeafMethodsToAncestorOperation",
+        "_ParallelMirroredLeafFamilySourceRewrite",
+        "FactorParallelMirroredLeafFamilyOperation",
+        "ClassMemberPromotionStatement",
+        "ClassDeclarationPromotionStatement",
+        "ClassMethodPromotionStatement",
+        "ClassMemberMoveProofContext",
+        "ClassMemberMoveSelection",
+        "PromoteClassMembersToAncestorOperation",
+        "_class_base_source_names"
+       ],
+       "destination_path": "nominal_refactor_advisor/refactors/class_member_authority.py"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "recipes": [
+    {
+     "recipe_id": "dissolve-class-member-authority-codemod",
+     "operations": [
+      {
+       "operation": "dissolve_module",
+       "file_path": "nominal_refactor_advisor/class_member_authority_codemod.py",
+       "successor_path": "nominal_refactor_advisor/refactors/class_member_authority.py"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "recipes": [
+    {
+     "recipe_id": "relocate-class-overlap",
+     "operations": [
+      {
+       "operation": "relocate_symbols_to_new_module",
+       "file_path": "nominal_refactor_advisor/class_overlap_codemod.py",
+       "symbol_qualnames": [
+        "OverlapClass",
+        "PlainOverlapClass",
+        "DataclassOverlapClass",
+        "source_rewrite_target",
+        "declared_names",
+        "RestatedDeclarations",
+        "ClassReferenceSite",
+        "ClassReferenceSites",
+        "require_static_c3",
+        "MetaclassMroProof",
+        "require_verdict",
+        "obsolete_import_edits",
+        "required_name_imports",
+        "ClassComposition",
+        "CoveringComposition",
+        "_owner_import_edits",
+        "BaseFold",
+        "require_no_positional_self_construction",
+        "KeywordOnlyComposition",
+        "FieldOrderDigest",
+        "_line_difference_edits",
+        "keyword_only_decorator_source",
+        "dataclass_options_besides_kw_only",
+        "composed_field_order",
+        "_is_own_class",
+        "PositionalConstruction",
+        "_LAYOUT_TOKENS",
+        "ConstructionKeywording",
+        "_receiver_class_calls",
+        "ComposeExistingClassOperation",
+        "ComposeExistingClassesOperation",
+        "FoldSharedDeclarationsIntoBaseOperation",
+        "require_owner_candidate",
+        "movable_members",
+        "MixinCreation",
+        "OwnerExtension",
+        "CreateMixinOperation",
+        "ExtendOwnerOperation",
+        "KeywordizeConstructionOperation",
+        "ClassOverlapFindingRecipeSynthesizer"
+       ],
+       "destination_path": "nominal_refactor_advisor/refactors/class_overlap.py"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "recipes": [
+    {
+     "recipe_id": "dissolve-class-overlap-codemod",
+     "operations": [
+      {
+       "operation": "dissolve_module",
+       "file_path": "nominal_refactor_advisor/class_overlap_codemod.py",
+       "successor_path": "nominal_refactor_advisor/refactors/class_overlap.py"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "recipes": [
+    {
+     "recipe_id": "relocate-assignment-operations",
+     "operations": [
+      {
+       "operation": "relocate_symbols_to_new_module",
+       "file_path": "nominal_refactor_advisor/codemod_assignment_operations.py",
+       "symbol_qualnames": [
+        "AssignmentReplacementOperationABC",
+        "ReplaceModuleAssignmentOperation",
+        "ReplaceScopeAssignmentOperation"
+       ],
+       "destination_path": "nominal_refactor_advisor/refactors/assignment_operations.py"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "recipes": [
+    {
+     "recipe_id": "dissolve-codemod-assignment-operations",
+     "operations": [
+      {
+       "operation": "dissolve_module",
+       "file_path": "nominal_refactor_advisor/codemod_assignment_operations.py",
+       "successor_path": "nominal_refactor_advisor/refactors/assignment_operations.py"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "recipes": [
+    {
+     "recipe_id": "relocate-call-declarations",
+     "operations": [
+      {
+       "operation": "relocate_symbols_to_new_module",
+       "file_path": "nominal_refactor_advisor/codemod_call_declarations.py",
+       "symbol_qualnames": [
+        "ModuleCallDeclaration",
+        "ModuleCallDeclarationSelector",
+        "DeleteModuleCallDeclarationsOperation"
+       ],
+       "destination_path": "nominal_refactor_advisor/refactors/call_declarations.py"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "recipes": [
+    {
+     "recipe_id": "dissolve-codemod-call-declarations",
+     "operations": [
+      {
+       "operation": "dissolve_module",
+       "file_path": "nominal_refactor_advisor/codemod_call_declarations.py",
+       "successor_path": "nominal_refactor_advisor/refactors/call_declarations.py"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "recipes": [
+    {
+     "recipe_id": "relocate-class-operations",
+     "operations": [
+      {
+       "operation": "relocate_symbols_to_new_module",
+       "file_path": "nominal_refactor_advisor/codemod_class_operations.py",
+       "symbol_qualnames": [
+        "InsertClassMemberOperation",
+        "RemoveFieldMetadataKeywordsOperation",
+        "PruneFieldMetadataKeywordsOperation"
+       ],
+       "destination_path": "nominal_refactor_advisor/refactors/class_operations.py"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "recipes": [
+    {
+     "recipe_id": "dissolve-codemod-class-operations",
+     "operations": [
+      {
+       "operation": "dissolve_module",
+       "file_path": "nominal_refactor_advisor/codemod_class_operations.py",
+       "successor_path": "nominal_refactor_advisor/refactors/class_operations.py"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "recipes": [
+    {
+     "recipe_id": "relocate-declaration-operations",
+     "operations": [
+      {
+       "operation": "relocate_symbols_to_new_module",
+       "file_path": "nominal_refactor_advisor/codemod_declaration_operations.py",
+       "symbol_qualnames": [
+        "DeclarationMutationOperationABC",
+        "DeclarationDecoratorsPayload",
+        "ReplaceDeclarationDecoratorsOperation"
+       ],
+       "destination_path": "nominal_refactor_advisor/refactors/declaration_operations.py"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "recipes": [
+    {
+     "recipe_id": "dissolve-codemod-declaration-operations",
+     "operations": [
+      {
+       "operation": "dissolve_module",
+       "file_path": "nominal_refactor_advisor/codemod_declaration_operations.py",
+       "successor_path": "nominal_refactor_advisor/refactors/declaration_operations.py"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "recipes": [
+    {
+     "recipe_id": "relocate-declaration-reference",
+     "operations": [
+      {
+       "operation": "relocate_symbols_to_new_module",
+       "file_path": "nominal_refactor_advisor/codemod_declaration_reference.py",
+       "symbol_qualnames": [
+        "SpanRewrite",
+        "ImportedNamesRewrite",
+        "InsertedImportsRewrite",
+        "DeclarationReferenceOperation",
+        "UnquoteResolvedTypeNamesOperation",
+        "ReferenceImportedModuleOperation",
+        "ReferenceNamedClassOperation",
+        "ReferenceClassNameOperation",
+        "ReferenceEnumMemberOperation",
+        "DeclarationReferenceFindingRecipeSynthesizer"
+       ],
+       "destination_path": "nominal_refactor_advisor/refactors/declaration_reference.py"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "recipes": [
+    {
+     "recipe_id": "dissolve-codemod-declaration-reference",
+     "operations": [
+      {
+       "operation": "dissolve_module",
+       "file_path": "nominal_refactor_advisor/codemod_declaration_reference.py",
+       "successor_path": "nominal_refactor_advisor/refactors/declaration_reference.py"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "recipes": [
+    {
+     "recipe_id": "relocate-false-distinctions",
+     "operations": [
+      {
+       "operation": "relocate_symbols_to_new_module",
+       "file_path": "nominal_refactor_advisor/codemod_false_distinctions.py",
+       "symbol_qualnames": [
+        "FoundT",
+        "ScopeBranchOperation",
+        "CollapseIdenticalArmsOperation",
+        "MergeTypeTestArmsOperation",
+        "ScopeBranchFindingRecipeSynthesizer",
+        "IdenticalArmsFindingRecipeSynthesizer",
+        "UndistinguishedTypeTestFindingRecipeSynthesizer",
+        "RedirectEmptySubclassOperation",
+        "ClassTargetFindingRecipeSynthesizer",
+        "EmptySubclassFindingRecipeSynthesizer",
+        "EnumFoldProof",
+        "FoldEnumMembersOperation",
+        "EnumFoldFindingRecipeSynthesizer"
+       ],
+       "destination_path": "nominal_refactor_advisor/refactors/false_distinctions.py"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "recipes": [
+    {
+     "recipe_id": "dissolve-codemod-false-distinctions",
+     "operations": [
+      {
+       "operation": "dissolve_module",
+       "file_path": "nominal_refactor_advisor/codemod_false_distinctions.py",
+       "successor_path": "nominal_refactor_advisor/refactors/false_distinctions.py"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "recipes": [
+    {
+     "recipe_id": "relocate-function-operations",
+     "operations": [
+      {
+       "operation": "relocate_symbols_to_new_module",
+       "file_path": "nominal_refactor_advisor/codemod_function_operations.py",
+       "symbol_qualnames": [
+        "FunctionMutationOperationABC",
+        "AliasFunctionOperation",
+        "ReplaceFunctionDecoratorsOperation",
+        "ReplaceFunctionSignatureOperation",
+        "FunctionBodySourcePayload",
+        "ReplaceFunctionBodyOperation",
+        "PrependFunctionBodyOperation",
+        "DeclaredCallMutationOperationABC",
+        "ReplaceDeclaredCallArgumentsOperation",
+        "CallExpressionSourcePayload",
+        "ReplaceDeclaredCallOperation",
+        "ReplaceDeclaredCallTargetOperation",
+        "FunctionBindingProjectionOperationABC",
+        "ProjectFunctionParameterOperation",
+        "ProjectFunctionLocalOperation",
+        "RouteForeignFamilyFilterOperation",
+        "FoldAdapterBindChainOperation",
+        "ProjectStaticCallsToAdapterOperation",
+        "_ForwarderBody",
+        "InlineForwarderOperation",
+        "_source_position",
+        "_plain_read",
+        "_within"
+       ],
+       "destination_path": "nominal_refactor_advisor/refactors/function_operations.py"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "recipes": [
+    {
+     "recipe_id": "dissolve-codemod-function-operations",
+     "operations": [
+      {
+       "operation": "dissolve_module",
+       "file_path": "nominal_refactor_advisor/codemod_function_operations.py",
+       "successor_path": "nominal_refactor_advisor/refactors/function_operations.py"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "recipes": [
+    {
+     "recipe_id": "relocate-mapping-observation",
+     "operations": [
+      {
+       "operation": "relocate_symbols_to_new_module",
+       "file_path": "nominal_refactor_advisor/codemod_mapping_observation.py",
+       "symbol_qualnames": [
+        "RequireDictionaryCopyMappingOperation"
+       ],
+       "destination_path": "nominal_refactor_advisor/refactors/mapping_observation.py"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "recipes": [
+    {
+     "recipe_id": "dissolve-codemod-mapping-observation",
+     "operations": [
+      {
+       "operation": "dissolve_module",
+       "file_path": "nominal_refactor_advisor/codemod_mapping_observation.py",
+       "successor_path": "nominal_refactor_advisor/refactors/mapping_observation.py"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "recipes": [
+    {
+     "recipe_id": "relocate-optional-ast-field",
+     "operations": [
+      {
+       "operation": "relocate_symbols_to_new_module",
+       "file_path": "nominal_refactor_advisor/codemod_optional_ast_field.py",
+       "symbol_qualnames": [
+        "FunctionNode",
+        "FUNCTION_CLASSES",
+        "GENERATED_MODULE",
+        "_same_expression",
+        "_none_probe",
+        "ProbeSite",
+        "CollectionProbeSite",
+        "QuantifiedProbeSite",
+        "ComprehensionFilterProbeSite",
+        "AnyPresentProbeSite",
+        "LoopGuardProbeSite",
+        "SingleNodeProbeSite",
+        "IfPresentProbeSite",
+        "SpliceProbeSite",
+        "PairedProbeSite",
+        "OptionalAstFieldDecoder",
+        "CollectionDecoder",
+        "KeywordNameDecoder",
+        "CaptureNameDecoder",
+        "DeclaredAnnotationDecoder",
+        "VariadicParameterDecoder",
+        "NamedOwnerDeclaration",
+        "OwnerDeclaration",
+        "ForeignNamesake",
+        "ProjectDecoderOwners",
+        "CachedT",
+        "SnapshotCache",
+        "_PROJECT_OWNERS",
+        "OptionalAstFieldAuthority",
+        "RouteOptionalAstFieldProbesOperation",
+        "DeclareAndRouteOptionalAstFieldProbesOperation",
+        "PendingDecoderMigration",
+        "_MIGRATIONS",
+        "MigrationConsumer",
+        "RoutedConsumer",
+        "Unroutable",
+        "_routing",
+        "_functions",
+        "OptionalAstFieldDecoderFindingRecipeSynthesizer",
+        "__all__"
+       ],
+       "destination_path": "nominal_refactor_advisor/refactors/optional_ast_field.py"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "recipes": [
+    {
+     "recipe_id": "dissolve-codemod-optional-ast-field",
+     "operations": [
+      {
+       "operation": "dissolve_module",
+       "file_path": "nominal_refactor_advisor/codemod_optional_ast_field.py",
+       "successor_path": "nominal_refactor_advisor/refactors/optional_ast_field.py"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "recipes": [
+    {
+     "recipe_id": "relocate-module-move",
+     "operations": [
+      {
+       "operation": "relocate_symbols_to_new_module",
+       "file_path": "nominal_refactor_advisor/module_move_codemod.py",
+       "symbol_qualnames": [
+        "PromoteGuardedImportOperation",
+        "PromotedGuardedImportReport",
+        "ModuleNameRedirect",
+        "RelocationNameRedirect",
+        "_StarExportedNames",
+        "_SingleImportFromText",
+        "_NamedModuleMemberAccess",
+        "_NamedModuleMemberRead",
+        "_NamedModuleMemberPatch",
+        "_SourceModuleObjectReads",
+        "SourceTopLevelSymbolClosureMoveCarrier",
+        "SourceTopLevelSymbolClosureMoveRequest",
+        "SourceTopLevelSymbolClosureMovePlan",
+        "RetainedCallOperation",
+        "ModuleSymbolMoveOperation",
+        "ExplicitModuleSymbolSelectionOperationABC",
+        "DependencyClosureModuleSymbolSelectionOperationABC",
+        "ExistingModuleSymbolMoveOperationABC",
+        "NewModuleSymbolMoveOperationABC",
+        "SourceBindingPreservingModuleSymbolMoveOperationABC",
+        "SourceBindingRelocatingModuleSymbolMoveOperationABC",
+        "MoveSymbolsToModuleOperation",
+        "RelocateSymbolsToModuleOperation",
+        "RelocateSymbolsToNewModuleOperation",
+        "MoveSymbolClosureToModuleOperation",
+        "ExtractSymbolsToNewModuleOperation",
+        "ExtractSymbolClosureToNewModuleOperation",
+        "ImportedNameOwner",
+        "_DissolvedModuleBindings",
+        "_ModuleIdentityStrings",
+        "DissolvedModuleReport",
+        "DissolveModuleOperation",
+        "RetargetModuleMentionsOperation",
+        "_RELATIVE_FROM",
+        "_RelativeImportRebase"
+       ],
+       "destination_path": "nominal_refactor_advisor/refactors/module_move.py"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "recipes": [
+    {
+     "recipe_id": "dissolve-module-move-codemod",
+     "operations": [
+      {
+       "operation": "dissolve_module",
+       "file_path": "nominal_refactor_advisor/module_move_codemod.py",
+       "successor_path": "nominal_refactor_advisor/refactors/module_move.py"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "recipes": [
+    {
+     "recipe_id": "relocate-projection-descent",
+     "operations": [
+      {
+       "operation": "relocate_symbols_to_new_module",
+       "file_path": "nominal_refactor_advisor/projection_descent_codemod.py",
+       "symbol_qualnames": [
+        "_TypeKeyedBehaviorSubjectRenamer",
+        "_TypeKeyedBehaviorMethodDescent",
+        "_ProjectionLookupSequence",
+        "_TypeKeyedBehaviorFacade",
+        "_TypeKeyedBehaviorSourceDerivation",
+        "Typed",
+        "TypedMirror"
+       ],
+       "destination_path": "nominal_refactor_advisor/refactors/projection_descent.py"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "recipes": [
+    {
+     "recipe_id": "dissolve-projection-descent-codemod",
+     "operations": [
+      {
+       "operation": "dissolve_module",
+       "file_path": "nominal_refactor_advisor/projection_descent_codemod.py",
+       "successor_path": "nominal_refactor_advisor/refactors/projection_descent.py"
+      }
+     ]
+    }
+   ]
+  }
+ ]
+}
