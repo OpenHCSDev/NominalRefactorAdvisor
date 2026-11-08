@@ -13,6 +13,7 @@ from typing import ClassVar, Self
 
 from .binding_proofs import RepositoryModuleBindingProof
 from .lexical_bindings import ImportAlias, ImportBoundNameProjection
+from .module_node_index import ModuleNodeIndex
 from .annotation_semantics import StringizedAnnotationSurface
 from .ast_tools import ModuleAnnotationEvaluationMode, ParsedModule
 from .class_index import (
@@ -872,6 +873,7 @@ class DeclarationAuthorityRenameProof:
                 repository_bindings,
             )
             for module in parsed_modules
+            if cls._reaches(module, rename_target, binding_closure)
         )
         cls._require_no_dynamic_name_surfaces(
             parsed_modules,
@@ -879,6 +881,26 @@ class DeclarationAuthorityRenameProof:
             modules,
         )
         return cls(binding_closure=binding_closure, modules=modules)
+
+    @staticmethod
+    def _reaches(
+        module: ParsedModule,
+        target: TopLevelBindingRenameTarget,
+        binding_closure: DeclarationAuthorityRenameBindingClosure,
+    ) -> bool:
+        """Whether a module's rename proof can hold anything. Every surface it
+        reads (a reference, a qualified read, an annotation, an export, an
+        import the proof refuses) names the target in the module's text; a
+        module the closure gives an import of the target, or that star-imports,
+        binds it without naming it. Any other module's proof is empty and
+        refuses nothing, so it is not built."""
+
+        index = module.fact(ModuleNodeIndex)
+        return (
+            index.spells(target.name)
+            or index.star_imports
+            or bool(binding_closure.imports_for(module))
+        )
 
     @staticmethod
     def _require_no_dynamic_name_surfaces(
@@ -898,7 +920,11 @@ class DeclarationAuthorityRenameProof:
             for reference in (*module.public_exports, *module.stable_public_exports)
         )
         for parsed_module in parsed_modules:
-            for node in ast.walk(parsed_module.module):
+            index = parsed_module.fact(ModuleNodeIndex)
+            spelled = index.spells(target.name)
+            # A module that never spells the name declares no `global` of it and
+            # comments none; only a string assembled from pieces can still hold it.
+            for node in ast.walk(parsed_module.module) if spelled else index.string_constants:
                 if (
                     isinstance(node, ast.Constant)
                     and isinstance(node.value, str)
@@ -917,6 +943,8 @@ class DeclarationAuthorityRenameProof:
                         f"Declaration authority {target.name!r} has an explicit "
                         "lexical scope declaration"
                     )
+            if not spelled:
+                continue
             for token in tokenize.generate_tokens(
                 io.StringIO(parsed_module.source).readline
             ):

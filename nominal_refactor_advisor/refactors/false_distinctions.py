@@ -237,7 +237,7 @@ class RedirectEmptySubclassOperation(RepositorySourceReprovedOperation):
         proof = DeclarationRedirectProof.require_redirect(
             snapshot.parsed_modules, target, node, bound_name=subclass.base.id
         )
-        tests = SiblingTestModules.beside(snapshot.parsed_modules)
+        tests = snapshot.module_set.fact(SiblingTestModules)
         refusals = (*self.refusals(proof, subclass), *self.test_refusals(tests, subclass))
         if refusals:
             raise ValueError("; ".join(dict.fromkeys(refusals)))
@@ -420,7 +420,7 @@ class EnumFoldProof:
             ),
             tuple(
                 (test, *enum_uses(test.module, name.__eq__))
-                for test in SiblingTestModules.beside(snapshot.parsed_modules).modules
+                for test in snapshot.module_set.fact(SiblingTestModules).modules
             ),
         )
 
