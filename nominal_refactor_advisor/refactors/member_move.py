@@ -28,6 +28,22 @@ from dataclasses import dataclass
 from functools import cached_property
 from typing import ClassVar
 
+from .answered_method import (
+    AnsweredMethod as AnsweredMethod,
+    ClassBinding as ClassBinding,
+    DeclaredClass as DeclaredClass,
+    ForeignClass as ForeignClass,
+    ImportedModule as ImportedModule,
+    ImportedName as ImportedName,
+    MethodCall as MethodCall,
+    MethodReference as MethodReference,
+    NameBinding as NameBinding,
+    NamedClass as NamedClass,
+    OtherClass as OtherClass,
+    OtherModule as OtherModule,
+    OutsideScan as OutsideScan,
+    ReceiverBinding as ReceiverBinding,
+)
 from ..codemod_imports import ModuleImportMutation
 from ..codemod_payload import (
     OptionalStringPayloadValueCodec,
@@ -44,18 +60,13 @@ from ..codemod_source_edits import (
     SourceTextSpanReplacement,
 )
 from ..lexical_bindings import LEXICAL_SCOPE_BINDING_AUTHORITY
-from ..probe_owner import InferredReceiverType, ProbeOwnerResolver, ReceiverSpan
-from ..type_checker_session import SourceTexts, TypeCheckerSession
 from .function_operations import imports_only_read_by, method_deletion_offsets
 
 
 @dataclass(frozen=True)
-class MovedMethod:
-    """The method as it leaves its class, and the classes whose instances answer it."""
+class MovedMethod(AnsweredMethod):
+    """The method as it leaves its class for another."""
 
-    snapshot: CodemodSourceSnapshot
-    source_class: ResolvedClassTarget
-    method: ast.FunctionDef | ast.AsyncFunctionDef
     destination: ResolvedClassTarget
     receiver_parameter: str | None
     destination_name: str | None
@@ -92,81 +103,28 @@ class MovedMethod:
         moved = cls(snapshot, source_class, method, target, receiver_parameter, destination_name)
         if moved.new_name in target.bound_names:
             raise ValueError(f"{target.qualname!r} already binds {moved.new_name!r}")
-        overriding = tuple(
-            snapshot.required_class_family_index.classes_by_symbol[symbol].qualname
-            for symbol in moved.descendants
-            if symbol in snapshot.required_class_family_index.classes_by_symbol
-            and method_name in _class_node(snapshot, symbol).bound_names_of_body
-        )
-        if overriding:
-            raise ValueError(f"{overriding!r} override {method_name!r}; moving it breaks their dispatch")
+        if moved.overriding:
+            raise ValueError(f"{moved.overriding!r} override {method_name!r}; moving it breaks their dispatch")
         moved.source, moved.member  # the decorators and the body must both decide the move
         return moved
-
-    @property
-    def name(self) -> str:
-        return self.method.name
 
     @property
     def new_name(self) -> str:
         return self.destination_name or self.method.name
 
     @cached_property
-    def symbol(self) -> str:
-        return self.source_class.required_symbol(self.snapshot)
-
-    @cached_property
-    def descendants(self) -> frozenset[str]:
-        return frozenset(self.snapshot.required_class_family_index.descendant_symbols(self.symbol))
-
-    @cached_property
-    def family(self) -> frozenset[str]:
-        """Every class whose instances answer the method by inheriting it."""
-
-        return self.descendants | {self.symbol}
-
-    @cached_property
-    def family_declarations(self) -> dict[tuple[str, str], str]:
-        """Each family class by the file and qualname that declare it."""
-
-        classes = self.snapshot.required_class_family_index.classes_by_symbol
-        return {
-            (classes[symbol].file_path, classes[symbol].qualname): symbol
-            for symbol in self.family if symbol in classes
-        }
-
-    def named_class(self, file_path: str, name: str, scopes: tuple[ast.AST, ...]) -> ClassBinding | None:
-        """What a name binds where a call reads it, when that says whether it is the family: a
-        family class, another class the scan declares, a module, or an import from outside the
-        scan. The innermost of `scopes` (the call's enclosing functions, then its module) that
-        binds the name decides; a name it binds any other way is typed as an instance."""
-
-        for scope in scopes:
-            binding = _ScopeBindings(scope).binding(name)
-            if binding is None:
-                continue
-            return binding.class_binding(self, file_path, scope)
-        return None
-
-    def declared_class(self, file_path: str, qualname: str) -> ClassBinding | None:
-        """A class the scan declares at this file and qualname: the family's, or another's."""
-
-        family = self.family_declarations.get((file_path, qualname))
-        if family is not None:
-            return NamedClass(family)
-        other = self.class_declarations.get((file_path, qualname))
-        return None if other is None else OtherClass(other)
-
-    @cached_property
-    def class_declarations(self) -> dict[tuple[str, str], str]:
-        classes = self.snapshot.required_class_family_index.classes_by_symbol
-        return {(declaration.file_path, declaration.qualname): symbol for symbol, declaration in classes.items()}
-
-    @cached_property
     def locals(self) -> frozenset[str]:
         return LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(self.method.body) | frozenset(
             argument.arg for argument in ast.walk(self.method.args) if isinstance(argument, ast.arg)
         )
+
+    def bound_class(
+        self, receiver: ast.expr, file_path: str, enclosing: str | None, scopes: tuple[ast.AST, ...],
+    ) -> ClassBinding | None:
+        return self.source.bound_class(receiver, file_path, enclosing, scopes)
+
+    def admits(self, binding: ReceiverBinding, where: str) -> None:
+        self.source.admits(binding, where)
 
     @cached_property
     def source(self) -> SourceShape:
@@ -211,17 +169,6 @@ class MovedMethod:
             node for statement in self.method.body for node in ast.walk(statement)
             if isinstance(node, ast.Name) and node.id == name and isinstance(node.ctx, ast.Load)
         )
-
-    def answers(self, symbols: tuple[str, ...], where: str) -> bool:
-        """Whether a receiver of these classes calls the moved method: all of the family, or
-        none of it (another class's own method of that name)."""
-
-        inside = tuple(symbol for symbol in symbols if symbol in self.family)
-        if symbols and len(inside) == len(symbols):
-            return True
-        if symbols and not inside:
-            return False
-        raise ValueError(f"{where} calls {self.name!r} on a receiver typed {symbols!r}")
 
     def destination_source(self) -> str:
         """The method as its destination member: its own header and body text, with only what
@@ -418,9 +365,7 @@ class SourceShape:
         or a class, module or import from outside the scan, which no family class is, whatever
         its attribute is called."""
 
-        if not isinstance(receiver, ast.Name):
-            return None
-        return self.moved.named_class(file_path, receiver.id, scopes)
+        return AnsweredMethod.bound_class(self.moved, receiver, file_path, enclosing, scopes)
 
     def admits(self, binding: ReceiverBinding, where: str) -> None:
         """Refuse a call whose receiver would change what the moved method means."""
@@ -490,55 +435,6 @@ class ClassSource(ClassBoundSource):
 
     def free_names(self) -> frozenset[str]:
         return frozenset({self.moved.source_class.name}) if self.moved.body_reads("cls") else frozenset()
-
-
-@dataclass(frozen=True)
-class ReceiverBinding:
-    """What a call's receiver says about the class the moved method runs on."""
-
-    symbol: str
-    describes: ClassVar[str] = "on an instance"
-
-    def names(self, symbol: str) -> bool:
-        """Whether the receiver fixes the runtime class to exactly this one."""
-
-        return False
-
-
-@dataclass(frozen=True)
-class ClassBinding(ReceiverBinding):
-    """A receiver that is a class rather than an instance of one."""
-
-    def reaches_family(self) -> bool:
-        return True
-
-
-@dataclass(frozen=True)
-class ForeignClass(ClassBinding):
-    """A class that is not the family's: its attribute of the method's name is its own."""
-
-    def reaches_family(self) -> bool:
-        return False
-
-
-@dataclass(frozen=True)
-class OutsideScan(ForeignClass):
-    """A name imported from outside the scan (the standard library, a dependency)."""
-
-
-@dataclass(frozen=True)
-class OtherClass(ForeignClass):
-    """Another class the scan declares."""
-
-
-@dataclass(frozen=True)
-class NamedClass(ClassBinding):
-    """The class spelled by its binding: the runtime class is exactly it."""
-
-    describes: ClassVar[str] = "on a class named outright"
-
-    def names(self, symbol: str) -> bool:
-        return self.symbol == symbol
 
 
 @dataclass(frozen=True)
@@ -869,23 +765,6 @@ class SignatureText:
         return first_start, first_start, f"{text}, "
 
 
-@dataclass(frozen=True)
-class _ClassBody:
-    bound_names_of_body: frozenset[str]
-
-
-def _class_node(snapshot: CodemodSourceSnapshot, symbol: str) -> _ClassBody:
-    declaration = snapshot.required_class_family_index.classes_by_symbol[symbol]
-    scope: ast.AST = snapshot.module_nodes_by_file_path[declaration.file_path]
-    for part in declaration.qualname.split("."):
-        scope = next(
-            statement for statement in scope.body  # type: ignore[attr-defined]
-            if isinstance(statement, ast.ClassDef) and statement.name == part
-        )
-    assert isinstance(scope, ast.ClassDef)
-    return _ClassBody(LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(scope.body))
-
-
 def _imported_file(snapshot: CodemodSourceSnapshot, file_path: str, statement: ast.ImportFrom) -> str:
     graph = snapshot.module_import_graph
     source_file = graph.source_file_for_path(file_path)
@@ -920,190 +799,6 @@ def _binding(snapshot: CodemodSourceSnapshot, file_path: str, name: str) -> tupl
     return None
 
 
-@dataclass(frozen=True)
-class OtherModule(ForeignClass):
-    """A module bound by `import`: its attribute of the method's name is its own."""
-
-
-@dataclass(frozen=True)
-class NameBinding:
-    """How one scope binds a name: by default as a value, typed as an instance."""
-
-    def class_binding(self, moved: MovedMethod, file_path: str, scope: ast.AST) -> ClassBinding | None:
-        return None
-
-
-@dataclass(frozen=True)
-class ImportedName(NameBinding):
-    """`from module import name`: the class it resolves to, or outside the scan."""
-
-    statement: ast.ImportFrom
-    alias: ast.alias
-
-    def class_binding(self, moved: MovedMethod, file_path: str, scope: ast.AST) -> ClassBinding | None:
-        graph = moved.snapshot.module_import_graph
-        source_file = graph.source_file_for_path(file_path)
-        if source_file is None:
-            return None
-        module = source_file.module_path_identity.resolve_import_from_module(
-            imported_module=self.statement.module, level=self.statement.level,
-        )
-        provider = None if module is None else graph.unique_source_file_for_module_name(module)
-        if provider is None:
-            return OutsideScan(str(module))
-        return moved.declared_class(provider.file_path, self.alias.name)
-
-
-@dataclass(frozen=True)
-class ImportedModule(NameBinding):
-    """`import module`: a module, never a family class."""
-
-    alias: ast.alias
-
-    def class_binding(self, moved: MovedMethod, file_path: str, scope: ast.AST) -> ClassBinding | None:
-        return OtherModule(self.alias.name)
-
-
-@dataclass(frozen=True)
-class DeclaredClass(NameBinding):
-    """`class Name:` in the scope: the class the index declares there, when it is top-level."""
-
-    node: ast.ClassDef
-
-    def class_binding(self, moved: MovedMethod, file_path: str, scope: ast.AST) -> ClassBinding | None:
-        return moved.declared_class(file_path, self.node.name) if isinstance(scope, ast.Module) else None
-
-
-_NESTED_SCOPES = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)
-
-
-@dataclass(frozen=True)
-class _ScopeBindings:
-    """The names one scope binds itself, without the scopes nested in it."""
-
-    scope: ast.AST
-
-    def nodes(self) -> list[ast.AST]:
-        found: list[ast.AST] = []
-        pending = list(ast.iter_child_nodes(self.scope))
-        while pending:
-            node = pending.pop()
-            found.append(node)
-            if not isinstance(node, _NESTED_SCOPES):
-                pending.extend(ast.iter_child_nodes(node))
-        return found
-
-    def binding(self, name: str) -> NameBinding | None:
-        last: NameBinding | None = None
-        for node in self.nodes():
-            if isinstance(node, ast.ImportFrom):
-                for alias in node.names:
-                    if (alias.asname or alias.name) == name:
-                        last = ImportedName(node, alias)
-            elif isinstance(node, ast.Import):
-                for alias in node.names:
-                    if (alias.asname or alias.name.partition(".")[0]) == name:
-                        last = ImportedModule(alias)
-            elif isinstance(node, ast.ClassDef) and node.name == name:
-                last = DeclaredClass(node)
-            elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == name:
-                last = NameBinding()
-            elif isinstance(node, ast.Name) and node.id == name and isinstance(node.ctx, ast.Store):
-                last = NameBinding()
-            elif isinstance(node, ast.arg) and node.arg == name:
-                last = NameBinding()
-        return last
-
-
-def _name_scopes(node: ast.AST, parents: dict[ast.AST, ast.AST]) -> tuple[ast.AST, ...]:
-    """The scopes a name read at `node` resolves through: enclosing functions innermost first,
-    a class body only when the read sits directly in it, then the module."""
-
-    scopes: list[ast.AST] = []
-    current = parents.get(node)
-    direct = True
-    while current is not None:
-        if isinstance(current, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
-            scopes.append(current)
-            direct = False
-        elif isinstance(current, ast.ClassDef):
-            if direct:
-                scopes.append(current)
-            direct = False
-        elif isinstance(current, ast.Module):
-            scopes.append(current)
-        current = parents.get(current)
-    return tuple(scopes)
-
-
-def _enclosing_class(
-    snapshot: CodemodSourceSnapshot, file_path: str, node: ast.AST, parents: dict[ast.AST, ast.AST],
-) -> str | None:
-    """The symbol of the class whose body a node sits in, when the index knows it."""
-
-    names: list[str] = []
-    current = parents.get(node)
-    while current is not None:
-        if isinstance(current, ast.ClassDef):
-            names.append(current.name)
-        current = parents.get(current)
-    qualname = ".".join(reversed(names))
-    return next(
-        (
-            symbol for symbol, declaration in snapshot.required_class_family_index.classes_by_symbol.items()
-            if names and declaration.file_path == file_path and declaration.qualname == qualname
-        ),
-        None,
-    )
-
-
-@dataclass(frozen=True)
-class MethodReference:
-    """One attribute reference by the method's name, called or not, before its receiver is typed."""
-
-    file_path: str
-    attribute: ast.Attribute
-    call: ast.Call | None
-
-    @property
-    def where(self) -> str:
-        return f"{self.file_path}:{self.attribute.lineno}"
-
-    def answered(self, moved: MovedMethod, binding: ReceiverBinding) -> MethodCall:
-        """The reference as a call the moved method answers: one that is not a call would lose
-        the method, and the source shape may refuse the binding."""
-
-        if self.call is None:
-            raise ValueError(f"{self.where} uses {moved.name!r} other than by calling it")
-        moved.source.admits(binding, self.where)
-        return MethodCall(self.file_path, self.call, self.attribute)
-
-
-@dataclass(frozen=True)
-class MethodCall:
-    """One call the moved method answers, and the receiver it is called on."""
-
-    file_path: str
-    call: ast.Call
-    attribute: ast.Attribute
-
-    @property
-    def where(self) -> str:
-        return f"{self.file_path}:{self.call.lineno}"
-
-
-_DYNAMIC_ACCESS = frozenset({"getattr", "hasattr", "setattr", "delattr"})
-
-
-def _dynamic_access(node: ast.AST, name: str) -> bool:
-    """Whether a node reaches an attribute of this name by a string, past any receiver typing."""
-
-    return (
-        isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id in _DYNAMIC_ACCESS
-        and len(node.args) > 1 and isinstance(node.args[1], ast.Constant) and node.args[1].value == name
-    )
-
-
 @dataclass(frozen=True, kw_only=True)
 class MoveMethodToClassOperation(RepositorySourceReprovedOperation):
     """Move `Class.method` (a plain method, staticmethod or classmethod) onto `destination` as
@@ -1132,7 +827,7 @@ class MoveMethodToClassOperation(RepositorySourceReprovedOperation):
             snapshot, source_path, self.target.qualname, self.destination,
             self.receiver_parameter, self.destination_name,
         )
-        rewritten = self.answering_calls(snapshot, moved)
+        rewritten = moved.answering_calls()
         replacements: dict[str, list[SourceTextSpanReplacement]] = {}
         imports: list[ModuleImportMutation] = list(moved.destination_imports())
         graph = snapshot.module_import_graph
@@ -1185,71 +880,3 @@ class MoveMethodToClassOperation(RepositorySourceReprovedOperation):
             snapshot.module_nodes_by_file_path[source_path], source_path, moved.method,
         ))
         return tuple(edits)
-
-    def answering_calls(
-        self, snapshot: CodemodSourceSnapshot, moved: MovedMethod,
-    ) -> tuple[MethodCall, ...]:
-        """The calls the moved method answers, each receiver typed by the class binding, the
-        declarations or the checker."""
-
-        typing = snapshot.declared_receiver_typing
-        answering: list[MethodCall] = []
-        undeclared: dict[ReceiverSpan, MethodReference] = {}
-        for parsed in snapshot.parsed_modules:
-            if moved.name not in parsed.source:
-                continue
-            parents = {
-                child: parent for parent in ast.walk(parsed.module)
-                for child in ast.iter_child_nodes(parent)
-            }
-            resolver = ProbeOwnerResolver.of(parsed)
-            for node in ast.walk(parsed.module):
-                where = f"{parsed.file_path}:{getattr(node, 'lineno', 0)}"
-                if _dynamic_access(node, moved.name):
-                    raise ValueError(f"{where} reaches {moved.name!r} by a string")
-                if node is moved.method or not (
-                    isinstance(node, ast.Attribute) and node.attr == moved.name
-                ):
-                    continue
-                parent = parents.get(node)
-                site = MethodReference(
-                    parsed.file_path, node,
-                    parent if isinstance(parent, ast.Call) and parent.func is node else None,
-                )
-                enclosing = _enclosing_class(snapshot, parsed.file_path, node, parents)
-                if isinstance(node.value, ast.Call) and isinstance(node.value.func, ast.Name) and (
-                    node.value.func.id == "super"
-                ):
-                    if enclosing in moved.family:
-                        raise ValueError(f"{where} reaches {moved.name!r} through super()")
-                    continue
-                bound = moved.source.bound_class(
-                    node.value, parsed.file_path, enclosing, _name_scopes(node, parents),
-                )
-                if bound is not None:
-                    if bound.reaches_family():
-                        answering.append(site.answered(moved, bound))
-                    continue
-                owner = resolver.owner(node.value).resolved(typing)
-                spans = owner.type_checker_spans()
-                if spans:
-                    undeclared[spans[0]] = site
-                elif moved.answers(tuple(getattr(owner, "class_symbols", tuple)()), where):
-                    answering.append(site.answered(moved, ReceiverBinding(moved.symbol)))
-        if undeclared:
-            with TypeCheckerSession.session(SourceTexts(snapshot.parsed_modules)) as session:
-                answers = session.receiver_types(undeclared)
-            for span, site in undeclared.items():
-                answer = answers.get(span)
-                if not isinstance(answer, InferredReceiverType):
-                    raise ValueError(f"{site.where}: the type checker gives no type for the receiver")
-                if moved.answers(answer.classes, site.where):
-                    answering.append(site.answered(moved, ReceiverBinding(moved.symbol)))
-        nested = [
-            site for site in answering
-            for other in answering
-            if other is not site and other.call in ast.walk(site.call)
-        ]
-        if nested:
-            raise ValueError(f"{nested[0].where} nests one moved call inside another")
-        return tuple(answering)
