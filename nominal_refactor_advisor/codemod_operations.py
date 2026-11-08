@@ -31,6 +31,7 @@ from .codemod_source_edits import (
     NominalSourceEdit,
     SourceEditOrigin,
     SourceFileCreation,
+    SourceFileDeletion,
 )
 from .registry_identity import suffix_trimmed_class_name_registry_key
 from .semantic_descent import AuthorityClaim
@@ -118,6 +119,13 @@ class RefactorRecipeOperation(
         self,
         context: CodemodSelectorContext,
     ) -> tuple[SourceFileCreation, ...]:
+        del context
+        return ()
+
+    def source_file_deletions(
+        self,
+        context: CodemodSelectorContext,
+    ) -> tuple[SourceFileDeletion, ...]:
         del context
         return ()
 

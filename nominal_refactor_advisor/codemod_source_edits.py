@@ -1010,6 +1010,20 @@ class SourceFileCreation(NominalSourceEdit):
         )
 
 
+@dataclass(frozen=True, kw_only=True)
+class SourceFileDeletion:
+    """Delete one indexed source path. The deleting operation proves nothing
+    still needs the file; no span edit may land in it in the same document."""
+
+    operation_type: type[RefactorRecipeOperation]
+    file_path: str
+    rationale: str = ""
+
+    @property
+    def operation_key(self) -> str:
+        return self.operation_type.operation_key()
+
+
 @dataclass(frozen=True)
 class SourceOffsetSpan:
     """Character interval shared independently of each source object's factory."""
