@@ -658,7 +658,7 @@ class InlineForwarderOperation(RepositorySourceReprovedOperation):
                         )
                         for node, replacement in replacements
                         for start, end in (
-                            self._deletion_offsets(geometry, node)
+                            method_deletion_offsets(geometry, node)
                             if node is method
                             else geometry.required_node_offsets(node),
                         )
@@ -666,7 +666,7 @@ class InlineForwarderOperation(RepositorySourceReprovedOperation):
                     rationale=self.rationale or f"Inline the forwarder {qualname!r}.",
                 )
             )
-        edits.extend(self._unused_import_removals(module, source_path, method))
+        edits.extend(imports_only_read_by(module, source_path, method))
         return tuple(edits)
 
     @staticmethod
@@ -698,43 +698,46 @@ class InlineForwarderOperation(RepositorySourceReprovedOperation):
             replacements.append((call, forwarder.inlined(call, node.value, file_path)))
         return replacements
 
-    @staticmethod
-    def _deletion_offsets(geometry: SourceTextGeometry, method: ast.FunctionDef) -> tuple[int, int]:
-        """The method's whole lines, plus one blank line after it if there is one."""
 
-        lines = geometry.source.splitlines(keepends=True)
-        start = sum(len(line) for line in lines[: method.lineno - 1])
-        end_line = method.end_lineno or method.lineno
-        if end_line < len(lines) and not lines[end_line].strip():
-            end_line += 1
-        end = sum(len(line) for line in lines[:end_line])
-        return start, end
+def method_deletion_offsets(
+    geometry: SourceTextGeometry, method: ast.FunctionDef | ast.AsyncFunctionDef,
+) -> tuple[int, int]:
+    """A method's whole lines, decorators included, plus one blank line after it if there is one."""
 
-    @staticmethod
-    def _unused_import_removals(
-        module: ast.Module,
-        source_path: str,
-        method: ast.FunctionDef,
-    ) -> Iterator[ModuleImportMutation]:
-        used_by_method = {node.id for node in ast.walk(method) if isinstance(node, ast.Name)}
-        used_elsewhere = {
-            node.id
-            for node in ast.walk(module)
-            if isinstance(node, ast.Name) and not _within(node, method)
-        }
-        for scope in ModuleImportScope:
-            for statement in scope.import_statements(module):
-                names = tuple(
-                    alias.asname or alias.name
-                    for alias in statement.names
-                    if (alias.asname or alias.name) in used_by_method - used_elsewhere
+    lines = geometry.source.splitlines(keepends=True)
+    first_line = min((decorator.lineno for decorator in method.decorator_list), default=method.lineno)
+    start = sum(len(line) for line in lines[: first_line - 1])
+    end_line = method.end_lineno or method.lineno
+    if end_line < len(lines) and not lines[end_line].strip():
+        end_line += 1
+    end = sum(len(line) for line in lines[:end_line])
+    return start, end
+
+
+def imports_only_read_by(
+    module: ast.Module, source_path: str, node: ast.AST,
+) -> Iterator[ModuleImportMutation]:
+    """Removals of the module's import bindings that only this node reads: they leave with it."""
+
+    used_by_node = {name.id for name in ast.walk(node) if isinstance(name, ast.Name)}
+    used_elsewhere = {
+        name.id
+        for name in ast.walk(module)
+        if isinstance(name, ast.Name) and not _within(name, node)
+    }
+    for scope in ModuleImportScope:
+        for statement in scope.import_statements(module):
+            names = tuple(
+                alias.asname or alias.name
+                for alias in statement.names
+                if (alias.asname or alias.name) in used_by_node - used_elsewhere
+            )
+            if names:
+                yield ModuleImportMutation.remove_bound_names(
+                    file_path=source_path,
+                    names=names,
+                    scope=scope,
                 )
-                if names:
-                    yield ModuleImportMutation.remove_bound_names(
-                        file_path=source_path,
-                        names=names,
-                        scope=scope,
-                    )
 
 
 def _source_position(call: ast.Call, name: str) -> tuple[int, int]:

@@ -43,6 +43,8 @@ from .ast_tools import (
 from .binding_proofs import RepositoryModuleBindingProof
 from .class_families.parsed_index import ClassFamilyIndex
 from .class_index import (
+    CompactClassFamilyIndex,
+    CompactModuleClassProjection,
     CompactModuleClassProjectionFamily,
     build_compact_class_family_index,
 )
@@ -114,6 +116,7 @@ from .descriptor_algebra import (
     AliasProperty,
     ConstantProperty,
 )
+from .declared_receivers import DeclaredReceiverTyping
 from .detectors._base import IssueDetector
 from .exact_field_authority import ExactDataclassFieldAuthorityComponentBuilder
 from .exact_method_authority import (
@@ -204,14 +207,27 @@ class CodemodSourceSnapshot(CodemodSelectorContext):
         )
 
     @cached_property
+    def compact_class_projections(self) -> tuple[CompactModuleClassProjection, ...]:
+        """This source state's compact class declarations, one per module."""
+
+        return tuple(CompactModuleClassProjectionFamily.collect_modules(self.parsed_modules))
+
+    @cached_property
+    def compact_class_index(self) -> CompactClassFamilyIndex:
+        return build_compact_class_family_index(self.compact_class_projections)
+
+    @cached_property
     def class_overlap_verdicts(self) -> ClassOverlapVerdicts:
         """The scan's class-overlap verdicts, re-derived from this source state."""
 
-        projections = CompactModuleClassProjectionFamily.collect_modules(
-            self.parsed_modules
-        )
-        return ClassOverlapVerdicts(
-            projections, build_compact_class_family_index(projections)
+        return ClassOverlapVerdicts(self.compact_class_projections, self.compact_class_index)
+
+    @cached_property
+    def declared_receiver_typing(self) -> DeclaredReceiverTyping:
+        """Receiver paths typed by this source state's declarations and declared returns."""
+
+        return DeclaredReceiverTyping.from_projections(
+            self.compact_class_projections, self.compact_class_index
         )
 
     @cached_property
