@@ -294,3 +294,12 @@ def test_two_roots_holding_equally_many_of_the_tables_packages_are_refused(
 
     with pytest.raises(ValueError, match="split evenly between pkg and tools"):
         _run_table(tmp_path)
+
+
+def test_a_table_whose_packages_no_root_holds_is_refused_by_name(tmp_path: Path) -> None:
+    _layered_package(tmp_path)
+    (tmp_path / "pkg/planning/__init__.py").unlink()
+    (tmp_path / "pkg/planning").rmdir()
+
+    with pytest.raises(ValueError, match="no scanned root holds any of the table's packages: nominal, planning"):
+        _run_table(tmp_path)

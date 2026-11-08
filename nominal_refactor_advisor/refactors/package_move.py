@@ -128,14 +128,20 @@ class DestinationTable:
             for root, packages in packages_by_root.items()
             if table_packages & packages
         }
-        if not held:
+        if not table_packages:
             return ()
+        if not held:
+            raise ValueError(
+                "no scanned root holds any of the table's packages: "
+                f"{', '.join(sorted(table_packages))}; create one of them in the root "
+                "the table describes"
+            )
         most = max(held.values())
         described = sorted(root for root, count in held.items() if count == most)
         if len(described) > 1:
             raise ValueError(
                 f"the table's packages are split evenly between {' and '.join(described)}; "
-                "name the root package it describes in its rows"
+                "add one of the table's packages to the root it describes"
             )
         (root,) = described
         return self.root_destinations(
