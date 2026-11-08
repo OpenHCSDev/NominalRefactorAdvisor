@@ -7441,41 +7441,6 @@ def _relocate_moved_with_consumer(tmp_path: Path, consumer: dict[str, str]):
     return operation, snapshot
 
 
-def test_relocation_redirects_a_name_read_through_an_import_it_removes(
-    tmp_path: Path,
-) -> None:
-    """The moved class took the source's last use of an imported helper, so the
-    source's import goes; a module that imported the helper through the source
-    now imports it from where it is declared."""
-
-    operation, snapshot = _relocate_moved_with_consumer(
-        tmp_path,
-        {
-            "pkg/helpers.py": "class Helper:\n    value = 3\n",
-            "pkg/source.py": "from .helpers import Helper\n\n\nclass Moved(Helper):\n    pass\n",
-            "pkg/reader.py": "from .source import Helper\n\nvalue = Helper.value\n",
-        },
-    )
-
-    simulation = RefactorRecipe("relocate-removing-import").with_operation(operation).simulate(snapshot)
-
-    assert simulation.is_clean
-    simulation.apply()
-    imported = subprocess.run(
-        [
-            sys.executable,
-            "-c",
-            "from pkg.reader import value; import pkg.source as source; "
-            "assert value == 3 and not hasattr(source, 'Helper')",
-        ],
-        cwd=tmp_path,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    assert imported.returncode == 0, imported.stderr
-
-
 def test_relocation_extracts_a_declaration_its_source_still_reads(tmp_path: Path) -> None:
     """A lower layer moves out: the source keeps reading the moved class through a
     plain import of the destination, and other importers are redirected."""
@@ -7614,6 +7579,64 @@ def test_relocation_refuses_a_module_object_reader_it_cannot_rewrite(
 
     assert report.status is CodemodPreflightStatus.FAILED
     assert message in report.message
+
+
+@pytest.mark.parametrize(
+    "source_import",
+    ("from .helpers import Helper", "from .api import Helper"),
+    ids=("declaring-module", "re-exporter"),
+)
+def test_relocation_redirects_readers_of_a_source_import_it_removes(
+    tmp_path: Path,
+    source_import: str,
+) -> None:
+    """The moved class took the source's last read of `Helper`, so the source's
+    import goes. Readers that reached `Helper` through the source, by attribute or
+    by import, now import it from the module that declares it, past any module
+    that only re-exports it."""
+
+    for relative_path, source in {
+        "pkg/__init__.py": "",
+        "pkg/helpers.py": "class Helper:\n    value = 3\n",
+        "pkg/api.py": "from .helpers import Helper\n",
+        "pkg/source.py": f"{source_import}\n\n\n"
+        "class Kept:\n    pass\n\n\nclass Moved:\n    value = Helper.value\n",
+        "pkg/destination.py": "",
+        "pkg/reader.py": "import pkg.source as s\nfrom pkg.other import other\n\n"
+        "value = s.Helper.value + other\n",
+        "pkg/other.py": "from pkg.source import Helper\n\nother = Helper.value\n",
+    }.items():
+        _write_module(tmp_path, relative_path, source)
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    operation = RelocateSymbolsToModuleOperation(
+        target=SourceRewriteTarget(file_path=(tmp_path / "pkg/source.py").as_posix()),
+        symbol_qualnames=("Moved",),
+        destination_path=(tmp_path / "pkg/destination.py").as_posix(),
+    )
+
+    simulation = RefactorRecipe("relocate-removed-import").with_operation(
+        operation
+    ).simulate(snapshot)
+
+    assert simulation.is_clean
+    rewritten = simulation.simulation.rewritten_sources
+    assert "Helper" not in rewritten[(tmp_path / "pkg/source.py").as_posix()]
+    for reader in ("pkg/reader.py", "pkg/other.py"):
+        assert "helpers import Helper" in rewritten[(tmp_path / reader).as_posix()]
+    simulation.apply()
+    imported = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "from pkg.reader import value; from pkg.destination import Moved; "
+            "assert value == 6 and Moved.value == 3",
+        ],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert imported.returncode == 0, imported.stderr
 
 
 def test_refactor_recipe_relocates_symbol_and_rewrites_consumers(
