@@ -452,3 +452,54 @@ def test_a_cycle_only_through_a_local_import_moves_and_names_its_debt(tmp_path: 
     )
     assert imported.returncode == 0, imported.stderr
     assert imported.stdout.strip() == "<loaded>"
+
+
+def test_a_merge_into_a_renamed_module_moves_its_target_first(tmp_path: Path) -> None:
+    """The table drops a prefix, so no stem matches its destination's; the merge
+    row alone says which module creates the shared destination."""
+
+    _write(tmp_path, "pkg/__init__.py", "")
+    _write(tmp_path, "pkg/execution/__init__.py", "")
+    _write(tmp_path, "pkg/selected_claim.py", "class Claim:\n    held = 1\n")
+    _write(tmp_path, "pkg/selected_write_plan.py", "class WritePlan:\n    steps = 2\n")
+    _write(
+        tmp_path,
+        "pkg/selected_actions.py",
+        "from pkg.selected_claim import Claim\n"
+        "from pkg.selected_write_plan import WritePlan\n\n\n"
+        "class Action:\n    claim = Claim\n    plan = WritePlan\n",
+    )
+    _write(
+        tmp_path,
+        "pkg/selected_write_authority.py",
+        "from typing import TYPE_CHECKING\n\n"
+        "if TYPE_CHECKING:\n    from pkg.selected_actions import Action\n\n\n"
+        "class WriteAuthority:\n"
+        "    def grant(self, action) -> int:\n        return action.claim.held\n",
+    )
+    _write(
+        tmp_path,
+        "pkg/app.py",
+        "from pkg.selected_actions import Action\n"
+        "from pkg.selected_write_authority import WriteAuthority\n\n"
+        "VALUE = (WriteAuthority().grant(Action()), Action.plan.steps)\n",
+    )
+    table = """
+| Package | Existing owners | What belongs here |
+|---|---|---|
+| `execution` | `selected_actions` moves to `execution/actions`, `selected_claim` moves to `execution/claim`, `selected_write_plan` moves to `execution/write_plan`; `selected_write_authority.py` merges into `selected_actions.py` | Selected turns. |
+"""
+    report = _goal(tmp_path, table)
+
+    assert report.stop_reason is CodemodWorkflowStopReason.ACHIEVED, report.to_markdown()
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    replay = report.replay_sequence.simulate(snapshot)
+    assert replay.is_clean
+    replay.apply()
+    assert sorted(p.name for p in (tmp_path / "pkg").glob("*.py")) == ["__init__.py", "app.py"]
+    imported = subprocess.run(
+        [sys.executable, "-c", "from pkg.app import VALUE; print(VALUE)"],
+        cwd=tmp_path, capture_output=True, text=True, check=False,
+    )
+    assert imported.returncode == 0, imported.stderr
+    assert imported.stdout.strip() == "(1, 2)"

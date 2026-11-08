@@ -483,6 +483,8 @@ class PackageDestinationMetrics(FindingMetrics):
     destination_path: str
     cluster_paths: tuple[str, ...]
     cluster_destination_paths: tuple[str, ...]
+    cluster_merge_source_paths: tuple[str, ...] = ()
+    """The cluster's modules a row declares merging into another."""
 
 
 @dataclass(frozen=True)
