@@ -14,7 +14,7 @@ from typing import (
     cast,
 )
 
-from metaclass_registry import AutoRegisterMeta
+from metaclass_registry import AutoRegisterMeta, LazyDiscoveryDict, RegistryConfig
 
 from .codemod_architecture_guards import ArchitectureGuardRule
 from .codemod_imports import ModuleImportMutation
@@ -52,11 +52,20 @@ class RefactorRecipeOperation(
     ABC,
     metaclass=AutoRegisterMeta,
 ):
-    """Agent-authored codemod operation compiled through source-index geometry."""
+    """Agent-authored codemod operation compiled through source-index geometry.
 
-    __registry_key__ = "operation_key_value"
-    __key_extractor__ = staticmethod(suffix_trimmed_class_name_registry_key)
-    __skip_if_no_key__ = True
+    The registry imports every module of the refactors package on its first read,
+    so an operation's membership never depends on an importer loading its module.
+    """
+
+    __registry_config__ = RegistryConfig(
+        registry_dict=LazyDiscoveryDict(),
+        key_attribute="operation_key_value",
+        key_extractor=suffix_trimmed_class_name_registry_key,
+        skip_if_no_key=True,
+        registry_name="codemod operation",
+        discovery_package=f"{__package__}.refactors",
+    )
     registry_key_suffix: ClassVar[str] = "Operation"
     operation_key_value: ClassVar[str]
     discriminator_field_name: ClassVar[str] = "operation"

@@ -9,7 +9,6 @@ from nominal_refactor_advisor.ast_tools import ModuleSyntaxIndex
 from nominal_refactor_advisor.codemod import (
     CodemodPlanDocument,
     CodemodSourceSnapshot,
-    ConvertManualRegistryToAutoregisterOperation,
     RefactorRecipe,
     SourceRewriteTarget,
 )
@@ -23,6 +22,7 @@ from nominal_refactor_advisor.codemod_source_edits import (
     SourceTextGeometry,
     SourceTextSpanReplacement,
 )
+from nominal_refactor_advisor.refactors.autoregister import ConvertManualRegistryToAutoregisterOperation
 from test_registry_candidate_correspondence import _projection
 from test_registry_policy_integrity import _execute
 from test_source_read_correspondence import document_for

@@ -6,13 +6,13 @@ from types import ModuleType
 
 import pytest
 
+from nominal_refactor_advisor.refactors.autoregister import ConvertManualRegistryToAutoregisterOperation
 from registry_test_sources import keyed_registry_source
 from nominal_refactor_advisor.ast_tools import ParsedModuleSet
 from nominal_refactor_advisor.analysis import analyze_detector_types
 from nominal_refactor_advisor.ast_tools import ParsedModule
 from nominal_refactor_advisor.codemod import (
     CodemodSourceSnapshot,
-    ConvertManualRegistryToAutoregisterOperation,
     RefactorRecipe,
     SourceRewriteTarget,
 )

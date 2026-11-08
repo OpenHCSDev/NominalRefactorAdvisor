@@ -13,7 +13,6 @@ from abc import ABC
 from collections.abc import Mapping
 from dataclasses import fields, replace
 from pathlib import Path
-from types import ModuleType
 from typing import cast
 from unittest.mock import Mock
 
@@ -27,27 +26,18 @@ from nominal_refactor_advisor.class_families.parsed_index import (
     ClassFamilyIndex,
     build_class_family_index,
 )
+from nominal_refactor_advisor.refactors.autoregister import (
+    ConvertManualRegistryToAutoregisterOperation,
+    DeriveAutoregisterInstanceViewOperation,
+)
+from nominal_refactor_advisor.refactors.dispatch_polymorphism import DispatchToPolymorphismOperation
 from registry_test_sources import _type_keyed_behavior_projection_source
 from native_use_test_support import (
     simulate_with_rendered_registry_creator_support,
 )
 
 import nominal_refactor_advisor.ast_tools as ast_tools_module
-import nominal_refactor_advisor.codemod_architecture_guards as codemod_architecture_guards_module
-import nominal_refactor_advisor.cancelable_composition as cancelable_composition_module
-import nominal_refactor_advisor.codemod_declaration_source as codemod_declaration_source_module
-import nominal_refactor_advisor.codemod_function_operations as codemod_function_operations_module
-import nominal_refactor_advisor.codemod_import_bindings as codemod_import_bindings_module
-import nominal_refactor_advisor.codemod_import_graph as codemod_import_graph_module
-import nominal_refactor_advisor.codemod_import_scopes as codemod_import_scopes_module
-import nominal_refactor_advisor.codemod_imports as codemod_imports_module
-import nominal_refactor_advisor.codemod_module_declarations as codemod_module_declarations_module
-import nominal_refactor_advisor.codemod_module_move_reports as codemod_module_move_reports_module
-import nominal_refactor_advisor.codemod_paths as codemod_paths_module
-import nominal_refactor_advisor.codemod_preflight as codemod_preflight_module
 import nominal_refactor_advisor.codemod_runtime as codemod_runtime_module
-import nominal_refactor_advisor.codemod_semantics as codemod_semantics_module
-import nominal_refactor_advisor.codemod_source_edits as codemod_source_edits_module
 import nominal_refactor_advisor.codemod_workflow as codemod_workflow_module
 from nominal_refactor_advisor.codemod_native_requirements import (
     DeclaredNativeUseInvariants,
@@ -199,16 +189,13 @@ from nominal_refactor_advisor.codemod import (
     CodemodSelectorContext,
     CodemodSourceRevision,
     CodemodSourceRevisionError,
-    ConvertManualRegistryToAutoregisterOperation,
     CreateFileOperation,
     DeclareAuthorityOperation,
     DeleteClassAssignmentsOperation,
     DeleteModuleAssignmentsOperation,
     DeleteTargetOperation,
-    DeriveAutoregisterInstanceViewOperation,
     DeriveCandidateCollectorOperation,
     TypedMirror,
-    DispatchToPolymorphismOperation,
     RefactorRecipeSimulation,
     EnsureImportOperation,
     DeclareCandidateFindingRendererOperation,
@@ -7441,41 +7428,6 @@ def _relocate_moved_with_consumer(tmp_path: Path, consumer: dict[str, str]):
     return operation, snapshot
 
 
-def test_relocation_redirects_a_name_read_through_an_import_it_removes(
-    tmp_path: Path,
-) -> None:
-    """The moved class took the source's last use of an imported helper, so the
-    source's import goes; a module that imported the helper through the source
-    now imports it from where it is declared."""
-
-    operation, snapshot = _relocate_moved_with_consumer(
-        tmp_path,
-        {
-            "pkg/helpers.py": "class Helper:\n    value = 3\n",
-            "pkg/source.py": "from .helpers import Helper\n\n\nclass Moved(Helper):\n    pass\n",
-            "pkg/reader.py": "from .source import Helper\n\nvalue = Helper.value\n",
-        },
-    )
-
-    simulation = RefactorRecipe("relocate-removing-import").with_operation(operation).simulate(snapshot)
-
-    assert simulation.is_clean
-    simulation.apply()
-    imported = subprocess.run(
-        [
-            sys.executable,
-            "-c",
-            "from pkg.reader import value; import pkg.source as source; "
-            "assert value == 3 and not hasattr(source, 'Helper')",
-        ],
-        cwd=tmp_path,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    assert imported.returncode == 0, imported.stderr
-
-
 def test_relocation_extracts_a_declaration_its_source_still_reads(tmp_path: Path) -> None:
     """A lower layer moves out: the source keeps reading the moved class through a
     plain import of the destination, and other importers are redirected."""
@@ -7530,6 +7482,10 @@ def test_relocation_extracts_a_declaration_its_source_still_reads(tmp_path: Path
             "pkg/reader.py": "import pkg as p\nfrom pkg import source\n\n"
             "assert not hasattr(p, 'retired')\nvalue = source.Moved.value\n"
         },
+        {
+            "pkg/reader.py": "import pkg.source as s\n\n"
+            "assert hasattr(s, 'Moved')\nvalue = getattr(s, 'Moved').value\n"
+        },
     ),
     ids=(
         "star-reexport",
@@ -7538,6 +7494,7 @@ def test_relocation_extracts_a_declaration_its_source_still_reads(tmp_path: Path
         "from-package",
         "named-unmoved-member",
         "named-package-member",
+        "named-moved-member",
     ),
 )
 def test_relocation_keeps_star_and_module_object_readers_working(
@@ -7573,13 +7530,8 @@ def test_relocation_keeps_star_and_module_object_readers_working(
             "uses the source module object 's' other than by reading an attribute",
         ),
         (
-            "import pkg.source as s\n\nvalue = getattr(s, 'Moved')\n",
-            "names 's.Moved', which reaches the moved names, through 'getattr'",
-        ),
-        (
-            "import pkg.source as s\n\n\ndef test_patch(monkeypatch):\n"
-            "    monkeypatch.setattr(s, 'Moved', None)\n",
-            "through 'monkeypatch.setattr'",
+            "import pkg.source as s\n\ndestination = None\nvalue = getattr(s, 'Moved')\n",
+            "already binds 'destination', which its 'getattr' of 'Moved'",
         ),
         (
             "import pkg as p\n\nsource = getattr(p, 'source')\n",
@@ -7596,8 +7548,7 @@ def test_relocation_keeps_star_and_module_object_readers_working(
     ),
     ids=(
         "escaping-module-object",
-        "named-moved-member",
-        "patched-moved-member",
+        "named-member-binding-taken",
         "named-source-from-package",
         "taken-name",
         "rebound-module-name",
@@ -7614,6 +7565,114 @@ def test_relocation_refuses_a_module_object_reader_it_cannot_rewrite(
 
     assert report.status is CodemodPreflightStatus.FAILED
     assert message in report.message
+
+
+@pytest.mark.parametrize(
+    "source_import",
+    ("from .helpers import Helper", "from .api import Helper"),
+    ids=("declaring-module", "re-exporter"),
+)
+def test_relocation_redirects_readers_of_a_source_import_it_removes(
+    tmp_path: Path,
+    source_import: str,
+) -> None:
+    """The moved class took the source's last read of `Helper`, so the source's
+    import goes. Readers that reached `Helper` through the source, by attribute or
+    by import, now import it from the module that declares it, past any module
+    that only re-exports it."""
+
+    for relative_path, source in {
+        "pkg/__init__.py": "",
+        "pkg/helpers.py": "class Helper:\n    value = 3\n",
+        "pkg/api.py": "from .helpers import Helper\n",
+        "pkg/source.py": f"{source_import}\n\n\n"
+        "class Kept:\n    pass\n\n\nclass Moved:\n    value = Helper.value\n",
+        "pkg/destination.py": "",
+        "pkg/reader.py": "import pkg.source as s\nfrom pkg.other import other\n\n"
+        "value = s.Helper.value + other\n",
+        "pkg/other.py": "from pkg.source import Helper\n\nother = Helper.value\n",
+    }.items():
+        _write_module(tmp_path, relative_path, source)
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    operation = RelocateSymbolsToModuleOperation(
+        target=SourceRewriteTarget(file_path=(tmp_path / "pkg/source.py").as_posix()),
+        symbol_qualnames=("Moved",),
+        destination_path=(tmp_path / "pkg/destination.py").as_posix(),
+    )
+
+    simulation = RefactorRecipe("relocate-removed-import").with_operation(
+        operation
+    ).simulate(snapshot)
+
+    assert simulation.is_clean
+    rewritten = simulation.simulation.rewritten_sources
+    assert "Helper" not in rewritten[(tmp_path / "pkg/source.py").as_posix()]
+    for reader in ("pkg/reader.py", "pkg/other.py"):
+        assert "helpers import Helper" in rewritten[(tmp_path / reader).as_posix()]
+    simulation.apply()
+    imported = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "from pkg.reader import value; from pkg.destination import Moved; "
+            "assert value == 6 and Moved.value == 3",
+        ],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert imported.returncode == 0, imported.stderr
+
+
+@pytest.mark.parametrize(
+    "patch",
+    (
+        "setattr(s, 'base', lambda: 7)",
+        "monkeypatch = pytest.MonkeyPatch()\nmonkeypatch.setattr(s, 'base', lambda: 7)",
+    ),
+    ids=("setattr", "monkeypatch"),
+)
+def test_relocation_points_a_patch_of_a_removed_import_at_its_new_reader(
+    tmp_path: Path,
+    patch: str,
+) -> None:
+    """Patching `source.base`, an import only the moved code reads, replaced
+    what that code calls; after the move the code reads `base` from the
+    destination, so the patch targets the destination, not `base`'s owner."""
+
+    for relative_path, source in {
+        "pkg/__init__.py": "",
+        "pkg/helpers.py": "def base():\n    return 3\n",
+        "pkg/source.py": "from .helpers import base\n\n\n"
+        "class Kept:\n    pass\n\n\n"
+        "class Moved:\n    @staticmethod\n    def value():\n        return base()\n",
+        "pkg/destination.py": "",
+        "pkg/reader.py": f"import pytest\nimport pkg.source as s\n\n{patch}\n"
+        "value = s.Moved.value()\n",
+    }.items():
+        _write_module(tmp_path, relative_path, source)
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    operation = RelocateSymbolsToModuleOperation(
+        target=SourceRewriteTarget(file_path=(tmp_path / "pkg/source.py").as_posix()),
+        symbol_qualnames=("Moved",),
+        destination_path=(tmp_path / "pkg/destination.py").as_posix(),
+    )
+
+    simulation = RefactorRecipe("relocate-patched-import").with_operation(
+        operation
+    ).simulate(snapshot)
+
+    assert simulation.is_clean
+    simulation.apply()
+    imported = subprocess.run(
+        [sys.executable, "-c", "from pkg.reader import value; assert value == 7, value"],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert imported.returncode == 0, imported.stderr
 
 
 def test_refactor_recipe_relocates_symbol_and_rewrites_consumers(
@@ -21014,11 +21073,11 @@ def test_class_family_migration_reports_native_proof_before_depth_budget(
 
 
 def test_class_family_name_projection_reads_registered_family_authority() -> None:
-    from nominal_refactor_advisor.codemod import (
-        ClassFamilyCollectionElementProjection,
-        ClassFamilyCollectionFactory,
-        ClassFamilyCollectionMembershipProjection,
-    )
+    from nominal_refactor_advisor.refactors.class_family_collection import (
+    ClassFamilyCollectionElementProjection,
+    ClassFamilyCollectionFactory,
+    ClassFamilyCollectionMembershipProjection,
+)
 
     membership_projection = (
         ClassFamilyCollectionMembershipProjection.for_authority_declaration(
@@ -26330,47 +26389,6 @@ def test_explicit_public_api_surface_is_not_a_semantic_mirror(tmp_path: Path) ->
     findings = analyze_path(tmp_path)
     assert not any(
         finding.detector_id == "manual_public_api_surface" for finding in findings
-    )
-
-
-@pytest.mark.parametrize(
-    "declaration_owner",
-    (
-        cancelable_composition_module,
-        codemod_architecture_guards_module,
-        codemod_declaration_source_module,
-        codemod_function_operations_module,
-        codemod_import_bindings_module,
-        codemod_import_graph_module,
-        codemod_import_scopes_module,
-        codemod_imports_module,
-        codemod_module_declarations_module,
-        codemod_module_move_reports_module,
-        codemod_paths_module,
-        codemod_preflight_module,
-        codemod_semantics_module,
-        codemod_source_edits_module,
-    ),
-)
-def test_codemod_facade_reexports_declaration_owned_types(
-    declaration_owner: ModuleType,
-) -> None:
-    import nominal_refactor_advisor.codemod as codemod_facade
-
-    owner_declarations = {
-        name: value
-        for name, value in vars(declaration_owner).items()
-        if (
-            not name.startswith("_")
-            and isinstance(value, type)
-            and value.__module__ == declaration_owner.__name__
-        )
-    }
-
-    assert owner_declarations
-    assert all(
-        getattr(codemod_facade, name) is declaration
-        for name, declaration in owner_declarations.items()
     )
 
 

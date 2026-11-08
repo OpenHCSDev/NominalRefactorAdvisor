@@ -14,7 +14,6 @@ from action_batch import BEFORE, build_plan
 from nominal_refactor_advisor.ast_tools import SourceModule
 from nominal_refactor_advisor.codemod import (
     CodemodSourceSnapshot,
-    DispatchToPolymorphismOperation,
     RefactorRecipe,
     SourceRewriteTarget,
 )
@@ -22,6 +21,7 @@ from nominal_refactor_advisor.detectors._base import DetectorConfig
 from nominal_refactor_advisor.detectors._runtime import (
     StringLiteralDispatchOwnershipLeadDetector,
 )
+from nominal_refactor_advisor.refactors.dispatch_polymorphism import DispatchToPolymorphismOperation
 
 
 @dataclass

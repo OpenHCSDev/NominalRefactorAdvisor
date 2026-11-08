@@ -9,6 +9,7 @@ from abc import (
 )
 from collections import Counter
 from collections.abc import Iterator, Mapping
+from itertools import product
 from dataclasses import dataclass
 from typing import ClassVar
 
@@ -281,8 +282,21 @@ class ModuleNameRedirect:
                         tuple(ast.alias(name=name) for name in module_reads.names),
                     )
                 )
+            module_objects = self._accessed_module_objects(
+                import_graph, consumer_path, module_reads
+            )
+            edits.extend(
+                ModuleImportMutation.from_source(
+                    file_path=consumer_path, import_source=import_source
+                )
+                for import_source in sorted({source for _node, _name, source in module_objects})
+            )
+            if module_reads.reads or module_objects:
                 edits.append(
-                    module_reads.rewrite(context.sources_by_file_path[consumer_path])
+                    module_reads.rewrite(
+                        context.sources_by_file_path[consumer_path],
+                        tuple((node, name) for node, name, _source in module_objects),
+                    )
                 )
             local_imports = self._local_import_replacements(
                 import_graph,
@@ -370,6 +384,51 @@ class ModuleNameRedirect:
             )
         return tuple(replacements)
 
+    def patched_reader_path(self, name: str, file_path: str) -> str:
+        """The module whose code reads `name` once it leaves the source, which a
+        patch of `source.name` must target instead. These owners spread the
+        readers, so no one module is it."""
+
+        raise ValueError(
+            f"{file_path!r} patches {name!r} on the source module, whose readers "
+            "the move spreads across owners"
+        )
+
+    def _accessed_module_objects(
+        self,
+        import_graph: SourceModuleImportGraph,
+        consumer_path: str,
+        module_reads: _SourceModuleObjectReads,
+    ) -> tuple[tuple[ast.expr, str, str], ...]:
+        """Each by-name access's module object, the binding of the module it now
+        targets, and the import that binds it."""
+
+        module_objects: list[tuple[ast.expr, str, str]] = []
+        for node, access in module_reads.accesses:
+            module_name = import_graph.module_name_for_file_path(
+                access.target_path(self, consumer_path)
+            )
+            if module_name is None:
+                raise ValueError(
+                    f"{consumer_path!r} reaches {access.member_name!r} through "
+                    f"{access.accessor!r} in a module outside the index"
+                )
+            package, _, binding = module_name.rpartition(".")
+            if binding in module_reads.bound_names:
+                raise ValueError(
+                    f"{consumer_path!r} already binds {binding!r}, which its "
+                    f"{access.accessor!r} of {access.member_name!r} would be "
+                    "redirected to"
+                )
+            module_objects.append(
+                (
+                    node,
+                    binding,
+                    f"from {package} import {binding}\n" if package else f"import {binding}\n",
+                )
+            )
+        return tuple(module_objects)
+
     def _owner_imports(
         self,
         import_graph: SourceModuleImportGraph,
@@ -396,6 +455,17 @@ class ModuleNameRedirect:
                 ).source,
                 scope=scope,
             )
+
+
+@dataclass(frozen=True)
+class RelocationNameRedirect(ModuleNameRedirect):
+    """The redirect of one relocation: every moved declaration, and so every
+    reader of a removed source import, lands in `reader_path`."""
+
+    reader_path: str
+
+    def patched_reader_path(self, name: str, file_path: str) -> str:
+        return self.reader_path
 
 
 @dataclass(frozen=True)
@@ -433,18 +503,13 @@ class _StarExportedNames:
 class _NamedModuleMemberAccess:
     """`getattr(m, "Name")`-shaped access: the module object is the first argument
     of a by-name accessor and the member is a string literal, so the name it
-    reaches is as static as `m.Name`."""
+    reaches is as static as `m.Name`. Each member says which module the access
+    targets once the name leaves the source."""
 
     accessor: str
     member_name: str
 
-    BUILTIN_ACCESSORS: ClassVar[frozenset[str]] = frozenset(
-        accessor.__name__ for accessor in (getattr, hasattr, setattr, delattr)
-    )
-    PATCH_ACCESSORS: ClassVar[frozenset[str]] = frozenset(
-        accessor.__name__ for accessor in (setattr, delattr)
-    )
-    PATCH_FIXTURE = "monkeypatch"
+    ACCESSORS: ClassVar[frozenset[str]] = frozenset()
 
     @classmethod
     def of(
@@ -462,21 +527,54 @@ class _NamedModuleMemberAccess:
         ):
             return None
         accessor = ast.unparse(call.func)
-        if accessor in cls.BUILTIN_ACCESSORS or accessor in {
-            f"{cls.PATCH_FIXTURE}.{name}" for name in cls.PATCH_ACCESSORS
-        }:
-            return cls(accessor=accessor, member_name=member.value)
+        for member_type in cls.__subclasses__():
+            if accessor in member_type.ACCESSORS:
+                return member_type(accessor=accessor, member_name=member.value)
         return None
+
+    def target_path(self, redirect: ModuleNameRedirect, file_path: str) -> str:
+        raise NotImplementedError
+
+
+@dataclass(frozen=True)
+class _NamedModuleMemberRead(_NamedModuleMemberAccess):
+    """`getattr`/`hasattr` reads the name where it is now declared."""
+
+    ACCESSORS: ClassVar[frozenset[str]] = frozenset(
+        accessor.__name__ for accessor in (getattr, hasattr)
+    )
+
+    def target_path(self, redirect: ModuleNameRedirect, file_path: str) -> str:
+        return redirect.destinations[self.member_name]
+
+
+@dataclass(frozen=True)
+class _NamedModuleMemberPatch(_NamedModuleMemberAccess):
+    """`setattr`/`delattr` (or the `monkeypatch` fixture's) replace the name in the
+    module whose code reads it, which is not its declaring module when the name
+    is an import: the patch follows the reader."""
+
+    ACCESSORS: ClassVar[frozenset[str]] = frozenset(
+        f"{fixture}{accessor.__name__}"
+        for fixture, accessor in product(("", "monkeypatch."), (setattr, delattr))
+    )
+
+    def target_path(self, redirect: ModuleNameRedirect, file_path: str) -> str:
+        return redirect.patched_reader_path(self.member_name, file_path)
 
 
 @dataclass(frozen=True)
 class _SourceModuleObjectReads:
     """A consumer's `module.Name` reads of moved names through its bindings of the
-    source module object. The move refuses when such a binding is used other than
-    by attribute reads, is rebound, or when a read name is already bound there."""
+    source module object, and its by-name accesses (`getattr(module, "Name")`,
+    `monkeypatch.setattr(module, "Name", ...)`) of them. The move refuses when
+    such a binding is used any other way, is rebound, or when a name it would
+    bind is already bound there."""
 
     file_path: str
     reads: tuple[tuple[ast.Attribute, str], ...]
+    accesses: tuple[tuple[ast.expr, _NamedModuleMemberAccess], ...]
+    bound_names: frozenset[str]
 
     @property
     def names(self) -> tuple[str, ...]:
@@ -495,7 +593,7 @@ class _SourceModuleObjectReads:
         source_parts = tuple(source_module_name.split("."))
         chains = frozenset(cls._bound_chains(module, identity, source_parts))
         if not chains:
-            return cls(file_path, ())
+            return cls(file_path, (), (), frozenset())
         bindings = cls._bound_name_counts(module)
         parents = {
             child: parent
@@ -503,6 +601,7 @@ class _SourceModuleObjectReads:
             for child in ast.iter_child_nodes(parent)
         }
         reads: list[tuple[ast.Attribute, str]] = []
+        accesses: list[tuple[ast.expr, _NamedModuleMemberAccess]] = []
         for chain in chains:
             if bindings[chain[0]] > 1:
                 raise ValueError(
@@ -520,13 +619,13 @@ class _SourceModuleObjectReads:
                     named := _NamedModuleMemberAccess.of(outermost, parents)
                 ):
                     reached = (*parts, named.member_name)
-                    if reached == chain or (
-                        parts == chain and named.member_name in moved_names
-                    ):
+                    if reached == chain:
                         raise ValueError(
                             f"{file_path!r} names {'.'.join(reached)!r}, which "
                             f"reaches the moved names, through {named.accessor!r}"
                         )
+                    if parts == chain and named.member_name in moved_names:
+                        accesses.append((outermost, named))
                 elif parts == chain:
                     raise ValueError(
                         f"{file_path!r} uses the source module object "
@@ -538,7 +637,12 @@ class _SourceModuleObjectReads:
                 f"{file_path!r} already binds {taken!r}, which its source-module "
                 "reads would be redirected to"
             )
-        return cls(file_path, tuple(reads))
+        return cls(
+            file_path,
+            tuple(reads),
+            tuple(accesses),
+            frozenset(name for name, count in bindings.items() if count),
+        )
 
     @staticmethod
     def _bound_chains(
@@ -609,7 +713,14 @@ class _SourceModuleObjectReads:
             parts.append(parent.attr)
         return outermost, tuple(parts)
 
-    def rewrite(self, source: str) -> NominalSourceEdit:
+    def rewrite(
+        self,
+        source: str,
+        module_objects: tuple[tuple[ast.expr, str], ...],
+    ) -> NominalSourceEdit:
+        """Each read becomes its bare name; each by-name access's module object
+        becomes the binding of the module it now targets."""
+
         geometry = SourceTextGeometry(source)
         return geometry.nominal_edit(
             file_path=self.file_path,
@@ -617,9 +728,9 @@ class _SourceModuleObjectReads:
                 SourceTextSpanReplacement.from_offsets(
                     start_offset=start,
                     end_offset=end,
-                    replacement_source=name,
+                    replacement_source=replacement,
                 )
-                for node, name in self.reads
+                for node, replacement in (*self.reads, *module_objects)
                 for start, end in (geometry.required_node_offsets(node),)
             ),
         )
@@ -702,10 +813,7 @@ class SourceTopLevelSymbolClosureMovePlan(SourceTopLevelSymbolClosureMoveCarrier
             destination_table,
             request,
             operation,
-            consumer_imported_names=cls._consumer_imported_names(
-                context,
-                request.source_path,
-            ),
+            kept_reexports=cls._kept_reexports(context, source_table),
         )
         source_binding_import_sources = operation.source_binding_import_sources(
             context,
@@ -726,12 +834,13 @@ class SourceTopLevelSymbolClosureMovePlan(SourceTopLevelSymbolClosureMoveCarrier
                 )
                 for module_text, names, scope in self_binding_removals
             ),
-            *ModuleNameRedirect(
+            *RelocationNameRedirect(
                 source_path=request.source_path,
                 destinations={
+                    **cls._removed_binding_owners(context, report),
                     **{name: request.destination_path for name in moved_symbol_names},
-                    **cls._removed_import_origins(context.module_import_graph, report),
                 },
+                reader_path=request.destination_path,
             ).consumer_edits(
                 context,
                 excluded_paths=frozenset((request.source_path, request.destination_path)),
@@ -748,6 +857,29 @@ class SourceTopLevelSymbolClosureMovePlan(SourceTopLevelSymbolClosureMoveCarrier
             consumer_edits=consumer_edits,
             rationale=request.rationale,
         )
+
+    @staticmethod
+    def _removed_binding_owners(
+        context: CodemodSelectorContext,
+        report: ModuleMoveDependencyReport,
+    ) -> dict[str, str]:
+        """Source imports the move removes, each to the module declaring it, so a
+        reader that reached the name through the source reads it from its owner.
+        A name declared outside the index has no owner path and is left alone."""
+
+        return {
+            dependency.name: owner
+            for dependency in report.source_removal_dependencies
+            if dependency.identity.imported_name == dependency.name
+            if (
+                owner := ImportedNameOwner.declaring_path(
+                    context,
+                    dependency.identity.module_name,
+                    dependency.name,
+                )
+            )
+            is not None
+        }
 
     @staticmethod
     def _destination_self_binding_removals(
@@ -792,28 +924,6 @@ class SourceTopLevelSymbolClosureMovePlan(SourceTopLevelSymbolClosureMoveCarrier
         return tuple(removals)
 
     @staticmethod
-    def _removed_import_origins(
-        import_graph: SourceModuleImportGraph,
-        report: ModuleMoveDependencyReport,
-    ) -> dict[str, str]:
-        """Each import the move removes from the source, by the scanned file that
-        declares it: a module that read the name through the source reads it from
-        there instead. An aliased binding or an origin outside the scan is not
-        redirected."""
-
-        return {
-            dependency.name: origin.file_path
-            for dependency in report.source_removal_dependencies
-            if dependency.identity.imported_name == dependency.name
-            for origin in (
-                import_graph.unique_source_file_for_module_name(
-                    dependency.identity.module_name
-                ),
-            )
-            if origin is not None
-        }
-
-    @staticmethod
     def _validate_destination(
         destination_table: ModuleSymbolTable,
         moved_symbol_names: tuple[str, ...],
@@ -836,31 +946,48 @@ class SourceTopLevelSymbolClosureMovePlan(SourceTopLevelSymbolClosureMoveCarrier
             )
 
     @staticmethod
-    def _consumer_imported_names(
+    def _kept_reexports(
         context: CodemodSelectorContext,
-        source_path: str,
+        source_table: ModuleSymbolTable,
     ) -> frozenset[str]:
-        """Names other files import from the source, at any scope: an import the
-        source keeps only so they can is a re-export, not a dead dependency."""
+        """Source imports other files import through the source and that no
+        redirect can point them past: the name is declared outside the index, or
+        the source binds it under another name. Every other such import is removed
+        with the move, and its importers read the name from its declaring module
+        (`_removed_binding_owners`)."""
 
-        source_module_name = context.module_import_graph.module_name_for_file_path(
-            source_path
-        )
-        names: set[str] = set()
+        source_path = source_table.file_path
+        import_graph = context.module_import_graph
+        source_module_name = import_graph.module_name_for_file_path(source_path)
+        kept: set[str] = set()
         for source_file in context.source_index.files:
             module = context.module_nodes_by_file_path.get(source_file.file_path)
             if source_file.file_path == source_path or module is None:
                 continue
             for node in ast.walk(module):
-                if isinstance(node, ast.ImportFrom) and (
+                if not isinstance(node, ast.ImportFrom) or (
                     source_file.module_path_identity.resolve_import_from_module(
                         imported_module=node.module,
                         level=node.level,
                     )
-                    == source_module_name
+                    != source_module_name
                 ):
-                    names.update(alias.name for alias in node.names)
-        return frozenset(names)
+                    continue
+                for alias in node.names:
+                    binding = source_table.import_binding_for_dependency(
+                        alias.name,
+                        import_graph=import_graph,
+                        permits_guarded_import=True,
+                    )
+                    if binding is not None and (
+                        binding[1].imported_name != alias.name
+                        or ImportedNameOwner.declaring_path(
+                            context, binding[1].module_name, alias.name
+                        )
+                        is None
+                    ):
+                        kept.add(alias.name)
+        return frozenset(kept)
 
     @classmethod
     def _dependency_report(
@@ -871,7 +998,7 @@ class SourceTopLevelSymbolClosureMovePlan(SourceTopLevelSymbolClosureMoveCarrier
         request: SourceTopLevelSymbolClosureMoveRequest,
         operation: ModuleSymbolMoveOperation,
         *,
-        consumer_imported_names: frozenset[str] = frozenset(),
+        kept_reexports: frozenset[str] = frozenset(),
     ) -> ModuleMoveDependencyReport:
         selection = request.selection
         declarations = selection.declarations
@@ -982,7 +1109,7 @@ class SourceTopLevelSymbolClosureMovePlan(SourceTopLevelSymbolClosureMoveCarrier
                     binding.supports_bound_name_removal
                     and name not in remaining_references
                     and name not in source_table.explicit_reexport_bound_names
-                    and name not in consumer_imported_names
+                    and name not in kept_reexports
                 ),
             )
             for name, (binding, identity) in sorted(
@@ -1631,6 +1758,52 @@ class ExtractSymbolClosureToNewModuleOperation(
 
 
 @dataclass(frozen=True)
+class ImportedNameOwner:
+    """The indexed module that declares an imported name, followed through the
+    modules that only re-import it; None when the name comes from outside the index."""
+
+    @staticmethod
+    def declaring_path(
+        context: CodemodSelectorContext,
+        module_name: str | None,
+        name: str,
+    ) -> str | None:
+        """The indexed module declaring `name`, through modules that only rebind it."""
+
+        import_graph = context.module_import_graph
+        seen: set[str] = set()
+        while module_name is not None and module_name not in seen:
+            seen.add(module_name)
+            source_file = import_graph.unique_source_file_for_module_name(module_name)
+            if source_file is None:
+                return None
+            table = ModuleSymbolTable(
+                file_path=source_file.file_path,
+                source=context.sources_by_file_path[source_file.file_path],
+                module=context.module_nodes_by_file_path[source_file.file_path],
+            )
+            if name in table.top_level_names:
+                return source_file.file_path
+            rebinding = next(
+                (
+                    node
+                    for scope in ModuleImportScope
+                    for node in scope.import_statements(table.module)
+                    if isinstance(node, ast.ImportFrom)
+                    and any(alias.name == name and alias.asname in (None, name) for alias in node.names)
+                ),
+                None,
+            )
+            if rebinding is None:
+                return source_file.file_path
+            module_name = source_file.module_path_identity.resolve_import_from_module(
+                imported_module=rebinding.module,
+                level=rebinding.level,
+            )
+        return None
+
+
+@dataclass(frozen=True)
 class _DissolvedModuleBindings:
     """What a module that declares nothing still binds: each imported name and
     the indexed module that declares it, following re-export chains."""
@@ -1655,7 +1828,7 @@ class _DissolvedModuleBindings:
         owners: dict[str, str] = {}
         foreign: set[str] = set()
         for name, binding_module in cls._imported_names(context, source_path, module):
-            owner = cls._declaring_path(context, binding_module, name)
+            owner = ImportedNameOwner.declaring_path(context, binding_module, name)
             if owner is None:
                 foreign.add(name)
             else:
@@ -1714,46 +1887,6 @@ class _DissolvedModuleBindings:
                             "its consumers cannot import that name from an owner"
                         )
                     yield alias.name, imported_module
-
-    @staticmethod
-    def _declaring_path(
-        context: CodemodSelectorContext,
-        module_name: str | None,
-        name: str,
-    ) -> str | None:
-        """The indexed module declaring `name`, through modules that only rebind it."""
-
-        import_graph = context.module_import_graph
-        seen: set[str] = set()
-        while module_name is not None and module_name not in seen:
-            seen.add(module_name)
-            source_file = import_graph.unique_source_file_for_module_name(module_name)
-            if source_file is None:
-                return None
-            table = ModuleSymbolTable(
-                file_path=source_file.file_path,
-                source=context.sources_by_file_path[source_file.file_path],
-                module=context.module_nodes_by_file_path[source_file.file_path],
-            )
-            if name in table.top_level_names:
-                return source_file.file_path
-            rebinding = next(
-                (
-                    node
-                    for scope in ModuleImportScope
-                    for node in scope.import_statements(table.module)
-                    if isinstance(node, ast.ImportFrom)
-                    and any(alias.name == name and alias.asname in (None, name) for alias in node.names)
-                ),
-                None,
-            )
-            if rebinding is None:
-                return source_file.file_path
-            module_name = source_file.module_path_identity.resolve_import_from_module(
-                imported_module=rebinding.module,
-                level=rebinding.level,
-            )
-        return None
 
 
 @dataclass(frozen=True)
