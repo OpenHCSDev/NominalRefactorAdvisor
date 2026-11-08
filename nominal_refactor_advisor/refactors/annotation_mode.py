@@ -124,33 +124,75 @@ class _AnnotationNames:
 
 @dataclass(frozen=True)
 class _RawAnnotationReader:
-    """A site that reads annotation values as stored: `__annotations__`, or
-    `get_annotations` in VALUE (the default) or FORWARDREF format. Those values are
-    strings in a stringized module and objects in a lazy one. STRING format and
-    `typing.get_type_hints` read the same thing in both modes."""
+    """A function that reads annotation values as stored: loads `__annotations__`, or
+    calls `get_annotations` in VALUE (the default) or FORWARDREF format without
+    `eval_str=True`. Those values are strings in a stringized module and objects in a
+    lazy one. STRING format, `eval_str=True` and `typing.get_type_hints` read the
+    same thing in both modes. A reader is named by the qualified name of the function
+    holding it (`pkg.module.Owner.method`), which survives edits around it."""
 
-    file_path: str
-    line: int
-
-    @property
-    def site(self) -> str:
-        return f"{self.file_path}:{self.line}"
+    qualname: str
 
     @classmethod
     def all_in(cls, context: CodemodSelectorContext) -> tuple[_RawAnnotationReader, ...]:
         return tuple(
-            cls(source_file.file_path, node.lineno)
-            for source_file in context.source_index.files
-            if (module := context.module_nodes_by_file_path.get(source_file.file_path))
-            is not None
-            for node in ast.walk(module)
-            if cls._reads_raw(node)
+            sorted(
+                {
+                    cls(qualname)
+                    for source_file in context.source_index.files
+                    if (module := context.module_nodes_by_file_path.get(source_file.file_path))
+                    is not None
+                    for qualname in cls._reading_scopes(module.body, source_file.module_name)
+                },
+                key=lambda reader: reader.qualname,
+            )
         )
+
+    @classmethod
+    def _reading_scopes(cls, body: list[ast.stmt], scope: str) -> Iterator[str]:
+        for statement in body:
+            if isinstance(statement, _DEFINITIONS):
+                yield from cls._reading_scopes(statement.body, f"{scope}.{statement.name}")
+                nodes: list[ast.AST] = [
+                    *statement.decorator_list,
+                    *(
+                        (statement.args, *((statement.returns,) if statement.returns else ()))
+                        if not isinstance(statement, ast.ClassDef)
+                        else statement.bases
+                    ),
+                ]
+            else:
+                nodes = [statement]
+                yield from cls._reading_scopes(
+                    [
+                        child
+                        for node in cls._outside_definitions(statement)
+                        for child in ast.iter_child_nodes(node)
+                        if isinstance(child, _DEFINITIONS)
+                    ],
+                    scope,
+                )
+            if any(
+                cls._reads_raw(node)
+                for root in nodes
+                for node in cls._outside_definitions(root)
+            ):
+                yield scope
+
+    @staticmethod
+    def _outside_definitions(root: ast.AST) -> Iterator[ast.AST]:
+        pending = [root]
+        while pending:
+            node = pending.pop()
+            yield node
+            pending.extend(
+                child for child in ast.iter_child_nodes(node) if not isinstance(child, _DEFINITIONS)
+            )
 
     @staticmethod
     def _reads_raw(node: ast.AST) -> bool:
         if isinstance(node, ast.Attribute):
-            return node.attr == "__annotations__"
+            return node.attr == "__annotations__" and isinstance(node.ctx, ast.Load)
         if not isinstance(node, ast.Call):
             return False
         name = (
@@ -162,10 +204,12 @@ class _RawAnnotationReader:
         )
         if name != "get_annotations":
             return False
-        formats = tuple(keyword.value for keyword in node.keywords if keyword.arg == "format")
-        return not any(
-            isinstance(value, ast.Attribute) and value.attr == "STRING" for value in formats
-        )
+        keywords = {keyword.arg: keyword.value for keyword in node.keywords}
+        evaluates = keywords.get("eval_str")
+        if isinstance(evaluates, ast.Constant) and evaluates.value is True:
+            return False
+        stored = keywords.get("format")
+        return not (isinstance(stored, ast.Attribute) and stored.attr == "STRING")
 
 
 @dataclass(frozen=True)
@@ -187,8 +231,8 @@ class StringizeAnnotationsOperation(RefactorRecipeOperation):
     definition's type parameters, so evaluating its string in the module's globals
     gives the object the lazy annotation gave. What a raw reader does with a stored
     annotation (a string afterwards, an object before) NRA cannot see, so every such
-    reader in the index must be named in `reviewed_annotation_readers` as
-    `path:line`, or the conversion is refused with the sites listed."""
+    reader in the index must be named in `reviewed_annotation_readers` by the
+    qualified name of its function, or the conversion is refused with them listed."""
 
     reviewed_annotation_readers: tuple[str, ...] = codemod_payload_field(
         StringArrayPayloadValueCodec(),
@@ -210,9 +254,9 @@ class StringizeAnnotationsOperation(RefactorRecipeOperation):
         ).unresolved
         reviewed = frozenset(self.reviewed_annotation_readers)
         unreviewed = tuple(
-            reader.site
+            reader.qualname
             for reader in _RawAnnotationReader.all_in(context)
-            if reader.site not in reviewed
+            if reader.qualname not in reviewed
         )
         message = (
             f"{source_path!r} already stores {mode.value} annotations"

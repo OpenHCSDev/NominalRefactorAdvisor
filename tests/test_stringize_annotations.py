@@ -116,15 +116,23 @@ def test_a_raw_annotation_reader_must_be_reviewed(tmp_path: Path) -> None:
         "def names(owner):\n"
         "    return tuple(get_annotations(owner))\n\n"
         "def strings(owner):\n"
-        "    return get_annotations(owner, format=Format.STRING)\n",
+        "    return get_annotations(owner, format=Format.STRING)\n\n"
+        "def evaluated(owner):\n"
+        "    return get_annotations(owner, eval_str=True)\n\n"
+        "def written(owner, annotations):\n"
+        "    owner.__annotations__ = annotations\n\n"
+        "if True:\n"
+        "    class Guarded:\n"
+        "        def stored(self, owner):\n"
+        "            return owner.__annotations__\n",
     )
-    reader = f"{(tmp_path / 'pkg/reader.py').as_posix()}:4"
+    readers = ("pkg.reader.Guarded.stored", "pkg.reader.names")
 
     refused = _preflight(tmp_path)
-    accepted = _preflight(tmp_path, reader)
+    accepted = _preflight(tmp_path, *readers)
 
     assert refused.status is CodemodPreflightStatus.FAILED
-    assert reader in refused.message
+    assert refused.detail.unreviewed_annotation_readers == readers
     assert accepted.status is CodemodPreflightStatus.PASSED
 
 
