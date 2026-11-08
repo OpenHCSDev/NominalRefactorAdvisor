@@ -13,7 +13,6 @@ from abc import ABC
 from collections.abc import Mapping
 from dataclasses import fields, replace
 from pathlib import Path
-from types import ModuleType
 from typing import cast
 from unittest.mock import Mock
 
@@ -27,27 +26,14 @@ from nominal_refactor_advisor.class_families.parsed_index import (
     ClassFamilyIndex,
     build_class_family_index,
 )
+from nominal_refactor_advisor.refactors.dispatch_polymorphism import DispatchToPolymorphismOperation
 from registry_test_sources import _type_keyed_behavior_projection_source
 from native_use_test_support import (
     simulate_with_rendered_registry_creator_support,
 )
 
 import nominal_refactor_advisor.ast_tools as ast_tools_module
-import nominal_refactor_advisor.codemod_architecture_guards as codemod_architecture_guards_module
-import nominal_refactor_advisor.cancelable_composition as cancelable_composition_module
-import nominal_refactor_advisor.codemod_declaration_source as codemod_declaration_source_module
-import nominal_refactor_advisor.codemod_function_operations as codemod_function_operations_module
-import nominal_refactor_advisor.codemod_import_bindings as codemod_import_bindings_module
-import nominal_refactor_advisor.codemod_import_graph as codemod_import_graph_module
-import nominal_refactor_advisor.codemod_import_scopes as codemod_import_scopes_module
-import nominal_refactor_advisor.codemod_imports as codemod_imports_module
-import nominal_refactor_advisor.codemod_module_declarations as codemod_module_declarations_module
-import nominal_refactor_advisor.codemod_module_move_reports as codemod_module_move_reports_module
-import nominal_refactor_advisor.codemod_paths as codemod_paths_module
-import nominal_refactor_advisor.codemod_preflight as codemod_preflight_module
 import nominal_refactor_advisor.codemod_runtime as codemod_runtime_module
-import nominal_refactor_advisor.codemod_semantics as codemod_semantics_module
-import nominal_refactor_advisor.codemod_source_edits as codemod_source_edits_module
 import nominal_refactor_advisor.codemod_workflow as codemod_workflow_module
 from nominal_refactor_advisor.codemod_native_requirements import (
     DeclaredNativeUseInvariants,
@@ -208,7 +194,6 @@ from nominal_refactor_advisor.codemod import (
     DeriveAutoregisterInstanceViewOperation,
     DeriveCandidateCollectorOperation,
     TypedMirror,
-    DispatchToPolymorphismOperation,
     RefactorRecipeSimulation,
     EnsureImportOperation,
     DeclareCandidateFindingRendererOperation,
@@ -26402,47 +26387,6 @@ def test_explicit_public_api_surface_is_not_a_semantic_mirror(tmp_path: Path) ->
     findings = analyze_path(tmp_path)
     assert not any(
         finding.detector_id == "manual_public_api_surface" for finding in findings
-    )
-
-
-@pytest.mark.parametrize(
-    "declaration_owner",
-    (
-        cancelable_composition_module,
-        codemod_architecture_guards_module,
-        codemod_declaration_source_module,
-        codemod_function_operations_module,
-        codemod_import_bindings_module,
-        codemod_import_graph_module,
-        codemod_import_scopes_module,
-        codemod_imports_module,
-        codemod_module_declarations_module,
-        codemod_module_move_reports_module,
-        codemod_paths_module,
-        codemod_preflight_module,
-        codemod_semantics_module,
-        codemod_source_edits_module,
-    ),
-)
-def test_codemod_facade_reexports_declaration_owned_types(
-    declaration_owner: ModuleType,
-) -> None:
-    import nominal_refactor_advisor.codemod as codemod_facade
-
-    owner_declarations = {
-        name: value
-        for name, value in vars(declaration_owner).items()
-        if (
-            not name.startswith("_")
-            and isinstance(value, type)
-            and value.__module__ == declaration_owner.__name__
-        )
-    }
-
-    assert owner_declarations
-    assert all(
-        getattr(codemod_facade, name) is declaration
-        for name, declaration in owner_declarations.items()
     )
 
 

@@ -13,12 +13,12 @@ from nominal_refactor_advisor.codemod import (
     CodemodPlanSequence,
     CodemodSourceSnapshot,
     DeriveCandidateCollectorOperation,
-    DispatchToPolymorphismOperation,
     InsertAfterTargetOperation,
     InsertBeforeTargetOperation,
     SourceRewriteTarget,
 )
 from nominal_refactor_advisor.json_reports import json_report_object
+from nominal_refactor_advisor.refactors.dispatch_polymorphism import DispatchToPolymorphismOperation
 
 
 @pytest.mark.parametrize(
