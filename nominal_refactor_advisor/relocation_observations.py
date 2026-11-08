@@ -15,6 +15,7 @@ import ast
 import builtins
 from collections.abc import Iterator
 from dataclasses import dataclass
+from typing import cast
 
 from .annotation_semantics import TypeWrapper
 from .ast_field_decoders import variadic_parameters
@@ -27,6 +28,7 @@ from .class_index import (
     ModuleNominalBindingAuthority,
     ModuleNominalBindingSnapshot,
 )
+from .foreign_family import FunctionDefinition
 from .observation_families import ShapeFamily
 from .probe_owner import (
     ProbeOwner,
@@ -38,10 +40,6 @@ from .restated_fact_observations import (
     RestatingSiteModule,
 )
 from .observation_shapes import RestatingSite
-
-DEFINITION_TYPES = (ast.FunctionDef, ast.AsyncFunctionDef)
-
-
 
 def statements_of(scope: ast.AST) -> list[ast.stmt]:
     """The statement list of a module, class or def."""
@@ -56,49 +54,44 @@ def statements_of(scope: ast.AST) -> list[ast.stmt]:
 
 @dataclass(frozen=True)
 class ScopedDefinition:
-    """A def statement with its dotted name and the class or module declaring it."""
+    """A def statement with its dotted name and immediate lexical scope."""
 
     qualname: str
     node: ast.FunctionDef | ast.AsyncFunctionDef
     owner: ast.AST
 
 
-def scoped_definitions(module: ast.Module) -> Iterator[ScopedDefinition]:
+def scoped_definitions(parsed_module: ParsedModule) -> Iterator[ScopedDefinition]:
     """Every def in the module, named by its enclosing classes and functions."""
 
-    for prefix, scope in walk_scopes(module):
-        for nested in nested_scopes(scope):
-            if isinstance(nested, DEFINITION_TYPES):
-                yield ScopedDefinition(f"{prefix}{nested.name}", nested, scope)
+    children = parsed_module.syntax_index.named_scope_children
+    for prefix, scope in walk_scopes(parsed_module):
+        for nested in FunctionDefinition.within(children[scope]):
+            yield ScopedDefinition(
+                f"{prefix}{nested.name}",
+                cast(ast.FunctionDef | ast.AsyncFunctionDef, nested),
+                scope,
+            )
 
 
-def nested_scopes(
-    scope: ast.AST,
-) -> Iterator[ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef]:
-    """The classes and defs a scope declares, inside blocks too, not their own."""
-
-    for statement in statements_of(scope):
-        for node in scope_nodes(statement):
-            if isinstance(node, (ast.ClassDef, *DEFINITION_TYPES)):
-                yield node
-
-
-def walk_scopes(module: ast.Module) -> Iterator[tuple[str, ast.AST]]:
+def walk_scopes(parsed_module: ParsedModule) -> Iterator[tuple[str, ast.AST]]:
     """The module, every class and every def, each with the prefix of its members."""
 
-    stack: list[tuple[str, ast.AST]] = [("", module)]
+    children = parsed_module.syntax_index.named_scope_children
+    stack: list[tuple[str, ast.AST]] = [("", parsed_module.module)]
     while stack:
         prefix, scope = stack.pop()
         yield prefix, scope
-        for nested in nested_scopes(scope):
+        for nested in children[scope]:
             stack.append((f"{prefix}{nested.name}.", nested))
 
 
-def scoped_classes(module: ast.Module) -> Iterator[tuple[str, ast.ClassDef]]:
-    """Every class in the module with its dotted name."""
+def scoped_classes(parsed_module: ParsedModule) -> Iterator[tuple[str, ast.ClassDef]]:
+    """Every original class with its dotted name, retaining the scope walk's order."""
 
-    for prefix, scope in walk_scopes(module):
-        for nested in nested_scopes(scope):
+    children = parsed_module.syntax_index.named_scope_children
+    for prefix, scope in walk_scopes(parsed_module):
+        for nested in children[scope]:
             if isinstance(nested, ast.ClassDef):
                 yield f"{prefix}{nested.name}", nested
 
@@ -109,7 +102,7 @@ def bound_classes(
     """Every class in the module with its dotted name and the module bindings its
     body's decorators resolve through, taken in one pass."""
 
-    classes = tuple(scoped_classes(parsed_module.module))
+    classes = tuple(scoped_classes(parsed_module))
     snapshots = ModuleNominalBindingAuthority(parsed_module).snapshots_before(
         node.lineno for _qualname, node in classes
     )
@@ -192,7 +185,7 @@ def function_nodes(node: ast.FunctionDef | ast.AsyncFunctionDef) -> Iterator[ast
 
 def scope_nodes(node: ast.AST) -> Iterator[ast.AST]:
     yield node
-    if isinstance(node, (*DEFINITION_TYPES, ast.ClassDef, ast.Lambda)):
+    if isinstance(node, (*FunctionDefinition.members, ast.ClassDef, ast.Lambda)):
         return
     for child in ast.iter_child_nodes(node):
         yield from scope_nodes(child)
@@ -446,16 +439,17 @@ def tested_reads(test: ast.expr) -> Iterator[tuple[ast.expr, str, bool]]:
             yield test, member, True
 
 
-def enclosing_symbols(module: ast.Module) -> dict[int, str]:
+def enclosing_symbols(parsed_module: ParsedModule) -> dict[int, str]:
     """The dotted name of the def or class enclosing each node."""
 
+    children = parsed_module.syntax_index.named_scope_children
     symbols: dict[int, str] = {}
-    for prefix, scope in walk_scopes(module):
+    for prefix, scope in walk_scopes(parsed_module):
         symbol = prefix.rstrip(".") or "<module>"
         for statement in statements_of(scope):
             for node in scope_nodes(statement):
                 symbols[id(node)] = symbol
-        for nested in nested_scopes(scope):
+        for nested in children[scope]:
             for child in ast.iter_child_nodes(nested):
                 if not isinstance(child, ast.stmt):
                     for node in ast.walk(child):
@@ -481,7 +475,7 @@ class ConsumerShapeFamily(ShapeFamily[ConsumerShapesModule]):
 
     @classmethod
     def collect(cls, parsed_module: ParsedModule) -> list[ConsumerShapesModule]:
-        symbols = enclosing_symbols(parsed_module.module)
+        symbols = enclosing_symbols(parsed_module)
         resolver = ProbeOwnerResolver.of(parsed_module)
         reads = []
         calls = []
@@ -692,7 +686,7 @@ class ZeroOneTupleSiteFamily(RestatingSiteFamily[RestatingSiteModule]):
 
     @classmethod
     def sites(cls, parsed_module: ParsedModule) -> Iterator[RestatingSite]:
-        for definition in scoped_definitions(parsed_module.module):
+        for definition in scoped_definitions(parsed_module):
             if absence_tuple_arities(definition.node) != {0, 1}:
                 continue
             yield RestatingSite(
@@ -749,7 +743,7 @@ class ThreadedAbsenceSiteFamily(RestatingSiteFamily[RestatingSiteModule]):
 
     @classmethod
     def sites(cls, parsed_module: ParsedModule) -> Iterator[RestatingSite]:
-        for definition in scoped_definitions(parsed_module.module):
+        for definition in scoped_definitions(parsed_module):
             name = definition.node.name
             if name.startswith("__") and name.endswith("__"):
                 continue
