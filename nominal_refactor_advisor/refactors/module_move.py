@@ -799,11 +799,12 @@ class _RedirectOwners(_AliasOwners):
         return self._modules(access.reached_paths(self.redirect))
 
     def _modules(self, paths: Iterable[str]) -> frozenset[str]:
-        return frozenset(
-            module
-            for path in paths
-            if (module := self.import_graph.module_name_for_file_path(path))
-        )
+        """The modules at `paths`; a path outside the index reaches no module the
+        move can name, so the use reaches none and the alias keeps its refusal."""
+        modules = frozenset(self.import_graph.module_name_for_file_path(path) for path in paths)
+        if None in modules:
+            return frozenset()
+        return cast(frozenset[str], modules)
 
 
 @dataclass(frozen=True)
