@@ -28,6 +28,10 @@ class ModuleMoveImportDependency(DataclassJsonReport):
     identity: ModuleImportBindingIdentity = json_report_field(flattened=True)
     destination_import_required: bool
     source_removal_required: bool
+    source_scopes: tuple[ModuleImportScope, ...] = json_report_field(included=False)
+    """Every scope the source binds this name in: a runtime import and its
+    `if TYPE_CHECKING:` copy are two bindings of one name, and a removal that
+    leaves either behind leaves a binding no code reads."""
 
     @json_report_property()
     def name(self) -> str:

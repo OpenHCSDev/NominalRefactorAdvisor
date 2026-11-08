@@ -7444,6 +7444,42 @@ def _relocate_moved_with_consumer(tmp_path: Path, consumer: dict[str, str]):
     return operation, snapshot
 
 
+def test_relocation_removes_every_scope_of_an_import_only_moved_code_reads(
+    tmp_path: Path,
+) -> None:
+    """A runtime import and its `if TYPE_CHECKING:` copy are two bindings of one
+    name: once the only reader moves, neither stays behind in the source."""
+
+    operation, snapshot = _relocate_moved_with_consumer(
+        tmp_path,
+        {
+            "pkg/helpers.py": "class Helper:\n    value = 3\n",
+            "pkg/destination.py": "from __future__ import annotations\n",
+            "pkg/source.py": "from __future__ import annotations\n\n"
+            "from typing import TYPE_CHECKING\n\n"
+            "from . import helpers as h\n\n"
+            "if TYPE_CHECKING:\n    from . import helpers as h\n\n\n"
+            "class Kept:\n    pass\n\n\n"
+            "class Moved(Kept):\n    def helper(self) -> h.Helper:\n        return h.Helper()\n",
+        },
+    )
+
+    simulation = RefactorRecipe("relocate-twice-bound").with_operation(operation).simulate(snapshot)
+
+    assert simulation.is_clean
+    source = simulation.simulation.rewritten_sources[(tmp_path / "pkg/source.py").as_posix()]
+    assert "helpers" not in source
+    simulation.apply()
+    imported = subprocess.run(
+        [sys.executable, "-c", "from pkg.destination import Moved; assert Moved().helper().value == 3"],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert imported.returncode == 0, imported.stderr
+
+
 def test_relocation_extracts_a_declaration_its_source_still_reads(tmp_path: Path) -> None:
     """A lower layer moves out: the source keeps reading the moved class through a
     plain import of the destination, and other importers are redirected."""
@@ -7841,6 +7877,41 @@ def test_relocation_moves_an_attribute_docstring_with_its_assignment(
     assert "retries" not in rewritten[(tmp_path / "pkg/source.py").as_posix()]
     assert rewritten[(tmp_path / "pkg/destination.py").as_posix()].strip() == (
         'LIMIT = 3\n"""The most retries a caller may ask for."""'
+    )
+
+
+def test_relocation_retargets_an_import_inside_a_program_string(tmp_path: Path) -> None:
+    """A program a test hands a subprocess imports moved and kept names on one
+    line: the moved names follow the move, the kept one stays, and the line is
+    still one line."""
+
+    for relative_path, source in {
+        "pkg/__init__.py": "",
+        "pkg/source.py": "class Kept:\n    pass\n\n\nclass Moved:\n    value = 3\n",
+        "pkg/destination.py": "",
+        "pkg/runner.py": "PROGRAM = (\n"
+        '    "import sys\\n"\n'
+        '    "from pkg.source import Kept, Moved\\n"\n'
+        '    "print(Kept.__name__, Moved.value)\\n"\n'
+        ")\n",
+    }.items():
+        _write_module(tmp_path, relative_path, source)
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    operation = RelocateSymbolsToModuleOperation(
+        target=SourceRewriteTarget(file_path=(tmp_path / "pkg/source.py").as_posix()),
+        symbol_qualnames=("Moved",),
+        destination_path=(tmp_path / "pkg/destination.py").as_posix(),
+    )
+
+    simulation = RefactorRecipe("relocate-program-text").with_operation(operation).simulate(snapshot)
+
+    assert simulation.is_clean
+    assert simulation.simulation.rewritten_sources[(tmp_path / "pkg/runner.py").as_posix()] == (
+        "PROGRAM = (\n"
+        '    "import sys\\n"\n'
+        '    "from pkg.source import Kept; from pkg.destination import Moved\\n"\n'
+        '    "print(Kept.__name__, Moved.value)\\n"\n'
+        ")\n"
     )
 
 
