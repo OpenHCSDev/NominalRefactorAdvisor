@@ -7,11 +7,11 @@ import pytest
 
 from nominal_refactor_advisor.codemod import (
     CodemodSourceSnapshot,
-    ConvertManualRegistryToAutoregisterOperation,
     RefactorRecipe,
     SourceRewriteTarget,
 )
 from nominal_refactor_advisor.manual_registry import DirectManualRegistryComponent
+from nominal_refactor_advisor.refactors.autoregister import ConvertManualRegistryToAutoregisterOperation
 from nominal_refactor_advisor.source_index import build_source_index
 from native_use_test_support import (
     simulate_with_rendered_registry_creator_support,

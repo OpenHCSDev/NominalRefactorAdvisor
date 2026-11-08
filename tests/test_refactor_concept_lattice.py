@@ -21,8 +21,23 @@ from nominal_refactor_advisor.detectors._systemic import AutoRegisterExplicitPri
 from nominal_refactor_advisor import semantic_match
 from nominal_refactor_advisor.analysis import analyze_modules
 from nominal_refactor_advisor.ast_tools import parse_python_modules
-from nominal_refactor_advisor.models import DispatchCountMetrics, RefactorFinding, SourceLocation
+from nominal_refactor_advisor.models import (
+    DispatchCountMetrics,
+    RefactorFinding,
+    RegistrationMetrics,
+    SourceLocation,
+)
 from nominal_refactor_advisor.patterns import PatternId
+from nominal_refactor_advisor.refactors.autoregister import (
+    AutoRegisterExplicitPriorityOrderingFindingRecipeSynthesizer,
+    AutoregisterInstanceViewRecipeBuilder,
+    ConvertManualRegistryToAutoregisterOperation,
+    DeriveAutoRegisterMroOrderingOperation,
+    DeriveAutoregisterInstanceViewOperation,
+    InheritedAutoRegisterConfigBoilerplateFindingRecipeSynthesizer,
+    ManualClassRegistrationFindingRecipeSynthesizer,
+    RegistrationSemanticMirrorRecipeStrategy,
+)
 from nominal_refactor_advisor.refactors.dispatch_polymorphism import (
     DispatchToPolymorphismOperation,
     NumericLiteralDispatchFindingRecipeSynthesizer,
@@ -40,10 +55,10 @@ EXPECTED_EXECUTABLE_CONCEPTS = {
         codemod.ConstructorKwargCarrierProjectionConcept
     ),
     RepeatedBuilderAuthorityMethod: (codemod.ConstructorKwargCollapseConcept),
-    codemod.ManualClassRegistrationFindingRecipeSynthesizer: (
+    ManualClassRegistrationFindingRecipeSynthesizer: (
         codemod.AutoRegisterClassRegistryConcept
     ),
-    codemod.RegistrationSemanticMirrorRecipeStrategy: (
+    RegistrationSemanticMirrorRecipeStrategy: (
         codemod.AutoRegisterClassRegistryConcept
     ),
     codemod.ClassFamilyCollectionSemanticMirrorRecipeBuilder: (
@@ -67,10 +82,10 @@ EXPECTED_EXECUTABLE_CONCEPTS = {
     NumericLiteralDispatchFindingRecipeSynthesizer: (
         codemod.AutoRegisterStrategyFamilyConcept
     ),
-    codemod.InheritedAutoRegisterConfigBoilerplateFindingRecipeSynthesizer: (
+    InheritedAutoRegisterConfigBoilerplateFindingRecipeSynthesizer: (
         codemod.AutoRegisterConcept
     ),
-    codemod.AutoRegisterExplicitPriorityOrderingFindingRecipeSynthesizer: (
+    AutoRegisterExplicitPriorityOrderingFindingRecipeSynthesizer: (
         codemod.AutoRegisterMroOrderingConcept
     ),
     codemod.CandidateCollectorBoilerplateFindingRecipeSynthesizer: (
@@ -117,7 +132,7 @@ EXPECTED_EXECUTABLE_CONCEPTS = {
     ClosedParameterConveyorDetector: codemod.SemanticCarrierConcept,
     DeclaredCarrierExpansionDetector: codemod.SemanticCarrierConcept,
     codemod.EnumSubsetSemanticMirrorRecipeBuilder: (codemod.DerivedProjectionConcept),
-    codemod.AutoregisterInstanceViewRecipeBuilder: (
+    AutoregisterInstanceViewRecipeBuilder: (
         codemod.AutoRegisterClassRegistryConcept
     ),
 }
@@ -134,7 +149,7 @@ EXPECTED_MAPPING_DECLARATIONS = frozenset(
 
 EXPECTED_REGISTRATION_DECLARATIONS = frozenset(
     {
-        codemod.AutoregisterInstanceViewRecipeBuilder,
+        AutoregisterInstanceViewRecipeBuilder,
         codemod.ClassFamilyCollectionSemanticMirrorRecipeBuilder,
     }
 )
@@ -455,7 +470,7 @@ def test_metric_dispatch_uses_nominal_mro_priority() -> None:
     )
 
     assert codemod.SemanticMirrorFindingRecipeStrategy.__registry__ == {
-        codemod.RegistrationMetrics: codemod.RegistrationSemanticMirrorRecipeStrategy,
+        RegistrationMetrics: RegistrationSemanticMirrorRecipeStrategy,
         codemod.MappingMetrics: codemod.MappingSemanticMirrorRecipeStrategy,
     }
     assert isinstance(
@@ -588,7 +603,7 @@ def test_source_rewrite_selection_is_owned_by_source_edit_algebra() -> None:
 
 def test_class_assignment_recipe_metadata_is_owned_by_its_synthesizer() -> None:
     synthesizer_type = (
-        codemod.InheritedAutoRegisterConfigBoilerplateFindingRecipeSynthesizer
+        InheritedAutoRegisterConfigBoilerplateFindingRecipeSynthesizer
     )
 
     assert synthesizer_type.recipe_id_suffix == "delete-inherited-autoregister-config"
@@ -605,10 +620,10 @@ def test_source_derived_synthesized_operations_share_one_reproof_contract() -> N
         codemod.CollapseDeclaredCarrierExpansionOperation,
         codemod.CollapseIntermediateClassAuthorityOperation,
         codemod.CollapseRedundantClassAuthorityOperation,
-        codemod.ConvertManualRegistryToAutoregisterOperation,
+        ConvertManualRegistryToAutoregisterOperation,
         codemod.DeleteInheritedAutoRegisterConfigurationOperation,
-        codemod.DeriveAutoregisterInstanceViewOperation,
-        codemod.DeriveAutoRegisterMroOrderingOperation,
+        DeriveAutoregisterInstanceViewOperation,
+        DeriveAutoRegisterMroOrderingOperation,
         codemod.DeriveClassFamilyCollectionOperation,
         codemod.DeriveDataclassConstructorProjectionOperation,
         codemod.DeriveDataclassFieldNameCollectionProjectionOperation,
@@ -876,7 +891,7 @@ def test_semantic_mirror_builder_families_publish_no_parallel_registry_or_priori
         for declaration in builder_declarations
     )
     assert not hasattr(
-        codemod.RegistrationSemanticMirrorRecipeStrategy,
+        RegistrationSemanticMirrorRecipeStrategy,
         "manual_registration_order",
     )
 

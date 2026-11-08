@@ -9,13 +9,13 @@ from nominal_refactor_advisor.captured_reference import (
 from nominal_refactor_advisor.codemod import (
     CodemodPlanDocument,
     CodemodSourceSnapshot,
-    ConvertManualRegistryToAutoregisterOperation,
     RefactorRecipe,
     RequireDictionaryCopyMappingOperation,
     SourceRewriteTarget,
 )
 from nominal_refactor_advisor.codemod_reproof import SourceReproofDiagnostic
 from nominal_refactor_advisor.json_reports import json_report_object
+from nominal_refactor_advisor.refactors.autoregister import ConvertManualRegistryToAutoregisterOperation
 from nominal_refactor_advisor.source_geometry import SourceByteSpan
 
 

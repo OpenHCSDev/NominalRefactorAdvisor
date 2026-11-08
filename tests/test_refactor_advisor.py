@@ -22,6 +22,10 @@ from nominal_refactor_advisor.ast_tools import ParsedModuleSet
 from nominal_refactor_advisor.ast_projection import CallKeyword
 from metaclass_registry import DuplicateRegistryKeyError
 
+from nominal_refactor_advisor.refactors.autoregister import (
+    ConvertManualRegistryToAutoregisterOperation,
+    DeriveAutoregisterInstanceViewOperation,
+)
 from nominal_refactor_advisor.refactors.dispatch_polymorphism import DispatchToPolymorphismOperation
 from registry_test_sources import _type_keyed_behavior_projection_source
 from native_use_test_support import (
@@ -184,13 +188,11 @@ from nominal_refactor_advisor.codemod import (
     CodemodSelectorContext,
     CodemodSourceRevision,
     CodemodSourceRevisionError,
-    ConvertManualRegistryToAutoregisterOperation,
     CreateFileOperation,
     DeclareAuthorityOperation,
     DeleteClassAssignmentsOperation,
     DeleteModuleAssignmentsOperation,
     DeleteTargetOperation,
-    DeriveAutoregisterInstanceViewOperation,
     DeriveCandidateCollectorOperation,
     TypedMirror,
     RefactorRecipeSimulation,

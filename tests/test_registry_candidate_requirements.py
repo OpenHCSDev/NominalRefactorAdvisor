@@ -17,7 +17,6 @@ from nominal_refactor_advisor.captured_reference import (
 from nominal_refactor_advisor.codemod import (
     CodemodPlanDocument,
     CodemodSourceSnapshot,
-    ConvertManualRegistryToAutoregisterOperation,
     PatchTargetOperation,
     RefactorRecipe,
     SourceRewriteTarget,
@@ -30,6 +29,7 @@ from nominal_refactor_advisor.codemod_source_edits import (
     CodemodSourceRevision,
     SourceTextReplacement,
 )
+from nominal_refactor_advisor.refactors.autoregister import ConvertManualRegistryToAutoregisterOperation
 from nominal_refactor_advisor.registry_identity import AutoRegisterClassAuthority
 from nominal_refactor_advisor.source_entry import ImportedSourceModuleEntryPremise
 from nominal_refactor_advisor.source_execution import SourceModuleExecution
