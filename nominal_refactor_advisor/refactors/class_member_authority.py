@@ -1411,6 +1411,32 @@ class ClassMemberPromotionStatement(ABC):
             )
         return matches[0] if matches else None
 
+    @classmethod
+    def selected(
+        cls,
+        node: ast.ClassDef,
+        member_names: tuple[str, ...],
+    ) -> tuple[ClassMemberPromotionStatement, ...]:
+        """The class's direct declarations of exactly these names, in body order."""
+
+        requested_names = frozenset(member_names)
+        members = tuple(
+            projection
+            for statement in node.body
+            if (projection := cls.for_statement(statement)) is not None
+            and projection.name in requested_names
+        )
+        resolved_names = tuple(member.name for member in members)
+        unresolved_names = requested_names - set(resolved_names)
+        if unresolved_names:
+            raise ValueError(
+                f"Class {node.name!r} has no direct declarations of "
+                f"{tuple(sorted(unresolved_names))!r}"
+            )
+        if len(resolved_names) != len(frozenset(resolved_names)):
+            raise ValueError(f"Class {node.name!r} rebinds a selected member")
+        return members
+
     @property
     @abstractmethod
     def name(self) -> str | None:
@@ -1600,22 +1626,8 @@ class ClassMemberMoveSelection:
             module_bound_names=LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(module.body),
         )
         requested_names = frozenset(member_names)
-        available_members: list[ClassMemberPromotionStatement] = []
-        for statement in source_class.node.body:
-            projection = ClassMemberPromotionStatement.for_statement(statement)
-            if projection is None or projection.name not in requested_names:
-                continue
-            available_members.append(projection)
-        resolved_names = tuple(member.name for member in available_members)
-        unresolved_names = requested_names - set(resolved_names)
-        if unresolved_names:
-            raise ValueError(
-                "Class-member promotion cannot resolve direct declarations "
-                f"{tuple(sorted(unresolved_names))!r}"
-            )
-        if len(resolved_names) != len(frozenset(resolved_names)):
-            raise ValueError("Class-member promotion found rebound member declarations")
-        members = tuple(available_members)
+        members = ClassMemberPromotionStatement.selected(source_class.node, member_names)
+        resolved_names = tuple(member.name for member in members)
         destination_names = destination_class.bound_names
         collisions = destination_names.intersection(member_names)
         if collisions:
