@@ -23,6 +23,11 @@ from nominal_refactor_advisor.declaration_binding_transfer import (
     DeclarationModuleBindingTransfer,
 )
 
+from .class_families.parsed_index import (
+    ClassFamilyIndex,
+    IndexedClass,
+    ModuleClassReferenceResolver,
+)
 from .value_expression import CompactValueExpression
 from .ast_tools import (
     BuiltinCallName,
@@ -30,10 +35,7 @@ from .ast_tools import (
     statements_without_docstring,
 )
 from .class_index import (
-    ClassFamilyIndex,
     CompactModuleClassProjectionFamily,
-    IndexedClass,
-    ModuleClassReferenceResolver,
     ModuleNominalBindingAuthority,
     build_compact_class_family_index,
 )

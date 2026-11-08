@@ -9,7 +9,7 @@ import pytest
 from nominal_refactor_advisor.ast_tools import ParsedModule, SourceModule
 from nominal_refactor_advisor.ast_tools import PythonModulePathAuthority
 from nominal_refactor_advisor.ast_tools import PythonModulePathIdentity
-from nominal_refactor_advisor.class_index import build_class_family_index
+from nominal_refactor_advisor.class_families.parsed_index import build_class_family_index
 from nominal_refactor_advisor.codemod import CodemodSourceSnapshot
 from nominal_refactor_advisor.models import RefactorFinding, SourceLocation
 from nominal_refactor_advisor.patterns import PatternId

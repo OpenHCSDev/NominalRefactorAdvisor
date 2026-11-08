@@ -40,8 +40,8 @@ from .ast_tools import (
     PythonModulePathAuthority,
 )
 from .binding_proofs import RepositoryModuleBindingProof
+from .class_families.parsed_index import ClassFamilyIndex
 from .class_index import (
-    ClassFamilyIndex,
     CompactModuleClassProjectionFamily,
     build_compact_class_family_index,
 )

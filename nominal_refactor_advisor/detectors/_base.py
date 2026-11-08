@@ -42,6 +42,11 @@ from metaclass_registry import AutoRegisterMeta, LazyDiscoveryDict, RegistryConf
 
 from ..ast_field_decoders import ParameterAnnotations
 from ..ast_projection import ExpressionReference
+from ..class_families.parsed_index import (
+    ClassFamilyIndex,
+    IndexedClass,
+    build_class_family_index,
+)
 from ..constructor_algebra import (
     ConstructorConstant,
     ConstructorDerivedField,
@@ -130,7 +135,6 @@ from ..positional_forwarding import PositionalForwardingCall
 from ..class_index import (
     annotation_type_names,
     ClsRegistryMembership,
-    ClassFamilyIndex,
     ClassSymbolResolutionAuthority,
     CompactClassFamilyIndex,
     CompactIndexedClass,
@@ -140,14 +144,12 @@ from ..class_index import (
     CompactModuleClassProjectionFamily,
     CompactRepeatedKeyedFamilyRoot,
     DeclaredFamilyBase,
-    IndexedClass,
     LatentRosterMatch,
     LatentRosterObservation,
     ModuleNominalBindingAuthority,
     RegistryLookupShape,
     RegistryLookupStyle,
     module_import_aliases,
-    build_class_family_index,
     build_compact_class_family_index,
     repository_settled_projections,
 )

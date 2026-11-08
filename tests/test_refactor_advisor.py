@@ -23,6 +23,10 @@ from nominal_refactor_advisor.ast_tools import ParsedModuleSet
 from nominal_refactor_advisor.ast_projection import CallKeyword
 from metaclass_registry import DuplicateRegistryKeyError
 
+from nominal_refactor_advisor.class_families.parsed_index import (
+    ClassFamilyIndex,
+    build_class_family_index,
+)
 from registry_test_sources import _type_keyed_behavior_projection_source
 from native_use_test_support import (
     simulate_with_rendered_registry_creator_support,
@@ -111,12 +115,10 @@ from nominal_refactor_advisor.calibration import (
 )
 from nominal_refactor_advisor.cache_paths import default_parse_cache_dir
 from nominal_refactor_advisor.class_index import (
-    ClassFamilyIndex,
     ModuleClassSyntaxFacets,
     RegistryLookupShape,
     RegistryLookupStyle,
     SelectionGuardKind,
-    build_class_family_index,
 )
 from nominal_refactor_advisor.cli import CalibrationExitCodeAuthority
 from nominal_refactor_advisor.cli import CliCommand

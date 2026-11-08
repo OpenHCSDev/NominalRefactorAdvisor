@@ -21,9 +21,7 @@ from .ast_tools import (
     ParsedModule,
     SourceModuleBatchParser,
 )
-from .class_index import (
-    ClassFamilyIndex,
-)
+from .class_families.parsed_index import ClassFamilyIndex
 from .ast_tools import ParsedModuleSet
 from .codemod_import_graph import SourceModuleImportGraph
 from .codemod_runtime import CodemodSourceSnapshot

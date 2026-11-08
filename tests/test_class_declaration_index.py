@@ -6,11 +6,11 @@ from pathlib import Path
 import pytest
 
 from nominal_refactor_advisor.ast_tools import parse_python_modules
-from nominal_refactor_advisor.class_index import (
+from nominal_refactor_advisor.class_families.parsed_index import (
     ClassFamilyIndex,
-    CompactClassFamilyIndex,
     build_class_family_index,
 )
+from nominal_refactor_advisor.class_index import CompactClassFamilyIndex
 
 
 @pytest.fixture

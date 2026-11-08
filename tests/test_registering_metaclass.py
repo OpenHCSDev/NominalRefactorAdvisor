@@ -6,10 +6,10 @@ import ast
 from pathlib import Path
 
 from nominal_refactor_advisor.ast_tools import ParsedModule
+from nominal_refactor_advisor.class_families.parsed_index import build_class_family_index
 from nominal_refactor_advisor.class_index import (
     CompactClassFamilyIndex,
     CompactModuleClassProjectionFamily,
-    build_class_family_index,
     build_compact_class_family_index,
 )
 
