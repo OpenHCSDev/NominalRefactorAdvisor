@@ -1925,7 +1925,7 @@ class CodemodRefactorGoalRunner:
             analyzed_rewritten_source_digests: set[str] = set()
             for branch_number, branch in enumerate(frontier.branches, start=1):
                 simulation = branch.document_simulation
-                if simulation.simulation.applied_rewrite_count == 0:
+                if not simulation.simulation.changed_file_paths:
                     continue
                 valid_transition_count += 1
                 transition_count += 1
@@ -2180,15 +2180,21 @@ class CodemodRefactorGoalRunner:
 
 @dataclass(frozen=True)
 class ProjectedScanModuleSet:
-    """Parsed module set after a codemod simulation, including created files."""
+    """Parsed module set after a codemod simulation: created files in, deleted
+    files out."""
 
     modules: tuple[ParsedModule, ...]
     simulation: CodemodSimulationReport
     roots: tuple[Path, ...] = ()
 
     def modules_after_projection(self) -> tuple[ParsedModule, ...]:
-        return ParsedModuleSourceProjection(
-            modules=self.modules,
-            source_overlay_by_file_path=self.simulation.rewritten_sources,
-            analysis_roots=self.roots,
-        ).projected_modules
+        deleted = frozenset(self.simulation.deleted_file_paths)
+        return tuple(
+            module
+            for module in ParsedModuleSourceProjection(
+                modules=self.modules,
+                source_overlay_by_file_path=self.simulation.rewritten_sources,
+                analysis_roots=self.roots,
+            ).projected_modules
+            if module.file_path not in deleted
+        )

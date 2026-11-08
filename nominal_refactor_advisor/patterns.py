@@ -605,6 +605,15 @@ class PatternId(IntEnum):
         ),
         witness_capabilities=(CapabilityTag.CLOSED_FAMILY_DISPATCH,),
     )
+    FLAT_MODULE_WITH_DECLARED_PACKAGE = _pattern(
+        stable_id=50,
+        display_name="Flat Module With A Declared Package",
+        required_relation=(
+            "A destination table declares the package a module's behaviour "
+            "belongs to, and the module still sits flat beside that package."
+        ),
+        witness_capabilities=(CapabilityTag.PROVENANCE,),
+    )
 
     def __new__(
         cls,

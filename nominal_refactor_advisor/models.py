@@ -475,6 +475,16 @@ class CoveredReferenceRewrites(DeclarationReferenceMetrics):
 
 
 @dataclass(frozen=True)
+class PackageDestinationMetrics(FindingMetrics):
+    """Where a destination table sends one flat module, and the flat modules
+    the same table sends anywhere in its root package: the cluster whose
+    import graph orders the moves."""
+
+    destination_path: str
+    cluster_paths: tuple[str, ...]
+
+
+@dataclass(frozen=True)
 class ForwardingFacadeMetrics(FindingMetrics):
     """Forwarding members of one facade; every one is deletable once consumers go direct."""
 

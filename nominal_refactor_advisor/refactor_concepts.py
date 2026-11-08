@@ -160,3 +160,7 @@ class FalseDistinctionErasureConcept(NominalBoundaryConcept):
 
 class DeclarationReferenceConcept(NominalBoundaryConcept):
     """Write a spelled declaration as the reference it spells."""
+
+
+class PackageMoveConcept(RefactorConcept):
+    """Move each flat module into the package a destination table declares for it."""
