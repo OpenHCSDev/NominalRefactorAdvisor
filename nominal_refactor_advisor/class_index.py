@@ -8695,10 +8695,12 @@ class InstalledClassDeclarations:
     @staticmethod
     @cache
     def module(module_name: str) -> CompactModuleClassProjection | None:
-        parsed = InstalledModule.parsed(module_name)
-        if parsed is None:
+        found = InstalledModule.family_items(
+            module_name, CompactModuleClassProjectionFamily
+        )
+        if found is None:
             return None
-        (projection,) = CompactModuleClassProjectionFamily.collect(parsed)
+        (projection,) = found
         return projection
 
     @classmethod

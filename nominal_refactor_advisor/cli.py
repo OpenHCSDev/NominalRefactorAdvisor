@@ -76,10 +76,12 @@ from .analysis_cache import (
 from .ast_tools import (
     ParsedModule,
     PythonModulePathAuthority,
+    PythonModuleRootParser,
     PythonSourcePathPolicy,
     parse_python_module_roots,
     python_source_paths_for_roots,
 )
+from .installed_source import InstalledModule
 from .cache_paths import (
     ParseCachePolicy,
     default_parse_cache_dir,
@@ -4174,17 +4176,24 @@ class ColdScanAnalysis:
     def compact_global(
         self, include_semantic_descent_graph: bool
     ) -> CompactPathAnalysisResult:
-        return analyze_compact_roots_with_cache(
-            self.roots,
-            self.config,
+        # Installed modules the scan reads share its first root's family cache.
+        installed_family_cache_dir = PythonModuleRootParser.for_root(
+            self.roots[0],
             cache_dir=self.parse_cache_dir,
-            analysis_cache_dir=self.analysis_cache_dir,
             use_parse_cache=self.args.use_parse_cache,
-            parse_workers=self.args.parse_workers,
-            source_policy=self.source_policy,
-            report_scope=self.path_scope,
-            include_semantic_descent_graph=include_semantic_descent_graph,
-        )
+        ).collected_family_cache_dir
+        with InstalledModule.cached_in(installed_family_cache_dir):
+            return analyze_compact_roots_with_cache(
+                self.roots,
+                self.config,
+                cache_dir=self.parse_cache_dir,
+                analysis_cache_dir=self.analysis_cache_dir,
+                use_parse_cache=self.args.use_parse_cache,
+                parse_workers=self.args.parse_workers,
+                source_policy=self.source_policy,
+                report_scope=self.path_scope,
+                include_semantic_descent_graph=include_semantic_descent_graph,
+            )
 
     def parsed(self) -> UnanalysedScan:
         """The roots parsed, with no detector run."""
