@@ -1586,6 +1586,7 @@ class CodemodWorkflowScan:
         cache_dir: Path | None,
         use_parse_cache: bool,
         parse_workers: int,
+        analysis_workers: int = 1,
     ) -> CodemodWorkflowScan:
         """Parse ``roots`` and run every detector over them."""
         modules = parse_python_module_roots(
@@ -1594,7 +1595,10 @@ class CodemodWorkflowScan:
             use_parse_cache=use_parse_cache,
             parse_workers=parse_workers,
         )
-        return cls(modules=modules, findings=analyze_modules(modules, config))
+        return cls(
+            modules=modules,
+            findings=analyze_modules(modules, config, analysis_workers=analysis_workers),
+        )
 
 
 @dataclass(frozen=True)
@@ -1627,7 +1631,9 @@ class CodemodSimulationFindingProjection:
         module_set = ParsedModuleSet.of(projected_modules)
         return CodemodWorkflowScan(
             modules=module_set,
-            findings=analyze_modules(module_set, self.config),
+            findings=analyze_modules(
+                module_set, self.config, analysis_workers=self.analysis_workers
+            ),
             scan_mode=CodemodProjectedScanMode.EXACT,
         )
 
@@ -1789,6 +1795,9 @@ class CodemodRefactorGoalRunner:
     report_roots: tuple[Path, ...] = ()
     config: DetectorConfig
     parse_workers: int
+    analysis_workers: int = 1
+    """Detector-analysis workers for every scan the goal runs, as the CLI resolved
+    them for its first scan (0 chooses automatically)."""
     dry_run: bool
     guard_suite: ArchitectureGuardSuite
     initial_scan: CodemodWorkflowScan | None = None
@@ -1817,6 +1826,7 @@ class CodemodRefactorGoalRunner:
             cache_dir=self.resolved_dir,
             use_parse_cache=self.enabled,
             parse_workers=self.parse_workers,
+            analysis_workers=self.analysis_workers,
         )
         return replace(scan, findings=self.report_scoped_findings(scan.findings))
 
@@ -1832,6 +1842,7 @@ class CodemodRefactorGoalRunner:
             config=self.config,
             roots=self.roots,
             report_roots=self.report_roots,
+            analysis_workers=self.analysis_workers,
         ).scan()
 
     def projected_target_scan(
@@ -1871,6 +1882,7 @@ class CodemodRefactorGoalRunner:
                     module_set,
                     self.config,
                     detector_types=detector_types,
+                    analysis_workers=self.analysis_workers,
                 )
             ),
             scan_mode=CodemodProjectedScanMode.TARGET_DETECTOR_PARTIAL,
@@ -1884,7 +1896,9 @@ class CodemodRefactorGoalRunner:
         return CodemodWorkflowScan(
             modules=scan.modules,
             findings=self.report_scoped_findings(
-                analyze_modules(scan.modules, self.config)
+                analyze_modules(
+                    scan.modules, self.config, analysis_workers=self.analysis_workers
+                )
             ),
             scan_mode=CodemodProjectedScanMode.EXACT,
         )

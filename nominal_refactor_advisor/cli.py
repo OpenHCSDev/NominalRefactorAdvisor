@@ -3886,6 +3886,7 @@ class CodemodRefactorGoalCliCommand(
             report_roots=self.report_roots,
             config=self.config,
             parse_workers=self.args.parse_workers,
+            analysis_workers=self.args.analysis_workers,
             guard_suite=self.execution_request.sequence.guard_suite,
             dry_run=not self.execution_request.mode.applies_changes,
             initial_scan=CodemodWorkflowScan(
