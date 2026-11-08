@@ -70,6 +70,7 @@ from .ast_tools import (
     SourceModule,
     _walk_nodes,
     collect_family_items,
+    collected_family_demand_cache_signature,
     statements_without_docstring,
 )
 from .class_method_facets import (
@@ -1650,11 +1651,19 @@ class ModuleClassHeaderCore(ParsedModuleFact):
 
     @classmethod
     def derive(cls, parsed_module: ParsedModule) -> Self:
-        return cls(
-            CompactModuleClassProjection.declared_in(
-                parsed_module, include_body_facets=False
-            ).header_core()
-        )
+        """Read from the parse's collected-family cache under the header-core demand,
+        so a later process over unchanged source skips the binding pass."""
+
+        cache = parsed_module.collected_family_cache
+        signature = collected_family_demand_cache_signature(HEADER_CORE_DEMAND)
+        cached = cache.load_items(CompactModuleClassProjectionFamily, signature)
+        if cached is not None:
+            return cls(*cached)
+        projection = CompactModuleClassProjection.declared_in(
+            parsed_module, include_body_facets=False
+        ).header_core()
+        cache.store_items(CompactModuleClassProjectionFamily, (projection,), signature)
+        return cls(projection)
 
 
 @dataclass(frozen=True)
@@ -4043,6 +4052,10 @@ class CompactClassProjectionDemand:
     class_method_names: frozenset[str]
     include_autoregister_references: bool = True
     header_core_only: bool = False
+
+
+HEADER_CORE_DEMAND = CompactClassProjectionDemand(frozenset(), header_core_only=True)
+"""The view `ModuleClassHeaderCore` holds: namespace and class headers only."""
 
 
 def _native_definition_child(node: object, definition_type: str) -> object | None:
