@@ -367,9 +367,8 @@ class CodemodSourceSnapshot(CodemodSelectorContext):
             return self
         return type(self)._from_modules_with_indexes(
             projection.projected_modules,
-            self.required_class_family_index.projected_with_module_overlay(
-                projection.projected_modules,
-                projection.changed_modules,
+            self.required_class_family_index.projected(
+                self.parsed_modules, projection.projected_modules
             ),
             self._source_index_build_artifacts.projected_with_module_overlay(
                 projection.projected_modules,
@@ -439,14 +438,15 @@ class CodemodSourceSnapshot(CodemodSelectorContext):
             raise ValueError(
                 f"Cannot delete unindexed sources: {tuple(sorted(missing))!r}"
             )
-        return type(self).from_modules(
-            ParsedModuleSet(
-                tuple(
-                    module
-                    for module in self.parsed_modules
-                    if module.file_path not in removed
-                )
-            )
+        remaining = tuple(
+            module for module in self.parsed_modules if module.file_path not in removed
+        )
+        return type(self)._from_modules_with_indexes(
+            remaining,
+            self.required_class_family_index.projected(self.parsed_modules, remaining),
+            self._source_index_build_artifacts.projected_with_module_overlay(
+                remaining, ()
+            ),
         )
 
     def modules_with_source_overlay(
