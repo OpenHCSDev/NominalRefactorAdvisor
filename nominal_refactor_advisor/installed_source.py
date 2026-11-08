@@ -3,21 +3,51 @@
 from __future__ import annotations
 
 import ast
+from collections.abc import Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from functools import cache
 from importlib.machinery import PathFinder
 from pathlib import Path
+from typing import ClassVar, TypeVar
 
-from .ast_tools import ParsedModule, SourceModule
+from .ast_tools import (
+    CollectedFamily,
+    CollectedFamilyCacheContext,
+    ParsedModule,
+    SourceModule,
+)
 from .python_module_identity import PythonModulePathIdentity
 from .source_identity import PACKAGE_INIT_FILE_NAME, source_path_is_package_init
+
+
+ItemT = TypeVar("ItemT")
 
 
 class InstalledModule:
     """A module outside the scan, read from its installed source and never run.
 
     The analysing interpreter's import path locates it (`PathFinder`, which
-    executes no package); only a `.py` source is read.
+    executes no package); only a `.py` source is read. Its collected families
+    are kept in the running scan's family cache, keyed like a scanned module's
+    by path, source signature and family schema, so a warm scan reads them
+    instead of parsing the installed source again.
     """
+
+    _family_cache_dir: ClassVar[ContextVar[Path | None]] = ContextVar(
+        "installed_module_family_cache_dir", default=None
+    )
+
+    @classmethod
+    @contextmanager
+    def cached_in(cls, family_cache_dir: Path | None) -> Iterator[None]:
+        """Keep installed modules' collected families in this cache while a scan runs."""
+
+        token = cls._family_cache_dir.set(family_cache_dir)
+        try:
+            yield
+        finally:
+            cls._family_cache_dir.reset(token)
 
     @staticmethod
     def source_path(module_name: str) -> Path | None:
@@ -53,13 +83,48 @@ class InstalledModule:
 
     @staticmethod
     @cache
+    def located_source(module_name: str) -> tuple[Path, str] | None:
+        """The installed `.py` file and its text, or None when it has none."""
+
+        path = InstalledModule.source_path(module_name)
+        return None if path is None else (path, path.read_text())
+
+    @classmethod
+    def family_items(
+        cls, module_name: str, family: type[CollectedFamily[ItemT]]
+    ) -> tuple[ItemT, ...] | None:
+        """One family's items for the module: the scan's family cache holds them,
+        or they are collected from the parsed source and stored there."""
+
+        located = cls.located_source(module_name)
+        if located is None:
+            return None
+        path, source = located
+        context = CollectedFamilyCacheContext.from_source(
+            path=path,
+            module_name=module_name,
+            source=source,
+            family_cache_dir=cls._family_cache_dir.get(),
+        )
+        cached = context.load_items(family)
+        if cached is not None:
+            return cached
+        parsed = cls.parsed(module_name)
+        if parsed is None:
+            return None
+        items = tuple(family.collect(parsed))
+        context.store_items(family, items)
+        return items
+
+    @staticmethod
+    @cache
     def parsed(module_name: str) -> ParsedModule | None:
         """The module parsed from its installed source, or None when it has none."""
 
-        path = InstalledModule.source_path(module_name)
-        if path is None:
+        located = InstalledModule.located_source(module_name)
+        if located is None:
             return None
-        source = path.read_text()
+        path, source = located
         try:
             module = ast.parse(source, filename=str(path))
         except SyntaxError:

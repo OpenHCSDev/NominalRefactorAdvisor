@@ -252,10 +252,10 @@ class DeclaredIdentityFamily(ShapeFamily[ModuleDeclarations]):
     def installed(cls, module_name: str) -> ModuleDeclarations | None:
         """What a module outside the scan declares, read from its installed source."""
 
-        parsed = InstalledModule.parsed(module_name)
-        if parsed is None:
+        found = InstalledModule.family_items(module_name, cls)
+        if found is None:
             return None
-        (declared,) = cls.collect(parsed)
+        (declared,) = found
         return declared
 
     @classmethod
