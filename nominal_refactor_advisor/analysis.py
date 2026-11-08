@@ -1190,34 +1190,8 @@ def build_compact_projection_shard(
             )
             local_analysis_seconds += perf_counter() - local_started
         for family in ast_families:
-            demand = demand_by_family.get(family)
-            demanded_projections = (
-                family.collect_demanded(module, demand)
-                if family in demand_by_family
-                else None
-            )
-            if demanded_projections is not None:
-                projections = tuple(demanded_projections)
-            else:
-                full_batch = module.family_batch(family)
-                full_projections = full_batch.items
-                projections = (
-                    family.project_cached_demand(full_projections, demand)
-                    if family in demand_by_family
-                    else full_projections
-                )
-            # The family cache remains the authority for later scans.  Keep the
-            # value already constructed by this worker for the current join so
-            # the parent does not immediately reopen every newly written file.
-            if family in demand_by_family:
-                projection_signature = source.store_items(
-                    family,
-                    projections,
-                    demand_signature_by_family[family],
-                )
-            else:
-                projection_signature = full_batch.content_signature
-            add_runtime_projection(family, projections, projection_signature)
+            batch = module.family_batch(family, demand_by_family.get(family))
+            add_runtime_projection(family, batch.items, batch.content_signature)
         del module
     if local_findings:
         local_findings = tuple(SortedFindingsAuthority.sort(local_findings))
