@@ -2677,14 +2677,14 @@ class _ScriptEntry:
         self,
         context: CodemodSelectorContext,
         source_path: str,
-        owners: Mapping[str, str],
         successor_path: str | None,
     ) -> tuple[NominalSourceEdit, ...]:
         """The block at the end of the successor, and the imports it needs there.
-        The names it runs are its loads, less what it binds itself and the
-        builtins: one the successor declares needs nothing, one another indexed
-        module declares is imported from it, and one the source imports from
-        outside the index travels as that import. Any other name refuses."""
+        Each name it runs is the source's import of it, the same proved
+        dependency a relocated declaration carries: one the successor declares or
+        already imports needs nothing, one it binds to another object refuses,
+        and every other one is imported into the successor from where it is
+        declared. A name the source does not bind refuses."""
 
         where = f"{source_path!r}:{self.statement.lineno}"
         if successor_path is None:
@@ -2694,51 +2694,52 @@ class _ScriptEntry:
         if _ScriptEntry.of(successor_module):
             raise ValueError(f"{successor_path!r} already runs as a script; {where} cannot join it")
         import_graph = context.module_import_graph
-        source_identity = import_graph.source_file_for_path(source_path).module_path_identity
-        successor_identity = import_graph.source_file_for_path(successor_path).module_path_identity
-        source_imports = _ImportedBindings.of(source_module, source_identity)
-        successor_imports = _ImportedBindings.of(successor_module, successor_identity)
+        source_table = ModuleSymbolTable(
+            file_path=source_path,
+            source=context.sources_by_file_path[source_path],
+            module=source_module,
+        )
+        successor_table = ModuleSymbolTable(
+            file_path=successor_path,
+            source=context.sources_by_file_path[successor_path],
+            module=successor_module,
+        )
         imports: list[ModuleImportMutation] = []
         unbound: list[str] = []
         for name in sorted(self.runs(source_module)):
-            if owners.get(name) == successor_path:
-                continue
-            if name in owners:
-                needed = _ImportedBinding(
-                    import_graph.module_name_for_file_path(owners[name]) or "", name
-                )
-                source = ImportFromSource(
-                    module_name=ModuleImportScope.RUNTIME.required_module_reference(
-                        import_graph,
-                        importing_file_path=successor_path,
-                        imported_file_path=owners[name],
-                        imported_name=name,
-                    ),
-                    aliases=(ast.alias(name=name),),
-                ).source
-            elif name in source_imports:
-                needed = source_imports[name]
-                source = needed.source(name)
-            else:
+            resolved = source_table.import_binding_for_dependency(
+                name, import_graph=import_graph, permits_guarded_import=False
+            )
+            if resolved is None:
                 unbound.append(name)
                 continue
-            if name in successor_imports:
-                if successor_imports[name] != needed:
-                    raise ValueError(
-                        f"{where} runs {name!r}, which {successor_path!r} binds to another object"
-                    )
+            binding, identity = resolved
+            if identity.is_destination_declaration(
+                import_graph, destination_path=successor_path, bound_name=name
+            ) or successor_table.satisfies_import_binding(
+                name, identity, binding.scope, import_graph=import_graph
+            ):
                 continue
+            if successor_table.conflicts_with_import_binding(name, identity, import_graph=import_graph):
+                raise ValueError(
+                    f"{where} runs {name!r}, which {successor_path!r} binds to another object"
+                )
             imports.append(
                 ModuleImportMutation.from_source(
                     file_path=successor_path,
-                    import_source=source,
+                    import_source=identity.source_for(
+                        import_graph,
+                        importing_file_path=successor_path,
+                        scope=binding.scope,
+                        bound_name=name,
+                    ),
                     rationale=f"The script entry moved from {source_path!r} runs {name!r}.",
                 )
             )
         if unbound:
             raise ValueError(
-                f"{where} runs {unbound!r} as a script, which the successor "
-                f"{successor_path!r} does not declare"
+                f"{where} runs {unbound!r} as a script, which the source "
+                f"{source_path!r} does not bind"
             )
         successor_source = context.sources_by_file_path[successor_path]
         return (
@@ -2768,45 +2769,6 @@ class _ScriptEntry:
         module_bound = LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(module.body)
         builtin = frozenset(dir(builtins)) - module_bound
         return frozenset(loads - bound - builtin - {"__name__"})
-
-
-@dataclass(frozen=True)
-class _ImportedBinding:
-    """What a top-level import binds a name to: a module, or a member of one."""
-
-    module: str
-    member: str | None = None
-
-    def source(self, name: str) -> str:
-        if self.member is None:
-            alias = self.module if name == self.module.partition(".")[0] else f"{self.module} as {name}"
-            return f"import {alias}\n"
-        alias = self.member if name == self.member else f"{self.member} as {name}"
-        return f"from {self.module} import {alias}\n"
-
-
-class _ImportedBindings:
-    """A module's top-level runtime imports, by the name each binds, resolved to
-    absolute modules."""
-
-    @staticmethod
-    def of(module: ast.Module, identity: PythonModulePathIdentity) -> Mapping[str, _ImportedBinding]:
-        bindings: dict[str, _ImportedBinding] = {}
-        for statement in ModuleImportScope.RUNTIME.import_statements(module):
-            if isinstance(statement, ast.Import):
-                for alias in statement.names:
-                    if alias.asname is None:
-                        head = alias.name.partition(".")[0]
-                        bindings[head] = _ImportedBinding(head)
-                    else:
-                        bindings[alias.asname] = _ImportedBinding(alias.name)
-                continue
-            resolved = identity.resolve_import_from_module(
-                imported_module=statement.module, level=statement.level
-            )
-            for alias in statement.names:
-                bindings[alias.asname or alias.name] = _ImportedBinding(str(resolved), alias.name)
-        return bindings
 
 
 class _GluedModuleName:
@@ -3457,9 +3419,7 @@ class DissolveModuleOperation(RetainedCallOperation):
             *(
                 edit
                 for entry in _ScriptEntry.of(context.module_nodes_by_file_path[strings.source_path])
-                for edit in entry.successor_edits(
-                    context, strings.source_path, bindings.owners, strings.successor_path
-                )
+                for edit in entry.successor_edits(context, strings.source_path, strings.successor_path)
             ),
         )
 

@@ -877,7 +877,7 @@ def test_a_script_entry_imports_what_another_module_declares_and_refuses_an_unbo
     assert other.endswith('if __name__ == "__main__":\n    main()\n')
 
     _write(tmp_path, "pkg/hub.py", 'from .owner import main\n\nif __name__ == "__main__":\n    missing(main)\n')
-    with pytest.raises(ValueError, match=r"runs \['missing'\] as a script, which the successor"):
+    with pytest.raises(ValueError, match=r"runs \['missing'\] as a script, which the source"):
         RefactorRecipe("dissolve-hub").with_operation(
             _dissolve(tmp_path, "pkg/hub.py", "pkg/other.py")
         ).simulate(_snapshot(tmp_path))
