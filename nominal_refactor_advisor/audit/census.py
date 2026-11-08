@@ -4,6 +4,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import ClassVar, Iterable
 
+from ..json_reports import JsonObject, JsonReport
 from .measures import (Headline, Measure, MeasuredRevisions, MechanismOwners, Measured, NodeCount,
                        NodeTable, ParseOutcome, Tally, Unparsed, interpreter)
 from .repository import Repository
@@ -35,7 +36,7 @@ class CensusRun(MeasuredRevisions):
 
 
 @dataclass(frozen=True)
-class Census:
+class Census(JsonReport):
     table: NodeTable
     measured: tuple[Measured, ...]
     unparsed: tuple[Unparsed, ...]
@@ -66,11 +67,12 @@ class Census:
         lines += [f"  {o.tally.score():>6}  {o.path}  (code lines {o.tally.code_lines:+})" for o in ranked]
         return "\n".join(lines) if ranked else ""
 
-    def record(self) -> dict[str, object]:
-        measures = self.table.measures
-        return {"tally": self.tally.as_record(measures),
-                "files": {o.path: o.tally.as_record(measures) for o in self.measured},
-                "unparsed": [o.path for o in self.unparsed]}
+    @classmethod
+    def project_json_object(cls, report: Census) -> JsonObject:
+        measures = report.table.measures
+        return JsonObject({"tally": report.tally.as_record(measures),
+                           "files": {o.path: o.tally.as_record(measures) for o in report.measured},
+                           "unparsed": [o.path for o in report.unparsed]})
 
 
 @dataclass(frozen=True)

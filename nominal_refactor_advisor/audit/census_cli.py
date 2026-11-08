@@ -18,6 +18,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import ClassVar
 
+from nominal_refactor_advisor.json_reports import DataclassJsonReport, json_report_field, json_report_object
 from nominal_refactor_advisor.audit.census import Census, CensusRun, CountTable, DensityTable, Undeclared
 from nominal_refactor_advisor.audit.family import Family
 from nominal_refactor_advisor.audit.repository import Repository
@@ -41,32 +42,28 @@ class Scope:
                          if self.includes(c.path)))
 
 
-class Report(ABC):
-    @abstractmethod
-    def render(self, top: int) -> str: ...
+class Report(DataclassJsonReport, ABC):
+    """What a mode measured: rendered for a reader, and written as JSON from its fields."""
 
     @abstractmethod
-    def record(self) -> dict[str, object]: ...
+    def render(self, top: int) -> str: ...
 
 
 @dataclass(frozen=True)
 class SnapshotReport(Report):
-    rev: str
-    census: Census
+    rev: str = json_report_field(included=False)
+    census: Census = json_report_field(field_name="snapshot")
 
     def render(self, top: int) -> str:
         return "\n\n".join(part for part in (f"snapshot at {self.rev}", DensityTable((("snapshot", self.census.tally),)).render(),
                                              self.census.render_coverage(), self.census.render_top(top)) if part)
-
-    def record(self) -> dict[str, object]:
-        return {"snapshot": self.census.record()}
 
 
 @dataclass(frozen=True)
 class ChangeReport(Report):
     base: str
     rev: str
-    census: Census
+    census: Census = json_report_field(field_name="change")
 
     def render(self, top: int) -> str:
         label = f"{self.base}..{self.rev}"
@@ -74,9 +71,6 @@ class ChangeReport(Report):
                                              CountTable(label, self.census.tally).render(),
                                              DensityTable((("added", self.census.tally),)).render(),
                                              self.census.render_coverage(), self.census.render_top(top)) if part)
-
-    def record(self) -> dict[str, object]:
-        return {"base": self.base, "rev": self.rev, "change": self.census.record()}
 
 
 @dataclass(frozen=True)
@@ -90,9 +84,6 @@ class ForkReport(Report):
         return "\n\n".join(part for part in (f"upstream measured at merge-base {self.merge_base[:10]}; fork = everything changed since",
                                              table, self.upstream.render_coverage(), self.fork.render_coverage(),
                                              self.fork.render_top(top)) if part)
-
-    def record(self) -> dict[str, object]:
-        return {"merge_base": self.merge_base, "upstream": self.upstream.record(), "fork": self.fork.record()}
 
 
 class Mode(Family, ABC, root=True, affix="Mode"):
@@ -161,7 +152,7 @@ def main() -> int:
     report = args.mode.report(scope)
     print(report.render(args.top))
     if args.json:
-        args.json.write_text(json.dumps(report.record(), indent=1))
+        args.json.write_text(json.dumps(json_report_object(report), indent=1))
     return 0
 
 

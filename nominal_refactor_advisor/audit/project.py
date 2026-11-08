@@ -24,6 +24,7 @@ from concurrent.futures import Executor
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from ..json_reports import DataclassJsonReport
 from .measures import MechanismOwners
 from .repository import Repository
 
@@ -31,9 +32,10 @@ AUDIT_PACKAGE = Path(__file__).resolve().parent
 
 
 @dataclass(frozen=True)
-class StoredFormat:
+class StoredFormat(DataclassJsonReport):
     """A versioned record as its writer stores it: its format version, each stored key with
-    that field's schema, and the keys every record carries."""
+    that field's schema, and the keys every record carries. Its JSON is the wire form a reader
+    prints and declared() decodes."""
 
     version: int
     fields: dict[object, object]
@@ -132,11 +134,6 @@ class StoredFormat:
                 return all(name in later and cls.accepts(later[name], schema)
                            for name, schema in earlier.items())
         return later == earlier
-
-    def wire(self) -> dict[str, object]:
-        """The JSON a reader prints, which declared(**wire) decodes. JSON has no set, so the
-        required keys travel as a sorted list."""
-        return {"version": self.version, "fields": self.fields, "required": sorted(self.required)}
 
 
 @dataclass(frozen=True)

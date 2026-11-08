@@ -21,6 +21,7 @@ from nominal_refactor_advisor.audit.identity import (ComparedKind, DeclaredSpell
                             OwnTypeTest, StringIdentity)
 from nominal_refactor_advisor.audit.measures import Measure
 from nominal_refactor_advisor.audit.project import StoredFormat
+from nominal_refactor_advisor.json_reports import json_report_object
 from nominal_refactor_advisor.audit.gate import BaseSide, CleanChangedLines, Compared, Comparison, HeadSide, SyntaxPasses
 from nominal_refactor_advisor.audit.repository import ChangedPaths
 from nominal_refactor_advisor.audit.source_measures import (BannedVocabulary, BooleanChainTerms, BroadExceptDefault,
@@ -55,7 +56,7 @@ def test_clean_lines_growth_fails_only_on_a_new_site_or_a_missing_report(introdu
     assert result.delta[GROWN_ABSENCE] == 1
     assert result.failed is failed
     assert result.missing == missing
-    assert result.report()["missing"] == [key.text for key in missing]
+    assert json_report_object(result)["missing"] == [key.text for key in missing]
 
 
 @pytest.mark.parametrize(
@@ -1625,7 +1626,7 @@ def test_a_stored_format_compares_required_keys_as_sets_at_every_depth():
     assert stored.fields == {"thread": {"type": "array", "items": {
         "type": "object", "properties": {"required": {"type": "string"}},
         "required": ["created_at", "name", "tags", "worktree"]}}}
-    assert StoredFormat.declared(**json.loads(json.dumps(stored.wire()))) == stored
+    assert StoredFormat.declared(**json.loads(json.dumps(json_report_object(stored)))) == stored
     defaulted = StoredFormat.declared(
         1, {"row": {"type": "object", "default": {"required": ["b", "a"]}}}, ["row"])
     assert defaulted.fields == {"row": {"type": "object", "default": {"required": ["b", "a"]}}}

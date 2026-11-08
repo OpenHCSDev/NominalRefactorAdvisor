@@ -19,6 +19,7 @@ from pathlib import Path
 
 from nominal_refactor_advisor.audit.project import Project, StoredFormat
 from nominal_refactor_advisor.audit.gate import Compared, compare
+from nominal_refactor_advisor.json_reports import json_report_object
 
 CACHE = Path(tempfile.mkdtemp(prefix="gate-test-cache-"))
 atexit.register(shutil.rmtree, CACHE, True)
@@ -112,4 +113,4 @@ class Checkout:
         """The comparison's exit status and JSON report, taking only the named measures'
         measurements, with a narrow pool so parallel test workers keep their width."""
         result = compare(self.project, base, head, self.root, 2, measured)
-        return int(result.failed), json.loads(json.dumps(result.report()))
+        return int(result.failed), json.loads(json.dumps(json_report_object(result)))

@@ -13,10 +13,16 @@ import unicodedata
 from collections.abc import Iterable, Mapping
 from dataclasses import InitVar, dataclass
 from itertools import combinations
-from typing import Any, ClassVar
+from typing import ClassVar
 
 from .collection_algebra import sorted_tuple
 from .factorization import FactorizationRow, FormalConceptLattice
+from .json_reports import (
+    DataclassJsonReport,
+    DataclassJsonRow,
+    json_report_field,
+    json_report_object,
+)
 
 CERTIFICATE_SCHEMA = "relation-factorization-certificate/v1"
 LEXICAL_TIE_BREAK = "maximum-cardinality-then-lexical/v1"
@@ -43,7 +49,7 @@ def _canonical_names(values: Iterable[str], field_name: str) -> tuple[str, ...]:
 
 
 @dataclass(frozen=True, order=True)
-class RequiredRelationPair:
+class RequiredRelationPair(DataclassJsonRow):
     """One exact required relation row."""
 
     implementation_key: str
@@ -55,7 +61,7 @@ class RequiredRelationPair:
 
 
 @dataclass(frozen=True, init=False)
-class RequiredRelation:
+class RequiredRelation(DataclassJsonReport):
     """A finite relation with explicit zero-degree endpoint carriers."""
 
     implementation_keys: tuple[str, ...]
@@ -137,7 +143,7 @@ class RequiredRelation:
 
 
 @dataclass(frozen=True)
-class ExactSearchLimits:
+class ExactSearchLimits(DataclassJsonReport):
     """Caller-owned finite ceilings for every exponential search phase."""
 
     max_pairs: int = 16
@@ -249,7 +255,7 @@ def _descendant_consumers(
 
 
 @dataclass(frozen=True)
-class SingleParentArrangement:
+class SingleParentArrangement(DataclassJsonReport):
     """Canonical single-parent witness validated against one retained relation.
 
     ``retained`` is construction-only validation context.  It is deliberately
@@ -355,7 +361,7 @@ def _validate_exact_count(value: int, field_name: str, *, positive: bool) -> Non
 
 
 @dataclass(frozen=True)
-class LaminarSearchStatistics:
+class LaminarSearchStatistics(DataclassJsonReport):
     subsets_examined: int
     feasible_laminar_subsets: int
     optimal_subsets: int
@@ -375,14 +381,14 @@ class LaminarSearchStatistics:
 
 
 @dataclass(frozen=True)
-class LaminarRepairCertificate:
-    required: RequiredRelation
+class LaminarRepairCertificate(DataclassJsonReport):
+    required: RequiredRelation = json_report_field(included=False)
     retained: RequiredRelation
     residual: RequiredRelation
     ancestry_gap: tuple[RequiredRelationPair, ...]
     arrangement: SingleParentArrangement
     statistics: LaminarSearchStatistics
-    search_limits: ExactSearchLimits
+    search_limits: ExactSearchLimits = json_report_field(included=False)
     tie_break: str = LEXICAL_TIE_BREAK
 
     @property
@@ -445,7 +451,7 @@ def factor_laminar_relation(
 
 
 @dataclass(frozen=True, order=True)
-class ProviderRectangle:
+class ProviderRectangle(DataclassJsonRow):
     """One nonempty maximal biclique in the residual relation."""
 
     implementation_keys: tuple[str, ...]
@@ -471,7 +477,7 @@ class ProviderRectangle:
 
 
 @dataclass(frozen=True)
-class FormalConceptSearchStatistics:
+class FormalConceptSearchStatistics(DataclassJsonReport):
     intent_subsets_examined: int
     maximal_biclique_candidates: int
 
@@ -493,7 +499,7 @@ class FormalConceptSearchStatistics:
 
 
 @dataclass(frozen=True)
-class ProviderCoverSearchStatistics:
+class ProviderCoverSearchStatistics(DataclassJsonReport):
     combinations_examined: int
     optimal_covers: int
 
@@ -512,13 +518,13 @@ class ProviderCoverSearchStatistics:
 
 
 @dataclass(frozen=True)
-class ProviderCoverCertificate:
+class ProviderCoverCertificate(DataclassJsonReport):
     relation: RequiredRelation
     rectangles: tuple[ProviderRectangle, ...]
     candidate_rectangles: tuple[ProviderRectangle, ...]
     formal_concept_statistics: FormalConceptSearchStatistics
     cover_statistics: ProviderCoverSearchStatistics
-    search_limits: ExactSearchLimits
+    search_limits: ExactSearchLimits = json_report_field(included=False)
     tie_break: str = COVER_TIE_BREAK
 
     @property
@@ -624,7 +630,7 @@ def factor_provider_cover(
 
 
 @dataclass(frozen=True)
-class OwnerInvalidationSurface:
+class OwnerInvalidationSurface(DataclassJsonReport):
     implementation_key: str
     derived_consumers: tuple[str, ...]
     residual_pairs: tuple[RequiredRelationPair, ...]
@@ -655,7 +661,7 @@ class OwnerInvalidationSurface:
 
 
 @dataclass(frozen=True)
-class RelationFactorizationCertificate:
+class RelationFactorizationCertificate(DataclassJsonReport):
     """One atomic, self-recomputing finite factorization certificate."""
 
     SCHEMA: ClassVar[str] = CERTIFICATE_SCHEMA
@@ -707,93 +713,9 @@ class RelationFactorizationCertificate:
         if self != expected:
             raise ValueError("relation factorization certificate does not recompute")
 
-    def to_dict(self) -> dict[str, Any]:
-        def pair_rows(relation: RequiredRelation) -> list[list[str]]:
-            return [[pair.implementation_key, pair.consumer] for pair in relation.pairs]
-
-        def relation_row(relation: RequiredRelation) -> dict[str, Any]:
-            return {
-                "implementation_keys": list(relation.implementation_keys),
-                "consumers": list(relation.consumers),
-                "pairs": pair_rows(relation),
-            }
-
-        repair = self.laminar_repair
-        cover = self.provider_cover
-        return {
-            "schema": self.schema,
-            "relation": relation_row(self.relation),
-            "search_limits": dict(sorted(self.search_limits.__dict__.items())),
-            "laminar_repair": {
-                "retained": relation_row(repair.retained),
-                "residual": relation_row(repair.residual),
-                "ancestry_gap": [
-                    [pair.implementation_key, pair.consumer]
-                    for pair in repair.ancestry_gap
-                ],
-                "arrangement": {
-                    "implementation_parents": [
-                        [child, parent]
-                        for child, parent in repair.arrangement.implementation_parents
-                    ],
-                    "consumer_parents": [
-                        [child, parent]
-                        for child, parent in repair.arrangement.consumer_parents
-                    ],
-                    "tie_break": repair.arrangement.tie_break,
-                },
-                "statistics": {
-                    "subsets_examined": repair.statistics.subsets_examined,
-                    "feasible_laminar_subsets": (
-                        repair.statistics.feasible_laminar_subsets
-                    ),
-                    "optimal_subsets": repair.statistics.optimal_subsets,
-                },
-                "tie_break": repair.tie_break,
-            },
-            "provider_cover": {
-                "relation": relation_row(cover.relation),
-                "rectangles": [
-                    [list(rectangle.implementation_keys), list(rectangle.consumers)]
-                    for rectangle in cover.rectangles
-                ],
-                "candidate_rectangles": [
-                    [list(rectangle.implementation_keys), list(rectangle.consumers)]
-                    for rectangle in cover.candidate_rectangles
-                ],
-                "formal_concept_statistics": {
-                    "intent_subsets_examined": (
-                        cover.formal_concept_statistics.intent_subsets_examined
-                    ),
-                    "maximal_biclique_candidates": (
-                        cover.formal_concept_statistics.maximal_biclique_candidates
-                    ),
-                },
-                "cover_statistics": {
-                    "combinations_examined": (
-                        cover.cover_statistics.combinations_examined
-                    ),
-                    "optimal_covers": cover.cover_statistics.optimal_covers,
-                },
-                "tie_break": cover.tie_break,
-            },
-            "invalidation_surfaces": [
-                {
-                    "implementation_key": surface.implementation_key,
-                    "derived_consumers": list(surface.derived_consumers),
-                    "residual_pairs": [
-                        [pair.implementation_key, pair.consumer]
-                        for pair in surface.residual_pairs
-                    ],
-                    "is_choke_point": surface.is_choke_point,
-                }
-                for surface in self.invalidation_surfaces
-            ],
-        }
-
     def canonical_json(self) -> str:
         return json.dumps(
-            self.to_dict(), sort_keys=True, separators=(",", ":"), ensure_ascii=False
+            json_report_object(self), sort_keys=True, separators=(",", ":"), ensure_ascii=False
         )
 
     def content_digest(self) -> str:
