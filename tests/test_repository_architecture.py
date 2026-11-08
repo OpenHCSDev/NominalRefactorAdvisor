@@ -4,7 +4,6 @@ from pathlib import Path
 
 from nominal_refactor_advisor.ast_tools import CollectedFamily, parse_python_modules
 from nominal_refactor_advisor.class_index import CompactModuleClassProjectionFamily
-from nominal_refactor_advisor.codemod import LiteralDispatchFindingRecipeSynthesizer
 from nominal_refactor_advisor.detector_capabilities import (
     DetectorContributionRole,
     DetectorRefactorCapabilityReport,
@@ -21,6 +20,7 @@ from nominal_refactor_advisor.models import (
     NominalDeclarationIdentity,
 )
 from nominal_refactor_advisor.json_reports import json_report_object
+from nominal_refactor_advisor.refactors.dispatch_polymorphism import LiteralDispatchFindingRecipeSynthesizer
 from nominal_refactor_advisor.semantic_descent import (
     CompactSemanticModuleProjectionFamily,
 )

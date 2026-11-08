@@ -5,15 +5,13 @@ import inspect
 
 import pytest
 
-from nominal_refactor_advisor.codemod import (
-    FindingRecipeSynthesizer,
-    LiteralDispatchFindingRecipeSynthesizer,
-)
+from nominal_refactor_advisor.codemod import FindingRecipeSynthesizer
 from nominal_refactor_advisor.detector_capabilities import (
     DetectorContributionRole,
     NominalContractMemberEvidence,
 )
 from nominal_refactor_advisor.models import NominalDeclarationIdentity
+from nominal_refactor_advisor.refactors.dispatch_polymorphism import LiteralDispatchFindingRecipeSynthesizer
 
 
 class Contract(ABC):
