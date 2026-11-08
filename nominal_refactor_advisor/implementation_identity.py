@@ -91,42 +91,79 @@ class _ImplementationDependencyTraversal:
         )
 
     def collect(self, values: Iterable[object]) -> tuple[str, ...]:
-        for value in values:
-            self._visit(value)
+        graph = _dependency_graph(self.expansion_roots)
+        pending = list(values)
+        while pending:
+            value = pending.pop()
+            if id(value) in self._seen_value_ids:
+                continue
+            self._seen_value_ids.add(id(value))
+            node = graph.node(value)
+            self._module_names.update(node.module_names)
+            pending.extend(node.dependencies)
         return tuple(sorted(self._module_names))
 
-    def _visit(self, value: object) -> None:
-        value_id = id(value)
-        if value_id in self._seen_value_ids:
-            return
-        self._seen_value_ids.add(value_id)
 
+@dataclass(frozen=True)
+class _DependencyNode:
+    """What one declared value contributes: its owner modules and the values it reaches."""
+
+    value: object
+    module_names: tuple[str, ...]
+    dependencies: tuple[object, ...]
+
+
+@dataclass
+class _DependencyGraph:
+    """Each value's node, derived once per scan for one set of expansion roots.
+
+    Every family's traversal walks the same declarations; deriving a node reads
+    the value's MRO, globals, annotations and closure, so it is done once and
+    shared. A node holds its value, so an identity is not reused while it lives.
+    """
+
+    expansion_roots: frozenset[str]
+    _nodes: dict[int, _DependencyNode] = field(default_factory=dict, init=False)
+
+    def node(self, value: object) -> _DependencyNode:
+        node = self._nodes.get(id(value))
+        if node is None:
+            node = self._derived(value)
+            self._nodes[id(value)] = node
+        return node
+
+    def _derived(self, value: object) -> _DependencyNode:
+        module_names: list[str] = []
+        dependencies: list[object] = []
         module_name = _module_name(value)
         if module_name is not None:
-            self._module_names.add(module_name)
+            module_names.append(module_name)
         expands_dependencies = (
             module_name is None or module_name.partition(".")[0] in self.expansion_roots
         )
 
         if isinstance(value, type) and expands_dependencies:
             for owner in value.__mro__:
-                for declared_value in tuple(vars(owner).values()):
-                    self._visit(declared_value)
+                dependencies.extend(tuple(vars(owner).values()))
         elif is_dataclass(value) and not isinstance(value, type):
-            self._module_names.add(type(value).__module__)
-            self._visit(type(value))
-            for declared_field in fields(value):
-                self._visit(getattr(value, declared_field.name))
+            module_names.append(type(value).__module__)
+            dependencies.append(type(value))
+            dependencies.extend(
+                getattr(value, declared_field.name) for declared_field in fields(value)
+            )
         elif callable(value) and module_name is None:
-            self._module_names.add(type(value).__module__)
+            module_names.append(type(value).__module__)
 
-        for generic_argument in get_args(value):
-            self._visit(generic_argument)
-        for dependency in _descriptor_dependencies(value):
-            self._visit(dependency)
+        dependencies.extend(get_args(value))
+        dependencies.extend(_descriptor_dependencies(value))
         if expands_dependencies:
-            for dependency in _callable_dependencies(value):
-                self._visit(dependency)
+            dependencies.extend(_callable_dependencies(value))
+        return _DependencyNode(value, tuple(module_names), tuple(dependencies))
+
+
+@ScanCache.cached
+def _dependency_graph(expansion_roots: frozenset[str]) -> _DependencyGraph:
+    return _DependencyGraph(expansion_roots)
 
 
 def _module_name(value: object) -> str | None:
