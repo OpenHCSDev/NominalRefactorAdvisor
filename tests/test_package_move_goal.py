@@ -7,6 +7,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 from nominal_refactor_advisor.ast_tools import parse_python_modules
 from nominal_refactor_advisor.codemod import (
     ArchitectureGuardSuite,
@@ -264,3 +266,47 @@ def test_a_consumer_root_holding_none_of_the_tables_packages_keeps_its_modules(
     )
     assert imported.returncode == 0, imported.stderr
     assert "pkg.planning.steps" in (tmp_path / "consumer/steps.py").read_text()
+
+
+def _run_table(root: Path):
+    return CodemodRefactorGoalRunner(
+        roots=(root,),
+        config=DetectorConfig(package_destination_tables=(TABLE,)),
+        parse_workers=1,
+        dry_run=True,
+        migration_type=PackageMoveConcept,
+        guard_suite=ArchitectureGuardSuite(),
+    ).run()
+
+
+def test_a_root_holding_fewer_of_the_tables_packages_keeps_its_modules(tmp_path: Path) -> None:
+    """agent-comms holds most of its table's packages; `tools` holds one (a `planning`
+    beside its own flat modules), and still keeps its `steps.py`."""
+
+    _layered_package(tmp_path)
+    _write(tmp_path, "pkg/nominal/__init__.py", "")
+    _write(tmp_path, "tools/__init__.py", "")
+    _write(tmp_path, "tools/planning/__init__.py", "")
+    _write(tmp_path, "tools/steps.py", "from pkg.steps import Step\n\nSTEP = Step\n")
+
+    report = _run_table(tmp_path)
+
+    assert report.stop_reason.completed, report.to_markdown()
+    assert {
+        Path(operation.target.file_path).relative_to(tmp_path).as_posix()
+        for document in report.replay_sequence.documents
+        for recipe in document.recipes
+        for operation in recipe.operations
+    } == {"pkg/goals.py", "pkg/steps.py", "pkg/plans.py"}
+
+
+def test_two_roots_holding_equally_many_of_the_tables_packages_are_refused(
+    tmp_path: Path,
+) -> None:
+    _layered_package(tmp_path)
+    _write(tmp_path, "tools/__init__.py", "")
+    _write(tmp_path, "tools/planning/__init__.py", "")
+    _write(tmp_path, "tools/steps.py", "STEP = 1\n")
+
+    with pytest.raises(ValueError, match="split evenly between pkg and tools"):
+        _run_table(tmp_path)

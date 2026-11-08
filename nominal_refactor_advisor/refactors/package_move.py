@@ -103,10 +103,11 @@ class DestinationTable:
     def destinations(
         self, modules: Iterable[CompactModuleClassHeader]
     ) -> tuple[FlatModuleDestination, ...]:
-        """Each flat module the table sends somewhere, per root package. A table is
-        the plan of the root packages that already hold one of its packages: a root
-        holding none of them (a consumer scanned beside the one being restructured)
-        keeps every module where it is, even one whose name a row lists."""
+        """Each flat module the table sends somewhere. A table describes the one root
+        package holding the most of its row packages; every other root (a consumer
+        scanned beside it, `tools`, a test package) keeps every module where it is,
+        even one whose name a row lists, and only its imports follow. Two roots
+        holding equally many are refused by name rather than guessed between."""
 
         flat_by_root: dict[str, list[CompactModuleClassHeader]] = {}
         packaged_by_root: dict[str, list[CompactModuleClassHeader]] = {}
@@ -122,13 +123,23 @@ class DestinationTable:
             by_root = flat_by_root if len(parts) == 2 else packaged_by_root
             by_root.setdefault(parts[0], []).append(module)
         table_packages = {row.package.split("/")[0] for row in self.rows}
-        return tuple(
-            destination
-            for root, root_modules in flat_by_root.items()
-            if table_packages & packages_by_root.get(root, set())
-            for destination in self.root_destinations(
-                tuple(root_modules), tuple(packaged_by_root.get(root, ()))
+        held = {
+            root: len(table_packages & packages)
+            for root, packages in packages_by_root.items()
+            if table_packages & packages
+        }
+        if not held:
+            return ()
+        most = max(held.values())
+        described = sorted(root for root, count in held.items() if count == most)
+        if len(described) > 1:
+            raise ValueError(
+                f"the table's packages are split evenly between {' and '.join(described)}; "
+                "name the root package it describes in its rows"
             )
+        (root,) = described
+        return self.root_destinations(
+            tuple(flat_by_root.get(root, ())), tuple(packaged_by_root.get(root, ()))
         )
 
     def root_destinations(
