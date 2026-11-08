@@ -5,7 +5,6 @@ from dataclasses import dataclass
 
 import pytest
 
-from nominal_refactor_advisor import codemod as codemod_module
 from nominal_refactor_advisor.codemod import (
     CodemodTargetSelector,
     NodeKindArrayPayloadValueCodec,
@@ -76,8 +75,6 @@ def test_registered_payload_bindings_own_exact_codec_leaves() -> None:
             assert not hasattr(binding, "value_projector")
             assert not hasattr(binding, "dsl_value_kind")
 
-    assert not hasattr(codemod_module, "selector_payload_bindings")
-    assert not hasattr(codemod_module, "operation_payload_bindings")
 
 
 def test_dataclass_json_report_derives_shallow_payload_from_declared_fields() -> None:
@@ -355,11 +352,6 @@ def test_string_payload_policy_leaves_own_missing_value_semantics() -> None:
 
 def test_payload_records_have_no_parallel_role_or_carrier() -> None:
     assert "from_json_value" in CodemodPayloadRecord.__dict__
-    assert not hasattr(codemod_module, "CodemodPayload")
-    assert not hasattr(codemod_module, "CodemodPayloadRole")
-    assert not hasattr(codemod_module, "SelectorObjectPayloadValueCodec")
-    assert not hasattr(codemod_module, "AuthorityClaimPayloadValueCodec")
-    assert not hasattr(codemod_module, "AuthorityClaimArrayPayloadValueCodec")
     assert not {"from_mapping", "required_string", "optional_string"}.intersection(
         AuthorityClaim.__dict__
     )

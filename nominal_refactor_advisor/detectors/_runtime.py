@@ -71,7 +71,6 @@ from ..codemod_foreign_family_source import ForeignFamilyFilterModuleFamily
 from ..codemod import (
     KeyedMirrorFindingRecipeSynthesizer,
     ManualClassRegistrationFindingRecipeSynthesizer,
-    NumericLiteralDispatchFindingRecipeSynthesizer,
     ParallelMirroredLeafFamilyFindingRecipeSynthesizer,
     RepeatedBuilderCallFindingRecipeSynthesizer,
     SemanticMirrorFindingRecipeEvaluator,
@@ -91,6 +90,7 @@ from ..observation_shapes import (
     ForeignFamilySiteShape,
 )
 from ..patterns import PatternId
+from ..refactors.dispatch_polymorphism import NumericLiteralDispatchFindingRecipeSynthesizer
 from ..semantic_identity import (
     InheritanceIdentityAttributeProjection,
     SemanticIdentifierTokenProjection,
