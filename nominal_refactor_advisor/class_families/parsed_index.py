@@ -127,7 +127,7 @@ class ClassFamilyIndex(ClassDeclarationIndex[IndexedClass], ParsedModuleSetFact)
         default_factory=dict, repr=False, compare=False
     )
     """Each module class record this build resolved, by identity, with what it
-    resolved to; the record is held so its identity stays its own. Identities
+    resolved to; the record is held, so no other object takes its id. Identities
     mean nothing in another process, so a pickled index carries none."""
 
     def __getstate__(self) -> dict[str, object]:
@@ -357,7 +357,7 @@ class ClassFamilyIndexBuilder:
         if self.previous is None:
             return None
         previous = self.previous.resolved_by_record.get(id(record))
-        if previous is None or previous[0] is not record:
+        if previous is None:
             return None
         if any(
             reference.resolved_parts[-1] in moved_terminal_names
