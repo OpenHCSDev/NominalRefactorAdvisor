@@ -42,6 +42,7 @@ from ..codemod_source_edits import (
 )
 from ..codemod_statement_source import StatementDeletionSource
 from ..lexical_bindings import LEXICAL_SCOPE_BINDING_AUTHORITY
+from ..semantic_algebra import DirectedGraph
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -266,6 +267,43 @@ class ServedHeaderBindings:
 
 
 @dataclass(frozen=True)
+class SubclassKeywords:
+    """A served class is created under its declaration's lineage, so every keyword-only
+    argument an __init_subclass__ there requires must be in the served header."""
+
+    snapshot: CodemodSourceSnapshot
+    served: tuple[ResolvedServedClass, ...]
+
+    def require_given(self) -> None:
+        index = self.snapshot.required_class_family_index
+        failures: list[str] = []
+        for served in self.served:
+            symbol = served.source_class.required_symbol(self.snapshot)
+            given = frozenset(keyword.arg for keyword in served.request.header.keywords)
+            for member in (symbol, *index.ancestor_symbols(symbol)):
+                declaration = index.classes_by_symbol.get(member)
+                if declaration is None:
+                    continue
+                node = _class_node(self.snapshot, declaration.file_path, declaration.qualname)
+                for statement in node.body:
+                    if isinstance(statement, ast.FunctionDef) and statement.name == "__init_subclass__":
+                        required = sorted(
+                            argument.arg
+                            for argument, default in zip(
+                                statement.args.kwonlyargs, statement.args.kw_defaults, strict=True,
+                            )
+                            if default is None and argument.arg not in given
+                        )
+                        failures.extend(
+                            f"{served.request.served_name!r} must pass {name!r}, which "
+                            f"{declaration.qualname}.__init_subclass__ requires"
+                            for name in required
+                        )
+        if failures:
+            raise ValueError("Served headers are missing class keywords: " + "; ".join(failures))
+
+
+@dataclass(frozen=True)
 class ServedMemberScope:
     """What a member can lose by changing class within its module. Names bound at module level
     resolve the same in the served class, so a module-bound decorator such as abstractmethod is
@@ -355,14 +393,14 @@ class FamilyMemberReads:
         failures: list[str] = []
         for served in self.served:
             symbol = served.source_class.required_symbol(self.snapshot)
-            departing_names, departing = self._departing(served, symbol)
+            departing = frozenset(index.ancestor_symbols(symbol)) - self.ancestors_after(symbol)
             ancestors = frozenset(index.ancestor_symbols(symbol)) - departing
-            leaving = served.moved | departing_names
+            leaving = served.moved | self._bound_names(departing)
             for member in (*ancestors, symbol, *index.descendant_symbols(symbol)):
                 declaration = index.classes_by_symbol.get(member)
                 if declaration is None:
                     continue  # declared outside the repository: no source to read or edit
-                node = self._class_node(declaration.file_path, declaration.qualname)
+                node = _class_node(self.snapshot, declaration.file_path, declaration.qualname)
                 where = f"{declaration.file_path}:{{line}} {declaration.qualname}"
                 for statement in node.body:
                     if statement in moving:
@@ -387,53 +425,61 @@ class FamilyMemberReads:
                 "Members cannot leave the declaration: " + "; ".join(sorted(set(failures)))
             )
 
-    def _departing(self, served: ResolvedServedClass, symbol: str) -> tuple[frozenset[str], frozenset[str]]:
-        """The ancestors the declaration stops inheriting when its moved bases leave (those not
-        still reached through a base it keeps), and the names their bodies bind."""
+    @cached_property
+    def remaining_inheritance(self) -> DirectedGraph[str]:
+        """The repository's class graph once every moved base leaves its declaration."""
 
         index = self.snapshot.required_class_family_index
-        ancestors = frozenset(index.ancestor_symbols(symbol))
+        removed: set[tuple[str, str]] = set()
+        for served in self.served:
+            symbol = served.source_class.required_symbol(self.snapshot)
+            for base in served.request.moved_bases:
+                root = ast.parse(base, mode="eval").body
+                root = root.value if isinstance(root, ast.Subscript) else root
+                owners = tuple(
+                    direct for direct in index.inheritance_graph.neighbors.get(symbol, ())
+                    if isinstance(root, ast.Name)
+                    and direct in index.classes_by_symbol
+                    and index.classes_by_symbol[direct].simple_name == root.id
+                )
+                if len(owners) != 1:
+                    raise ValueError(
+                        f"Moved base {base!r} of {served.source_class.qualname!r} resolves to "
+                        f"{len(owners)} repository classes"
+                    )
+                removed.add((symbol, owners[0]))
+        return DirectedGraph({
+            symbol: tuple(base for base in bases if (symbol, base) not in removed)
+            for symbol, bases in index.inheritance_graph.neighbors.items()
+        })
 
-        def lineage(base: str) -> frozenset[str]:
-            root = ast.parse(base, mode="eval").body
-            root = root.value if isinstance(root, ast.Subscript) else root
-            if not isinstance(root, ast.Name):
-                raise ValueError(f"Base {base!r} of {served.source_class.qualname!r} is not a named class")
-            owners = tuple(
-                ancestor for ancestor in ancestors
-                if ancestor in index.classes_by_symbol
-                and index.classes_by_symbol[ancestor].simple_name == root.id
-            )
-            if len(owners) > 1:
-                raise ValueError(f"Base {base!r} resolves to {len(owners)} repository classes")
-            return frozenset((*owners, *(a for owner in owners for a in index.ancestor_symbols(owner))))
+    def ancestors_after(self, symbol: str) -> frozenset[str]:
+        return frozenset(self.remaining_inheritance.reachable_from(symbol))
 
-        moved = tuple(served.request.moved_bases)
-        if not moved:
-            return frozenset(), frozenset()
-        kept = frozenset().union(*(
-            lineage(ast.unparse(base)) for base in served.source_class.node.bases
-            if ast.unparse(base) not in moved
-        ))
-        departing = frozenset().union(*map(lineage, moved)) - kept
-        names = frozenset().union(*(
-            LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(self._class_node(
-                index.classes_by_symbol[departed].file_path,
-                index.classes_by_symbol[departed].qualname,
+    def _bound_names(self, symbols: frozenset[str]) -> frozenset[str]:
+        """What these classes' bodies bind: a declaration that stops inheriting them loses it."""
+
+        index = self.snapshot.required_class_family_index
+        return frozenset().union(*(
+            LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(_class_node(
+                self.snapshot, index.classes_by_symbol[symbol].file_path,
+                index.classes_by_symbol[symbol].qualname,
             ).body)
-            for departed in departing
+            for symbol in symbols
         ))
-        return names, departing
 
-    def _class_node(self, file_path: str, qualname: str) -> ast.ClassDef:
-        scope: ast.AST = self.snapshot.module_nodes_by_file_path[file_path]
-        for part in qualname.split("."):
-            scope = next(
-                statement for statement in scope.body  # type: ignore[attr-defined]
-                if isinstance(statement, ast.ClassDef) and statement.name == part
-            )
-        assert isinstance(scope, ast.ClassDef)
-        return scope
+
+def _class_node(snapshot: CodemodSourceSnapshot, file_path: str, qualname: str) -> ast.ClassDef:
+    """The class statement a family-index declaration names."""
+
+    scope: ast.AST = snapshot.module_nodes_by_file_path[file_path]
+    for part in qualname.split("."):
+        scope = next(
+            statement for statement in scope.body  # type: ignore[attr-defined]
+            if isinstance(statement, ast.ClassDef) and statement.name == part
+        )
+    assert isinstance(scope, ast.ClassDef)
+    return scope
 
 
 def _names_abstractmethod(decorator: ast.expr) -> bool:
@@ -474,6 +520,7 @@ class ServeClassMembersOperation(RepositorySourceReprovedOperation):
     ) -> tuple[NominalSourceEdit, ...]:
         served = tuple(ResolvedServedClass.require(snapshot, request) for request in self.classes)
         imports = ServedHeaderBindings(snapshot, served).required_imports()
+        SubclassKeywords(snapshot, served).require_given()
         FamilyMemberReads(snapshot, served).require_none()
         return (
             *imports,

@@ -195,3 +195,17 @@ def test_a_moved_base_must_be_declared_and_taken_by_the_served_header(tmp_path: 
         _simulate(tmp_path, _served(
             tmp_path, "family", "Prompt", "class ServedPrompt(Prompt)", "apply", moved_bases=("Request",),
         ))
+
+
+def test_a_served_header_passes_what_its_lineage_requires_of_subclasses(tmp_path: Path) -> None:
+    _write(tmp_path, {"family": FAMILY.replace(
+        "class Request(ABC):\n",
+        "class Request(ABC):\n    def __init_subclass__(cls, *, action: str = 'none', kind: str, **kwargs):\n"
+        "        super().__init_subclass__(**kwargs)\n\n",
+    ).replace("class Prompt(Request):", "class Prompt(Request, kind='prompt'):")})
+
+    with pytest.raises(CodemodOperationPreflightError, match="'ServedPrompt' must pass 'kind'"):
+        _simulate(tmp_path, _served(tmp_path, "family", "Prompt", "class ServedPrompt(Prompt)", "apply", "result"))
+    assert _simulate(tmp_path, _served(
+        tmp_path, "family", "Prompt", "class ServedPrompt(Prompt, kind='prompt')", "apply", "result",
+    )).is_clean
