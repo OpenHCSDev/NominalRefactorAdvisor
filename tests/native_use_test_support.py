@@ -5,7 +5,6 @@ from dataclasses import replace
 from nominal_refactor_advisor.codemod import (
     CodemodPlanDocument,
     CodemodSourceSnapshot,
-    ConvertManualRegistryToAutoregisterOperation,
     RefactorRecipe,
 )
 from nominal_refactor_advisor.codemod_native_requirements import (
@@ -13,6 +12,7 @@ from nominal_refactor_advisor.codemod_native_requirements import (
 )
 from nominal_refactor_advisor.codemod_runtime import CodemodPlanDocumentSimulation
 from nominal_refactor_advisor.codemod_semantics import CodemodBackend
+from nominal_refactor_advisor.refactors.autoregister import ConvertManualRegistryToAutoregisterOperation
 
 
 def with_rendered_registry_creator_support(

@@ -6,10 +6,12 @@ import pytest
 
 from nominal_refactor_advisor.codemod import (
     CodemodSourceSnapshot,
-    ConvertManualRegistryToAutoregisterOperation,
-    DeriveAutoregisterInstanceViewOperation,
     RefactorRecipe,
     SourceRewriteTarget,
+)
+from nominal_refactor_advisor.refactors.autoregister import (
+    ConvertManualRegistryToAutoregisterOperation,
+    DeriveAutoregisterInstanceViewOperation,
 )
 from nominal_refactor_advisor.source_index import build_source_index
 from native_use_test_support import (

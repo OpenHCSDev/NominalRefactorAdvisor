@@ -14,7 +14,6 @@ from nominal_refactor_advisor.codemod import (
     CreateFileOperation,
     TypedMirror,
     CodemodSourceSnapshot,
-    ConvertManualRegistryToAutoregisterOperation,
     RefactorRecipe,
     ReplaceFunctionBodyOperation,
     SourceRewriteTarget,
@@ -39,6 +38,7 @@ from nominal_refactor_advisor.codemod_source_edits import (
     SourceTextSpanReplacement,
 )
 from nominal_refactor_advisor.native_declarations import NativeDeclaration
+from nominal_refactor_advisor.refactors.autoregister import ConvertManualRegistryToAutoregisterOperation
 from nominal_refactor_advisor.source_execution import SourceModuleExecution
 
 PATH = "/repo/probe.py"
