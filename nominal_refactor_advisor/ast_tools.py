@@ -952,9 +952,10 @@ class ParsedModule(SourceFileIdentity):
 
         return SourceLineSegmentAuthority(self.source)
 
-    @property
+    @cached_property
     def module_path_identity(self) -> PythonModulePathIdentity:
-        """Return the source-independent identity retained by source projections."""
+        """The source-independent identity retained by source projections, held by
+        the parse so a projection of unchanged modules re-derives none of it."""
 
         return PythonModulePathIdentity(path=self.path, import_name=self.module_name)
 
@@ -1154,9 +1155,7 @@ class PythonModulePathAuthority:
     def identities_by_resolved_path(self) -> dict[Path, PythonModulePathIdentity]:
         identities_by_path: dict[Path, PythonModulePathIdentity] = {}
         for identity in self.identities:
-            resolved_path = (
-                identity.declared_import_root / identity.declared_source_relative_path
-            ).resolve()
+            resolved_path = identity.declared_resolved_path
             previous = identities_by_path.get(resolved_path)
             if previous is not None and previous != identity:
                 raise ValueError(
