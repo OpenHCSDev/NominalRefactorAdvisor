@@ -202,3 +202,19 @@ def test_a_merge_row_folds_one_module_into_the_other(tmp_path: Path) -> None:
     assert imported.stdout.strip() == "<loaded>"
     merged = (tmp_path / "pkg/planning/presentation.py").read_text()
     assert "session_load" not in merged
+
+
+def test_a_package_shadowed_by_a_module_file_is_refused(tmp_path: Path) -> None:
+    _write(tmp_path, "pkg/__init__.py", "")
+    _write(tmp_path, "pkg/messaging.py", "def send():\n    return 'sent'\n")
+    _write(tmp_path, "pkg/bus.py", "class Bus:\n    n = 1\n")
+    _write(tmp_path, "pkg/app.py", "from pkg.bus import Bus\nVALUE = Bus.n\n")
+    report = _goal(tmp_path, "| `messaging` | `bus.py` | |\n")
+
+    assert report.stages == ()
+    reasons = " ".join(
+        record.evaluation.rejection_reason
+        for dead_end in report.trajectory_proof.dead_ends
+        for record in dead_end.class_plan_report.finding_plan.records
+    )
+    assert "pkg/messaging.py' is the module of that name" in reasons

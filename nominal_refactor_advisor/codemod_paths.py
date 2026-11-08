@@ -182,6 +182,9 @@ class SourceCreationPathAuthority(SourcePathCandidateAuthority):
     """Resolve a new DSL file path against existing indexed source roots."""
 
     def required_path(self) -> str:
+        return self.importable(self.resolved_path())
+
+    def resolved_path(self) -> str:
         requested = Path(self.requested_path)
         if requested.is_absolute():
             return requested.as_posix()
@@ -194,6 +197,23 @@ class SourceCreationPathAuthority(SourcePathCandidateAuthority):
                 f"candidate locations: {parent_matches!r}"
             )
         return requested.as_posix()
+
+    def importable(self, path: str) -> str:
+        """A file under `pkg/` is never imported while `pkg.py` is a module
+        beside it: Python resolves the name to the module file."""
+
+        existing = frozenset(self.candidate_set.paths)
+        for directory in Path(path).parents:
+            if not directory.name:
+                continue
+            shadow = directory.with_suffix(".py").as_posix()
+            if shadow in existing:
+                raise ValueError(
+                    f"New source path {path!r} is under {directory.as_posix()!r}, "
+                    f"but {shadow!r} is the module of that name, so the new file "
+                    "would never import; move that module's names out first"
+                )
+        return path
 
     def parent_matches(self, requested: Path) -> tuple[str, ...]:
         requested_parent = requested.parent.as_posix()
