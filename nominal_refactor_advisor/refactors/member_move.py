@@ -274,13 +274,30 @@ class MovedMethod:
 def _annotation_names(annotation: ast.expr | None, name: str) -> bool:
     """Whether a parameter's annotation is exactly the named class, bare or quoted."""
 
-    if isinstance(annotation, ast.Name):
-        return annotation.id == name
-    return isinstance(annotation, ast.Constant) and annotation.value == name
+    return annotation is not None and ast.unparse(annotation) in {name, repr(name)}
 
 
 def _calls(node: ast.AST) -> bool:
     return any(isinstance(each, (ast.Call, ast.Await)) for each in ast.walk(node))
+
+
+@dataclass(frozen=True)
+class PassedArgument:
+    """The destination as a call passes it positionally: the receiver takes its place as is."""
+
+    node: ast.AST
+    value: ast.expr
+
+    def spelled(self, parameter: str, receiver: str) -> str:
+        return receiver
+
+
+@dataclass(frozen=True)
+class KeywordArgument(PassedArgument):
+    """The destination passed by keyword: the receiver takes its place under its own name."""
+
+    def spelled(self, parameter: str, receiver: str) -> str:
+        return f"{parameter}={receiver}"
 
 
 @dataclass(frozen=True)
@@ -349,7 +366,7 @@ class DestinationInstanceMethod(DestinationMember):
             *reads,
         )
 
-    def argument(self, call: MethodCall) -> ast.expr | ast.keyword:
+    def argument(self, call: MethodCall) -> PassedArgument:
         method = self.moved.method
         if any(isinstance(each, ast.Starred) for each in call.call.args) or any(
             keyword.arg is None for keyword in call.call.keywords
@@ -359,10 +376,11 @@ class DestinationInstanceMethod(DestinationMember):
             (each for each in call.call.keywords if each.arg == self.parameter.arg), None,
         )
         if keyword is not None:
-            return keyword
+            return KeywordArgument(keyword, keyword.value)
         positional = (method.args.posonlyargs + method.args.args)[1:]
         if self.parameter in positional and positional.index(self.parameter) < len(call.call.args):
-            return call.call.args[positional.index(self.parameter)]
+            passed = call.call.args[positional.index(self.parameter)]
+            return PassedArgument(passed, passed)
         raise ValueError(f"{call.where} passes no {self.parameter.arg!r} to {self.moved.name!r}")
 
     def replacement(
@@ -370,7 +388,7 @@ class DestinationInstanceMethod(DestinationMember):
     ) -> tuple[SourceTextSpanReplacement, ...]:
         receiver = call.attribute.value
         argument = self.argument(call)
-        value = argument.value if isinstance(argument, ast.keyword) else argument
+        value = argument.value
         if _calls(receiver) and _calls(value):
             raise ValueError(
                 f"{call.where}: the receiver and {self.parameter.arg!r} both call, and swapping "
@@ -378,13 +396,10 @@ class DestinationInstanceMethod(DestinationMember):
             )
         receiver_text = geometry.source[slice(*geometry.required_node_offsets(receiver))]
         value_text = geometry.source[slice(*geometry.required_node_offsets(value))]
-        receiver_spelled = (
-            f"{self.moved.receiver_parameter}={receiver_text}"
-            if isinstance(argument, ast.keyword) else receiver_text
-        )
+        receiver_spelled = argument.spelled(self.moved.receiver_parameter, receiver_text)
         atom = isinstance(value, (ast.Name, ast.Attribute, ast.Subscript, ast.Call, ast.Constant))
         receiver_start, receiver_end = geometry.required_node_offsets(receiver)
-        argument_start, argument_end = geometry.required_node_offsets(argument)
+        argument_start, argument_end = geometry.required_node_offsets(argument.node)
         return (
             SourceTextSpanReplacement.from_offsets(
                 start_offset=receiver_start,
