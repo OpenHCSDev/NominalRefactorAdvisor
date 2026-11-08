@@ -2666,6 +2666,11 @@ def test_uncached_compact_analysis_skips_persistent_content_identities(
         "collected_family_items_content_signature",
         unexpected_content_identity,
     )
+    monkeypatch.setattr(
+        ast_tools_module.CollectedFamilyCacheContext,
+        "items_content_signature",
+        lambda context, items: unexpected_content_identity(items),
+    )
 
     result = analyze_compact_roots_with_cache(
         (package_root,),

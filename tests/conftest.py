@@ -94,9 +94,10 @@ def no_modules() -> ParsedModuleSet:
     return ParsedModuleSet(())
 
 
-@pytest.fixture(scope="session", autouse=True)
+@pytest.fixture(autouse=True)
 def _isolated_default_advisor_cache() -> Iterator[None]:
-    """Keep test-created persistent caches inside one disposable session root."""
+    """Give each test its own disposable cache home. The default home is shared
+    by every checkout, so one test's tree would otherwise answer another's."""
 
     environment_name = "NRA_CACHE_HOME"
     previous_cache_home = os.environ.get(environment_name)

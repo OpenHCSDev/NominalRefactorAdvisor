@@ -16,7 +16,6 @@ from nominal_refactor_advisor.ast_tools import (
     PythonModuleRootParser,
     PythonSourcePathPolicy,
     collect_family_items,
-    collected_family_items_content_signature,
 )
 from nominal_refactor_advisor.detectors._base import DetectorConfig
 from nominal_refactor_advisor.class_index import CompactModuleClassProjectionFamily
@@ -87,7 +86,7 @@ def test_full_family_is_published_once_per_shard(
         (receipt,) = result.projection_batches
         assert type(receipt) is CompactFamilyProjectionReceipt
         assert receipt.family is family
-        assert receipt.content_signature == collected_family_items_content_signature(
+        assert receipt.content_signature == request_source.items_content_signature(
             items
         )
         assert request_source.load_items(family) == items
@@ -121,8 +120,8 @@ def test_list_collection_and_batch_share_the_same_publication(tmp_path, monkeypa
     monkeypatch.setattr(CollectedFamilyCacheContext, "store_items", unexpected_store)
     batch = module.family_batch(family)
     assert batch.items == tuple(items)
-    assert batch.content_signature == collected_family_items_content_signature(
-        batch.items
+    assert batch.content_signature == (
+        module.collected_family_cache.items_content_signature(batch.items)
     )
 
 
