@@ -8,14 +8,16 @@ import sys
 
 import pytest
 
-from nominal_refactor_advisor.codemod import (
+from nominal_refactor_advisor.refactors.class_base import (
     AddClassBaseOperation,
+    RemoveClassBaseOperation,
+    ReplaceClassBaseOperation,
+)
+from nominal_refactor_advisor.codemod import (
     CodemodOperationPreflightError,
     CodemodPlanSequence,
     CodemodSourceSnapshot,
     RefactorRecipeOperation,
-    RemoveClassBaseOperation,
-    ReplaceClassBaseOperation,
     SourceRewriteTarget,
 )
 from nominal_refactor_advisor.json_reports import json_report_object

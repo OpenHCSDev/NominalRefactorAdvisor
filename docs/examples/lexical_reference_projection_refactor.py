@@ -4,9 +4,9 @@ from dataclasses import replace
 import json
 from textwrap import dedent
 
+from nominal_refactor_advisor.refactors.target_deletion import DeleteTargetOperation
 from nominal_refactor_advisor.codemod import (
     CodemodPlanSequence,
-    DeleteTargetOperation,
     InsertClassMemberOperation,
     ReplaceFunctionBodyOperation,
     ReplaceScopeAssignmentOperation,

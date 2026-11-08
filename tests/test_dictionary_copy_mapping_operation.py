@@ -6,11 +6,11 @@ import json
 
 import pytest
 
+from nominal_refactor_advisor.refactors.source_insertion import CreateFileOperation
 from nominal_refactor_advisor.codemod import (
     CodemodPlanDocument,
     CodemodPlanSequence,
     CodemodSourceSnapshot,
-    CreateFileOperation,
     PatchTargetOperation,
     RefactorRecipe,
     RequireDictionaryCopyMappingOperation,

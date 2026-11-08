@@ -10,13 +10,15 @@ from registry_test_sources import _type_keyed_behavior_projection_source
 
 from nominal_refactor_advisor.ast_tools import ParsedModuleSet
 from nominal_refactor_advisor.analysis import analyze_modules
+from nominal_refactor_advisor.refactors.semantic_mirror import (
+    MappingSemanticMirrorRecipeStrategy,
+    SemanticDescentRecipeEvaluation,
+)
 from nominal_refactor_advisor.codemod import (
     CodemodPlanDocument,
     CodemodSourceSnapshot,
     TypedMirror,
-    MappingSemanticMirrorRecipeStrategy,
     RefactorRecipe,
-    SemanticDescentRecipeEvaluation,
 )
 from nominal_refactor_advisor.codemod_authority_claims import (
     AuthorityClaimDeclarationPreflightDetail,

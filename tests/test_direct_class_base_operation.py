@@ -7,6 +7,7 @@ import sys
 import pytest
 
 from nominal_refactor_advisor.ast_tools import parse_python_modules
+from nominal_refactor_advisor.refactors.class_base import ReplaceDirectClassBaseOperation
 from nominal_refactor_advisor.codemod import (
     CodemodPlanDocument,
     CodemodPlanSequence,
@@ -14,7 +15,6 @@ from nominal_refactor_advisor.codemod import (
     CodemodSourceSnapshot,
     RefactorRecipe,
     RefactorRecipeOperation,
-    ReplaceDirectClassBaseOperation,
     SourceRewriteTarget,
 )
 from nominal_refactor_advisor.cli import CodemodRecipePlanFastSourceSnapshot

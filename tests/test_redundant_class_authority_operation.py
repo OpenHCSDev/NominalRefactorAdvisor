@@ -8,10 +8,10 @@ from pathlib import Path
 import pytest
 
 from nominal_refactor_advisor.ast_tools import parse_python_modules
+from nominal_refactor_advisor.refactors.class_base import CollapseRedundantClassAuthorityOperation
 from nominal_refactor_advisor.codemod import (
     CodemodOperationPreflightError,
     CodemodSourceSnapshot,
-    CollapseRedundantClassAuthorityOperation,
     RefactorRecipe,
     RefactorRecipeOperation,
     SourceRewriteTarget,

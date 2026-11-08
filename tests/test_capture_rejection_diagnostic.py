@@ -13,9 +13,9 @@ from nominal_refactor_advisor.captured_reference import (
     CapturedReferenceViolation,
     OpenCapturedReference,
 )
+from nominal_refactor_advisor.refactors.candidate_collector import DeriveCandidateCollectorOperation
 from nominal_refactor_advisor.codemod import (
     CodemodPlanDocument,
-    DeriveCandidateCollectorOperation,
     RefactorRecipe,
     SourceRewriteTarget,
 )

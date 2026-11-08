@@ -37,12 +37,12 @@ from ..class_index import (
     CompactClassMappingKeyAuthority,
     CompactIndexedClass,
 )
-from ..codemod import (
+from ..refactors.candidate_collector import (
     CandidateCollectorBoilerplateFindingRecipeSynthesizer,
-    CasesFindingRecipeSynthesizer,
     DeclarativeDetectorClassFindingRecipeSynthesizer,
     DirectBuildFindingRendererFindingRecipeSynthesizer,
 )
+from ..refactors.finding_recipes import CasesFindingRecipeSynthesizer
 from ..native_syntax import NativePythonSyntaxIndex
 from ..registry_identity import (
     INHERITABLE_AUTOREGISTER_CONFIGURATION_ATTRIBUTE_NAMES,

@@ -5,9 +5,11 @@ from __future__ import annotations
 from abc import ABC
 from typing import ClassVar
 
-from .codemod import (
+from .refactors.finding_recipes import (
     FindingEvidenceActionKeysMixin,
     FindingRecipeSynthesizer,
+)
+from .codemod import (
     ForeignAdapterBindChainConcept,
     ForeignFamilyRoutingConcept,
     StaticProjectionAdapterConcept,

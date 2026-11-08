@@ -12,9 +12,9 @@ from nominal_refactor_advisor.carrier_expansion import (
     DeclaredCarrierExpansionAuthorityViolation,
     DeclaredCarrierExpansionBuilder,
 )
+from nominal_refactor_advisor.refactors.carrier_collapse import CollapseDeclaredCarrierExpansionOperation
 from nominal_refactor_advisor.codemod import (
     CodemodSourceSnapshot,
-    CollapseDeclaredCarrierExpansionOperation,
     FindingRecipeSynthesisStatus,
     RefactorRecipe,
     RefactorRecipeOperation,

@@ -2,10 +2,10 @@
 
 import json
 
+from nominal_refactor_advisor.refactors.class_base import AddClassBaseOperation
+from nominal_refactor_advisor.refactors.target_deletion import DeleteClassAssignmentsOperation
 from nominal_refactor_advisor.codemod import (
-    AddClassBaseOperation,
     CodemodPlanSequence,
-    DeleteClassAssignmentsOperation,
     ReplaceFunctionBodyOperation,
     SourceRewriteTarget,
 )

@@ -18,19 +18,23 @@ from ..class_member_authority_codemod import (
     ClassDeclarationPromotionStatement,
     ClassMemberPromotionTargets,
 )
-from ..codemod import (
-    DeleteClassAssignmentsOperation,
-    DeleteInheritedAutoRegisterConfigurationOperation,
+from .finding_recipes import (
     FindingEvidenceActionKeysMixin,
     FindingRecipeSynthesizer,
-    InsertAfterTargetOperation,
-    PatchTargetOperation,
-    RegistrationSemanticMirrorRecipeBuilder,
-    ResolvedFunctionProjectionTarget,
-    SemanticMirrorFindingRecipeStrategy,
-    SemanticMirrorRecipeSeedLocations,
     SingleSourcePathFindingMixin,
 )
+from .dataclass_projection import ResolvedFunctionProjectionTarget
+from .semantic_mirror import (
+    RegistrationSemanticMirrorRecipeBuilder,
+    SemanticMirrorFindingRecipeStrategy,
+    SemanticMirrorRecipeSeedLocations,
+)
+from .source_insertion import InsertAfterTargetOperation
+from .target_deletion import (
+    DeleteClassAssignmentsOperation,
+    DeleteInheritedAutoRegisterConfigurationOperation,
+)
+from ..codemod import PatchTargetOperation
 from ..codemod_authority_claims import AstTargetAuthorityClaim
 from ..codemod_declaration_source import (
     ClassBodyTailSourceAuthority,

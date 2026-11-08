@@ -3,9 +3,9 @@
 import json
 from textwrap import dedent
 
+from nominal_refactor_advisor.refactors.target_deletion import DeleteClassAssignmentsOperation
 from nominal_refactor_advisor.codemod import (
     CodemodPlanSequence,
-    DeleteClassAssignmentsOperation,
     ReplaceFunctionBodyOperation,
     SourceRewriteTarget,
 )

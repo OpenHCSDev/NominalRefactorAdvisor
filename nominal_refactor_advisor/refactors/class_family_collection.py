@@ -14,12 +14,12 @@ from ..class_families.parsed_index import (
     IndexedClass,
     ModuleClassReferenceResolver,
 )
-from ..codemod import (
-    ClassAuthorityReferenceProof,
+from .semantic_mirror import (
     RegistrationSemanticMirrorRecipeBuilder,
     SemanticMirrorOperationTargets,
-    SourceDerivedAuthorityProjectionOperation,
 )
+from .class_base import ClassAuthorityReferenceProof
+from .authority_extraction import SourceDerivedAuthorityProjectionOperation
 from ..codemod_authority_claims import AstTargetAuthorityClaim
 from ..codemod_runtime import (
     CodemodSourceSnapshot,

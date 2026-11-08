@@ -12,10 +12,10 @@ import sys
 import pytest
 
 from nominal_refactor_advisor.ast_tools import parse_python_modules
+from nominal_refactor_advisor.refactors.target_deletion import DeleteFunctionAssignmentsOperation
 from nominal_refactor_advisor.codemod import (
     CodemodPlanSequence,
     CodemodSourceSnapshot,
-    DeleteFunctionAssignmentsOperation,
     ProjectFunctionLocalOperation,
     SourceRewriteTarget,
 )

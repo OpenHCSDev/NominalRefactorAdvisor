@@ -1,9 +1,11 @@
 """Applied batch: give declaration caches scan ownership, independently of ASTs."""
 
-from nominal_refactor_advisor.codemod import (
-    CodemodPlanSequence,
+from nominal_refactor_advisor.refactors.source_insertion import (
     CreateFileOperation,
     EnsureImportOperation,
+)
+from nominal_refactor_advisor.codemod import (
+    CodemodPlanSequence,
     PatchTargetOperation,
     SourceRewriteTarget,
     SourceTextReplacement,

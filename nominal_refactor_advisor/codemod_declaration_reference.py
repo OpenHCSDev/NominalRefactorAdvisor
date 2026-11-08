@@ -22,7 +22,7 @@ from dataclasses import dataclass
 from typing import ClassVar
 from pathlib import Path
 
-from .codemod import FindingRecipeSynthesizer
+from .refactors.finding_recipes import FindingRecipeSynthesizer
 from .codemod_reproof import SourceReprovedOperation
 from .codemod_runtime import (
     CodemodSourceSnapshot,

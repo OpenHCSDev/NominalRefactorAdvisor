@@ -3,12 +3,14 @@
 from dataclasses import replace
 import json
 
-from nominal_refactor_advisor.codemod import (
-    AddClassBaseOperation,
-    CodemodPlanSequence,
-    DeleteFunctionAssignmentsOperation,
+from nominal_refactor_advisor.refactors.class_base import AddClassBaseOperation
+from nominal_refactor_advisor.refactors.source_insertion import (
     EnsureImportOperation,
     InsertBeforeTargetOperation,
+)
+from nominal_refactor_advisor.refactors.target_deletion import DeleteFunctionAssignmentsOperation
+from nominal_refactor_advisor.codemod import (
+    CodemodPlanSequence,
     PrependFunctionBodyOperation,
     ProjectFunctionParameterOperation,
     PromoteClassMembersToAncestorOperation,
@@ -50,7 +52,7 @@ WITNESS = CodemodPlanSequence.from_operations(
     (
         EnsureImportOperation(
             target=module,
-            import_source="from nominal_refactor_advisor.codemod import CurrentLineWitness",
+            import_source="from nominal_refactor_advisor.refactors.candidate_collector import CurrentLineWitness",
         ),
         ReplaceFunctionSignatureOperation(
             target=renderer,

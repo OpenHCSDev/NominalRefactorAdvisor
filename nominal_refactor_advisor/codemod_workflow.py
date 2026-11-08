@@ -30,7 +30,7 @@ from .ast_tools import (
     ParsedModuleSourceProjection,
     parse_python_module_roots,
 )
-from .codemod import (
+from .refactors.finding_recipes import (
     FindingRecipeClassPlan,
     FindingRecipeClassPlanReport,
     FindingRecipeSynthesizer,

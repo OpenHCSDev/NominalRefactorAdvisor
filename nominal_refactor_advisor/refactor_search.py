@@ -23,7 +23,7 @@ from difflib import SequenceMatcher
 from pathlib import Path
 
 from .amortization import IntrospectionSource, NoTrace
-from .codemod import FindingRecipeSynthesizer
+from .refactors.finding_recipes import FindingRecipeSynthesizer
 from .codemod_architecture_guards import ArchitectureGuardSuite
 from .codemod_workflow import (
     CodemodRefactorGoalRunner,

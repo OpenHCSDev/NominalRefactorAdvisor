@@ -25,10 +25,8 @@ from ..ast_tools import (
     statements_without_docstring,
     walk_function_body_nodes,
 )
-from ..codemod import (
-    EnsureImportOperation,
-    FindingRecipeSynthesizer,
-)
+from .finding_recipes import FindingRecipeSynthesizer
+from .source_insertion import EnsureImportOperation
 from ..codemod_architecture_guards import (
     ArchitectureGuardRule,
     ArchitectureGuardTargetScope,

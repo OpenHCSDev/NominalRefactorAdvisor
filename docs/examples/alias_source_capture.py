@@ -4,10 +4,12 @@ from dataclasses import replace
 import json
 from textwrap import dedent, indent
 
-from nominal_refactor_advisor.codemod import (
-    CodemodPlanSequence,
+from nominal_refactor_advisor.refactors.source_insertion import (
     EnsureImportOperation,
     InsertBeforeTargetOperation,
+)
+from nominal_refactor_advisor.codemod import (
+    CodemodPlanSequence,
     InsertClassMemberOperation,
     PatchTargetOperation,
     ReplaceTargetOperation,

@@ -4,14 +4,16 @@ from dataclasses import replace
 import json
 from textwrap import dedent
 
-from nominal_refactor_advisor.codemod import (
-    AddClassBaseOperation,
-    CodemodPlanSequence,
+from nominal_refactor_advisor.refactors.class_base import AddClassBaseOperation
+from nominal_refactor_advisor.refactors.source_insertion import (
     EnsureImportOperation,
+    RemoveImportNamesOperation,
+)
+from nominal_refactor_advisor.codemod import (
+    CodemodPlanSequence,
     MoveSymbolClosureToModuleOperation,
     PatchTargetOperation,
     PromoteClassMembersToAncestorOperation,
-    RemoveImportNamesOperation,
     ReplaceDeclarationDecoratorsOperation,
     ReplaceFunctionBodyOperation,
     SourceRewriteTarget,

@@ -12,10 +12,10 @@ import textwrap
 import pytest
 
 from nominal_refactor_advisor.ast_tools import parse_python_modules
+from nominal_refactor_advisor.refactors.binding_rename import RenameTopLevelBindingAuthorityOperation
 from nominal_refactor_advisor.codemod import (
     CodemodPlanSequence,
     CodemodSourceSnapshot,
-    RenameTopLevelBindingAuthorityOperation,
     SourceRewriteTarget,
 )
 from nominal_refactor_advisor.declaration_dependencies import (

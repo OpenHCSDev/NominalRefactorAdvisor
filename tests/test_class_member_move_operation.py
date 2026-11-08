@@ -8,16 +8,16 @@ from pathlib import Path
 import pytest
 
 from nominal_refactor_advisor.ast_tools import parse_python_modules
+from nominal_refactor_advisor.refactors.class_base import CollapseIntermediateClassAuthorityOperation
+from nominal_refactor_advisor.refactors.binding_rename import RenameTopLevelDeclarationAuthorityOperation
 from nominal_refactor_advisor.codemod import (
     CodemodPlanDocument,
     CodemodPlanSequence,
     CodemodOperationPreflightError,
     CodemodSourceSnapshot,
-    CollapseIntermediateClassAuthorityOperation,
     PromoteClassMembersToAncestorOperation,
     RefactorRecipe,
     RefactorRecipeOperation,
-    RenameTopLevelDeclarationAuthorityOperation,
     SourceRewriteTarget,
 )
 from nominal_refactor_advisor.json_reports import json_report_object
