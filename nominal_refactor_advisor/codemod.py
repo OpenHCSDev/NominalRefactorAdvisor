@@ -564,6 +564,7 @@ from .codemod_source_edits import (
 )
 from .codemod_source_edits import (
     SourceFileCreation as SourceFileCreation,
+    SourceFileDeletion as SourceFileDeletion,
 )
 from .codemod_source_edits import (
     SourceInsertion as SourceInsertion,
@@ -674,6 +675,7 @@ from .module_move_codemod import (
     ExplicitModuleSymbolSelectionOperationABC as ExplicitModuleSymbolSelectionOperationABC,
     ExtractSymbolClosureToNewModuleOperation as ExtractSymbolClosureToNewModuleOperation,
     ExtractSymbolsToNewModuleOperation as ExtractSymbolsToNewModuleOperation,
+    DissolveModuleOperation as DissolveModuleOperation,
     ModuleSymbolMoveOperation as ModuleSymbolMoveOperation,
     MoveSymbolClosureToModuleOperation as MoveSymbolClosureToModuleOperation,
     MoveSymbolsToModuleOperation as MoveSymbolsToModuleOperation,

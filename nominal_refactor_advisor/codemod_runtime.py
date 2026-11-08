@@ -96,6 +96,7 @@ from .codemod_source_edits import (
     SimulatedSourceRewrite,
     SourceEditWindowABC,
     SourceFileCreation,
+    SourceFileDeletion,
     SourceInsertion,
     SourceRewriteContributor,
     SourceTargetEditor,
@@ -421,6 +422,30 @@ class CodemodSourceSnapshot(CodemodSelectorContext):
             )
         return self.with_virtual_sources(
             {creation.file_path: creation.source for creation in creation_tuple}
+        )
+
+    def without_source_paths(
+        self,
+        file_paths: Iterable[str],
+    ) -> CodemodSourceSnapshot:
+        """This source state with the given files removed from it."""
+
+        removed = frozenset(file_paths)
+        if not removed:
+            return self
+        missing = removed.difference(self.sources_by_file_path)
+        if missing:
+            raise ValueError(
+                f"Cannot delete unindexed sources: {tuple(sorted(missing))!r}"
+            )
+        return type(self).from_modules(
+            ParsedModuleSet(
+                tuple(
+                    module
+                    for module in self.parsed_modules
+                    if module.file_path not in removed
+                )
+            )
         )
 
     def modules_with_source_overlay(
@@ -765,7 +790,9 @@ class RefactorRecipe(SourceRewriteReferences):
     ) -> bool:
         if selector_context is None:
             return bool(self.operations)
-        if self.created_source_paths(selector_context):
+        if self.created_source_paths(selector_context) or self.source_file_deletions(
+            selector_context
+        ):
             return True
         return bool(self.source_rewrite_batch(selector_context.execution_snapshot()))
 
@@ -825,6 +852,16 @@ class RefactorRecipe(SourceRewriteReferences):
             creation
             for operation in self.operations
             for creation in operation.source_file_creations(context)
+        )
+
+    def source_file_deletions(
+        self,
+        context: CodemodSelectorContext,
+    ) -> tuple[SourceFileDeletion, ...]:
+        return tuple(
+            deletion
+            for operation in self.operations
+            for deletion in operation.source_file_deletions(context)
         )
 
     def rewrite_context(
@@ -1113,6 +1150,16 @@ class CodemodPlanDocument(SourceRewriteReferences, CodemodPlanRoot):
             for creation in recipe.source_file_creations(snapshot)
         )
 
+    def source_file_deletions(
+        self,
+        snapshot: CodemodSelectorContext,
+    ) -> tuple[SourceFileDeletion, ...]:
+        return tuple(
+            deletion
+            for recipe in self.recipes
+            for deletion in recipe.source_file_deletions(snapshot)
+        )
+
     def simulate(
         self,
         snapshot: CodemodSourceSnapshot,
@@ -1179,13 +1226,18 @@ class CodemodPlanDocumentPreflight:
         backend: CodemodBackend | None = None,
     ) -> CodemodPlanDocumentSimulation:
         edit_batch = self.required_edit_batch
-        simulation = edit_batch.compiler.simulate_rewrites(
-            edit_batch.planned_rewrites,
-            backend=backend,
-        ).with_base_snapshot(self.base_snapshot)
+        simulation = (
+            edit_batch.compiler.simulate_rewrites(
+                edit_batch.planned_rewrites,
+                backend=backend,
+            )
+            .with_deletions(self.document.source_file_deletions(self.rewrite_snapshot))
+            .with_base_snapshot(self.base_snapshot)
+        )
         after_snapshot_projection = CodemodAfterSnapshotProjection(
             base_snapshot=self.rewrite_snapshot,
             source_overlay_by_file_path=simulation.rewritten_sources,
+            deleted_file_paths=simulation.deleted_file_paths,
         )
         active_guard_suite = self.document.combined_guard_suite
         architecture_guard_report = (
@@ -1432,8 +1484,17 @@ class CodemodSimulationReport(DataclassJsonReport):
     rewritten_sources: dict[str, str] = json_report_field(included=False)
     parse_validation: CodemodParseValidationReport
     base_revisions: tuple[CodemodSourceRevision, ...]
+    deleted_file_paths: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
+        rewritten_deletions = frozenset(self.deleted_file_paths).intersection(
+            self.rewritten_sources
+        )
+        if rewritten_deletions:
+            raise ValueError(
+                "A deleted source cannot also be rewritten: "
+                f"{tuple(sorted(rewritten_deletions))!r}"
+            )
         revision_paths = tuple(revision.file_path for revision in self.base_revisions)
         if len(revision_paths) != len(frozenset(revision_paths)):
             raise ValueError("Codemod source revisions require unique file paths")
@@ -1467,6 +1528,7 @@ class CodemodSimulationReport(DataclassJsonReport):
         initial_revisions: dict[str, CodemodSourceRevision] = {}
         active_source_hashes: dict[str, str | None] = {}
         rewritten_sources: dict[str, str] = {}
+        deleted_file_paths: set[str] = set()
         validated_file_paths: set[str] = set()
         for report in report_tuple:
             for revision in report.base_revisions:
@@ -1485,6 +1547,11 @@ class CodemodSimulationReport(DataclassJsonReport):
                     source
                 )
                 rewritten_sources[file_path] = source
+                deleted_file_paths.discard(file_path)
+            for file_path in report.deleted_file_paths:
+                active_source_hashes[file_path] = None
+                rewritten_sources.pop(file_path, None)
+                deleted_file_paths.add(file_path)
             validated_file_paths.update(report.validated_file_paths)
         backend = report_tuple[0].backend
         return cls(
@@ -1500,6 +1567,21 @@ class CodemodSimulationReport(DataclassJsonReport):
             base_revisions=tuple(
                 initial_revisions[file_path] for file_path in sorted(initial_revisions)
             ),
+            deleted_file_paths=tuple(sorted(deleted_file_paths)),
+        )
+
+    def with_deletions(
+        self,
+        deletions: Iterable[SourceFileDeletion],
+    ) -> CodemodSimulationReport:
+        """The same rewrites, plus the source files the document deletes."""
+
+        deleted = tuple(sorted({deletion.file_path for deletion in deletions}))
+        if not deleted:
+            return self
+        return replace(
+            self,
+            deleted_file_paths=tuple(sorted({*self.deleted_file_paths, *deleted})),
         )
 
     def with_base_snapshot(
@@ -1532,13 +1614,20 @@ class CodemodSimulationReport(DataclassJsonReport):
 
     @json_report_property()
     def changed_file_paths(self) -> tuple[str, ...]:
-        return tuple(sorted(self.rewritten_sources))
+        return tuple(sorted({*self.rewritten_sources, *self.deleted_file_paths}))
+
+    def rewritten_source(self, file_path: str) -> str | None:
+        """The file's source after the rewrite; None when the rewrite deletes it."""
+
+        if file_path in self.deleted_file_paths:
+            return None
+        return self.rewritten_sources[file_path]
 
     @cached_property
     def rewritten_source_digest(self) -> str:
         return hashlib.blake2s(
             "\0".join(
-                f"{file_path}\0{self.rewritten_sources[file_path]}"
+                f"{file_path}\0{self.rewritten_source(file_path)}"
                 for file_path in self.changed_file_paths
             ).encode("utf-8"),
             digest_size=16,
@@ -1559,10 +1648,13 @@ class CodemodAfterSnapshotProjection:
 
     base_snapshot: CodemodSourceSnapshot
     source_overlay_by_file_path: Mapping[str, str]
+    deleted_file_paths: tuple[str, ...] = ()
 
     @cached_property
     def snapshot(self) -> CodemodSourceSnapshot:
-        return self.base_snapshot.with_virtual_sources(self.source_overlay_by_file_path)
+        return self.base_snapshot.with_virtual_sources(
+            self.source_overlay_by_file_path
+        ).without_source_paths(self.deleted_file_paths)
 
 
 @dataclass(frozen=True)
@@ -3606,13 +3698,17 @@ def format_codemod_unified_diff(
     diff_lines: list[str] = []
     for file_path in simulation.changed_file_paths:
         original_source = source_by_path.get(file_path, "")
-        rewritten_source = simulation.rewritten_sources[file_path]
+        rewritten_source = simulation.rewritten_source(file_path)
         diff_lines.extend(
             difflib.unified_diff(
                 original_source.splitlines(keepends=True),
-                rewritten_source.splitlines(keepends=True),
+                (rewritten_source or "").splitlines(keepends=True),
                 fromfile=DiffPathPrefixAuthority(fromfile_prefix).path(file_path),
-                tofile=DiffPathPrefixAuthority(tofile_prefix).path(file_path),
+                tofile=(
+                    "/dev/null"
+                    if rewritten_source is None
+                    else DiffPathPrefixAuthority(tofile_prefix).path(file_path)
+                ),
             )
         )
     return "".join(diff_lines)
@@ -3656,11 +3752,11 @@ class CodemodSimulationWriter:
         try:
             self.simulation.require_current_sources(encoding=self.encoding)
             for file_path in self.simulation.changed_file_paths:
+                revision = self.simulation.base_revision_by_file_path[file_path]
                 committed_sources.append(
-                    self.commit_source(
-                        self.simulation.base_revision_by_file_path[file_path],
-                        staged_paths[file_path],
-                    )
+                    self.commit_deletion(revision)
+                    if file_path in self.simulation.deleted_file_paths
+                    else self.commit_source(revision, staged_paths[file_path])
                 )
         except BaseException:
             for committed_source in reversed(committed_sources):
@@ -3726,6 +3822,22 @@ class CodemodSimulationWriter:
         try:
             revision.require_path_state(backup_path, encoding=self.encoding)
             os.replace(staged_path, target_path)
+        except BaseException:
+            os.replace(backup_path, target_path)
+            raise
+        return CommittedCodemodSource(target_path, backup_path)
+
+    def commit_deletion(
+        self,
+        revision: CodemodSourceRevision,
+    ) -> CommittedCodemodSource:
+        """Move the file aside; rollback moves it back, success removes it."""
+
+        target_path = Path(revision.file_path)
+        backup_path = self.reserve_backup_path(target_path)
+        os.replace(target_path, backup_path)
+        try:
+            revision.require_path_state(backup_path, encoding=self.encoding)
         except BaseException:
             os.replace(backup_path, target_path)
             raise

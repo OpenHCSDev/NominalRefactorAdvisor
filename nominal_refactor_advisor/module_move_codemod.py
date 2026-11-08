@@ -12,6 +12,7 @@ from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
 
 from .ast_tools import ModuleAnnotationEvaluationMode
+from .json_reports import DataclassJsonReport
 from .class_index import CompactModulePublicExportContract, module_public_export_contract
 from .codemod_import_bindings import FromModuleImportBindingIdentity
 from .codemod_import_graph import SourceModuleImportGraph
@@ -52,6 +53,7 @@ from .codemod_semantics import CodemodPreflightStatus
 from .codemod_source_edits import (
     NominalSourceEdit,
     SourceFileCreation,
+    SourceFileDeletion,
     SourceInsertion,
     SourceTargetEditor,
     SourceTextGeometry,
@@ -165,7 +167,91 @@ class ModuleNameRedirect:
                 edits.append(
                     module_reads.rewrite(context.sources_by_file_path[consumer_path])
                 )
+            local_imports = self._local_import_replacements(
+                import_graph,
+                module,
+                identity,
+                consumer_path,
+                source_module_name,
+            )
+            if local_imports:
+                geometry = SourceTextGeometry(context.sources_by_file_path[consumer_path])
+                edits.append(
+                    geometry.nominal_edit(
+                        file_path=consumer_path,
+                        replacements=tuple(
+                            SourceTextSpanReplacement.from_offsets(
+                                start_offset=start,
+                                end_offset=end,
+                                replacement_source=replacement,
+                            )
+                            for statement, replacement in local_imports
+                            for start, end in (geometry.required_node_offsets(statement),)
+                        ),
+                    )
+                )
         return tuple(edits)
+
+    def _local_import_replacements(
+        self,
+        import_graph: SourceModuleImportGraph,
+        module: ast.Module,
+        identity: PythonModulePathIdentity,
+        consumer_path: str,
+        source_module_name: str,
+    ) -> tuple[tuple[ast.ImportFrom, str], ...]:
+        """Imports of moved names inside a function or class body, each rewritten in
+        place: one statement per owner, plus one for the names that stay."""
+
+        scoped = frozenset(
+            id(statement)
+            for scope in ModuleImportScope
+            for statement in scope.import_statements(module)
+        )
+        replacements: list[tuple[ast.ImportFrom, str]] = []
+        for statement in ast.walk(module):
+            if (
+                not isinstance(statement, ast.ImportFrom)
+                or id(statement) in scoped
+                or identity.resolve_import_from_module(
+                    imported_module=statement.module,
+                    level=statement.level,
+                )
+                != source_module_name
+            ):
+                continue
+            moved = tuple(alias for alias in statement.names if alias.name in self.destinations)
+            if not moved:
+                continue
+            if any(alias.name == "*" for alias in statement.names):
+                raise ValueError(f"{consumer_path!r}:{statement.lineno} star-imports locally")
+            kept = tuple(alias for alias in statement.names if alias.name not in self.destinations)
+            lines = [
+                ImportFromSource(
+                    module_name=ModuleImportScope.RUNTIME.required_module_reference(
+                        import_graph,
+                        importing_file_path=consumer_path,
+                        imported_file_path=destination_path,
+                        imported_name=owned[0].name,
+                    ),
+                    aliases=owned,
+                ).source.strip()
+                for destination_path in sorted({self.destinations[alias.name] for alias in moved})
+                for owned in (
+                    tuple(alias for alias in moved if self.destinations[alias.name] == destination_path),
+                )
+            ]
+            if kept:
+                lines.append(
+                    ImportFromSource(
+                        module_name=ImportFromModuleName.from_node(statement).source,
+                        aliases=kept,
+                    ).source.strip()
+                )
+            replacements.append(
+                (statement, ("\n" + " " * statement.col_offset).join(lines))
+            )
+        return tuple(replacements)
 
     def _owner_imports(
         self,
@@ -1203,3 +1289,407 @@ class ExtractSymbolClosureToNewModuleOperation(
     SourceBindingPreservingModuleSymbolMoveOperationABC,
 ):
     """Create a module and derive the moved closure from semantic roots."""
+
+
+@dataclass(frozen=True)
+class _DissolvedModuleBindings:
+    """What a module that declares nothing still binds: each imported name and
+    the indexed module that declares it, following re-export chains."""
+
+    source_path: str
+    owners: Mapping[str, str]
+    foreign_names: frozenset[str]
+
+    @classmethod
+    def of(
+        cls,
+        context: CodemodSelectorContext,
+        source_path: str,
+    ) -> _DissolvedModuleBindings:
+        module = context.module_nodes_by_file_path[source_path]
+        for index, statement in enumerate(module.body):
+            if not cls._binds_only_imports(statement, first=index == 0):
+                raise ValueError(
+                    f"{source_path!r} still declares {ast.unparse(statement).splitlines()[0]!r} "
+                    f"at line {statement.lineno}; relocate its declarations first"
+                )
+        owners: dict[str, str] = {}
+        foreign: set[str] = set()
+        for name, binding_module in cls._imported_names(context, source_path, module):
+            owner = cls._declaring_path(context, binding_module, name)
+            if owner is None:
+                foreign.add(name)
+            else:
+                owners[name] = owner
+        return cls(source_path, owners, frozenset(foreign))
+
+    @staticmethod
+    def _binds_only_imports(statement: ast.stmt, *, first: bool) -> bool:
+        if isinstance(statement, (ast.Import, ast.ImportFrom)):
+            return True
+        if first and isinstance(statement, ast.Expr) and isinstance(
+            statement.value, ast.Constant
+        ) and isinstance(statement.value.value, str):
+            return True
+        if isinstance(statement, ast.Assign) and all(
+            isinstance(target, ast.Name) and target.id == "__all__"
+            for target in statement.targets
+        ):
+            return True
+        return (
+            isinstance(statement, ast.If)
+            and not statement.orelse
+            and all(isinstance(inner, (ast.Import, ast.ImportFrom)) for inner in statement.body)
+        )
+
+    @staticmethod
+    def _imported_names(
+        context: CodemodSelectorContext,
+        source_path: str,
+        module: ast.Module,
+    ) -> Iterator[tuple[str, str | None]]:
+        identity = context.module_import_graph.source_file_for_path(
+            source_path
+        ).module_path_identity
+        for scope in ModuleImportScope:
+            for statement in scope.import_statements(module):
+                if isinstance(statement, ast.Import):
+                    for alias in statement.names:
+                        yield alias.asname or alias.name.split(".")[0], None
+                    continue
+                if statement.module == "__future__":
+                    continue
+                imported_module = identity.resolve_import_from_module(
+                    imported_module=statement.module,
+                    level=statement.level,
+                )
+                for alias in statement.names:
+                    if alias.name == "*":
+                        raise ValueError(
+                            f"{source_path!r} star-imports {imported_module!r}; "
+                            "its rebound names cannot be listed"
+                        )
+                    if alias.asname not in (None, alias.name):
+                        raise ValueError(
+                            f"{source_path!r} rebinds {alias.name!r} as {alias.asname!r}; "
+                            "its consumers cannot import that name from an owner"
+                        )
+                    yield alias.name, imported_module
+
+    @staticmethod
+    def _declaring_path(
+        context: CodemodSelectorContext,
+        module_name: str | None,
+        name: str,
+    ) -> str | None:
+        """The indexed module declaring `name`, through modules that only rebind it."""
+
+        import_graph = context.module_import_graph
+        seen: set[str] = set()
+        while module_name is not None and module_name not in seen:
+            seen.add(module_name)
+            source_file = import_graph.unique_source_file_for_module_name(module_name)
+            if source_file is None:
+                return None
+            table = ModuleSymbolTable(
+                file_path=source_file.file_path,
+                source=context.sources_by_file_path[source_file.file_path],
+                module=context.module_nodes_by_file_path[source_file.file_path],
+            )
+            if name in table.top_level_names:
+                return source_file.file_path
+            rebinding = next(
+                (
+                    node
+                    for scope in ModuleImportScope
+                    for node in scope.import_statements(table.module)
+                    if isinstance(node, ast.ImportFrom)
+                    and any(alias.name == name and alias.asname in (None, name) for alias in node.names)
+                ),
+                None,
+            )
+            if rebinding is None:
+                return source_file.file_path
+            module_name = source_file.module_path_identity.resolve_import_from_module(
+                imported_module=rebinding.module,
+                level=rebinding.level,
+            )
+        return None
+
+
+@dataclass(frozen=True)
+class _ModuleIdentityStrings:
+    """String constants naming the dissolved module: its dotted name, its path,
+    or `<module>.<Name>` (a patch target); each is rewritten to its owner."""
+
+    source_path: str
+    source_module_name: str
+    owners: Mapping[str, str]
+    successor_path: str | None
+
+    def edits(self, context: CodemodSelectorContext) -> tuple[NominalSourceEdit, ...]:
+        edits: list[NominalSourceEdit] = []
+        for source_file in context.source_index.files:
+            file_path = source_file.file_path
+            module = context.module_nodes_by_file_path.get(file_path)
+            if file_path == self.source_path or module is None:
+                continue
+            replacements = tuple(
+                (node, replacement)
+                for node in ast.walk(module)
+                if isinstance(node, ast.Constant) and isinstance(node.value, str)
+                for replacement in (self._replacement(context, file_path, node),)
+                if replacement is not None
+            )
+            if not replacements:
+                continue
+            geometry = SourceTextGeometry(context.sources_by_file_path[file_path])
+            edits.append(
+                geometry.nominal_edit(
+                    file_path=file_path,
+                    replacements=tuple(
+                        SourceTextSpanReplacement.from_offsets(
+                            start_offset=start,
+                            end_offset=end,
+                            replacement_source=repr(replacement),
+                        )
+                        for node, replacement in replacements
+                        for start, end in (geometry.required_node_offsets(node),)
+                    ),
+                )
+            )
+        return tuple(edits)
+
+    def _replacement(
+        self,
+        context: CodemodSelectorContext,
+        file_path: str,
+        node: ast.Constant,
+    ) -> str | None:
+        value = node.value
+        import_graph = context.module_import_graph
+        prefix = f"{self.source_module_name}."
+        if value.startswith(prefix) and value[len(prefix):] in self.owners:
+            name = value[len(prefix):]
+            return f"{import_graph.module_name_for_file_path(self.owners[name])}.{name}"
+        names_module = value == self.source_module_name or value.startswith(prefix)
+        names_path = value.endswith(".py") and (
+            value == self.source_path or self.source_path.endswith(f"/{value}")
+        )
+        if not (names_module or names_path):
+            return None
+        if self.successor_path is None or value.startswith(prefix):
+            raise ValueError(
+                f"{file_path!r}:{node.lineno} names the dissolved module as {value!r}; "
+                "declare its successor_path"
+            )
+        if names_module:
+            return import_graph.module_name_for_file_path(self.successor_path)
+        root = self.source_path[: len(self.source_path) - len(value)]
+        if not self.successor_path.startswith(root):
+            raise ValueError(
+                f"{file_path!r}:{node.lineno} names {value!r} relative to a root "
+                f"{self.successor_path!r} does not share"
+            )
+        return self.successor_path[len(root):]
+
+
+@dataclass(frozen=True)
+class DissolvedModuleReport(DataclassJsonReport):
+    """Where a dissolved module's names went."""
+
+    deleted_path: str
+    owner_paths_by_name: tuple[tuple[str, str], ...]
+
+
+@dataclass(frozen=True, kw_only=True)
+class DissolveModuleOperation(RepositorySourceReprovedOperation):
+    """Delete a module that declares nothing: every name it still binds is
+    imported by its consumers from the module that declares it (through
+    `ModuleNameRedirect`), every binding of the module object that only read
+    those names is removed, and every string naming the module follows it.
+
+    `successor_path` names the module a string naming the dissolved module now
+    means; without one such a string is refused. A consumer that binds the
+    module for its import side effect, or imports a name the module took from
+    outside the index, is refused: it has no owner to follow."""
+
+    successor_path: str | None = codemod_payload_field(
+        OptionalStringPayloadValueCodec(),
+        default=None,
+    )
+
+    def source_file_deletions(
+        self,
+        context: CodemodSelectorContext,
+    ) -> tuple[SourceFileDeletion, ...]:
+        source_path = self.required_source_path(context, self.operation_key())
+        return (
+            SourceFileDeletion(
+                operation_type=type(self),
+                file_path=source_path,
+                rationale=self.rationale_text(f"Dissolve {source_path!r}."),
+            ),
+        )
+
+    def preflight_reports(
+        self,
+        context: CodemodSelectorContext,
+    ) -> tuple[CodemodOperationPreflightReport, ...]:
+        try:
+            self.required_reproof(lambda: self.source_edits_from_snapshot(context))
+            source_path = self.required_source_path(context, self.operation_key())
+            bindings = _DissolvedModuleBindings.of(context, source_path)
+        except CodemodOperationPreflightError as error:
+            return (error.report,)
+        return (
+            CodemodOperationPreflightReport(
+                operation=self.operation_key(),
+                status=CodemodPreflightStatus.PASSED,
+                message="Every consumer of the dissolved module follows its owners",
+                detail=DissolvedModuleReport(
+                    deleted_path=source_path,
+                    owner_paths_by_name=tuple(sorted(bindings.owners.items())),
+                ),
+            ),
+        )
+
+    def source_edits_from_snapshot(
+        self,
+        context: CodemodSourceSnapshot,
+    ) -> tuple[NominalSourceEdit, ...]:
+        source_path = self.required_source_path(context, self.operation_key())
+        import_graph = context.module_import_graph
+        source_module_name = import_graph.module_name_for_file_path(source_path)
+        if source_module_name is None:
+            raise ValueError(f"Source module identity is unavailable for {source_path!r}")
+        bindings = _DissolvedModuleBindings.of(context, source_path)
+        successor_path = (
+            None
+            if self.successor_path is None
+            else SourcePathResolutionAuthority.from_source_index(
+                self.successor_path,
+                context.source_index,
+            ).required_path()
+        )
+        excluded = frozenset({source_path})
+        self._require_followable_consumers(context, source_path, source_module_name, bindings)
+        return (
+            *ModuleNameRedirect(source_path, bindings.owners).consumer_edits(
+                context,
+                excluded_paths=excluded,
+            ),
+            *self._module_binding_removals(context, source_path, source_module_name),
+            *_ModuleIdentityStrings(
+                source_path,
+                source_module_name,
+                bindings.owners,
+                successor_path,
+            ).edits(context),
+        )
+
+    @staticmethod
+    def _require_followable_consumers(
+        context: CodemodSelectorContext,
+        source_path: str,
+        source_module_name: str,
+        bindings: _DissolvedModuleBindings,
+    ) -> None:
+        for source_file in context.source_index.files:
+            module = context.module_nodes_by_file_path.get(source_file.file_path)
+            if source_file.file_path == source_path or module is None:
+                continue
+            identity = source_file.module_path_identity
+            for node in ast.walk(module):
+                if not isinstance(node, ast.ImportFrom) or (
+                    identity.resolve_import_from_module(
+                        imported_module=node.module,
+                        level=node.level,
+                    )
+                    != source_module_name
+                ):
+                    continue
+                unowned = tuple(
+                    alias.name
+                    for alias in node.names
+                    if alias.name == "*" and bindings.foreign_names
+                    or alias.name != "*" and alias.name not in bindings.owners
+                )
+                if unowned:
+                    raise ValueError(
+                        f"{source_file.file_path!r}:{node.lineno} imports {unowned!r} "
+                        f"from {source_module_name!r}, which declares none of them"
+                    )
+
+    @staticmethod
+    def _module_binding_removals(
+        context: CodemodSelectorContext,
+        source_path: str,
+        source_module_name: str,
+    ) -> Iterator[NominalSourceEdit]:
+        """Remove `from pkg import source` bindings once their reads are redirected.
+
+        `ModuleNameRedirect` refuses any use other than an attribute read, so a
+        binding still standing here is either all reads (now redirected) or unused,
+        which means it was taken for its import side effect."""
+
+        package, _, leaf = source_module_name.rpartition(".")
+        for source_file in context.source_index.files:
+            module = context.module_nodes_by_file_path.get(source_file.file_path)
+            if source_file.file_path == source_path or module is None:
+                continue
+            identity = source_file.module_path_identity
+            scoped = {
+                id(statement): scope
+                for scope in ModuleImportScope
+                for statement in scope.import_statements(module)
+            }
+            for scope, statement in (
+                (scoped.get(id(node)), node)
+                for node in ast.walk(module)
+                if isinstance(node, (ast.Import, ast.ImportFrom))
+            ):
+                if isinstance(statement, ast.Import):
+                    if any(
+                        alias.name == source_module_name
+                        or alias.name.startswith(f"{source_module_name}.")
+                        for alias in statement.names
+                    ):
+                        raise ValueError(
+                            f"{source_file.file_path!r}:{statement.lineno} imports "
+                            f"{source_module_name!r} as a module path"
+                        )
+                    continue
+                if (
+                    identity.resolve_import_from_module(
+                        imported_module=statement.module,
+                        level=statement.level,
+                    )
+                    != package
+                ):
+                    continue
+                aliases = tuple(alias for alias in statement.names if alias.name == leaf)
+                for alias in aliases:
+                    bound = alias.asname or alias.name
+                    if not any(
+                        isinstance(node, ast.Attribute)
+                        and isinstance(node.value, ast.Name)
+                        and node.value.id == bound
+                        for node in ast.walk(module)
+                    ):
+                        raise ValueError(
+                            f"{source_file.file_path!r}:{statement.lineno} binds "
+                            f"{source_module_name!r} for its import side effect"
+                        )
+                if aliases and scope is None:
+                    raise ValueError(
+                        f"{source_file.file_path!r}:{statement.lineno} binds "
+                        f"{source_module_name!r} inside a function"
+                    )
+                if aliases:
+                    yield ModuleImportMutation.remove_names(
+                        file_path=source_file.file_path,
+                        module_name=ImportFromModuleName.from_node(statement).source,
+                        names=(alias.name for alias in aliases),
+                        scope=scope,
+                    )
