@@ -29,6 +29,7 @@ from dataclasses import (
 )
 from functools import cached_property
 from itertools import groupby, pairwise
+from operator import attrgetter
 from pathlib import Path
 from typing import (
     ClassVar,
@@ -1023,6 +1024,60 @@ class SourceFileDeletion:
     @property
     def operation_key(self) -> str:
         return self.operation_type.operation_key()
+
+
+@dataclass(frozen=True, kw_only=True)
+class TextFileEdit:
+    """Span replacements in a file outside the Python source index that a move
+    must keep true: a project manifest naming a module, a data file read beside
+    its module. `source` is the text the spans index, as read when the edit was
+    planned; the writer refuses the edit once the file on disk differs from it."""
+
+    operation_type: type[RefactorRecipeOperation]
+    file_path: str
+    source: str
+    replacements: tuple[SourceTextSpanReplacement, ...]
+    rationale: str = ""
+
+    @staticmethod
+    def rewrites(edits: Iterable[TextFileEdit]) -> tuple[TextFileRewrite, ...]:
+        """Every edit of one file applied together. Edits of one file must read
+        the same text and touch disjoint spans."""
+
+        rewrites: list[TextFileRewrite] = []
+        for file_path, group in groupby(
+            sorted(edits, key=attrgetter("file_path")), key=attrgetter("file_path")
+        ):
+            file_edits = tuple(group)
+            sources = {edit.source for edit in file_edits}
+            if len(sources) != 1:
+                raise ValueError(f"Text edits of {file_path!r} read different texts")
+            (source,) = sources
+            spans = sorted(
+                {
+                    (replacement.start_offset, replacement.end_offset, replacement.replacement_source)
+                    for edit in file_edits
+                    for replacement in edit.replacements
+                }
+            )
+            for (_, first_end, _), (second_start, _, _) in pairwise(spans):
+                if second_start < first_end:
+                    raise ValueError(f"Text edits of {file_path!r} overlap at offset {second_start}")
+            rewritten = source
+            for start, end, replacement in reversed(spans):
+                rewritten = rewritten[:start] + replacement + rewritten[end:]
+            if rewritten != source:
+                rewrites.append(TextFileRewrite(file_path=file_path, before=source, after=rewritten))
+        return tuple(rewrites)
+
+
+@dataclass(frozen=True, kw_only=True)
+class TextFileRewrite:
+    """One file outside the Python source index, before and after a codemod."""
+
+    file_path: str
+    before: str
+    after: str
 
 
 @dataclass(frozen=True)

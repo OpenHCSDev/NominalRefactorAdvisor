@@ -2,17 +2,20 @@ from __future__ import annotations
 
 import ast
 import re
+import tomllib
 from abc import (
     ABC,
     abstractmethod,
 )
 from collections import Counter
 from collections.abc import (
+    Iterable,
     Iterator,
     Mapping,
 )
 from dataclasses import dataclass
 from itertools import product
+from pathlib import Path
 from typing import ClassVar, cast
 
 from ..ast_projection import ExpressionReference
@@ -69,6 +72,7 @@ from ..codemod_source_edits import (
     SourceTargetEditor,
     SourceTextGeometry,
     SourceTextSpanReplacement,
+    TextFileEdit,
 )
 from ..codemod_spacing import DestinationInsertionSpacing
 from ..declaration_dependencies import DeclarationDependencyProjection
@@ -2584,14 +2588,67 @@ class _OpaqueSequence(_LiteralSequence):
         return None
 
 
+class _ProjectManifests:
+    """The `pyproject.toml` governing each indexed source: the nearest one in
+    the source's directory or above it."""
+
+    file_name: ClassVar[str] = "pyproject.toml"
+
+    @classmethod
+    def governing(cls, file_paths: Iterable[str]) -> tuple[Path, ...]:
+        manifests: set[Path] = set()
+        for directory in {Path(file_path).parent for file_path in file_paths}:
+            for candidate in (directory, *directory.parents):
+                manifest = candidate / cls.file_name
+                if manifest.is_file():
+                    manifests.add(manifest)
+                    break
+        return tuple(sorted(manifests))
+
+
+class _TomlStrings:
+    """Offsets of every string's text in a TOML document: basic and literal,
+    single- and multi-line, skipping comments."""
+
+    @staticmethod
+    def content_spans(source: str) -> Iterator[tuple[int, int]]:
+        index = 0
+        while index < len(source):
+            character = source[index]
+            if character == "#":
+                newline = source.find("\n", index)
+                index = len(source) if newline < 0 else newline
+            elif source.startswith(('"""', "'''"), index):
+                delimiter = source[index : index + 3]
+                end = _TomlStrings._closing(source, index + 3, delimiter)
+                yield index + 3, end
+                index = end + 3
+            elif character in "\"'":
+                end = _TomlStrings._closing(source, index + 1, character)
+                yield index + 1, end
+                index = end + 1
+            else:
+                index += 1
+
+    @staticmethod
+    def _closing(source: str, start: int, delimiter: str) -> int:
+        index = start
+        while not source.startswith(delimiter, index):
+            if index >= len(source):
+                raise ValueError(f"Unterminated TOML string at offset {start}")
+            index += 2 if delimiter[0] == '"' and source[index] == "\\" else 1
+        return index
+
+
 @dataclass(frozen=True)
 class _ModuleIdentityStrings:
     """Every mention of the dissolved module inside a string (docstrings and
-    f-string parts included): its dotted name, `<module>.<Name>` (a patch
-    target), or its path. Each mention is rewritten in place to the name's
-    owner or to the successor; a mention in the claim (first positional
-    argument) of a call named in `retained_calls` (absence evidence such as
-    PathsAbsent) stays."""
+    f-string parts included), in Python sources and in the `pyproject.toml`
+    governing them: its dotted name, `<module>.<Name>` (a patch target),
+    `<module>:<Name>` (an entry point), or its path. Each mention is rewritten
+    in place to the name's owner or to the successor; a mention in the claim
+    (first positional argument) of a call named in `retained_calls` (absence
+    evidence such as PathsAbsent) stays."""
 
     source_path: str
     source_module_name: str
@@ -2599,13 +2656,87 @@ class _ModuleIdentityStrings:
     successor_path: str | None
     retained_calls: frozenset[str] = frozenset()
 
-    def edits(self, context: CodemodSelectorContext) -> tuple[NominalSourceEdit, ...]:
-        module_pattern = re.compile(
-            rf"(?<![\w.]){re.escape(self.source_module_name)}(?:\.(\w+))?(?!\w)"
+    @property
+    def module_pattern(self) -> re.Pattern[str]:
+        return re.compile(
+            rf"(?<![\w.]){re.escape(self.source_module_name)}(?:([.:])(\w+))?(?!\w)"
         )
-        embedded = _EmbeddedImportFrom(self.source_module_name)
+
+    @property
+    def path_pattern(self) -> re.Pattern[str]:
         file_name = self.source_path.rsplit("/", 1)[-1]
-        path_pattern = re.compile(rf"(?<![\w./-])((?:[\w.-]+/)+{re.escape(file_name)})(?!\w)")
+        return re.compile(rf"(?<![\w./-])((?:[\w.-]+/)+{re.escape(file_name)})(?!\w)")
+
+    def string_replacements(
+        self,
+        context: CodemodSelectorContext,
+        where: str,
+        segment: str,
+        start: int,
+        routed: Iterable[tuple[int, int]] = (),
+    ) -> tuple[SourceTextSpanReplacement, ...]:
+        """Replacements for every mention of the module in one string's text,
+        which starts at offset `start` of its file."""
+
+        routed = tuple(routed)
+        replacements: list[SourceTextSpanReplacement] = []
+        for match in self.module_pattern.finditer(segment):
+            if any(low <= match.start() < high for low, high in routed):
+                continue
+            replacements.append(
+                SourceTextSpanReplacement.from_offsets(
+                    start_offset=start + match.start(),
+                    end_offset=start + match.end(),
+                    replacement_source=self._module_replacement(context, where, match),
+                )
+            )
+        for match in self.path_pattern.finditer(segment):
+            path = match.group(1)
+            if not (self.source_path == path or self.source_path.endswith(f"/{path}")):
+                continue
+            replacements.append(
+                SourceTextSpanReplacement.from_offsets(
+                    start_offset=start + match.start(1),
+                    end_offset=start + match.end(1),
+                    replacement_source=self._path_replacement(where, path),
+                )
+            )
+        return tuple(replacements)
+
+    def manifest_edits(self, context: CodemodSelectorContext) -> tuple[TextFileEdit, ...]:
+        """Every string in a governing `pyproject.toml` naming the module: a
+        `[project.scripts]` or `[project.entry-points]` value, a tool's module
+        or path setting."""
+
+        edits: list[TextFileEdit] = []
+        for manifest in _ProjectManifests.governing(context.execution_snapshot().sources_by_file_path):
+            source = manifest.read_text(encoding="utf-8")
+            replacements = tuple(
+                replacement
+                for start, end in _TomlStrings.content_spans(source)
+                for replacement in self.string_replacements(
+                    context,
+                    f"{manifest.as_posix()!r}:{source.count(chr(10), 0, start) + 1}",
+                    source[start:end],
+                    start,
+                )
+            )
+            if not replacements:
+                continue
+            edit = TextFileEdit(
+                operation_type=DissolveModuleOperation,
+                file_path=manifest.as_posix(),
+                source=source,
+                replacements=replacements,
+                rationale=f"Entry points and settings naming {self.source_module_name!r} follow it.",
+            )
+            (rewrite,) = TextFileEdit.rewrites((edit,))
+            tomllib.loads(rewrite.after)
+            edits.append(edit)
+        return tuple(edits)
+
+    def edits(self, context: CodemodSelectorContext) -> tuple[NominalSourceEdit, ...]:
+        embedded = _EmbeddedImportFrom(self.source_module_name)
         edits: list[NominalSourceEdit] = []
         for source_file, parsed in FilesReachingModule(context, self.source_module_name):
             file_path = source_file.file_path
@@ -2633,28 +2764,11 @@ class _ModuleIdentityStrings:
                             "string; it does not bind them"
                         )
                     routed.append(match.span())
-                for match in module_pattern.finditer(segment):
-                    if any(low <= match.start() < high for low, high in routed):
-                        continue
-                    replacement = self._module_replacement(context, file_path, node, match)
-                    replacements.append(
-                        SourceTextSpanReplacement.from_offsets(
-                            start_offset=start + match.start(),
-                            end_offset=start + match.end(),
-                            replacement_source=replacement,
-                        )
+                replacements.extend(
+                    self.string_replacements(
+                        context, f"{file_path!r}:{node.lineno}", segment, start, routed
                     )
-                for match in path_pattern.finditer(segment):
-                    path = match.group(1)
-                    if not (self.source_path == path or self.source_path.endswith(f"/{path}")):
-                        continue
-                    replacements.append(
-                        SourceTextSpanReplacement.from_offsets(
-                            start_offset=start + match.start(1),
-                            end_offset=start + match.end(1),
-                            replacement_source=self._path_replacement(file_path, node, path),
-                        )
-                    )
+                )
             replacements.extend(
                 self._glued_replacements(context, file_path, parsed.fact(ModuleNodeIndex), geometry)
             )
@@ -2735,36 +2849,36 @@ class _ModuleIdentityStrings:
     def _module_replacement(
         self,
         context: CodemodSelectorContext,
-        file_path: str,
-        node: ast.Constant,
+        where: str,
         match: re.Match[str],
     ) -> str:
         import_graph = context.module_import_graph
-        name = match.group(1)
+        separator, name = match.group(1), match.group(2)
         if name is not None and name in self.owners:
-            return f"{import_graph.module_name_for_file_path(self.owners[name])}.{name}"
+            owner = import_graph.module_name_for_file_path(self.owners[name])
+            return f"{owner}{separator}{name}"
         if name is not None:
             raise ValueError(
-                f"{file_path!r}:{node.lineno} names {match.group(0)!r}, which the "
+                f"{where} names {match.group(0)!r}, which the "
                 "dissolved module does not bind"
             )
         if self.successor_path is None:
             raise ValueError(
-                f"{file_path!r}:{node.lineno} names the dissolved module "
+                f"{where} names the dissolved module "
                 f"{match.group(0)!r}; declare its successor_path or retain the call"
             )
         return import_graph.module_name_for_file_path(self.successor_path)
 
-    def _path_replacement(self, file_path: str, node: ast.Constant, path: str) -> str:
+    def _path_replacement(self, where: str, path: str) -> str:
         if self.successor_path is None:
             raise ValueError(
-                f"{file_path!r}:{node.lineno} names the dissolved module's path "
+                f"{where} names the dissolved module's path "
                 f"{path!r}; declare its successor_path or retain the call"
             )
         root = self.source_path[: len(self.source_path) - len(path)]
         if not self.successor_path.startswith(root):
             raise ValueError(
-                f"{file_path!r}:{node.lineno} names {path!r} relative to a root "
+                f"{where} names {path!r} relative to a root "
                 f"{self.successor_path!r} does not share"
             )
         return self.successor_path[len(root):]
@@ -2794,6 +2908,12 @@ class DissolveModuleOperation(RetainedCallOperation):
         OptionalStringPayloadValueCodec(),
         default=None,
     )
+
+    def text_file_edits(
+        self,
+        context: CodemodSelectorContext,
+    ) -> tuple[TextFileEdit, ...]:
+        return self._identity_strings(context).manifest_edits(context)
 
     def source_file_deletions(
         self,
@@ -2830,39 +2950,41 @@ class DissolveModuleOperation(RetainedCallOperation):
             ),
         )
 
+    def _identity_strings(self, context: CodemodSelectorContext) -> _ModuleIdentityStrings:
+        source_path = self.required_source_path(context, self.operation_key())
+        source_module_name = context.module_import_graph.module_name_for_file_path(source_path)
+        if source_module_name is None:
+            raise ValueError(f"Source module identity is unavailable for {source_path!r}")
+        return _ModuleIdentityStrings(
+            source_path,
+            source_module_name,
+            _DissolvedModuleBindings.of(context, source_path).owners,
+            (
+                None
+                if self.successor_path is None
+                else SourcePathResolutionAuthority.from_source_index(
+                    self.successor_path,
+                    context.source_index,
+                ).required_path()
+            ),
+            frozenset(self.retained_calls),
+        )
+
     def source_edits_from_snapshot(
         self,
         context: CodemodSourceSnapshot,
     ) -> tuple[NominalSourceEdit, ...]:
-        source_path = self.required_source_path(context, self.operation_key())
-        import_graph = context.module_import_graph
-        source_module_name = import_graph.module_name_for_file_path(source_path)
-        if source_module_name is None:
-            raise ValueError(f"Source module identity is unavailable for {source_path!r}")
-        bindings = _DissolvedModuleBindings.of(context, source_path)
-        successor_path = (
-            None
-            if self.successor_path is None
-            else SourcePathResolutionAuthority.from_source_index(
-                self.successor_path,
-                context.source_index,
-            ).required_path()
-        )
-        excluded = frozenset({source_path})
-        self._require_followable_consumers(context, excluded, source_module_name, bindings)
-        self._require_removable_module_bindings(context, excluded, source_module_name)
+        strings = self._identity_strings(context)
+        bindings = _DissolvedModuleBindings.of(context, strings.source_path)
+        excluded = frozenset({strings.source_path})
+        self._require_followable_consumers(context, excluded, strings.source_module_name, bindings)
+        self._require_removable_module_bindings(context, excluded, strings.source_module_name)
         return (
-            *ModuleNameRedirect(source_path, bindings.owners).consumer_edits(
+            *ModuleNameRedirect(strings.source_path, bindings.owners).consumer_edits(
                 context,
                 excluded_paths=excluded,
             ),
-            *_ModuleIdentityStrings(
-                source_path,
-                source_module_name,
-                bindings.owners,
-                successor_path,
-                frozenset(self.retained_calls),
-            ).edits(context),
+            *strings.edits(context),
         )
 
     @staticmethod

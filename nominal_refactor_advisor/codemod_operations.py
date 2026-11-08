@@ -32,6 +32,7 @@ from .codemod_source_edits import (
     SourceEditOrigin,
     SourceFileCreation,
     SourceFileDeletion,
+    TextFileEdit,
 )
 from .registry_identity import suffix_trimmed_class_name_registry_key
 from .semantic_descent import AuthorityClaim
@@ -135,6 +136,15 @@ class RefactorRecipeOperation(
         self,
         context: CodemodSelectorContext,
     ) -> tuple[SourceFileDeletion, ...]:
+        del context
+        return ()
+
+    def text_file_edits(
+        self,
+        context: CodemodSelectorContext,
+    ) -> tuple[TextFileEdit, ...]:
+        """Edits of files outside the Python source index this operation keeps true."""
+
         del context
         return ()
 
