@@ -359,7 +359,7 @@ class _SourceModuleObjectReads:
                 if parts[: len(chain)] == chain and len(parts) > len(chain):
                     if parts[-1] in moved_names:
                         reads.append((outermost, parts[-1]))
-                elif chain[: len(parts)] == parts:
+                elif parts == chain:
                     raise ValueError(
                         f"{file_path!r} uses the source module object "
                         f"{'.'.join(parts)!r} other than by reading an attribute"
@@ -400,7 +400,11 @@ class _SourceModuleObjectReads:
 
     @staticmethod
     def _bound_name_counts(module: ast.Module) -> Counter[str]:
+        """How many bindings each name has. Every `import pkg.x` binds the same
+        package object to `pkg`, so those count as one binding however many."""
+
         counts: Counter[str] = Counter()
+        package_heads: set[str] = set()
         for node in ast.walk(module):
             if isinstance(node, ast.Name) and not isinstance(node.ctx, ast.Load):
                 counts[node.id] += 1
@@ -408,8 +412,17 @@ class _SourceModuleObjectReads:
                 counts[node.arg] += 1
             elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
                 counts[node.name] += 1
-            elif isinstance(node, ast.alias) and node.name != "*":
-                counts[node.asname or node.name.split(".")[0]] += 1
+            elif isinstance(node, ast.Import):
+                for alias in node.names:
+                    if alias.asname is None:
+                        package_heads.add(alias.name.split(".")[0])
+                    else:
+                        counts[alias.asname] += 1
+            elif isinstance(node, ast.ImportFrom):
+                for alias in node.names:
+                    if alias.name != "*":
+                        counts[alias.asname or alias.name] += 1
+        counts.update(package_heads)
         return counts
 
     @staticmethod

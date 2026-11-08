@@ -310,3 +310,57 @@ def test_a_move_drops_the_destinations_guarded_import_of_the_moved_declaration(
         "assert typing.get_type_hints(pkg.rules.Rule.found)['frame'] is pkg.rules.Frame",
     )
     assert imported.returncode == 0, imported.stderr
+
+
+def test_repeated_package_imports_are_one_binding_not_a_rebinding(tmp_path: Path) -> None:
+    _write(tmp_path, "pkg/__init__.py", "")
+    _write(tmp_path, "pkg/other.py", "")
+    _write(tmp_path, "pkg/source.py", "class Moved:\n    value = 3\n")
+    _write(
+        tmp_path,
+        "pkg/consumer.py",
+        "import pkg.other, pkg.source  # noqa: E401\n\n"
+        "value = pkg.source.Moved.value\n",
+    )
+    simulation = (
+        RefactorRecipe("relocate-moved")
+        .with_operation(
+            RelocateSymbolsToNewModuleOperation(
+                target=SourceRewriteTarget(file_path=(tmp_path / "pkg/source.py").as_posix()),
+                symbol_qualnames=("Moved",),
+                destination_path=(tmp_path / "pkg/moved.py").as_posix(),
+            )
+        )
+        .simulate(_snapshot(tmp_path))
+    )
+    assert simulation.is_clean, simulation.preflight_report
+    simulation.apply()
+    imported = _run(tmp_path, "from pkg.consumer import value; assert value == 3")
+    assert imported.returncode == 0, imported.stderr
+
+
+def test_a_package_object_above_the_source_is_not_the_source(tmp_path: Path) -> None:
+    _write(tmp_path, "pkg/__init__.py", "")
+    _write(tmp_path, "pkg/source.py", "class Moved:\n    value = 3\n")
+    _write(
+        tmp_path,
+        "pkg/consumer.py",
+        "import pkg\nimport pkg.source\n\n"
+        "ROOT = pkg.__name__\n"
+        "value = pkg.source.Moved.value\n",
+    )
+    simulation = (
+        RefactorRecipe("relocate-moved")
+        .with_operation(
+            RelocateSymbolsToNewModuleOperation(
+                target=SourceRewriteTarget(file_path=(tmp_path / "pkg/source.py").as_posix()),
+                symbol_qualnames=("Moved",),
+                destination_path=(tmp_path / "pkg/moved.py").as_posix(),
+            )
+        )
+        .simulate(_snapshot(tmp_path))
+    )
+    assert simulation.is_clean, simulation.preflight_report
+    simulation.apply()
+    imported = _run(tmp_path, "from pkg.consumer import value, ROOT; assert value == 3 and ROOT == 'pkg'")
+    assert imported.returncode == 0, imported.stderr
