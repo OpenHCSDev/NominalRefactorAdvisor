@@ -287,6 +287,12 @@ class SearchBudgetArguments:
         return SearchBudget(**cls.supplied(args))
 
 
+def destination_table_text(path: str) -> str:
+    """Read a destination table at the CLI boundary, so the config holds its text."""
+
+    return Path(path).read_text(encoding="utf-8")
+
+
 def _config_argument_specs() -> tuple[CliArgumentSpec, ...]:
     return tuple(
         (
@@ -736,6 +742,18 @@ _CLI_ARGUMENT_SPECS = (
     )
     + _config_argument_specs()
     + (
+        CliArgumentSpec(
+            flags=("--package-destination-table",),
+            action="append",
+            dest="package_destination_tables",
+            value_type=destination_table_text,
+            default=[],
+            help=(
+                "A Markdown destination table (a row per package: `package` | "
+                "its owners and modules | ...) that --codemod-refactor-goal "
+                "package_move moves flat modules by (can be repeated)."
+            ),
+        ),
         CliArgumentSpec(
             flags=("--exclude-pattern",),
             action="append",
