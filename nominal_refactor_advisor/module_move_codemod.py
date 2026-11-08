@@ -844,7 +844,8 @@ class SourceTopLevelSymbolClosureMovePlan(SourceTopLevelSymbolClosureMoveCarrier
                 reader_path=request.destination_path,
             ).consumer_edits(
                 context,
-                excluded_paths=frozenset((request.source_path, request.destination_path)),
+                excluded_paths=frozenset((request.source_path, request.destination_path))
+                | operation.retained_file_paths(context),
             ),
         )
         return cls(
@@ -1297,7 +1298,41 @@ class SourceTopLevelSymbolClosureMovePlan(SourceTopLevelSymbolClosureMoveCarrier
 
 
 @dataclass(frozen=True, kw_only=True)
-class ModuleSymbolMoveOperation(RepositorySourceReprovedOperation, ABC):
+class RetainedFileOperation(RepositorySourceReprovedOperation, ABC):
+    """A module operation that rewrites the files reading the module, except
+    `retained_paths`: files whose whole text records the module's old shape on
+    purpose (a frozen historical copy a test replays) and stay exactly as written."""
+
+    retained_paths: tuple[str, ...] = codemod_payload_field(
+        StringArrayPayloadValueCodec(),
+        default=(),
+    )
+
+    def retained_file_paths(self, context: CodemodSelectorContext) -> frozenset[str]:
+        return frozenset(
+            SourcePathResolutionAuthority.from_source_index(
+                path,
+                context.source_index,
+            ).required_path()
+            for path in self.retained_paths
+        )
+
+
+@dataclass(frozen=True, kw_only=True)
+class RetainedCallOperation(RepositorySourceReprovedOperation, ABC):
+    """A module operation that rewrites strings naming the module, except under
+    a call named in `retained_calls`: those strings record the module's old
+    identity on purpose (evidence that the path is gone, such as PathsAbsent)
+    inside an otherwise live file, and stay as written."""
+
+    retained_calls: tuple[str, ...] = codemod_payload_field(
+        StringArrayPayloadValueCodec(),
+        default=(),
+    )
+
+
+@dataclass(frozen=True, kw_only=True)
+class ModuleSymbolMoveOperation(RetainedFileOperation, ABC):
     """Repository-proved destination contract for module-symbol moves."""
 
     destination_path: str = codemod_payload_field(SourcePathPayloadValueCodec())
@@ -1903,6 +1938,7 @@ class _ModuleIdentityStrings:
     owners: Mapping[str, str]
     successor_path: str | None
     retained_calls: frozenset[str] = frozenset()
+    retained_paths: frozenset[str] = frozenset()
 
     def edits(self, context: CodemodSelectorContext) -> tuple[NominalSourceEdit, ...]:
         module_pattern = re.compile(
@@ -1914,7 +1950,7 @@ class _ModuleIdentityStrings:
         for source_file in context.source_index.files:
             file_path = source_file.file_path
             module = context.module_nodes_by_file_path.get(file_path)
-            if file_path == self.source_path or module is None:
+            if file_path == self.source_path or file_path in self.retained_paths or module is None:
                 continue
             source = context.sources_by_file_path[file_path]
             geometry = SourceTextGeometry(source)
@@ -2017,26 +2053,20 @@ class DissolvedModuleReport(DataclassJsonReport):
 
 
 @dataclass(frozen=True, kw_only=True)
-class DissolveModuleOperation(RepositorySourceReprovedOperation):
+class DissolveModuleOperation(RetainedFileOperation, RetainedCallOperation):
     """Delete a module that declares nothing: every name it still binds is
     imported by its consumers from the module that declares it (through
     `ModuleNameRedirect`), every binding of the module object that only read
     those names is removed, and every string naming the module follows it.
 
     `successor_path` names the module a string naming the dissolved module now
-    means; without one such a string is refused. Strings under a call named in
-    `retained_calls` record the module's old identity on purpose (evidence that
-    the path is gone, such as PathsAbsent) and stay as written. A consumer that binds the
+    means; without one such a string is refused. A consumer that binds the
     module for its import side effect, or imports a name the module took from
     outside the index, is refused: it has no owner to follow."""
 
     successor_path: str | None = codemod_payload_field(
         OptionalStringPayloadValueCodec(),
         default=None,
-    )
-    retained_calls: tuple[str, ...] = codemod_payload_field(
-        StringArrayPayloadValueCodec(),
-        default=(),
     )
 
     def source_file_deletions(
@@ -2092,33 +2122,34 @@ class DissolveModuleOperation(RepositorySourceReprovedOperation):
                 context.source_index,
             ).required_path()
         )
-        excluded = frozenset({source_path})
-        self._require_followable_consumers(context, source_path, source_module_name, bindings)
+        excluded = frozenset({source_path}) | self.retained_file_paths(context)
+        self._require_followable_consumers(context, excluded, source_module_name, bindings)
         return (
             *ModuleNameRedirect(source_path, bindings.owners).consumer_edits(
                 context,
                 excluded_paths=excluded,
             ),
-            *self._module_binding_removals(context, source_path, source_module_name),
+            *self._module_binding_removals(context, excluded, source_module_name),
             *_ModuleIdentityStrings(
                 source_path,
                 source_module_name,
                 bindings.owners,
                 successor_path,
                 frozenset(self.retained_calls),
+                self.retained_file_paths(context),
             ).edits(context),
         )
 
     @staticmethod
     def _require_followable_consumers(
         context: CodemodSelectorContext,
-        source_path: str,
+        excluded_paths: frozenset[str],
         source_module_name: str,
         bindings: _DissolvedModuleBindings,
     ) -> None:
         for source_file in context.source_index.files:
             module = context.module_nodes_by_file_path.get(source_file.file_path)
-            if source_file.file_path == source_path or module is None:
+            if source_file.file_path in excluded_paths or module is None:
                 continue
             identity = source_file.module_path_identity
             for node in ast.walk(module):
@@ -2145,7 +2176,7 @@ class DissolveModuleOperation(RepositorySourceReprovedOperation):
     @staticmethod
     def _module_binding_removals(
         context: CodemodSelectorContext,
-        source_path: str,
+        excluded_paths: frozenset[str],
         source_module_name: str,
     ) -> Iterator[NominalSourceEdit]:
         """Remove `from pkg import source` bindings once their reads are redirected.
@@ -2157,7 +2188,7 @@ class DissolveModuleOperation(RepositorySourceReprovedOperation):
         package, _, leaf = source_module_name.rpartition(".")
         for source_file in context.source_index.files:
             module = context.module_nodes_by_file_path.get(source_file.file_path)
-            if source_file.file_path == source_path or module is None:
+            if source_file.file_path in excluded_paths or module is None:
                 continue
             identity = source_file.module_path_identity
             scoped = {
@@ -2217,7 +2248,7 @@ class DissolveModuleOperation(RepositorySourceReprovedOperation):
 
 
 @dataclass(frozen=True, kw_only=True)
-class RetargetModuleMentionsOperation(RepositorySourceReprovedOperation):
+class RetargetModuleMentionsOperation(RetainedFileOperation, RetainedCallOperation):
     """Point every string mention of a module that no longer exists at its
     successor: the cleanup a dissolve does, for a module removed before the
     dissolve could see the mention (prose, embedded program text)."""
@@ -2225,10 +2256,6 @@ class RetargetModuleMentionsOperation(RepositorySourceReprovedOperation):
     retired_module_name: str = codemod_payload_field(RequiredStringPayloadValueCodec())
     retired_path: str = codemod_payload_field(RequiredStringPayloadValueCodec())
     successor_path: str = codemod_payload_field(SourcePathPayloadValueCodec())
-    retained_calls: tuple[str, ...] = codemod_payload_field(
-        StringArrayPayloadValueCodec(),
-        default=(),
-    )
 
     def preflight_reports(
         self,
@@ -2265,4 +2292,5 @@ class RetargetModuleMentionsOperation(RepositorySourceReprovedOperation):
             {},
             successor_path,
             frozenset(self.retained_calls),
+            self.retained_file_paths(context),
         ).edits(context)

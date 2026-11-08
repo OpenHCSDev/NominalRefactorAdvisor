@@ -688,6 +688,7 @@ class PayloadBinding(Generic[PayloadOwnerT, PayloadValueT]):
     field_name: str
     constructor_argument_name: str
     codec: PayloadValueCodec[PayloadValueT]
+    declares_default: bool = False
 
     def nested_records(self, owner: PayloadOwnerT) -> tuple[DataclassPayloadProjection, ...]:
         return self.codec.nested_records(getattr(owner, self.constructor_argument_name))
@@ -696,6 +697,13 @@ class PayloadBinding(Generic[PayloadOwnerT, PayloadValueT]):
         self,
         payload: Mapping[str, JsonValue],
     ) -> dict[str, PayloadValueT]:
+        """The field read from the payload; a field the payload omits and the
+        dataclass declares a default for is left to that default."""
+
+        if self.declares_default and not any(
+            name in payload for name in self.payload_field_names
+        ):
+            return {}
         return {
             self.constructor_argument_name: self.codec.read(payload, self.field_name)
         }
@@ -754,6 +762,8 @@ class PayloadBindingSet(
                     field_name=declaration.field_name or record_field.name,
                     constructor_argument_name=record_field.name,
                     codec=declaration.codec,
+                    declares_default=record_field.default is not MISSING
+                    or record_field.default_factory is not MISSING,
                 )
             )
         return cls(bindings)
