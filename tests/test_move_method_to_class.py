@@ -170,3 +170,127 @@ def test_a_method_that_neither_takes_nor_builds_the_destination_is_not_its(tmp_p
 
     with pytest.raises(CodemodOperationPreflightError, match="neither takes a Request nor builds one"):
         _simulate(tmp_path, "Thread.label")
+
+
+IDENTITY = (
+    "from __future__ import annotations\n\n"
+    "from dataclasses import dataclass\n\n\n"
+    "@dataclass(frozen=True)\n"
+    "class Identity:\n"
+    "    session: str\n"
+    "    file: str\n\n"
+    "    @staticmethod\n"
+    "    def from_proof(proof: 'Proof') -> Identity:\n"
+    "        return Identity(proof.session, proof.file)\n\n"
+    "    def require(self, proof) -> None:\n"
+    "        if self != self.from_proof(proof):\n"
+    "            raise ValueError('changed')\n\n"
+    "    @classmethod\n"
+    "    def from_evidence(cls, evidence: 'Evidence') -> Identity:\n"
+    "        \"\"\"Read the identity its evidence names.\"\"\"\n"
+    "        return cls(evidence.header(), evidence.path)\n\n"
+    "    @classmethod\n"
+    "    def proof_for(cls, session: str):\n"
+    "        from pkg.proof import Proof\n\n"
+    "        return Proof(session, 'f')\n"
+)
+PROOF = (
+    "from __future__ import annotations\n\n"
+    "from dataclasses import dataclass\n\n\n"
+    "@dataclass(frozen=True)\n"
+    "class Proof:\n"
+    "    session: str\n"
+    "    file: str\n\n\n"
+    "@dataclass(frozen=True)\n"
+    "class Evidence:\n"
+    "    path: str\n\n"
+    "    def header(self) -> str:\n"
+    "        return 's-' + self.path\n"
+)
+USE = (
+    "from pkg.identity import Identity\n"
+    "from pkg.proof import Evidence, Proof\n\n\n"
+    "def run() -> str:\n"
+    "    proof = Proof('s', 'f')\n"
+    "    one = Identity.from_proof(proof)\n"
+    "    one.require(proof)\n"
+    "    two = Identity.from_evidence(Evidence('p'))\n"
+    "    three = Identity.proof_for('x')\n"
+    "    return f'{one.session}/{two.session}/{three.session}'\n"
+)
+
+
+def _class_bound(root: Path, qualname: str, destination: str, **fields: str):
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(root))
+    operation = MoveMethodToClassOperation(
+        target=SourceRewriteTarget(file_path=(root / "pkg/identity.py").as_posix(), qualname=qualname),
+        destination=SourceRewriteTarget(file_path=(root / "pkg/proof.py").as_posix(), qualname=destination),
+        **fields,
+    )
+    replayed = RefactorRecipeOperation.from_json_value(json_report_object(operation))
+    return RefactorRecipe(recipe_id="move").with_operation(replayed).simulate(snapshot)
+
+
+def _runs(root: Path, result) -> str:
+    for path, source in result.simulation.rewritten_sources.items():
+        Path(path).write_text(source)
+    return subprocess.run(
+        [sys.executable, "-c", "from pkg.use import run; print(run())"],
+        cwd=root, check=True, capture_output=True, text=True,
+    ).stdout.strip()
+
+
+@pytest.mark.native_proof
+@pytest.mark.parametrize(
+    "qualname,destination,new_name,member,call",
+    (
+        ("Identity.from_proof", "Proof", "identity",
+         "    def identity(self) -> Identity:\n        return Identity(self.session, self.file)\n",
+         "one = proof.identity()"),
+        ("Identity.from_evidence", "Evidence", "identity",
+         "    def identity(self) -> Identity:\n        \"\"\"Read the identity its evidence names.\"\"\"\n"
+         "        return Identity(self.header(), self.path)\n",
+         "two = Evidence('p').identity()"),
+        ("Identity.proof_for", "Proof", None,
+         "    @classmethod\n    def proof_for(cls, session: str):\n        return cls(session, 'f')\n",
+         "three = Proof.proof_for('x')"),
+    ),
+)
+def test_a_static_or_class_method_moves_onto_the_class_it_takes_or_builds(
+    tmp_path: Path, qualname: str, destination: str, new_name: str | None, member: str, call: str,
+) -> None:
+    _write(tmp_path, {"identity": IDENTITY, "proof": PROOF, "use": USE})
+    fields = {} if new_name is None else {"destination_name": new_name}
+    result = _class_bound(tmp_path, qualname, destination, **fields)
+
+    assert result.is_clean is True
+    assert member in _source(tmp_path, result, "proof")
+    assert call in _source(tmp_path, result, "use")
+    assert qualname.split(".")[1] not in _source(tmp_path, result, "identity").split("def require")[0]
+    assert _runs(tmp_path, result) == "s/s-p/x"
+
+
+def test_a_static_method_call_inside_its_class_moves_with_it(tmp_path: Path) -> None:
+    _write(tmp_path, {"identity": IDENTITY, "proof": PROOF, "use": USE})
+    result = _class_bound(tmp_path, "Identity.from_proof", "Proof", destination_name="identity")
+
+    assert "if self != proof.identity():" in _source(tmp_path, result, "identity")
+
+
+@pytest.mark.parametrize(
+    "identity,qualname,fields,refusal",
+    (
+        (IDENTITY + "\n\nclass Child(Identity):\n    pass\n", "Identity.from_evidence",
+         {"destination_name": "identity"}, "class with descendants"),
+        (IDENTITY, "Identity.from_proof", {"receiver_parameter": "identity"},
+         "is a staticmethod; receiver_parameter is not taken"),
+    ),
+)
+def test_moving_a_class_bound_method_refuses_what_would_change(
+    tmp_path: Path, identity: str, qualname: str, fields: dict[str, str], refusal: str,
+) -> None:
+    destination = "Evidence" if "evidence" in qualname else "Proof"
+    _write(tmp_path, {"identity": identity, "proof": PROOF, "use": USE})
+
+    with pytest.raises(CodemodOperationPreflightError, match=refusal):
+        _class_bound(tmp_path, qualname, destination, **fields)
