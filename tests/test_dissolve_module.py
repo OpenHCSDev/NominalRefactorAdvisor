@@ -211,7 +211,7 @@ def test_relocation_redirects_a_function_local_import(tmp_path: Path) -> None:
 
 
 def _promote(root: Path, source: str, module: str, *names: str):
-    from nominal_refactor_advisor.codemod import PromoteGuardedImportOperation
+    from nominal_refactor_advisor.module_move_codemod import PromoteGuardedImportOperation
 
     return PromoteGuardedImportOperation(
         target=SourceRewriteTarget(file_path=(root / source).as_posix()),
