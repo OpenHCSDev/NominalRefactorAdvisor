@@ -892,33 +892,56 @@ class ParsedModule(SourceFileIdentity):
         return cast(ParsedModuleFactT, facts[kind])
 
     @cached_property
-    def _family_batches(self) -> dict[type[CollectedFamily], CollectedFamilyBatch]:
+    def _family_batches(
+        self,
+    ) -> dict[tuple[type[CollectedFamily], str], CollectedFamilyBatch]:
         return {}
 
     def family_batch(
-        self, family: type[CollectedFamily[ShapeItemT]]
+        self,
+        family: type[CollectedFamily[ShapeItemT]],
+        demand: object | None = None,
     ) -> CollectedFamilyBatch[ShapeItemT]:
-        """One family's items from this parse, collected once and retaining the
-        signature returned by the cache authority."""
+        """One family's items from this parse, or one demanded view of them,
+        collected once and retaining the signature returned by the cache authority."""
 
+        signature = (
+            "" if demand is None else collected_family_demand_cache_signature(demand)
+        )
         batches = self._family_batches
-        if family not in batches:
-            cached_items = self.collected_family_cache.load_items(family)
+        key = (family, signature)
+        if key not in batches:
+            cache = self.collected_family_cache
+            cached_items = cache.load_items(family, signature)
             if cached_items is not None:
-                batches[family] = CollectedFamilyBatch(
-                    cached_items,
-                    self.collected_family_cache.load_content_signature(family),
+                batches[key] = CollectedFamilyBatch(
+                    cached_items, cache.load_content_signature(family, signature)
                 )
             else:
                 items = tuple(
                     item
-                    for item in COLLECTED_ITEM_PROJECTION.flatten(family.collect(self))
+                    for item in COLLECTED_ITEM_PROJECTION.flatten(
+                        self._collected(family, demand)
+                    )
                     if isinstance(item, family.item_type)
                 )
-                batches[family] = CollectedFamilyBatch(
-                    items, self.collected_family_cache.store_items(family, items)
+                batches[key] = CollectedFamilyBatch(
+                    items, cache.store_items(family, items, signature)
                 )
-        return cast(CollectedFamilyBatch[ShapeItemT], batches[family])
+        return cast(CollectedFamilyBatch[ShapeItemT], batches[key])
+
+    def _collected(
+        self, family: type[CollectedFamily[ShapeItemT]], demand: object | None
+    ) -> Sequence[object]:
+        """The family's collection, or its demanded view; a demand the family
+        cannot collect directly is projected from the whole family."""
+
+        if demand is None:
+            return family.collect(self)
+        demanded = family.collect_demanded(self, demand)
+        if demanded is not None:
+            return demanded
+        return family.project_cached_demand(self.family_batch(family).items, demand)
 
     @cached_property
     def scoped_observations(self) -> tuple[ScopedAstObservation, ...]:
