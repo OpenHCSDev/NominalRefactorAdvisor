@@ -1070,8 +1070,8 @@ class MovedTopLevelDeclarationSource(SourceTextGeometry):
 
     @cached_property
     def moved_source(self) -> str:
-        start, end = self.node_span_offsets(self.declaration.source_span)
-        return self.source[start:end]
+        _, end = self.node_span_offsets(self.declaration.source_span)
+        return self.source[self.line_anchor_offset(self.source_start_line) : end]
 
     @property
     def name(self) -> str:
@@ -1079,7 +1079,12 @@ class MovedTopLevelDeclarationSource(SourceTextGeometry):
 
     @property
     def source_start_line(self) -> int:
-        return self.node_start_line(self.declaration.source_span)
+        """The declaration's first line, taking the comment lines written directly
+        above it: a comment about a declaration moves and is deleted with it."""
+        line = self.node_start_line(self.declaration.source_span)
+        while line > 1 and self.lines[line - 2].lstrip().startswith("#"):
+            line -= 1
+        return line
 
     @property
     def source_end_line(self) -> int:
