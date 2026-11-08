@@ -3236,6 +3236,7 @@ REGISTRATION_DECORATOR_FAMILY = AstNameFamily(
 class LexicalSyntaxScope:
     """Interned lexical owner state shared by every node in one scope."""
 
+    owner_node_index: int = 0
     names: tuple[str, ...] = ()
     class_names: tuple[str, ...] = ()
     function_names: tuple[str, ...] = ()
@@ -3285,6 +3286,23 @@ class ModuleSyntaxIndex:
     def node_membership(self) -> frozenset[ast.AST]:
         """Actual nodes of this tree, shared by source-ownership checks."""
         return frozenset(self.depth_first_nodes)
+
+    @cached_property
+    def named_scope_children(
+        self,
+    ) -> dict[ast.AST, tuple[ast.ClassDef | FunctionDefinitionNode, ...]]:
+        """Immediate named declarations in original order, including declarations in blocks."""
+        nodes = self.depth_first_nodes
+        children: dict[ast.AST, list[ast.ClassDef | FunctionDefinitionNode]] = {
+            nodes[scope.owner_node_index]: [] for scope in self.scopes
+        }
+        for scope in self.scopes[1:]:
+            node_index = scope.owner_node_index
+            parent = self.scopes[self.scope_ids[node_index]]
+            children[nodes[parent.owner_node_index]].append(
+                cast(ast.ClassDef | FunctionDefinitionNode, nodes[node_index])
+            )
+        return {owner: tuple(declarations) for owner, declarations in children.items()}
 
     def instances_of(self, node_type: type[SyntaxNodeT]) -> tuple[SyntaxNodeT, ...]:
         """Nodes that are instances of ``node_type``, in ``ast.walk`` order."""
@@ -3395,6 +3413,7 @@ class ModuleSyntaxIndex:
                 child_scope_id = len(scopes)
                 scopes.append(
                     LexicalSyntaxScope(
+                        owner_node_index=node_index,
                         names=(*scope.names, node.name),
                         class_names=(*scope.class_names, node.name),
                         function_names=scope.function_names,
@@ -3406,6 +3425,7 @@ class ModuleSyntaxIndex:
                 child_scope_id = len(scopes)
                 scopes.append(
                     LexicalSyntaxScope(
+                        owner_node_index=node_index,
                         names=(*scope.names, node.name),
                         class_names=scope.class_names,
                         function_names=(*scope.function_names, node.name),
