@@ -22,6 +22,7 @@ from .class_member_authority import (
     ClassMemberMoveProofContext,
     ClassMemberPromotionStatement,
 )
+from ..codemod_declaration_source import ClassHeaderSpanSourceAuthority
 from ..codemod_imports import ModuleImportMutation
 from ..codemod_payload import (
     CodemodPayloadRecord,
@@ -54,6 +55,15 @@ class ServedClass(CodemodPayloadRecord):
     member_names: tuple[str, ...] = codemod_payload_field(
         StringArrayPayloadValueCodec(), default=()
     )
+    moved_bases: tuple[str, ...] = codemod_payload_field(
+        StringArrayPayloadValueCodec(), default=()
+    )
+    """Bases that leave the declaration's header; the served header must name each."""
+    declaration_keywords: tuple[str, ...] = codemod_payload_field(
+        StringArrayPayloadValueCodec(), default=()
+    )
+    """Class keywords the declaration gains, such as an intermediate's declared_name=None
+    once moving its abstract members makes it instantiable."""
 
     @cached_property
     def header(self) -> ast.ClassDef:
@@ -64,6 +74,14 @@ class ServedClass(CodemodPayloadRecord):
         if node.decorator_list:
             raise ValueError("Served header carries decorators; write them on the class body")
         return node
+
+    @property
+    def header_source(self) -> str:
+        """The served header as NRA renders every class header, wrapped when long."""
+
+        node = self.header
+        authority = ClassHeaderSpanSourceAuthority(node=node, source=f"{self.served_header}:\n    pass\n")
+        return "".join(authority.header_lines(tuple(ast.unparse(base) for base in node.bases), ""))
 
     @property
     def served_name(self) -> str:
@@ -112,6 +130,13 @@ class ResolvedServedClass:
                 f"Served header {request.served_header!r} does not name "
                 f"{source_class.name!r} as a base"
             )
+        declared_bases = tuple(ast.unparse(base) for base in source_class.node.bases)
+        served_bases = tuple(ast.unparse(base) for base in request.header.bases)
+        for base in request.moved_bases:
+            if base not in declared_bases:
+                raise ValueError(f"{source_class.qualname!r} has no base {base!r} to move")
+            if base not in served_bases:
+                raise ValueError(f"Served header {request.served_header!r} does not take base {base!r}")
         members = ClassMemberPromotionStatement.selected(source_class.node, request.member_names)
         resolved = cls(request, source_class, members)
         context = ClassMemberMoveProofContext(
@@ -142,6 +167,15 @@ class ResolvedServedClass:
             snapshot.module_nodes_by_file_path[self.file_path].body
         )
 
+    def declaration_header_replacements(self, source: str) -> tuple[SourceTextSpanReplacement, ...]:
+        if not self.request.moved_bases and not self.request.declaration_keywords:
+            return ()
+        header = ClassHeaderSpanSourceAuthority(node=self.source_class.node, source=source)
+        return (header.header_replacement(header.with_items(
+            tuple(base for base in header.base_items if base not in self.request.moved_bases),
+            (*header.keyword_items, *self.request.declaration_keywords),
+        )),)
+
     def source_edits(self, snapshot: CodemodSourceSnapshot, rationale: str) -> tuple[NominalSourceEdit, ...]:
         source = snapshot.sources_by_file_path[self.file_path]
         deletion = StatementDeletionSource(
@@ -155,10 +189,11 @@ class ResolvedServedClass:
         body = "\n".join(
             member.source_from(source, indentation="    ") for member in self.members
         ) or "    pass\n"
-        served_source = f"{separator}\n\n{self.request.served_header}:\n{body}"
+        served_source = f"{separator}\n\n{self.request.header_source}{body}"
         return deletion.physical_edits(
             file_path=self.file_path,
             replacements=(
+                *self.declaration_header_replacements(source),
                 *deletion.replacements_for_statements(
                     tuple(member.statement for member in self.members)
                 ),
@@ -320,7 +355,9 @@ class FamilyMemberReads:
         failures: list[str] = []
         for served in self.served:
             symbol = served.source_class.required_symbol(self.snapshot)
-            ancestors = frozenset(index.ancestor_symbols(symbol))
+            departing_names, departing = self._departing(served, symbol)
+            ancestors = frozenset(index.ancestor_symbols(symbol)) - departing
+            leaving = served.moved | departing_names
             for member in (*ancestors, symbol, *index.descendant_symbols(symbol)):
                 declaration = index.classes_by_symbol.get(member)
                 if declaration is None:
@@ -342,13 +379,51 @@ class FamilyMemberReads:
                     failures.extend(
                         f"{where.format(line=read.lineno)} reads {read.attr!r}"
                         for read in ast.walk(statement)
-                        if isinstance(read, ast.Attribute) and read.attr in served.moved
+                        if isinstance(read, ast.Attribute) and read.attr in leaving
                         and _is_own_receiver(read.value)
                     )
         if failures:
             raise ValueError(
                 "Members cannot leave the declaration: " + "; ".join(sorted(set(failures)))
             )
+
+    def _departing(self, served: ResolvedServedClass, symbol: str) -> tuple[frozenset[str], frozenset[str]]:
+        """The ancestors the declaration stops inheriting when its moved bases leave (those not
+        still reached through a base it keeps), and the names their bodies bind."""
+
+        index = self.snapshot.required_class_family_index
+        ancestors = frozenset(index.ancestor_symbols(symbol))
+
+        def lineage(base: str) -> frozenset[str]:
+            root = ast.parse(base, mode="eval").body
+            root = root.value if isinstance(root, ast.Subscript) else root
+            if not isinstance(root, ast.Name):
+                raise ValueError(f"Base {base!r} of {served.source_class.qualname!r} is not a named class")
+            owners = tuple(
+                ancestor for ancestor in ancestors
+                if ancestor in index.classes_by_symbol
+                and index.classes_by_symbol[ancestor].simple_name == root.id
+            )
+            if len(owners) > 1:
+                raise ValueError(f"Base {base!r} resolves to {len(owners)} repository classes")
+            return frozenset((*owners, *(a for owner in owners for a in index.ancestor_symbols(owner))))
+
+        moved = tuple(served.request.moved_bases)
+        if not moved:
+            return frozenset(), frozenset()
+        kept = frozenset().union(*(
+            lineage(ast.unparse(base)) for base in served.source_class.node.bases
+            if ast.unparse(base) not in moved
+        ))
+        departing = frozenset().union(*map(lineage, moved)) - kept
+        names = frozenset().union(*(
+            LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(self._class_node(
+                index.classes_by_symbol[departed].file_path,
+                index.classes_by_symbol[departed].qualname,
+            ).body)
+            for departed in departing
+        ))
+        return names, departing
 
     def _class_node(self, file_path: str, qualname: str) -> ast.ClassDef:
         scope: ast.AST = self.snapshot.module_nodes_by_file_path[file_path]
