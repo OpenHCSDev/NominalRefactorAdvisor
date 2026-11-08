@@ -409,18 +409,25 @@ class ModuleNameRedirect:
         source: str,
         source_module_name: str,
     ) -> tuple[SourceTextSpanReplacement, ...]:
-        """A string literal that is exactly one `from <source> import ...`
-        statement naming moved names (a plan's `import_source`, say) is a reader
-        written as text: it names each owner instead. A string that only mentions
-        the module is prose, and a dissolve's mention rule owns it."""
+        """An import of moved names written as text is a reader: a string that
+        is exactly one `from <source> import ...` statement (a plan's
+        `import_source`, say) names each owner instead, and so does such a
+        statement inside a longer string (a program a test hands a subprocess),
+        one `from` per owner joined by `; ` so the text keeps its lines. Names
+        that did not move stay on the source. A string that only mentions the
+        module is prose, and a dissolve's mention rule owns it."""
 
         geometry = SourceTextGeometry(source)
+        embedded = _EmbeddedImportFrom(source_module_name)
         replacements: list[SourceTextSpanReplacement] = []
         for node in ast.walk(module):
             if not (isinstance(node, ast.Constant) and isinstance(node.value, str)):
                 continue
             statement = _SingleImportFromText.of(node.value)
             if statement is None or statement.level or statement.module != source_module_name:
+                replacements.extend(
+                    self._embedded_import_replacements(import_graph, geometry, node, embedded)
+                )
                 continue
             moved = tuple(alias for alias in statement.names if alias.name in self.destinations)
             if not moved:
@@ -449,6 +456,42 @@ class ModuleNameRedirect:
                     start_offset=start,
                     end_offset=end,
                     replacement_source=text_literal,
+                )
+            )
+        return tuple(replacements)
+
+    def _embedded_import_replacements(
+        self,
+        import_graph: SourceModuleImportGraph,
+        geometry: SourceTextGeometry,
+        node: ast.Constant,
+        embedded: _EmbeddedImportFrom,
+    ) -> tuple[SourceTextSpanReplacement, ...]:
+        offsets = geometry.node_offsets(node)
+        if offsets is None:
+            return ()
+        start, end = offsets
+        replacements: list[SourceTextSpanReplacement] = []
+        for match in embedded.matches(geometry.source[start:end]):
+            names = embedded.names(match)
+            if not any(name in self.destinations for name in names):
+                continue
+            by_owner: dict[str, list[str]] = {}
+            for name in names:
+                owner = (
+                    import_graph.module_name_for_file_path(self.destinations[name])
+                    if name in self.destinations
+                    else embedded.module_name
+                )
+                by_owner.setdefault(owner, []).append(name)
+            replacements.append(
+                SourceTextSpanReplacement.from_offsets(
+                    start_offset=start + match.start(),
+                    end_offset=start + match.end(),
+                    replacement_source="; ".join(
+                        f"from {owner} import {', '.join(owned)}"
+                        for owner, owned in by_owner.items()
+                    ),
                 )
             )
         return tuple(replacements)
@@ -566,6 +609,26 @@ class _StarExportedNames:
                 f"not decide {self.unresolved!r}"
             )
         return self.names
+
+
+@dataclass(frozen=True)
+class _EmbeddedImportFrom:
+    """`from <module> import a, b` written anywhere inside a string's source
+    text: the one spelling both the redirect (which rewrites it to each name's
+    owner) and a dissolve's mention rule (which leaves it to the redirect) read."""
+
+    module_name: str
+
+    def matches(self, text: str) -> Iterator[re.Match[str]]:
+        return re.finditer(
+            rf"from[ \t]+{re.escape(self.module_name)}[ \t]+import[ \t]+"
+            r"(\w+(?:[ \t]*,[ \t]*\w+)*)",
+            text,
+        )
+
+    @staticmethod
+    def names(match: re.Match[str]) -> list[str]:
+        return [name.strip() for name in match.group(1).split(",")]
 
 
 class _SingleImportFromText:
@@ -2176,10 +2239,7 @@ class _ModuleIdentityStrings:
         module_pattern = re.compile(
             rf"(?<![\w.]){re.escape(self.source_module_name)}(?:\.(\w+))?(?!\w)"
         )
-        import_pattern = re.compile(
-            rf"from[ \t]+{re.escape(self.source_module_name)}[ \t]+import[ \t]+"
-            r"(\w+(?:[ \t]*,[ \t]*\w+)*)"
-        )
+        embedded = _EmbeddedImportFrom(self.source_module_name)
         file_name = self.source_path.rsplit("/", 1)[-1]
         path_pattern = re.compile(rf"(?<![\w./-])((?:[\w.-]+/)+{re.escape(file_name)})(?!\w)")
         edits: list[NominalSourceEdit] = []
@@ -2203,17 +2263,15 @@ class _ModuleIdentityStrings:
                 start, end = offsets
                 segment = source[start:end]
                 routed: list[tuple[int, int]] = []
-                for match in import_pattern.finditer(segment):
-                    routed.append(match.span())
-                    replacements.append(
-                        SourceTextSpanReplacement.from_offsets(
-                            start_offset=start + match.start(),
-                            end_offset=start + match.end(),
-                            replacement_source=self._import_replacement(
-                                context, file_path, node, match.group(1)
-                            ),
+                for match in embedded.matches(segment):
+                    unowned = [name for name in embedded.names(match) if name not in self.owners]
+                    if unowned:
+                        raise ValueError(
+                            f"{file_path!r}:{node.lineno} imports {unowned!r} from the "
+                            f"dissolved module {self.source_module_name!r} inside a "
+                            "string; it does not bind them"
                         )
-                    )
+                    routed.append(match.span())
                 for match in module_pattern.finditer(segment):
                     if any(low <= match.start() < high for low, high in routed):
                         continue
@@ -2254,33 +2312,6 @@ class _ModuleIdentityStrings:
             ) in self.retained_calls
             for argument in (*node.args, *(keyword.value for keyword in node.keywords))
             for inner in ast.walk(argument)
-        )
-
-    def _import_replacement(
-        self,
-        context: CodemodSelectorContext,
-        file_path: str,
-        node: ast.Constant,
-        imported: str,
-    ) -> str:
-        """An import statement written inside a string follows each name to its
-        owner, like a real import: one ``from`` per owner, joined by ``; `` so
-        the rewritten text is still one line wherever the original was."""
-
-        names = [name.strip() for name in imported.split(",")]
-        unowned = [name for name in names if name not in self.owners]
-        if unowned:
-            raise ValueError(
-                f"{file_path!r}:{node.lineno} imports {unowned!r} from the dissolved "
-                f"module {self.source_module_name!r} inside a string; it does not bind them"
-            )
-        import_graph = context.module_import_graph
-        by_owner: dict[str, list[str]] = {}
-        for name in names:
-            owner = import_graph.module_name_for_file_path(self.owners[name])
-            by_owner.setdefault(owner, []).append(name)
-        return "; ".join(
-            f"from {owner} import {', '.join(owned)}" for owner, owned in by_owner.items()
         )
 
     def _module_replacement(

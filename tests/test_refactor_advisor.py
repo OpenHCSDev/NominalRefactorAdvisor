@@ -7880,6 +7880,41 @@ def test_relocation_moves_an_attribute_docstring_with_its_assignment(
     )
 
 
+def test_relocation_retargets_an_import_inside_a_program_string(tmp_path: Path) -> None:
+    """A program a test hands a subprocess imports moved and kept names on one
+    line: the moved names follow the move, the kept one stays, and the line is
+    still one line."""
+
+    for relative_path, source in {
+        "pkg/__init__.py": "",
+        "pkg/source.py": "class Kept:\n    pass\n\n\nclass Moved:\n    value = 3\n",
+        "pkg/destination.py": "",
+        "pkg/runner.py": "PROGRAM = (\n"
+        '    "import sys\\n"\n'
+        '    "from pkg.source import Kept, Moved\\n"\n'
+        '    "print(Kept.__name__, Moved.value)\\n"\n'
+        ")\n",
+    }.items():
+        _write_module(tmp_path, relative_path, source)
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    operation = RelocateSymbolsToModuleOperation(
+        target=SourceRewriteTarget(file_path=(tmp_path / "pkg/source.py").as_posix()),
+        symbol_qualnames=("Moved",),
+        destination_path=(tmp_path / "pkg/destination.py").as_posix(),
+    )
+
+    simulation = RefactorRecipe("relocate-program-text").with_operation(operation).simulate(snapshot)
+
+    assert simulation.is_clean
+    assert simulation.simulation.rewritten_sources[(tmp_path / "pkg/runner.py").as_posix()] == (
+        "PROGRAM = (\n"
+        '    "import sys\\n"\n'
+        '    "from pkg.source import Kept; from pkg.destination import Moved\\n"\n'
+        '    "print(Kept.__name__, Moved.value)\\n"\n'
+        ")\n"
+    )
+
+
 def test_refactor_recipe_relocates_symbol_and_rewrites_consumers(
     tmp_path: Path,
 ) -> None:
