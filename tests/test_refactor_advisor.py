@@ -7571,7 +7571,7 @@ def test_relocation_keeps_star_and_module_object_readers_working(
             "names 'p.source', which reaches the moved names, through 'getattr'",
         ),
         (
-            "import pkg.source as s\n\nMoved = None\nvalue = s.Moved\n",
+            "import pkg.source as s\n\nMoved = None\nvalue = s.Moved\nkept = s.Kept\n",
             "already binds ('Moved',)",
         ),
         (
@@ -7601,6 +7601,51 @@ def test_relocation_refuses_a_module_object_reader_it_cannot_rewrite(
 
 
 @pytest.mark.parametrize(
+    ("reader", "retargeted"),
+    (
+        (
+            "import pkg.source as s\n\nMoved = None\nvalue = s.Moved.value\n",
+            "import pkg.destination as s\n",
+        ),
+        (
+            "from typing import TYPE_CHECKING\n\nif TYPE_CHECKING:\n    from pkg.source import Moved\n\n\n"
+            "def read() -> int:\n    import pkg.source as s, sys as _sys\n\n    return s.Moved.value\n\n\n"
+            "value = read()\n",
+            "    import pkg.destination as s, sys as _sys\n",
+        ),
+    ),
+    ids=("name-taken-at-module-level", "local-import-beside-guarded-name"),
+)
+def test_relocation_retargets_a_module_alias_whose_reads_all_moved_to_one_owner(
+    tmp_path: Path,
+    reader: str,
+    retargeted: str,
+) -> None:
+    """Every load of the alias reads a name now declared in one module, so the
+    import binds that module where it stands: a function-local import stays local
+    and keeps its alias, and no name is bound beside it."""
+
+    operation, snapshot = _relocate_moved_with_consumer(tmp_path, {"pkg/reader.py": reader})
+
+    simulation = RefactorRecipe("retarget-alias").with_operation(operation).simulate(snapshot)
+
+    assert simulation.is_clean
+    rewritten = simulation.simulation.rewritten_sources[(tmp_path / "pkg/reader.py").as_posix()]
+    assert "pkg.source" not in rewritten
+    assert retargeted in rewritten and rewritten.count("import pkg.destination as s") == 1
+    assert "s.Moved.value" in rewritten
+    simulation.apply()
+    imported = subprocess.run(
+        [sys.executable, "-c", "from pkg.reader import value; assert value == 3"],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert imported.returncode == 0, imported.stderr
+
+
+@pytest.mark.parametrize(
     "source_import",
     ("from .helpers import Helper", "from .api import Helper"),
     ids=("declaring-module", "re-exporter"),
@@ -7611,7 +7656,7 @@ def test_relocation_redirects_readers_of_a_source_import_it_removes(
 ) -> None:
     """The moved class took the source's last read of `Helper`, so the source's
     import goes. Readers that reached `Helper` through the source, by attribute or
-    by import, now import it from the module that declares it, past any module
+    by import, now reach it in the module that declares it, past any module
     that only re-exports it."""
 
     for relative_path, source in {
@@ -7640,8 +7685,8 @@ def test_relocation_redirects_readers_of_a_source_import_it_removes(
     assert simulation.is_clean
     rewritten = simulation.simulation.rewritten_sources
     assert "Helper" not in rewritten[(tmp_path / "pkg/source.py").as_posix()]
-    for reader in ("pkg/reader.py", "pkg/other.py"):
-        assert "helpers import Helper" in rewritten[(tmp_path / reader).as_posix()]
+    assert "import pkg.helpers as s\n" in rewritten[(tmp_path / "pkg/reader.py").as_posix()]
+    assert "helpers import Helper" in rewritten[(tmp_path / "pkg/other.py").as_posix()]
     simulation.apply()
     imported = subprocess.run(
         [

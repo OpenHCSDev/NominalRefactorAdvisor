@@ -250,12 +250,24 @@ class ModuleNameRedirect:
                             ),
                         )
                     )
+            retargets = _SourceModuleAliasRetargets.of(
+                module,
+                source_module_name=source_module_name,
+                owner_modules={
+                    name: owner
+                    for name, path in self.destinations.items()
+                    if (owner := import_graph.module_name_for_file_path(path)) is not None
+                },
+            )
+            if retargets.aliases:
+                edits.append(retargets.rewrite(consumer_path, context.sources_by_file_path[consumer_path]))
             module_reads = _SourceModuleObjectReads.of(
                 module,
                 identity,
                 source_module_name=source_module_name,
                 moved_names=moved_names,
                 file_path=consumer_path,
+                retargeted=retargets.bindings,
             )
             if module_reads.names:
                 edits.extend(
@@ -636,6 +648,92 @@ class _NamedModuleMemberPatch(_NamedModuleMemberAccess):
 
 
 @dataclass(frozen=True)
+class _SourceModuleAliasRetargets:
+    """`import source as s` whose every load of `s` reads a name now declared in
+    one module binds that module where it stands: the same scope, the same alias,
+    the reads as written. A function that imports the module to keep it off the
+    import path at load time keeps doing so. An alias that also reads a name
+    staying behind, reaches names moved to several owners, or is used any other
+    way stays with `_SourceModuleObjectReads`."""
+
+    aliases: tuple[tuple[ast.alias, str], ...]
+
+    @property
+    def bindings(self) -> frozenset[str]:
+        return frozenset(alias.asname for alias, _owner in self.aliases if alias.asname)
+
+    @classmethod
+    def of(
+        cls,
+        module: ast.Module,
+        *,
+        source_module_name: str,
+        owner_modules: Mapping[str, str],
+    ) -> _SourceModuleAliasRetargets:
+        candidates = tuple(
+            alias
+            for node in ast.walk(module)
+            if isinstance(node, ast.Import)
+            for alias in node.names
+            if alias.asname is not None and alias.name == source_module_name
+        )
+        if not candidates:
+            return cls(())
+        bindings = _SourceModuleObjectReads._bound_name_counts(module)
+        parents = {
+            child: parent
+            for parent in ast.walk(module)
+            for child in ast.iter_child_nodes(parent)
+        }
+        return cls(
+            tuple(
+                (alias, owner)
+                for alias in candidates
+                if alias.asname is not None and bindings[alias.asname] == 1
+                for owner in cls._sole_owner(module, parents, alias.asname, owner_modules)
+            )
+        )
+
+    @staticmethod
+    def _sole_owner(
+        module: ast.Module,
+        parents: dict[ast.AST, ast.AST],
+        binding: str,
+        owner_modules: Mapping[str, str],
+    ) -> tuple[str, ...]:
+        """The one module every load of `binding` reads a moved name from, or none."""
+
+        owners: set[str] = set()
+        for node in ast.walk(module):
+            if not (isinstance(node, ast.Name) and node.id == binding):
+                continue
+            parent = parents.get(node)
+            if not (
+                isinstance(parent, ast.Attribute)
+                and parent.value is node
+                and parent.attr in owner_modules
+            ):
+                return ()
+            owners.add(owner_modules[parent.attr])
+        return tuple(owners) if len(owners) == 1 else ()
+
+    def rewrite(self, file_path: str, source: str) -> NominalSourceEdit:
+        geometry = SourceTextGeometry(source)
+        return geometry.nominal_edit(
+            file_path=file_path,
+            replacements=tuple(
+                SourceTextSpanReplacement.from_offsets(
+                    start_offset=start,
+                    end_offset=end,
+                    replacement_source=f"{owner} as {alias.asname}",
+                )
+                for alias, owner in self.aliases
+                for start, end in (geometry.required_node_offsets(alias),)
+            ),
+        )
+
+
+@dataclass(frozen=True)
 class _SourceModuleObjectReads:
     """A consumer's `module.Name` reads of moved names through its bindings of the
     source module object, and its by-name accesses (`getattr(module, "Name")`,
@@ -664,9 +762,14 @@ class _SourceModuleObjectReads:
         source_module_name: str,
         moved_names: frozenset[str],
         file_path: str,
+        retargeted: frozenset[str] = frozenset(),
     ) -> _SourceModuleObjectReads:
         source_parts = tuple(source_module_name.split("."))
-        chains = frozenset(cls._bound_chains(module, identity, source_parts))
+        chains = frozenset(
+            chain
+            for chain in cls._bound_chains(module, identity, source_parts)
+            if chain[0] not in retargeted
+        )
         if not chains:
             return cls(file_path, (), (), frozenset(), ())
         bindings = cls._bound_name_counts(module)
