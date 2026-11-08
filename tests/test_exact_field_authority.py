@@ -4,10 +4,8 @@ import ast
 from pathlib import Path
 
 from nominal_refactor_advisor.ast_tools import ParsedModule
-from nominal_refactor_advisor.class_index import (
-    FunctionNominalParameterBindingAuthority,
-    ModuleNominalBindingAuthority,
-)
+from nominal_refactor_advisor.binding_proofs import FunctionNominalParameterBindingAuthority
+from nominal_refactor_advisor.class_index import ModuleNominalBindingAuthority
 from nominal_refactor_advisor.exact_field_authority import (
     ExactDataclassFieldAuthorityComponentBuilder,
 )

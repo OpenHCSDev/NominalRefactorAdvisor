@@ -8,7 +8,7 @@ import pytest
 
 from nominal_refactor_advisor.ast_tools import ParsedModuleSet
 from nominal_refactor_advisor import class_index, product_flow
-from nominal_refactor_advisor.class_index import RepositoryModuleBindingProof
+from nominal_refactor_advisor.binding_proofs import RepositoryModuleBindingProof
 from nominal_refactor_advisor.codemod_runtime import CodemodSourceSnapshot
 from nominal_refactor_advisor.source_execution import SourceModuleExecution
 

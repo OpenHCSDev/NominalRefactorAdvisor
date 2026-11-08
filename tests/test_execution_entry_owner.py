@@ -12,11 +12,11 @@ import pytest
 import nominal_refactor_advisor.source_execution as execution_module
 import nominal_refactor_advisor.class_index as binding_module
 from nominal_refactor_advisor.ast_tools import ParsedModule
+from nominal_refactor_advisor.binding_proofs import RepositoryModuleBindingProof
 from nominal_refactor_advisor.captured_reference import (
     CapturedNativeObject,
     InitialNativeIsland,
 )
-from nominal_refactor_advisor.class_index import RepositoryModuleBindingProof
 from nominal_refactor_advisor.native_declarations import NativeDeclaration
 from nominal_refactor_advisor.product_flow import source_product_flow_projection
 from nominal_refactor_advisor.source_entry import (

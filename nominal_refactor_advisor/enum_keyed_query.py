@@ -12,6 +12,7 @@ from .ast_tools import (
     ParsedModule,
     statements_without_docstring,
 )
+from .binding_proofs import RepositoryModuleBindingProof
 from .class_index import (
     ClassFamilyIndex,
     IndexedClass,
@@ -19,7 +20,6 @@ from .class_index import (
     ModuleNominalBindingWitness,
     ModuleNominalBindingView,
     NamedImportModuleBindingProjection,
-    RepositoryModuleBindingProof,
     build_class_family_index,
 )
 from .collection_algebra import sorted_tuple
