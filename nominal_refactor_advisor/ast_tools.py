@@ -39,7 +39,6 @@ from .ast_field_decoders import (
 )
 from .foreign_family import FunctionDefinition
 from .interpreter import PythonVersion
-from .module_node_index import ModuleNodeIndex
 from .ast_projection import CallKeywords, StatementValue
 from .ast_projection import (
     AstNameFamily,
@@ -845,11 +844,6 @@ class ParsedModule(SourceFileIdentity):
     source: str = field(repr=False)
     semantic_hash: str | None = None
     family_cache_dir: Path | None = None
-
-    @cached_property
-    def node_index(self) -> ModuleNodeIndex:
-        """One walk of this module, held for every pass that looks up its nodes."""
-        return ModuleNodeIndex.of(self.module)
 
     @cached_property
     def native_compilation(self) -> NativePythonCompilation:
