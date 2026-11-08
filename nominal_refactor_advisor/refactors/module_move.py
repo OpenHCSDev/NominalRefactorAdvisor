@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ast
 import builtins
+import os
 import re
 import tomllib
 from abc import (
@@ -3038,6 +3039,68 @@ class _ProjectManifests:
         return tuple(sorted(manifests))
 
 
+class _ProjectScripts:
+    """The executable scripts a governing project ships: files under the
+    manifest's directory with a shebang and the execute bit, outside hidden,
+    virtual-environment and dependency directories. A script that runs a module
+    by path or by `-m` names it in its text."""
+
+    skipped_directories: ClassVar[frozenset[str]] = frozenset(
+        ("node_modules", "__pycache__", "venv")
+    )
+
+    @classmethod
+    def governing(cls, manifests: Iterable[Path]) -> tuple[Path, ...]:
+        scripts: set[Path] = set()
+        for manifest in manifests:
+            for directory, subdirectories, files in os.walk(manifest.parent):
+                subdirectories[:] = [
+                    name
+                    for name in subdirectories
+                    if not name.startswith(".") and name not in cls.skipped_directories
+                ]
+                for name in files:
+                    path = Path(directory) / name
+                    if path.suffix != ".py" and os.access(path, os.X_OK) and cls._has_shebang(path):
+                        scripts.add(path)
+        return tuple(sorted(scripts))
+
+    @staticmethod
+    def _has_shebang(path: Path) -> bool:
+        with path.open("rb") as script:
+            return script.read(2) == b"#!"
+
+
+class _ScriptCode:
+    """Offsets of a script's code: everything but its comments. A `#` starts a
+    comment at the start of a line or after whitespace, outside quotes; the
+    shebang is one."""
+
+    @staticmethod
+    def spans(source: str) -> Iterator[tuple[int, int]]:
+        start = index = 0
+        quote = ""
+        previous = "\n"
+        while index < len(source):
+            character = source[index]
+            if quote:
+                if character == "\\" and quote == '"':
+                    index += 1
+                elif character == quote:
+                    quote = ""
+            elif character in "\"'":
+                quote = character
+            elif character == "#" and previous.isspace():
+                yield start, index
+                newline = source.find("\n", index)
+                index = start = len(source) if newline < 0 else newline
+                previous = "\n"
+                continue
+            previous = character
+            index += 1
+        yield start, len(source)
+
+
 class _TomlStrings:
     """Offsets of every string's text in a TOML document: basic and literal,
     single- and multi-line, skipping comments."""
@@ -3123,17 +3186,28 @@ class _ModuleIdentityStrings:
                 )
             )
         for match in self.path_pattern.finditer(segment):
-            path = match.group(1)
-            if not (self.source_path == path or self.source_path.endswith(f"/{path}")):
-                continue
-            replacements.append(
-                SourceTextSpanReplacement.from_offsets(
-                    start_offset=start + match.start(1),
-                    end_offset=start + match.end(1),
-                    replacement_source=self._path_replacement(where, path),
+            for path in self._source_path_suffixes(match.group(1))[:1]:
+                replacements.append(
+                    SourceTextSpanReplacement.from_offsets(
+                        start_offset=start + match.end(1) - len(path),
+                        end_offset=start + match.end(1),
+                        replacement_source=self._path_replacement(where, path),
+                    )
                 )
-            )
         return tuple(replacements)
+
+    def _source_path_suffixes(self, spelled: str) -> tuple[str, ...]:
+        """The tails of a spelled path, longest first, that name the dissolved
+        module's file: `$root/src/pkg/worker.py` names `src/pkg/worker.py`. A
+        tail keeps at least one directory, so a bare file name names nothing."""
+
+        parts = spelled.split("/")
+        tails = ("/".join(parts[index:]) for index in range(len(parts) - 1))
+        return tuple(
+            tail
+            for tail in tails
+            if self.source_path == tail or self.source_path.endswith(f"/{tail}")
+        )
 
     def manifest_edits(self, context: CodemodSelectorContext) -> tuple[TextFileEdit, ...]:
         """Every string in a governing `pyproject.toml` naming the module: a
@@ -3164,6 +3238,37 @@ class _ModuleIdentityStrings:
             )
             tomllib.loads(edit.rewritten)
             edits.append(edit)
+        return tuple(edits)
+
+    def script_edits(self, context: CodemodSelectorContext) -> tuple[TextFileEdit, ...]:
+        """Every mention of the module in the code of an executable script the
+        governing projects ship: `python -m module`, or its path after
+        `$repo_root/`. Comments are prose and stay as written."""
+
+        manifests = _ProjectManifests.governing(context.execution_snapshot().sources_by_file_path)
+        edits: list[TextFileEdit] = []
+        for script in _ProjectScripts.governing(manifests):
+            source = script.read_text(encoding="utf-8")
+            replacements = tuple(
+                replacement
+                for start, end in _ScriptCode.spans(source)
+                for replacement in self.string_replacements(
+                    context,
+                    f"{script.as_posix()!r}:{source.count(chr(10), 0, start) + 1}",
+                    source[start:end],
+                    start,
+                )
+            )
+            if replacements:
+                edits.append(
+                    TextFileEdit(
+                        operation_type=DissolveModuleOperation,
+                        file_path=script.as_posix(),
+                        source=source,
+                        replacements=replacements,
+                        rationale=f"Scripts running {self.source_module_name!r} follow it.",
+                    )
+                )
         return tuple(edits)
 
     def edits(self, context: CodemodSelectorContext) -> tuple[NominalSourceEdit, ...]:
@@ -3344,7 +3449,8 @@ class DissolveModuleOperation(RetainedCallOperation):
         self,
         context: CodemodSelectorContext,
     ) -> tuple[TextFileEdit, ...]:
-        return self._identity_strings(context).manifest_edits(context)
+        strings = self._identity_strings(context)
+        return (*strings.manifest_edits(context), *strings.script_edits(context))
 
     def source_file_deletions(
         self,
