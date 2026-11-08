@@ -29,17 +29,17 @@ from ..codemod_module_declarations import ModuleSymbolTable
 from ..codemod_runtime import FindingRecipeEvaluation, RefactorRecipe
 from ..codemod_selection_context import CodemodSelectorContext
 from ..codemod_selector_models import SourceRewriteTarget
-from ..module_node_index import ModuleNodeIndex
 from ..models import PackageDestinationMetrics, RefactorFinding, SourceLocation
-from .module_move import (
-    DissolveModuleOperation,
-    RelocateSymbolsToModuleOperation,
-    RelocateSymbolsToNewModuleOperation,
-)
+from ..module_node_index import ModuleNodeIndex
 from ..refactor_concepts import PackageMoveConcept
 from .finding_recipes import (
     PrimaryEvidenceActionKeysMixin,
     FindingRecipeSynthesizer,
+)
+from .module_move import (
+    DissolveModuleOperation,
+    RelocateSymbolsToModuleOperation,
+    RelocateSymbolsToNewModuleOperation,
 )
 
 _ROW = re.compile(r"^\s*\|\s*`(?P<package>[A-Za-z_][\w./]*)`\s*\|(?P<owners>[^|]*)\|")
@@ -103,19 +103,29 @@ class DestinationTable:
     def destinations(
         self, modules: Iterable[CompactModuleClassHeader]
     ) -> tuple[FlatModuleDestination, ...]:
-        """Each flat module the table sends somewhere, per root package."""
+        """Each flat module the table sends somewhere, per root package. A table is
+        the plan of the root packages that already hold one of its packages: a root
+        holding none of them (a consumer scanned beside the one being restructured)
+        keeps every module where it is, even one whose name a row lists."""
 
         flat_by_root: dict[str, list[CompactModuleClassHeader]] = {}
         packaged_by_root: dict[str, list[CompactModuleClassHeader]] = {}
+        packages_by_root: dict[str, set[str]] = {}
         for module in modules:
             parts = module.module_name.split(".")
+            if len(parts) > 2 or (
+                len(parts) == 2 and PurePosixPath(module.file_path).name == "__init__.py"
+            ):
+                packages_by_root.setdefault(parts[0], set()).add(parts[1])
             if PurePosixPath(module.file_path).name == "__init__.py" or len(parts) < 2:
                 continue
             by_root = flat_by_root if len(parts) == 2 else packaged_by_root
             by_root.setdefault(parts[0], []).append(module)
+        table_packages = {row.package.split("/")[0] for row in self.rows}
         return tuple(
             destination
             for root, root_modules in flat_by_root.items()
+            if table_packages & packages_by_root.get(root, set())
             for destination in self.root_destinations(
                 tuple(root_modules), tuple(packaged_by_root.get(root, ()))
             )

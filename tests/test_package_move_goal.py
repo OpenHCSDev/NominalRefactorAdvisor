@@ -218,3 +218,49 @@ def test_a_package_shadowed_by_a_module_file_is_refused(tmp_path: Path) -> None:
         for record in dead_end.class_plan_report.finding_plan.records
     )
     assert "pkg/messaging.py' is the module of that name" in reasons
+
+
+def test_a_consumer_root_holding_none_of_the_tables_packages_keeps_its_modules(
+    tmp_path: Path,
+) -> None:
+    """Toad scanned beside agent-comms: its own `thread_identity.py` shares a name with a
+    row's module, but Toad holds none of the table's packages, so only its import moves."""
+
+    _layered_package(tmp_path)
+    _write(tmp_path, "consumer/__init__.py", "")
+    _write(
+        tmp_path,
+        "consumer/steps.py",
+        "from pkg.steps import Step\n\nCONSUMED = Step.plan.phases\n",
+    )
+    report = CodemodRefactorGoalRunner(
+        roots=(tmp_path,),
+        config=DetectorConfig(package_destination_tables=(TABLE,)),
+        parse_workers=1,
+        dry_run=True,
+        migration_type=PackageMoveConcept,
+        guard_suite=ArchitectureGuardSuite(),
+    ).run()
+
+    assert report.stop_reason.completed, report.to_markdown()
+    targets = {
+        Path(operation.target.file_path).relative_to(tmp_path).as_posix()
+        for document in report.replay_sequence.documents
+        for recipe in document.recipes
+        for operation in recipe.operations
+    }
+    assert targets == {"pkg/goals.py", "pkg/steps.py", "pkg/plans.py"}
+    replay = report.replay_sequence.simulate(
+        CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    )
+    assert replay.is_clean
+    replay.apply()
+    imported = subprocess.run(
+        [sys.executable, "-c", "from consumer.steps import CONSUMED; print(CONSUMED)"],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert imported.returncode == 0, imported.stderr
+    assert "pkg.planning.steps" in (tmp_path / "consumer/steps.py").read_text()
