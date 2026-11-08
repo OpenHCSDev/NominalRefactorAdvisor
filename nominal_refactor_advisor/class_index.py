@@ -1574,19 +1574,22 @@ class CompactModuleClassHeader(CompactModuleIdentity):
     classes: tuple[CompactIndexedClass, ...]
     field_declaration_wrappers: tuple[CompactFieldDeclarationWrapper, ...] = ()
 
-    @classmethod
+    @staticmethod
     @ScanCache.cached
-    def from_modules(cls, modules: tuple[ParsedModule, ...]) -> tuple[Self, ...]:
+    def from_modules(
+        modules: tuple[ParsedModule, ...],
+    ) -> tuple[CompactModuleClassHeader, ...]:
         """Join original declarations with the repository's namespace proof."""
         return repository_settled_projections(
-            tuple(cls.from_module(module) for module in modules)
+            tuple(CompactModuleClassHeader.from_module(module) for module in modules)
         )
 
-    @classmethod
-    @ScanCache.cached
-    def from_module(cls, parsed_module: ParsedModule) -> Self:
-        """Acquire complete class declarations without unrelated analysis surfaces."""
-        return cls.declared_in(parsed_module, include_body_facets=True)
+    @staticmethod
+    def from_module(parsed_module: ParsedModule) -> CompactModuleClassHeader:
+        """Acquire complete class declarations without unrelated analysis surfaces:
+        a fact of the parse, so every scan and every goal state reads an unchanged
+        module's declarations once."""
+        return parsed_module.fact(ModuleClassHeader).header
 
     @classmethod
     def declared_in(
@@ -1619,6 +1622,22 @@ class CompactModuleClassHeader(CompactModuleIdentity):
         )
 
 ClassProjectionT = TypeVar("ClassProjectionT", bound=CompactModuleClassHeader)
+
+
+@dataclass(frozen=True)
+class ModuleClassHeader(ParsedModuleFact):
+    """One module's complete class declarations, body facets included. A fact of
+    the parse, like ModuleClassHeaderCore: a goal run's states hand unchanged
+    parses from stage to stage, so each unchanged module is declared once per run
+    instead of once per scan."""
+
+    header: CompactModuleClassHeader
+
+    @classmethod
+    def derive(cls, parsed_module: ParsedModule) -> Self:
+        return cls(
+            CompactModuleClassHeader.declared_in(parsed_module, include_body_facets=True)
+        )
 
 
 @dataclass(frozen=True)
