@@ -32,7 +32,6 @@ from ..refactors.dispatch_polymorphism import (
 from ..type_checker_session import (
     SourceFiles,
     SourceTexts,
-    TypeCheckerSession,
     TypeCheckerSources,
 )
 from ..codemod_legacy_path_recipe import LegacyPathErasureFindingRecipeSynthesizer
@@ -519,8 +518,7 @@ class ProbeOwnerQuery:
 
         if not self.spans:
             return ProbeOwnerContext(self.classes, {}, self.typing)
-        with TypeCheckerSession.session(sources) as session:
-            answers = session.receiver_types(self.spans)
+        answers = sources.receiver_types(self.spans)
         return ProbeOwnerContext(
             self.classes,
             {span: answer.owner(self.classes) for span, answer in answers.items()},

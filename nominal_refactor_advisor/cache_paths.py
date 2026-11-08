@@ -4,9 +4,53 @@ from __future__ import annotations
 
 import os
 import shutil
+from collections.abc import Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 from pathlib import Path
 from time import time
+from typing import ClassVar
+
+
+def replace_atomically(path: Path, data: bytes) -> None:
+    """Write to a private temporary file, then rename: a concurrent reader sees
+    the old entry or the new one, never a partial write."""
+
+    temp_path = path.with_name(f".{path.name}.{os.getpid()}.{id(data):x}.tmp")
+    try:
+        with temp_path.open("wb") as handle:
+            handle.write(data)
+        os.replace(temp_path, path)
+    except BaseException:
+        temp_path.unlink(missing_ok=True)
+        raise
+
+
+class ActiveScanCache:
+    """The collected-family cache of the scan running in this context.
+
+    State a scan derives outside its scanned modules (installed modules'
+    families, the type checker's answers) is kept beside them, so it is found
+    by the next scan of the same tree.
+    """
+
+    _directory: ClassVar[ContextVar[Path | None]] = ContextVar(
+        "active_scan_cache_directory", default=None
+    )
+
+    @classmethod
+    @contextmanager
+    def opened(cls, directory: Path | None) -> Iterator[None]:
+        token = cls._directory.set(directory)
+        try:
+            yield
+        finally:
+            cls._directory.reset(token)
+
+    @classmethod
+    def directory(cls) -> Path | None:
+        return cls._directory.get()
 
 
 @dataclass(frozen=True, kw_only=True)

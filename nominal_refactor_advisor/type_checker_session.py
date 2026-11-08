@@ -19,9 +19,15 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from itertools import chain
 from dataclasses import dataclass
+import hashlib
+import io
+from pathlib import Path
+import pickle
 from time import perf_counter
 from typing import TYPE_CHECKING, ClassVar
 
+from .cache_checkout import CheckoutRelocation, checkout_identity_text
+from .cache_paths import ActiveScanCache, replace_atomically
 from .json_reports import DataclassJsonReport
 from .probe_owner import FailedReceiverType, InferredReceiverType, ReceiverSpan, ReceiverType
 
@@ -88,6 +94,14 @@ class TypeCheckerSources(ABC):
     def build_sources(self, options: Options) -> list[BuildSource]:
         raise NotImplementedError
 
+    def receiver_types(
+        self, spans: tuple[ReceiverSpan, ...]
+    ) -> Mapping[ReceiverSpan, ReceiverType]:
+        """Build these sources once and answer every span."""
+
+        with TypeCheckerSession.session(self) as session:
+            return session.receiver_types(spans)
+
     def pathed(self, options: Options) -> tuple[tuple[str, BuildSource], ...]:
         """Every source with the file it reads; mypy's optional path is refused here, once."""
 
@@ -105,10 +119,113 @@ class SourceFiles(TypeCheckerSources):
 
     paths: frozenset[str]
 
+    ANSWER_SCHEMA = "type-checker-answers-v1"
+    ANSWER_IMPLEMENTATION_MODULES = (
+        "nominal_refactor_advisor.type_checker_session",
+        "nominal_refactor_advisor.probe_owner",
+    )
+
     def build_sources(self, options: Options) -> list[BuildSource]:
         return importlib.import_module("mypy.find_sources").create_source_list(
             sorted(self.paths), options
         )
+
+    def receiver_types(
+        self, spans: tuple[ReceiverSpan, ...]
+    ) -> Mapping[ReceiverSpan, ReceiverType]:
+        """Files on disk answer as their content does, so the answers are kept
+        in the scan's cache under what they depend on: each file's content
+        and place in its checkout, the spans, mypy's and Python's versions and
+        the type checker's own source. A scan after an NRA change that leaves
+        those alone reads them instead of building again (14-19 s cold)."""
+
+        directory = ActiveScanCache.directory()
+        if directory is None or importlib.util.find_spec("mypy") is None:
+            return super().receiver_types(spans)
+        relocation = CheckoutRelocation.containing(min(self.paths, default="."))
+        key = self.answer_key(spans)
+        portable_path = directory / "type-checker-answers" / f"{key}.pickle"
+        bound_path = portable_path.with_name(
+            f"{key}-{_checkout_digest(relocation)}.pickle"
+        )
+        for path in (portable_path, bound_path):
+            stored = _load_answers(path, relocation, key)
+            if stored is not None:
+                return stored
+        answers = super().receiver_types(spans)
+        payload = (key, dict(answers))
+        if relocation is None:
+            data, portable = pickle.dumps(payload, pickle.HIGHEST_PROTOCOL), False
+        else:
+            data, portable = relocation.portable_dumps(payload)
+        try:
+            portable_path.parent.mkdir(parents=True, exist_ok=True)
+            replace_atomically(portable_path if portable else bound_path, data)
+        except OSError:
+            pass
+        return answers
+
+    def answer_key(self, spans: tuple[ReceiverSpan, ...]) -> str:
+        files = sorted(
+            (checkout_identity_text(path), _content_hash(Path(path)))
+            for path in self.paths
+        )
+        span_keys = sorted(
+            (
+                checkout_identity_text(span.file_path),
+                span.line,
+                span.column,
+                span.end_line,
+                span.end_column,
+            )
+            for span in spans
+        )
+        implementation = tuple(
+            _content_hash(Path(importlib.import_module(name).__file__ or name))
+            for name in self.ANSWER_IMPLEMENTATION_MODULES
+        )
+        return hashlib.blake2s(
+            repr(
+                (
+                    self.ANSWER_SCHEMA,
+                    importlib.import_module("mypy.version").__version__,
+                    sys.version_info[:2],
+                    files,
+                    span_keys,
+                    implementation,
+                )
+            ).encode("utf-8"),
+            digest_size=16,
+        ).hexdigest()
+
+
+def _content_hash(path: Path) -> str:
+    try:
+        return hashlib.blake2s(path.read_bytes(), digest_size=16).hexdigest()
+    except OSError:
+        return "unreadable"
+
+
+def _checkout_digest(relocation: CheckoutRelocation | None) -> str:
+    root = "unrooted" if relocation is None else relocation.root_texts[0]
+    return hashlib.blake2s(root.encode("utf-8"), digest_size=8).hexdigest()
+
+
+def _load_answers(
+    path: Path, relocation: CheckoutRelocation | None, key: str
+) -> Mapping[ReceiverSpan, ReceiverType] | None:
+    try:
+        data = path.read_bytes()
+        payload = (
+            pickle.loads(data)
+            if relocation is None
+            else relocation.load(io.BytesIO(data))
+        )
+    except (OSError, pickle.PickleError, EOFError, AttributeError, ImportError):
+        return None
+    if not isinstance(payload, tuple) or len(payload) != 2 or payload[0] != key:
+        return None
+    return payload[1]
 
 
 @dataclass(frozen=True)

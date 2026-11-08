@@ -3,13 +3,10 @@
 from __future__ import annotations
 
 import ast
-from collections.abc import Iterator
-from contextlib import contextmanager
-from contextvars import ContextVar
 from functools import cache
 from importlib.machinery import PathFinder
 from pathlib import Path
-from typing import ClassVar, TypeVar
+from typing import TypeVar
 
 from .ast_tools import (
     CollectedFamily,
@@ -17,6 +14,7 @@ from .ast_tools import (
     ParsedModule,
     SourceModule,
 )
+from .cache_paths import ActiveScanCache
 from .python_module_identity import PythonModulePathIdentity
 from .source_identity import PACKAGE_INIT_FILE_NAME, source_path_is_package_init
 
@@ -33,21 +31,6 @@ class InstalledModule:
     by path, source signature and family schema, so a warm scan reads them
     instead of parsing the installed source again.
     """
-
-    _family_cache_dir: ClassVar[ContextVar[Path | None]] = ContextVar(
-        "installed_module_family_cache_dir", default=None
-    )
-
-    @classmethod
-    @contextmanager
-    def cached_in(cls, family_cache_dir: Path | None) -> Iterator[None]:
-        """Keep installed modules' collected families in this cache while a scan runs."""
-
-        token = cls._family_cache_dir.set(family_cache_dir)
-        try:
-            yield
-        finally:
-            cls._family_cache_dir.reset(token)
 
     @staticmethod
     def source_path(module_name: str) -> Path | None:
@@ -104,7 +87,7 @@ class InstalledModule:
             path=path,
             module_name=module_name,
             source=source,
-            family_cache_dir=cls._family_cache_dir.get(),
+            family_cache_dir=ActiveScanCache.directory(),
         )
         cached = context.load_items(family)
         if cached is not None:

@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+from nominal_refactor_advisor.cache_paths import ActiveScanCache
 from nominal_refactor_advisor.class_index import CompactModuleClassProjectionFamily
 from nominal_refactor_advisor.installed_source import InstalledModule
 
@@ -23,7 +24,7 @@ def test_an_installed_modules_classes_are_read_from_the_family_cache_once_stored
     monkeypatch.syspath_prepend(str(site))
     InstalledModule.located_source.cache_clear()
     cache_dir = tmp_path / "collected-family"
-    with InstalledModule.cached_in(cache_dir):
+    with ActiveScanCache.opened(cache_dir):
         (stored,) = InstalledModule.family_items(
             "nra_test_cached_install", CompactModuleClassProjectionFamily
         )
@@ -40,7 +41,7 @@ def test_an_installed_modules_classes_are_read_from_the_family_cache_once_stored
         return real_parse(source, filename, *args, **kwargs)
 
     monkeypatch.setattr(ast, "parse", parse)
-    with InstalledModule.cached_in(cache_dir):
+    with ActiveScanCache.opened(cache_dir):
         (read,) = InstalledModule.family_items(
             "nra_test_cached_install", CompactModuleClassProjectionFamily
         )

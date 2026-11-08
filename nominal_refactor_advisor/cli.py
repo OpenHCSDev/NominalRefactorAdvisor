@@ -81,8 +81,8 @@ from .ast_tools import (
     parse_python_module_roots,
     python_source_paths_for_roots,
 )
-from .installed_source import InstalledModule
 from .cache_paths import (
+    ActiveScanCache,
     ParseCachePolicy,
     default_parse_cache_dir,
     maintain_default_cache,
@@ -4186,7 +4186,7 @@ class ColdScanAnalysis:
             cache_dir=self.parse_cache_dir,
             use_parse_cache=self.args.use_parse_cache,
         ).collected_family_cache_dir
-        with InstalledModule.cached_in(installed_family_cache_dir):
+        with ActiveScanCache.opened(installed_family_cache_dir):
             return analyze_compact_roots_with_cache(
                 self.roots,
                 self.config,

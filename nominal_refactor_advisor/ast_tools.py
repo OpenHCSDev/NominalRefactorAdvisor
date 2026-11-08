@@ -45,7 +45,11 @@ from .ast_projection import (
     ExpressionReference,
 )
 from .cache_checkout import CheckoutRelocation
-from .cache_paths import ParseCacheDirectory, default_parse_cache_dir
+from .cache_paths import (
+    ParseCacheDirectory,
+    default_parse_cache_dir,
+    replace_atomically,
+)
 from .case_root import Case
 from .collection_algebra import (
     UniqueIdentityIndexAuthority,
@@ -2472,20 +2476,6 @@ class _StableCacheWalk:
         return "repr", value_type.__module__, value_type.__qualname__, repr(value)
 
 
-def _replace_atomically(path: Path, data: bytes) -> None:
-    """Write to a private temporary file, then rename: a concurrent reader sees
-    the old entry or the new one, never a partial write."""
-
-    temp_path = path.with_name(f".{path.name}.{os.getpid()}.{id(data):x}.tmp")
-    try:
-        with temp_path.open("wb") as handle:
-            handle.write(data)
-        os.replace(temp_path, path)
-    except BaseException:
-        temp_path.unlink(missing_ok=True)
-        raise
-
-
 def _store_collected_family_content_signature(
     cache_dir: Path,
     identity: CollectedFamilyCacheIdentity,
@@ -2493,7 +2483,7 @@ def _store_collected_family_content_signature(
 ) -> str | None:
     try:
         signature = stable.signature
-        _replace_atomically(
+        replace_atomically(
             _collected_family_content_signature_path(cache_dir, identity),
             signature.encode("ascii"),
         )
@@ -2732,7 +2722,7 @@ class CollectedFamilyCacheContext:
             if len(payload_bytes) > payload_max_bytes:
                 return None
             self.family_cache_dir.mkdir(parents=True, exist_ok=True)
-            _replace_atomically(
+            replace_atomically(
                 _collected_family_cache_path(self.family_cache_dir, identity),
                 payload_bytes,
             )
@@ -2806,7 +2796,7 @@ class CollectedFamilyCacheContext:
     def _store_bundle_marker(marker_path: Path) -> None:
         try:
             marker_path.parent.mkdir(parents=True, exist_ok=True)
-            _replace_atomically(marker_path, b"complete-v4\n")
+            replace_atomically(marker_path, b"complete-v4\n")
         except OSError:
             pass
 
