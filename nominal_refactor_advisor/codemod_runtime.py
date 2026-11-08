@@ -101,6 +101,9 @@ from .codemod_source_edits import (
     SourceFileCreation,
     SourceFileDeletion,
     SourceInsertion,
+    AbsentFileText,
+    FileText,
+    PresentFileText,
     TextFileChange,
     TextFileRewrite,
     SourceRewriteContributor,
@@ -180,6 +183,41 @@ def _parsed_modules_from_source_mapping(
 @dataclass(frozen=True)
 class CodemodSourceSnapshot(CodemodSelectorContext):
     """Source-index, source text, and semantic indexes for codemod execution."""
+
+    text_files: Mapping[str, FileText] = field(default_factory=dict, repr=False, compare=False)
+    """Files outside the Python index that earlier stages of the plan rewrote, as
+    this state has them; every other one is as it is on disk."""
+
+    def text_file(self, path: Path) -> FileText:
+        """A file outside the Python index as this state has it."""
+
+        carried = self.text_files.get(path.as_posix())
+        if carried is not None:
+            return carried
+        if path.is_file():
+            return PresentFileText(path.read_text(encoding="utf-8"))
+        return AbsentFileText()
+
+    def with_text_file_rewrites(
+        self,
+        rewrites: Iterable[TextFileRewrite],
+    ) -> CodemodSourceSnapshot:
+        """This state after `rewrites`, its Python sources and indexes unchanged."""
+
+        return self.with_text_files(TextFileRewrite.carried(self.text_files, rewrites))
+
+    def with_text_files(self, text_files: Mapping[str, FileText]) -> CodemodSourceSnapshot:
+        """This state with `text_files` as the plan's rewritten files outside the index."""
+
+        if text_files == self.text_files:
+            return self
+        return type(self)._from_modules_with_indexes(
+            self.parsed_modules,
+            self.required_class_family_index,
+            self._source_index_build_artifacts,
+            retained_product_flow_repository=self._retained_product_flow_repository,
+            text_files=text_files,
+        )
 
     _retained_product_flow_repository: SourceProductFlowRepository | None = field(
         default=None,
@@ -351,6 +389,7 @@ class CodemodSourceSnapshot(CodemodSelectorContext):
         class_family_index: ClassFamilyIndex,
         source_index_artifacts: SourceIndexBuildArtifacts,
         retained_product_flow_repository: SourceProductFlowRepository | None = None,
+        text_files: Mapping[str, FileText] | None = None,
     ) -> CodemodSourceSnapshot:
         """Build from source and semantic indexes proved for that exact source."""
 
@@ -368,6 +407,7 @@ class CodemodSourceSnapshot(CodemodSelectorContext):
                 module_nodes_by_file_path=module_node_cache,
             ),
             _retained_product_flow_repository=retained_product_flow_repository,
+            text_files={} if text_files is None else text_files,
         )
         snapshot._parsed_modules_by_file_path.update(
             (module.file_path, module) for module in modules
@@ -397,6 +437,7 @@ class CodemodSourceSnapshot(CodemodSelectorContext):
                     projection
                 )
             ),
+            text_files=self.text_files,
         )
 
     @cached_property
@@ -465,6 +506,7 @@ class CodemodSourceSnapshot(CodemodSelectorContext):
             self._source_index_build_artifacts.projected_with_module_overlay(
                 remaining, ()
             ),
+            text_files=self.text_files,
         )
 
     def modules_with_source_overlay(
@@ -657,6 +699,7 @@ class RefactorRecipeOperationCompiler(CodemodSourceSnapshot):
             snapshot.required_class_family_index,
             snapshot._source_index_build_artifacts,
             snapshot.product_flow_repository,
+            text_files=snapshot.text_files,
         )
 
     def planned_rewrites_for_recipes(
@@ -1286,6 +1329,7 @@ class CodemodPlanDocumentPreflight:
             base_snapshot=self.rewrite_snapshot,
             source_overlay_by_file_path=simulation.rewritten_sources,
             deleted_file_paths=simulation.deleted_file_paths,
+            text_file_rewrites=simulation.text_file_rewrites,
         )
         active_guard_suite = self.document.combined_guard_suite
         architecture_guard_report = (
@@ -1794,12 +1838,15 @@ class CodemodAfterSnapshotProjection:
     base_snapshot: CodemodSourceSnapshot
     source_overlay_by_file_path: Mapping[str, str]
     deleted_file_paths: tuple[str, ...] = ()
+    text_file_rewrites: tuple[TextFileRewrite, ...] = ()
 
     @cached_property
     def snapshot(self) -> CodemodSourceSnapshot:
-        return self.base_snapshot.with_virtual_sources(
-            self.source_overlay_by_file_path
-        ).without_source_paths(self.deleted_file_paths)
+        return (
+            self.base_snapshot.with_virtual_sources(self.source_overlay_by_file_path)
+            .without_source_paths(self.deleted_file_paths)
+            .with_text_file_rewrites(self.text_file_rewrites)
+        )
 
 
 @dataclass(frozen=True)

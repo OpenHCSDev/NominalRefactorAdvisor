@@ -969,3 +969,110 @@ def test_a_script_that_runs_the_dissolved_module_by_path_or_name_follows_it(tmp_
     )
     assert (tmp_path / "stack/native/prepare").stat().st_mode & 0o111
     assert (tmp_path / "docs/notes.md").read_text(encoding="utf-8") == "Run pkg/worker.py by hand.\n"
+
+
+def test_an_entry_point_naming_a_relocated_name_follows_it_before_the_dissolve(
+    tmp_path: Path,
+) -> None:
+    """native_pi's `[project.scripts]` entry names `main` on the module: the
+    relocation that moves `main` removes the source's binding of it, so the entry
+    names its owner at once; the module's own name and an unmoved name still name
+    the source, and the dissolve then has nothing left to refuse."""
+
+    _write(
+        tmp_path,
+        "pyproject.toml",
+        "[project]\n"
+        'name = "pkg"\n\n'
+        "[project.scripts]\n"
+        'pkg-tool = "pkg.tool:main"\n'
+        'pkg-kept = "pkg.tool:kept"\n\n'
+        '[project.entry-points."pkg.plugins"]\n'
+        "tool = 'pkg.tool'\n",
+    )
+    _write(tmp_path, "pkg/__init__.py", "")
+    _write(tmp_path, "pkg/execution/__init__.py", "")
+    _write(tmp_path, "pkg/tool.py", "def main() -> int:\n    return 7\n\n\ndef kept() -> int:\n    return 8\n")
+    source = (tmp_path / "pkg/tool.py").as_posix()
+    destination = (tmp_path / "pkg/execution/tool.py").as_posix()
+    relocate = RelocateSymbolsToNewModuleOperation(
+        target=SourceRewriteTarget(file_path=source),
+        symbol_qualnames=("main",),
+        destination_path=destination,
+    )
+
+    simulation = RefactorRecipe("relocate-main").with_operation(relocate).simulate(_snapshot(tmp_path))
+
+    assert simulation.is_clean
+    assert simulation.simulation.rewritten_source((tmp_path / "pyproject.toml").as_posix()) == (
+        "[project]\n"
+        'name = "pkg"\n\n'
+        "[project.scripts]\n"
+        'pkg-tool = "pkg.execution.tool:main"\n'
+        'pkg-kept = "pkg.tool:kept"\n\n'
+        '[project.entry-points."pkg.plugins"]\n'
+        "tool = 'pkg.tool'\n"
+    )
+
+    whole = RelocateSymbolsToNewModuleOperation(
+        target=SourceRewriteTarget(file_path=source),
+        symbol_qualnames=("main", "kept"),
+        destination_path=destination,
+    )
+    result = CodemodPlanSequence(
+        documents=(
+            CodemodPlanDocument(recipes=(RefactorRecipe("move").with_operation(whole),)),
+            CodemodPlanDocument(
+                recipes=(
+                    RefactorRecipe("dissolve").with_operation(
+                        _dissolve(tmp_path, "pkg/tool.py", "pkg/execution/tool.py")
+                    ),
+                )
+            ),
+        )
+    ).simulate(_snapshot(tmp_path))
+    assert result.is_clean
+    result.apply()
+    completed = _run(
+        tmp_path,
+        "import tomllib, importlib\n"
+        "scripts = tomllib.load(open('pyproject.toml', 'rb'))['project']['scripts']\n"
+        "for target in (scripts['pkg-tool'], scripts['pkg-kept']):\n"
+        "    module, _, name = target.partition(':')\n"
+        "    print(module, getattr(importlib.import_module(module), name)())\n",
+    )
+    assert completed.stdout == "pkg.execution.tool 7\npkg.execution.tool 8\n", completed.stderr
+
+
+def test_a_later_stage_reads_the_script_an_earlier_stage_rewrote(tmp_path: Path) -> None:
+    """Two dissolves in separate stages both name one script: the second reads the
+    first stage's text of it, so the plan keeps both rewrites instead of reading
+    the disk, finding the old text and refusing a stale transition."""
+
+    _write(tmp_path, "pyproject.toml", '[project]\nname = "pkg"\n')
+    _write(tmp_path, "pkg/__init__.py", "")
+    _write(tmp_path, "pkg/execution/__init__.py", "")
+    for name in ("a", "b"):
+        _write(tmp_path, f"pkg/execution/{name}.py", "def main() -> int:\n    return 7\n")
+        _write(tmp_path, f"pkg/{name}.py", f"from .execution.{name} import main\n")
+    _write(tmp_path, "stack/run", '#!/bin/sh\n"$python" -m pkg.a\n"$python" -m pkg.b\n')
+    (tmp_path / "stack/run").chmod(0o755)
+
+    result = CodemodPlanSequence(
+        documents=tuple(
+            CodemodPlanDocument(
+                recipes=(
+                    RefactorRecipe(f"dissolve-{name}").with_operation(
+                        _dissolve(tmp_path, f"pkg/{name}.py", f"pkg/execution/{name}.py")
+                    ),
+                )
+            )
+            for name in ("a", "b")
+        )
+    ).simulate(_snapshot(tmp_path))
+    assert result.is_clean
+    result.apply()
+
+    assert (tmp_path / "stack/run").read_text(encoding="utf-8") == (
+        '#!/bin/sh\n"$python" -m pkg.execution.a\n"$python" -m pkg.execution.b\n'
+    )
