@@ -449,6 +449,8 @@ class DetectorConfig:
         "Minimum shared substantial regex literals before surfacing a local syntax-authority finding.",
     )
     excluded_pattern_ids: tuple = ()
+    package_destination_tables: tuple = ()
+    """Markdown destination tables, as text, that declare where flat modules go."""
 
     @classmethod
     def from_namespace(cls, namespace: argparse.Namespace) -> DetectorConfig:
