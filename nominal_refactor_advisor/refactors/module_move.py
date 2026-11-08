@@ -2522,9 +2522,11 @@ class DissolveModuleOperation(RetainedCallOperation):
         source_module_name: str,
     ) -> None:
         """Refuse the bindings of the dissolved module that its redirect cannot
-        remove: a module-path import, a binding taken only for its import side
-        effect, and one inside a function. `ModuleNameRedirect` removes every
-        other `from pkg import source` binding once its reads are redirected."""
+        remove: a bare `import pkg.source` (it binds the package head, which other
+        reads may still need), a binding taken only for its import side effect,
+        and one inside a function. `ModuleNameRedirect` removes every other
+        binding (`from pkg import source`, `import pkg.source as alias`) once its
+        reads are redirected."""
 
         package, _, leaf = source_module_name.rpartition(".")
         for source_file, parsed in FilesReachingModule(context, source_module_name):
@@ -2536,12 +2538,10 @@ class DissolveModuleOperation(RetainedCallOperation):
                 for scope in ModuleImportScope
                 for statement in scope.import_statements(parsed.module)
             }
-            for scope, statement in (
-                (scoped.get(id(node)), node) for node in parsed.fact(ModuleNodeIndex).imports
-            ):
+            for statement in parsed.fact(ModuleNodeIndex).imports:
                 if isinstance(statement, ast.Import):
                     if any(
-                        alias.name == source_module_name
+                        alias.asname is None and alias.name == source_module_name
                         or alias.name.startswith(f"{source_module_name}.")
                         for alias in statement.names
                     ):
@@ -2549,23 +2549,35 @@ class DissolveModuleOperation(RetainedCallOperation):
                             f"{source_file.file_path!r}:{statement.lineno} imports "
                             f"{source_module_name!r} as a module path"
                         )
-                    continue
-                if (
+                    bound = tuple(
+                        alias.asname
+                        for alias in statement.names
+                        if alias.asname is not None and alias.name == source_module_name
+                    )
+                elif isinstance(statement, ast.ImportFrom) and (
                     identity.resolve_import_from_module(
                         imported_module=statement.module,
                         level=statement.level,
                     )
-                    != package
+                    == package
                 ):
+                    bound = tuple(
+                        alias.asname or alias.name
+                        for alias in statement.names
+                        if alias.name == leaf
+                    )
+                else:
                     continue
-                aliases = tuple(alias for alias in statement.names if alias.name == leaf)
-                for alias in aliases:
-                    if (alias.asname or alias.name) not in parsed.fact(ModuleNodeIndex).attribute_bases:
+                for name in bound:
+                    if name not in parsed.fact(ModuleNodeIndex).attribute_bases:
                         raise ValueError(
                             f"{source_file.file_path!r}:{statement.lineno} binds "
                             f"{source_module_name!r} for its import side effect"
                         )
-                if aliases and scope is None:
+                if not bound:
+                    continue
+                scope = scoped.get(id(statement))
+                if scope is None:
                     raise ValueError(
                         f"{source_file.file_path!r}:{statement.lineno} binds "
                         f"{source_module_name!r} inside a function"

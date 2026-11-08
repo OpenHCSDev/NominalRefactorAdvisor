@@ -67,6 +67,13 @@ def test_a_reexport_hub_dissolves_into_its_owners(tmp_path: Path) -> None:
         "TARGET = 'pkg.hub.Moved'\n"
         "value = hub.Moved.value + Kept.value\n",
     )
+    _write(
+        tmp_path,
+        "pkg/aliased.py",
+        "import pkg.hub as tools\n\n\n"
+        "def doubled(moved: tools.Moved) -> int:\n"
+        "    return 2 * moved.value\n",
+    )
     simulation = (
         RefactorRecipe("dissolve-hub")
         .with_operation(_dissolve(tmp_path, "pkg/hub.py"))
@@ -81,6 +88,8 @@ def test_a_reexport_hub_dissolves_into_its_owners(tmp_path: Path) -> None:
     consumer = simulation.simulation.rewritten_sources[(tmp_path / "pkg/consumer.py").as_posix()]
     assert "hub" not in consumer.replace("'pkg.owner.Moved'", "")
     assert "'pkg.owner.Moved'" in consumer
+    aliased = simulation.simulation.rewritten_sources[(tmp_path / "pkg/aliased.py").as_posix()]
+    assert "import pkg.owner as tools" in aliased and "hub" not in aliased
 
     simulation.apply()
 
@@ -88,7 +97,8 @@ def test_a_reexport_hub_dissolves_into_its_owners(tmp_path: Path) -> None:
     imported = _run(
         tmp_path,
         "from pkg.consumer import TARGET, value; "
-        "assert value == 7 and TARGET == 'pkg.owner.Moved'",
+        "from pkg.aliased import doubled; from pkg.owner import Moved; "
+        "assert value == 7 and TARGET == 'pkg.owner.Moved' and doubled(Moved()) == 6",
     )
     assert imported.returncode == 0, imported.stderr
 
@@ -219,6 +229,11 @@ def test_a_module_a_plan_creates_and_dissolves_is_never_written(tmp_path: Path) 
             "from .owner import Moved\n",
             "NAME = 'pkg.hub'\n",
             "declare its successor_path",
+        ),
+        (
+            "from .owner import Moved\n",
+            "import pkg.hub\n\nvalue = pkg.hub.Moved.value\n",
+            "as a module path",
         ),
         (
             "from dataclasses import dataclass\nfrom .owner import Moved\n",
