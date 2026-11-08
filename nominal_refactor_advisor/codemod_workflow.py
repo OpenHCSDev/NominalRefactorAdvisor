@@ -931,15 +931,27 @@ class CodemodRefactorRemainingTargets(DataclassJsonReport):
         """
 
         records_by_id = {record.finding_id: record for record in records}
-        groups: dict[tuple[FindingRecipeSynthesisStatus, str], list[str]] = {}
+        target_records = []
         for finding in target_findings:
             record = records_by_id.get(finding.stable_id)
             if record is None:
                 raise ValueError(f"target {finding.stable_id} has no synthesis record")
             if record.status is FindingRecipeSynthesisStatus.EXECUTABLE_CANDIDATE:
                 raise ValueError(f"target {finding.stable_id} is still executable")
+            target_records.append(record)
+        return cls.of_records(target_records)
+
+    @classmethod
+    def of_records(
+        cls,
+        records: Iterable[FindingRecipeSynthesisRecord],
+    ) -> tuple[CodemodRefactorRemainingTargets, ...]:
+        """The records' targets under each synthesis outcome and reason, largest group first."""
+
+        groups: dict[tuple[FindingRecipeSynthesisStatus, str], list[str]] = {}
+        for record in records:
             groups.setdefault((record.status, record.reason), []).append(
-                finding.stable_id
+                record.finding_id
             )
         return tuple(
             cls(status, reason, tuple(sorted(finding_ids)))
@@ -1073,6 +1085,25 @@ class CodemodRefactorTrajectoryDeadEnd(DataclassJsonReport):
     )
     partial_rejection: str = ""
     """Why a state that ran stages is not a partial terminal; empty at depth 0."""
+
+    @json_report_property()
+    def target_outcomes(self) -> tuple[CodemodRefactorRemainingTargets, ...]:
+        """Each target this state planned, under why no stage it proposed leaves the state."""
+
+        return CodemodRefactorRemainingTargets.of_records(
+            self.class_plan_report.finding_plan.report.records
+        )
+
+    def markdown_lines(self) -> tuple[str, ...]:
+        return (
+            f"   - Dead end at depth {self.depth}"
+            + (f": {self.partial_rejection}" if self.partial_rejection else "")
+            + ", targets by reason:",
+            *(
+                f"     - {group.finding_count} {group.status.value}: {group.reason}"
+                for group in self.target_outcomes
+            ),
+        )
 
     @json_report_property()
     def source_state_id(self) -> str:
@@ -1223,6 +1254,9 @@ class CodemodRefactorGoalReport(DataclassJsonReport):
             )
         if self.trajectory_proof.status.proved:
             lines.extend(self.trajectory_proof.proved_terminal.markdown_lines())
+        else:
+            for dead_end in self.trajectory_proof.dead_ends:
+                lines.extend(dead_end.markdown_lines())
         for obstacle in self.trajectory_proof.obstacles:
             lines.extend(obstacle.markdown_lines())
         return "\n".join(lines)

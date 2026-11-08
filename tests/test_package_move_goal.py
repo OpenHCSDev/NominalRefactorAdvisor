@@ -163,6 +163,9 @@ def test_modules_importing_each_other_are_refused_by_name(tmp_path: Path) -> Non
     )
     assert "presentation.py and" in reasons and "session_load.py import each other" in reasons
     assert "merges into" in reasons
+    markdown = report.to_markdown()
+    assert "Dead end at depth 0, targets by reason:" in markdown
+    assert "session_load.py import each other" in markdown
 
 
 def test_a_merge_row_folds_one_module_into_the_other(tmp_path: Path) -> None:
