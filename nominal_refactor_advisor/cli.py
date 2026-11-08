@@ -718,7 +718,10 @@ _CLI_ARGUMENT_SPECS = (
             value_type=int,
             default=8,
             help=(
-                "Maximum reachable trajectory depth proved for --codemod-refactor-goal."
+                "Trajectory depth proved for --codemod-refactor-goal; a concept "
+                "that knows its stage count raises it (package_move: two per "
+                "module). A run that reaches it along one clean path writes "
+                "the proved prefix as a plan."
             ),
         ),
         CliArgumentSpec(

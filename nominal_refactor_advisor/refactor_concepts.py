@@ -15,6 +15,12 @@ class RefactorConcept(ABC):
         return class_name_registry_key(cls.__name__.removesuffix("Concept"), cls)
 
     @classmethod
+    def trajectory_depth(cls, target_count: int, declared: int) -> int:
+        """The stage budget a goal run proves within; the declared one by default."""
+
+        return declared
+
+    @classmethod
     def declaration_types(cls) -> tuple[type[RefactorConcept], ...]:
         """Return pure concept declarations without cataloging execution classes."""
 
@@ -164,3 +170,9 @@ class DeclarationReferenceConcept(NominalBoundaryConcept):
 
 class PackageMoveConcept(RefactorConcept):
     """Move each flat module into the package a destination table declares for it."""
+
+    @classmethod
+    def trajectory_depth(cls, target_count: int, declared: int) -> int:
+        """Each flat module takes at most a relocate and a dissolve: two stages."""
+
+        return max(declared, 2 * target_count)

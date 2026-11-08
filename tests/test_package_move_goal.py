@@ -322,3 +322,50 @@ def test_a_table_whose_packages_no_root_holds_is_refused_by_name(tmp_path: Path)
 
     with pytest.raises(ValueError, match="no scanned root holds any of the table's packages: nominal, planning"):
         _run_table(tmp_path)
+
+
+def test_the_stage_budget_comes_from_the_table_and_a_budget_stop_lands_its_prefix(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from nominal_refactor_advisor.codemod_workflow import (
+        CodemodRefactorTrajectoryBudget,
+        CodemodRefactorTrajectoryStatus,
+    )
+
+    _layered_package(tmp_path)
+
+    def run(max_depth: int):
+        return CodemodRefactorGoalRunner(
+            roots=(tmp_path,),
+            config=DetectorConfig(package_destination_tables=(TABLE,)),
+            parse_workers=1,
+            dry_run=True,
+            migration_type=PackageMoveConcept,
+            trajectory_budget=CodemodRefactorTrajectoryBudget(max_depth=max_depth),
+            guard_suite=ArchitectureGuardSuite(),
+        ).run()
+
+    lifted = run(1)
+    assert lifted.stop_reason is CodemodWorkflowStopReason.ACHIEVED
+    assert lifted.trajectory_proof.budget.max_depth == 6
+    assert lifted.stage_count == 6
+
+    monkeypatch.setattr(
+        PackageMoveConcept,
+        "trajectory_depth",
+        classmethod(lambda cls, target_count, declared: declared),
+    )
+    prefix = run(2)
+    assert prefix.stop_reason is CodemodWorkflowStopReason.PROVED_PREFIX
+    assert prefix.stop_reason.completed
+    assert prefix.trajectory_proof.status is CodemodRefactorTrajectoryStatus.PREFIX_PROVED
+    assert [
+        Path(operation.target.file_path).name
+        for document in prefix.replay_sequence.documents
+        for recipe in document.recipes
+        for operation in recipe.operations
+    ] == ["goals.py", "goals.py"]
+    assert len(prefix.final_target_finding_ids) == 2
+    assert "2 targets left for the next run" in prefix.to_markdown()
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    assert prefix.replay_sequence.simulate(snapshot).is_clean
