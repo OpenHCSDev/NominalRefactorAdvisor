@@ -118,9 +118,10 @@ class NameBindings(ParsedModuleFact):
     @classmethod
     def derive(cls, parsed_module: ParsedModule) -> NameBindings:
         qualified_names = parsed_module.fact(QualifiedNames)
+        nodes = parsed_module.syntax_index.breadth_first_nodes
         counts = Counter(
             bound
-            for node in ast.walk(parsed_module.module)
+            for node in nodes
             for bound in ModuleReferenceScope.bound_names(node)
         )
         imports = module_import_aliases(parsed_module)
@@ -142,7 +143,7 @@ class NameBindings(ParsedModuleFact):
             ),
             named=frozenset(
                 name
-                for node in ast.walk(parsed_module.module)
+                for node in nodes
                 for name in (
                     *ModuleReferenceScope.bound_names(node),
                     *((node.id,) if isinstance(node, ast.Name) else ()),
@@ -150,7 +151,7 @@ class NameBindings(ParsedModuleFact):
             ),
             starred=any(
                 alias.name == DeclaredIdentityFamily.STAR
-                for node in ast.walk(parsed_module.module)
+                for node in nodes
                 if isinstance(node, ast.ImportFrom)
                 for alias in node.names
             ),
@@ -159,7 +160,7 @@ class NameBindings(ParsedModuleFact):
                     None,
                     (
                         qualified_names.declared_name(annotation)
-                        for node in ast.walk(parsed_module.module)
+                        for node in nodes
                         for annotation in cls.typed_annotations(node)
                     ),
                 )
@@ -294,7 +295,7 @@ class DeclaredIdentityFamily(ShapeFamily[ModuleDeclarations]):
                     sorted(
                         {
                             qualified
-                            for node in ast.walk(parsed_module.module)
+                            for node in index.breadth_first_nodes
                             for receiver in cls.renamed_receivers(node)
                             if (qualified := names.qualified(receiver))
                         }
@@ -319,7 +320,7 @@ class DeclaredIdentityFamily(ShapeFamily[ModuleDeclarations]):
     ) -> Iterator[tuple[str, tuple[str, ...]]]:
         """Each module an import statement names, with the names a `from` takes from it."""
 
-        for node in ast.walk(parsed_module.module):
+        for node in parsed_module.syntax_index.breadth_first_nodes:
             match node:
                 case ast.Import(names=aliases):
                     for alias in aliases:
