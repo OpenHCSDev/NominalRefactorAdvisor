@@ -213,7 +213,7 @@ USE = (
     "from pkg.proof import Evidence, Proof\n\n\n"
     "def run() -> str:\n"
     "    proof = Proof('s', 'f')\n"
-    "    one = Identity.from_proof(proof)\n"
+    "    one = Identity.from_proof(\n        proof,\n    )\n"
     "    one.require(proof)\n"
     "    two = Identity.from_evidence(Evidence('p'))\n"
     "    three = Identity.proof_for('x')\n"
@@ -247,7 +247,7 @@ def _runs(root: Path, result) -> str:
     (
         ("Identity.from_proof", "Proof", "identity",
          "    def identity(self) -> Identity:\n        return Identity(self.session, self.file)\n",
-         "one = proof.identity()"),
+         "one = proof.identity()\n"),
         ("Identity.from_evidence", "Evidence", "identity",
          "    def identity(self) -> Identity:\n        \"\"\"Read the identity its evidence names.\"\"\"\n"
          "        return Identity(self.header(), self.path)\n",
@@ -322,7 +322,8 @@ def test_another_class_s_method_of_the_same_name_and_an_alike_binding_do_not_ref
         "\n\nclass Codec:\n    @staticmethod\n    def proof_for(value: str) -> str:\n        return value\n\n\n"
         "READER = Codec.proof_for\nNOTE = 'proof_for'\n\n\n"
         "def stdlib_named(value: bytes) -> str:\n    from codecs import decode as proof_for\n\n"
-        "    from json import JSONDecoder\n    return JSONDecoder.proof_for if False else proof_for(value)\n"
+        "    from json import JSONDecoder\n    return JSONDecoder.proof_for if False else proof_for(value)\n\n\n"
+        "def scanned_named(value: str) -> str:\n    from pkg.use import Codec\n\n    return Codec.proof_for(value)\n"
     )
     identity = IDENTITY.replace(
         "        from pkg.proof import Proof\n\n        return Proof(session, 'f')\n",
