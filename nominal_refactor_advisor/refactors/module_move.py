@@ -2003,10 +2003,33 @@ class NewModuleSymbolMoveOperationABC(ModuleSymbolMoveOperation, ABC):
     ) -> frozenset[str]:
         """When every name the source declares moves into the module this move creates,
         the moved code is that module under its new name, so `__name__` (a logger's, say)
-        names the destination. `__file__` never follows: a path beside the module stays."""
-        if source_table.declared_names <= moved_names:
-            return frozenset(("__name__",))
-        return frozenset()
+        names the destination, and `__doc__` (an argparse description) reads the
+        docstring the destination opens with. `__file__` never follows: a path beside
+        the module stays."""
+        if not source_table.declared_names <= moved_names:
+            return frozenset()
+        if self.carries_source_docstring:
+            return frozenset(("__name__", "__doc__"))
+        return frozenset(("__name__",))
+
+    @property
+    def carries_source_docstring(self) -> bool:
+        """The created module opens with the source's docstring unless the caller
+        writes its source or docstring."""
+        return self.destination_source is None and self.destination_docstring is None
+
+    def moves_whole_module(self, context: CodemodSelectorContext) -> bool:
+        source_path = self.required_source_path(context, self.operation_key())
+        source_table = ModuleSymbolTable(
+            file_path=source_path,
+            source=context.sources_by_file_path[source_path],
+            module=context.module_nodes_by_file_path[source_path],
+        )
+        moved_names = frozenset(
+            declaration.name
+            for declaration in self.move_selection(context, source_path).declarations
+        )
+        return source_table.declared_names <= moved_names
 
     destination_source: str | None = codemod_payload_field(
         OptionalStringPayloadValueCodec(),
@@ -2039,12 +2062,20 @@ class NewModuleSymbolMoveOperationABC(ModuleSymbolMoveOperation, ABC):
         if self.destination_source is not None:
             return self.destination_source
         source_path = self.required_source_path(context, self.operation_key())
-        annotation_mode = ModuleAnnotationEvaluationMode.from_module(
-            context.module_nodes_by_file_path[source_path]
-        )
-        if self.destination_docstring is None:
-            return annotation_mode.new_module_prelude()
-        return f'"""{self.destination_docstring}"""\n\n{annotation_mode.new_module_prelude()}'
+        source_module = context.module_nodes_by_file_path[source_path]
+        prelude = ModuleAnnotationEvaluationMode.from_module(source_module).new_module_prelude()
+        if self.destination_docstring is not None:
+            return f'"""{self.destination_docstring}"""\n\n{prelude}'
+        docstring = source_module.body[0] if source_module.body else None
+        if (
+            self.carries_source_docstring
+            and isinstance(docstring, ast.Expr)
+            and isinstance(docstring.value, ast.Constant)
+            and isinstance(docstring.value.value, str)
+            and self.moves_whole_module(context)
+        ):
+            return f"{ast.get_source_segment(context.sources_by_file_path[source_path], docstring)}\n\n{prelude}"
+        return prelude
 
     def source_edits_from_snapshot(
         self,
@@ -2363,7 +2394,7 @@ class _DissolvedModuleBindings:
 
     @staticmethod
     def _binds_only_imports(statement: ast.stmt, *, first: bool) -> bool:
-        if isinstance(statement, (ast.Import, ast.ImportFrom)):
+        if isinstance(statement, (ast.Import, ast.ImportFrom)) or _ScriptEntry.is_guard(statement):
             return True
         if first and isinstance(statement, ast.Expr) and isinstance(
             statement.value, ast.Constant
@@ -2413,6 +2444,70 @@ class _DissolvedModuleBindings:
                             "its consumers cannot import that name from an owner"
                         )
                     yield alias.name, imported_module
+
+
+@dataclass(frozen=True)
+class _ScriptEntry:
+    """A module's `if __name__ == "__main__":` block: what running the module as
+    a script does. Dissolving the module moves it to the end of the successor,
+    which every `-m` string naming the module now names; each name it reads must
+    be one the successor declares."""
+
+    statement: ast.If
+
+    @staticmethod
+    def is_guard(statement: ast.stmt) -> bool:
+        test = statement.test if isinstance(statement, ast.If) else None
+        return (
+            isinstance(test, ast.Compare)
+            and isinstance(test.left, ast.Name)
+            and test.left.id == "__name__"
+            and len(test.ops) == 1
+            and isinstance(test.ops[0], ast.Eq)
+            and isinstance(test.comparators[0], ast.Constant)
+            and test.comparators[0].value == "__main__"
+        )
+
+    @classmethod
+    def of(cls, module: ast.Module) -> tuple[_ScriptEntry, ...]:
+        return tuple(
+            cls(cast(ast.If, statement)) for statement in module.body if cls.is_guard(statement)
+        )
+
+    def successor_edit(
+        self,
+        context: CodemodSelectorContext,
+        source_path: str,
+        owners: Mapping[str, str],
+        successor_path: str | None,
+    ) -> SourceInsertion:
+        where = f"{source_path!r}:{self.statement.lineno}"
+        if successor_path is None:
+            raise ValueError(f"{where} runs the module as a script; declare its successor_path")
+        read = {
+            node.id
+            for node in ast.walk(self.statement)
+            if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load)
+        } - {"__name__"}
+        foreign = sorted(name for name in read if owners.get(name) != successor_path)
+        if foreign:
+            raise ValueError(
+                f"{where} runs {foreign!r} as a script, which the successor "
+                f"{successor_path!r} does not declare"
+            )
+        if _ScriptEntry.of(context.module_nodes_by_file_path[successor_path]):
+            raise ValueError(f"{successor_path!r} already runs as a script; {where} cannot join it")
+        successor_source = context.sources_by_file_path[successor_path]
+        return SourceInsertion(
+            file_path=successor_path,
+            insertion_line=len(successor_source.splitlines()) + 1,
+            inserted_lines=SourceTargetEditor.source_lines(
+                "\n\n"
+                + ast.get_source_segment(context.sources_by_file_path[source_path], self.statement)
+                + "\n"
+            ),
+            rationale=f"Running {source_path!r} as a script now runs {successor_path!r}.",
+        )
 
 
 class _GluedModuleName:
@@ -3061,6 +3156,12 @@ class DissolveModuleOperation(RetainedCallOperation):
                 excluded_paths=excluded,
             ),
             *strings.edits(context),
+            *(
+                entry.successor_edit(
+                    context, strings.source_path, bindings.owners, strings.successor_path
+                )
+                for entry in _ScriptEntry.of(context.module_nodes_by_file_path[strings.source_path])
+            ),
         )
 
     @staticmethod

@@ -795,3 +795,79 @@ def test_an_alias_patched_by_name_follows_the_whole_module_it_binds(tmp_path: Pa
     assert check.count("native_package") == 4
     completed = _run(tmp_path, "from pkg.check import patched; print(patched())")
     assert completed.stdout == "5\n", completed.stderr
+
+
+def test_a_whole_module_moved_into_a_package_keeps_its_docstring_and_runs_as_a_script(
+    tmp_path: Path,
+) -> None:
+    """`worker.py` moves whole into `execution/worker.py`: the new module opens
+    with its docstring (its argparse description reads `__doc__`), its
+    `if __name__ == "__main__":` block follows it, and so do `-m` strings."""
+    _write(tmp_path, "pkg/__init__.py", "")
+    _write(tmp_path, "pkg/execution/__init__.py", "")
+    _write(
+        tmp_path,
+        "pkg/worker.py",
+        '"""Runs the worker."""\n\nimport argparse\n\n'
+        "# The process gives up its interactive priority.\n"
+        "NICENESS = 10\n\n\n"
+        "def main() -> int:\n"
+        "    print(argparse.ArgumentParser(description=__doc__).description)\n"
+        "    return 0\n\n\n"
+        'if __name__ == "__main__":\n    main()\n',
+    )
+    _write(
+        tmp_path,
+        "pkg/launch.py",
+        'import sys\n\nCOMMAND = (sys.executable, "-m", "pkg.worker")\n',
+    )
+    source, destination = (tmp_path / "pkg/worker.py").as_posix(), (
+        tmp_path / "pkg/execution/worker.py"
+    ).as_posix()
+    result = CodemodPlanSequence(
+        documents=(
+            CodemodPlanDocument(
+                recipes=(
+                    RefactorRecipe("move").with_operation(
+                        RelocateSymbolsToNewModuleOperation(
+                            target=SourceRewriteTarget(file_path=source),
+                            symbol_qualnames=("NICENESS", "main"),
+                            destination_path=destination,
+                        )
+                    ),
+                )
+            ),
+            CodemodPlanDocument(
+                recipes=(
+                    RefactorRecipe("dissolve").with_operation(
+                        _dissolve(tmp_path, "pkg/worker.py", "pkg/execution/worker.py")
+                    ),
+                )
+            ),
+        )
+    ).simulate(_snapshot(tmp_path))
+    assert result.is_clean
+    result.apply()
+
+    assert not (tmp_path / "pkg/worker.py").exists()
+    moved = (tmp_path / "pkg/execution/worker.py").read_text(encoding="utf-8")
+    assert moved.startswith('"""Runs the worker."""')
+    assert "\n\n# The process gives up its interactive priority.\nNICENESS = 10\n" in moved
+    assert moved.endswith('    return 0\n\n\nif __name__ == "__main__":\n    main()\n')
+    assert '"-m", "pkg.execution.worker"' in (tmp_path / "pkg/launch.py").read_text(encoding="utf-8")
+    completed = _run(tmp_path, "import runpy; runpy.run_module('pkg.execution.worker', run_name='__main__')")
+    assert completed.stdout == "Runs the worker.\n", completed.stderr
+
+
+def test_a_script_entry_that_runs_a_name_the_successor_does_not_declare_refuses(
+    tmp_path: Path,
+) -> None:
+    _write(tmp_path, "pkg/__init__.py", "")
+    _write(tmp_path, "pkg/owner.py", "def main() -> int:\n    return 0\n")
+    _write(tmp_path, "pkg/other.py", "def unrelated() -> int:\n    return 1\n")
+    _write(tmp_path, "pkg/hub.py", 'from .owner import main\n\nif __name__ == "__main__":\n    main()\n')
+
+    with pytest.raises(ValueError, match=r"runs \['main'\] as a script, which the successor"):
+        RefactorRecipe("dissolve-hub").with_operation(
+            _dissolve(tmp_path, "pkg/hub.py", "pkg/other.py")
+        ).simulate(_snapshot(tmp_path))
