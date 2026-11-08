@@ -766,7 +766,18 @@ class SiblingTestModules(ParsedModuleSetFact):
     modules: tuple[ParsedModule, ...]
 
     @classmethod
-    def under(cls, import_roots: Iterable[str]) -> SiblingTestModules:
+    def under(
+        cls,
+        import_roots: Iterable[str],
+        held: frozenset[Path] = frozenset(),
+    ) -> SiblingTestModules:
+        """The test modules under each import root that the scan does not hold.
+
+        `held` is the scanned files, resolved. Their uses are already in the
+        scan's own projections, and one file can sit under several import roots,
+        so a file is matched by where it is, not by the name a root gives it.
+        """
+
         policy = PythonSourcePathPolicy(include_tests=True)
         modules: list[ParsedModule] = []
         for root in map(Path, sorted(set(import_roots))):
@@ -774,6 +785,7 @@ class SiblingTestModules(ParsedModuleSetFact):
                 path
                 for path in PythonSourcePathDiscovery(root, policy).paths()
                 if PythonSourcePathPolicy.is_test_path(path.relative_to(root))
+                and path.resolve() not in held
             )
             modules.extend(
                 PythonModuleRootParser.for_root(root, source_policy=policy).parsed_source_paths(
@@ -795,16 +807,15 @@ class SiblingTestModules(ParsedModuleSetFact):
 
     @classmethod
     def derive(cls, modules: ParsedModuleSet) -> SiblingTestModules:
-        """The tests beside one module set, read once for every proof over it."""
-        return cls.beside(modules)
+        """The tests beside one module set, read once for every proof over it:
+        the set's own test parses, then the tests it does not hold."""
 
-    @classmethod
-    def beside(cls, parsed_modules: Iterable[ParsedModule]) -> SiblingTestModules:
-        """The test modules beside a set of parsed (scanned) modules."""
-
-        return cls.under(
-            str(module.module_path_identity.declared_import_root) for module in parsed_modules
+        held_tests = tuple(module for module in modules if cls.holds(module))
+        unheld = cls.under(
+            (str(module.module_path_identity.declared_import_root) for module in modules),
+            frozenset(Path(module.file_path).resolve() for module in modules),
         )
+        return cls((*held_tests, *unheld.modules))
 
 
 SPELLED_WORD = re.compile(r"(?<![\w])[A-Z]\w*")
@@ -846,6 +857,7 @@ class EmptySubclassSiteModule(RestatingSiteModule):
     """One module's empty subclasses as sites, and every name it spells."""
 
     import_root: str
+    file_path: str
     uses: tuple[NameUse, ...] = ()
 
 
@@ -875,6 +887,7 @@ class EmptySubclassSiteFamily(ShapeFamily[EmptySubclassSiteModule]):
                     sorted(NameUse.in_module(parsed_module), key=attrgetter("name", "kind"))
                 ),
                 import_root=str(parsed_module.module_path_identity.declared_import_root),
+                file_path=parsed_module.file_path,
             )
         ]
 
@@ -905,7 +918,10 @@ class EmptySubclassIndex:
         for module in modules:
             for use in module.uses:
                 kinds[use.name].add(use.kind)
-        for test_module in SiblingTestModules.under(module.import_root for module in modules).modules:
+        for test_module in SiblingTestModules.under(
+            (module.import_root for module in modules),
+            frozenset(Path(module.file_path).resolve() for module in modules),
+        ).modules:
             for use in NameUse.in_module(test_module):
                 kinds[use.name].add(use.kind)
         index = cls(class_index, {name: frozenset(found) for name, found in kinds.items()}, {})
@@ -1300,6 +1316,7 @@ class EnumUseModule(RestatingSiteModule):
     """One module's literal-valued classes as sites, and every enum-shaped spelling."""
 
     import_root: str
+    file_path: str
     member_uses: tuple[EnumMemberUse, ...] = ()
     class_uses: tuple[EnumClassUse, ...] = ()
 
@@ -1361,6 +1378,7 @@ class EnumUseSiteFamily(ShapeFamily[EnumUseModule]):
                 member_uses=tuple(dict.fromkeys(member_uses)),
                 class_uses=tuple(dict.fromkeys(class_uses)),
                 import_root=str(parsed_module.module_path_identity.declared_import_root),
+                file_path=parsed_module.file_path,
             )
         ]
 
@@ -1390,7 +1408,10 @@ class EnumMemberIndex:
         modules = EnumUseSiteFamily.modules_in(projections_by_family)
         member_uses: dict[str, list[EnumMemberUse]] = defaultdict(list)
         class_kinds: dict[str, set[EnumUseKind]] = defaultdict(set)
-        tests = SiblingTestModules.under(module.import_root for module in modules)
+        tests = SiblingTestModules.under(
+            (module.import_root for module in modules),
+            frozenset(Path(module.file_path).resolve() for module in modules),
+        )
         evidence = (
             *((module.member_uses, module.class_uses) for module in modules),
             *(
