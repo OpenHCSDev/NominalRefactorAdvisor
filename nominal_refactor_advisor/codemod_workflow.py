@@ -66,6 +66,7 @@ from .json_reports import (
 from .models import FindingObligationClass, RefactorFinding
 from .source_index import SourceIndex
 from .refactor_concepts import RefactorConcept
+from .stage_proof import TrajectoryScans
 
 
 IdentityT = TypeVar("IdentityT", bound=Hashable)
@@ -1792,7 +1793,7 @@ class CodemodGoalProgress:
 
 
 @dataclass(frozen=True, kw_only=True)
-class CodemodRefactorGoalRunner:
+class CodemodRefactorGoalRunner(TrajectoryScans[CodemodWorkflowScan]):
     """Prove virtual stages, then commit one revision-checked migration batch."""
 
     resolved_dir: Path | None = None
@@ -1860,14 +1861,16 @@ class CodemodRefactorGoalRunner:
     ) -> CodemodWorkflowScan:
         """Rerun only active goal detector declarations between stages."""
 
-        detector_ids = frozenset(
-            (
-                *(finding.detector_id for finding in target_findings),
-                *IssueDetector.semantic_mirror_detector_ids(),
-                *FindingRecipeSynthesizer.detector_ids_for_concept(
-                    self.migration_type
-                ),
-            )
+        detector_ids = self.migration_type.stage_proof.reproof_detector_ids(
+            frozenset(
+                (
+                    *(finding.detector_id for finding in target_findings),
+                    *FindingRecipeSynthesizer.detector_ids_for_concept(
+                        self.migration_type
+                    ),
+                )
+            ),
+            IssueDetector.semantic_mirror_detector_ids(),
         )
         detector_types = tuple(
             detector_type
@@ -1910,6 +1913,12 @@ class CodemodRefactorGoalRunner:
             ),
             scan_mode=CodemodProjectedScanMode.EXACT,
         )
+
+    def certified(self, scan: CodemodWorkflowScan) -> CodemodWorkflowScan:
+        """The scan a terminal state and its report are judged on, as the
+        concept's stage proof declares it."""
+
+        return self.migration_type.stage_proof.certified(self, scan)
 
     def report_scoped_findings(
         self,
@@ -2010,7 +2019,7 @@ class CodemodRefactorGoalRunner:
                 target_findings = self.target_findings(active_scan)
                 details.append(f"{len(target_findings)} targets")
             if not target_findings:
-                active_scan = self.exact_scan(active_scan)
+                active_scan = self.certified(active_scan)
                 target_findings = self.target_findings(active_scan)
                 state = replace(state, scan=active_scan)
                 if not target_findings:
@@ -2119,7 +2128,7 @@ class CodemodRefactorGoalRunner:
                         target_findings,
                     )
                     if not self.target_findings(projected_scan):
-                        projected_scan = self.exact_scan(projected_scan)
+                        projected_scan = self.certified(projected_scan)
                     details.append(f"{len(projected_scan.findings)} findings")
                 stage = self.stage(
                     active_scan,
@@ -2348,7 +2357,7 @@ class CodemodRefactorGoalRunner:
         reason: CodemodWorkflowStopReason,
         trajectory_proof: CodemodRefactorTrajectoryProof,
     ) -> CodemodRefactorGoalReport:
-        verified_scan = self.exact_scan(scan)
+        verified_scan = self.certified(scan)
         return CodemodRefactorGoalReport(
             migration_type=self.migration_type,
             stages=stages,
