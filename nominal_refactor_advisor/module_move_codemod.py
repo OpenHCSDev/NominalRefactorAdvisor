@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from typing import ClassVar
 
 from .ast_tools import ModuleAnnotationEvaluationMode
+from .codemod_operations import RefactorRecipeOperation
 from .json_reports import DataclassJsonReport
 from .class_index import CompactModulePublicExportContract, module_public_export_contract
 from .codemod_import_bindings import FromModuleImportBindingIdentity
@@ -39,6 +40,7 @@ from .codemod_paths import SourcePathResolutionAuthority
 from .codemod_payload import (
     OptionalStringPayloadValueCodec,
     RequiredIntegerPayloadValueCodec,
+    RequiredStringPayloadValueCodec,
     StringArrayPayloadValueCodec,
     codemod_payload_field,
 )
@@ -50,7 +52,10 @@ from .codemod_reproof import RepositorySourceReprovedOperation
 from .codemod_runtime import CodemodSourceSnapshot
 from .codemod_selection_context import CodemodSelectorContext
 from .codemod_selector_models import SourcePathPayloadValueCodec
-from .codemod_semantics import CodemodPreflightStatus
+from .codemod_semantics import (
+    CodemodPreflightStatus,
+    CodemodSourceDependencyScope,
+)
 from .codemod_source_edits import (
     NominalSourceEdit,
     SourceFileCreation,
@@ -64,6 +69,114 @@ from .codemod_spacing import DestinationInsertionSpacing
 from .declaration_dependencies import DeclarationDependencyProjection
 from .lexical_bindings import ImportFromModuleName
 from .python_module_identity import PythonModulePathIdentity
+
+
+@dataclass(frozen=True, kw_only=True)
+class PromoteGuardedImportOperation(RefactorRecipeOperation):
+    """Move names out of an ``if TYPE_CHECKING:`` guard into a runtime import.
+
+    A guard that hides no cycle restates nothing but a fear of one; this proves
+    against the repository's runtime import graph that the import closes no cycle,
+    and refuses (naming the module that reaches back) when it would."""
+
+    module_name: str = codemod_payload_field(RequiredStringPayloadValueCodec())
+    import_names: tuple[str, ...] = codemod_payload_field(
+        StringArrayPayloadValueCodec()
+    )
+    source_dependency_scope: ClassVar[CodemodSourceDependencyScope] = (
+        CodemodSourceDependencyScope.REPOSITORY
+    )
+
+    def preflight_reports(
+        self,
+        context: CodemodSelectorContext,
+    ) -> tuple[CodemodOperationPreflightReport, ...]:
+        source_path = self.required_source_path(context, self.operation_key())
+        import_graph = context.module_import_graph
+        source_file = import_graph.source_file_for_path(source_path)
+        guarded = frozenset(
+            alias.name
+            for statement in ModuleImportScope.TYPE_CHECKING.import_statements(
+                context.module_nodes_by_file_path[source_path]
+            )
+            if isinstance(statement, ast.ImportFrom)
+            and ImportFromModuleName.from_node(statement).source == self.module_name
+            for alias in statement.names
+        )
+        missing = tuple(name for name in self.import_names if name not in guarded)
+        imported_module = source_file.module_path_identity.resolve_import_from_module(
+            imported_module=self.module_name.lstrip("."),
+            level=len(self.module_name) - len(self.module_name.lstrip(".")),
+        )
+        imported_file = (
+            None
+            if imported_module is None
+            else import_graph.unique_source_file_for_module_name(imported_module)
+        )
+        cycle = imported_file is not None and import_graph.import_would_create_cycle(
+            importing_file_path=source_path,
+            imported_file_path=imported_file.file_path,
+        )
+        message = (
+            f"{self.import_names!r} are not guarded imports of {self.module_name!r}: "
+            f"{missing!r}"
+            if missing
+            else f"{imported_module!r} already imports {source_file.module_name!r} at "
+            "runtime; the guard hides a cycle, so move the declaration instead"
+            if cycle
+            else "The guarded import closes no runtime import cycle"
+        )
+        return (
+            CodemodOperationPreflightReport(
+                operation=self.operation_key(),
+                status=(
+                    CodemodPreflightStatus.FAILED
+                    if missing or cycle
+                    else CodemodPreflightStatus.PASSED
+                ),
+                message=message,
+                detail=PromotedGuardedImportReport(
+                    file_path=source_path,
+                    module_name=self.module_name,
+                    import_names=self.import_names,
+                ),
+            ),
+        )
+
+    def source_edits(
+        self,
+        context: CodemodSelectorContext,
+    ) -> tuple[ModuleImportMutation, ...]:
+        source_path = self.required_source_path(context, self.operation_key())
+        rationale = self.rationale or (
+            f"Import {self.import_names!r} from {self.module_name!r} at runtime."
+        )
+        return (
+            ModuleImportMutation.remove_names(
+                file_path=source_path,
+                module_name=self.module_name,
+                names=self.import_names,
+                scope=ModuleImportScope.TYPE_CHECKING,
+                rationale=rationale,
+            ),
+            ModuleImportMutation.from_source(
+                file_path=source_path,
+                import_source=(
+                    f"from {self.module_name} import {', '.join(self.import_names)}\n"
+                ),
+                rationale=rationale,
+            ),
+        )
+
+
+@dataclass(frozen=True)
+class PromotedGuardedImportReport(DataclassJsonReport):
+    """Which guarded names a promotion moves to runtime."""
+
+    file_path: str
+    module_name: str
+    import_names: tuple[str, ...]
+
 
 @dataclass(frozen=True)
 class ModuleNameRedirect:
@@ -411,7 +524,7 @@ class _SourceModuleObjectReads:
                             f"{file_path!r} names {'.'.join(reached)!r}, which "
                             f"reaches the moved names, through {named.accessor!r}"
                         )
-                elif chain[: len(parts)] == parts:
+                elif parts == chain:
                     raise ValueError(
                         f"{file_path!r} uses the source module object "
                         f"{'.'.join(parts)!r} other than by reading an attribute"
@@ -452,7 +565,11 @@ class _SourceModuleObjectReads:
 
     @staticmethod
     def _bound_name_counts(module: ast.Module) -> Counter[str]:
+        """How many bindings each name has. Every `import pkg.x` binds the same
+        package object to `pkg`, so those count as one binding however many."""
+
         counts: Counter[str] = Counter()
+        package_heads: set[str] = set()
         for node in ast.walk(module):
             if isinstance(node, ast.Name) and not isinstance(node.ctx, ast.Load):
                 counts[node.id] += 1
@@ -460,8 +577,17 @@ class _SourceModuleObjectReads:
                 counts[node.arg] += 1
             elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
                 counts[node.name] += 1
-            elif isinstance(node, ast.alias) and node.name != "*":
-                counts[node.asname or node.name.split(".")[0]] += 1
+            elif isinstance(node, ast.Import):
+                for alias in node.names:
+                    if alias.asname is None:
+                        package_heads.add(alias.name.split(".")[0])
+                    else:
+                        counts[alias.asname] += 1
+            elif isinstance(node, ast.ImportFrom):
+                for alias in node.names:
+                    if alias.name != "*":
+                        counts[alias.asname or alias.name] += 1
+        counts.update(package_heads)
         return counts
 
     @staticmethod
@@ -573,6 +699,10 @@ class SourceTopLevelSymbolClosureMovePlan(SourceTopLevelSymbolClosureMoveCarrier
             destination_table,
             request,
             operation,
+            consumer_imported_names=cls._consumer_imported_names(
+                context,
+                request.source_path,
+            ),
         )
         source_binding_import_sources = operation.source_binding_import_sources(
             context,
@@ -677,6 +807,33 @@ class SourceTopLevelSymbolClosureMovePlan(SourceTopLevelSymbolClosureMoveCarrier
                 f"{duplicate_names!r}"
             )
 
+    @staticmethod
+    def _consumer_imported_names(
+        context: CodemodSelectorContext,
+        source_path: str,
+    ) -> frozenset[str]:
+        """Names other files import from the source, at any scope: an import the
+        source keeps only so they can is a re-export, not a dead dependency."""
+
+        source_module_name = context.module_import_graph.module_name_for_file_path(
+            source_path
+        )
+        names: set[str] = set()
+        for source_file in context.source_index.files:
+            module = context.module_nodes_by_file_path.get(source_file.file_path)
+            if source_file.file_path == source_path or module is None:
+                continue
+            for node in ast.walk(module):
+                if isinstance(node, ast.ImportFrom) and (
+                    source_file.module_path_identity.resolve_import_from_module(
+                        imported_module=node.module,
+                        level=node.level,
+                    )
+                    == source_module_name
+                ):
+                    names.update(alias.name for alias in node.names)
+        return frozenset(names)
+
     @classmethod
     def _dependency_report(
         cls,
@@ -685,6 +842,8 @@ class SourceTopLevelSymbolClosureMovePlan(SourceTopLevelSymbolClosureMoveCarrier
         destination_table: ModuleSymbolTable,
         request: SourceTopLevelSymbolClosureMoveRequest,
         operation: ModuleSymbolMoveOperation,
+        *,
+        consumer_imported_names: frozenset[str] = frozenset(),
     ) -> ModuleMoveDependencyReport:
         selection = request.selection
         declarations = selection.declarations
@@ -795,6 +954,7 @@ class SourceTopLevelSymbolClosureMovePlan(SourceTopLevelSymbolClosureMoveCarrier
                     binding.supports_bound_name_removal
                     and name not in remaining_references
                     and name not in source_table.explicit_reexport_bound_names
+                    and name not in consumer_imported_names
                 ),
             )
             for name, (binding, identity) in sorted(
@@ -1546,13 +1706,14 @@ class _ModuleIdentityStrings:
     source_module_name: str
     owners: Mapping[str, str]
     successor_path: str | None
+    retained_paths: frozenset[str] = frozenset()
 
     def edits(self, context: CodemodSelectorContext) -> tuple[NominalSourceEdit, ...]:
         edits: list[NominalSourceEdit] = []
         for source_file in context.source_index.files:
             file_path = source_file.file_path
             module = context.module_nodes_by_file_path.get(file_path)
-            if file_path == self.source_path or module is None:
+            if file_path == self.source_path or file_path in self.retained_paths or module is None:
                 continue
             replacements = tuple(
                 (node, replacement)
@@ -1630,13 +1791,19 @@ class DissolveModuleOperation(RepositorySourceReprovedOperation):
     those names is removed, and every string naming the module follows it.
 
     `successor_path` names the module a string naming the dissolved module now
-    means; without one such a string is refused. A consumer that binds the
+    means; without one such a string is refused. `retained_paths` are files whose
+    strings record the module's old identity on purpose (evidence that the path
+    is gone, a history) and stay as written. A consumer that binds the
     module for its import side effect, or imports a name the module took from
     outside the index, is refused: it has no owner to follow."""
 
     successor_path: str | None = codemod_payload_field(
         OptionalStringPayloadValueCodec(),
         default=None,
+    )
+    retained_paths: tuple[str, ...] = codemod_payload_field(
+        StringArrayPayloadValueCodec(),
+        default=(),
     )
 
     def source_file_deletions(
@@ -1705,6 +1872,13 @@ class DissolveModuleOperation(RepositorySourceReprovedOperation):
                 source_module_name,
                 bindings.owners,
                 successor_path,
+                frozenset(
+                    SourcePathResolutionAuthority.from_source_index(
+                        path,
+                        context.source_index,
+                    ).required_path()
+                    for path in self.retained_paths
+                ),
             ).edits(context),
         )
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+import copy
 from abc import (
     ABC,
     abstractmethod,
@@ -57,6 +58,13 @@ from .codemod_selector_models import (
     SourceRewriteTarget,
 )
 from .codemod_imports import ModuleImportMutation
+from .codemod_preflight import CodemodOperationPreflightError, CodemodOperationPreflightReport
+from .codemod_semantics import CodemodPreflightStatus
+from .codemod_selection_context import CodemodSelectorContext
+from .codemod_reproof import SourceReproofDiagnostic
+from .codemod_source_edits import SourceTextGeometry, SourceTextSpanReplacement, NominalSourceEdit
+from .codemod_import_scopes import ModuleImportScope
+from collections.abc import Iterator
 from .codemod_source_edits import (
     NominalSourceEdit,
     PhysicalSourceEdit,
@@ -483,3 +491,272 @@ class ProjectStaticCallsToAdapterOperation(SourceReprovedOperation):
             *imports,
             *(retired if authority.retired_names else ()),
         )
+
+
+@dataclass(frozen=True)
+class _ForwarderBody:
+    """A method whose whole body is one call built from its own parameters."""
+
+    method: ast.FunctionDef
+    call: ast.Call
+    returns: bool
+
+    @classmethod
+    def of(cls, method: ast.FunctionDef, qualname: str) -> _ForwarderBody:
+        body = [
+            statement
+            for statement in method.body
+            if not (
+                isinstance(statement, ast.Expr)
+                and isinstance(statement.value, ast.Constant)
+                and isinstance(statement.value.value, str)
+            )
+        ]
+        arguments = method.args
+        if (
+            method.decorator_list
+            or arguments.vararg
+            or arguments.kwarg
+            or arguments.posonlyargs
+            or not arguments.args
+            or len(body) != 1
+        ):
+            raise ValueError(f"{qualname!r} is not a plain one-call forwarder")
+        statement = body[0]
+        call = statement.value if isinstance(statement, (ast.Return, ast.Expr)) else None
+        if not isinstance(call, ast.Call):
+            raise ValueError(f"{qualname!r} is not a plain one-call forwarder")
+        return cls(method, call, isinstance(statement, ast.Return))
+
+    @property
+    def parameter_names(self) -> tuple[str, ...]:
+        return tuple(argument.arg for argument in (*self.method.args.args, *self.method.args.kwonlyargs))
+
+    def inlined(self, call_site: ast.Call, receiver: ast.expr, file_path: str) -> str:
+        """The forwarded call with self and each parameter replaced by the call
+        site's receiver and arguments."""
+
+        if any(isinstance(argument, ast.Starred) for argument in call_site.args) or any(
+            keyword.arg is None for keyword in call_site.keywords
+        ):
+            raise ValueError(f"{file_path!r}:{call_site.lineno} passes unpacked arguments")
+        positional = self.method.args.args[1:]
+        if len(call_site.args) > len(positional):
+            raise ValueError(f"{file_path!r}:{call_site.lineno} passes too many arguments")
+        bound: dict[str, ast.expr] = {self.method.args.args[0].arg: receiver}
+        bound.update(
+            (parameter.arg, argument) for parameter, argument in zip(positional, call_site.args)
+        )
+        bound.update((keyword.arg, keyword.value) for keyword in call_site.keywords)
+        missing = tuple(name for name in self.parameter_names if name not in bound)
+        if missing:
+            raise ValueError(
+                f"{file_path!r}:{call_site.lineno} relies on defaults for {missing!r}"
+            )
+        uses = [
+            node.id
+            for node in ast.walk(self.call)
+            if isinstance(node, ast.Name) and node.id in bound
+        ]
+        unbalanced = tuple(name for name in self.parameter_names if uses.count(name) != 1)
+        if unbalanced:
+            raise ValueError(
+                f"Inlining would not evaluate {unbalanced!r} exactly once at "
+                f"{file_path!r}:{call_site.lineno}"
+            )
+        site_order = [self.method.args.args[0].arg, *(
+            parameter.arg for parameter in positional[: len(call_site.args)]
+        ), *(keyword.arg for keyword in call_site.keywords)]
+        inlined_order = sorted(uses, key=lambda name: _source_position(self.call, name))
+        if inlined_order != site_order and not all(
+            _plain_read(bound[name]) for name in bound
+        ):
+            raise ValueError(
+                f"Inlining reorders the evaluation of arguments with effects at "
+                f"{file_path!r}:{call_site.lineno}"
+            )
+
+        class Substitute(ast.NodeTransformer):
+            def visit_Name(self, node: ast.Name) -> ast.expr:
+                return bound.get(node.id, node)
+
+        return ast.unparse(Substitute().visit(copy.deepcopy(self.call)))
+
+
+@dataclass(frozen=True, kw_only=True)
+class InlineForwarderOperation(RepositorySourceReprovedOperation):
+    """Inline a method whose body only forwards one call, at every call site, and
+    delete it (paper1 Thm 4.6: a forwarder supplies a pair outside the lattice).
+
+    Without receiver types the call sites are found by name, so the proof is
+    closed-world: no other indexed class declares or assigns the name, every use
+    of the name is a direct call, and no string names it. Each call site becomes
+    the forwarded call with self and the parameters replaced by the receiver and
+    arguments; imports only the method used leave its module."""
+
+    def preflight_reports(
+        self,
+        context: CodemodSelectorContext,
+    ) -> tuple[CodemodOperationPreflightReport, ...]:
+        try:
+            self.required_reproof(lambda: self.source_edits_from_snapshot(context))
+        except CodemodOperationPreflightError as error:
+            return (error.report,)
+        return (
+            CodemodOperationPreflightReport(
+                operation=self.operation_key(),
+                status=CodemodPreflightStatus.PASSED,
+                message="Every use of the forwarder is a call that inlines",
+                detail=SourceReproofDiagnostic(self.target, ()),
+            ),
+        )
+
+    def source_edits_from_snapshot(
+        self,
+        snapshot: CodemodSourceSnapshot,
+    ) -> tuple[NominalSourceEdit, ...]:
+        source_path = self.required_source_path(snapshot, self.operation_key())
+        qualname = self.target.qualname
+        if qualname is None or "." not in qualname:
+            raise ValueError("inline_forwarder requires a Class.method target_qualname")
+        class_name, method_name = qualname.rsplit(".", 1)
+        module = snapshot.module_nodes_by_file_path[source_path]
+        owner = next(
+            (node for node in module.body if isinstance(node, ast.ClassDef) and node.name == class_name),
+            None,
+        )
+        method = None if owner is None else next(
+            (node for node in owner.body if isinstance(node, ast.FunctionDef) and node.name == method_name),
+            None,
+        )
+        if method is None:
+            raise ValueError(f"{qualname!r} is not declared in {source_path!r}")
+        forwarder = _ForwarderBody.of(method, qualname)
+        edits: list[NominalSourceEdit] = []
+        for source_file in snapshot.source_index.files:
+            file_path = source_file.file_path
+            consumer = snapshot.module_nodes_by_file_path.get(file_path)
+            if consumer is None:
+                continue
+            replacements = self._call_site_replacements(
+                consumer, file_path, method_name, forwarder, method if file_path == source_path else None
+            )
+            if file_path == source_path:
+                replacements.append((method, ""))
+            if not replacements:
+                continue
+            geometry = SourceTextGeometry(snapshot.sources_by_file_path[file_path])
+            edits.append(
+                geometry.nominal_edit(
+                    file_path=file_path,
+                    replacements=tuple(
+                        SourceTextSpanReplacement.from_offsets(
+                            start_offset=start,
+                            end_offset=end,
+                            replacement_source=replacement,
+                        )
+                        for node, replacement in replacements
+                        for start, end in (
+                            self._deletion_offsets(geometry, node)
+                            if node is method
+                            else geometry.required_node_offsets(node),
+                        )
+                    ),
+                    rationale=self.rationale or f"Inline the forwarder {qualname!r}.",
+                )
+            )
+        edits.extend(self._unused_import_removals(module, source_path, method))
+        return tuple(edits)
+
+    @staticmethod
+    def _call_site_replacements(
+        module: ast.Module,
+        file_path: str,
+        method_name: str,
+        forwarder: _ForwarderBody,
+        declaration: ast.FunctionDef | None,
+    ) -> list[tuple[ast.AST, str]]:
+        parents = {child: parent for parent in ast.walk(module) for child in ast.iter_child_nodes(parent)}
+        replacements: list[tuple[ast.AST, str]] = []
+        for node in ast.walk(module):
+            if declaration is not None and node is declaration:
+                continue
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) and node.name == method_name:
+                raise ValueError(f"{file_path!r}:{node.lineno} declares another {method_name!r}")
+            if isinstance(node, ast.Constant) and node.value == method_name:
+                raise ValueError(f"{file_path!r}:{node.lineno} names {method_name!r} in a string")
+            if not (isinstance(node, ast.Attribute) and node.attr == method_name):
+                continue
+            call = parents.get(node)
+            if not (isinstance(call, ast.Call) and call.func is node) or not isinstance(node.ctx, ast.Load):
+                raise ValueError(f"{file_path!r}:{node.lineno} uses {method_name!r} other than by calling it")
+            if not forwarder.returns and not isinstance(parents.get(call), ast.Expr):
+                raise ValueError(
+                    f"{file_path!r}:{call.lineno} uses the value of {method_name!r}, which returns None"
+                )
+            replacements.append((call, forwarder.inlined(call, node.value, file_path)))
+        return replacements
+
+    @staticmethod
+    def _deletion_offsets(geometry: SourceTextGeometry, method: ast.FunctionDef) -> tuple[int, int]:
+        """The method's whole lines, plus one blank line after it if there is one."""
+
+        lines = geometry.source.splitlines(keepends=True)
+        start = sum(len(line) for line in lines[: method.lineno - 1])
+        end_line = method.end_lineno or method.lineno
+        if end_line < len(lines) and not lines[end_line].strip():
+            end_line += 1
+        end = sum(len(line) for line in lines[:end_line])
+        return start, end
+
+    @staticmethod
+    def _unused_import_removals(
+        module: ast.Module,
+        source_path: str,
+        method: ast.FunctionDef,
+    ) -> Iterator[ModuleImportMutation]:
+        used_by_method = {node.id for node in ast.walk(method) if isinstance(node, ast.Name)}
+        used_elsewhere = {
+            node.id
+            for node in ast.walk(module)
+            if isinstance(node, ast.Name) and not _within(node, method)
+        }
+        for scope in ModuleImportScope:
+            for statement in scope.import_statements(module):
+                names = tuple(
+                    alias.asname or alias.name
+                    for alias in statement.names
+                    if (alias.asname or alias.name) in used_by_method - used_elsewhere
+                )
+                if names:
+                    yield ModuleImportMutation.remove_bound_names(
+                        file_path=source_path,
+                        names=names,
+                        scope=scope,
+                    )
+
+
+def _source_position(call: ast.Call, name: str) -> tuple[int, int]:
+    return next(
+        (node.lineno, node.col_offset)
+        for node in ast.walk(call)
+        if isinstance(node, ast.Name) and node.id == name
+    )
+
+
+def _plain_read(expression: ast.expr) -> bool:
+    """A name, a constant, or attribute and constant-index reads over a name."""
+
+    if isinstance(expression, (ast.Name, ast.Constant)):
+        return True
+    if isinstance(expression, ast.Attribute):
+        return _plain_read(expression.value)
+    if isinstance(expression, ast.Subscript):
+        return isinstance(expression.slice, ast.Constant) and _plain_read(expression.value)
+    return False
+
+
+def _within(node: ast.AST, container: ast.AST) -> bool:
+    return (
+        getattr(container, "lineno", 0) <= getattr(node, "lineno", -1) <= (getattr(container, "end_lineno", 0) or 0)
+    )

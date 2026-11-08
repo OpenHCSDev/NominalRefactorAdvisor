@@ -211,7 +211,7 @@ def test_relocation_redirects_a_function_local_import(tmp_path: Path) -> None:
 
 
 def _promote(root: Path, source: str, module: str, *names: str):
-    from nominal_refactor_advisor.codemod import PromoteGuardedImportOperation
+    from nominal_refactor_advisor.module_move_codemod import PromoteGuardedImportOperation
 
     return PromoteGuardedImportOperation(
         target=SourceRewriteTarget(file_path=(root / source).as_posix()),
@@ -309,4 +309,98 @@ def test_a_move_drops_the_destinations_guarded_import_of_the_moved_declaration(
         "import typing, pkg.rules; "
         "assert typing.get_type_hints(pkg.rules.Rule.found)['frame'] is pkg.rules.Frame",
     )
+    assert imported.returncode == 0, imported.stderr
+
+
+def test_repeated_package_imports_are_one_binding_not_a_rebinding(tmp_path: Path) -> None:
+    _write(tmp_path, "pkg/__init__.py", "")
+    _write(tmp_path, "pkg/other.py", "")
+    _write(tmp_path, "pkg/source.py", "class Moved:\n    value = 3\n")
+    _write(
+        tmp_path,
+        "pkg/consumer.py",
+        "import pkg.other, pkg.source  # noqa: E401\n\n"
+        "value = pkg.source.Moved.value\n",
+    )
+    simulation = (
+        RefactorRecipe("relocate-moved")
+        .with_operation(
+            RelocateSymbolsToNewModuleOperation(
+                target=SourceRewriteTarget(file_path=(tmp_path / "pkg/source.py").as_posix()),
+                symbol_qualnames=("Moved",),
+                destination_path=(tmp_path / "pkg/moved.py").as_posix(),
+            )
+        )
+        .simulate(_snapshot(tmp_path))
+    )
+    assert simulation.is_clean, simulation.preflight_report
+    simulation.apply()
+    imported = _run(tmp_path, "from pkg.consumer import value; assert value == 3")
+    assert imported.returncode == 0, imported.stderr
+
+
+def test_a_package_object_above_the_source_is_not_the_source(tmp_path: Path) -> None:
+    _write(tmp_path, "pkg/__init__.py", "")
+    _write(tmp_path, "pkg/source.py", "class Moved:\n    value = 3\n")
+    _write(
+        tmp_path,
+        "pkg/consumer.py",
+        "import pkg\nimport pkg.source\n\n"
+        "ROOT = pkg.__name__\n"
+        "value = pkg.source.Moved.value\n",
+    )
+    simulation = (
+        RefactorRecipe("relocate-moved")
+        .with_operation(
+            RelocateSymbolsToNewModuleOperation(
+                target=SourceRewriteTarget(file_path=(tmp_path / "pkg/source.py").as_posix()),
+                symbol_qualnames=("Moved",),
+                destination_path=(tmp_path / "pkg/moved.py").as_posix(),
+            )
+        )
+        .simulate(_snapshot(tmp_path))
+    )
+    assert simulation.is_clean, simulation.preflight_report
+    simulation.apply()
+    imported = _run(tmp_path, "from pkg.consumer import value, ROOT; assert value == 3 and ROOT == 'pkg'")
+    assert imported.returncode == 0, imported.stderr
+
+
+def test_retained_files_keep_the_dissolved_modules_old_name(tmp_path: Path) -> None:
+    _write(tmp_path, "pkg/__init__.py", "")
+    _write(tmp_path, "pkg/owner.py", "class Moved:\n    pass\n")
+    _write(tmp_path, "pkg/hub.py", "from .owner import Moved\n")
+    _write(tmp_path, "pkg/evidence.py", "GONE = ('pkg/hub.py',)\n")
+    _write(tmp_path, "pkg/reader.py", "NAME = 'pkg.hub'\n")
+    operation = DissolveModuleOperation(
+        target=SourceRewriteTarget(file_path=(tmp_path / "pkg/hub.py").as_posix()),
+        successor_path=(tmp_path / "pkg/owner.py").as_posix(),
+        retained_paths=((tmp_path / "pkg/evidence.py").as_posix(),),
+    )
+    simulation = RefactorRecipe("dissolve").with_operation(operation).simulate(_snapshot(tmp_path))
+    assert simulation.is_clean
+    simulation.apply()
+    assert (tmp_path / "pkg/evidence.py").read_text() == "GONE = ('pkg/hub.py',)\n"
+    assert (tmp_path / "pkg/reader.py").read_text() == "NAME = 'pkg.owner'\n"
+
+
+def test_a_move_keeps_a_source_import_that_consumers_import(tmp_path: Path) -> None:
+    _write(tmp_path, "pkg/__init__.py", "")
+    _write(tmp_path, "pkg/base.py", "class Base:\n    pass\n")
+    _write(tmp_path, "pkg/source.py", "from .base import Base\n\n\nclass Moved(Base):\n    pass\n")
+    _write(tmp_path, "pkg/consumer.py", "from .source import Base, Moved\n")
+    simulation = (
+        RefactorRecipe("relocate-moved")
+        .with_operation(
+            RelocateSymbolsToNewModuleOperation(
+                target=SourceRewriteTarget(file_path=(tmp_path / "pkg/source.py").as_posix()),
+                symbol_qualnames=("Moved",),
+                destination_path=(tmp_path / "pkg/moved.py").as_posix(),
+            )
+        )
+        .simulate(_snapshot(tmp_path))
+    )
+    assert simulation.is_clean
+    simulation.apply()
+    imported = _run(tmp_path, "from pkg.consumer import Base, Moved; assert issubclass(Moved, Base)")
     assert imported.returncode == 0, imported.stderr
