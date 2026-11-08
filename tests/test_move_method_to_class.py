@@ -65,12 +65,12 @@ def _write(root: Path, sources: dict[str, str]) -> None:
         (root / f"pkg/{name}.py").write_text(source)
 
 
-def _simulate(root: Path, qualname: str = "Thread.environment"):
+def _simulate(root: Path, qualname: str = "Thread.environment", receiver: str = "thread"):
     snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(root))
     operation = MoveMethodToClassOperation(
         target=SourceRewriteTarget(file_path=(root / "pkg/threads.py").as_posix(), qualname=qualname),
         destination=SourceRewriteTarget(file_path=(root / "pkg/requests.py").as_posix(), qualname="Request"),
-        receiver_parameter="thread",
+        receiver_parameter=receiver,
     )
     replayed = RefactorRecipeOperation.from_json_value(json_report_object(operation))
     return RefactorRecipe(recipe_id="move").with_operation(replayed).simulate(snapshot)
@@ -90,8 +90,8 @@ def test_a_method_moves_onto_the_class_it_builds_and_only_its_receivers_follow(t
     assert "def environment" not in threads and "pkg.requests" not in threads
     assert "def label" in threads
     requests = _source(tmp_path, result, "requests")
-    assert "    @staticmethod\n    def environment(thread, root: str)" in requests
-    assert "Request.for_thread(thread)" in requests and "import Request" not in requests
+    assert "    @classmethod\n    def environment(cls, thread, root: str)" in requests
+    assert "cls.for_thread(thread)" in requests and "import Request" not in requests
     config = _source(tmp_path, result, "config")
     assert "Request.environment(thread, '/root')" in config
     assert "return self.config.environment(self.thread)" in config
@@ -126,3 +126,47 @@ def test_moving_a_method_refuses_what_its_callers_would_lose(
 
     with pytest.raises(CodemodOperationPreflightError, match=refusal):
         _simulate(tmp_path)
+
+
+@pytest.mark.native_proof
+def test_a_method_taking_the_destination_becomes_its_instance_method(tmp_path: Path) -> None:
+    threads = THREADS.replace(
+        "    def label(self) -> str:\n",
+        "    def stamp(self, request: Request, suffix: str) -> str:\n"
+        "        return f'{request.thread}:{self.name}{suffix}'\n\n"
+        "    def label(self) -> str:\n",
+    ).replace("from dataclasses import dataclass, replace\n", (
+        "from __future__ import annotations\n\nfrom dataclasses import dataclass, replace\n"
+        "from typing import TYPE_CHECKING\n\nif TYPE_CHECKING:\n    from pkg.requests import Request\n"
+    ))
+    config = CONFIG.replace("from pkg.threads import NativeThread, Thread\n", (
+        "from pkg.requests import Request\nfrom pkg.threads import NativeThread, Thread\n"
+    )) + (
+        "\n\ndef stamped(thread: Thread, request: Request) -> str:\n"
+        "    return thread.stamp(request, suffix='!')\n"
+    )
+    _write(tmp_path, {"threads": threads, "requests": REQUESTS, "config": config})
+    result = _simulate(tmp_path, "Thread.stamp", receiver="owner")
+
+    assert result.is_clean is True
+    requests = _source(tmp_path, result, "requests")
+    assert "    def stamp(self, owner, suffix: str) -> str:\n" in requests
+    assert "f'{self.thread}:{owner.name}{suffix}'" in requests
+    assert "return request.stamp(thread, suffix='!')" in _source(tmp_path, result, "config")
+    for path, source in result.simulation.rewritten_sources.items():
+        Path(path).write_text(source)
+    completed = subprocess.run(
+        [sys.executable, "-c", (
+            "from pkg.config import stamped; from pkg.requests import Request; "
+            "from pkg.threads import NativeThread; print(stamped(NativeThread('w'), Request('r')))"
+        )],
+        cwd=tmp_path, check=True, capture_output=True, text=True,
+    )
+    assert completed.stdout.strip() == "r:w!"
+
+
+def test_a_method_that_neither_takes_nor_builds_the_destination_is_not_its(tmp_path: Path) -> None:
+    _write(tmp_path, {"threads": THREADS, "requests": REQUESTS, "config": CONFIG})
+
+    with pytest.raises(CodemodOperationPreflightError, match="neither takes a Request nor builds one"):
+        _simulate(tmp_path, "Thread.label")
