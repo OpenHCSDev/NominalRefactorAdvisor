@@ -32,6 +32,10 @@ from .ast_field_decoders import (
     declared_annotations,
     variadic_parameters,
 )
+from .binding_proofs import (
+    FunctionNominalParameterBindingAuthority,
+    RepositoryModuleBindingProof,
+)
 from .value_expression import CompactValueExpression
 from .annotation_semantics import NOMINAL_ANNOTATION_SOURCE_AUTHORITY
 from .ast_projection import ExpressionReference
@@ -256,11 +260,9 @@ from .class_index import (
     ClassFamilyIndex,
     ClassMethodReceiverRequirements,
     CompactClassFamilyIndex,
-    FunctionNominalParameterBindingAuthority,
     IndexedClass,
     ModuleClassReferenceResolver,
     ModuleNominalBindingAuthority,
-    RepositoryModuleBindingProof,
     declared_nominal_base_count,
 )
 from .codemod_architecture_guards import (

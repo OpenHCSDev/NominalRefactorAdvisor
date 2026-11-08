@@ -39,10 +39,10 @@ from .ast_tools import (
     ParsedModuleSourceProjection,
     PythonModulePathAuthority,
 )
+from .binding_proofs import RepositoryModuleBindingProof
 from .class_index import (
     ClassFamilyIndex,
     CompactModuleClassProjectionFamily,
-    RepositoryModuleBindingProof,
     build_compact_class_family_index,
 )
 from .ast_tools import ParsedModuleSet

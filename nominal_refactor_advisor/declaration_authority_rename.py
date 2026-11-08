@@ -11,6 +11,7 @@ from dataclasses import dataclass, replace
 from functools import cached_property
 from typing import ClassVar, Self
 
+from .binding_proofs import RepositoryModuleBindingProof
 from .lexical_bindings import ImportAlias, ImportBoundNameProjection
 from .annotation_semantics import StringizedAnnotationSurface
 from .ast_tools import ModuleAnnotationEvaluationMode, ParsedModule
@@ -18,7 +19,6 @@ from .class_index import (
     ModuleNominalBindingAuthority,
     ModulePublicExportSourceAuthority,
     PublicExportNameReference,
-    RepositoryModuleBindingProof,
     module_public_export_contract,
     module_star_import_origins,
     nominal_reference_root,

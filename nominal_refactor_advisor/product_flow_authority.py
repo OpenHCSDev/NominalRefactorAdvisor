@@ -21,6 +21,10 @@ from typing import (
     cast,
 )
 
+from .binding_proofs import (
+    FunctionNominalParameterBindingAuthority,
+    RepositoryModuleBindingProof,
+)
 from .value_expression import CompactValueExpression
 from .annotation_semantics import NOMINAL_ANNOTATION_SOURCE_AUTHORITY, TypeWrapper
 from .ast_tools import (
@@ -56,9 +60,7 @@ from .class_index import (
     CompactPublicNameExposure,
     CompactUnannotatedCallable,
     CompactRepositoryPublicExposureIndex,
-    FunctionNominalParameterBindingAuthority,
     ModuleNominalBindingAuthority,
-    RepositoryModuleBindingProof,
     build_compact_class_family_index,
 )
 from .collection_algebra import (

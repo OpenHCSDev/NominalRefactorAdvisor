@@ -11,7 +11,7 @@ import typing
 import pytest
 
 from nominal_refactor_advisor.ast_tools import parse_python_modules
-from nominal_refactor_advisor.class_index import RepositoryModuleBindingProof
+from nominal_refactor_advisor.binding_proofs import RepositoryModuleBindingProof
 from nominal_refactor_advisor.class_namespace import ClassNamespaceExecutionEvidence
 from nominal_refactor_advisor.captured_reference import (
     CapturedNativeObject,

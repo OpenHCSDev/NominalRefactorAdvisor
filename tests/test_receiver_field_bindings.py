@@ -6,10 +6,8 @@ from pathlib import Path
 import pytest
 
 from nominal_refactor_advisor.ast_tools import SourceModule
-from nominal_refactor_advisor.class_index import (
-    FunctionNominalParameterBindingAuthority,
-    ModuleNominalBindingAuthority,
-)
+from nominal_refactor_advisor.binding_proofs import FunctionNominalParameterBindingAuthority
+from nominal_refactor_advisor.class_index import ModuleNominalBindingAuthority
 from nominal_refactor_advisor.product_flow_authority import SourceProductFlowRepository
 
 
