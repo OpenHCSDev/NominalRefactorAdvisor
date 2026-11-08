@@ -91,6 +91,7 @@ def test_a_forwarder_is_inlined_and_its_guarded_import_leaves(tmp_path: Path) ->
         ("class Other:\n    def require_may_change(self, todo):\n        pass\n", "declares another"),
         ("def bound(actor):\n    return actor.require_may_change\n", "other than by calling it"),
         ("def used(actor, todo):\n    return actor.require_may_change(todo)\n", "returns None"),
+        ("def effect(make, todo):\n    make().require_may_change(todo.pop())\n", "reorders the evaluation"),
     ),
 )
 def test_inlining_by_name_is_refused_when_the_name_is_not_closed(
@@ -103,3 +104,21 @@ def test_inlining_by_name_is_refused_when_the_name_is_not_closed(
     report = _inline(tmp_path).preflight_reports(snapshot)
     assert report and report[0].status is CodemodPreflightStatus.FAILED, report
     assert message in report[0].message
+
+
+def test_an_ignored_parameter_is_not_inlined_away(tmp_path: Path) -> None:
+    _write(tmp_path, "pkg/__init__.py", "")
+    _write(
+        tmp_path,
+        "pkg/identity.py",
+        "class Actor:\n"
+        "    def require_may_change(self, todo) -> None:\n"
+        "        self.check()\n\n"
+        "    def check(self) -> None:\n"
+        "        pass\n",
+    )
+    _write(tmp_path, "pkg/consumer.py", "def run(actor, effect):\n    actor.require_may_change(effect())\n")
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    report = _inline(tmp_path).preflight_reports(snapshot)
+    assert report[0].status is CodemodPreflightStatus.FAILED
+    assert "exactly once" in report[0].message

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+import copy
 from abc import (
     ABC,
     abstractmethod,
@@ -552,22 +553,32 @@ class _ForwarderBody:
             raise ValueError(
                 f"{file_path!r}:{call_site.lineno} relies on defaults for {missing!r}"
             )
-        uses = {name: 0 for name in self.parameter_names}
-        for node in ast.walk(self.call):
-            if isinstance(node, ast.Name) and node.id in uses:
-                uses[node.id] += 1
-        repeated = tuple(name for name, count in uses.items() if count > 1)
-        if repeated:
+        uses = [
+            node.id
+            for node in ast.walk(self.call)
+            if isinstance(node, ast.Name) and node.id in bound
+        ]
+        unbalanced = tuple(name for name in self.parameter_names if uses.count(name) != 1)
+        if unbalanced:
             raise ValueError(
-                f"Inlining would evaluate {repeated!r} more than once at "
+                f"Inlining would not evaluate {unbalanced!r} exactly once at "
+                f"{file_path!r}:{call_site.lineno}"
+            )
+        site_order = [self.method.args.args[0].arg, *(
+            parameter.arg for parameter in positional[: len(call_site.args)]
+        ), *(keyword.arg for keyword in call_site.keywords)]
+        inlined_order = sorted(uses, key=lambda name: _source_position(self.call, name))
+        if inlined_order != site_order and not all(
+            _plain_read(bound[name]) for name in bound
+        ):
+            raise ValueError(
+                f"Inlining reorders the evaluation of arguments with effects at "
                 f"{file_path!r}:{call_site.lineno}"
             )
 
         class Substitute(ast.NodeTransformer):
             def visit_Name(self, node: ast.Name) -> ast.expr:
                 return bound.get(node.id, node)
-
-        import copy
 
         return ast.unparse(Substitute().visit(copy.deepcopy(self.call)))
 
@@ -723,6 +734,26 @@ class InlineForwarderOperation(RepositorySourceReprovedOperation):
                         names=names,
                         scope=scope,
                     )
+
+
+def _source_position(call: ast.Call, name: str) -> tuple[int, int]:
+    return next(
+        (node.lineno, node.col_offset)
+        for node in ast.walk(call)
+        if isinstance(node, ast.Name) and node.id == name
+    )
+
+
+def _plain_read(expression: ast.expr) -> bool:
+    """A name, a constant, or attribute and constant-index reads over a name."""
+
+    if isinstance(expression, (ast.Name, ast.Constant)):
+        return True
+    if isinstance(expression, ast.Attribute):
+        return _plain_read(expression.value)
+    if isinstance(expression, ast.Subscript):
+        return isinstance(expression.slice, ast.Constant) and _plain_read(expression.value)
+    return False
 
 
 def _within(node: ast.AST, container: ast.AST) -> bool:

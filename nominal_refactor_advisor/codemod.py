@@ -150,6 +150,7 @@ from .codemod_function_operations import (
     FunctionBindingProjectionOperationABC as FunctionBindingProjectionOperationABC,
     FunctionBodySourcePayload as FunctionBodySourcePayload,
     FunctionMutationOperationABC as FunctionMutationOperationABC,
+    InlineForwarderOperation as InlineForwarderOperation,
     PrependFunctionBodyOperation as PrependFunctionBodyOperation,
     ProjectFunctionLocalOperation as ProjectFunctionLocalOperation,
     ProjectFunctionParameterOperation as ProjectFunctionParameterOperation,
