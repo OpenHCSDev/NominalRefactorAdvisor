@@ -1191,6 +1191,10 @@ class FileText(ABC):
     def sources(self, file_path: str) -> Mapping[str, str]:
         """The file's text keyed by its path, empty when there is no file."""
 
+    @abstractmethod
+    def required_text(self, path: Path) -> str:
+        """The text of a file a reader found; a file that is gone refuses."""
+
 
 @dataclass(frozen=True)
 class PresentFileText(FileText):
@@ -1199,11 +1203,17 @@ class PresentFileText(FileText):
     def sources(self, file_path: str) -> Mapping[str, str]:
         return {file_path: self.text}
 
+    def required_text(self, path: Path) -> str:
+        return self.text
+
 
 @dataclass(frozen=True)
 class AbsentFileText(FileText):
     def sources(self, file_path: str) -> Mapping[str, str]:
         return {}
+
+    def required_text(self, path: Path) -> str:
+        raise ValueError(f"{path.as_posix()!r} is gone in this state of the plan")
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -1213,6 +1223,15 @@ class TextFileRewrite:
     file_path: str
     before: FileText
     after: FileText
+
+    @staticmethod
+    def carried(
+        text_files: Mapping[str, FileText],
+        rewrites: Iterable[TextFileRewrite],
+    ) -> Mapping[str, FileText]:
+        """The files outside the index a plan has rewritten, after `rewrites` too."""
+
+        return {**text_files, **{rewrite.file_path: rewrite.after for rewrite in rewrites}}
 
 
 @dataclass(frozen=True)

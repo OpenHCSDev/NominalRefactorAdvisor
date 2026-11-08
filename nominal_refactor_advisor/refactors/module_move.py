@@ -2276,8 +2276,8 @@ class NewModuleSymbolMoveOperationABC(ModuleSymbolMoveOperation, ABC):
         """The data beside the source that moves with it, when the whole module moves."""
 
         if not self.moves_whole_module(context):
-            return ()
-        return self.sibling_data(context).carry(self)
+            return super().text_file_changes(context)
+        return (*super().text_file_changes(context), *self.sibling_data(context).carry(self))
 
     destination_source: str | None = codemod_payload_field(
         OptionalStringPayloadValueCodec(),
@@ -2394,6 +2394,25 @@ class SourceBindingRelocatingModuleSymbolMoveOperationABC(
     ABC,
 ):
     """Move declarations only when their former bindings can be removed."""
+
+    def text_file_changes(
+        self,
+        context: CodemodSelectorContext,
+    ) -> tuple[TextFileChange, ...]:
+        """An entry point or setting naming a moved name on the source, which no
+        longer binds it, names the name's owner instead."""
+
+        source_path = self.required_source_path(context, self.operation_key())
+        redirect = self.move_plan(context).name_redirect
+        return (
+            *super().text_file_changes(context),
+            *_RelocatedNameStrings(
+                source_path,
+                redirect.source_module_name(context.module_import_graph),
+                redirect.destinations,
+                None,
+            ).manifest_edits(context, self),
+        )
 
     def source_local_dependency_resolution(
         self,
@@ -3226,11 +3245,14 @@ class _ModuleIdentityStrings:
         for match in self.module_pattern.finditer(segment):
             if any(low <= match.start() < high for low, high in routed):
                 continue
+            replacement_source = self._module_replacement(context, where, match)
+            if replacement_source == match.group(0):
+                continue
             replacements.append(
                 SourceTextSpanReplacement.from_offsets(
                     start_offset=start + match.start(),
                     end_offset=start + match.end(),
-                    replacement_source=self._module_replacement(context, where, match),
+                    replacement_source=replacement_source,
                 )
             )
         for match in self.path_pattern.finditer(segment):
@@ -3257,14 +3279,18 @@ class _ModuleIdentityStrings:
             if self.source_path == tail or self.source_path.endswith(f"/{tail}")
         )
 
-    def manifest_edits(self, context: CodemodSelectorContext) -> tuple[TextFileEdit, ...]:
+    def manifest_edits(
+        self,
+        context: CodemodSelectorContext,
+        operation: RefactorRecipeOperation,
+    ) -> tuple[TextFileEdit, ...]:
         """Every string in a governing `pyproject.toml` naming the module: a
         `[project.scripts]` or `[project.entry-points]` value, a tool's module
         or path setting."""
 
         edits: list[TextFileEdit] = []
         for manifest in _ProjectManifests.governing(context.execution_snapshot().sources_by_file_path):
-            source = manifest.read_text(encoding="utf-8")
+            source = context.execution_snapshot().text_file(manifest).required_text(manifest)
             replacements = tuple(
                 replacement
                 for start, end in _TomlStrings.content_spans(source)
@@ -3278,7 +3304,7 @@ class _ModuleIdentityStrings:
             if not replacements:
                 continue
             edit = TextFileEdit(
-                operation_type=DissolveModuleOperation,
+                operation_type=type(operation),
                 file_path=manifest.as_posix(),
                 source=source,
                 replacements=replacements,
@@ -3288,7 +3314,11 @@ class _ModuleIdentityStrings:
             edits.append(edit)
         return tuple(edits)
 
-    def script_edits(self, context: CodemodSelectorContext) -> tuple[TextFileEdit, ...]:
+    def script_edits(
+        self,
+        context: CodemodSelectorContext,
+        operation: RefactorRecipeOperation,
+    ) -> tuple[TextFileEdit, ...]:
         """Every mention of the module in the code of an executable script the
         governing projects ship: `python -m module`, or its path after
         `$repo_root/`. Comments are prose and stay as written."""
@@ -3296,7 +3326,7 @@ class _ModuleIdentityStrings:
         manifests = _ProjectManifests.governing(context.execution_snapshot().sources_by_file_path)
         edits: list[TextFileEdit] = []
         for script in _ProjectScripts.governing(manifests):
-            source = script.read_text(encoding="utf-8")
+            source = context.execution_snapshot().text_file(script).required_text(script)
             replacements = tuple(
                 replacement
                 for start, end in _ScriptCode.spans(source)
@@ -3310,7 +3340,7 @@ class _ModuleIdentityStrings:
             if replacements:
                 edits.append(
                     TextFileEdit(
-                        operation_type=DissolveModuleOperation,
+                        operation_type=type(operation),
                         file_path=script.as_posix(),
                         source=source,
                         replacements=replacements,
@@ -3476,6 +3506,30 @@ class DissolvedModuleReport(DataclassJsonReport):
     owner_paths_by_name: tuple[tuple[str, str], ...]
 
 
+@dataclass(frozen=True)
+class _RelocatedNameStrings(_ModuleIdentityStrings):
+    """A relocation's mentions of its source, which stays: only
+    `<module>.<Name>` and `<module>:<Name>` of a name that left follow it to its
+    owner. The module's own name, its path and the names it still declares
+    name what is still there."""
+
+    def _module_replacement(
+        self,
+        context: CodemodSelectorContext,
+        where: str,
+        match: re.Match[str],
+    ) -> str:
+        if match.group(2) not in self.owners:
+            return match.group(0)
+        return super()._module_replacement(context, where, match)
+
+    def _source_path_suffixes(self, spelled: str) -> tuple[str, ...]:
+        """The source file stays where it is, so no path to it changes."""
+
+        del spelled
+        return ()
+
+
 @dataclass(frozen=True, kw_only=True)
 class DissolveModuleOperation(RetainedCallOperation):
     """Delete a module that declares nothing: every name it still binds is
@@ -3498,7 +3552,7 @@ class DissolveModuleOperation(RetainedCallOperation):
         context: CodemodSelectorContext,
     ) -> tuple[TextFileEdit, ...]:
         strings = self._identity_strings(context)
-        return (*strings.manifest_edits(context), *strings.script_edits(context))
+        return (*strings.manifest_edits(context, self), *strings.script_edits(context, self))
 
     def source_file_deletions(
         self,

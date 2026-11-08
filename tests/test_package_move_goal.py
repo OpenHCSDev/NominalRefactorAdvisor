@@ -554,3 +554,32 @@ def test_data_another_module_also_reads_stays_and_refuses(tmp_path: Path) -> Non
 
     assert report.stages == ()
     assert "__file__ (" in report.to_markdown() and "also names" in report.to_markdown()
+
+
+def test_entry_points_naming_two_moved_modules_follow_both_moves(tmp_path: Path) -> None:
+    """One manifest names a function in each of two moved modules: every stage
+    reads the manifest as the stages before it left it, so both entries follow and
+    no later stage refuses a name its module no longer binds."""
+
+    _write(
+        tmp_path,
+        "pyproject.toml",
+        '[project]\nname = "pkg"\n\n[project.scripts]\n'
+        'pkg-a = "pkg.a:main"\npkg-b = "pkg.b:main"\n',
+    )
+    _write(tmp_path, "pkg/__init__.py", "")
+    _write(tmp_path, "pkg/planning/__init__.py", "")
+    for name, value in (("a", 1), ("b", 2)):
+        _write(tmp_path, f"pkg/{name}.py", f"def main() -> int:\n    return {value}\n")
+    report = _goal(tmp_path, "| `planning` | `a.py`, `b.py` | |\n")
+
+    assert report.stop_reason is CodemodWorkflowStopReason.ACHIEVED, report.to_markdown()
+    replay = report.replay_sequence.simulate(
+        CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    )
+    assert replay.is_clean
+    replay.apply()
+    assert (tmp_path / "pyproject.toml").read_text() == (
+        '[project]\nname = "pkg"\n\n[project.scripts]\n'
+        'pkg-a = "pkg.planning.a:main"\npkg-b = "pkg.planning.b:main"\n'
+    )

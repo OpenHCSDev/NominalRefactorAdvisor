@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from collections import Counter, deque
-from collections.abc import Callable, Hashable, Iterable, Iterator
+from collections.abc import Callable, Hashable, Iterable, Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from enum import StrEnum
@@ -40,6 +40,7 @@ from .codemod_architecture_guards import (
     ArchitectureGuardSuite,
 )
 from .codemod_semantics import FindingRecipeSynthesisStatus
+from .codemod_source_edits import FileText, TextFileRewrite
 from .codemod_runtime import (
     CodemodPlanDocumentSimulation,
     CodemodPlanSequence,
@@ -1542,6 +1543,8 @@ class CodemodWorkflowScan:
     modules: ParsedModuleSet
     findings: list[RefactorFinding]
     scan_mode: CodemodProjectedScanMode = CodemodProjectedScanMode.EXACT
+    text_files: Mapping[str, FileText] = field(default_factory=dict, repr=False, compare=False)
+    """The files outside the Python index the stages so far have rewritten."""
 
     @property
     def source_index(self) -> SourceIndex:
@@ -1553,7 +1556,9 @@ class CodemodWorkflowScan:
 
     @cached_property
     def source_snapshot(self) -> CodemodSourceSnapshot:
-        return CodemodSourceSnapshot.from_modules(self.modules, self.findings)
+        return CodemodSourceSnapshot.from_modules(self.modules, self.findings).with_text_files(
+            self.text_files
+        )
 
     @cached_property
     def _findings_by_concept(
@@ -1619,6 +1624,12 @@ class CodemodSimulationFindingProjection:
     expected_removed_finding_ids: tuple[str, ...] = ()
     include_continuation: bool = False
     include_source_index: bool = False
+    text_files: Mapping[str, FileText] = field(default_factory=dict)
+    """The plan's rewritten files outside the index before `simulation`."""
+
+    @property
+    def text_files_after(self) -> Mapping[str, FileText]:
+        return TextFileRewrite.carried(self.text_files, self.simulation.text_file_rewrites)
 
     def scan(self) -> CodemodWorkflowScan:
         projected_modules = ProjectedScanModuleSet(
@@ -1635,6 +1646,7 @@ class CodemodSimulationFindingProjection:
                 module_set, self.config, analysis_workers=self.analysis_workers
             ),
             scan_mode=CodemodProjectedScanMode.EXACT,
+            text_files=self.text_files_after,
         )
 
     def evidence_local_projected_scan(
@@ -1647,6 +1659,7 @@ class CodemodSimulationFindingProjection:
                 modules=ParsedModuleSet.of(projected_modules),
                 findings=list(self.findings),
                 scan_mode=CodemodProjectedScanMode.EVIDENCE_LOCAL_PARTIAL,
+                text_files=self.text_files_after,
             )
         detector_types = default_detector_types_for_analysis()
         detector_selection = EvidenceLocalPartialDetectorSelection.from_detector_types(
@@ -1681,6 +1694,7 @@ class CodemodSimulationFindingProjection:
             modules=ParsedModuleSet.of(projected_modules),
             findings=findings,
             scan_mode=CodemodProjectedScanMode.EVIDENCE_LOCAL_PARTIAL,
+            text_files=self.text_files_after,
         )
 
     def changed_findings(
@@ -1843,6 +1857,7 @@ class CodemodRefactorGoalRunner:
             roots=self.roots,
             report_roots=self.report_roots,
             analysis_workers=self.analysis_workers,
+            text_files=scan.text_files,
         ).scan()
 
     def projected_target_scan(
@@ -1886,6 +1901,7 @@ class CodemodRefactorGoalRunner:
                 )
             ),
             scan_mode=CodemodProjectedScanMode.TARGET_DETECTOR_PARTIAL,
+            text_files=TextFileRewrite.carried(scan.text_files, simulation.text_file_rewrites),
         )
 
     def exact_scan(self, scan: CodemodWorkflowScan) -> CodemodWorkflowScan:
@@ -1893,8 +1909,8 @@ class CodemodRefactorGoalRunner:
 
         if scan.scan_mode.exact:
             return scan
-        return CodemodWorkflowScan(
-            modules=scan.modules,
+        return replace(
+            scan,
             findings=self.report_scoped_findings(
                 analyze_modules(
                     scan.modules, self.config, analysis_workers=self.analysis_workers
