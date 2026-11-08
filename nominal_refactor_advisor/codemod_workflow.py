@@ -1445,6 +1445,28 @@ class CodemodWorkflowScan:
     def source_snapshot(self) -> CodemodSourceSnapshot:
         return CodemodSourceSnapshot.from_modules(self.modules, self.findings)
 
+    @cached_property
+    def _findings_by_concept(
+        self,
+    ) -> dict[type[RefactorConcept], tuple[RefactorFinding, ...]]:
+        return {}
+
+    def concept_findings(
+        self, concept_type: type[RefactorConcept]
+    ) -> tuple[RefactorFinding, ...]:
+        """This state's findings whose executable declarations inherit the
+        concept. Deciding it can evaluate every finding's recipe, so a state
+        answers once per concept, however many stages ask."""
+
+        by_concept = self._findings_by_concept
+        if concept_type not in by_concept:
+            by_concept[concept_type] = FindingRecipeSynthesizer.findings_for_concept(
+                self.findings,
+                concept_type,
+                self.source_snapshot,
+            )
+        return by_concept[concept_type]
+
     @classmethod
     def parsed(
         cls,
@@ -2124,11 +2146,7 @@ class CodemodRefactorGoalRunner:
         """The concept's findings; with a picks file, only the picked ones, so
         no stage serves a finding nobody reviewed."""
 
-        findings = FindingRecipeSynthesizer.findings_for_concept(
-            scan.findings,
-            self.migration_type,
-            scan.source_snapshot,
-        )
+        findings = scan.concept_findings(self.migration_type)
         if self.owner_picks is None:
             return findings
         picked = self.owner_picks.picked_finding_ids
