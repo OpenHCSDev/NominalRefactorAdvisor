@@ -12,6 +12,10 @@ from nominal_refactor_advisor.class_index import (
     CompactModuleClassProjectionFamily,
     build_compact_class_family_index,
 )
+from nominal_refactor_advisor.class_syntax_facets import (
+    ModuleClassSyntaxFacets,
+    ModuleClassSyntaxFacetsWithoutAutoregister,
+)
 from nominal_refactor_advisor.product_flow_authority import SourceProductFlowRepository
 from nominal_refactor_advisor.scan_cache import ScanCache
 
@@ -73,8 +77,8 @@ def test_original_source_consumer_does_not_construct_method_comparison_surfaces(
             "project",
         )
     held_facts = vars(module).get("_facts", {})
-    assert class_index.ModuleClassSyntaxFacets not in held_facts
-    assert class_index.ModuleClassSyntaxFacetsWithoutAutoregister not in held_facts
+    assert ModuleClassSyntaxFacets not in held_facts
+    assert ModuleClassSyntaxFacetsWithoutAutoregister not in held_facts
 
 
 def test_changed_original_source_reproves_declarations_within_the_same_invocation():

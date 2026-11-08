@@ -47,6 +47,9 @@ from ..class_families.parsed_index import (
     IndexedClass,
     build_class_family_index,
 )
+from ..class_method_facets import CompactMethodSemanticCoordinateKind
+from ..class_symbols import ClassSymbolResolutionAuthority
+from ..class_syntax_facets import annotation_type_names
 from ..constructor_algebra import (
     ConstructorConstant,
     ConstructorDerivedField,
@@ -60,6 +63,7 @@ from ..descriptor_algebra import (
     ConstantProperty,
 )
 from ..enum_semantics import PYTHON_ENUM_BASE_AUTHORITY
+from ..registration_facets import CompactManualSubclassRegistrationSite
 from ..registry_identity import DEFAULT_REGISTRY_KEY_ATTRIBUTE, class_name_registry_key
 from ..semantic_match import (
     AstPredicateRule,
@@ -133,13 +137,9 @@ from ..observation_families import (
 from ..native_syntax import NativePythonSyntaxIndex
 from ..positional_forwarding import PositionalForwardingCall
 from ..class_index import (
-    annotation_type_names,
     ClsRegistryMembership,
-    ClassSymbolResolutionAuthority,
     CompactClassFamilyIndex,
     CompactIndexedClass,
-    CompactManualSubclassRegistrationSite,
-    CompactMethodSemanticCoordinateKind,
     CompactModuleClassProjection,
     CompactModuleClassProjectionFamily,
     CompactRepeatedKeyedFamilyRoot,

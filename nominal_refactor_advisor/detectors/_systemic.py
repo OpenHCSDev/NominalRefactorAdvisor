@@ -15,6 +15,11 @@ from pathlib import Path
 from typing import Generic, TypeVar
 
 from ..ast_projection import ExpressionReference
+from ..class_syntax_facets import (
+    CompactClosedAxisBranchFunction,
+    CompactNamedProjectionSurface,
+    CompactSortedKeyCall,
+)
 from ..refactors.autoregister import (
     AutoRegisterExplicitPriorityOrderingFindingRecipeSynthesizer,
     InheritedAutoRegisterConfigBoilerplateFindingRecipeSynthesizer,
@@ -30,10 +35,7 @@ from ..ast_tools import (
 from ..class_index import (
     CompactClassFamilyIndex,
     CompactClassMappingKeyAuthority,
-    CompactClosedAxisBranchFunction,
     CompactIndexedClass,
-    CompactNamedProjectionSurface,
-    CompactSortedKeyCall,
 )
 from ..codemod import (
     CandidateCollectorBoilerplateFindingRecipeSynthesizer,

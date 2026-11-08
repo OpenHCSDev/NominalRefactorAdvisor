@@ -40,6 +40,7 @@ from .class_families.parsed_index import (
     ModuleClassReferenceResolver,
     overlay_class_family_index,
 )
+from .class_symbols import iter_class_definitions
 from .foreign_family import FunctionDefinition
 from .interpreter import PythonVersion
 from .assignment_projection import SingleAssignmentAndValueNameProjection
@@ -77,7 +78,6 @@ from .class_index import (
     CompactModuleClassProjection,
     CompactModuleClassProjectionFamily,
     build_compact_class_family_index,
-    iter_class_definitions,
 )
 from .codemod_payload import (
     CodemodPayloadRecord,

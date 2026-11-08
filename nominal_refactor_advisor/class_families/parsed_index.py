@@ -18,7 +18,6 @@ from ..class_index import (
     ClassDeclarationIndex,
     ClassMethodPromotionSafeDecorator,
     ClassRegistryFacts,
-    ClassSymbolResolutionAuthority,
     CompactClassFamilyIndexBuilder,
     CompactModuleClassProjectionFamily,
     CompactRepositoryPublicExposureIndex,
@@ -29,11 +28,14 @@ from ..class_index import (
     _dataclass_declaration,
     _module_nominal_binding_snapshots,
     _single_assignment_target_name,
-    _unique_known_symbol_by_suffix,
-    iter_class_definitions,
     module_import_aliases,
 )
 from ..class_namespace import ClassNamespaceExecutionEvidence
+from ..class_symbols import (
+    ClassSymbolResolutionAuthority,
+    _unique_known_symbol_by_suffix,
+    iter_class_definitions,
+)
 from ..collection_algebra import (
     UniqueIdentityIndexAuthority,
     sorted_tuple,

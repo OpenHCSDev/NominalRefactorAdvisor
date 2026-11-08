@@ -44,7 +44,6 @@ from .class_index import (
     CompactAnnotatedMethod,
     CompactAnnotatedProperty,
     CompactClassFamilyIndex,
-    CompactClassMemberDeclaration,
     CompactClassReferenceResolver,
     CompactIndexedClass,
     CompactModuleClassProjection,
@@ -53,6 +52,7 @@ from .class_index import (
     native_identity,
     build_compact_class_family_index,
 )
+from .class_syntax_facets import CompactClassMemberDeclaration
 from .typeshed_stubs import AnswerT, StubAnswers, StubRoot, installed_stub_root
 
 FunctionNode = ast.FunctionDef | ast.AsyncFunctionDef

@@ -26,11 +26,13 @@ from nominal_refactor_advisor.class_families.parsed_index import (
     ClassFamilyIndex,
     build_class_family_index,
 )
+from nominal_refactor_advisor.class_syntax_facets import ModuleClassSyntaxFacets
 from nominal_refactor_advisor.refactors.autoregister import (
     ConvertManualRegistryToAutoregisterOperation,
     DeriveAutoregisterInstanceViewOperation,
 )
 from nominal_refactor_advisor.refactors.dispatch_polymorphism import DispatchToPolymorphismOperation
+from nominal_refactor_advisor.registration_facets import SelectionGuardKind
 from registry_test_sources import _type_keyed_behavior_projection_source
 from native_use_test_support import (
     simulate_with_rendered_registry_creator_support,
@@ -105,10 +107,8 @@ from nominal_refactor_advisor.calibration import (
 )
 from nominal_refactor_advisor.cache_paths import default_parse_cache_dir
 from nominal_refactor_advisor.class_index import (
-    ModuleClassSyntaxFacets,
     RegistryLookupShape,
     RegistryLookupStyle,
-    SelectionGuardKind,
 )
 from nominal_refactor_advisor.cli import CalibrationExitCodeAuthority
 from nominal_refactor_advisor.cli import CliCommand

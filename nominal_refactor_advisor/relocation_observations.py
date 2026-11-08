@@ -24,10 +24,10 @@ from .ast_tools import ParsedModule
 from .class_index import (
     ABSTRACT_METHOD_DECORATOR,
     PROPERTY_DECORATORS,
-    ClassSymbolResolutionAuthority,
     ModuleNominalBindingAuthority,
     ModuleNominalBindingSnapshot,
 )
+from .class_symbols import ClassSymbolResolutionAuthority
 from .foreign_family import FunctionDefinition
 from .observation_families import ShapeFamily
 from .probe_owner import (

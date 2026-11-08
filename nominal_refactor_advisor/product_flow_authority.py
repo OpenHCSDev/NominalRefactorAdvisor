@@ -25,6 +25,7 @@ from .binding_proofs import (
     FunctionNominalParameterBindingAuthority,
     RepositoryModuleBindingProof,
 )
+from .class_syntax_facets import CompactClassMemberDeclaration
 from .public_exports import CompactPublicNameExposure
 from .value_expression import CompactValueExpression
 from .annotation_semantics import NOMINAL_ANNOTATION_SOURCE_AUTHORITY, TypeWrapper
@@ -50,7 +51,6 @@ from .class_index import (
     CompactAnnotatedMethod,
     CompactAnnotatedProperty,
     CompactClassFamilyIndex,
-    CompactClassMemberDeclaration,
     CompactClassReferenceResolver,
     CompactIndexedClass,
     CompactModuleClassHeader,

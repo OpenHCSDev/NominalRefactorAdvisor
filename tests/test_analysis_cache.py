@@ -20,6 +20,24 @@ from nominal_refactor_advisor.class_index import (
     ResolvedStarImportOrigin,
     UnresolvedStarImportOrigin,
 )
+from nominal_refactor_advisor.class_method_facets import (
+    CompactClassMethod,
+    CompactMethodSemanticCoordinateKind,
+    MethodFamilyResidueRole,
+    MethodPromotionHazard,
+    _compact_class_method_statements_from_sources,
+)
+from nominal_refactor_advisor.class_symbols import (
+    ClassSymbolResolutionAuthority,
+    iter_class_definitions,
+)
+from nominal_refactor_advisor.class_syntax_facets import (
+    CompactClassSyntaxFacets,
+    ModuleClassSyntaxFacets,
+    ModuleClassSyntaxFacetsWithoutAutoregister,
+    _compact_class_member_declarations,
+)
+from nominal_refactor_advisor.declaration_dependencies import ClassScopeDependency
 from nominal_refactor_advisor.json_reports import json_report_object
 from nominal_refactor_advisor.analysis import (
     AnalysisPathScope,
@@ -70,7 +88,10 @@ from nominal_refactor_advisor.observation_families import (
     RegistrationShapeFamily,
 )
 from nominal_refactor_advisor.native_syntax import NativePythonSyntaxIndex
-from nominal_refactor_advisor import ast_tools as ast_tools_module
+from nominal_refactor_advisor import (
+    ast_tools as ast_tools_module,
+    class_method_facets,
+)
 from nominal_refactor_advisor import analysis as analysis_module
 from nominal_refactor_advisor import analysis_cache as analysis_cache_module
 from nominal_refactor_advisor import annotation_semantics as annotation_semantics_module
@@ -2937,7 +2958,7 @@ def test_class_candidate_anchor_witnesses_follow_reported_seed_locations() -> No
         classes=(
             replace(
                 base_class,
-                direct_member_declarations=class_index_module._compact_class_member_declarations(
+                direct_member_declarations=_compact_class_member_declarations(
                     ast.parse("class Root: _registered_types = []").body[0]
                 ),
                 predicate_selected_methods=((2, "select", "matches", "context"),),
@@ -2949,7 +2970,7 @@ def test_class_candidate_anchor_witnesses_follow_reported_seed_locations() -> No
         classes=(
             replace(
                 base_class,
-                direct_member_declarations=class_index_module._compact_class_member_declarations(
+                direct_member_declarations=_compact_class_member_declarations(
                     ast.parse("class Root: registry_key_attr = 'kind'").body[0]
                 ),
                 base_references=(
@@ -3058,8 +3079,8 @@ def test_class_demand_omits_unreportable_autoregister_reference_graph(
 
     assert demanded is not None
     assert demanded[0].autoregister_reference_index is None
-    assert class_index_module.ModuleClassSyntaxFacetsWithoutAutoregister in held_facts
-    assert class_index_module.ModuleClassSyntaxFacets not in held_facts
+    assert ModuleClassSyntaxFacetsWithoutAutoregister in held_facts
+    assert ModuleClassSyntaxFacets not in held_facts
 
     target_root = class_index_module.CompactIndexedClass(
         symbol="pkg.target.TargetRegistry",
@@ -3351,7 +3372,7 @@ def test_native_class_header_core_matches_cached_minimal_projection(
     )
     assert class_index_module.CompactModuleClassProjection.__mro__[:3] == (
         class_index_module.CompactModuleClassProjection,
-        class_index_module.CompactClassSyntaxFacets,
+        CompactClassSyntaxFacets,
         class_index_module.CompactModuleClassHeader,
     )
     assert not hasattr(class_index_module, "_CompactClassSyntaxFacets")
@@ -5575,7 +5596,7 @@ def _write_compact_method_family_fixture(package_root: Path) -> None:
 def _compact_class_methods_for_source(
     package_root: Path,
     source: str,
-) -> tuple[class_index_module.CompactClassMethod, ...]:
+) -> tuple[CompactClassMethod, ...]:
     package_root.mkdir()
     (package_root / "methods.py").write_text(source, encoding="utf-8", newline="")
     parsed_module = parse_python_modules(
@@ -5605,8 +5626,8 @@ def test_compact_method_coordinates_own_typed_residue_semantics(
         "        self.write(value, suffix='.out')\n"
         "        return value\n",
     )
-    kind = class_index_module.CompactMethodSemanticCoordinateKind
-    role = class_index_module.MethodFamilyResidueRole
+    kind = CompactMethodSemanticCoordinateKind
+    role = MethodFamilyResidueRole
     coordinate_kinds = {
         coordinate.kind
         for method in methods
@@ -5810,8 +5831,8 @@ def test_compact_class_method_promotion_hazards_are_nominal_facts(
         method.class_symbol.rsplit(".", 1)[-1]: method.receiver_member_names
         for method in methods
     }
-    hazard = class_index_module.MethodPromotionHazard
-    scope_dependency = class_index_module.ClassScopeDependency
+    hazard = MethodPromotionHazard
+    scope_dependency = ClassScopeDependency
 
     assert hazards_by_class == {
         "SafeProperty": (),
@@ -5975,8 +5996,8 @@ def test_compact_method_family_candidates_preserve_semantics_without_ast_shadow(
         assert not hasattr(structural_detectors, removed_name)
     assert not hasattr(class_index_module, "_COMPACT_ABC_OPTIMIZER_IGNORED_BASE_NAMES")
     assert not hasattr(helper_detectors, "_ABC_OPTIMIZER_IGNORED_BASE_NAMES")
-    assert not hasattr(class_index_module.CompactClassMethod, "skeleton_blob")
-    assert not hasattr(class_index_module.CompactClassMethod, "coordinates_blob")
+    assert not hasattr(CompactClassMethod, "skeleton_blob")
+    assert not hasattr(CompactClassMethod, "coordinates_blob")
 
 
 def test_compact_method_family_profiles_are_derived_after_the_family_join(
@@ -5994,7 +6015,7 @@ def test_compact_method_family_profiles_are_derived_after_the_family_join(
     )
     profile_derivations: list[tuple[str, ...]] = []
     original_derivation = (
-        class_index_module._compact_class_method_statements_from_sources
+        _compact_class_method_statements_from_sources
     )
 
     def recording_derivation(statement_sources):
@@ -6002,7 +6023,7 @@ def test_compact_method_family_profiles_are_derived_after_the_family_join(
         return original_derivation(statement_sources)
 
     monkeypatch.setattr(
-        class_index_module,
+        class_method_facets,
         "_compact_class_method_statements_from_sources",
         recording_derivation,
     )
@@ -6023,10 +6044,10 @@ def test_compact_method_family_profiles_are_derived_after_the_family_join(
     )
     assert len(profile_derivations) == 10
     assert all(len(statement_sources) == 4 for statement_sources in profile_derivations)
-    assert class_index_module.ClassSymbolResolutionAuthority.establishes_nominal_family(
+    assert ClassSymbolResolutionAuthority.establishes_nominal_family(
         "domain.Worker"
     )
-    assert not class_index_module.ClassSymbolResolutionAuthority.establishes_nominal_family(
+    assert not ClassSymbolResolutionAuthority.establishes_nominal_family(
         "abc.ABC"
     )
 
@@ -6106,7 +6127,7 @@ def test_compact_semantic_descent_graph_matches_legacy_ast_graph(
     legacy_supplements = tuple(
         supplement
         for module in modules
-        for qualname, node in class_index_module.iter_class_definitions(
+        for qualname, node in iter_class_definitions(
             list(module.module.body)
         )
         if (

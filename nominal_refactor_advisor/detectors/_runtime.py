@@ -23,6 +23,7 @@ from tree_sitter import Node
 
 from ._regex_bundle import RepeatedLocalRegexBundleDetector
 
+from ..class_syntax_facets import CompactExactTypeGuard
 from ..lexical_bindings import ImportBoundNameProjection
 from ..ast_tools import (
     BuiltinCall,
@@ -40,9 +41,7 @@ from ..native_syntax import NativePythonSyntaxIndex
 from ..class_index import (
     CompactClassFamilyIndex,
     CompactClassReferenceResolver,
-    CompactExactTypeGuard,
     CompactIndexedClass,
-    CompactManualSubclassRosterRoot,
     CompactModuleClassProjection,
     CompactModuleClassProjectionFamily,
     CompactRepositoryPublicExposureIndex,
@@ -91,6 +90,7 @@ from ..patterns import PatternId
 from ..refactors.autoregister import ManualClassRegistrationFindingRecipeSynthesizer
 from ..refactors.dispatch_polymorphism import NumericLiteralDispatchFindingRecipeSynthesizer
 from ..refactors.repeated_builder import RepeatedBuilderCallFindingRecipeSynthesizer
+from ..registration_facets import CompactManualSubclassRosterRoot
 from ..semantic_identity import (
     InheritanceIdentityAttributeProjection,
     SemanticIdentifierTokenProjection,
