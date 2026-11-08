@@ -7444,6 +7444,42 @@ def _relocate_moved_with_consumer(tmp_path: Path, consumer: dict[str, str]):
     return operation, snapshot
 
 
+def test_relocation_removes_every_scope_of_an_import_only_moved_code_reads(
+    tmp_path: Path,
+) -> None:
+    """A runtime import and its `if TYPE_CHECKING:` copy are two bindings of one
+    name: once the only reader moves, neither stays behind in the source."""
+
+    operation, snapshot = _relocate_moved_with_consumer(
+        tmp_path,
+        {
+            "pkg/helpers.py": "class Helper:\n    value = 3\n",
+            "pkg/destination.py": "from __future__ import annotations\n",
+            "pkg/source.py": "from __future__ import annotations\n\n"
+            "from typing import TYPE_CHECKING\n\n"
+            "from . import helpers as h\n\n"
+            "if TYPE_CHECKING:\n    from . import helpers as h\n\n\n"
+            "class Kept:\n    pass\n\n\n"
+            "class Moved(Kept):\n    def helper(self) -> h.Helper:\n        return h.Helper()\n",
+        },
+    )
+
+    simulation = RefactorRecipe("relocate-twice-bound").with_operation(operation).simulate(snapshot)
+
+    assert simulation.is_clean
+    source = simulation.simulation.rewritten_sources[(tmp_path / "pkg/source.py").as_posix()]
+    assert "helpers" not in source
+    simulation.apply()
+    imported = subprocess.run(
+        [sys.executable, "-c", "from pkg.destination import Moved; assert Moved().helper().value == 3"],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert imported.returncode == 0, imported.stderr
+
+
 def test_relocation_extracts_a_declaration_its_source_still_reads(tmp_path: Path) -> None:
     """A lower layer moves out: the source keeps reading the moved class through a
     plain import of the destination, and other importers are redirected."""

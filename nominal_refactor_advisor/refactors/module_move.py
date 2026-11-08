@@ -1334,6 +1334,19 @@ class SourceTopLevelSymbolClosureMovePlan(SourceTopLevelSymbolClosureMoveCarrier
                     and name not in source_table.explicit_reexport_bound_names
                     and name not in kept_reexports
                 ),
+                source_scopes=tuple(
+                    dict.fromkeys(
+                        (
+                            binding.scope,
+                            *(
+                                bound.scope
+                                for bound in source_table.import_bindings_by_name.get(
+                                    name, ()
+                                )
+                            ),
+                        )
+                    )
+                ),
             )
             for name, (binding, identity) in sorted(
                 source_import_binding_by_name.items()
@@ -1459,7 +1472,7 @@ class SourceTopLevelSymbolClosureMovePlan(SourceTopLevelSymbolClosureMoveCarrier
                 ModuleImportMutation.remove_bound_names(
                     file_path=self.source_path,
                     names=(dependency.name,),
-                    scope=dependency.scope,
+                    scope=scope,
                     rationale=self.rationale
                     or (
                         "Remove imports used only by moved symbols "
@@ -1468,6 +1481,7 @@ class SourceTopLevelSymbolClosureMovePlan(SourceTopLevelSymbolClosureMoveCarrier
                 )
             )
             for dependency in self.dependency_report.source_removal_dependencies
+            for scope in dependency.source_scopes
         )
         edits.extend(
             ModuleImportMutation.from_source(
