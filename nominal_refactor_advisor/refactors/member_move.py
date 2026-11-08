@@ -135,6 +135,35 @@ class MovedMethod:
             for symbol in self.family if symbol in classes
         }
 
+    def named_class(self, file_path: str, name: str) -> ClassBinding | None:
+        """What a module-level name in a file binds, when that says whether it is the family:
+        a family class declared there or imported from where it is declared, or an import from
+        outside the scan. A name the module binds otherwise is typed as an instance."""
+
+        local = self.family_declarations.get((file_path, name))
+        if local is not None:
+            return NamedClass(local)
+        graph = self.snapshot.module_import_graph
+        source_file = graph.source_file_for_path(file_path)
+        if source_file is None:
+            return None
+        for statement in ast.walk(self.snapshot.module_nodes_by_file_path[file_path]):
+            if not isinstance(statement, ast.ImportFrom):
+                continue
+            for alias in statement.names:
+                if (alias.asname or alias.name) != name:
+                    continue
+                module = source_file.module_path_identity.resolve_import_from_module(
+                    imported_module=statement.module, level=statement.level,
+                )
+                provider = None if module is None else graph.unique_source_file_for_module_name(module)
+                if provider is None:
+                    return OutsideScan(str(module))
+                imported = self.family_declarations.get((provider.file_path, alias.name))
+                if imported is not None:
+                    return NamedClass(imported)
+        return None
+
     @cached_property
     def locals(self) -> frozenset[str]:
         return LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(self.method.body) | frozenset(
@@ -378,9 +407,13 @@ class SourceShape:
     def bound_class(
         self, receiver: ast.expr, file_path: str, enclosing: str | None,
     ) -> ClassBinding | None:
-        """The family class a call receiver names, when it names one rather than an instance."""
+        """The class a call receiver names by its module binding, when it names one: a family
+        class, or a name bound from outside the scan (the standard library, a dependency), which
+        no family class is, whatever its attribute is called."""
 
-        return None
+        if not isinstance(receiver, ast.Name):
+            return None
+        return self.moved.named_class(file_path, receiver.id)
 
     def admits(self, binding: ReceiverBinding, where: str) -> None:
         """Refuse a call whose receiver would change what the moved method means."""
@@ -412,25 +445,9 @@ class ClassBoundSource(SourceShape):
     def bound_class(
         self, receiver: ast.expr, file_path: str, enclosing: str | None,
     ) -> ClassBinding | None:
-        if not isinstance(receiver, ast.Name):
-            return None
-        family = self.moved.family_declarations
-        if receiver.id in {"cls", "self"}:
+        if isinstance(receiver, ast.Name) and receiver.id in {"cls", "self"}:
             return None if enclosing not in self.moved.family else ImplicitClass(enclosing)
-        local = family.get((file_path, receiver.id))
-        if local is not None:
-            return NamedClass(local)
-        snapshot = self.moved.snapshot
-        for statement in ast.walk(snapshot.module_nodes_by_file_path[file_path]):
-            if not isinstance(statement, ast.ImportFrom):
-                continue
-            for alias in statement.names:
-                if (alias.asname or alias.name) != receiver.id:
-                    continue
-                imported = family.get((_imported_file(snapshot, file_path, statement), alias.name))
-                if imported is not None:
-                    return NamedClass(imported)
-        return None
+        return super().bound_class(receiver, file_path, enclosing)
 
 
 @dataclass(frozen=True)
@@ -483,7 +500,18 @@ class ReceiverBinding:
 
 @dataclass(frozen=True)
 class ClassBinding(ReceiverBinding):
-    """A receiver that is a family class rather than an instance of one."""
+    """A receiver that is a class rather than an instance of one."""
+
+    def reaches_family(self) -> bool:
+        return True
+
+
+@dataclass(frozen=True)
+class OutsideScan(ClassBinding):
+    """A name imported from outside the scan: its attribute of the method's name is its own."""
+
+    def reaches_family(self) -> bool:
+        return False
 
 
 @dataclass(frozen=True)
@@ -990,7 +1018,8 @@ class MoveMethodToClassOperation(RepositorySourceReprovedOperation):
                     continue
                 bound = moved.source.bound_class(node.value, parsed.file_path, enclosing)
                 if bound is not None:
-                    answering.append(site.answered(moved, bound))
+                    if bound.reaches_family():
+                        answering.append(site.answered(moved, bound))
                     continue
                 owner = resolver.owner(node.value).resolved(typing)
                 spans = owner.type_checker_spans()
