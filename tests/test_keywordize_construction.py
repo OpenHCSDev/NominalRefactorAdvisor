@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 
 from nominal_refactor_advisor.ast_tools import parse_python_modules
-from nominal_refactor_advisor.class_overlap_codemod import KeywordizeConstructionOperation
+from nominal_refactor_advisor.refactors.class_overlap import KeywordizeConstructionOperation
 from nominal_refactor_advisor.codemod import (
     CodemodOperationPreflightError,
     CodemodSourceSnapshot,

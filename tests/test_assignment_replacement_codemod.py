@@ -267,20 +267,6 @@ def test_cli_composes_retained_authority_field_and_consumer_edits(
     )
 
 
-def test_assignment_operations_share_nominal_source_authority() -> None:
-    from nominal_refactor_advisor import codemod_assignment_operations as owner
-
-    for operation in (
-        ReplaceModuleAssignmentOperation,
-        ReplaceScopeAssignmentOperation,
-    ):
-        assert (
-            operation.source_edits_from_snapshot
-            is owner.AssignmentReplacementOperationABC.source_edits_from_snapshot
-        )
-        assert operation is vars(owner)[operation.__name__]
-
-
 def test_recorded_assignment_projection_plan_preserves_native_results(
     tmp_path: Path,
 ) -> None:

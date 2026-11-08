@@ -18,7 +18,7 @@ from typing import (
 from ..ast_tools import ParsedModule
 from ..binding_proofs import RepositoryModuleBindingProof
 from ..class_index import ModuleNominalBindingAuthority
-from ..class_member_authority_codemod import ClassDeclarationPromotionStatement
+from .class_member_authority import ClassDeclarationPromotionStatement
 from .finding_recipes import (
     FindingRecipeSynthesizer,
     PrimaryEvidenceActionKeysMixin,

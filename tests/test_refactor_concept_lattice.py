@@ -61,15 +61,21 @@ from nominal_refactor_advisor.refactors.class_family_collection import (
     ClassFamilyCollectionSemanticMirrorRecipeBuilder,
     DeriveClassFamilyCollectionOperation,
 )
-from nominal_refactor_advisor.refactors.dataclass_projection import (
+from nominal_refactor_advisor.refactors.dataclass_constructor_projection import (
     DataclassConstructorProjectionMappingRecipeBuilder,
-    DataclassFieldNameCollectionProjectionMappingRecipeBuilder,
-    DataclassKeyValueSequenceProjectionMappingRecipeBuilder,
-    DataclassPayloadProjectionMappingRecipeBuilder,
     DeriveDataclassConstructorProjectionOperation,
-    DeriveDataclassFieldNameCollectionProjectionOperation,
+)
+from nominal_refactor_advisor.refactors.dataclass_key_value_projection import (
+    DataclassKeyValueSequenceProjectionMappingRecipeBuilder,
     DeriveDataclassKeyValueSequenceProjectionOperation,
+)
+from nominal_refactor_advisor.refactors.dataclass_payload_projection import (
+    DataclassPayloadProjectionMappingRecipeBuilder,
     DeriveDataclassPayloadProjectionOperation,
+)
+from nominal_refactor_advisor.refactors.dataclass_field_name_projection import (
+    DataclassFieldNameCollectionProjectionMappingRecipeBuilder,
+    DeriveDataclassFieldNameCollectionProjectionOperation,
 )
 from nominal_refactor_advisor.refactors.dispatch_polymorphism import (
     DispatchToPolymorphismOperation,

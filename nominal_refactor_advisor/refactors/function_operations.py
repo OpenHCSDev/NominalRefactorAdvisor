@@ -6,41 +6,38 @@ from abc import (
     ABC,
     abstractmethod,
 )
+from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import ClassVar
 
-
-from .codemod_call_source import (
+from .declaration_operations import (
+    DeclarationDecoratorsPayload,
+    DeclarationMutationOperationABC,
+)
+from ..codemod_call_source import (
     DeclaredCallArgumentsRewrite,
     DeclaredCallExpressionRewrite,
     DeclaredCallRewriteABC,
     DeclaredCallTargetRewrite,
 )
-from .codemod_declaration_operations import (
-    DeclarationDecoratorsPayload as DeclarationDecoratorsPayload,
-    DeclarationMutationOperationABC as DeclarationMutationOperationABC,
-    ReplaceDeclarationDecoratorsOperation as ReplaceDeclarationDecoratorsOperation,
-)
-from .codemod_declaration_source import (
-    FunctionBindingProjectionSourceAuthority,
+from ..codemod_declaration_source import (
     FunctionAliasSourceAuthority,
+    FunctionBindingProjectionSourceAuthority,
     FunctionBodyPrefixSourceAuthority,
     FunctionBodySourceAuthority,
     FunctionDecoratorsSourceAuthority,
     FunctionRegionSourceAuthority,
     FunctionSignatureSourceAuthority,
 )
-from .codemod_foreign_adapter_source import AdapterBindChainAuthority
-from .codemod_foreign_family_source import (
+from ..codemod_foreign_adapter_source import AdapterBindChainAuthority
+from ..codemod_foreign_family_source import (
     ForeignFamilyFilterAuthority,
     ForeignFamilyReference,
 )
-from .codemod_static_projection_source import (
-    StaticProjection,
-    StaticProjectionAuthority,
-)
-from .codemod_payload import (
+from ..codemod_import_scopes import ModuleImportScope
+from ..codemod_imports import ModuleImportMutation
+from ..codemod_payload import (
     BooleanPayloadValueCodec,
     EmptyDefaultStringPayloadValueCodec,
     OptionalStringArrayPayloadValueCodec,
@@ -48,38 +45,42 @@ from .codemod_payload import (
     RequiredStringPayloadValueCodec,
     codemod_payload_field,
 )
-from .codemod_reproof import (
+from ..codemod_preflight import (
+    CodemodOperationPreflightError,
+    CodemodOperationPreflightReport,
+)
+from ..codemod_reproof import (
     RepositorySourceReprovedOperation,
+    SourceReproofDiagnostic,
     SourceReprovedOperation,
 )
-from .codemod_runtime import CodemodSourceSnapshot
-from .codemod_selector_models import (
+from ..codemod_runtime import CodemodSourceSnapshot
+from ..codemod_selection_context import CodemodSelectorContext
+from ..codemod_selector_models import (
     DeclaredCallSelection,
     SourceRewriteTarget,
 )
-from .codemod_imports import ModuleImportMutation
-from .codemod_preflight import CodemodOperationPreflightError, CodemodOperationPreflightReport
-from .codemod_semantics import CodemodPreflightStatus
-from .codemod_selection_context import CodemodSelectorContext
-from .codemod_reproof import SourceReproofDiagnostic
-from .codemod_source_edits import SourceTextGeometry, SourceTextSpanReplacement, NominalSourceEdit
-from .codemod_import_scopes import ModuleImportScope
-from collections.abc import Iterator
-from .codemod_source_edits import (
+from ..codemod_semantics import CodemodPreflightStatus
+from ..codemod_source_edits import (
     NominalSourceEdit,
     PhysicalSourceEdit,
     SourceTextGeometry,
+    SourceTextSpanReplacement,
 )
-from .declaration_dependencies import (
+from ..codemod_static_projection_source import (
+    StaticProjection,
+    StaticProjectionAuthority,
+)
+from ..declaration_dependencies import (
     FunctionBindingABC,
     FunctionLocalBinding,
     FunctionParameterBinding,
 )
-from .declared_root import DeclaredRoot
-from .descriptor_algebra import AliasProperty
-from .source_index import AstTargetNodeKind
-from .product_flow import BareCallTargetReference
-from .value_expression import LexicalValueReference
+from ..declared_root import DeclaredRoot
+from ..descriptor_algebra import AliasProperty
+from ..product_flow import BareCallTargetReference
+from ..source_index import AstTargetNodeKind
+from ..value_expression import LexicalValueReference
 
 
 @dataclass(frozen=True, kw_only=True)

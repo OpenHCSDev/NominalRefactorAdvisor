@@ -19,7 +19,7 @@ selection = SourceRewriteTarget(
     file_path="nominal_refactor_advisor/codemod_selection_context.py"
 )
 movement = SourceRewriteTarget(
-    file_path="nominal_refactor_advisor/class_member_authority_codemod.py"
+    file_path="nominal_refactor_advisor/refactors/class_member_authority.py"
 )
 context = replace(movement, qualname="ClassMemberMoveProofContext")
 require_move = replace(movement, qualname="ClassMemberMoveSelection.require")

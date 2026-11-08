@@ -1,27 +1,28 @@
-"""Typed selection and deletion of module-level call declarations."""
-
 from __future__ import annotations
 
 import ast
 from dataclasses import dataclass
 from typing import cast
 
-from .ast_projection import ExpressionReference
-from .codemod_operations import RefactorRecipeOperation
-from .codemod_payload import (
+from ..ast_projection import ExpressionReference
+from ..codemod_operations import RefactorRecipeOperation
+from ..codemod_payload import (
     CodemodPayloadRecord,
     FlattenedPayloadRecordValueCodec,
     OptionalStringArrayPayloadValueCodec,
     RequiredStringPayloadValueCodec,
     codemod_payload_field,
 )
-from .codemod_selection_context import CodemodSelectorContext
-from .codemod_selector_models import (
+from ..codemod_selection_context import CodemodSelectorContext
+from ..codemod_selector_models import (
     SelectionCountExpectation,
     SelectionCountPayloadValueCodec,
 )
-from .codemod_source_edits import NominalSourceEdit, SourceSpanDeletion
-from .source_index import AstTargetNodeKind
+from ..codemod_source_edits import (
+    NominalSourceEdit,
+    SourceSpanDeletion,
+)
+from ..source_index import AstTargetNodeKind
 
 
 @dataclass(frozen=True)

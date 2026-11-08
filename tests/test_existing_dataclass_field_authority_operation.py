@@ -6,9 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from nominal_refactor_advisor.class_member_authority_codemod import (
-    PromoteExactDataclassFieldsToExistingAuthorityOperation,
-)
+from nominal_refactor_advisor.refactors.class_member_authority import PromoteExactDataclassFieldsToExistingAuthorityOperation
 from nominal_refactor_advisor.ast_tools import parse_python_modules
 from nominal_refactor_advisor.codemod import (
     CodemodBackend,

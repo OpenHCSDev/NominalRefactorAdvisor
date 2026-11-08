@@ -9,7 +9,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 
 from ..class_index import CompactModuleClassProjectionFamily
-from ..codemod_false_distinctions import (
+from ..refactors.false_distinctions import (
     CollapseIdenticalArmsOperation,
     EnumFoldFindingRecipeSynthesizer,
     FoldEnumMembersOperation,
