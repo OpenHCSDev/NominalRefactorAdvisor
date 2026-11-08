@@ -500,6 +500,31 @@ class ModuleNameRedirect:
             )
         return tuple(replacements)
 
+    def moved_text(self, import_graph: SourceModuleImportGraph, text: str) -> str:
+        """Code leaving the source reads the source's names as text too: an import
+        string in the moved code follows each moved name to its owner, the way a
+        consumer's does, so the moved text never names a module that no longer
+        binds them."""
+
+        source_module_name = import_graph.module_name_for_file_path(self.source_path)
+        if source_module_name is None:
+            return text
+        parsed = ParsedModule(
+            path=Path(self.source_path),
+            module_name=source_module_name,
+            module=ast.parse(text),
+            source=text,
+        )
+        return TextFileEdit.applied(
+            text,
+            sorted(
+                (replacement.start_offset, replacement.end_offset, replacement.replacement_source)
+                for replacement in self._import_string_replacements(
+                    import_graph, parsed, source_module_name
+                )
+            ),
+        )
+
     def _embedded_import_replacements(
         self,
         import_graph: SourceModuleImportGraph,
@@ -1209,6 +1234,7 @@ class SourceTopLevelSymbolClosureMovePlan(SourceTopLevelSymbolClosureMoveCarrier
     source_blocks: tuple[MovedTopLevelDeclarationSource, ...]
     dependency_report: ModuleMoveDependencyReport
     source_binding_import_sources: tuple[str, ...]
+    name_redirect: RelocationNameRedirect
     consumer_edits: tuple[NominalSourceEdit, ...]
 
     @classmethod
@@ -1286,6 +1312,14 @@ class SourceTopLevelSymbolClosureMovePlan(SourceTopLevelSymbolClosureMoveCarrier
                 reader_module=destination_module_name,
             )
         )
+        name_redirect = RelocationNameRedirect(
+            source_path=request.source_path,
+            destinations={
+                **cls._removed_binding_owners(context, report),
+                **{name: request.destination_path for name in moved_symbol_names},
+            },
+            reader_path=request.destination_path,
+        )
         consumer_edits = (
             *destination_localizations,
             *(
@@ -1299,14 +1333,7 @@ class SourceTopLevelSymbolClosureMovePlan(SourceTopLevelSymbolClosureMoveCarrier
                 )
                 for module_text, names, scope in self_binding_removals
             ),
-            *RelocationNameRedirect(
-                source_path=request.source_path,
-                destinations={
-                    **cls._removed_binding_owners(context, report),
-                    **{name: request.destination_path for name in moved_symbol_names},
-                },
-                reader_path=request.destination_path,
-            ).consumer_edits(
+            *name_redirect.consumer_edits(
                 context,
                 excluded_paths=frozenset((request.source_path, request.destination_path)),
             ),
@@ -1319,6 +1346,7 @@ class SourceTopLevelSymbolClosureMovePlan(SourceTopLevelSymbolClosureMoveCarrier
             ),
             dependency_report=report,
             source_binding_import_sources=source_binding_import_sources,
+            name_redirect=name_redirect,
             consumer_edits=consumer_edits,
             rationale=request.rationale,
         )
@@ -1776,7 +1804,11 @@ class SourceTopLevelSymbolClosureMovePlan(SourceTopLevelSymbolClosureMoveCarrier
     ) -> str:
         rebase = _RelativeImportRebase.between(context, self.source_path, self.destination_path)
         moved_source = "\n\n\n".join(
-            rebase.applied(block.moved_source.strip("\n")) for block in self.source_blocks
+            self.name_redirect.moved_text(
+                context.module_import_graph,
+                rebase.applied(block.moved_source.strip("\n")),
+            )
+            for block in self.source_blocks
         )
         spacing = DestinationInsertionSpacing.from_source(
             destination_source,
