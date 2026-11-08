@@ -1317,6 +1317,24 @@ class SourceModuleBatchParser:
                 return tuple(executor.map(SourceModule.parse, self.source_modules))
 
 
+_DATACLASS_FIELD_NAMES: dict[type, tuple[str, ...] | None] = {}
+
+
+def dataclass_field_names(value_type: type) -> tuple[str, ...] | None:
+    """A dataclass type's field names, read once per type; None for any other type."""
+
+    try:
+        return _DATACLASS_FIELD_NAMES[value_type]
+    except KeyError:
+        names = (
+            tuple(item.name for item in fields(value_type))
+            if is_dataclass(value_type)
+            else None
+        )
+        _DATACLASS_FIELD_NAMES[value_type] = names
+        return names
+
+
 def retains_python_ast(
     value: object,
     seen_ids: set[int] | None = None,
@@ -1332,11 +1350,9 @@ def retains_python_ast(
     if value_id in seen:
         return False
     seen.add(value_id)
-    if is_dataclass(value) and not isinstance(value, type):
-        return any(
-            retains_python_ast(getattr(value, item.name), seen)
-            for item in fields(value)
-        )
+    names = None if isinstance(value, type) else dataclass_field_names(type(value))
+    if names is not None:
+        return any(retains_python_ast(getattr(value, name), seen) for name in names)
     if isinstance(value, dict):
         return any(
             retains_python_ast(item, seen) for pair in value.items() for item in pair
@@ -2361,13 +2377,99 @@ def collected_family_items_content_signature(
     """Content identity of collected items; checkout paths relocated, so every
     checkout of the same content derives the same signature."""
 
-    stable = _stable_collected_family_cache_value(items)
-    payload = (
-        pickle.dumps(stable, protocol=pickle.HIGHEST_PROTOCOL)
-        if relocation is None
-        else relocation.portable_dumps(stable)[0]
-    )
-    return hashlib.blake2s(payload, digest_size=16).hexdigest()
+    return StableCacheValue.of(items, relocation).signature
+
+
+@dataclass(frozen=True)
+class StableCacheValue:
+    """A value's order-independent normal form, built by one walk.
+
+    Sets and dicts are sorted, so equal content hashes equally in every
+    process. Strings and paths under the checkout are made relative as the walk
+    meets them, so every checkout of the same content derives the same form;
+    a string spelling the root anywhere else binds the form to this checkout.
+    The same walk notes parsed syntax, which no cache entry may hold.
+    """
+
+    form: object
+    retains_syntax: bool
+
+    @classmethod
+    def of(
+        cls, value: object, relocation: CheckoutRelocation | None = None
+    ) -> StableCacheValue:
+        walk = _StableCacheWalk(relocation)
+        form = walk.normal_form(value)
+        if walk.bound_to_checkout:
+            form = _StableCacheWalk(None).normal_form(value)
+        return cls(form, walk.retains_syntax)
+
+    @cached_property
+    def signature(self) -> str:
+        return hashlib.blake2s(
+            pickle.dumps(self.form, protocol=pickle.HIGHEST_PROTOCOL), digest_size=16
+        ).hexdigest()
+
+
+class _StableCacheWalk:
+    def __init__(self, relocation: CheckoutRelocation | None) -> None:
+        self.roots = () if relocation is None else relocation.root_texts
+        self.bound_to_checkout = False
+        self.retains_syntax = False
+
+    def text(self, value: str) -> object:
+        for root in self.roots:
+            if value.startswith(root) and (
+                len(value) == len(root) or value[len(root)] == "/"
+            ):
+                return ("checkout", value[len(root) :])
+            if root in value:
+                self.bound_to_checkout = True
+        return value
+
+    def normal_form(self, value: object) -> object:
+        value_type = type(value)
+        if value_type is str:
+            return self.text(value)
+        if value is None or value_type in (int, bool, float, bytes):
+            return value
+        if value_type is tuple:
+            return "tuple", tuple(self.normal_form(item) for item in value)
+        if isinstance(value, (ast.AST, ParsedModule)):
+            self.retains_syntax = True
+            return "repr", value_type.__module__, value_type.__qualname__, repr(value)
+        names = None if isinstance(value, type) else dataclass_field_names(value_type)
+        if names is not None:
+            return (
+                "dataclass",
+                value_type.__module__,
+                value_type.__qualname__,
+                tuple((name, self.normal_form(getattr(value, name))) for name in names),
+            )
+        if isinstance(value, dict):
+            pairs = tuple(
+                (self.normal_form(key), self.normal_form(item))
+                for key, item in value.items()
+            )
+            return "dict", tuple(sorted(pairs, key=repr))
+        if isinstance(value, (set, frozenset)):
+            items = tuple(self.normal_form(item) for item in value)
+            return value_type.__name__, tuple(sorted(items, key=repr))
+        if isinstance(value, tuple):
+            return "tuple", tuple(self.normal_form(item) for item in value)
+        if isinstance(value, list):
+            return "list", tuple(self.normal_form(item) for item in value)
+        if isinstance(value, Path):
+            return "path", self.text(str(value))
+        if isinstance(value, Enum):
+            return "enum", value_type.__module__, value_type.__qualname__, value.value
+        if isinstance(value, str):
+            # A str subclass is relocated like a str and keeps its type, so the
+            # fast path and this one agree on everything but the type tag.
+            return "str", value_type.__module__, value_type.__qualname__, self.text(value)
+        if isinstance(value, (bytes, int, float, bool)):
+            return value
+        return "repr", value_type.__module__, value_type.__qualname__, repr(value)
 
 
 def _replace_atomically(path: Path, data: bytes) -> None:
@@ -2384,57 +2486,13 @@ def _replace_atomically(path: Path, data: bytes) -> None:
         raise
 
 
-def _stable_collected_family_cache_value(value: object) -> object:
-    if is_dataclass(value) and not isinstance(value, type):
-        return (
-            "dataclass",
-            type(value).__module__,
-            type(value).__qualname__,
-            tuple(
-                (
-                    item.name,
-                    _stable_collected_family_cache_value(getattr(value, item.name)),
-                )
-                for item in fields(value)
-            ),
-        )
-    if isinstance(value, dict):
-        pairs = tuple(
-            (
-                _stable_collected_family_cache_value(key),
-                _stable_collected_family_cache_value(item),
-            )
-            for key, item in value.items()
-        )
-        return "dict", tuple(sorted(pairs, key=repr))
-    if isinstance(value, (set, frozenset)):
-        items = tuple(_stable_collected_family_cache_value(item) for item in value)
-        return type(value).__name__, tuple(sorted(items, key=repr))
-    if isinstance(value, tuple):
-        return "tuple", tuple(
-            _stable_collected_family_cache_value(item) for item in value
-        )
-    if isinstance(value, list):
-        return "list", tuple(
-            _stable_collected_family_cache_value(item) for item in value
-        )
-    if isinstance(value, Path):
-        return "path", str(value)
-    if isinstance(value, Enum):
-        return "enum", type(value).__module__, type(value).__qualname__, value.value
-    if value is None or isinstance(value, (str, bytes, int, float, bool)):
-        return value
-    return "repr", type(value).__module__, type(value).__qualname__, repr(value)
-
-
 def _store_collected_family_content_signature(
     cache_dir: Path,
     identity: CollectedFamilyCacheIdentity,
-    items: tuple[object, ...],
-    relocation: CheckoutRelocation | None,
+    stable: StableCacheValue,
 ) -> str | None:
     try:
-        signature = collected_family_items_content_signature(items, relocation)
+        signature = stable.signature
         _replace_atomically(
             _collected_family_content_signature_path(cache_dir, identity),
             signature.encode("ascii"),
@@ -2453,7 +2511,7 @@ def collected_family_demand_cache_signature(demand: object) -> str:
                 "demand-projection-v2",
                 type(demand).__module__,
                 type(demand).__qualname__,
-                _stable_collected_family_cache_value(demand),
+                StableCacheValue.of(demand).form,
             )
         ).encode("utf-8"),
         digest_size=16,
@@ -2625,8 +2683,7 @@ class CollectedFamilyCacheContext:
             _store_collected_family_content_signature(
                 self.family_cache_dir,
                 identity,
-                payload.items,
-                self.relocation,
+                StableCacheValue.of(payload.items, self.relocation),
             )
         if payload.ast_free is not True:
             return None
@@ -2654,7 +2711,10 @@ class CollectedFamilyCacheContext:
         items: tuple[ShapeItemT, ...],
         demand_signature: str = "",
     ) -> str | None:
-        if self.family_cache_dir is None or retains_python_ast(items):
+        if self.family_cache_dir is None:
+            return None
+        stable = StableCacheValue.of(items, self.relocation)
+        if stable.retains_syntax:
             return None
         identity = self.identity(family, demand_signature)
         payload = CollectedFamilyCachePayload(
@@ -2677,10 +2737,7 @@ class CollectedFamilyCacheContext:
                 payload_bytes,
             )
             return _store_collected_family_content_signature(
-                self.family_cache_dir,
-                identity,
-                items,
-                self.relocation,
+                self.family_cache_dir, identity, stable
             )
         except (OSError, pickle.PickleError, TypeError, AttributeError):
             return None
