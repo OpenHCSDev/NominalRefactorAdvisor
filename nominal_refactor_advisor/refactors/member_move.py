@@ -4,29 +4,34 @@ A method that only builds or asks another family's object belongs to that family
 is, it makes its own class import the other family, and when that family imports back, a local
 import hides the cycle (agent-comms Thread.native_environment builds a ProjectRuntimeRequest).
 
-The method's body says which member of the destination it becomes. One that takes a destination
-instance as a parameter becomes an instance method of the destination: that parameter becomes
-self, the old receiver takes its place, and each call is spelled on the destination argument. One
-that builds a destination becomes a classmethod constructing through cls, the old receiver its
-first parameter. A method that does neither is not the destination's, and the move refuses.
+Two facts decide the move. The method's source shape (a plain method, a staticmethod or a
+classmethod) says what its call sites are spelled on before the move: a receiver of its class
+family, or the class itself. Its body says which member of the destination it becomes. One that
+takes a destination instance as a parameter becomes an instance method of the destination: that
+parameter becomes self, and each call is spelled on the destination argument. One that builds a
+destination becomes a classmethod constructing through cls. A method that does neither is not
+the destination's, and the move refuses.
 
-Call sites are found by the method's name and typed by their receiver: the receiver's declared
-path (parameters, fields, declared returns) where the declarations type it, the type checker's
-answer where they do not. A call whose receiver is the method's class or a descendant becomes a
-call on the destination; a call whose receiver is another class is that class's own method and
-stays; a call this proof cannot type refuses the move."""
+Call sites are found by the method's name and typed by their receiver: the class binding itself
+for a staticmethod or classmethod, the receiver's declared path (parameters, fields, declared
+returns) where the declarations type it, the type checker's answer where they do not. A call
+whose receiver is the method's class family becomes a call on the destination; a call whose
+receiver is another class is that class's own method and stays; a call this proof cannot type
+refuses the move."""
 
 from __future__ import annotations
 
 import ast
 import builtins
+import copy
 from dataclasses import dataclass
 from functools import cached_property
+from typing import ClassVar
 
 from ..codemod_imports import ModuleImportMutation
 from ..codemod_payload import (
+    OptionalStringPayloadValueCodec,
     PayloadRecordValueCodec,
-    RequiredStringPayloadValueCodec,
     codemod_payload_field,
 )
 from ..codemod_reproof import RepositorySourceReprovedOperation
@@ -52,7 +57,8 @@ class MovedMethod:
     source_class: ResolvedClassTarget
     method: ast.FunctionDef | ast.AsyncFunctionDef
     destination: ResolvedClassTarget
-    receiver_parameter: str
+    receiver_parameter: str | None
+    destination_name: str | None
 
     @classmethod
     def require(
@@ -61,7 +67,8 @@ class MovedMethod:
         source_path: str,
         qualname: str,
         destination: SourceRewriteTarget,
-        receiver_parameter: str,
+        receiver_parameter: str | None,
+        destination_name: str | None,
     ) -> MovedMethod:
         class_name, _, method_name = qualname.rpartition(".")
         if not class_name:
@@ -79,20 +86,12 @@ class MovedMethod:
         )
         if method is None:
             raise ValueError(f"{qualname!r} is not a method declared in {source_path!r}")
-        if method.decorator_list:
-            raise ValueError(f"{qualname!r} is decorated; only a plain method moves")
-        positional = method.args.posonlyargs + method.args.args
-        if not positional or positional[0].arg != "self":
-            raise ValueError(f"{qualname!r} takes no self receiver")
-        bound = LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(method.body) | frozenset(
-            argument.arg for argument in ast.walk(method.args) if isinstance(argument, ast.arg)
-        )
-        if receiver_parameter in bound:
-            raise ValueError(f"{qualname!r} already binds {receiver_parameter!r}")
+        if method.body[0].lineno == method.lineno:
+            raise ValueError(f"{qualname!r} keeps its body on the def line")
         target = ResolvedClassTarget.from_rewrite_target(snapshot, destination)
-        if method_name in target.bound_names:
-            raise ValueError(f"{target.qualname!r} already binds {method_name!r}")
-        moved = cls(snapshot, source_class, method, target, receiver_parameter)
+        moved = cls(snapshot, source_class, method, target, receiver_parameter, destination_name)
+        if moved.new_name in target.bound_names:
+            raise ValueError(f"{target.qualname!r} already binds {moved.new_name!r}")
         overriding = tuple(
             snapshot.required_class_family_index.classes_by_symbol[symbol].qualname
             for symbol in moved.descendants
@@ -101,12 +100,16 @@ class MovedMethod:
         )
         if overriding:
             raise ValueError(f"{overriding!r} override {method_name!r}; moving it breaks their dispatch")
-        moved.member  # the body must make the method the destination's
+        moved.source, moved.member  # the decorators and the body must both decide the move
         return moved
 
     @property
     def name(self) -> str:
         return self.method.name
+
+    @property
+    def new_name(self) -> str:
+        return self.destination_name or self.method.name
 
     @cached_property
     def symbol(self) -> str:
@@ -123,13 +126,30 @@ class MovedMethod:
         return self.descendants | {self.symbol}
 
     @cached_property
+    def locals(self) -> frozenset[str]:
+        return LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(self.method.body) | frozenset(
+            argument.arg for argument in ast.walk(self.method.args) if isinstance(argument, ast.arg)
+        )
+
+    @cached_property
+    def source(self) -> SourceShape:
+        """What the method is on its own class, read from its decorators."""
+
+        decorators = tuple(ast.unparse(decorator) for decorator in self.method.decorator_list)
+        shape = SourceShape.members.get(decorators)
+        if shape is None:
+            raise ValueError(
+                f"{self.name!r} is decorated {decorators!r}; only a plain, static or class method moves"
+            )
+        return shape(self)
+
+    @cached_property
     def member(self) -> DestinationMember:
         """The member of the destination this method becomes, read from its body."""
 
         destination = self.destination.name
         annotated = tuple(
-            argument for argument in self.method.args.posonlyargs + self.method.args.args
-            + self.method.args.kwonlyargs
+            argument for argument in self.source.call_parameters
             if _annotation_names(argument.annotation, destination)
         )
         if len(annotated) > 1:
@@ -139,15 +159,20 @@ class MovedMethod:
             )
         if annotated:
             return DestinationInstanceMethod(self, annotated[0])
-        if any(
-            isinstance(node, ast.Name) and node.id == destination and isinstance(node.ctx, ast.Load)
-            for statement in self.method.body for node in ast.walk(statement)
-        ):
-            if "cls" in LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(self.method.body):
-                raise ValueError(f"{self.name!r} already binds 'cls'")
+        if self.destination_reads:
             return DestinationClassMethod(self)
         raise ValueError(
             f"{self.name!r} neither takes a {destination} nor builds one; it is not {destination}'s"
+        )
+
+    @cached_property
+    def destination_reads(self) -> tuple[ast.Name, ...]:
+        return self.body_reads(self.destination.name)
+
+    def body_reads(self, name: str) -> tuple[ast.Name, ...]:
+        return tuple(
+            node for statement in self.method.body for node in ast.walk(statement)
+            if isinstance(node, ast.Name) and node.id == name and isinstance(node.ctx, ast.Load)
         )
 
     def answers(self, symbols: tuple[str, ...], where: str) -> bool:
@@ -162,41 +187,54 @@ class MovedMethod:
         raise ValueError(f"{where} calls {self.name!r} on a receiver typed {symbols!r}")
 
     def destination_source(self) -> str:
-        """The method as its destination member: the member's renames and decorator applied."""
+        """The method as its destination member: a header built from its new parameters, and
+        its body with the member's renames applied."""
 
         source = self.snapshot.sources_by_file_path[self.source_class.file_path]
         geometry = SourceTextGeometry(source)
-        start, end = method_deletion_offsets(geometry, self.method)
-        method_start = geometry.required_node_offsets(self.method)[0]
+        body_start = geometry.line_offsets[self.method.body[0].lineno - 1]
+        end = method_deletion_offsets(geometry, self.method)[1]
         renames = sorted(
             (
                 (*geometry.required_node_offsets(node), replacement)
-                for node, replacement in self.member.renames()
+                for node, replacement in self.member.body_renames()
             ),
             reverse=True,
         )
-        text = source[method_start:end]
+        text = source[body_start:end]
         for node_start, node_end, replacement in renames:
-            text = text[: node_start - method_start] + replacement + text[node_end - method_start:]
-        source_indent = source[start:method_start]
+            text = text[: node_start - body_start] + replacement + text[node_end - body_start:]
+        source_indent = " " * self.method.col_offset
         destination_indent = " " * (self.destination.node.body[0].col_offset)
         lines = [
             line.removeprefix(source_indent) if line.strip() else line
-            for line in (source_indent + text).splitlines(keepends=True)
+            for line in text.splitlines(keepends=True)
         ]
         dropped = self.destination_self_imports
         kept: list[str] = []
         previous_dropped = False
-        for number, line in enumerate(lines, start=self.method.lineno):
+        for number, line in enumerate(lines, start=self.method.body[0].lineno):
             if number in dropped or (previous_dropped and not line.strip()):
                 previous_dropped = number in dropped
                 continue
             previous_dropped = False
             kept.append(line)
-        body = "".join(
-            destination_indent + line if line.strip() else line for line in kept
+        body = "".join(destination_indent + line if line.strip() else line for line in kept)
+        return (
+            f"\n{self.member.decorator(destination_indent)}"
+            f"{destination_indent}{self.header()}\n{body.rstrip()}\n"
         )
-        return f"\n{self.member.decorator(destination_indent)}{body.rstrip()}\n"
+
+    def header(self) -> str:
+        definition = type(self.method)(
+            name=self.new_name,
+            args=self.member.arguments(),
+            body=[ast.Pass()],
+            decorator_list=[],
+            returns=copy.deepcopy(self.method.returns),
+            type_params=list(getattr(self.method, "type_params", [])),
+        )
+        return ast.unparse(ast.fix_missing_locations(definition)).splitlines()[0]
 
     @cached_property
     def destination_self_imports(self) -> frozenset[int]:
@@ -216,15 +254,12 @@ class MovedMethod:
     def free_names(self) -> frozenset[str]:
         """Module-level names of the source the method reads, which its new module must bind."""
 
-        local = LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(self.method.body) | frozenset(
-            argument.arg for argument in ast.walk(self.method.args) if isinstance(argument, ast.arg)
-        )
         reads = frozenset(
             node.id for node in ast.walk(self.method)
             if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load)
         )
         return frozenset(
-            name for name in reads - local - {"self", "cls", self.destination.name}
+            name for name in (reads - self.locals - {self.destination.name}) | self.source.free_names()
             if not hasattr(builtins, name)
         )
 
@@ -282,6 +317,129 @@ def _calls(node: ast.AST) -> bool:
 
 
 @dataclass(frozen=True)
+class SourceShape:
+    """The method on its own class: what leads its parameters and what its calls are spelled on.
+    Members register under the decorators that declare them."""
+
+    moved: MovedMethod
+
+    members: ClassVar[dict[tuple[str, ...], type[SourceShape]]] = {}
+    decorators: ClassVar[tuple[str, ...] | None] = None
+    leading_name: ClassVar[str | None] = None
+    describes: ClassVar[str] = "a plain method"
+    keeps_receiver: ClassVar[bool] = False
+
+    def __init_subclass__(cls, **kwargs: object) -> None:
+        super().__init_subclass__(**kwargs)
+        if cls.decorators is not None:
+            SourceShape.members[cls.decorators] = cls
+
+    def __post_init__(self) -> None:
+        positional = self.moved.method.args.posonlyargs + self.moved.method.args.args
+        if self.leading_name is not None and (not positional or positional[0].arg != self.leading_name):
+            raise ValueError(f"{self.moved.name!r} takes no {self.leading_name} parameter")
+        if self.keeps_receiver != (self.moved.receiver_parameter is not None):
+            raise ValueError(
+                f"{self.moved.name!r} is {self.describes}; receiver_parameter is "
+                + ("required" if self.keeps_receiver else "not taken")
+            )
+
+    @property
+    def positional_parameters(self) -> tuple[ast.arg, ...]:
+        """The positional parameters a call passes: every one after the leading self or cls."""
+
+        positional = self.moved.method.args.posonlyargs + self.moved.method.args.args
+        return tuple(positional[0 if self.leading_name is None else 1:])
+
+    @property
+    def call_parameters(self) -> tuple[ast.arg, ...]:
+        return self.positional_parameters + tuple(self.moved.method.args.kwonlyargs)
+
+    def body_renames(self) -> tuple[tuple[ast.AST, str], ...]:
+        return ()
+
+    def free_names(self) -> frozenset[str]:
+        return frozenset()
+
+    def class_receiver(self, receiver: ast.expr, file_path: str, enclosing: str | None) -> bool:
+        """Whether a call receiver is the source class itself."""
+
+        return False
+
+
+@dataclass(frozen=True)
+class InstanceSource(SourceShape):
+    """A plain method: calls are spelled on instances of the family, and the receiver stays as
+    the destination member's receiver parameter."""
+
+    decorators: ClassVar[tuple[str, ...] | None] = ()
+    leading_name: ClassVar[str | None] = "self"
+    keeps_receiver: ClassVar[bool] = True
+
+    def __post_init__(self) -> None:
+        super().__post_init__()
+        if self.moved.receiver_parameter in self.moved.locals:
+            raise ValueError(f"{self.moved.name!r} already binds {self.moved.receiver_parameter!r}")
+
+    def body_renames(self) -> tuple[tuple[ast.AST, str], ...]:
+        return tuple((node, str(self.moved.receiver_parameter)) for node in self.moved.body_reads("self"))
+
+
+@dataclass(frozen=True)
+class ClassBoundSource(SourceShape):
+    """A staticmethod or classmethod: calls are spelled on the class itself, by its binding, or
+    inside it on cls or self; the destination member takes no receiver from them."""
+
+    def class_receiver(self, receiver: ast.expr, file_path: str, enclosing: str | None) -> bool:
+        if not isinstance(receiver, ast.Name):
+            return False
+        if receiver.id in {"cls", "self"}:
+            return enclosing == self.moved.symbol
+        snapshot = self.moved.snapshot
+        name = self.moved.source_class.name
+        if file_path == self.moved.source_class.file_path:
+            return receiver.id == name
+        return any(
+            isinstance(statement, ast.ImportFrom)
+            and any(alias.name == name and (alias.asname or alias.name) == receiver.id for alias in statement.names)
+            and _imported_file(snapshot, file_path, statement) == self.moved.source_class.file_path
+            for statement in ast.walk(snapshot.module_nodes_by_file_path[file_path])
+        )
+
+
+@dataclass(frozen=True)
+class StaticSource(ClassBoundSource):
+    """A staticmethod: nothing leads its parameters."""
+
+    decorators: ClassVar[tuple[str, ...] | None] = ("staticmethod",)
+    describes: ClassVar[str] = "a staticmethod"
+
+
+@dataclass(frozen=True)
+class ClassSource(ClassBoundSource):
+    """A classmethod: its cls is the source class, which a descendant would change, so the move
+    requires a class without descendants; on the destination cls reads become that class."""
+
+    decorators: ClassVar[tuple[str, ...] | None] = ("classmethod",)
+    leading_name: ClassVar[str | None] = "cls"
+    describes: ClassVar[str] = "a classmethod"
+
+    def __post_init__(self) -> None:
+        super().__post_init__()
+        if self.moved.descendants:
+            raise ValueError(
+                f"{self.moved.name!r} is a classmethod of a class with descendants; "
+                "cls would stop naming them"
+            )
+
+    def body_renames(self) -> tuple[tuple[ast.AST, str], ...]:
+        return tuple((node, self.moved.source_class.name) for node in self.moved.body_reads("cls"))
+
+    def free_names(self) -> frozenset[str]:
+        return frozenset({self.moved.source_class.name}) if self.moved.body_reads("cls") else frozenset()
+
+
+@dataclass(frozen=True)
 class PassedArgument:
     """The destination as a call passes it positionally: the receiver takes its place as is."""
 
@@ -306,10 +464,15 @@ class DestinationMember:
 
     moved: MovedMethod
 
-    def renames(self) -> tuple[tuple[ast.AST, str], ...]:
-        """Each source node of the method and the text it becomes on the destination."""
+    def arguments(self) -> ast.arguments:
+        """The member's parameters, as its header declares them."""
 
         raise NotImplementedError
+
+    def body_renames(self) -> tuple[tuple[ast.AST, str], ...]:
+        """Each body node of the method and the text it becomes on the destination."""
+
+        return self.moved.source.body_renames()
 
     def decorator(self, indent: str) -> str:
         return ""
@@ -325,21 +488,43 @@ class DestinationMember:
     ) -> tuple[SourceTextSpanReplacement, ...]:
         raise NotImplementedError
 
-    def self_reads(self) -> tuple[ast.Name, ...]:
-        return tuple(
-            node for node in ast.walk(self.moved.method)
-            if isinstance(node, ast.Name) and node.id == "self"
+    def renamed_attribute(self, geometry: SourceTextGeometry, call: MethodCall) -> SourceTextSpanReplacement:
+        end = geometry.required_node_offsets(call.attribute)[1]
+        return SourceTextSpanReplacement.from_offsets(
+            start_offset=end - len(call.attribute.attr), end_offset=end,
+            replacement_source=self.moved.new_name,
         )
 
-    @property
-    def self_argument(self) -> ast.arg:
-        return (self.moved.method.args.posonlyargs + self.moved.method.args.args)[0]
+    def dropped_receiver(self, call: MethodCall) -> None:
+        if not self.moved.source.keeps_receiver and _calls(call.attribute.value):
+            raise ValueError(f"{call.where}: the receiver calls, and the moved call no longer evaluates it")
+
+    def parameters(self, leading: list[ast.arg], kept: tuple[ast.arg, ...]) -> ast.arguments:
+        """The method's arguments with its leading parameters replaced and only `kept` left."""
+
+        original = self.moved.method.args
+        everything = original.posonlyargs + original.args
+        defaults = dict(zip(everything[len(everything) - len(original.defaults):], original.defaults))
+        positional = [argument for argument in everything if argument in kept]
+        keywords = [argument for argument in original.kwonlyargs if argument in kept]
+        keyword_defaults = dict(zip(original.kwonlyargs, original.kw_defaults))
+        return ast.arguments(
+            posonlyargs=[],
+            args=leading + [copy.deepcopy(argument) for argument in positional],
+            vararg=copy.deepcopy(original.vararg),
+            kwonlyargs=[copy.deepcopy(argument) for argument in keywords],
+            kw_defaults=[copy.deepcopy(keyword_defaults[argument]) for argument in keywords],
+            kwarg=copy.deepcopy(original.kwarg),
+            defaults=[copy.deepcopy(defaults[argument]) for argument in positional if argument in defaults],
+        )
 
 
 @dataclass(frozen=True)
 class DestinationInstanceMethod(DestinationMember):
-    """The method takes a destination: that parameter becomes self, the old receiver takes its
-    place, and `receiver.m(..., destination, ...)` becomes `destination.m(..., receiver, ...)`."""
+    """The method takes a destination: that parameter becomes self. A plain method's receiver
+    takes its place, so `receiver.m(..., destination, ...)` becomes `destination.m(..., receiver,
+    ...)`; a staticmethod or classmethod has none, so `Source.m(..., destination, ...)` becomes
+    `destination.m(...)`."""
 
     parameter: ast.arg
 
@@ -354,20 +539,26 @@ class DestinationInstanceMethod(DestinationMember):
         if has_default:
             raise ValueError(f"{self.moved.name!r}'s {self.parameter.arg!r} has a default; calls may omit it")
 
-    def renames(self) -> tuple[tuple[ast.AST, str], ...]:
-        reads = tuple(
-            (node, "self") for node in ast.walk(self.moved.method)
-            if isinstance(node, ast.Name) and node.id == self.parameter.arg
-        )
-        return (
-            (self.self_argument, "self"),
-            (self.parameter, self.moved.receiver_parameter),
-            *((node, self.moved.receiver_parameter) for node in self.self_reads()),
-            *reads,
+    def arguments(self) -> ast.arguments:
+        source = self.moved.source
+        receiver = self.moved.receiver_parameter
+        if receiver is None:
+            return self.parameters(
+                [ast.arg("self")],
+                tuple(argument for argument in source.call_parameters if argument is not self.parameter),
+            )
+        arguments = self.parameters([ast.arg("self")], source.call_parameters)
+        for argument in arguments.args + arguments.kwonlyargs:
+            if argument.arg == self.parameter.arg:
+                argument.arg, argument.annotation = receiver, None
+        return arguments
+
+    def body_renames(self) -> tuple[tuple[ast.AST, str], ...]:
+        return super().body_renames() + tuple(
+            (node, "self") for node in self.moved.body_reads(self.parameter.arg)
         )
 
     def argument(self, call: MethodCall) -> PassedArgument:
-        method = self.moved.method
         if any(isinstance(each, ast.Starred) for each in call.call.args) or any(
             keyword.arg is None for keyword in call.call.keywords
         ):
@@ -377,7 +568,7 @@ class DestinationInstanceMethod(DestinationMember):
         )
         if keyword is not None:
             return KeywordArgument(keyword, keyword.value)
-        positional = (method.args.posonlyargs + method.args.args)[1:]
+        positional = self.moved.source.positional_parameters
         if self.parameter in positional and positional.index(self.parameter) < len(call.call.args):
             passed = call.call.args[positional.index(self.parameter)]
             return PassedArgument(passed, passed)
@@ -386,49 +577,75 @@ class DestinationInstanceMethod(DestinationMember):
     def replacement(
         self, geometry: SourceTextGeometry, call: MethodCall,
     ) -> tuple[SourceTextSpanReplacement, ...]:
+        self.dropped_receiver(call)
         receiver = call.attribute.value
         argument = self.argument(call)
         value = argument.value
-        if _calls(receiver) and _calls(value):
+        passed: list[ast.AST] = sorted(
+            (*call.call.args, *call.call.keywords),
+            key=lambda each: geometry.required_node_offsets(each)[0],
+        )
+        index = passed.index(argument.node)
+        earlier = ([receiver] if self.moved.source.keeps_receiver else []) + passed[:index]
+        if _calls(value) and any(_calls(each) for each in earlier):
             raise ValueError(
-                f"{call.where}: the receiver and {self.parameter.arg!r} both call, and swapping "
-                "them would reorder their effects"
+                f"{call.where}: {self.parameter.arg!r} and an earlier argument both call, and "
+                "moving it ahead would reorder their effects"
             )
-        receiver_text = geometry.source[slice(*geometry.required_node_offsets(receiver))]
         value_text = geometry.source[slice(*geometry.required_node_offsets(value))]
-        receiver_spelled = argument.spelled(self.moved.receiver_parameter, receiver_text)
         atom = isinstance(value, (ast.Name, ast.Attribute, ast.Subscript, ast.Call, ast.Constant))
         receiver_start, receiver_end = geometry.required_node_offsets(receiver)
         argument_start, argument_end = geometry.required_node_offsets(argument.node)
-        return (
+        replacements = [
             SourceTextSpanReplacement.from_offsets(
                 start_offset=receiver_start,
                 end_offset=receiver_end,
                 replacement_source=value_text if atom else f"({value_text})",
             ),
-            SourceTextSpanReplacement.from_offsets(
+            self.renamed_attribute(geometry, call),
+        ]
+        if self.moved.source.keeps_receiver:
+            replacements.append(SourceTextSpanReplacement.from_offsets(
                 start_offset=argument_start,
                 end_offset=argument_end,
-                replacement_source=receiver_spelled,
-            ),
-        )
+                replacement_source=argument.spelled(
+                    str(self.moved.receiver_parameter), geometry.source[receiver_start:receiver_end],
+                ),
+            ))
+        elif index + 1 < len(passed):
+            replacements.append(SourceTextSpanReplacement.from_offsets(
+                start_offset=argument_start,
+                end_offset=geometry.required_node_offsets(passed[index + 1])[0],
+                replacement_source="",
+            ))
+        else:
+            replacements.append(SourceTextSpanReplacement.from_offsets(
+                start_offset=geometry.required_node_offsets(passed[index - 1])[1] if index else argument_start,
+                end_offset=argument_end,
+                replacement_source="",
+            ))
+        return tuple(replacements)
 
 
 @dataclass(frozen=True)
 class DestinationClassMethod(DestinationMember):
-    """The method builds a destination: it becomes a classmethod constructing through cls, the
-    old receiver its first parameter, and `receiver.m(...)` becomes `Destination.m(receiver, ...)`."""
+    """The method builds a destination: it becomes a classmethod constructing through cls. A
+    plain method's receiver becomes its first parameter, so `receiver.m(...)` becomes
+    `Destination.m(receiver, ...)`; a staticmethod or classmethod call is respelled on the
+    destination with its arguments as they are."""
 
-    def renames(self) -> tuple[tuple[ast.AST, str], ...]:
-        return (
-            (self.self_argument, f"cls, {self.moved.receiver_parameter}"),
-            *((node, self.moved.receiver_parameter) for node in self.self_reads()),
-            *(
-                (node, "cls") for statement in self.moved.method.body for node in ast.walk(statement)
-                if isinstance(node, ast.Name) and node.id == self.moved.destination.name
-                and isinstance(node.ctx, ast.Load)
-            ),
-        )
+    def __post_init__(self) -> None:
+        if "cls" in LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(self.moved.method.body):
+            raise ValueError(f"{self.moved.name!r} already binds 'cls'")
+
+    def arguments(self) -> ast.arguments:
+        leading = [ast.arg("cls")]
+        if self.moved.receiver_parameter is not None:
+            leading.append(ast.arg(self.moved.receiver_parameter))
+        return self.parameters(leading, self.moved.source.call_parameters)
+
+    def body_renames(self) -> tuple[tuple[ast.AST, str], ...]:
+        return super().body_renames() + tuple((node, "cls") for node in self.moved.destination_reads)
 
     def decorator(self, indent: str) -> str:
         return f"{indent}@classmethod\n"
@@ -440,24 +657,33 @@ class DestinationClassMethod(DestinationMember):
     def replacement(
         self, geometry: SourceTextGeometry, call: MethodCall,
     ) -> tuple[SourceTextSpanReplacement, ...]:
-        start, end = geometry.required_node_offsets(call.call)
-        receiver = geometry.source[slice(*geometry.required_node_offsets(call.attribute.value))]
-        arguments = geometry.source[geometry.required_node_offsets(call.attribute)[1]:end]
-        opening = arguments.index("(") + 1
-        inner = arguments[opening:-1]
+        self.dropped_receiver(call)
+        receiver_start, receiver_end = geometry.required_node_offsets(call.attribute.value)
+        replacements = [
+            SourceTextSpanReplacement.from_offsets(
+                start_offset=receiver_start, end_offset=receiver_end,
+                replacement_source=self.moved.destination.name,
+            ),
+            self.renamed_attribute(geometry, call),
+        ]
+        if not self.moved.source.keeps_receiver:
+            return tuple(replacements)
+        receiver = geometry.source[receiver_start:receiver_end]
+        end = geometry.required_node_offsets(call.call)[1]
+        attribute_end = geometry.required_node_offsets(call.attribute)[1]
+        opening = attribute_end + geometry.source[attribute_end:end].index("(") + 1
+        inner = geometry.source[opening:end - 1]
         lead = inner[: len(inner) - len(inner.lstrip())]
-        rest = inner.lstrip()
-        if not rest:
-            joined = receiver
-        elif "\n" in lead:
-            joined = f"{lead}{receiver},{lead}{rest}"
+        if "\n" in lead:
+            inserted, span_end = f"{lead}{receiver},", opening
+        elif inner.strip():
+            inserted, span_end = f"{receiver}, ", opening + len(lead)
         else:
-            joined = f"{receiver}, {rest}"
-        return (SourceTextSpanReplacement.from_offsets(
-            start_offset=start,
-            end_offset=end,
-            replacement_source=f"{self.moved.destination.name}.{call.attribute.attr}({joined})",
-        ),)
+            inserted, span_end = receiver, opening + len(lead)
+        replacements.append(SourceTextSpanReplacement.from_offsets(
+            start_offset=opening, end_offset=span_end, replacement_source=inserted,
+        ))
+        return tuple(replacements)
 
 
 @dataclass(frozen=True)
@@ -489,6 +715,27 @@ def _imported_file(snapshot: CodemodSourceSnapshot, file_path: str, statement: a
     return provider.file_path
 
 
+def _enclosing_class(
+    snapshot: CodemodSourceSnapshot, file_path: str, node: ast.AST, parents: dict[ast.AST, ast.AST],
+) -> str | None:
+    """The symbol of the class whose body a node sits in, when the index knows it."""
+
+    names: list[str] = []
+    current = parents.get(node)
+    while current is not None:
+        if isinstance(current, ast.ClassDef):
+            names.append(current.name)
+        current = parents.get(current)
+    qualname = ".".join(reversed(names))
+    return next(
+        (
+            symbol for symbol, declaration in snapshot.required_class_family_index.classes_by_symbol.items()
+            if names and declaration.file_path == file_path and declaration.qualname == qualname
+        ),
+        None,
+    )
+
+
 @dataclass(frozen=True)
 class MethodCall:
     """One call by the method's name, and the receiver it is called on."""
@@ -504,17 +751,21 @@ class MethodCall:
 
 @dataclass(frozen=True, kw_only=True)
 class MoveMethodToClassOperation(RepositorySourceReprovedOperation):
-    """Move `Class.method` onto `destination` as the member its body makes it (an instance method
-    when it takes a destination, a classmethod when it builds one), and rewrite every call on an
-    instance of the method's class family into a call on the destination. Calls of the same name on another class's instances stay; a call whose
-    receiver neither the declarations nor the type checker types refuses the move, as do a
-    descendant overriding the method, a reference that is not a call, a super() call, and a
-    string naming the method."""
+    """Move `Class.method` (a plain method, staticmethod or classmethod) onto `destination` as
+    the member its body makes it, an instance method when it takes a destination and a
+    classmethod when it builds one, named `destination_name` when given, and rewrite every call
+    on the method's class family into a call on the destination. Calls of the same name on
+    another class's instances stay; a call whose receiver neither the class binding, the
+    declarations nor the type checker types refuses the move, as do a descendant overriding the
+    method, a reference that is not a call, a super() call, and a string naming the method.
+    `receiver_parameter` names the old receiver's parameter on the destination; only a plain
+    method has a receiver to keep."""
 
     destination: SourceRewriteTarget = codemod_payload_field(
         PayloadRecordValueCodec(SourceRewriteTarget)
     )
-    receiver_parameter: str = codemod_payload_field(RequiredStringPayloadValueCodec())
+    receiver_parameter: str | None = codemod_payload_field(OptionalStringPayloadValueCodec(), default=None)
+    destination_name: str | None = codemod_payload_field(OptionalStringPayloadValueCodec(), default=None)
 
     def source_edits_from_snapshot(
         self, snapshot: CodemodSourceSnapshot,
@@ -523,7 +774,8 @@ class MoveMethodToClassOperation(RepositorySourceReprovedOperation):
         if self.target.qualname is None:
             raise ValueError("move_method_to_class requires a Class.method target_qualname")
         moved = MovedMethod.require(
-            snapshot, source_path, self.target.qualname, self.destination, self.receiver_parameter,
+            snapshot, source_path, self.target.qualname, self.destination,
+            self.receiver_parameter, self.destination_name,
         )
         rewritten = self.answering_calls(snapshot, moved)
         replacements: dict[str, list[SourceTextSpanReplacement]] = {}
@@ -582,7 +834,8 @@ class MoveMethodToClassOperation(RepositorySourceReprovedOperation):
     def answering_calls(
         self, snapshot: CodemodSourceSnapshot, moved: MovedMethod,
     ) -> tuple[MethodCall, ...]:
-        """The calls the moved method answers, each receiver typed by declarations or the checker."""
+        """The calls the moved method answers, each receiver typed by the class binding, the
+        declarations or the checker."""
 
         typing = snapshot.declared_receiver_typing
         answering: list[MethodCall] = []
@@ -611,6 +864,10 @@ class MoveMethodToClassOperation(RepositorySourceReprovedOperation):
                 ):
                     raise ValueError(f"{where} calls {moved.name!r} through super()")
                 site = MethodCall(parsed.file_path, call, node)
+                enclosing = _enclosing_class(snapshot, parsed.file_path, node, parents)
+                if moved.source.class_receiver(node.value, parsed.file_path, enclosing):
+                    answering.append(site)
+                    continue
                 owner = resolver.owner(node.value).resolved(typing)
                 spans = owner.type_checker_spans()
                 if spans:
