@@ -19,12 +19,14 @@ from __future__ import annotations
 
 import ast
 import re
-from collections.abc import Iterable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass
 from functools import cached_property
 from pathlib import PurePosixPath
 
+from ..ast_tools import ParsedModule
 from ..class_index import CompactModuleClassHeader
+from ..codemod_import_scopes import ModuleImportScope
 from ..codemod_module_declarations import ModuleSymbolTable
 from ..codemod_runtime import FindingRecipeEvaluation, RefactorRecipe
 from ..codemod_selection_context import CodemodSelectorContext
@@ -271,17 +273,30 @@ class ClusterLayers:
         return not set(self.declared_names(path)) - {"__all__"}
 
     def imported_module_names(self, path: str) -> frozenset[str]:
-        """Every module `path` imports at any scope, function-local included: a
-        lazy import is still an edge once the two modules share a package."""
+        """The modules `path` imports when it loads: module scope, unguarded.
+        Only these order the moves; a guarded or function-local import is
+        rewritten where it stands whichever module moves first."""
 
+        return self._edges(
+            path,
+            lambda parsed: ModuleImportScope.RUNTIME.import_statements(parsed.module),
+        )
+
+    def any_scope_module_names(self, path: str) -> frozenset[str]:
+        """The modules `path` imports at any scope, guarded and local included."""
+
+        return self._edges(path, lambda parsed: parsed.fact(ModuleNodeIndex).imports)
+
+    def _edges(
+        self, path: str, statements: Callable[[ParsedModule], Iterable[ast.stmt]]
+    ) -> frozenset[str]:
         graph = self.context.module_import_graph
         source_file = graph.source_file_for_path(path)
         if source_file is None:
             return frozenset()
-        index = self.context.parsed_module_for_source_path(path).fact(ModuleNodeIndex)
         return frozenset(
             edge
-            for node in index.imports
+            for node in statements(self.context.parsed_module_for_source_path(path))
             for edge in graph.statement_edges(source_file, node)
         )
 
@@ -309,17 +324,34 @@ class ClusterLayers:
 
     @cached_property
     def mutual_imports(self) -> tuple[tuple[str, str], ...]:
-        """Pairs of declaring flat modules that import each other at any scope
+        """Pairs of declaring flat modules that import each other when they load
         and keep separate modules: no move order separates them."""
 
+        return self._mutual_pairs(self.imports)
+
+    def deferred_cycles(self, path: str) -> tuple[tuple[str, str], ...]:
+        """Pairs with `path` that import each other only through a guard or a
+        function-local import: the move carries that cycle, it does not make it."""
+
+        return tuple(
+            pair
+            for pair in self._mutual_pairs(self.imports_at_any_scope)
+            if path in pair and pair not in self.mutual_imports
+        )
+
+    def imports_at_any_scope(self, importer: str, imported: str) -> bool:
+        module_name = self.context.module_import_graph.module_name_for_file_path(imported)
+        return module_name in self.any_scope_module_names(importer)
+
+    def _mutual_pairs(
+        self, imports: Callable[[str, str], bool]
+    ) -> tuple[tuple[str, str], ...]:
         declaring = [path for path in self.present_paths if not self.emptied(path)]
         return tuple(
             (path, other)
             for index, path in enumerate(declaring)
             for other in declaring[index + 1 :]
-            if not self.joins(path, other)
-            and self.imports(path, other)
-            and self.imports(other, path)
+            if not self.joins(path, other) and imports(path, other) and imports(other, path)
         )
 
     def ready(self, path: str) -> bool:
@@ -420,7 +452,12 @@ class PackageMoveFindingRecipeSynthesizer(
         return self.executable_evaluation(
             RefactorRecipe(
                 recipe_id=f"relocate-{stem}",
-                reason="Relocate every name the flat module declares into its package.",
+                reason="Relocate every name the flat module declares into its package."
+                + "".join(
+                    f" Debt carried: {left} and {right} import each other through a "
+                    "guarded or function-local import; break that cycle at its owner."
+                    for left, right in layers.deferred_cycles(source_path)
+                ),
             ).with_operation(
                 (
                     RelocateSymbolsToModuleOperation
