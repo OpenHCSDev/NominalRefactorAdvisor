@@ -1628,33 +1628,23 @@ class SourceTextGeometry(SourceLineSegmentAuthority):
             rationale=rationale,
         )
 
-    @cached_property
+    @property
     def line_offsets(self) -> tuple[int, ...]:
-        offsets = []
-        offset = 0
-        for line in self.logical_lines:
-            offsets.append(offset)
-            offset += len(line)
-        return tuple(offsets)
+        return self.layout.line_offsets
 
-    @cached_property
+    @property
     def end_offset(self) -> int:
-        return sum(len(line) for line in self.lines)
+        return self.layout.end_offset
 
     def token_position_offset(self, position: tuple[int, int]) -> int:
-        line, column = position
-        if line == len(self.line_offsets) + 1 and column == 0:
-            return self.end_offset
-        if not 1 <= line <= len(self.line_offsets):
-            raise ValueError(f"Token position is outside source geometry: {position!r}")
-        return self.line_offsets[line - 1] + column
+        return self.layout.token_position_offset(position)
 
     def byte_span_offsets(self, span: SourceByteSpan) -> tuple[int, int]:
         return span.character_offsets(self.lines, self.line_offsets)
 
-    @cached_property
+    @property
     def token_start_offsets(self) -> tuple[int, ...]:
-        return tuple(self.token_position_offset(token.start) for token in self.tokens)
+        return self.layout.token_start_offsets
 
     def tokens_in_span(self, span: SourceTextSpan) -> tuple[tokenize.TokenInfo, ...]:
         start = bisect_left(self.token_start_offsets, span.start_offset)
