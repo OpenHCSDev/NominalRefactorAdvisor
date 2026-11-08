@@ -1302,7 +1302,7 @@ class SourceTopLevelSymbolClosureMovePlan(SourceTopLevelSymbolClosureMoveCarrier
             *RelocationNameRedirect(
                 source_path=request.source_path,
                 destinations={
-                    **cls._removed_binding_owners(context, report),
+                    **cls._removed_binding_owners(context, report, request.destination_path),
                     **{name: request.destination_path for name in moved_symbol_names},
                 },
                 reader_path=request.destination_path,
@@ -1327,23 +1327,29 @@ class SourceTopLevelSymbolClosureMovePlan(SourceTopLevelSymbolClosureMoveCarrier
     def _removed_binding_owners(
         context: CodemodSelectorContext,
         report: ModuleMoveDependencyReport,
+        destination_path: str,
     ) -> dict[str, str]:
-        """Source imports the move removes, each to the module declaring it, so a
-        reader that reached the name through the source reads it from its owner.
-        A name declared outside the index has no owner path and is left alone."""
+        """Source imports the move removes, each to where a reader that reached the
+        name through the source reads it now. A name imported under its own name
+        from an indexed module reads from the module declaring it. Every other
+        removed binding (`import os`, `from os import sep`, an alias) has no indexed
+        declaration to read; the move removes it only because the moved code alone
+        read it, so the destination binds it now and the reader reads it there.
+        Leaving those alone left `source.os` reading a binding the move took away."""
 
         return {
-            dependency.name: owner
-            for dependency in report.source_removal_dependencies
-            if dependency.identity.imported_name == dependency.name
-            if (
-                owner := ImportedNameOwner.declaring_path(
-                    context,
-                    dependency.identity.module_name,
-                    dependency.name,
+            dependency.name: (
+                (
+                    dependency.identity.imported_name == dependency.name
+                    and ImportedNameOwner.declaring_path(
+                        context,
+                        dependency.identity.module_name,
+                        dependency.name,
+                    )
                 )
+                or destination_path
             )
-            is not None
+            for dependency in report.source_removal_dependencies
         }
 
     @staticmethod

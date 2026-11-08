@@ -7791,6 +7791,52 @@ def test_relocation_redirects_readers_of_a_source_import_it_removes(
     assert imported.returncode == 0, imported.stderr
 
 
+def test_relocation_redirects_readers_of_a_removed_import_declared_outside_the_index(
+    tmp_path: Path,
+) -> None:
+    """`os` has no module in the index to read it from. The moved class took the
+    source's last read of it, so the destination imports it now, and a reader that
+    reached `os` through the source reaches it there instead of at a binding the
+    move removed."""
+
+    for relative_path, source in {
+        "pkg/__init__.py": "",
+        "pkg/source.py": "import os\n\n\nclass Kept:\n    pass\n\n\n"
+        "class Moved:\n    sep = os.sep\n",
+        "pkg/destination.py": "",
+        "pkg/reader.py": "import pkg.source as s\n\nvalue = s.os.sep\n",
+    }.items():
+        _write_module(tmp_path, relative_path, source)
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    operation = RelocateSymbolsToModuleOperation(
+        target=SourceRewriteTarget(file_path=(tmp_path / "pkg/source.py").as_posix()),
+        symbol_qualnames=("Moved",),
+        destination_path=(tmp_path / "pkg/destination.py").as_posix(),
+    )
+
+    simulation = RefactorRecipe("relocate-foreign-removed-import").with_operation(
+        operation
+    ).simulate(snapshot)
+
+    assert simulation.is_clean
+    rewritten = simulation.simulation.rewritten_sources
+    assert "import os" not in rewritten[(tmp_path / "pkg/source.py").as_posix()]
+    assert "import pkg.destination as s\n" in rewritten[(tmp_path / "pkg/reader.py").as_posix()]
+    simulation.apply()
+    imported = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import os; from pkg.reader import value; assert value == os.sep",
+        ],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert imported.returncode == 0, imported.stderr
+
+
 @pytest.mark.parametrize(
     "patch",
     (
