@@ -1862,21 +1862,36 @@ class NativeCodeObservation:
     """Transient native stream with one cached initial source-body boundary."""
 
     code: CodeType
-    _instructions: dict[int, dis.Instruction] = field(default_factory=dict, init=False)
+    _walk: list[dis.Instruction] = field(default_factory=list, init=False)
+    # Indexes over `_walk`. Its list keeps each observed object alive, so an
+    # identity cannot be reused while the observation exists.
+    _walk_identities: set[int] = field(default_factory=set, init=False)
+    _walk_positions: dict[int, int] = field(default_factory=dict, init=False)
     emissions: list[NativeCodeEmission] = field(default_factory=list, init=False)
     current: NativeCodeEmission | None = field(default=None, init=False)
     _boundary: dis.Instruction | None = field(default=None, init=False)
 
     @property
     def instructions(self) -> tuple[dis.Instruction, ...]:
-        return tuple(self._instructions.values())
+        return tuple(self._walk)
+
+    def observed(self, instruction: dis.Instruction) -> bool:
+        """Whether the walk observed this exact instruction object."""
+        return id(instruction) in self._walk_identities
+
+    def following(self, offset: int, count: int) -> tuple[dis.Instruction, ...]:
+        """The ``count`` instructions observed right after the first one at ``offset``."""
+        position = self._walk_positions.get(offset)
+        if position is None:
+            return ()
+        return tuple(self._walk[position + 1 : position + 1 + count])
 
     @property
     def initial_instructions(self) -> tuple[dis.Instruction, ...]:
         return tuple(
             takewhile(
                 lambda instruction: instruction is not self._boundary,
-                self._instructions.values(),
+                self._walk,
             )
         )
 
@@ -1895,7 +1910,7 @@ class NativeCodeObservation:
         if emission.source_span is None or None in instruction.positions:
             raise ValueError("Native function operand has incomplete source ranges")
         for event in (emission.load, emission.creation, instruction):
-            if self._instructions.get(id(event)) is not event:
+            if not self.observed(event):
                 raise ValueError(
                     "Native function operand requires its original instruction"
                 )
@@ -1938,7 +1953,7 @@ class NativeCodeObservation:
         return candidates[0]
 
     def observe(self, instruction: dis.Instruction) -> None:
-        if id(instruction) in self._instructions:
+        if self.observed(instruction):
             return
         if self._boundary is None:
             header = (self.code.co_firstlineno, self.code.co_firstlineno, 0, 0)
@@ -1947,7 +1962,9 @@ class NativeCodeObservation:
                 and tuple(instruction.positions) != header
             ):
                 self._boundary = instruction
-        self._instructions[id(instruction)] = instruction
+        self._walk_identities.add(id(instruction))
+        self._walk_positions.setdefault(instruction.offset, len(self._walk))
+        self._walk.append(instruction)
 
 
 @dataclass(frozen=True)
@@ -2798,7 +2815,13 @@ class NativeCreationInventory(NativeScopeInventoryABC):
                     containing_code_identity
                 ]
                 try:
-                    frame = backend.generated_class_frame(owner, body, span, prologue)
+                    frame = backend.generated_class_frame(
+                        owner,
+                        body,
+                        span,
+                        prologue,
+                        self.prefixes[id(owner.containing_code)],
+                    )
                 except ValueError:
                     pass
                 else:
@@ -3518,6 +3541,7 @@ class NativeCreationBackend(ABC, metaclass=AutoRegisterMeta):
         body: NativeCodeEmission,
         source_span: SourceByteSpan,
         prologue: NativeClassPrologue,
+        containing: NativeCodeObservation,
     ) -> NativeGeneratedClassFrame:
         raise ValueError("Generated class wrapper activation remains unproved")
 
@@ -4626,8 +4650,13 @@ class CPython314CreationBackend(
         body: NativeCodeEmission,
         source_span: SourceByteSpan,
         prologue: NativeClassPrologue,
+        containing: NativeCodeObservation,
     ) -> NativeGeneratedClassFrame:
-        """Admit CPython 3.14's immediate generated class-wrapper call."""
+        """Admit CPython 3.14's immediate generated class-wrapper call.
+
+        ``containing`` is the inventory's walk of ``emission.containing_code``;
+        the activation is read from it rather than disassembling that code again
+        for every class it holds."""
         if (
             emission.source_span != source_span
             or emission.creation is None
@@ -4637,18 +4666,12 @@ class CPython314CreationBackend(
         boundary = max(
             (emission.creation, *emission.attachments), key=attrgetter("offset")
         )
-        instructions = tuple(self.instructions(emission.containing_code))
-        boundary_index = next(
-            (
-                index
-                for index, instruction in enumerate(instructions)
-                if instruction.offset == boundary.offset
-            ),
-            None,
-        )
-        if boundary_index is None or boundary_index + 2 >= len(instructions):
+        if containing.code is not emission.containing_code:
+            raise ValueError("Generated class wrapper has no observed containing walk")
+        activation = containing.following(boundary.offset, 2)
+        if len(activation) != 2:
             raise ValueError("Generated class wrapper has no immediate activation")
-        marker, call = instructions[boundary_index + 1 : boundary_index + 3]
+        marker, call = activation
         NativePrimitiveOperation.PUSH_NULL.require_instruction(marker)
         NativePrimitiveOperation.CALL.require_instruction(call)
         if (

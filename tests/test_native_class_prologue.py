@@ -545,15 +545,13 @@ def test_compact_capture_and_queried_compilation_pickle_without_native_code(
 )
 def test_unproved_native_prefix_remains_open(monkeypatch, damage):
     _, _, body, _, _ = _case(monkeypatch, "class Target:\n    record()\n")
-    prefix = NativeCodeObservation(body)
-    for instruction in dis.get_instructions(body):
-        prefix.observe(instruction)
+    instructions = list(dis.get_instructions(body))
     store_index = next(
         i
-        for i, instruction in enumerate(prefix.instructions)
+        for i, instruction in enumerate(instructions)
         if instruction.opname == "STORE_NAME"
     )
-    instruction = prefix.instructions[store_index]
+    instruction = instructions[store_index]
     if damage == "unknown":
         # NOP is an admitted inert primitive; raising remains unsupported here.
         instruction = instruction._replace(
@@ -573,7 +571,10 @@ def test_unproved_native_prefix_remains_open(monkeypatch, damage):
         )
     else:
         instruction = instruction._replace(argval=None)
-    prefix._instructions[id(prefix.instructions[store_index])] = instruction
+    instructions[store_index] = instruction
+    prefix = NativeCodeObservation(body)
+    for observed in instructions:
+        prefix.observe(observed)
     result = NativeCreationBackend.current().class_prologue(prefix)
     assert isinstance(result, OpenNativeClassPrologue)
 
