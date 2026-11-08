@@ -4,7 +4,6 @@ from pathlib import Path
 
 import pytest
 
-from nominal_refactor_advisor import class_index
 from nominal_refactor_advisor.ast_tools import SourceModule
 from nominal_refactor_advisor.class_index import (
     CompactClassFamilyIndex,
