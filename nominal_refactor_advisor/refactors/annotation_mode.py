@@ -5,10 +5,11 @@ from __future__ import annotations
 import ast
 import builtins
 import symtable
-from collections.abc import Iterator
-from dataclasses import dataclass
-from typing import ClassVar
+from collections.abc import Iterable, Iterator, Mapping
+from dataclasses import dataclass, field
+from typing import ClassVar, Self, cast
 
+from ..ast_projection import ExpressionReference
 from ..ast_tools import ModuleAnnotationEvaluationMode, Stringized
 from ..codemod_operations import RefactorRecipeOperation
 from ..codemod_preflight import CodemodOperationPreflightReport
@@ -19,9 +20,134 @@ from ..codemod_source_edits import (
     SourceTextGeometry,
     SourceTextSpanReplacement,
 )
+from ..declared_family import ForeignAdapter
 from ..json_reports import DataclassJsonReport
 
-_DEFINITIONS = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
+_KEY_READERS = frozenset({"len", "tuple", "set", "frozenset", "sorted", "list"})
+_Annotations = Iterator[tuple[ast.expr, frozenset[str]]]
+
+
+def _outside_definitions(root: ast.AST) -> Iterator[ast.AST]:
+    """`root` and every node under it, without descending into a definition (a
+    definition is yielded; its body and header belong to its own handling)."""
+
+    pending = [root]
+    while pending:
+        node = pending.pop()
+        yield node
+        if not _Statement.decoded(node).opens_scope:
+            pending.extend(ast.iter_child_nodes(node))
+
+
+def _each(body: list[ast.stmt]) -> Iterator[ast.AST]:
+    for statement in body:
+        yield from _outside_definitions(statement)
+
+
+class _Statement(ForeignAdapter):
+    """A statement, read for the annotations it evaluates and the scopes its
+    stored-annotation reads belong to. Anything that is not an annotated assignment
+    or a definition carries neither (its nested ones are reached by the walk)."""
+
+    __registry_key__ = "adapts"
+    opens_scope: ClassVar[bool] = False
+    is_function: ClassVar[bool] = False
+
+    @classmethod
+    def decoded(cls, node: object) -> Self:
+        return cast(Self, super().decoded(node))
+
+    def annotations(self, type_parameters: frozenset[str]) -> _Annotations:
+        """Annotations it evaluates at module or class level."""
+
+        return iter(())
+
+    def annotations_in_function(self, type_parameters: frozenset[str]) -> _Annotations:
+        """Annotations it evaluates inside a function body, where a local's
+        annotation is never evaluated in either mode."""
+
+        return iter(())
+
+    def unproved_reads(
+        self, reads: _ModuleAnnotationReads, scope: str, function: ast.AST | None
+    ) -> Iterator[_RawAnnotationRead]:
+        """Unproved reads in the scope this statement opens."""
+
+        return iter(())
+
+
+class _OtherStatement(_Statement):
+    adapts = object
+
+
+class _AnnotatedAssignment(_Statement):
+    adapts = ast.AnnAssign
+
+    def annotations(self, type_parameters: frozenset[str]) -> _Annotations:
+        yield self.node.annotation, type_parameters
+
+
+class _Definition(_Statement):
+    opens_scope = True
+
+    def scope_parameters(self, type_parameters: frozenset[str]) -> frozenset[str]:
+        return type_parameters | {parameter.name for parameter in self.node.type_params}
+
+    def annotations_in_function(self, type_parameters: frozenset[str]) -> _Annotations:
+        return self.annotations(type_parameters)
+
+    def unproved_reads(
+        self, reads: _ModuleAnnotationReads, scope: str, function: ast.AST | None
+    ) -> Iterator[_RawAnnotationRead]:
+        yield from reads.unproved(
+            self.node.body, f"{scope}.{self.node.name}", self.reading_function(function)
+        )
+        yield from reads.unproved_at(
+            (child for child in ast.iter_child_nodes(self.node) if child not in self.node.body),
+            scope,
+            function,
+        )
+
+    def reading_function(self, function: ast.AST | None) -> ast.AST | None:
+        return self.node
+
+
+class _ClassDefinition(_Definition):
+    adapts = ast.ClassDef
+
+    def annotations(self, type_parameters: frozenset[str]) -> _Annotations:
+        parameters = self.scope_parameters(type_parameters)
+        for node in _each(self.node.body):
+            yield from _Statement.decoded(node).annotations(parameters)
+
+    def reading_function(self, function: ast.AST | None) -> ast.AST | None:
+        return function
+
+
+class _FunctionDefinition(_Definition):
+    adapts = ast.FunctionDef
+    is_function = True
+
+    def annotations(self, type_parameters: frozenset[str]) -> _Annotations:
+        parameters = self.scope_parameters(type_parameters)
+        arguments = self.node.args
+        for argument in (
+            *arguments.posonlyargs,
+            *arguments.args,
+            *arguments.kwonlyargs,
+            *((arguments.vararg,) if arguments.vararg else ()),
+            *((arguments.kwarg,) if arguments.kwarg else ()),
+        ):
+            if argument.annotation is not None:
+                yield argument.annotation, parameters
+        if self.node.returns is not None:
+            yield self.node.returns, parameters
+        for node in _each(self.node.body):
+            yield from _Statement.decoded(node).annotations_in_function(parameters)
+
+
+class _AsyncFunctionDefinition(_FunctionDefinition):
+    adapts = ast.AsyncFunctionDef
 
 
 @dataclass(frozen=True)
@@ -51,7 +177,10 @@ class _AnnotationNames:
                 sorted(
                     {
                         (node.id, node.lineno)
-                        for annotation, type_parameters in cls._evaluated(module.body, ())
+                        for statement in _each(module.body)
+                        for annotation, type_parameters in _Statement.decoded(
+                            statement
+                        ).annotations(frozenset())
                         for node in ast.walk(annotation)
                         if isinstance(node, ast.Name)
                         and isinstance(node.ctx, ast.Load)
@@ -62,83 +191,55 @@ class _AnnotationNames:
             )
         )
 
-    @classmethod
-    def _evaluated(
-        cls,
-        body: list[ast.stmt],
-        type_parameters: tuple[str, ...],
-    ) -> Iterator[tuple[ast.expr, frozenset[str]]]:
-        for statement in body:
-            if isinstance(statement, ast.AnnAssign):
-                yield statement.annotation, frozenset(type_parameters)
-            elif isinstance(statement, _DEFINITIONS):
-                scope = (*type_parameters, *(param.name for param in statement.type_params))
-                if isinstance(statement, ast.ClassDef):
-                    yield from cls._evaluated(statement.body, scope)
-                    continue
-                arguments = statement.args
-                for argument in (
-                    *arguments.posonlyargs,
-                    *arguments.args,
-                    *arguments.kwonlyargs,
-                    *((arguments.vararg,) if arguments.vararg else ()),
-                    *((arguments.kwarg,) if arguments.kwarg else ()),
-                ):
-                    if argument.annotation is not None:
-                        yield argument.annotation, frozenset(scope)
-                if statement.returns is not None:
-                    yield statement.returns, frozenset(scope)
-                yield from cls._nested_definitions(statement.body, scope)
-            else:
-                for field in ("body", "orelse", "finalbody", "handlers"):
-                    yield from cls._evaluated(
-                        [
-                            child
-                            for child in getattr(statement, field, ())
-                            if isinstance(child, ast.stmt)
-                        ]
-                        + [
-                            stmt
-                            for handler in getattr(statement, field, ())
-                            if isinstance(handler, ast.ExceptHandler)
-                            for stmt in handler.body
-                        ],
-                        type_parameters,
-                    )
+
+class _StoredAnnotationsRead(ForeignAdapter):
+    """A node that may read annotation values as stored: a load of `__annotations__`,
+    or a call to `get_annotations` in VALUE (the default) or FORWARDREF format without
+    `eval_str=True`. Those values are strings in a stringized module and objects in a
+    lazy one; STRING format, `eval_str=True` and `typing.get_type_hints` read the same
+    thing in both."""
+
+    __registry_key__ = "adapts"
 
     @classmethod
-    def _nested_definitions(
-        cls,
-        body: list[ast.stmt],
-        type_parameters: tuple[str, ...],
-    ) -> Iterator[tuple[ast.expr, frozenset[str]]]:
-        """A definition inside a function body: its own annotations are evaluated,
-        the annotations of the function's locals are not."""
+    def decoded(cls, node: object) -> Self:
+        return cast(Self, super().decoded(node))
 
-        for statement in body:
-            for node in ast.walk(statement):
-                if isinstance(node, _DEFINITIONS):
-                    yield from cls._evaluated([node], type_parameters)
+    @property
+    def is_raw(self) -> bool:
+        return False
 
 
-_KEY_READERS = frozenset({"len", "tuple", "set", "frozenset", "sorted", "list"})
+class _OtherNode(_StoredAnnotationsRead):
+    adapts = object
+
+
+class _AnnotationsAttribute(_StoredAnnotationsRead):
+    adapts = ast.Attribute
+
+    @property
+    def is_raw(self) -> bool:
+        return self.node.attr == "__annotations__" and isinstance(self.node.ctx, ast.Load)
+
+
+class _AnnotationsCall(_StoredAnnotationsRead):
+    adapts = ast.Call
+
+    @property
+    def is_raw(self) -> bool:
+        if ExpressionReference.decoded(self.node.func).terminal_name != "get_annotations":
+            return False
+        keywords = {keyword.arg: keyword.value for keyword in self.node.keywords}
+        evaluates = keywords.get("eval_str")
+        if isinstance(evaluates, ast.Constant) and evaluates.value is True:
+            return False
+        return ExpressionReference.decoded(keywords.get("format")).terminal_name != "STRING"
 
 
 @dataclass(frozen=True)
 class _RawAnnotationRead:
-    """A read of annotation values as stored: a load of `__annotations__`, or a call to
-    `get_annotations` in VALUE (the default) or FORWARDREF format without
-    `eval_str=True`. Those values are strings in a stringized module and objects in a
-    lazy one; STRING format, `eval_str=True` and `typing.get_type_hints` read the same
-    thing in both.
-
-    A read is proved to see no difference when its dict is used only for its keys
-    (iterated, tested with `in`, counted), or reaches `typing.get_type_hints`, which
-    evaluates a string and returns the object a lazy annotation holds: directly, or
-    through one call into a function of the same module that stores it as some
-    object's `__annotations__` and asks `get_type_hints` for that object. Single
-    values travel the same way when they are collected into a dict literal. Any other
-    read is unproved, and named by the function holding it and its line."""
+    """A raw read of stored annotations that nothing proves unable to tell strings
+    from objects, named by the function holding it and its line."""
 
     qualname: str
     line: int
@@ -156,7 +257,9 @@ class _RawAnnotationRead:
                     for source_file in context.source_index.files
                     if (module := context.module_nodes_by_file_path.get(source_file.file_path))
                     is not None
-                    for read in _ModuleAnnotationReads(module).unproved(source_file.module_name)
+                    for read in _ModuleAnnotationReads(module).unproved(
+                        module.body, source_file.module_name, None
+                    )
                 },
                 key=lambda read: (read.qualname, read.line),
             )
@@ -165,178 +268,237 @@ class _RawAnnotationRead:
 
 @dataclass(frozen=True)
 class _ModuleAnnotationReads:
-    """The raw annotation reads of one module and the proof that each sees no
-    difference between the two modes."""
+    """One module's raw annotation reads, each proved or reported.
+
+    A read is proved to see no difference when its dict is used only for its keys
+    (iterated, tested with `in`, counted), or reaches `typing.get_type_hints`, which
+    evaluates a string and returns the object a lazy annotation holds: directly, or
+    through one call into a function of the same module that stores it as some
+    object's `__annotations__` and asks `get_type_hints` for that object. Single
+    values travel the same way when they are collected into a dict literal."""
 
     module: ast.Module
+    _scopes: dict[int, _ReadScope] = field(default_factory=dict, compare=False)
 
-    def unproved(self, module_name: str) -> Iterator[_RawAnnotationRead]:
-        yield from self._unproved_in(self.module.body, module_name, None)
+    def scope(self, root: ast.AST) -> _ReadScope:
+        """`root`'s parent map, built once however many reads it holds."""
 
-    def _unproved_in(
-        self,
-        body: list[ast.stmt],
-        scope: str,
-        function: ast.FunctionDef | ast.AsyncFunctionDef | None,
+        found = self._scopes.get(id(root))
+        if found is None:
+            found = _ReadScope(
+                self,
+                {child: parent for parent in ast.walk(root) for child in ast.iter_child_nodes(parent)},
+                root,
+            )
+            self._scopes[id(root)] = found
+        return found
+
+    def unproved(
+        self, body: list[ast.stmt], scope: str, function: ast.AST | None
     ) -> Iterator[_RawAnnotationRead]:
-        for statement in body:
-            if isinstance(statement, _DEFINITIONS):
-                inner = (
-                    function if isinstance(statement, ast.ClassDef) else statement
-                )
-                yield from self._unproved_in(statement.body, f"{scope}.{statement.name}", inner)
-                roots: list[ast.AST] = list(statement.decorator_list)
-            else:
-                roots = [statement]
-                yield from self._unproved_in(
-                    [
-                        child
-                        for node in self._outside_definitions(statement)
-                        for child in ast.iter_child_nodes(node)
-                        if isinstance(child, _DEFINITIONS)
-                    ],
-                    scope,
-                    function,
-                )
-            for root in roots:
-                for node in self._outside_definitions(root):
-                    if self._reads_raw(node) and not self._keys_or_evaluated(
-                        node, function or self.module
-                    ):
-                        yield _RawAnnotationRead(scope, node.lineno)
+        for node in _each(body):
+            yield from self._unproved_read(node, scope, function)
+            yield from _Statement.decoded(node).unproved_reads(self, scope, function)
 
-    @staticmethod
-    def _outside_definitions(root: ast.AST) -> Iterator[ast.AST]:
-        pending = [root]
-        while pending:
-            node = pending.pop()
-            yield node
-            pending.extend(
-                child for child in ast.iter_child_nodes(node) if not isinstance(child, _DEFINITIONS)
-            )
+    def unproved_at(
+        self, roots: Iterable[ast.AST], scope: str, function: ast.AST | None
+    ) -> Iterator[_RawAnnotationRead]:
+        for root in roots:
+            for node in _outside_definitions(root):
+                yield from self._unproved_read(node, scope, function)
 
-    @staticmethod
-    def _reads_raw(node: ast.AST) -> bool:
-        if isinstance(node, ast.Attribute):
-            return node.attr == "__annotations__" and isinstance(node.ctx, ast.Load)
-        if not (isinstance(node, ast.Call) and _called_name(node) == "get_annotations"):
-            return False
-        keywords = {keyword.arg: keyword.value for keyword in node.keywords}
-        evaluates = keywords.get("eval_str")
-        if isinstance(evaluates, ast.Constant) and evaluates.value is True:
-            return False
-        stored = keywords.get("format")
-        return not (isinstance(stored, ast.Attribute) and stored.attr == "STRING")
+    def _unproved_read(
+        self, node: ast.AST, scope: str, function: ast.AST | None
+    ) -> Iterator[_RawAnnotationRead]:
+        if _StoredAnnotationsRead.decoded(node).is_raw and not self.scope(
+            function or self.module
+        ).dict_used(node):
+            yield _RawAnnotationRead(scope, node.lineno)
 
-    def _parents(self, scope: ast.AST) -> dict[ast.AST, ast.AST]:
-        return {child: parent for parent in ast.walk(scope) for child in ast.iter_child_nodes(parent)}
+    def type_hint_evaluator(self, call: ast.Call, position: int) -> _TypeHintEvaluator | None:
+        """The one same-module function the call reaches, at the parameter the
+        argument binds, or nothing when the callee is ambiguous or absent."""
 
-    def _keys_or_evaluated(self, read: ast.expr, scope: ast.AST) -> bool:
-        """`read` denotes an annotations dict: is every use of it keys-only or evaluated?"""
-
-        parent = self._parents(scope).get(read)
-        if isinstance(parent, ast.comprehension | ast.For) and parent.iter is read:
-            return True
-        if isinstance(parent, ast.Compare) and read in parent.comparators:
-            return isinstance(parent.ops[parent.comparators.index(read)], ast.In | ast.NotIn)
-        if isinstance(parent, ast.Call) and read in parent.args:
-            return (
-                _called_name(parent) in _KEY_READERS and len(parent.args) == 1
-            ) or self._reaches_type_hints(parent, parent.args.index(read))
-        if isinstance(parent, ast.Subscript) and parent.value is read:
-            return self._evaluated_value(parent, scope)
-        if (
-            isinstance(parent, ast.Assign)
-            and parent.value is read
-            and len(parent.targets) == 1
-            and isinstance(parent.targets[0], ast.Name)
-        ):
-            name = parent.targets[0].id
-            loads = tuple(
-                node
-                for node in ast.walk(scope)
-                if isinstance(node, ast.Name) and node.id == name and isinstance(node.ctx, ast.Load)
-            )
-            return bool(loads) and all(self._keys_or_evaluated(load, scope) for load in loads)
-        return False
-
-    def _evaluated_value(self, value: ast.expr, scope: ast.AST) -> bool:
-        """`value` denotes one stored annotation: is it collected into a dict that is?"""
-
-        parent = self._parents(scope).get(value)
-        return (
-            isinstance(parent, ast.Dict)
-            and value in parent.values
-            and self._keys_or_evaluated(parent, scope)
-        )
-
-    def _reaches_type_hints(self, call: ast.Call, position: int) -> bool:
-        if _called_name(call) == "get_type_hints":
-            return True
+        name = ExpressionReference.decoded(call.func).terminal_name
         callees = tuple(
-            node
-            for node in ast.walk(self.module)
-            if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef)
-            and node.name == _called_name(call)
+            definition
+            for definition in ast.walk(self.module)
+            if _Statement.decoded(definition).is_function and definition.name == name
         )
         if len(callees) != 1:
-            return False
+            return None
         (callee,) = callees
-        bound = (
-            0
-            if any(
-                isinstance(decorator, ast.Name) and decorator.id == "staticmethod"
-                for decorator in callee.decorator_list
-            )
-            else 1
-            if isinstance(call.func, ast.Attribute)
-            else 0
+        static = any(
+            ExpressionReference.decoded(decorator).terminal_name == "staticmethod"
+            for decorator in callee.decorator_list
         )
+        bound = 0 if static or ExpressionReference.decoded(call.func).identifier else 1
         parameters = (*callee.args.posonlyargs, *callee.args.args)
         if position + bound >= len(parameters):
-            return False
-        name = parameters[position + bound].arg
-        parents = self._parents(callee)
-        hinted = {
-            node.args[0].id
-            for node in ast.walk(callee)
-            if isinstance(node, ast.Call)
-            and _called_name(node) == "get_type_hints"
-            and node.args
-            and isinstance(node.args[0], ast.Name)
-        }
-        loads = tuple(
+            return None
+        return _TypeHintEvaluator(self.scope(callee), parameters[position + bound].arg)
+
+
+@dataclass(frozen=True)
+class _ReadScope:
+    """One scope a read lives in, with its parent map."""
+
+    reads: _ModuleAnnotationReads
+    parents: Mapping[ast.AST, ast.AST]
+    root: ast.AST
+
+    def uses(self, node: ast.AST) -> AnnotationsUse:
+        return AnnotationsUse.decoded(self.parents.get(node))
+
+    def dict_used(self, read: ast.AST) -> bool:
+        return self.uses(read).of_dict(read, self)
+
+    def value_used(self, value: ast.AST) -> bool:
+        return self.uses(value).of_value(value, self)
+
+    def loads(self, name: str) -> tuple[ast.Name, ...]:
+        return tuple(
             node
-            for node in ast.walk(callee)
-            if isinstance(node, ast.Name) and node.id == name and isinstance(node.ctx, ast.Load)
+            for node in ast.walk(self.root)
+            if ExpressionReference.decoded(node).identifier == name
+            and isinstance(node.ctx, ast.Load)
         )
+
+
+@dataclass(frozen=True)
+class _TypeHintEvaluator:
+    """A callee parameter that must reach `get_type_hints`: stored as some object's
+    `__annotations__` that `get_type_hints` is asked for, or passed to it."""
+
+    scope: _ReadScope
+    parameter: str
+
+    @property
+    def hinted(self) -> frozenset[str]:
+        return frozenset(
+            name
+            for node in ast.walk(self.scope.root)
+            if isinstance(node, ast.Call)
+            and ExpressionReference.decoded(node.func).terminal_name == "get_type_hints"
+            and node.args
+            and (name := ExpressionReference.decoded(node.args[0]).identifier) is not None
+        )
+
+    def evaluates(self) -> bool:
+        loads = self.scope.loads(self.parameter)
+        hinted = self.hinted
         return bool(loads) and all(
-            (
-                isinstance(parent := parents.get(load), ast.Assign)
-                and parent.value is load
-                and all(
-                    isinstance(target, ast.Attribute)
-                    and target.attr == "__annotations__"
-                    and isinstance(target.value, ast.Name)
-                    and target.value.id in hinted
-                    for target in parent.targets
-                )
-            )
-            or (
-                isinstance(parent, ast.Call)
-                and _called_name(parent) == "get_type_hints"
-                and load in parent.args
-            )
-            for load in loads
+            self.scope.uses(load).reaches_type_hints(load, hinted) for load in loads
         )
 
 
-def _called_name(call: ast.Call) -> str | None:
-    if isinstance(call.func, ast.Attribute):
-        return call.func.attr
-    if isinstance(call.func, ast.Name):
-        return call.func.id
-    return None
+class AnnotationsUse(ForeignAdapter):
+    """How a parent node uses the annotations dict (or one value of it) below it."""
+
+    __registry_key__ = "adapts"
+
+    @classmethod
+    def decoded(cls, node: object) -> Self:
+        return cast(Self, super().decoded(node))
+
+    def of_dict(self, read: ast.AST, scope: _ReadScope) -> bool:
+        """Is this use of the whole dict keys-only or evaluated?"""
+
+        return False
+
+    def of_value(self, value: ast.AST, scope: _ReadScope) -> bool:
+        """Is this use of one stored value collected into a dict that is?"""
+
+        return False
+
+    def reaches_type_hints(self, load: ast.AST, hinted: frozenset[str]) -> bool:
+        """In a type-hint evaluator, does this use hand the parameter to
+        `get_type_hints`?"""
+
+        return False
+
+
+class _UnprovedUse(AnnotationsUse):
+    adapts = object
+
+
+class _IteratedUse(AnnotationsUse):
+    def of_dict(self, read: ast.AST, scope: _ReadScope) -> bool:
+        return self.node.iter is read
+
+
+class _ComprehensionUse(_IteratedUse):
+    adapts = ast.comprehension
+
+
+class _ForUse(_IteratedUse):
+    adapts = ast.For
+
+
+class _ComparedUse(AnnotationsUse):
+    adapts = ast.Compare
+
+    def of_dict(self, read: ast.AST, scope: _ReadScope) -> bool:
+        return read in self.node.comparators and isinstance(
+            self.node.ops[self.node.comparators.index(read)], ast.In | ast.NotIn
+        )
+
+
+class _PassedUse(AnnotationsUse):
+    adapts = ast.Call
+
+    @property
+    def callee_name(self) -> str | None:
+        return ExpressionReference.decoded(self.node.func).terminal_name
+
+    def of_dict(self, read: ast.AST, scope: _ReadScope) -> bool:
+        if read not in self.node.args:
+            return False
+        if self.callee_name in _KEY_READERS and len(self.node.args) == 1:
+            return True
+        if self.callee_name == "get_type_hints":
+            return True
+        evaluator = scope.reads.type_hint_evaluator(self.node, self.node.args.index(read))
+        return evaluator is not None and evaluator.evaluates()
+
+    def reaches_type_hints(self, load: ast.AST, hinted: frozenset[str]) -> bool:
+        return self.callee_name == "get_type_hints" and load in self.node.args
+
+
+class _SubscriptedUse(AnnotationsUse):
+    adapts = ast.Subscript
+
+    def of_dict(self, read: ast.AST, scope: _ReadScope) -> bool:
+        return self.node.value is read and scope.value_used(self.node)
+
+
+class _BoundUse(AnnotationsUse):
+    adapts = ast.Assign
+
+    def of_dict(self, read: ast.AST, scope: _ReadScope) -> bool:
+        match self.node.targets:
+            case (target,) if self.node.value is read:
+                name = ExpressionReference.decoded(target).identifier
+            case _:
+                return False
+        loads = () if name is None else scope.loads(name)
+        return bool(loads) and all(scope.dict_used(load) for load in loads)
+
+    def reaches_type_hints(self, load: ast.AST, hinted: frozenset[str]) -> bool:
+        return self.node.value is load and all(
+            (chain := ExpressionReference.decoded(target).attribute_chain) is not None
+            and len(chain) == 2
+            and chain[1] == "__annotations__"
+            and chain[0] in hinted
+            for target in self.node.targets
+        )
+
+
+class _CollectedUse(AnnotationsUse):
+    adapts = ast.Dict
+
+    def of_value(self, value: ast.AST, scope: _ReadScope) -> bool:
+        return value in self.node.values and scope.dict_used(self.node)
 
 
 @dataclass(frozen=True)
