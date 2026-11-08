@@ -2507,6 +2507,26 @@ class CollectedFamilyCacheContext:
     def items_content_signature(self, items: tuple[object, ...]) -> str:
         return collected_family_items_content_signature(items, self.relocation)
 
+    def payload_bytes(self, payload: CollectedFamilyCachePayload[ShapeItemT]) -> bytes:
+        """The one encoding of a family entry: relocated when portable, else
+        bound to this checkout. `read_payload` is its only reader."""
+
+        if self.relocation is None:
+            return pickle.dumps(payload, protocol=pickle.HIGHEST_PROTOCOL)
+        data, portable = self.relocation.portable_dumps(payload)
+        if portable:
+            return data
+        return pickle.dumps(
+            replace(payload, checkout_root=self.relocation.root_texts[0]),
+            protocol=pickle.HIGHEST_PROTOCOL,
+        )
+
+    def read_payload(self, path: Path) -> object:
+        with path.open("rb") as handle:
+            if self.relocation is None:
+                return pickle.load(handle)
+            return self.relocation.load(handle)
+
     @ScanCache.cached
     def identity(
         self,
@@ -2568,15 +2588,9 @@ class CollectedFamilyCacheContext:
             return None
         identity = self.identity(family, demand_signature)
         try:
-            with _collected_family_cache_path(
-                self.family_cache_dir,
-                identity,
-            ).open("rb") as handle:
-                payload = (
-                    pickle.load(handle)
-                    if self.relocation is None
-                    else self.relocation.load(handle)
-                )
+            payload = self.read_payload(
+                _collected_family_cache_path(self.family_cache_dir, identity)
+            )
         except (
             FileNotFoundError,
             OSError,
@@ -2649,15 +2663,7 @@ class CollectedFamilyCacheContext:
             ast_free=True,
         )
         try:
-            if self.relocation is None:
-                payload_bytes = pickle.dumps(payload, protocol=pickle.HIGHEST_PROTOCOL)
-            else:
-                payload_bytes, portable = self.relocation.portable_dumps(payload)
-                if not portable:
-                    payload_bytes = pickle.dumps(
-                        replace(payload, checkout_root=self.relocation.root_texts[0]),
-                        protocol=pickle.HIGHEST_PROTOCOL,
-                    )
+            payload_bytes = self.payload_bytes(payload)
             payload_max_bytes = (
                 family.cache_payload_max_bytes
                 if family.cache_payload_max_bytes is not None

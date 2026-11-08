@@ -2027,21 +2027,21 @@ def test_uncertified_family_cache_payload_is_invalidated(
     module = parse_python_modules(package_root, cache_dir=cache_dir)[0]
     expected_items = collect_family_items(module, BuilderCallShapeFamily)
     payload_path = next((cache_dir / "collected-family").glob("*.pickle"))
-    payload = pickle.loads(payload_path.read_bytes())
+    entries = module.collected_family_cache
+    payload = entries.read_payload(payload_path)
     payload_path.write_bytes(
-        pickle.dumps(
+        entries.payload_bytes(
             ast_tools_module.CollectedFamilyCachePayload(
                 identity=payload.identity,
                 items=payload.items,
                 ast_free=False,
-            ),
-            protocol=pickle.HIGHEST_PROTOCOL,
+            )
         )
     )
 
     reloaded_module = parse_python_modules(package_root, cache_dir=cache_dir)[0]
     actual_items = collect_family_items(reloaded_module, BuilderCallShapeFamily)
-    certified_payload = pickle.loads(payload_path.read_bytes())
+    certified_payload = entries.read_payload(payload_path)
 
     assert actual_items == expected_items
     assert certified_payload.ast_free is True
@@ -2074,15 +2074,16 @@ def test_collected_family_can_opt_into_a_larger_bounded_cache_payload(
     )
     monkeypatch.setattr(BuilderCallShapeFamily, "cache_payload_max_bytes", None)
     measured_sizes = []
-    serialize = pickle.dumps
+    encode = ast_tools_module.CollectedFamilyCacheContext.payload_bytes
 
-    def measure_payload(payload, *arguments, **keywords):
-        serialized = serialize(payload, *arguments, **keywords)
-        if isinstance(payload, ast_tools_module.CollectedFamilyCachePayload):
-            measured_sizes.append(len(serialized))
+    def measure_payload(context, payload):
+        serialized = encode(context, payload)
+        measured_sizes.append(len(serialized))
         return serialized
 
-    monkeypatch.setattr(pickle, "dumps", measure_payload)
+    monkeypatch.setattr(
+        ast_tools_module.CollectedFamilyCacheContext, "payload_bytes", measure_payload
+    )
     module = parse_python_modules(package_root, cache_dir=cache_dir)[0]
     assert collect_family_items(module, BuilderCallShapeFamily)
     family_cache_dir = cache_dir / "collected-family"
@@ -3595,7 +3596,7 @@ def test_mixed_projection_shard_uses_only_python_ast(
                 items = projection_source.load_items(family)
                 assert items is not None
                 assert projection_source.load_content_signature(family) == (
-                    ast_tools_module.collected_family_items_content_signature(items)
+                    projection_source.items_content_signature(items)
                 )
             assert (
                 projection_source.load_content_signature(
