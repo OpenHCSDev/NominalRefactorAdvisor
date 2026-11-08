@@ -7494,6 +7494,50 @@ def test_relocation_refuses_a_module_object_reader_it_cannot_rewrite(
     assert message in report.message
 
 
+def test_relocation_redirects_readers_of_a_source_import_it_removes(
+    tmp_path: Path,
+) -> None:
+    for relative_path, source in {
+        "pkg/__init__.py": "",
+        "pkg/helpers.py": "class Helper:\n    value = 3\n",
+        "pkg/source.py": "from .helpers import Helper\n\n\n"
+        "class Kept:\n    pass\n\n\nclass Moved:\n    value = Helper.value\n",
+        "pkg/destination.py": "",
+        "pkg/reader.py": "import pkg.source as s\nfrom pkg.other import other\n\n"
+        "value = s.Helper.value + other\n",
+        "pkg/other.py": "from pkg.source import Helper\n\nother = Helper.value\n",
+    }.items():
+        _write_module(tmp_path, relative_path, source)
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    operation = RelocateSymbolsToModuleOperation(
+        target=SourceRewriteTarget(file_path=(tmp_path / "pkg/source.py").as_posix()),
+        symbol_qualnames=("Moved",),
+        destination_path=(tmp_path / "pkg/destination.py").as_posix(),
+    )
+
+    simulation = RefactorRecipe("relocate-removed-import").with_operation(
+        operation
+    ).simulate(snapshot)
+
+    assert simulation.is_clean
+    rewritten = simulation.simulation.rewritten_sources
+    assert "Helper" not in rewritten[(tmp_path / "pkg/source.py").as_posix()]
+    simulation.apply()
+    imported = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "from pkg.reader import value; from pkg.destination import Moved; "
+            "assert value == 6 and Moved.value == 3",
+        ],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert imported.returncode == 0, imported.stderr
+
+
 def test_refactor_recipe_relocates_symbol_and_rewrites_consumers(
     tmp_path: Path,
 ) -> None:

@@ -543,7 +543,10 @@ class SourceTopLevelSymbolClosureMovePlan(SourceTopLevelSymbolClosureMoveCarrier
             ),
             *ModuleNameRedirect(
                 source_path=request.source_path,
-                destinations={name: request.destination_path for name in moved_symbol_names},
+                destinations={
+                    **cls._removed_binding_owners(context, report),
+                    **{name: request.destination_path for name in moved_symbol_names},
+                },
             ).consumer_edits(
                 context,
                 excluded_paths=frozenset((request.source_path, request.destination_path)),
@@ -560,6 +563,29 @@ class SourceTopLevelSymbolClosureMovePlan(SourceTopLevelSymbolClosureMoveCarrier
             consumer_edits=consumer_edits,
             rationale=request.rationale,
         )
+
+    @staticmethod
+    def _removed_binding_owners(
+        context: CodemodSelectorContext,
+        report: ModuleMoveDependencyReport,
+    ) -> dict[str, str]:
+        """Source imports the move removes, each to the module declaring it, so a
+        reader that reached the name through the source reads it from its owner.
+        A name declared outside the index has no owner path and is left alone."""
+
+        return {
+            dependency.name: owner
+            for dependency in report.source_removal_dependencies
+            if dependency.identity.imported_name == dependency.name
+            if (
+                owner := ImportedNameOwner.declaring_path(
+                    context,
+                    dependency.identity.module_name,
+                    dependency.name,
+                )
+            )
+            is not None
+        }
 
     @staticmethod
     def _destination_self_binding_removals(
@@ -1360,6 +1386,52 @@ class ExtractSymbolClosureToNewModuleOperation(
 
 
 @dataclass(frozen=True)
+class ImportedNameOwner:
+    """The indexed module that declares an imported name, followed through the
+    modules that only re-import it; None when the name comes from outside the index."""
+
+    @staticmethod
+    def declaring_path(
+        context: CodemodSelectorContext,
+        module_name: str | None,
+        name: str,
+    ) -> str | None:
+        """The indexed module declaring `name`, through modules that only rebind it."""
+
+        import_graph = context.module_import_graph
+        seen: set[str] = set()
+        while module_name is not None and module_name not in seen:
+            seen.add(module_name)
+            source_file = import_graph.unique_source_file_for_module_name(module_name)
+            if source_file is None:
+                return None
+            table = ModuleSymbolTable(
+                file_path=source_file.file_path,
+                source=context.sources_by_file_path[source_file.file_path],
+                module=context.module_nodes_by_file_path[source_file.file_path],
+            )
+            if name in table.top_level_names:
+                return source_file.file_path
+            rebinding = next(
+                (
+                    node
+                    for scope in ModuleImportScope
+                    for node in scope.import_statements(table.module)
+                    if isinstance(node, ast.ImportFrom)
+                    and any(alias.name == name and alias.asname in (None, name) for alias in node.names)
+                ),
+                None,
+            )
+            if rebinding is None:
+                return source_file.file_path
+            module_name = source_file.module_path_identity.resolve_import_from_module(
+                imported_module=rebinding.module,
+                level=rebinding.level,
+            )
+        return None
+
+
+@dataclass(frozen=True)
 class _DissolvedModuleBindings:
     """What a module that declares nothing still binds: each imported name and
     the indexed module that declares it, following re-export chains."""
@@ -1384,7 +1456,7 @@ class _DissolvedModuleBindings:
         owners: dict[str, str] = {}
         foreign: set[str] = set()
         for name, binding_module in cls._imported_names(context, source_path, module):
-            owner = cls._declaring_path(context, binding_module, name)
+            owner = ImportedNameOwner.declaring_path(context, binding_module, name)
             if owner is None:
                 foreign.add(name)
             else:
@@ -1443,46 +1515,6 @@ class _DissolvedModuleBindings:
                             "its consumers cannot import that name from an owner"
                         )
                     yield alias.name, imported_module
-
-    @staticmethod
-    def _declaring_path(
-        context: CodemodSelectorContext,
-        module_name: str | None,
-        name: str,
-    ) -> str | None:
-        """The indexed module declaring `name`, through modules that only rebind it."""
-
-        import_graph = context.module_import_graph
-        seen: set[str] = set()
-        while module_name is not None and module_name not in seen:
-            seen.add(module_name)
-            source_file = import_graph.unique_source_file_for_module_name(module_name)
-            if source_file is None:
-                return None
-            table = ModuleSymbolTable(
-                file_path=source_file.file_path,
-                source=context.sources_by_file_path[source_file.file_path],
-                module=context.module_nodes_by_file_path[source_file.file_path],
-            )
-            if name in table.top_level_names:
-                return source_file.file_path
-            rebinding = next(
-                (
-                    node
-                    for scope in ModuleImportScope
-                    for node in scope.import_statements(table.module)
-                    if isinstance(node, ast.ImportFrom)
-                    and any(alias.name == name and alias.asname in (None, name) for alias in node.names)
-                ),
-                None,
-            )
-            if rebinding is None:
-                return source_file.file_path
-            module_name = source_file.module_path_identity.resolve_import_from_module(
-                imported_module=rebinding.module,
-                level=rebinding.level,
-            )
-        return None
 
 
 @dataclass(frozen=True)
