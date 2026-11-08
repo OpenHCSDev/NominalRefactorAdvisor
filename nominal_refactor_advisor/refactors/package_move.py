@@ -39,7 +39,7 @@ from .module_move import (
 from ..refactor_concepts import PackageMoveConcept
 from .finding_recipes import (
     PrimaryEvidenceActionKeysMixin,
-    SelfDeclaredRecipeSynthesizer,
+    FindingRecipeSynthesizer,
 )
 
 _ROW = re.compile(r"^\s*\|\s*`(?P<package>[A-Za-z_][\w./]*)`\s*\|(?P<owners>[^|]*)\|")
@@ -328,7 +328,7 @@ class ClusterLayers:
 
 class PackageMoveFindingRecipeSynthesizer(
     PrimaryEvidenceActionKeysMixin,
-    SelfDeclaredRecipeSynthesizer,
+    FindingRecipeSynthesizer,
     PackageMoveConcept,
 ):
     """Relocate a flat module's names into its declared package, then dissolve it."""

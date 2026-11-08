@@ -53,6 +53,7 @@ from ..codemod_declaration_source import (
 )
 from ..codemod_paths import SourcePathResolutionAuthority
 from ..codemod_runtime import (
+    DelegatedRecipeDeclaration,
     CodemodSourceSnapshot,
     ExecutableRecipeEvaluation,
     FindingRecipeEvaluation,
@@ -975,6 +976,7 @@ class RepeatedBuilderAuthorityRecipeParts(AuthorityClaimCarrier):
 
 
 class RepeatedBuilderCallFindingRecipeSynthesizer(
+    DelegatedRecipeDeclaration,
     FindingRecipeSynthesizer,
     ConstructorKwargCollapseConcept,
 ):

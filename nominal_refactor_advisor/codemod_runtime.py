@@ -2821,6 +2821,28 @@ class FindingRecipePlanSimulation(
         return self.document_simulation.simulation_payload()
 
 
+class DelegatedRecipeDeclaration(ABC):
+    """An evaluator whose findings each go to one of several derivations; only
+    evaluating a finding says which declaration owns it."""
+
+    @abstractmethod
+    def evaluate_recipe_for_finding(
+        self,
+        finding: RefactorFinding,
+        context: CodemodSelectorContext | None = None,
+    ) -> FindingRecipeEvaluation:
+        raise NotImplementedError
+
+    def evaluation_declaration_for_finding(
+        self,
+        finding: RefactorFinding,
+        context: CodemodSelectorContext,
+    ) -> type[object]:
+        return self.evaluate_recipe_for_finding(
+            finding, context
+        ).required_evaluation_declaration_type
+
+
 class FindingRecipeEvaluator(AnswerFreeDeclaration, ABC):
     """Declaration-owned proof evaluation for one detector finding.
 
@@ -2868,15 +2890,12 @@ class FindingRecipeEvaluator(AnswerFreeDeclaration, ABC):
         finding: RefactorFinding,
         context: CodemodSelectorContext,
     ) -> type[object]:
-        """The declaration that owns this finding's evaluation.
+        """The declaration that owns this finding's evaluation: the evaluator
+        itself. One that hands a finding to one of several derivations
+        inherits DelegatedRecipeDeclaration and answers by evaluating."""
 
-        An evaluator that hands a finding to one of several derivations only
-        knows which by evaluating it.
-        """
-
-        return self.evaluate_recipe_for_finding(
-            finding, context
-        ).required_evaluation_declaration_type
+        del finding, context
+        return type(self)
 
     def rejected_evaluation(self, reason: str) -> RejectedRecipeEvaluation:
         return RejectedRecipeEvaluation(
