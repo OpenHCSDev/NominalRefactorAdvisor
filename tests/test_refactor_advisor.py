@@ -7441,6 +7441,41 @@ def _relocate_moved_with_consumer(tmp_path: Path, consumer: dict[str, str]):
     return operation, snapshot
 
 
+def test_relocation_redirects_a_name_read_through_an_import_it_removes(
+    tmp_path: Path,
+) -> None:
+    """The moved class took the source's last use of an imported helper, so the
+    source's import goes; a module that imported the helper through the source
+    now imports it from where it is declared."""
+
+    operation, snapshot = _relocate_moved_with_consumer(
+        tmp_path,
+        {
+            "pkg/helpers.py": "class Helper:\n    value = 3\n",
+            "pkg/source.py": "from .helpers import Helper\n\n\nclass Moved(Helper):\n    pass\n",
+            "pkg/reader.py": "from .source import Helper\n\nvalue = Helper.value\n",
+        },
+    )
+
+    simulation = RefactorRecipe("relocate-removing-import").with_operation(operation).simulate(snapshot)
+
+    assert simulation.is_clean
+    simulation.apply()
+    imported = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "from pkg.reader import value; import pkg.source as source; "
+            "assert value == 3 and not hasattr(source, 'Helper')",
+        ],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert imported.returncode == 0, imported.stderr
+
+
 def test_relocation_extracts_a_declaration_its_source_still_reads(tmp_path: Path) -> None:
     """A lower layer moves out: the source keeps reading the moved class through a
     plain import of the destination, and other importers are redirected."""

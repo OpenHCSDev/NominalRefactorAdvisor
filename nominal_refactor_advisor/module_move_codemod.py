@@ -598,7 +598,10 @@ class SourceTopLevelSymbolClosureMovePlan(SourceTopLevelSymbolClosureMoveCarrier
             ),
             *ModuleNameRedirect(
                 source_path=request.source_path,
-                destinations={name: request.destination_path for name in moved_symbol_names},
+                destinations={
+                    **{name: request.destination_path for name in moved_symbol_names},
+                    **cls._removed_import_origins(context.module_import_graph, report),
+                },
             ).consumer_edits(
                 context,
                 excluded_paths=frozenset((request.source_path, request.destination_path)),
@@ -657,6 +660,28 @@ class SourceTopLevelSymbolClosureMovePlan(SourceTopLevelSymbolClosureMoveCarrier
                         (ImportFromModuleName.from_node(statement).source, names, scope)
                     )
         return tuple(removals)
+
+    @staticmethod
+    def _removed_import_origins(
+        import_graph: SourceModuleImportGraph,
+        report: ModuleMoveDependencyReport,
+    ) -> dict[str, str]:
+        """Each import the move removes from the source, by the scanned file that
+        declares it: a module that read the name through the source reads it from
+        there instead. An aliased binding or an origin outside the scan is not
+        redirected."""
+
+        return {
+            dependency.name: origin.file_path
+            for dependency in report.source_removal_dependencies
+            if dependency.identity.imported_name == dependency.name
+            for origin in (
+                import_graph.unique_source_file_for_module_name(
+                    dependency.identity.module_name
+                ),
+            )
+            if origin is not None
+        }
 
     @staticmethod
     def _validate_destination(
