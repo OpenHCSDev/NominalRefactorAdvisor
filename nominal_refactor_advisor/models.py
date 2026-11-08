@@ -38,6 +38,7 @@ from .json_reports import (
 )
 from .patterns import PatternId
 from .semantic_description_length import CompressionCertificate
+from .cache_checkout import checkout_identity_text
 from .source_identity import source_path_text
 
 if TYPE_CHECKING:
@@ -245,9 +246,10 @@ class SourceLocation(SourceLineReference, SemanticRecord):
 
     @property
     def subject_key(self) -> str:
-        """The file and symbol this evidence sits in, without its line."""
+        """The file and symbol this evidence sits in, without its line; the file
+        as it sits in its checkout, so every worktree names one finding alike."""
 
-        return f"{self.file_path}::{self.symbol}"
+        return f"{checkout_identity_text(self.file_path)}::{self.symbol}"
 
 @dataclass(frozen=True)
 class SourceLocationZipDescriptorShape(SemanticRecord):
@@ -262,7 +264,8 @@ def stable_source_location_id(source_location: SourceLocation) -> str:
     """Return a compact, repeatable id for one source evidence coordinate."""
 
     payload = (
-        f"{source_location.file_path}:{source_location.line}:{source_location.symbol}"
+        f"{checkout_identity_text(source_location.file_path)}:"
+        f"{source_location.line}:{source_location.symbol}"
     )
     return hashlib.blake2s(payload.encode("utf-8"), digest_size=5).hexdigest()
 

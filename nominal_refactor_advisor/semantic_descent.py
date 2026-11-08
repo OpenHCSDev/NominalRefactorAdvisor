@@ -3973,12 +3973,7 @@ class SemanticDescentGraphCacheDirAuthority:
     def cache_dir(self) -> Path | None:
         if not self.modules:
             return None
-        common_root = Path(
-            os.path.commonpath(
-                tuple(str(module.path.resolve().parent) for module in self.modules)
-            )
-        )
-        return default_semantic_descent_cache_dir(common_root)
+        return default_semantic_descent_cache_dir()
 
 
 @dataclass(frozen=True)

@@ -23,7 +23,7 @@ import tokenize
 from abc import ABC, abstractmethod
 from collections.abc import Container, Iterable, Iterator, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass, field, fields, is_dataclass
+from dataclasses import dataclass, field, fields, is_dataclass, replace
 from enum import Enum, StrEnum
 from fnmatch import fnmatchcase
 from functools import cached_property
@@ -44,6 +44,7 @@ from .ast_projection import (
     AstNameFamily,
     ExpressionReference,
 )
+from .cache_checkout import CheckoutRelocation
 from .cache_paths import ParseCacheDirectory, default_parse_cache_dir
 from .case_root import Case
 from .collection_algebra import (
@@ -2048,6 +2049,8 @@ class CollectedFamilyCachePayload(Generic[ShapeItemT]):
     identity: CollectedFamilyCacheIdentity
     items: tuple[ShapeItemT, ...]
     ast_free: bool
+    checkout_root: str | None = None
+    """The checkout these items still spell after relocation; None when portable."""
 
 
 def _registry_member_key(registered_type: type[_TRegistered]) -> tuple[str, int, str]:
@@ -2351,12 +2354,34 @@ def _collected_family_content_signature_path(
     return cache_dir / f"{identity.cache_token}.signature"
 
 
-def collected_family_items_content_signature(items: tuple[object, ...]) -> str:
-    payload = pickle.dumps(
-        _stable_collected_family_cache_value(items),
-        protocol=pickle.HIGHEST_PROTOCOL,
+def collected_family_items_content_signature(
+    items: tuple[object, ...],
+    relocation: CheckoutRelocation | None = None,
+) -> str:
+    """Content identity of collected items; checkout paths relocated, so every
+    checkout of the same content derives the same signature."""
+
+    stable = _stable_collected_family_cache_value(items)
+    payload = (
+        pickle.dumps(stable, protocol=pickle.HIGHEST_PROTOCOL)
+        if relocation is None
+        else relocation.portable_dumps(stable)[0]
     )
     return hashlib.blake2s(payload, digest_size=16).hexdigest()
+
+
+def _replace_atomically(path: Path, data: bytes) -> None:
+    """Write to a private temporary file, then rename: a concurrent reader sees
+    the old entry or the new one, never a partial write."""
+
+    temp_path = path.with_name(f".{path.name}.{os.getpid()}.{id(data):x}.tmp")
+    try:
+        with temp_path.open("wb") as handle:
+            handle.write(data)
+        os.replace(temp_path, path)
+    except BaseException:
+        temp_path.unlink(missing_ok=True)
+        raise
 
 
 def _stable_collected_family_cache_value(value: object) -> object:
@@ -2406,12 +2431,13 @@ def _store_collected_family_content_signature(
     cache_dir: Path,
     identity: CollectedFamilyCacheIdentity,
     items: tuple[object, ...],
+    relocation: CheckoutRelocation | None,
 ) -> str | None:
     try:
-        signature = collected_family_items_content_signature(items)
-        _collected_family_content_signature_path(cache_dir, identity).write_text(
-            signature,
-            encoding="ascii",
+        signature = collected_family_items_content_signature(items, relocation)
+        _replace_atomically(
+            _collected_family_content_signature_path(cache_dir, identity),
+            signature.encode("ascii"),
         )
         return signature
     except (OSError, pickle.PickleError, TypeError, AttributeError):
@@ -2463,6 +2489,24 @@ class CollectedFamilyCacheContext:
     def resolved_path_text(self) -> str:
         return str(self.path.resolve())
 
+    @cached_property
+    def relocation(self) -> CheckoutRelocation | None:
+        """The checkout this module's derived state is relative to, if any."""
+
+        return CheckoutRelocation.containing(self.path)
+
+    @cached_property
+    def identity_path_text(self) -> str:
+        """Where the module sits in its checkout: entries are shared by every
+        checkout of the same content, never keyed by where it is checked out."""
+
+        if self.relocation is None:
+            return self.resolved_path_text
+        return self.relocation.relative_text(self.path)
+
+    def items_content_signature(self, items: tuple[object, ...]) -> str:
+        return collected_family_items_content_signature(items, self.relocation)
+
     @ScanCache.cached
     def identity(
         self,
@@ -2470,7 +2514,7 @@ class CollectedFamilyCacheContext:
         demand_signature: str = "",
     ) -> CollectedFamilyCacheIdentity:
         identity = CollectedFamilyCacheIdentity(
-            path=self.resolved_path_text,
+            path=self.identity_path_text,
             module_name=self.module_name,
             source_signature=self.source_signature,
             family_schema=CollectedFamilySchemaIdentity.from_family(family),
@@ -2528,7 +2572,11 @@ class CollectedFamilyCacheContext:
                 self.family_cache_dir,
                 identity,
             ).open("rb") as handle:
-                payload = pickle.load(handle)
+                payload = (
+                    pickle.load(handle)
+                    if self.relocation is None
+                    else self.relocation.load(handle)
+                )
         except (
             FileNotFoundError,
             OSError,
@@ -2548,6 +2596,11 @@ class CollectedFamilyCacheContext:
             identity_matches = False
         if not identity_matches:
             return None
+        if payload.checkout_root is not None and (
+            self.relocation is None
+            or payload.checkout_root not in self.relocation.root_texts
+        ):
+            return None
         if not all(isinstance(item, family.item_type) for item in payload.items):
             return None
         signature_path = _collected_family_content_signature_path(
@@ -2559,6 +2612,7 @@ class CollectedFamilyCacheContext:
                 self.family_cache_dir,
                 identity,
                 payload.items,
+                self.relocation,
             )
         if payload.ast_free is not True:
             return None
@@ -2595,7 +2649,15 @@ class CollectedFamilyCacheContext:
             ast_free=True,
         )
         try:
-            payload_bytes = pickle.dumps(payload, protocol=pickle.HIGHEST_PROTOCOL)
+            if self.relocation is None:
+                payload_bytes = pickle.dumps(payload, protocol=pickle.HIGHEST_PROTOCOL)
+            else:
+                payload_bytes, portable = self.relocation.portable_dumps(payload)
+                if not portable:
+                    payload_bytes = pickle.dumps(
+                        replace(payload, checkout_root=self.relocation.root_texts[0]),
+                        protocol=pickle.HIGHEST_PROTOCOL,
+                    )
             payload_max_bytes = (
                 family.cache_payload_max_bytes
                 if family.cache_payload_max_bytes is not None
@@ -2604,15 +2666,15 @@ class CollectedFamilyCacheContext:
             if len(payload_bytes) > payload_max_bytes:
                 return None
             self.family_cache_dir.mkdir(parents=True, exist_ok=True)
-            with _collected_family_cache_path(
-                self.family_cache_dir,
-                identity,
-            ).open("wb") as handle:
-                handle.write(payload_bytes)
+            _replace_atomically(
+                _collected_family_cache_path(self.family_cache_dir, identity),
+                payload_bytes,
+            )
             return _store_collected_family_content_signature(
                 self.family_cache_dir,
                 identity,
                 items,
+                self.relocation,
             )
         except (OSError, pickle.PickleError, TypeError, AttributeError):
             return None
@@ -2658,8 +2720,8 @@ class CollectedFamilyCacheContext:
             )
         bundle_payload = repr(
             (
-                "collected-family-bundle-v4",
-                self.resolved_path_text,
+                "collected-family-bundle-v5",
+                self.identity_path_text,
                 self.module_name,
                 self.source_signature,
                 PythonVersion.running(),
@@ -2681,7 +2743,7 @@ class CollectedFamilyCacheContext:
     def _store_bundle_marker(marker_path: Path) -> None:
         try:
             marker_path.parent.mkdir(parents=True, exist_ok=True)
-            marker_path.write_bytes(b"complete-v4\n")
+            _replace_atomically(marker_path, b"complete-v4\n")
         except OSError:
             pass
 
@@ -3043,7 +3105,7 @@ class PythonModuleRootParser(PythonModuleParseContext):
         resolved_cache_dir = (
             cache_dir
             if cache_dir is not None or not use_parse_cache
-            else default_parse_cache_dir(root)
+            else default_parse_cache_dir()
         )
         active_source_policy = source_policy or PythonSourcePathPolicy()
         return cls(
