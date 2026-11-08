@@ -1,14 +1,18 @@
 from __future__ import annotations
 
 from abc import ABC
+from typing import ClassVar
 
 from .collection_algebra import UniqueIdentityIndexAuthority
 from .registry_identity import class_name_registry_key
 from .semantic_match import loaded_nominal_descendants
+from .stage_proof import OperationCertifiedStages, RescannedStages, StageProof
 
 
 class RefactorConcept(ABC):
     """Nominal refactor semantics inherited by executable declarations."""
+
+    stage_proof: ClassVar[type[StageProof]] = RescannedStages
 
     @classmethod
     def concept_key(cls) -> str:
@@ -170,6 +174,8 @@ class DeclarationReferenceConcept(NominalBoundaryConcept):
 
 class PackageMoveConcept(RefactorConcept):
     """Move each flat module into the package a destination table declares for it."""
+
+    stage_proof = OperationCertifiedStages
 
     @classmethod
     def trajectory_depth(cls, target_count: int, declared: int) -> int:
