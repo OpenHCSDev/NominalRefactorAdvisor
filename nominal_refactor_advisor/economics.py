@@ -27,7 +27,10 @@ from .json_reports import (
 )
 
 
-_DEFAULT_SCAN_BUDGET_SECONDS = 20.0
+_DEFAULT_SCAN_BUDGET_SECONDS = 600.0
+"""The proof's scans must fit the budget that binds an agent: its 10-minute tool
+cap. 20 s failed every cold scan (NRA on itself takes 94 s cold, 147 s with
+tests, on 4 cores, 11-08)."""
 
 
 @dataclass(frozen=True)
