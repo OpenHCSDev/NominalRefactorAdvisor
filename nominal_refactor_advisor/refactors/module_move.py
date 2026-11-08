@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+import builtins
 import re
 import tomllib
 from abc import (
@@ -79,7 +80,7 @@ from ..codemod_source_edits import (
 from ..codemod_spacing import DestinationInsertionSpacing
 from ..declaration_dependencies import DeclarationDependencyProjection
 from ..json_reports import DataclassJsonReport
-from ..lexical_bindings import ImportFromModuleName
+from ..lexical_bindings import LEXICAL_SCOPE_BINDING_AUTHORITY, ImportFromModuleName
 from ..public_exports import (
     CompactModulePublicExportContract,
     module_public_export_contract,
@@ -2672,40 +2673,140 @@ class _ScriptEntry:
             cls(cast(ast.If, statement)) for statement in module.body if cls.is_guard(statement)
         )
 
-    def successor_edit(
+    def successor_edits(
         self,
         context: CodemodSelectorContext,
         source_path: str,
         owners: Mapping[str, str],
         successor_path: str | None,
-    ) -> SourceInsertion:
+    ) -> tuple[NominalSourceEdit, ...]:
+        """The block at the end of the successor, and the imports it needs there.
+        The names it runs are its loads, less what it binds itself and the
+        builtins: one the successor declares needs nothing, one another indexed
+        module declares is imported from it, and one the source imports from
+        outside the index travels as that import. Any other name refuses."""
+
         where = f"{source_path!r}:{self.statement.lineno}"
         if successor_path is None:
             raise ValueError(f"{where} runs the module as a script; declare its successor_path")
-        read = {
+        source_module = context.module_nodes_by_file_path[source_path]
+        successor_module = context.module_nodes_by_file_path[successor_path]
+        if _ScriptEntry.of(successor_module):
+            raise ValueError(f"{successor_path!r} already runs as a script; {where} cannot join it")
+        import_graph = context.module_import_graph
+        source_identity = import_graph.source_file_for_path(source_path).module_path_identity
+        successor_identity = import_graph.source_file_for_path(successor_path).module_path_identity
+        source_imports = _ImportedBindings.of(source_module, source_identity)
+        successor_imports = _ImportedBindings.of(successor_module, successor_identity)
+        imports: list[ModuleImportMutation] = []
+        unbound: list[str] = []
+        for name in sorted(self.runs(source_module)):
+            if owners.get(name) == successor_path:
+                continue
+            if name in owners:
+                needed = _ImportedBinding(
+                    import_graph.module_name_for_file_path(owners[name]) or "", name
+                )
+                source = ImportFromSource(
+                    module_name=ModuleImportScope.RUNTIME.required_module_reference(
+                        import_graph,
+                        importing_file_path=successor_path,
+                        imported_file_path=owners[name],
+                        imported_name=name,
+                    ),
+                    aliases=(ast.alias(name=name),),
+                ).source
+            elif name in source_imports:
+                needed = source_imports[name]
+                source = needed.source(name)
+            else:
+                unbound.append(name)
+                continue
+            if name in successor_imports:
+                if successor_imports[name] != needed:
+                    raise ValueError(
+                        f"{where} runs {name!r}, which {successor_path!r} binds to another object"
+                    )
+                continue
+            imports.append(
+                ModuleImportMutation.from_source(
+                    file_path=successor_path,
+                    import_source=source,
+                    rationale=f"The script entry moved from {source_path!r} runs {name!r}.",
+                )
+            )
+        if unbound:
+            raise ValueError(
+                f"{where} runs {unbound!r} as a script, which the successor "
+                f"{successor_path!r} does not declare"
+            )
+        successor_source = context.sources_by_file_path[successor_path]
+        return (
+            *imports,
+            SourceInsertion(
+                file_path=successor_path,
+                insertion_line=len(successor_source.splitlines()) + 1,
+                inserted_lines=SourceTargetEditor.source_lines(
+                    "\n\n"
+                    + ast.get_source_segment(context.sources_by_file_path[source_path], self.statement)
+                    + "\n"
+                ),
+                rationale=f"Running {source_path!r} as a script now runs {successor_path!r}.",
+            ),
+        )
+
+    def runs(self, module: ast.Module) -> frozenset[str]:
+        """The names the block reads from the module: its loads, less the names it
+        binds itself and the builtins the module does not shadow."""
+
+        loads = {
             node.id
             for node in ast.walk(self.statement)
             if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load)
-        } - {"__name__"}
-        foreign = sorted(name for name in read if owners.get(name) != successor_path)
-        if foreign:
-            raise ValueError(
-                f"{where} runs {foreign!r} as a script, which the successor "
-                f"{successor_path!r} does not declare"
+        }
+        bound = LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(self.statement.body)
+        module_bound = LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(module.body)
+        builtin = frozenset(dir(builtins)) - module_bound
+        return frozenset(loads - bound - builtin - {"__name__"})
+
+
+@dataclass(frozen=True)
+class _ImportedBinding:
+    """What a top-level import binds a name to: a module, or a member of one."""
+
+    module: str
+    member: str | None = None
+
+    def source(self, name: str) -> str:
+        if self.member is None:
+            alias = self.module if name == self.module.partition(".")[0] else f"{self.module} as {name}"
+            return f"import {alias}\n"
+        alias = self.member if name == self.member else f"{self.member} as {name}"
+        return f"from {self.module} import {alias}\n"
+
+
+class _ImportedBindings:
+    """A module's top-level runtime imports, by the name each binds, resolved to
+    absolute modules."""
+
+    @staticmethod
+    def of(module: ast.Module, identity: PythonModulePathIdentity) -> Mapping[str, _ImportedBinding]:
+        bindings: dict[str, _ImportedBinding] = {}
+        for statement in ModuleImportScope.RUNTIME.import_statements(module):
+            if isinstance(statement, ast.Import):
+                for alias in statement.names:
+                    if alias.asname is None:
+                        head = alias.name.partition(".")[0]
+                        bindings[head] = _ImportedBinding(head)
+                    else:
+                        bindings[alias.asname] = _ImportedBinding(alias.name)
+                continue
+            resolved = identity.resolve_import_from_module(
+                imported_module=statement.module, level=statement.level
             )
-        if _ScriptEntry.of(context.module_nodes_by_file_path[successor_path]):
-            raise ValueError(f"{successor_path!r} already runs as a script; {where} cannot join it")
-        successor_source = context.sources_by_file_path[successor_path]
-        return SourceInsertion(
-            file_path=successor_path,
-            insertion_line=len(successor_source.splitlines()) + 1,
-            inserted_lines=SourceTargetEditor.source_lines(
-                "\n\n"
-                + ast.get_source_segment(context.sources_by_file_path[source_path], self.statement)
-                + "\n"
-            ),
-            rationale=f"Running {source_path!r} as a script now runs {successor_path!r}.",
-        )
+            for alias in statement.names:
+                bindings[alias.asname or alias.name] = _ImportedBinding(str(resolved), alias.name)
+        return bindings
 
 
 class _GluedModuleName:
@@ -3354,10 +3455,11 @@ class DissolveModuleOperation(RetainedCallOperation):
             ),
             *strings.edits(context),
             *(
-                entry.successor_edit(
+                edit
+                for entry in _ScriptEntry.of(context.module_nodes_by_file_path[strings.source_path])
+                for edit in entry.successor_edits(
                     context, strings.source_path, bindings.owners, strings.successor_path
                 )
-                for entry in _ScriptEntry.of(context.module_nodes_by_file_path[strings.source_path])
             ),
         )
 

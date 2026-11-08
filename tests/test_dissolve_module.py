@@ -859,15 +859,75 @@ def test_a_whole_module_moved_into_a_package_keeps_its_docstring_and_runs_as_a_s
     assert completed.stdout == "Runs the worker.\n", completed.stderr
 
 
-def test_a_script_entry_that_runs_a_name_the_successor_does_not_declare_refuses(
+def test_a_script_entry_imports_what_another_module_declares_and_refuses_an_unbound_name(
     tmp_path: Path,
 ) -> None:
     _write(tmp_path, "pkg/__init__.py", "")
     _write(tmp_path, "pkg/owner.py", "def main() -> int:\n    return 0\n")
     _write(tmp_path, "pkg/other.py", "def unrelated() -> int:\n    return 1\n")
     _write(tmp_path, "pkg/hub.py", 'from .owner import main\n\nif __name__ == "__main__":\n    main()\n')
+    simulation = (
+        RefactorRecipe("dissolve-hub")
+        .with_operation(_dissolve(tmp_path, "pkg/hub.py", "pkg/other.py"))
+        .simulate(_snapshot(tmp_path))
+    )
+    assert simulation.is_clean
+    other = simulation.simulation.rewritten_sources[(tmp_path / "pkg/other.py").as_posix()]
+    assert "from .owner import main\n" in other
+    assert other.endswith('if __name__ == "__main__":\n    main()\n')
 
-    with pytest.raises(ValueError, match=r"runs \['main'\] as a script, which the successor"):
+    _write(tmp_path, "pkg/hub.py", 'from .owner import main\n\nif __name__ == "__main__":\n    missing(main)\n')
+    with pytest.raises(ValueError, match=r"runs \['missing'\] as a script, which the successor"):
         RefactorRecipe("dissolve-hub").with_operation(
             _dissolve(tmp_path, "pkg/hub.py", "pkg/other.py")
         ).simulate(_snapshot(tmp_path))
+
+def test_a_script_entry_takes_its_locals_builtins_and_imports_with_it(tmp_path: Path) -> None:
+    """native_build_inputs' block binds locals, calls builtins and reads the
+    source's own imports: its locals and builtins need nothing, and the imports
+    it reads travel into the successor beside the declarations it runs."""
+    _write(tmp_path, "pkg/__init__.py", "")
+    _write(tmp_path, "pkg/installer/__init__.py", "")
+    _write(
+        tmp_path,
+        "pkg/inputs.py",
+        "import sys\nfrom pathlib import Path\n\n\n"
+        "class Inputs:\n    def __init__(self, root: Path) -> None:\n        self.root = root\n\n\n"
+        "def pin(path: Path) -> str:\n    return path.name\n\n\n"
+        'if __name__ == "__main__":\n'
+        "    inputs = Inputs(Path(sys.argv[1]))\n"
+        '    manifest = inputs.root / "pin.sha256"\n'
+        "    sys.exit(print(pin(manifest), len(sys.argv)))\n",
+    )
+    source = (tmp_path / "pkg/inputs.py").as_posix()
+    destination = (tmp_path / "pkg/installer/inputs.py").as_posix()
+    result = CodemodPlanSequence(
+        documents=(
+            CodemodPlanDocument(
+                recipes=(
+                    RefactorRecipe("move").with_operation(
+                        RelocateSymbolsToNewModuleOperation(
+                            target=SourceRewriteTarget(file_path=source),
+                            symbol_qualnames=("Inputs", "pin"),
+                            destination_path=destination,
+                        )
+                    ),
+                )
+            ),
+            CodemodPlanDocument(
+                recipes=(
+                    RefactorRecipe("dissolve").with_operation(
+                        _dissolve(tmp_path, "pkg/inputs.py", "pkg/installer/inputs.py")
+                    ),
+                )
+            ),
+        )
+    ).simulate(_snapshot(tmp_path))
+    assert result.is_clean
+    result.apply()
+
+    moved = (tmp_path / "pkg/installer/inputs.py").read_text(encoding="utf-8")
+    assert moved.count("import sys\n") == 1
+    assert moved.count("from pathlib import Path\n") == 1
+    completed = _run(tmp_path, "import runpy, sys; sys.argv = ['x', 'root']; runpy.run_module('pkg.installer.inputs', run_name='__main__')")
+    assert completed.stdout == "pin.sha256 2\n", completed.stderr
