@@ -149,7 +149,7 @@ from ..class_index import (
     module_import_aliases,
     build_class_family_index,
     build_compact_class_family_index,
-    star_resolved_projections,
+    repository_settled_projections,
 )
 from ..ast_tools import ParsedModuleSet
 from ..collection_algebra import UniqueIdentityIndexAuthority, sorted_tuple
@@ -962,7 +962,7 @@ class CompactClassRepositoryContext:
         projections: Sequence[CompactModuleClassProjection],
         config: DetectorConfig,
     ) -> CompactClassRepositoryContext:
-        resolved = star_resolved_projections(tuple(projections))
+        resolved = repository_settled_projections(tuple(projections))
         return cls(
             projections=resolved,
             config=config,

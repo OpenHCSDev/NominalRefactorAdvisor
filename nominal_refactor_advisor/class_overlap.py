@@ -603,11 +603,21 @@ class ClassOverlapVerdicts:
         )
         shared_receipts = tuple(
             Receipt(
-                self.declaration(first.symbol, shared.name).kind.shared_receipt,
-                f"`{shared.name}` is declared identically",
+                shared.kind.shared_receipt,
+                shared.receipt_text,
                 _shared_locations(shared),
             )
             for shared in extractable
+        )
+        differing_receipts = tuple(
+            Receipt(
+                OverlapReceiptKind.DECLARATION_DIFFERS,
+                f"`{shared.name}` is declared differently in each class: one "
+                "declaration cannot serve both, so the repair keeps each declaration",
+                _shared_locations(shared),
+            )
+            for shared in extractable
+            if shared.declaration_differs
         )
         axis_receipts = tuple(
             Receipt(
@@ -680,6 +690,7 @@ class ClassOverlapVerdicts:
                     )
                 ),
                 *axis_receipts,
+                *differing_receipts,
                 *self._inherited_receipts(overlap),
                 *self._size_receipts(extractable, first, second),
                 *self._member_receipts(overlap, members),
