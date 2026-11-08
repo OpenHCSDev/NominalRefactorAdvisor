@@ -3760,10 +3760,8 @@ class ClassBodyNormalForm:
         cls,
         method: ast.FunctionDef | ast.AsyncFunctionDef,
     ) -> ast.FunctionDef | ast.AsyncFunctionDef:
-        normalized = copy.deepcopy(method)
-        normalized.body = _trim_leading_docstring(list(normalized.body)) or [
-            ast.Pass()
-        ]
+        normalized = copy.copy(method)
+        normalized.body = _trim_leading_docstring(list(method.body)) or [ast.Pass()]
         positional = (*normalized.args.posonlyargs, *normalized.args.args)
         receiver_name = positional[0].arg if positional else None
         if receiver_name is None or len(normalized.body) != 2:
@@ -3790,7 +3788,7 @@ class ClassBodyNormalForm:
             return normalized
         normalized.body = [
             _ReceiverAliasSubstitution(alias_name, receiver_name).visit(
-                remaining_statement
+                copy.deepcopy(remaining_statement)
             )
         ]
         return ast.fix_missing_locations(normalized)
