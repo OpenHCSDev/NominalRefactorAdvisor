@@ -66,6 +66,80 @@ class ServedSubclassHeader:
 
 
 @dataclass(frozen=True)
+class ServedMemberScope:
+    """What a member can lose by changing class within its module. Names bound at module level
+    resolve the same in the served class, so a module-bound decorator such as abstractmethod is
+    no hazard here. What can break: a decorator, default, annotation or class-level value that
+    reads a name bound in the source class and left behind; a private name, whose mangling follows
+    the owning class; and a dunder, which Python looks up on its own and the family read check
+    cannot see."""
+
+    source_class: ResolvedClassTarget
+    moved: frozenset[str]
+    members: tuple[ClassMemberPromotionStatement, ...]
+
+    def require_safe(self, context: ClassMemberMoveProofContext) -> None:
+        left_behind = self.source_class.bound_names - self.moved
+        failures: list[str] = []
+        for member in self.members:
+            context.require_no_attached_leading_comment(member)
+            name = member.name
+            if name is not None and name.startswith("__") and name.endswith("__"):
+                failures.append(f"{name!r} is looked up implicitly")
+            failures.extend(
+                f"{name!r} uses private name {private!r}, mangled by its owner"
+                for private in sorted(_private_names(member.statement))
+            )
+            failures.extend(
+                f"{name!r} reads class-scope {captured!r}, which stays behind"
+                for captured in sorted(_class_scope_reads(member.statement) & left_behind)
+            )
+        if failures:
+            raise ValueError("Members cannot change class: " + "; ".join(failures))
+
+
+def _private_names(statement: ast.stmt) -> frozenset[str]:
+    return frozenset(
+        found
+        for node in ast.walk(statement)
+        if (found := node.attr if isinstance(node, ast.Attribute) else node.id if isinstance(node, ast.Name) else "")
+        .startswith("__") and not found.endswith("__")
+    )
+
+
+def _class_scope_reads(statement: ast.stmt) -> frozenset[str]:
+    """Names a member reads while the class body runs: a method's decorators, defaults and
+    annotations, or a class attribute's whole statement. Method bodies run later and cannot see
+    class scope."""
+
+    if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef)):
+        arguments = statement.args
+        evaluated: tuple[ast.AST, ...] = (
+            *statement.decorator_list,
+            *arguments.defaults,
+            *(default for default in arguments.kw_defaults if default is not None),
+            *(
+                argument.annotation
+                for argument in (
+                    *arguments.posonlyargs, *arguments.args, *arguments.kwonlyargs,
+                    *((arguments.vararg,) if arguments.vararg else ()),
+                    *((arguments.kwarg,) if arguments.kwarg else ()),
+                )
+                if argument.annotation is not None
+            ),
+            *((statement.returns,) if statement.returns is not None else ()),
+        )
+    else:
+        evaluated = (statement,)
+    return frozenset(
+        node.id
+        for part in evaluated
+        for node in ast.walk(part)
+        if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load)
+    )
+
+
+@dataclass(frozen=True)
 class FamilyMemberReads:
     """The source class's family, read for the members that move: a class that stays a plain
     declaration must not read them through its own receiver, and an ancestor's abstract
@@ -167,8 +241,9 @@ class ServeClassMembersOperation(RepositorySourceReprovedOperation):
             source=source,
             module_bound_names=module_names,
         )
-        for member in members:
-            member.require_safe_move(context)
+        ServedMemberScope(
+            source_class, frozenset(self.member_names), members,
+        ).require_safe(context)
         moved_statements = frozenset(member.statement for member in members)
         FamilyMemberReads(
             snapshot, source_class, frozenset(self.member_names), moved_statements,

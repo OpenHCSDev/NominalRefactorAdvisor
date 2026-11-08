@@ -87,6 +87,11 @@ def test_serving_members_moves_them_onto_a_subclass_declared_after_the_declarati
         (FAMILY.replace("    def describe(self) -> str:\n        return self.thread\n",
                         "    @abstractmethod\n    def apply(self) -> str: ...\n"),
          "Request declares 'apply' abstract"),
+        (FAMILY.replace("    def result(self) -> str:\n        return self.text\n",
+                        "    def result(self, default: str = text) -> str:\n        return default\n"),
+         "'result' reads class-scope 'text', which stays behind"),
+        (FAMILY.replace("return self.text", "return self.__text"),
+         "'result' uses private name '__text'"),
     ),
 )
 def test_serving_refuses_a_member_the_plain_family_still_needs(
