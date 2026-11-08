@@ -16,6 +16,7 @@ from nominal_refactor_advisor.codemod import (
     CodemodSourceSnapshot,
     DissolveModuleOperation,
     RefactorRecipe,
+    RelocateSymbolsToModuleOperation,
     RelocateSymbolsToNewModuleOperation,
     SourceRewriteTarget,
 )
@@ -264,3 +265,48 @@ def test_a_guard_hiding_a_cycle_is_refused(tmp_path: Path) -> None:
     )[0]
     assert report.status is CodemodPreflightStatus.FAILED
     assert "hides a cycle" in report.message
+
+
+def test_a_move_drops_the_destinations_guarded_import_of_the_moved_declaration(
+    tmp_path: Path,
+) -> None:
+    _write(tmp_path, "pkg/__init__.py", "")
+    _write(
+        tmp_path,
+        "pkg/frame.py",
+        "from pkg.rules import Rule\n\n\nclass Frame:\n    rule = Rule\n",
+    )
+    _write(
+        tmp_path,
+        "pkg/rules.py",
+        "from __future__ import annotations\n\n"
+        "from typing import TYPE_CHECKING\n\n"
+        "if TYPE_CHECKING:\n"
+        "    from pkg.frame import Frame\n\n\n"
+        "class Rule:\n"
+        "    def found(self, frame: Frame) -> None:\n"
+        "        pass\n",
+    )
+    simulation = (
+        RefactorRecipe("frame-beside-rules")
+        .with_operation(
+            RelocateSymbolsToModuleOperation(
+                target=SourceRewriteTarget(file_path=(tmp_path / "pkg/frame.py").as_posix()),
+                symbol_qualnames=("Frame",),
+                destination_path=(tmp_path / "pkg/rules.py").as_posix(),
+            )
+        )
+        .simulate(_snapshot(tmp_path))
+    )
+    assert simulation.is_clean
+    simulation.apply()
+
+    rules = (tmp_path / "pkg/rules.py").read_text()
+    assert "TYPE_CHECKING" not in rules.replace("from typing import TYPE_CHECKING", "")
+    assert "class Frame" in rules
+    imported = _run(
+        tmp_path,
+        "import typing, pkg.rules; "
+        "assert typing.get_type_hints(pkg.rules.Rule.found)['frame'] is pkg.rules.Frame",
+    )
+    assert imported.returncode == 0, imported.stderr

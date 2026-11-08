@@ -495,9 +495,18 @@ class SourceTopLevelSymbolClosureMovePlan(SourceTopLevelSymbolClosureMoveCarrier
         )
         declarations = request.selection.declarations
         moved_symbol_names = tuple(declaration.name for declaration in declarations)
+        self_binding_removals = cls._destination_self_binding_removals(
+            context,
+            source_path=request.source_path,
+            destination_path=request.destination_path,
+            moved_symbol_names=moved_symbol_names,
+        )
         cls._validate_destination(
             destination_table,
             moved_symbol_names,
+            excused_names=frozenset(
+                name for removal in self_binding_removals for name in removal[1]
+            ),
         )
         source_blocks = tuple(
             MovedTopLevelDeclarationSource.from_declaration(
@@ -520,12 +529,25 @@ class SourceTopLevelSymbolClosureMovePlan(SourceTopLevelSymbolClosureMoveCarrier
             destination_path=request.destination_path,
             moved_symbol_names=moved_symbol_names,
         )
-        consumer_edits = ModuleNameRedirect(
-            source_path=request.source_path,
-            destinations={name: request.destination_path for name in moved_symbol_names},
-        ).consumer_edits(
-            context,
-            excluded_paths=frozenset((request.source_path, request.destination_path)),
+        consumer_edits = (
+            *(
+                ModuleImportMutation.remove_names(
+                    file_path=request.destination_path,
+                    module_name=module_text,
+                    names=names,
+                    scope=scope,
+                    rationale=request.rationale
+                    or f"The destination now declares {names!r} itself.",
+                )
+                for module_text, names, scope in self_binding_removals
+            ),
+            *ModuleNameRedirect(
+                source_path=request.source_path,
+                destinations={name: request.destination_path for name in moved_symbol_names},
+            ).consumer_edits(
+                context,
+                excluded_paths=frozenset((request.source_path, request.destination_path)),
+            ),
         )
         return cls(
             source_path=request.source_path,
@@ -540,15 +562,61 @@ class SourceTopLevelSymbolClosureMovePlan(SourceTopLevelSymbolClosureMoveCarrier
         )
 
     @staticmethod
+    def _destination_self_binding_removals(
+        context: CodemodSelectorContext,
+        *,
+        source_path: str,
+        destination_path: str,
+        moved_symbol_names: tuple[str, ...],
+    ) -> tuple[tuple[str, tuple[str, ...], ModuleImportScope], ...]:
+        """The destination's own imports of the moved declarations from the source:
+        once the declarations land there, those imports would rebind them, so the
+        move removes them instead of refusing the destination."""
+
+        import_graph = context.module_import_graph
+        source_module_name = import_graph.module_name_for_file_path(source_path)
+        destination_file = import_graph.source_file_for_path(destination_path)
+        if source_module_name is None or destination_file is None:
+            return ()
+        moved = frozenset(moved_symbol_names)
+        removals: list[tuple[str, tuple[str, ...], ModuleImportScope]] = []
+        for scope in ModuleImportScope:
+            for statement in scope.import_statements(
+                context.module_nodes_by_file_path[destination_path]
+            ):
+                if not isinstance(statement, ast.ImportFrom) or (
+                    destination_file.module_path_identity.resolve_import_from_module(
+                        imported_module=statement.module,
+                        level=statement.level,
+                    )
+                    != source_module_name
+                ):
+                    continue
+                names = tuple(
+                    alias.name
+                    for alias in statement.names
+                    if alias.name in moved and alias.asname in (None, alias.name)
+                )
+                if names:
+                    removals.append(
+                        (ImportFromModuleName.from_node(statement).source, names, scope)
+                    )
+        return tuple(removals)
+
+    @staticmethod
     def _validate_destination(
         destination_table: ModuleSymbolTable,
         moved_symbol_names: tuple[str, ...],
+        *,
+        excused_names: frozenset[str] = frozenset(),
     ) -> None:
         destination_names = destination_table.top_level_names | frozenset(
             destination_table.import_bindings_by_name
         )
         duplicate_names = tuple(
-            name for name in moved_symbol_names if name in destination_names
+            name
+            for name in moved_symbol_names
+            if name in destination_names and name not in excused_names
         )
         if duplicate_names:
             raise ValueError(
