@@ -1699,10 +1699,13 @@ class SourceTopLevelSymbolClosureMovePlan(SourceTopLevelSymbolClosureMoveCarrier
 
 @dataclass(frozen=True, kw_only=True)
 class RetainedCallOperation(RepositorySourceReprovedOperation, ABC):
-    """A module operation that rewrites strings naming the module, except under
-    a call named in `retained_calls`: those strings record the module's old
-    identity on purpose (evidence that the path is gone, such as PathsAbsent)
-    inside an otherwise live file, and stay as written."""
+    """A module operation that rewrites strings naming the module, except in the
+    claim of a call named in `retained_calls`: its first positional argument
+    records the module's old identity on purpose (evidence that the path is gone,
+    such as PathsAbsent's paths or PatternAbsent's pattern) inside an otherwise
+    live file, and stays as written. The call's other arguments say where to
+    look, and follow the move like any other mention: a search scope left on the
+    old path would read a file that no longer exists and hold vacuously."""
 
     retained_calls: tuple[str, ...] = codemod_payload_field(
         StringArrayPayloadValueCodec(),
@@ -2584,8 +2587,9 @@ class _ModuleIdentityStrings:
     """Every mention of the dissolved module inside a string (docstrings and
     f-string parts included): its dotted name, `<module>.<Name>` (a patch
     target), or its path. Each mention is rewritten in place to the name's
-    owner or to the successor; a mention under a call named in
-    `retained_calls` (absence evidence such as PathsAbsent) stays."""
+    owner or to the successor; a mention in the claim (first positional
+    argument) of a call named in `retained_calls` (absence evidence such as
+    PathsAbsent) stays."""
 
     source_path: str
     source_module_name: str
@@ -2722,7 +2726,7 @@ class _ModuleIdentityStrings:
                 else node.func.attr if isinstance(node.func, ast.Attribute)
                 else None
             ) in self.retained_calls
-            for argument in (*node.args, *(keyword.value for keyword in node.keywords))
+            for argument in node.args[:1]
             for inner in ast.walk(argument)
         )
 
