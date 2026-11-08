@@ -10,7 +10,11 @@ import pytest
 
 from nominal_refactor_advisor import cli as cli_module
 from nominal_refactor_advisor.ast_tools import ParsedModuleSet, parse_python_modules
+from nominal_refactor_advisor.analysis import _compact_findings_by_detector
 from nominal_refactor_advisor.analysis_cache import GlobalModuleContextSignature
+from nominal_refactor_advisor.detectors._restated_facts import (
+    ForeignAbsenceProbeDetector,
+)
 from nominal_refactor_advisor.detectors._base import (
     CrossModuleCollectorCandidateDetector,
     DetectorConfig,
@@ -165,6 +169,23 @@ def test_hard_deadline_terminates_at_signal_boundary() -> None:
 
     assert len(observed_errors) == 1
     assert observed_errors[0].stage == "process_pool_wait"
+
+
+def test_a_spent_budget_in_the_compact_join_names_the_detector_it_stopped_in() -> None:
+    """The 11-06 agent-comms scan stopped in the mypy build and reported
+    `parse_python_module`, the last label the parse loop had left behind."""
+
+    deadline = ScanDeadline.start(0.0)
+    deadline.stage = "parse_python_module"
+    with pytest.raises(ScanDeadlineExceeded) as stopped:
+        with enforce_scan_deadline(deadline):
+            _compact_findings_by_detector(
+                (ForeignAbsenceProbeDetector,), {}, DetectorConfig()
+            )
+
+    assert stopped.value.stage == ForeignAbsenceProbeDetector.scan_stage(
+        "compact_detector"
+    )
 
 
 def test_repository_semantic_signature_changes_for_contextual_source_edit(

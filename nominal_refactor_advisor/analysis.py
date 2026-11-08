@@ -775,6 +775,7 @@ def _compact_findings_by_detector(
 
     active_shared_contexts = {} if shared_contexts is None else shared_contexts
     for detector_type in detector_types:
+        scan_deadline_checkpoint(detector_type.scan_stage("compact_detector"))
         detector = cast(CompactModuleProjectionDetectorMixin, detector_type())
         compact_detector_type = cast(
             type[CompactModuleProjectionDetectorMixin], detector_type
@@ -2385,6 +2386,7 @@ def analyze_compact_roots_with_cache(
             str(request.source.path),
         ),
     )
+    scan_deadline_checkpoint("compact_projection_build")
     build_results = worker_plan.map(
         build_compact_projection_shard, ordered_build_requests,
     )
@@ -3784,10 +3786,9 @@ class IncrementalAnalysisCacheResolver:
         hit_count = 0
         module_context = self._modules
         for detector_type in detector_types:
-            detector_label = (
-                detector_type.effective_detector_id() or detector_type.__qualname__
+            scan_deadline_checkpoint(
+                detector_type.scan_stage("contextual_global_cache_lookup")
             )
-            scan_deadline_checkpoint(f"contextual_global_cache_lookup:{detector_label}")
             if not issubclass(detector_type, ContextualGlobalCacheContract):
                 raise TypeError(
                     f"{detector_type.__name__} declares contextual-global caching "
@@ -3824,7 +3825,7 @@ class IncrementalAnalysisCacheResolver:
                 hit_count += 1
                 findings.extend(cache_lookup.findings)
                 continue
-            scan_deadline_checkpoint(f"contextual_global_prepare:{detector_label}")
+            scan_deadline_checkpoint(detector_type.scan_stage("contextual_global_prepare"))
             prepared_analysis = (
                 None
                 if semantic_detector
@@ -3857,7 +3858,7 @@ class IncrementalAnalysisCacheResolver:
                     continue
             if semantic_detector:
                 scan_deadline_checkpoint(
-                    f"contextual_global_detection:{detector_label}"
+                    detector_type.scan_stage("contextual_global_detection")
                 )
                 if focused_semantic_detector:
                     detector_findings = detector._collect_focused_findings_from_graph(
@@ -3874,7 +3875,7 @@ class IncrementalAnalysisCacheResolver:
                     )
             else:
                 scan_deadline_checkpoint(
-                    f"contextual_global_detection:{detector_label}"
+                    detector_type.scan_stage("contextual_global_detection")
                 )
                 if prepared_analysis is None:
                     raise RuntimeError(
