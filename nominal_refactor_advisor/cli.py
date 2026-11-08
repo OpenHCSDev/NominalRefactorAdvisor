@@ -509,8 +509,12 @@ _CLI_ARGUMENT_SPECS = (
         CliArgumentSpec(
             flags=("--scan-budget-seconds",),
             value_type=float,
-            default=20.0,
-            help="Per-scan runtime budget for --prove-economics.",
+            default=None,
+            help=(
+                "Stop the scan after this many seconds and report it incomplete. "
+                "Without it a scan runs to completion; --prove-economics judges "
+                "its scans against its own budget."
+            ),
         ),
         CliArgumentSpec(
             flags=("--compare-ref",),
@@ -4839,7 +4843,10 @@ class CliScanDeadlineRequest:
 
     @classmethod
     def from_namespace(cls, args: argparse.Namespace) -> CliScanDeadlineRequest | None:
-        if args.scan_budget_seconds <= 0.0:
+        """A deadline only when the caller asked for one: a scan stopped at a
+        budget nobody chose reads as "no findings"."""
+
+        if args.scan_budget_seconds is None or args.scan_budget_seconds <= 0.0:
             return None
         return cls(budget_seconds=args.scan_budget_seconds, json_enabled=args.json)
 
@@ -4860,10 +4867,16 @@ class CliScanDeadlineRequest:
         }
 
     def emit_timeout(self, error: ScanDeadlineExceeded) -> None:
+        """Say on stderr that the scan is incomplete, whatever stdout carries:
+        an empty findings list must never read as a clean scan."""
+
+        print(
+            f"nominal-refactor-advisor: SCAN INCOMPLETE: {error} "
+            "(--scan-budget-seconds); its findings are not reported",
+            file=sys.stderr,
+        )
         if self.json_enabled:
             print(json.dumps(self.timeout_payload(error), indent=2))
-            return
-        print(str(error), file=sys.stderr)
 
     def terminate_process(self, error: ScanDeadlineExceeded) -> None:
         """Publish the incomplete result and terminate without unwinding workers."""

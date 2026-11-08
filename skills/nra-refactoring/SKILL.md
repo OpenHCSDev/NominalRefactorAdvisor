@@ -42,7 +42,7 @@ comparison outside the family's own decoder restates a case decision the family
 should answer once. m consumers × n cases of restated decisions become m + n.
 
 1. **Count first.** `python -m nominal_refactor_advisor PKG --count-member-awareness
-   --scan-budget-seconds 600 [--json]` lists, per family (foreign modules such as
+   [--json]` lists, per family (foreign modules such as
    `ast`, declared `ForeignFamily`/`ForeignAdapter` families, enums), every consumer
    that tests two or more members **on the same subject**, grouped by member set,
    and which of them bypass an owner that already exists. Largest bypassing group
@@ -74,7 +74,7 @@ should answer once. m consumers × n cases of restated decisions become m + n.
 3. **Fold through the goal search, never by hand.** Each fold ships as detector
    + operation + recipe + concept. Dry run, then apply:
    `python -m nominal_refactor_advisor PKG --codemod-refactor-goal CONCEPT
-   --codemod-goal-detector DETECTOR --codemod-apply --scan-budget-seconds 600 --json`.
+   --codemod-goal-detector DETECTOR --codemod-apply --json`.
    `CONCEPT` is the concept key (class name minus `Concept`, snake case: e.g.
    `foreign_family_routing`, `foreign_adapter_bind_chain`). The fold must prove
    each site (e.g. AST-equality of each arm's expression to the adapter
