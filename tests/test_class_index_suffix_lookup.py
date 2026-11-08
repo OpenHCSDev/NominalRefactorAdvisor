@@ -5,7 +5,6 @@ from pathlib import Path
 
 import pytest
 
-from nominal_refactor_advisor import class_index as class_index_module
 from nominal_refactor_advisor.ast_tools import (
     ParsedModule,
     collect_family_items,
