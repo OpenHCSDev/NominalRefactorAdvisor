@@ -88,22 +88,104 @@ def test_a_forwarder_is_inlined_and_its_guarded_import_leaves(tmp_path: Path) ->
 @pytest.mark.parametrize(
     ("consumer", "message"),
     (
-        ("class Other:\n    def require_may_change(self, todo):\n        pass\n", "declares another"),
-        ("def bound(actor):\n    return actor.require_may_change\n", "other than by calling it"),
-        ("def used(actor, todo):\n    return actor.require_may_change(todo)\n", "returns None"),
-        ("def effect(make, todo):\n    make().require_may_change(todo.pop())\n", "reorders the evaluation"),
+        ("def bound(actor: Actor):\n    return actor.require_may_change\n", "other than by calling it"),
+        ("def used(actor: Actor, todo):\n    return actor.require_may_change(todo)\n", "returns None"),
+        (
+            "from collections.abc import Callable\n\n\n"
+            "def effect(make: Callable[[], Actor], todo):\n    make().require_may_change(todo.pop())\n",
+            "reorders the evaluation",
+        ),
+        ("def untyped(actor, todo):\n    actor.require_may_change(todo)\n", "on a receiver typed"),
     ),
 )
-def test_inlining_by_name_is_refused_when_the_name_is_not_closed(
+def test_inlining_is_refused_where_a_call_cannot_inline(
     tmp_path: Path, consumer: str, message: str
 ) -> None:
     _identity(tmp_path)
     _write(tmp_path, "pkg/orders.py", "class Todo:\n    pass\n")
-    _write(tmp_path, "pkg/consumer.py", consumer)
+    _write(tmp_path, "pkg/consumer.py", "from pkg.identity import Actor\n\n\n" + consumer)
     snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     report = _inline(tmp_path).preflight_reports(snapshot)
     assert report and report[0].status is CodemodPreflightStatus.FAILED, report
     assert message in report[0].message
+
+
+def test_another_class_s_method_of_the_same_name_is_its_own(tmp_path: Path) -> None:
+    """Call sites are typed by their receiver: a call on another class that
+    declares a method of the same name is that class's method and stays."""
+    _identity(tmp_path)
+    _write(tmp_path, "pkg/orders.py", "class Todo:\n    def require_maintainer(self, actor) -> None:\n        pass\n")
+    _write(
+        tmp_path,
+        "pkg/consumer.py",
+        "from pkg.identity import Actor\nfrom pkg.orders import Todo\n\n\n"
+        "class Other:\n    def require_may_change(self, todo: Todo) -> None:\n        pass\n\n\n"
+        "def run(actor: Actor, other: Other, todo: Todo) -> None:\n"
+        "    actor.require_may_change(todo)\n"
+        "    other.require_may_change(todo)\n",
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    simulation = RefactorRecipe("inline").with_operation(_inline(tmp_path)).simulate(snapshot)
+    assert simulation.is_clean, simulation.preflight_report
+    consumer = simulation.simulation.rewritten_sources[(tmp_path / "pkg/consumer.py").as_posix()]
+    assert "    todo.require_maintainer(actor)\n    other.require_may_change(todo)\n" in consumer
+
+
+def test_an_async_forwarder_with_a_local_import_inlines_and_its_callee_follows(
+    tmp_path: Path,
+) -> None:
+    """agent-comms AttachedChild.send_fenced: an async method that imports its
+    callee locally and awaits it. Each awaited call becomes the awaited callee,
+    and the callee is imported where the call now is."""
+    _write(tmp_path, "pkg/__init__.py", "")
+    _write(
+        tmp_path,
+        "pkg/prompt_send.py",
+        "SENT: list = []\n\n\nasync def send_fenced_prompt(stream, data) -> None:\n    SENT.append((stream, data))\n",
+    )
+    _write(
+        tmp_path,
+        "pkg/child.py",
+        "class AttachedChild:\n"
+        "    stdin = 'pipe'\n\n"
+        "    async def send_fenced(self, data) -> None:\n"
+        '        """Keep the raw writer on this input."""\n'
+        "        from .prompt_send import send_fenced_prompt\n\n"
+        "        await send_fenced_prompt(self.stdin, data)\n",
+    )
+    _write(
+        tmp_path,
+        "pkg/native.py",
+        "from pkg.child import AttachedChild\n\n\n"
+        "class NativeChild:\n"
+        "    def __init__(self, proc: AttachedChild) -> None:\n"
+        "        self.proc = proc\n\n"
+        "    async def send_fenced(self, data) -> None:\n"
+        "        await self.proc.send_fenced(data)\n",
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    operation = InlineForwarderOperation(
+        target=SourceRewriteTarget(
+            file_path=(tmp_path / "pkg/child.py").as_posix(), qualname="AttachedChild.send_fenced",
+        )
+    )
+    simulation = RefactorRecipe("inline").with_operation(operation).simulate(snapshot)
+    assert simulation.is_clean, simulation.preflight_report
+    simulation.apply()
+
+    child = (tmp_path / "pkg/child.py").read_text()
+    native = (tmp_path / "pkg/native.py").read_text()
+    assert "send_fenced" not in child and "prompt_send" not in child
+    assert "        await send_fenced_prompt(self.proc.stdin, data)\n" in native
+    assert "async def send_fenced(self, data)" in native
+    ran = subprocess.run(
+        [sys.executable, "-c",
+         "import asyncio; from pkg.child import AttachedChild; from pkg.native import NativeChild; "
+         "from pkg.prompt_send import SENT; asyncio.run(NativeChild(AttachedChild()).send_fenced(b'x')); "
+         "assert SENT == [('pipe', b'x')], SENT"],
+        cwd=tmp_path, capture_output=True, text=True, check=False,
+    )
+    assert ran.returncode == 0, ran.stderr
 
 
 def test_an_ignored_parameter_is_not_inlined_away(tmp_path: Path) -> None:
@@ -117,7 +199,11 @@ def test_an_ignored_parameter_is_not_inlined_away(tmp_path: Path) -> None:
         "    def check(self) -> None:\n"
         "        pass\n",
     )
-    _write(tmp_path, "pkg/consumer.py", "def run(actor, effect):\n    actor.require_may_change(effect())\n")
+    _write(
+        tmp_path,
+        "pkg/consumer.py",
+        "from pkg.identity import Actor\n\n\ndef run(actor: Actor, effect):\n    actor.require_may_change(effect())\n",
+    )
     snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     report = _inline(tmp_path).preflight_reports(snapshot)
     assert report[0].status is CodemodPreflightStatus.FAILED

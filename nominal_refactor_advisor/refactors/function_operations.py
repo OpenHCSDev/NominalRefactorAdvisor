@@ -1,16 +1,18 @@
 from __future__ import annotations
 
 import ast
+import builtins
 import copy
 from abc import (
     ABC,
     abstractmethod,
 )
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import ClassVar
 
+from .answered_method import AnsweredMethod
 from .declaration_operations import (
     DeclarationDecoratorsPayload,
     DeclarationMutationOperationABC,
@@ -55,7 +57,9 @@ from ..codemod_reproof import (
     SourceReprovedOperation,
 )
 from ..codemod_runtime import CodemodSourceSnapshot
-from ..codemod_selection_context import CodemodSelectorContext
+from ..codemod_import_graph import SourceModuleImportGraph
+from ..codemod_module_declarations import ModuleSymbolTable
+from ..codemod_selection_context import CodemodSelectorContext, ResolvedClassTarget
 from ..codemod_selector_models import (
     DeclaredCallSelection,
     SourceRewriteTarget,
@@ -77,6 +81,7 @@ from ..declaration_dependencies import (
     FunctionParameterBinding,
 )
 from ..declared_root import DeclaredRoot
+from ..lexical_bindings import LEXICAL_SCOPE_BINDING_AUTHORITY
 from ..descriptor_algebra import AliasProperty
 from ..product_flow import BareCallTargetReference
 from ..source_index import AstTargetNodeKind
@@ -496,14 +501,17 @@ class ProjectStaticCallsToAdapterOperation(SourceReprovedOperation):
 
 @dataclass(frozen=True)
 class _ForwarderBody:
-    """A method whose whole body is one call built from its own parameters."""
+    """A method whose whole body is one call built from its own parameters, after
+    any imports that bind what it calls. An async forwarder awaits that call, so
+    its callers' `await` reaches the forwarded call itself."""
 
-    method: ast.FunctionDef
+    method: ast.FunctionDef | ast.AsyncFunctionDef
     call: ast.Call
     returns: bool
+    imports: tuple[ast.Import | ast.ImportFrom, ...] = ()
 
     @classmethod
-    def of(cls, method: ast.FunctionDef, qualname: str) -> _ForwarderBody:
+    def of(cls, method: ast.FunctionDef | ast.AsyncFunctionDef, qualname: str) -> _ForwarderBody:
         body = [
             statement
             for statement in method.body
@@ -513,6 +521,9 @@ class _ForwarderBody:
                 and isinstance(statement.value.value, str)
             )
         ]
+        imports = tuple(
+            statement for statement in body if isinstance(statement, (ast.Import, ast.ImportFrom))
+        )
         arguments = method.args
         if (
             method.decorator_list
@@ -520,14 +531,35 @@ class _ForwarderBody:
             or arguments.kwarg
             or arguments.posonlyargs
             or not arguments.args
-            or len(body) != 1
+            or len(body) != len(imports) + 1
+            or tuple(body[: len(imports)]) != imports
         ):
             raise ValueError(f"{qualname!r} is not a plain one-call forwarder")
-        statement = body[0]
-        call = statement.value if isinstance(statement, (ast.Return, ast.Expr)) else None
-        if not isinstance(call, ast.Call):
+        statement = body[-1]
+        value = statement.value if isinstance(statement, (ast.Return, ast.Expr)) else None
+        if isinstance(method, ast.AsyncFunctionDef):
+            value = value.value if isinstance(value, ast.Await) else None
+        if not isinstance(value, ast.Call):
             raise ValueError(f"{qualname!r} is not a plain one-call forwarder")
-        return cls(method, call, isinstance(statement, ast.Return))
+        return cls(method, value, isinstance(statement, ast.Return), imports)
+
+    @property
+    def free_names(self) -> frozenset[str]:
+        """The names the forwarded call reads besides the forwarder's parameters."""
+
+        return frozenset(
+            node.id
+            for node in ast.walk(self.call)
+            if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load)
+        ) - frozenset(self.parameter_names)
+
+    def value_used(self, call: ast.Call, parents: Mapping[ast.AST, ast.AST]) -> bool:
+        """Whether the call site reads the value of the call (or of its await)."""
+
+        outer = parents.get(call)
+        if isinstance(self.method, ast.AsyncFunctionDef) and isinstance(outer, ast.Await):
+            outer = parents.get(outer)
+        return not isinstance(outer, ast.Expr)
 
     @property
     def parameter_names(self) -> tuple[str, ...]:
@@ -621,31 +653,34 @@ class InlineForwarderOperation(RepositorySourceReprovedOperation):
         if qualname is None or "." not in qualname:
             raise ValueError("inline_forwarder requires a Class.method target_qualname")
         class_name, method_name = qualname.rsplit(".", 1)
-        module = snapshot.module_nodes_by_file_path[source_path]
-        owner = next(
-            (node for node in module.body if isinstance(node, ast.ClassDef) and node.name == class_name),
-            None,
+        source_class = ResolvedClassTarget.from_rewrite_target(
+            snapshot, SourceRewriteTarget(file_path=source_path, qualname=class_name),
         )
-        method = None if owner is None else next(
-            (node for node in owner.body if isinstance(node, ast.FunctionDef) and node.name == method_name),
+        method = next(
+            (
+                node for node in source_class.node.body
+                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == method_name
+            ),
             None,
         )
         if method is None:
             raise ValueError(f"{qualname!r} is not declared in {source_path!r}")
         forwarder = _ForwarderBody.of(method, qualname)
-        edits: list[NominalSourceEdit] = []
-        for source_file in snapshot.source_index.files:
-            file_path = source_file.file_path
-            consumer = snapshot.module_nodes_by_file_path.get(file_path)
-            if consumer is None:
-                continue
-            replacements = self._call_site_replacements(
-                consumer, file_path, method_name, forwarder, method if file_path == source_path else None
+        answered = AnsweredMethod(snapshot, source_class, method)
+        if answered.overriding:
+            raise ValueError(f"{answered.overriding!r} override {method_name!r}; inlining skips their dispatch")
+        replacements: dict[str, list[tuple[ast.AST, str]]] = {source_path: [(method, "")]}
+        for call in answered.answering_calls():
+            parsed = snapshot.parsed_module_for_source_path(call.file_path)
+            parents = {child: parent for parent in ast.walk(parsed.module) for child in ast.iter_child_nodes(parent)}
+            if not forwarder.returns and forwarder.value_used(call.call, parents):
+                raise ValueError(f"{call.where} uses the value of {method_name!r}, which returns None")
+            replacements.setdefault(call.file_path, []).append(
+                (call.call, forwarder.inlined(call.call, call.attribute.value, call.file_path))
             )
-            if file_path == source_path:
-                replacements.append((method, ""))
-            if not replacements:
-                continue
+        callee = _ForwardedNames(snapshot, source_path, forwarder)
+        edits: list[NominalSourceEdit] = []
+        for file_path, file_replacements in replacements.items():
             geometry = SourceTextGeometry(snapshot.sources_by_file_path[file_path])
             edits.append(
                 geometry.nominal_edit(
@@ -656,7 +691,7 @@ class InlineForwarderOperation(RepositorySourceReprovedOperation):
                             end_offset=end,
                             replacement_source=replacement,
                         )
-                        for node, replacement in replacements
+                        for node, replacement in file_replacements
                         for start, end in (
                             method_deletion_offsets(geometry, node)
                             if node is method
@@ -666,37 +701,81 @@ class InlineForwarderOperation(RepositorySourceReprovedOperation):
                     rationale=self.rationale or f"Inline the forwarder {qualname!r}.",
                 )
             )
-        edits.extend(imports_only_read_by(module, source_path, method))
+            if any(node is not method for node, _replacement in file_replacements):
+                edits.extend(callee.imports_into(file_path))
+        edits.extend(imports_only_read_by(snapshot.module_nodes_by_file_path[source_path], source_path, method))
         return tuple(edits)
 
-    @staticmethod
-    def _call_site_replacements(
-        module: ast.Module,
-        file_path: str,
-        method_name: str,
-        forwarder: _ForwarderBody,
-        declaration: ast.FunctionDef | None,
-    ) -> list[tuple[ast.AST, str]]:
-        parents = {child: parent for parent in ast.walk(module) for child in ast.iter_child_nodes(parent)}
-        replacements: list[tuple[ast.AST, str]] = []
-        for node in ast.walk(module):
-            if declaration is not None and node is declaration:
+
+@dataclass(frozen=True)
+class _ForwardedNames:
+    """What the forwarded call reads besides the forwarder's parameters, bound
+    where each call now lands the way the forwarder binds it: its own local
+    imports first, then the source module's imports and declarations. One the
+    call site binds to another object refuses."""
+
+    snapshot: CodemodSourceSnapshot
+    source_path: str
+    forwarder: _ForwarderBody
+
+    @property
+    def tables(self) -> tuple[ModuleSymbolTable, ...]:
+        source = self.snapshot.sources_by_file_path[self.source_path]
+        module = self.snapshot.module_nodes_by_file_path[self.source_path]
+        local = ast.Module(body=list(self.forwarder.imports), type_ignores=[])
+        return (
+            ModuleSymbolTable(file_path=self.source_path, source=source, module=local),
+            ModuleSymbolTable(file_path=self.source_path, source=source, module=module),
+        )
+
+    def imports_into(self, file_path: str) -> tuple[ModuleImportMutation, ...]:
+        graph = self.snapshot.module_import_graph
+        source_module = self.snapshot.module_nodes_by_file_path[self.source_path]
+        unshadowed = frozenset(dir(builtins)) - LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(source_module.body)
+        consumer = ModuleSymbolTable(
+            file_path=file_path,
+            source=self.snapshot.sources_by_file_path[file_path],
+            module=self.snapshot.module_nodes_by_file_path[file_path],
+        )
+        imports: list[ModuleImportMutation] = []
+        for name in sorted(self.forwarder.free_names - unshadowed):
+            import_source = self._import_source(graph, consumer, name)
+            if import_source:
+                imports.append(ModuleImportMutation.from_source(
+                    file_path=file_path,
+                    import_source=import_source,
+                    rationale=f"The inlined call reads {name!r}.",
+                ))
+        return tuple(imports)
+
+    def _import_source(self, graph: SourceModuleImportGraph, consumer: ModuleSymbolTable, name: str) -> str:
+        """The import `consumer` needs for `name`, empty when it already binds it."""
+
+        for table in self.tables:
+            resolved = table.import_binding_for_dependency(
+                name, import_graph=graph, permits_guarded_import=False,
+            )
+            if resolved is None:
                 continue
-            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) and node.name == method_name:
-                raise ValueError(f"{file_path!r}:{node.lineno} declares another {method_name!r}")
-            if isinstance(node, ast.Constant) and node.value == method_name:
-                raise ValueError(f"{file_path!r}:{node.lineno} names {method_name!r} in a string")
-            if not (isinstance(node, ast.Attribute) and node.attr == method_name):
-                continue
-            call = parents.get(node)
-            if not (isinstance(call, ast.Call) and call.func is node) or not isinstance(node.ctx, ast.Load):
-                raise ValueError(f"{file_path!r}:{node.lineno} uses {method_name!r} other than by calling it")
-            if not forwarder.returns and not isinstance(parents.get(call), ast.Expr):
-                raise ValueError(
-                    f"{file_path!r}:{call.lineno} uses the value of {method_name!r}, which returns None"
-                )
-            replacements.append((call, forwarder.inlined(call, node.value, file_path)))
-        return replacements
+            binding, identity = resolved
+            if identity.is_destination_declaration(
+                graph, destination_path=consumer.file_path, bound_name=name,
+            ) or consumer.satisfies_import_binding(name, identity, binding.scope, import_graph=graph):
+                return ""
+            if consumer.conflicts_with_import_binding(name, identity, import_graph=graph):
+                raise ValueError(f"{consumer.file_path!r} binds {name!r}, which the inlined call reads, to another object")
+            return identity.source_for(
+                graph, importing_file_path=consumer.file_path, scope=binding.scope, bound_name=name,
+            )
+        if name not in self.tables[1].declared_names:
+            raise ValueError(f"The forwarded call reads {name!r}, which {self.source_path!r} does not bind")
+        if consumer.file_path == self.source_path:
+            return ""
+        if name in consumer.top_level_names:
+            raise ValueError(f"{consumer.file_path!r} binds {name!r}, which the inlined call reads, to another object")
+        return graph.required_import_source(
+            importing_file_path=consumer.file_path, imported_file_path=self.source_path, imported_name=name,
+        )
 
 
 def method_deletion_offsets(
