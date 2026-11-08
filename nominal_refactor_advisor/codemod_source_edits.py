@@ -24,6 +24,7 @@ from collections.abc import (
 )
 from dataclasses import (
     dataclass,
+    field,
     replace,
 )
 from functools import cached_property
@@ -1370,6 +1371,18 @@ class SourceNodeSpan:
     @property
     def line_span(self) -> SourceLineSpan:
         return SourceLineSpan(start_line=self.start_line, end_line=self.end_line)
+
+
+@dataclass(frozen=True)
+class DocumentedNodeSpan(SourceNodeSpan):
+    """A statement and the attribute docstring right after it: the docstring
+    documents the statement, so the span ends where the docstring does."""
+
+    docstring: ast.Expr = field(kw_only=True)
+
+    @property
+    def end_line(self) -> int:
+        return self.docstring.end_lineno or self.docstring.lineno
 
 
 @dataclass(frozen=True)
