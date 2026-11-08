@@ -257,11 +257,7 @@ class RedirectEmptySubclassOperation(RepositorySourceReprovedOperation):
         proof: DeclarationAuthorityRenameProof, subclass: EmptySubclass
     ) -> Iterator[str]:
         for module in proof.modules:
-            parents = {
-                id(child): parent
-                for parent in ast.walk(module.module.module)
-                for child in ast.iter_child_nodes(parent)
-            }
+            parents = module.module.syntax_index.parent_by_node
             for reference in (*module.direct_references, *module.qualified_references):
                 kind = NameUseKind.of(reference, parents)
                 if kind not in NameUseKind.only_builds():
