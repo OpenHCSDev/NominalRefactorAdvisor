@@ -455,8 +455,10 @@ def test_absence_evidence_keeps_the_old_name_and_every_other_mention_follows(
         tmp_path,
         "pkg/evidence.py",
         "def PathsAbsent(paths):\n    return paths\n\n\n"
+        "def PatternAbsent(pattern, paths):\n    return paths\n\n\n"
         "def ClassDeclared(name, paths):\n    return paths\n\n\n"
         "GONE = PathsAbsent(('pkg/hub.py',))\n"
+        "UNREAD = PatternAbsent('from pkg.hub import', ('pkg/hub.py', 'pkg/reader.py'))\n"
         "WHERE = ClassDeclared('Moved', ('pkg/hub.py',))\n",
     )
     _write(
@@ -469,7 +471,7 @@ def test_absence_evidence_keeps_the_old_name_and_every_other_mention_follows(
     operation = DissolveModuleOperation(
         target=SourceRewriteTarget(file_path=(tmp_path / "pkg/hub.py").as_posix()),
         successor_path=(tmp_path / "pkg/owner.py").as_posix(),
-        retained_calls=("PathsAbsent",),
+        retained_calls=("PathsAbsent", "PatternAbsent"),
     )
     simulation = RefactorRecipe("dissolve").with_operation(operation).simulate(_snapshot(tmp_path))
     assert simulation.is_clean, simulation.preflight_report
@@ -477,6 +479,9 @@ def test_absence_evidence_keeps_the_old_name_and_every_other_mention_follows(
     evidence = (tmp_path / "pkg/evidence.py").read_text()
     reader = (tmp_path / "pkg/reader.py").read_text()
     assert "GONE = PathsAbsent(('pkg/hub.py',))" in evidence
+    # The pattern is the claim and keeps the old name; where it is searched follows the
+    # move, or the check would read a file that no longer exists and hold vacuously.
+    assert "UNREAD = PatternAbsent('from pkg.hub import', ('pkg/owner.py', 'pkg/reader.py'))" in evidence
     assert "WHERE = ClassDeclared('Moved', ('pkg/owner.py',))" in evidence
     assert '"""Serving them is in pkg.owner, which only the server imports."""' in reader
     assert "loaded = 'pkg.owner' in modules; target = 'pkg.owner.Moved'; {NAME}" in reader
