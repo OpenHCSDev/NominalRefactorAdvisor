@@ -11,12 +11,12 @@ from nominal_refactor_advisor.ast_tools import parse_python_modules
 from nominal_refactor_advisor.codemod import (
     CodemodOperationPreflightError,
     CodemodSourceSnapshot,
-    CollapseRedundantClassAuthorityOperation,
     RefactorRecipe,
     RefactorRecipeOperation,
     SourceRewriteTarget,
 )
 from nominal_refactor_advisor.json_reports import json_report_object
+from nominal_refactor_advisor.refactors.class_base import CollapseRedundantClassAuthorityOperation
 
 
 def _write_module(root: Path, relative_path: str, source: str) -> Path:

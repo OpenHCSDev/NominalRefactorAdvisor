@@ -4,13 +4,14 @@ import json
 
 from nominal_refactor_advisor.codemod import (
     CodemodPlanSequence,
-    EnsureImportOperation,
     InsertClassMemberOperation,
     PatchTargetOperation,
     SourceRewriteTarget,
     SourceTextReplacement,
 )
 from nominal_refactor_advisor.json_reports import json_report_object
+from nominal_refactor_advisor.refactors.source_insertion import EnsureImportOperation
+
 
 product_path = "nominal_refactor_advisor/product_flow_authority.py"
 runtime_path = "nominal_refactor_advisor/codemod_runtime.py"

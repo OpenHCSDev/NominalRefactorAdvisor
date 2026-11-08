@@ -19,6 +19,12 @@ from ..refactors.autoregister import (
     AutoRegisterExplicitPriorityOrderingFindingRecipeSynthesizer,
     InheritedAutoRegisterConfigBoilerplateFindingRecipeSynthesizer,
 )
+from ..refactors.candidate_collector import (
+    CandidateCollectorBoilerplateFindingRecipeSynthesizer,
+    DeclarativeDetectorClassFindingRecipeSynthesizer,
+    DirectBuildFindingRendererFindingRecipeSynthesizer,
+)
+from ..refactors.finding_recipes import CasesFindingRecipeSynthesizer
 from ..semantic_algebra import ObjectFamilyShape
 from ..semantic_description_length import CompressionCertificate
 from ..ast_tools import (
@@ -34,12 +40,6 @@ from ..class_index import (
     CompactIndexedClass,
     CompactNamedProjectionSurface,
     CompactSortedKeyCall,
-)
-from ..codemod import (
-    CandidateCollectorBoilerplateFindingRecipeSynthesizer,
-    CasesFindingRecipeSynthesizer,
-    DeclarativeDetectorClassFindingRecipeSynthesizer,
-    DirectBuildFindingRendererFindingRecipeSynthesizer,
 )
 from ..native_syntax import NativePythonSyntaxIndex
 from ..registry_identity import (

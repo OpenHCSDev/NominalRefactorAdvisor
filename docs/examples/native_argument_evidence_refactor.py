@@ -10,10 +10,11 @@ import json
 from nominal_refactor_advisor.codemod import (
     CodemodPlanSequence,
     MoveSymbolClosureToModuleOperation,
-    RenameTopLevelDeclarationAuthorityOperation,
     SourceRewriteTarget,
 )
 from nominal_refactor_advisor.json_reports import json_report_object
+from nominal_refactor_advisor.refactors.binding_rename import RenameTopLevelDeclarationAuthorityOperation
+
 
 PLAN = CodemodPlanSequence.from_operations(
     (

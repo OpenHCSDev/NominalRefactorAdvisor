@@ -2,13 +2,16 @@
 
 from nominal_refactor_advisor.codemod import (
     CodemodPlanSequence,
-    CreateFileOperation,
-    EnsureImportOperation,
     PatchTargetOperation,
     SourceRewriteTarget,
     SourceTextReplacement,
     ReplaceDeclarationDecoratorsOperation,
 )
+from nominal_refactor_advisor.refactors.source_insertion import (
+    CreateFileOperation,
+    EnsureImportOperation,
+)
+
 
 SCAN_CACHE_SOURCE = '''"""Bounded memoization for declarations stable during one analysis invocation."""
 

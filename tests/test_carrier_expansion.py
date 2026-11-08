@@ -14,7 +14,6 @@ from nominal_refactor_advisor.carrier_expansion import (
 )
 from nominal_refactor_advisor.codemod import (
     CodemodSourceSnapshot,
-    CollapseDeclaredCarrierExpansionOperation,
     FindingRecipeSynthesisStatus,
     RefactorRecipe,
     RefactorRecipeOperation,
@@ -26,6 +25,7 @@ from nominal_refactor_advisor.detectors._base import DetectorConfig
 from nominal_refactor_advisor.json_reports import json_report_object
 from nominal_refactor_advisor.models import ParameterThreadMetrics, SourceLocation
 from nominal_refactor_advisor.patterns import PatternId
+from nominal_refactor_advisor.refactors.carrier_collapse import CollapseDeclaredCarrierExpansionOperation
 
 
 def _module(module_name: str, source: str) -> ParsedModule:

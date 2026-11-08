@@ -26,11 +26,52 @@ from nominal_refactor_advisor.class_families.parsed_index import (
     ClassFamilyIndex,
     build_class_family_index,
 )
+from nominal_refactor_advisor.refactors.authority_extraction import (
+    DeclareAuthorityOperation,
+    ExtractAuthorityOperation,
+)
 from nominal_refactor_advisor.refactors.autoregister import (
     ConvertManualRegistryToAutoregisterOperation,
     DeriveAutoregisterInstanceViewOperation,
 )
+from nominal_refactor_advisor.refactors.candidate_collector import (
+    DeclareCandidateFindingRendererOperation,
+    DeclareDetectorClassOperation,
+    DeriveCandidateCollectorOperation,
+)
+from nominal_refactor_advisor.refactors.carrier_fields import (
+    CarrierFieldProjection,
+    ReplaceFieldsWithCarrierOperation,
+)
+from nominal_refactor_advisor.refactors.class_base import (
+    AddClassBaseOperation,
+    RemoveClassBaseOperation,
+)
 from nominal_refactor_advisor.refactors.dispatch_polymorphism import DispatchToPolymorphismOperation
+from nominal_refactor_advisor.refactors.finding_recipes import (
+    FindingRecipeClassPlan,
+    FindingRecipeClassPlanReport,
+    FindingRecipeSynthesizer,
+    codemod_class_plan_from_findings,
+)
+from nominal_refactor_advisor.refactors.semantic_mirror import (
+    MappingSemanticMirrorRecipeStrategy,
+    SemanticDescentRecipeEvaluation,
+)
+from nominal_refactor_advisor.refactors.source_insertion import (
+    CreateFileOperation,
+    EnsureImportOperation,
+    InsertAfterImportsOperation,
+    InsertAfterTargetOperation,
+    InsertBeforeTargetOperation,
+    RemoveImportNamesOperation,
+)
+from nominal_refactor_advisor.refactors.target_deletion import (
+    DeleteClassAssignmentsOperation,
+    DeleteModuleAssignmentsOperation,
+    DeleteTargetOperation,
+    EraseDeadCompatibilityOperation,
+)
 from registry_test_sources import _type_keyed_behavior_projection_source
 from native_use_test_support import (
     simulate_with_rendered_registry_creator_support,
@@ -170,7 +211,6 @@ from nominal_refactor_advisor.exact_method_authority import (
     ParallelMirroredLeafFamilyComponentBuilder,
 )
 from nominal_refactor_advisor.codemod import (
-    AddClassBaseOperation,
     ArchitectureGuardRule,
     ArchitectureGuardSuite,
     ArchitectureGuardTargetScope,
@@ -180,7 +220,6 @@ from nominal_refactor_advisor.codemod import (
     CallSiteSelector,
     CallSiteTargetSelector,
     CancelableCompositionKind,
-    CarrierFieldProjection,
     ClassFamilyAuthorityConcept,
     ClassFamilyTargetSelector,
     CodemodBackend,
@@ -189,38 +228,20 @@ from nominal_refactor_advisor.codemod import (
     CodemodSelectorContext,
     CodemodSourceRevision,
     CodemodSourceRevisionError,
-    CreateFileOperation,
-    DeclareAuthorityOperation,
-    DeleteClassAssignmentsOperation,
-    DeleteModuleAssignmentsOperation,
-    DeleteTargetOperation,
-    DeriveCandidateCollectorOperation,
     TypedMirror,
     RefactorRecipeSimulation,
-    EnsureImportOperation,
-    DeclareCandidateFindingRendererOperation,
-    DeclareDetectorClassOperation,
-    EraseDeadCompatibilityOperation,
-    ExtractAuthorityOperation,
     ExtractSymbolClosureToNewModuleOperation,
     ExtractSymbolsToNewModuleOperation,
     FactorExactMethodRoleOperation,
     FactorParallelMirroredLeafFamilyOperation,
     FindingEvidenceTargetSelector,
     FindingRecipeActionKey,
-    FindingRecipeClassPlan,
-    FindingRecipeClassPlanReport,
     FindingRecipePlanningHorizon,
     FindingRecipeSynthesisStatus,
-    FindingRecipeSynthesizer,
     ForbiddenAttributeArchitectureGuardConstraint,
     ForbiddenCallArchitectureGuardConstraint,
     ForbiddenDispatchArchitectureGuardConstraint,
     InheritanceEdgeTargetSelector,
-    InsertAfterImportsOperation,
-    InsertAfterTargetOperation,
-    InsertBeforeTargetOperation,
-    MappingSemanticMirrorRecipeStrategy,
     ModuleImportScope,
     ModuleMoveDependencyReport,
     ModuleMoveObstacleKind,
@@ -236,16 +257,12 @@ from nominal_refactor_advisor.codemod import (
     RefactorRecipeOperation,
     RelocateSymbolsToModuleOperation,
     RelocateSymbolsToNewModuleOperation,
-    RemoveClassBaseOperation,
-    RemoveImportNamesOperation,
-    ReplaceFieldsWithCarrierOperation,
     ReplaceFunctionBodyOperation,
     ReplaceFunctionSignatureOperation,
     ReplaceModuleAssignmentOperation,
     ReplaceTargetOperation,
     RewriteOperation,
     SemanticCarrierConcept,
-    SemanticDescentRecipeEvaluation,
     SourceCreationConflictPreflightDetail,
     SourceEditOrigin,
     SourceIndexTargetSelector,
@@ -258,7 +275,6 @@ from nominal_refactor_advisor.codemod import (
     SourceTextSpanReplacement,
     TargetSetExpressionSelector,
     TupleDictReturnNominalizationConcept,
-    codemod_class_plan_from_findings,
     detect_cancelable_composition_signals,
     evaluate_architecture_guards,
 )
@@ -19902,7 +19918,7 @@ def test_goal_runner_rejects_terminal_with_new_finding_obligations(
     tmp_path: Path,
 ) -> None:
     from nominal_refactor_advisor.codemod import FindingRecipeActionKey
-    from nominal_refactor_advisor.codemod import FindingRecipeSynthesizer
+    from nominal_refactor_advisor.refactors.finding_recipes import FindingRecipeSynthesizer
     from nominal_refactor_advisor.codemod_workflow import CodemodFindingClassStatus
     from nominal_refactor_advisor.codemod_workflow import CodemodRefactorGoalRunner
     from nominal_refactor_advisor.codemod_workflow import CodemodWorkflowScan
@@ -20122,7 +20138,7 @@ def test_codemod_refactor_goal_runner_builds_staged_replay_plan(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from nominal_refactor_advisor.codemod import FindingRecipeActionKey
-    from nominal_refactor_advisor.codemod import FindingRecipeSynthesizer
+    from nominal_refactor_advisor.refactors.finding_recipes import FindingRecipeSynthesizer
     from nominal_refactor_advisor.codemod_workflow import CodemodWorkflowScan
     from nominal_refactor_advisor.codemod_workflow import CodemodRefactorGoalRunner
     from nominal_refactor_advisor.codemod_workflow import CodemodWorkflowStopReason
@@ -20301,7 +20317,7 @@ def test_proved_migration_reports_divergent_post_apply_rescan(
     tmp_path: Path,
 ) -> None:
     from nominal_refactor_advisor.codemod import FindingRecipeActionKey
-    from nominal_refactor_advisor.codemod import FindingRecipeSynthesizer
+    from nominal_refactor_advisor.refactors.finding_recipes import FindingRecipeSynthesizer
     from nominal_refactor_advisor.codemod_workflow import CodemodWorkflowScan
     from nominal_refactor_advisor.codemod_workflow import CodemodRefactorGoalRunner
     from nominal_refactor_advisor.codemod_workflow import CodemodWorkflowStopReason
@@ -20411,7 +20427,7 @@ def test_goal_runner_does_not_commit_conflicting_trajectory_branches(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     import nominal_refactor_advisor.codemod_runtime as codemod_runtime_module
-    from nominal_refactor_advisor.codemod import FindingRecipeSynthesizer
+    from nominal_refactor_advisor.refactors.finding_recipes import FindingRecipeSynthesizer
     from nominal_refactor_advisor.codemod_workflow import CodemodRefactorGoalRunner
     from nominal_refactor_advisor.codemod_workflow import CodemodWorkflowScan
     from nominal_refactor_advisor.codemod_workflow import CodemodWorkflowStopReason
@@ -20559,7 +20575,7 @@ def test_goal_runner_analyzes_equivalent_branch_state_once(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from nominal_refactor_advisor.codemod import FindingRecipeActionKey
-    from nominal_refactor_advisor.codemod import FindingRecipeSynthesizer
+    from nominal_refactor_advisor.refactors.finding_recipes import FindingRecipeSynthesizer
     from nominal_refactor_advisor.codemod_workflow import CodemodProjectedScanMode
     from nominal_refactor_advisor.codemod_workflow import CodemodRefactorGoalRunner
     from nominal_refactor_advisor.codemod_workflow import CodemodWorkflowScan
@@ -20687,7 +20703,7 @@ def test_goal_runner_crosses_local_worsening_move_to_unique_terminal(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from nominal_refactor_advisor.codemod import FindingRecipeSynthesizer
+    from nominal_refactor_advisor.refactors.finding_recipes import FindingRecipeSynthesizer
     from nominal_refactor_advisor.codemod_workflow import CodemodRefactorGoalRunner
     from nominal_refactor_advisor.codemod_workflow import CodemodWorkflowScan
     from nominal_refactor_advisor.codemod_workflow import CodemodWorkflowStopReason
@@ -21195,7 +21211,7 @@ def test_codemod_refactor_goal_runner_scopes_context_root_progress(
     tmp_path: Path,
 ) -> None:
     from nominal_refactor_advisor.codemod import FindingRecipeActionKey
-    from nominal_refactor_advisor.codemod import FindingRecipeSynthesizer
+    from nominal_refactor_advisor.refactors.finding_recipes import FindingRecipeSynthesizer
     from nominal_refactor_advisor.codemod_workflow import CodemodWorkflowScan
     from nominal_refactor_advisor.codemod_workflow import CodemodRefactorGoalRunner
     from nominal_refactor_advisor.codemod_workflow import CodemodWorkflowStopReason
@@ -21303,7 +21319,7 @@ def test_codemod_refactor_goal_reports_terminal_synthesis_failures(
     tmp_path: Path,
 ) -> None:
     from nominal_refactor_advisor.codemod import FindingRecipeActionKey
-    from nominal_refactor_advisor.codemod import FindingRecipeSynthesizer
+    from nominal_refactor_advisor.refactors.finding_recipes import FindingRecipeSynthesizer
     from nominal_refactor_advisor.codemod_workflow import CodemodWorkflowScan
     from nominal_refactor_advisor.codemod_workflow import CodemodRefactorGoalRunner
     from nominal_refactor_advisor.codemod_workflow import CodemodWorkflowStopReason

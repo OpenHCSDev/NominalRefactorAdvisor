@@ -2,13 +2,13 @@
 
 from nominal_refactor_advisor.codemod import (
     CodemodPlanSequence,
-    DeleteTargetOperation,
     InsertClassMemberOperation,
     PatchTargetOperation,
     ReplaceFunctionBodyOperation,
     SourceRewriteTarget,
     SourceTextReplacement,
 )
+from nominal_refactor_advisor.refactors.target_deletion import DeleteTargetOperation
 
 
 def target(module: str, name: str) -> SourceRewriteTarget:

@@ -8,8 +8,6 @@ import pytest
 from nominal_refactor_advisor.codemod import (
     CodemodPlanDocument,
     CodemodSourceSnapshot,
-    EnsureImportOperation,
-    InsertAfterImportsOperation,
     RefactorRecipe,
     SourceRewriteTarget,
 )
@@ -35,6 +33,11 @@ from nominal_refactor_advisor.codemod_source_edits import (
     SourceTextSpan,
     SourceTextSpanReplacement,
 )
+from nominal_refactor_advisor.refactors.source_insertion import (
+    EnsureImportOperation,
+    InsertAfterImportsOperation,
+)
+
 
 PATH = Path(__file__).with_name("exact_window_fixture.py").resolve().as_posix()
 SOURCE = "first = object\nleft = 1; right = type\nlast = 3\n"

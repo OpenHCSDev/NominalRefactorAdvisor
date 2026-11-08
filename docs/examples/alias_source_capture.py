@@ -6,8 +6,6 @@ from textwrap import dedent, indent
 
 from nominal_refactor_advisor.codemod import (
     CodemodPlanSequence,
-    EnsureImportOperation,
-    InsertBeforeTargetOperation,
     InsertClassMemberOperation,
     PatchTargetOperation,
     ReplaceTargetOperation,
@@ -15,6 +13,11 @@ from nominal_refactor_advisor.codemod import (
     SourceTextReplacement,
 )
 from nominal_refactor_advisor.json_reports import json_report_object
+from nominal_refactor_advisor.refactors.source_insertion import (
+    EnsureImportOperation,
+    InsertBeforeTargetOperation,
+)
+
 
 FLOW = SourceRewriteTarget(file_path="nominal_refactor_advisor/product_flow.py")
 REPOSITORY = SourceRewriteTarget(

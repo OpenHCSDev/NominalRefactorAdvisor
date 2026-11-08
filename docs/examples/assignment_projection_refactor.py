@@ -3,13 +3,14 @@
 import json
 
 from nominal_refactor_advisor.codemod import (
-    AddClassBaseOperation,
     CodemodPlanSequence,
-    DeleteClassAssignmentsOperation,
     ReplaceFunctionBodyOperation,
     SourceRewriteTarget,
 )
 from nominal_refactor_advisor.json_reports import json_report_object
+from nominal_refactor_advisor.refactors.class_base import AddClassBaseOperation
+from nominal_refactor_advisor.refactors.target_deletion import DeleteClassAssignmentsOperation
+
 
 module = "nominal_refactor_advisor/assignment_projection.py"
 projection = "SingleAssignmentAndValueNameProjection"

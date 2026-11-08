@@ -2,13 +2,14 @@
 
 from nominal_refactor_advisor.codemod import (
     CodemodPlanSequence,
-    EnsureImportOperation,
     InsertClassMemberOperation,
     PatchTargetOperation,
     ReplaceTargetOperation,
     SourceRewriteTarget,
     SourceTextReplacement,
 )
+from nominal_refactor_advisor.refactors.source_insertion import EnsureImportOperation
+
 
 SOURCE_PATH = "nominal_refactor_advisor/source_execution.py"
 

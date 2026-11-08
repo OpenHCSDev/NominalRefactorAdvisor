@@ -16,10 +16,7 @@ from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from typing import ClassVar, Generic, TypeVar
 
-from ..codemod import (
-    EraseDeadCompatibilityOperation,
-    RefactorRecipeOperation,
-)
+from ..codemod import RefactorRecipeOperation
 from ..class_index import (
     CompactClassFamilyIndex,
     CompactModuleClassProjectionFamily,
@@ -31,6 +28,7 @@ from ..refactors.dispatch_polymorphism import (
     DispatchToPolymorphismOperation,
     LiteralDispatchFindingRecipeSynthesizer,
 )
+from ..refactors.target_deletion import EraseDeadCompatibilityOperation
 from ..type_checker_session import (
     SourceFiles,
     SourceTexts,

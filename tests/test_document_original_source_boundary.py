@@ -8,12 +8,12 @@ from nominal_refactor_advisor.codemod import (
     CodemodPlanDocument,
     CodemodPlanSequence,
     CodemodSourceSnapshot,
-    CreateFileOperation,
     RefactorRecipe,
     ReplaceDeclaredCallArgumentsOperation,
     ReplaceFunctionBodyOperation,
     SourceRewriteTarget,
 )
+from nominal_refactor_advisor.refactors.source_insertion import CreateFileOperation
 
 
 @pytest.mark.parametrize("source", ("", "value = object\n"))

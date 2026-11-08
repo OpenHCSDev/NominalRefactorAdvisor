@@ -14,13 +14,13 @@ from nominal_refactor_advisor.ast_tools import parse_python_modules
 from nominal_refactor_advisor.codemod import (
     CodemodPlanSequence,
     CodemodSourceSnapshot,
-    DeleteFunctionAssignmentsOperation,
-    RemoveImportNamesOperation,
     ReplaceDeclaredCallOperation,
     SelectionCountExpectation,
     SourceRewriteTarget,
 )
 from nominal_refactor_advisor.json_reports import json_report_object
+from nominal_refactor_advisor.refactors.source_insertion import RemoveImportNamesOperation
+from nominal_refactor_advisor.refactors.target_deletion import DeleteFunctionAssignmentsOperation
 
 
 def _operation(

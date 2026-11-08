@@ -14,7 +14,6 @@ from nominal_refactor_advisor.ast_tools import ParsedModule
 from nominal_refactor_advisor.codemod import (
     CodemodPlanSequence,
     CodemodSourceSnapshot,
-    DeriveCandidateCollectorOperation,
     RefactorRecipe,
     SourceRewriteTarget,
 )
@@ -22,6 +21,7 @@ from nominal_refactor_advisor.detectors._base import (
     CrossModuleCandidateDetector,
     CrossModuleCollectorCandidateDetector,
 )
+from nominal_refactor_advisor.refactors.candidate_collector import DeriveCandidateCollectorOperation
 
 
 @pytest.mark.native_proof

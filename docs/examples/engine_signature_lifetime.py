@@ -2,10 +2,11 @@
 
 from nominal_refactor_advisor.codemod import (
     CodemodPlanSequence,
-    EnsureImportOperation,
     ReplaceDeclarationDecoratorsOperation,
     SourceRewriteTarget,
 )
+from nominal_refactor_advisor.refactors.source_insertion import EnsureImportOperation
+
 
 SOURCE = "nominal_refactor_advisor/analysis_cache.py"
 PLAN = CodemodPlanSequence.from_operations(

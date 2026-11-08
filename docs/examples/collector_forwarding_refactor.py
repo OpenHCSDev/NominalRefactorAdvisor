@@ -6,11 +6,6 @@ from textwrap import dedent
 
 from nominal_refactor_advisor.codemod import (
     CodemodPlanSequence,
-    DeleteClassAssignmentsOperation,
-    DeleteTargetOperation,
-    EnsureImportOperation,
-    InsertAfterTargetOperation,
-    InsertBeforeTargetOperation,
     PrependFunctionBodyOperation,
     ReplaceFunctionBodyOperation,
     ReplaceFunctionSignatureOperation,
@@ -18,6 +13,16 @@ from nominal_refactor_advisor.codemod import (
     SourceRewriteTarget,
 )
 from nominal_refactor_advisor.json_reports import json_report_object
+from nominal_refactor_advisor.refactors.source_insertion import (
+    EnsureImportOperation,
+    InsertAfterTargetOperation,
+    InsertBeforeTargetOperation,
+)
+from nominal_refactor_advisor.refactors.target_deletion import (
+    DeleteClassAssignmentsOperation,
+    DeleteTargetOperation,
+)
+
 
 candidate = SourceRewriteTarget(
     file_path="nominal_refactor_advisor/detectors/_base.py",

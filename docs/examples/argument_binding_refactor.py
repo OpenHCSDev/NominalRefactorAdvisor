@@ -5,14 +5,17 @@ import json
 
 from nominal_refactor_advisor.codemod import (
     CodemodPlanSequence,
-    DeleteTargetOperation,
-    EnsureImportOperation,
-    RemoveImportNamesOperation,
     ReplaceDeclaredCallOperation,
     SelectionCountExpectation,
     SourceRewriteTarget,
 )
 from nominal_refactor_advisor.json_reports import json_report_object
+from nominal_refactor_advisor.refactors.source_insertion import (
+    EnsureImportOperation,
+    RemoveImportNamesOperation,
+)
+from nominal_refactor_advisor.refactors.target_deletion import DeleteTargetOperation
+
 
 scopes = SourceRewriteTarget(file_path="nominal_refactor_advisor/lexical_scopes.py")
 dependencies = SourceRewriteTarget(

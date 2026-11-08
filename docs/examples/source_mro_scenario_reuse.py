@@ -5,7 +5,6 @@ import json
 
 from nominal_refactor_advisor.codemod import (
     CodemodPlanSequence,
-    EnsureImportOperation,
     InsertClassMemberOperation,
     ProjectFunctionParameterOperation,
     ReplaceDeclaredCallOperation,
@@ -15,6 +14,8 @@ from nominal_refactor_advisor.codemod import (
     SourceRewriteTarget,
 )
 from nominal_refactor_advisor.json_reports import json_report_object
+from nominal_refactor_advisor.refactors.source_insertion import EnsureImportOperation
+
 
 module = SourceRewriteTarget(file_path="nominal_refactor_advisor/source_native_mro.py")
 owner = replace(module, qualname="SourceNativeClassMro")

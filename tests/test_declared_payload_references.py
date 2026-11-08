@@ -8,7 +8,6 @@ from nominal_refactor_advisor.codemod import (
     CodemodPlanDocument,
     CodemodPlanSequence,
     CodemodSourceSnapshot,
-    DeleteFunctionAssignmentsOperation,
     ExtractSymbolsToNewModuleOperation,
     PrependFunctionBodyOperation,
     PromoteClassMembersToAncestorOperation,
@@ -29,6 +28,7 @@ from nominal_refactor_advisor.codemod_selector_models import (
     SourceRewriteReferences,
 )
 from nominal_refactor_advisor.json_reports import JsonObject, json_report_object
+from nominal_refactor_advisor.refactors.target_deletion import DeleteFunctionAssignmentsOperation
 
 
 @dataclass(frozen=True)

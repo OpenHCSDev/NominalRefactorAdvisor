@@ -15,7 +15,6 @@ from nominal_refactor_advisor.captured_reference import (
 )
 from nominal_refactor_advisor.codemod import (
     CodemodPlanDocument,
-    DeriveCandidateCollectorOperation,
     RefactorRecipe,
     SourceRewriteTarget,
 )
@@ -25,6 +24,7 @@ from nominal_refactor_advisor.codemod_preflight import (
 )
 from nominal_refactor_advisor.codemod_reproof import SourceReproofDiagnostic
 from nominal_refactor_advisor.json_reports import json_report_object
+from nominal_refactor_advisor.refactors.candidate_collector import DeriveCandidateCollectorOperation
 from nominal_refactor_advisor.source_execution import SourceModuleExecution
 from nominal_refactor_advisor import cli
 from nominal_refactor_advisor.detectors import _base as collector_runtime

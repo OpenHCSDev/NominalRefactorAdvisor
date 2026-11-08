@@ -10,7 +10,6 @@ from nominal_refactor_advisor.ast_tools import ParsedModule
 from nominal_refactor_advisor.codemod import (
     CodemodPlanSequence,
     CodemodSourceSnapshot,
-    EnsureImportOperation,
     RefactorRecipeOperationCompiler,
     SourceRewriteTarget,
 )
@@ -22,6 +21,7 @@ from nominal_refactor_advisor.codemod_imports import (
 from nominal_refactor_advisor.lexical_bindings import ImportBoundNameProjection
 from nominal_refactor_advisor.codemod_import_scopes import ModuleImportScope
 from nominal_refactor_advisor.codemod_source_edits import SourceTextGeometry
+from nominal_refactor_advisor.refactors.source_insertion import EnsureImportOperation
 
 
 @pytest.mark.parametrize(

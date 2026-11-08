@@ -7,18 +7,18 @@ from enum import StrEnum
 from functools import cached_property
 from typing import cast
 
+from .authority_extraction import SourceDerivedAuthorityProjectionOperation
+from .class_base import ClassAuthorityReferenceProof
+from .semantic_mirror import (
+    RegistrationSemanticMirrorRecipeBuilder,
+    SemanticMirrorOperationTargets,
+)
 from ..assignment_projection import SingleAssignmentAndValueNameProjection
 from ..ast_tools import BuiltinCallName
 from ..class_families.parsed_index import (
     ClassFamilyIndex,
     IndexedClass,
     ModuleClassReferenceResolver,
-)
-from ..codemod import (
-    ClassAuthorityReferenceProof,
-    RegistrationSemanticMirrorRecipeBuilder,
-    SemanticMirrorOperationTargets,
-    SourceDerivedAuthorityProjectionOperation,
 )
 from ..codemod_authority_claims import AstTargetAuthorityClaim
 from ..codemod_runtime import (

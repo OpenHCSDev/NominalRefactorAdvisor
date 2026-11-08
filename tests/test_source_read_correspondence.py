@@ -11,7 +11,6 @@ from nominal_refactor_advisor.ast_tools import ParsedModule
 from nominal_refactor_advisor.codemod import (
     CodemodPlanDocument,
     CodemodPlanSequence,
-    CreateFileOperation,
     TypedMirror,
     CodemodSourceSnapshot,
     RefactorRecipe,
@@ -39,6 +38,7 @@ from nominal_refactor_advisor.codemod_source_edits import (
 )
 from nominal_refactor_advisor.native_declarations import NativeDeclaration
 from nominal_refactor_advisor.refactors.autoregister import ConvertManualRegistryToAutoregisterOperation
+from nominal_refactor_advisor.refactors.source_insertion import CreateFileOperation
 from nominal_refactor_advisor.source_execution import SourceModuleExecution
 
 PATH = "/repo/probe.py"

@@ -18,11 +18,13 @@ from nominal_refactor_advisor.codemod import (
     CodemodSourceSnapshot,
     RefactorRecipe,
     RefactorRecipeOperation,
-    RenameTopLevelBindingAuthorityOperation,
-    RenameTopLevelDeclarationAuthorityOperation,
     SourceRewriteTarget,
 )
 from nominal_refactor_advisor.json_reports import json_report_object
+from nominal_refactor_advisor.refactors.binding_rename import (
+    RenameTopLevelBindingAuthorityOperation,
+    RenameTopLevelDeclarationAuthorityOperation,
+)
 
 
 def _write_module(root: Path, relative_path: str, source: str) -> Path:

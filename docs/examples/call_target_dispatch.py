@@ -5,17 +5,22 @@ import json
 from textwrap import dedent
 
 from nominal_refactor_advisor.codemod import (
-    AddClassBaseOperation,
     CodemodPlanSequence,
-    EnsureImportOperation,
-    InsertAfterTargetOperation,
-    InsertBeforeTargetOperation,
     InsertClassMemberOperation,
-    ReplaceClassBaseOperation,
     ReplaceFunctionBodyOperation,
     SourceRewriteTarget,
 )
 from nominal_refactor_advisor.json_reports import json_report_object
+from nominal_refactor_advisor.refactors.class_base import (
+    AddClassBaseOperation,
+    ReplaceClassBaseOperation,
+)
+from nominal_refactor_advisor.refactors.source_insertion import (
+    EnsureImportOperation,
+    InsertAfterTargetOperation,
+    InsertBeforeTargetOperation,
+)
+
 
 syntax = SourceRewriteTarget(file_path="nominal_refactor_advisor/product_flow.py")
 repository = SourceRewriteTarget(

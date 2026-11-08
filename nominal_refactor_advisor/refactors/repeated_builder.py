@@ -24,6 +24,13 @@ from typing import (
     cast,
 )
 
+from .authority_extraction import SourceDerivedAuthorityProjectionOperation
+from .dataclass_projection import (
+    DataclassAuthorityReferenceProof,
+    DataclassPayloadAuthorityTarget,
+    ResolvedFunctionProjectionTarget,
+)
+from .finding_recipes import FindingRecipeSynthesizer
 from ..annotation_semantics import NOMINAL_ANNOTATION_SOURCE_AUTHORITY
 from ..ast_field_decoders import declared_annotations
 from ..ast_projection import (
@@ -38,14 +45,7 @@ from ..ast_tools import (
 )
 from ..class_families.parsed_index import IndexedClass
 from ..class_index import ClassMethodReceiverRequirements
-from ..codemod import (
-    DataclassAuthorityReferenceProof,
-    DataclassPayloadAuthorityTarget,
-    FindingRecipeSynthesizer,
-    NominalConstructorCall,
-    ResolvedFunctionProjectionTarget,
-    SourceDerivedAuthorityProjectionOperation,
-)
+from ..codemod import NominalConstructorCall
 from ..codemod_authority_claims import AstTargetAuthorityClaim
 from ..codemod_declaration_source import (
     ClassBodySourceAuthority,

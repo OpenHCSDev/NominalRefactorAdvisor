@@ -68,12 +68,6 @@ from ..codemod_foreign_family_recipe import (
     ForeignFamilySiteFindingRecipeSynthesizer,
 )
 from ..codemod_foreign_family_source import ForeignFamilyFilterModuleFamily
-from ..codemod import (
-    KeyedMirrorFindingRecipeSynthesizer,
-    ParallelMirroredLeafFamilyFindingRecipeSynthesizer,
-    SemanticMirrorFindingRecipeEvaluator,
-    TypedMirrorFindingRecipeSynthesizer,
-)
 from ..collection_algebra import sorted_tuple
 from ..installed_owners import RegistrationOwners
 from ..owner_candidates import OwnerCandidate, ranked
@@ -90,6 +84,12 @@ from ..observation_shapes import (
 from ..patterns import PatternId
 from ..refactors.autoregister import ManualClassRegistrationFindingRecipeSynthesizer
 from ..refactors.dispatch_polymorphism import NumericLiteralDispatchFindingRecipeSynthesizer
+from ..refactors.finding_recipes import (
+    KeyedMirrorFindingRecipeSynthesizer,
+    ParallelMirroredLeafFamilyFindingRecipeSynthesizer,
+    SemanticMirrorFindingRecipeEvaluator,
+    TypedMirrorFindingRecipeSynthesizer,
+)
 from ..refactors.repeated_builder import RepeatedBuilderCallFindingRecipeSynthesizer
 from ..semantic_identity import (
     InheritanceIdentityAttributeProjection,

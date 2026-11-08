@@ -23,7 +23,6 @@ from difflib import SequenceMatcher
 from pathlib import Path
 
 from .amortization import IntrospectionSource, NoTrace
-from .codemod import FindingRecipeSynthesizer
 from .codemod_architecture_guards import ArchitectureGuardSuite
 from .codemod_workflow import (
     CodemodRefactorGoalRunner,
@@ -34,6 +33,7 @@ from .detectors._base import DetectorConfig
 from .json_reports import SemanticRecord, json_report_field, json_report_property
 from .member_census import CensusCorpus, MemberAwarenessCensusBuilder
 from .refactor_concepts import RefactorConcept
+from .refactors.finding_recipes import FindingRecipeSynthesizer
 
 
 @dataclass(frozen=True)

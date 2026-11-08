@@ -6,10 +6,8 @@ This authored syntax plan changes ownership; it does not prove body activation.
 from textwrap import dedent
 
 from nominal_refactor_advisor.codemod import (
-    AddClassBaseOperation,
     CodemodPlanSequence,
     CodemodSourceSnapshot,
-    EnsureImportOperation,
     InsertClassMemberOperation,
     PatchTargetOperation,
     ReplaceFunctionBodyOperation,
@@ -17,6 +15,9 @@ from nominal_refactor_advisor.codemod import (
     SourceTextReplacement,
 )
 from nominal_refactor_advisor.codemod_declaration_source import FunctionSourceAuthority
+from nominal_refactor_advisor.refactors.class_base import AddClassBaseOperation
+from nominal_refactor_advisor.refactors.source_insertion import EnsureImportOperation
+
 
 GEOMETRY = "nominal_refactor_advisor/source_geometry.py"
 EDITS = "nominal_refactor_advisor/codemod_source_edits.py"

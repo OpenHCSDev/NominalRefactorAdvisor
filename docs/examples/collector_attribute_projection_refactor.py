@@ -6,7 +6,6 @@ from textwrap import dedent
 
 from nominal_refactor_advisor.codemod import (
     CodemodPlanSequence,
-    DeleteTargetOperation,
     PatchTargetOperation,
     ReplaceFunctionBodyOperation,
     SourceRewriteTarget,
@@ -14,6 +13,8 @@ from nominal_refactor_advisor.codemod import (
 )
 from nominal_refactor_advisor.detectors._base import DerivedCandidateCollectorMixin
 from nominal_refactor_advisor.json_reports import json_report_object
+from nominal_refactor_advisor.refactors.target_deletion import DeleteTargetOperation
+
 
 module = SourceRewriteTarget(file_path="nominal_refactor_advisor/detectors/_base.py")
 PLAN = CodemodPlanSequence.from_operations(

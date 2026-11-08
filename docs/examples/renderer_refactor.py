@@ -4,11 +4,7 @@ from dataclasses import replace
 import json
 
 from nominal_refactor_advisor.codemod import (
-    AddClassBaseOperation,
     CodemodPlanSequence,
-    DeleteFunctionAssignmentsOperation,
-    EnsureImportOperation,
-    InsertBeforeTargetOperation,
     PrependFunctionBodyOperation,
     ProjectFunctionParameterOperation,
     PromoteClassMembersToAncestorOperation,
@@ -18,6 +14,12 @@ from nominal_refactor_advisor.codemod import (
     SourceRewriteTarget,
 )
 from nominal_refactor_advisor.json_reports import json_report_object
+from nominal_refactor_advisor.refactors.class_base import AddClassBaseOperation
+from nominal_refactor_advisor.refactors.source_insertion import (
+    EnsureImportOperation,
+    InsertBeforeTargetOperation,
+)
+from nominal_refactor_advisor.refactors.target_deletion import DeleteFunctionAssignmentsOperation
 
 
 module = SourceRewriteTarget(file_path="nominal_refactor_advisor/codemod.py")

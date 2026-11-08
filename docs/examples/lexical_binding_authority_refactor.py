@@ -6,11 +6,12 @@ from nominal_refactor_advisor.codemod import (
     CodemodPlanSequence,
     ExtractSymbolClosureToNewModuleOperation,
     MoveSymbolClosureToModuleOperation,
-    RenameTopLevelDeclarationAuthorityOperation,
     ReplaceFunctionBodyOperation,
     SourceRewriteTarget,
 )
 from nominal_refactor_advisor.json_reports import json_report_object
+from nominal_refactor_advisor.refactors.binding_rename import RenameTopLevelDeclarationAuthorityOperation
+
 
 bindings = "nominal_refactor_advisor/lexical_bindings.py"
 

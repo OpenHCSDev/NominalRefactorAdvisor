@@ -8,13 +8,13 @@ from nominal_refactor_advisor.analysis import analyze_path
 from nominal_refactor_advisor.ast_tools import parse_python_modules
 from nominal_refactor_advisor.codemod import (
     CodemodSourceSnapshot,
-    EraseDeadCompatibilityOperation,
     FindingRecipeEvaluator,
 )
 from nominal_refactor_advisor.detectors._restated_facts import (DeadModuleDetector, ExactKeySetDetector, ForeignAbsenceProbeDetector, ForwardingFacadeDetector, LegacyPathMarkerDetector, NamedAttributeDetector, OwnTypeTestDetector, StringKindDispatchDetector)
 from nominal_refactor_advisor.detectors._restated_identity import RestatedIdentityDetector
 from nominal_refactor_advisor.patterns import PatternId
 from nominal_refactor_advisor.refactors.dispatch_polymorphism import DispatchToPolymorphismOperation
+from nominal_refactor_advisor.refactors.target_deletion import EraseDeadCompatibilityOperation
 
 
 DETECTORS = (

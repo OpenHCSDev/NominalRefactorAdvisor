@@ -22,7 +22,6 @@ from dataclasses import dataclass
 from typing import ClassVar
 from pathlib import Path
 
-from .codemod import FindingRecipeSynthesizer
 from .codemod_reproof import SourceReprovedOperation
 from .codemod_runtime import (
     CodemodSourceSnapshot,
@@ -55,6 +54,7 @@ from .quoted_reference import (
     SpelledModules,
 )
 from .refactor_concepts import DeclarationReferenceConcept
+from .refactors.finding_recipes import FindingRecipeSynthesizer
 
 
 @dataclass(frozen=True)

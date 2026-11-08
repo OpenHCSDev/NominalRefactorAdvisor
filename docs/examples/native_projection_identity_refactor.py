@@ -5,13 +5,16 @@ import json
 
 from nominal_refactor_advisor.codemod import (
     CodemodPlanSequence,
-    EnsureImportOperation,
-    InsertBeforeTargetOperation,
-    RemoveImportNamesOperation,
     ReplaceDeclarationDecoratorsOperation,
     SourceRewriteTarget,
 )
 from nominal_refactor_advisor.json_reports import json_report_object
+from nominal_refactor_advisor.refactors.source_insertion import (
+    EnsureImportOperation,
+    InsertBeforeTargetOperation,
+    RemoveImportNamesOperation,
+)
+
 
 module = SourceRewriteTarget(
     file_path="nominal_refactor_advisor/native_declarations.py"

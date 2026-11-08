@@ -6,13 +6,14 @@ from textwrap import dedent
 
 from nominal_refactor_advisor.codemod import (
     CodemodPlanSequence,
-    InsertBeforeTargetOperation,
     PatchTargetOperation,
     ReplaceTargetOperation,
     SourceRewriteTarget,
     SourceTextReplacement,
 )
 from nominal_refactor_advisor.json_reports import json_report_object
+from nominal_refactor_advisor.refactors.source_insertion import InsertBeforeTargetOperation
+
 
 module = SourceRewriteTarget(file_path="nominal_refactor_advisor/class_namespace.py")
 collector = replace(module, qualname="_ClassNamespaceExecutionCollector")

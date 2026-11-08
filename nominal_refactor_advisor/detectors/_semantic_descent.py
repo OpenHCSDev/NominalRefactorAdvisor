@@ -6,7 +6,6 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Callable, ClassVar, Iterator
 
-from ..codemod import SemanticMirrorFindingRecipeEvaluator
 from ._base import (
     CompactClassIndexMultiProjectionDetector,
     CompactFindingStream,
@@ -29,6 +28,7 @@ from ..models import (
     SemanticMirrorMetricRelation,
 )
 from ..patterns import PatternId
+from ..refactors.finding_recipes import SemanticMirrorFindingRecipeEvaluator
 from ..semantic_descent import (
     CompactSemanticDescentRepository,
     CompactSemanticModuleProjectionFamily,

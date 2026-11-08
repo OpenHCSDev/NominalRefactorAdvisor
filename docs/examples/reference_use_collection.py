@@ -6,14 +6,17 @@ from textwrap import dedent
 
 from nominal_refactor_advisor.codemod import (
     CodemodPlanSequence,
-    DeleteClassAssignmentsOperation,
-    DeleteTargetOperation,
     ReplaceDeclaredCallArgumentsOperation,
     ReplaceFunctionBodyOperation,
     ReplaceFunctionSignatureOperation,
     SourceRewriteTarget,
 )
 from nominal_refactor_advisor.json_reports import json_report_object
+from nominal_refactor_advisor.refactors.target_deletion import (
+    DeleteClassAssignmentsOperation,
+    DeleteTargetOperation,
+)
+
 
 module = SourceRewriteTarget(file_path="nominal_refactor_advisor/product_flow.py")
 record = replace(module, qualname="_CompactFlowCollector._record_callable_reference")

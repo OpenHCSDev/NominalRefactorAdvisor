@@ -7,7 +7,6 @@ import pytest
 from nominal_refactor_advisor.codemod import (
     CodemodPlanDocument,
     CodemodSourceSnapshot,
-    CreateFileOperation,
     RefactorRecipe,
     SourceRewriteTarget,
 )
@@ -25,6 +24,8 @@ from nominal_refactor_advisor.codemod_source_edits import (
     SourceTextSpan,
     SourceTextSpanReplacement,
 )
+from nominal_refactor_advisor.refactors.source_insertion import CreateFileOperation
+
 
 PATH = Path(__file__).with_name("origins_fixture.py").resolve().as_posix()
 SOURCE = "left = object; right = type\n"

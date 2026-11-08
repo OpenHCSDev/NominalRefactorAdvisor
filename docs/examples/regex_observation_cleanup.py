@@ -4,12 +4,15 @@ import json
 
 from nominal_refactor_advisor.codemod import (
     CodemodPlanSequence,
-    DeleteModuleAssignmentsOperation,
-    DeleteTargetOperation,
-    EnsureImportOperation,
     SourceRewriteTarget,
 )
 from nominal_refactor_advisor.json_reports import json_report_object
+from nominal_refactor_advisor.refactors.source_insertion import EnsureImportOperation
+from nominal_refactor_advisor.refactors.target_deletion import (
+    DeleteModuleAssignmentsOperation,
+    DeleteTargetOperation,
+)
+
 
 SOURCE_PATH = "nominal_refactor_advisor/detectors/_runtime.py"
 PLAN = CodemodPlanSequence.from_operations(

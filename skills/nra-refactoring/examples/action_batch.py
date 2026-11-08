@@ -18,13 +18,16 @@ from nominal_refactor_advisor.codemod import (
     CodemodPlanSequence,
     CodemodSourceRevision,
     CodemodSourceSnapshot,
-    EnsureImportOperation,
     ForbiddenDispatchArchitectureGuardConstraint,
-    InsertBeforeTargetOperation,
     PatchTargetOperation,
     SourceRewriteTarget,
     SourceTextReplacement,
 )
+from nominal_refactor_advisor.refactors.source_insertion import (
+    EnsureImportOperation,
+    InsertBeforeTargetOperation,
+)
+
 
 BEFORE = dedent('''\
     import json

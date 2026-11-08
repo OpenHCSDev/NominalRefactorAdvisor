@@ -5,8 +5,6 @@ import json
 
 from nominal_refactor_advisor.codemod import (
     CodemodPlanSequence,
-    DeleteClassAssignmentsOperation,
-    EnsureImportOperation,
     InsertClassMemberOperation,
     PrependFunctionBodyOperation,
     ProjectFunctionParameterOperation,
@@ -14,6 +12,9 @@ from nominal_refactor_advisor.codemod import (
     SourceRewriteTarget,
 )
 from nominal_refactor_advisor.json_reports import json_report_object
+from nominal_refactor_advisor.refactors.source_insertion import EnsureImportOperation
+from nominal_refactor_advisor.refactors.target_deletion import DeleteClassAssignmentsOperation
+
 
 selection = SourceRewriteTarget(
     file_path="nominal_refactor_advisor/codemod_selection_context.py"

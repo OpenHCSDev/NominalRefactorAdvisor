@@ -7,7 +7,6 @@ from textwrap import dedent
 from nominal_refactor_advisor.codemod import (
     CodemodPlanSequence,
     PatchTargetOperation,
-    RenameTopLevelDeclarationAuthorityOperation,
     ReplaceFunctionBodyOperation,
     ReplaceFunctionSignatureOperation,
     ReplaceTargetOperation,
@@ -15,6 +14,8 @@ from nominal_refactor_advisor.codemod import (
     SourceTextReplacement,
 )
 from nominal_refactor_advisor.json_reports import json_report_object
+from nominal_refactor_advisor.refactors.binding_rename import RenameTopLevelDeclarationAuthorityOperation
+
 
 MODULE = SourceRewriteTarget(
     file_path="nominal_refactor_advisor/product_flow_authority.py"
