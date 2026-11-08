@@ -673,13 +673,28 @@ class ModuleImportMutation(KeyedSourceEditCoalescence):
                 f"{tuple((item.scope.value, item.name) for item in unmatched_bound_name_removals)!r}"
             )
 
+        importing_file = context.module_import_graph.source_file_for_path(self.file_path)
+        package = (  # a module this stage creates has no digest yet: spellings must agree
+            "" if importing_file is None
+            else ".".join(importing_file.module_path_identity.package_parts)
+        )
+
+        def imported_module(name: ImportFromModuleName) -> str:
+            """The module a from-import names, whether spelled absolute or relative."""
+            try:
+                return name.resolve_from_package(lambda: package)
+            except ValueError:
+                return name.source
+
         pending_additions: list[RequestedImportStatement] = []
         for addition in additions:
             matching_from_statements = tuple(
                 statement
                 for statement in import_from_statements
                 if scope_by_statement_id[id(statement)] is addition.scope
-                if addition.module_name == ImportFromModuleName.from_node(statement)
+                if addition.module_name is not None
+                and imported_module(addition.module_name)
+                == imported_module(ImportFromModuleName.from_node(statement))
             )
             if addition.module_name is None:
                 existing_aliases = tuple(

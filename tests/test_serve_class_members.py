@@ -122,6 +122,8 @@ def test_a_chain_calling_super_is_served_together_across_modules(tmp_path: Path)
     )
 
     assert result.is_clean is True
+    leaf = result.simulation.rewritten_sources[(tmp_path / "pkg/leaf.py").as_posix()]
+    assert leaf.count("base import") == 1, leaf
     _apply(tmp_path, result)
     assert _run(tmp_path, (
         "from pkg.leaf import Prompt, ServedPrompt; "
