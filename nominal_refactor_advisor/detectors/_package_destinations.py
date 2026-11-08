@@ -4,12 +4,18 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
-from ..class_index import CompactModuleClassProjection, CompactModuleClassProjectionFamily
-from ..models import RefactorFinding
-from ..patterns import PatternId
-from ..refactors.package_move import PackageMoveFindingRecipeSynthesizer
-from ..taxonomy import CapabilityTag, ObservationTag
 from ..ast_tools import ParsedModuleSet
+from ..class_index import (
+    CompactModuleClassProjection,
+    CompactModuleClassProjectionFamily,
+)
+from ..models import RefactorFinding, SourceLocation
+from ..patterns import PatternId
+from ..refactors.package_move import (
+    DestinationTable,
+    PackageMoveFindingRecipeSynthesizer,
+)
+from ..taxonomy import CapabilityTag, ObservationTag
 from ._base import (
     CompactModuleProjectionDetectorMixin,
     DetectorConfig,
@@ -50,4 +56,17 @@ class FlatModulePackageDestinationDetector(
         projections: Sequence[CompactModuleClassProjection],
         config: DetectorConfig,
     ) -> list[RefactorFinding]:
-        return self.destination_findings(projections, config.package_destination_tables)
+        """Findings are this detector's answers, so they are computed here, where the
+        cache key reads them, never on the answer-free synthesizer it inherits."""
+        return [
+            self.build_finding(
+                f"`{destination.source_path}` belongs in "
+                f"`{destination.destination_path}`, the package its destination "
+                "table declares.",
+                (SourceLocation(destination.source_path, 1, "<module>"),),
+                metrics=destination.metrics(),
+            )
+            for destination in DestinationTable.from_texts(
+                config.package_destination_tables
+            ).destinations(projections)
+        ]
