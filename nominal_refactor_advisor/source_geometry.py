@@ -255,8 +255,9 @@ class SourceTextLayout:
 
     Every geometry over the same text reads one layout (`of`), so a declaration,
     an edit and the parse that hold the same file share its tokenization instead
-    of each caching its own copy. A layout lives while anything holds it; the
-    parse's `source_segments` holds its file's for the parse's lifetime."""
+    of each caching its own copy. A layout lives while a geometry over its text
+    does: the moved declarations of one stage, the edits over one file and the
+    parse's `source_segments` all read the one layout of that file."""
 
     source: str
     _interned: ClassVar[WeakValueDictionary[str, SourceTextLayout]] = WeakValueDictionary()
@@ -329,7 +330,7 @@ class SourceLineSegmentAuthority:
                 return token.start[0]
         raise ValueError("Decorated declaration has no source decorator marker")
 
-    @property
+    @cached_property
     def layout(self) -> SourceTextLayout:
         return SourceTextLayout.of(self.source)
 
