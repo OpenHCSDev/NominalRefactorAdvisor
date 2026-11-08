@@ -140,7 +140,14 @@ class ClassFamilyIndex(ClassDeclarationIndex[IndexedClass], ParsedModuleSetFact)
         projected_modules: Iterable[ParsedModule],
         changed_modules: Iterable[ParsedModule],
     ) -> ClassFamilyIndex:
-        """Derive an exact projected index using an overlay only when closed."""
+        """Derive the exact projected index by rebuilding only what can change.
+
+        A base reference resolves to its exact candidate, its module-local name,
+        or the one known symbol sharing its terminal name. So when symbols
+        appear or disappear (a relocation renames `a.Goal` to `a.b.Goal`), a
+        retained class can resolve differently only if one of its base
+        references ends in such a symbol's class name; those modules rebuild
+        with the changed ones and every other record is kept."""
 
         projected_module_tuple = tuple(projected_modules)
         changed_module_tuple = tuple(changed_modules)
@@ -163,11 +170,34 @@ class ClassFamilyIndex(ClassDeclarationIndex[IndexedClass], ParsedModuleSetFact)
         )
         if not replaced_symbols and not projected_symbols:
             return self
-        if replaced_symbols != projected_symbols:
-            return build_class_family_index(list(projected_module_tuple))
+        moved_names = frozenset(
+            symbol.rsplit(".", 1)[-1]
+            for symbol in replaced_symbols.symmetric_difference(projected_symbols)
+        )
+        rereading_modules = frozenset(
+            record.module_name
+            for record in retained_records
+            if any(
+                not moved_names.isdisjoint(reference.terminal_names)
+                for reference in record.registry_facts.base_references
+            )
+        )
+        rebuilt_modules = (
+            *changed_module_tuple,
+            *(
+                module
+                for module in projected_module_tuple
+                if module.module_name in rereading_modules
+                and module.file_path not in changed_file_paths
+            ),
+        )
         return ClassFamilyIndexBuilder(
-            changed_module_tuple,
-            base_records=retained_records,
+            rebuilt_modules,
+            base_records=tuple(
+                record
+                for record in retained_records
+                if record.module_name not in rereading_modules
+            ),
         ).build()
 
 

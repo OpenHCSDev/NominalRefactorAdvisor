@@ -412,6 +412,12 @@ class CompactNominalReference(ABC):
 
     source_parts: tuple[str, ...]
 
+    @property
+    def terminal_names(self) -> frozenset[str]:
+        """The class names a symbol this reference resolves to can end in."""
+
+        return frozenset((self.source_parts[-1], self.resolved_parts[-1]))
+
     @staticmethod
     def bound_as(
         parts: tuple[str, ...], binding: CompactNominalBinding | None
