@@ -232,14 +232,18 @@ class ModuleImportInsertionPoint(ImportBlockInsertionPointABC):
 
     @property
     def initial_line_number(self) -> int:
-        """Return the first import anchor after any module docstring."""
+        """Return the first import anchor after any module docstring and the
+        blank lines that separate it."""
 
         body = self.module.body
         if not body:
             return 1
         if self._first_statement_index_after_docstring(body):
             docstring = body[0]
-            return (docstring.end_lineno or docstring.lineno) + 1
+            line = (docstring.end_lineno or docstring.lineno) + 1
+            return line + DestinationInsertionSpacing.from_source(
+                self.source, line, inserted_source_is_import_block=True
+            ).following_blank_line_count
         return 1
 
     @property

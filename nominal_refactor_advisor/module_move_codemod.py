@@ -7,10 +7,12 @@ from abc import (
     ABC,
     abstractmethod,
 )
+from collections import Counter
+from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
 
 from .ast_tools import ModuleAnnotationEvaluationMode
-from .class_index import module_public_export_contract
+from .class_index import CompactModulePublicExportContract, module_public_export_contract
 from .codemod_import_bindings import FromModuleImportBindingIdentity
 from .codemod_import_graph import SourceModuleImportGraph
 from .codemod_import_scopes import ModuleImportScope
@@ -52,10 +54,309 @@ from .codemod_source_edits import (
     SourceFileCreation,
     SourceInsertion,
     SourceTargetEditor,
+    SourceTextGeometry,
+    SourceTextSpanReplacement,
 )
 from .codemod_spacing import DestinationInsertionSpacing
 from .declaration_dependencies import DeclarationDependencyProjection
 from .lexical_bindings import ImportFromModuleName
+from .python_module_identity import PythonModulePathIdentity
+
+@dataclass(frozen=True)
+class ModuleNameRedirect:
+    """Every importer of names leaving one module, redirected to each name's new
+    owner, so each importer keeps working:
+
+    - `from source import Name` imports the name from its owner;
+    - `from source import *` gains each moved name the source's export contract
+      proves public, as `from owner import Name as Name`, so it stays exposed
+      through the star;
+    - a `<module>.Name` read through a binding of the source module object reads
+      `Name`, imported from its owner.
+
+    A reader it cannot rewrite is refused (`_SourceModuleObjectReads`,
+    `_StarExportedNames`)."""
+
+    source_path: str
+    destinations: Mapping[str, str]
+
+    def consumer_edits(
+        self,
+        context: CodemodSelectorContext,
+        *,
+        excluded_paths: frozenset[str],
+    ) -> tuple[NominalSourceEdit, ...]:
+        import_graph = context.module_import_graph
+        source_module_name = import_graph.module_name_for_file_path(self.source_path)
+        if source_module_name is None:
+            raise ValueError(
+                f"Source module identity is unavailable for {self.source_path!r}"
+            )
+        moved_names = frozenset(self.destinations)
+        star_exported = _StarExportedNames.of(
+            module_public_export_contract(
+                context.parsed_module_for_source_path(self.source_path)
+            ),
+            tuple(sorted(moved_names)),
+        )
+        edits: list[NominalSourceEdit] = []
+        for source_file in context.source_index.files:
+            consumer_path = source_file.file_path
+            module = context.module_nodes_by_file_path.get(consumer_path)
+            if consumer_path in excluded_paths or module is None:
+                continue
+            identity = source_file.module_path_identity
+            for scope in ModuleImportScope:
+                for statement in scope.import_statements(module):
+                    if not isinstance(statement, ast.ImportFrom) or (
+                        identity.resolve_import_from_module(
+                            imported_module=statement.module,
+                            level=statement.level,
+                        )
+                        != source_module_name
+                    ):
+                        continue
+                    named_aliases = tuple(
+                        alias for alias in statement.names if alias.name in moved_names
+                    )
+                    if named_aliases:
+                        edits.append(
+                            ModuleImportMutation.remove_names(
+                                file_path=consumer_path,
+                                module_name=ImportFromModuleName.from_node(
+                                    statement
+                                ).source,
+                                names=(alias.name for alias in named_aliases),
+                                scope=scope,
+                            )
+                        )
+                    edits.extend(
+                        self._owner_imports(
+                            import_graph,
+                            consumer_path,
+                            scope,
+                            (
+                                *named_aliases,
+                                *(
+                                    ast.alias(name=name, asname=name)
+                                    for alias in statement.names
+                                    if alias.name == "*"
+                                    for name in star_exported.required(consumer_path)
+                                ),
+                            ),
+                        )
+                    )
+            module_reads = _SourceModuleObjectReads.of(
+                module,
+                identity,
+                source_module_name=source_module_name,
+                moved_names=moved_names,
+                file_path=consumer_path,
+            )
+            if module_reads.names:
+                edits.extend(
+                    self._owner_imports(
+                        import_graph,
+                        consumer_path,
+                        ModuleImportScope.RUNTIME,
+                        tuple(ast.alias(name=name) for name in module_reads.names),
+                    )
+                )
+                edits.append(
+                    module_reads.rewrite(context.sources_by_file_path[consumer_path])
+                )
+        return tuple(edits)
+
+    def _owner_imports(
+        self,
+        import_graph: SourceModuleImportGraph,
+        consumer_path: str,
+        scope: ModuleImportScope,
+        aliases: tuple[ast.alias, ...],
+    ) -> Iterator[ModuleImportMutation]:
+        """One import per owner, of the aliases that owner now declares."""
+
+        for destination_path in sorted({self.destinations[alias.name] for alias in aliases}):
+            owned = tuple(
+                alias for alias in aliases if self.destinations[alias.name] == destination_path
+            )
+            yield ModuleImportMutation.from_source(
+                file_path=consumer_path,
+                import_source=ImportFromSource(
+                    module_name=scope.required_module_reference(
+                        import_graph,
+                        importing_file_path=consumer_path,
+                        imported_file_path=destination_path,
+                        imported_name=owned[0].name,
+                    ),
+                    aliases=owned,
+                ).source,
+                scope=scope,
+            )
+
+
+@dataclass(frozen=True)
+class _StarExportedNames:
+    """The moved names a star import of the source module carries, from the
+    source's export contract; a name the contract cannot decide is refused."""
+
+    names: tuple[str, ...]
+    unresolved: tuple[str, ...]
+
+    @classmethod
+    def of(
+        cls,
+        contract: CompactModulePublicExportContract,
+        moved_symbol_names: tuple[str, ...],
+    ) -> _StarExportedNames:
+        exposures = tuple((name, contract.exposure_for(name)) for name in moved_symbol_names)
+        return cls(
+            names=tuple(name for name, exposure in exposures if exposure.proves_public_exposure),
+            unresolved=tuple(
+                name for name, exposure in exposures if exposure.introduces_uncertainty
+            ),
+        )
+
+    def required(self, file_path: str) -> tuple[str, ...]:
+        if self.unresolved:
+            raise ValueError(
+                f"{file_path!r} star-imports the source, whose export contract does "
+                f"not decide {self.unresolved!r}"
+            )
+        return self.names
+
+
+@dataclass(frozen=True)
+class _SourceModuleObjectReads:
+    """A consumer's `module.Name` reads of moved names through its bindings of the
+    source module object. The move refuses when such a binding is used other than
+    by attribute reads, is rebound, or when a read name is already bound there."""
+
+    file_path: str
+    reads: tuple[tuple[ast.Attribute, str], ...]
+
+    @property
+    def names(self) -> tuple[str, ...]:
+        return tuple(sorted({name for _node, name in self.reads}))
+
+    @classmethod
+    def of(
+        cls,
+        module: ast.Module,
+        identity: PythonModulePathIdentity,
+        *,
+        source_module_name: str,
+        moved_names: frozenset[str],
+        file_path: str,
+    ) -> _SourceModuleObjectReads:
+        source_parts = tuple(source_module_name.split("."))
+        chains = frozenset(cls._bound_chains(module, identity, source_parts))
+        if not chains:
+            return cls(file_path, ())
+        bindings = cls._bound_name_counts(module)
+        parents = {
+            child: parent
+            for parent in ast.walk(module)
+            for child in ast.iter_child_nodes(parent)
+        }
+        reads: list[tuple[ast.Attribute, str]] = []
+        for chain in chains:
+            if bindings[chain[0]] > 1:
+                raise ValueError(
+                    f"{file_path!r} rebinds {chain[0]!r}, which binds the source "
+                    f"module {source_module_name!r}"
+                )
+            for node in ast.walk(module):
+                if not (isinstance(node, ast.Name) and node.id == chain[0]):
+                    continue
+                outermost, parts = cls._read_chain(node, parents, len(chain) + 1)
+                if parts[: len(chain)] == chain and len(parts) > len(chain):
+                    if parts[-1] in moved_names:
+                        reads.append((outermost, parts[-1]))
+                elif chain[: len(parts)] == parts:
+                    raise ValueError(
+                        f"{file_path!r} uses the source module object "
+                        f"{'.'.join(parts)!r} other than by reading an attribute"
+                    )
+        taken = tuple(sorted({name for _node, name in reads if bindings[name]}))
+        if taken:
+            raise ValueError(
+                f"{file_path!r} already binds {taken!r}, which its source-module "
+                "reads would be redirected to"
+            )
+        return cls(file_path, tuple(reads))
+
+    @staticmethod
+    def _bound_chains(
+        module: ast.Module,
+        identity: PythonModulePathIdentity,
+        source_parts: tuple[str, ...],
+    ) -> Iterator[tuple[str, ...]]:
+        """The attribute chain that reaches the source module from each binding."""
+
+        for node in ast.walk(module):
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    alias_parts = tuple(alias.name.split("."))
+                    if alias.asname is None and alias_parts[0] == source_parts[0]:
+                        yield source_parts
+                    elif alias.asname is not None and source_parts[: len(alias_parts)] == alias_parts:
+                        yield (alias.asname, *source_parts[len(alias_parts) :])
+            elif isinstance(node, ast.ImportFrom):
+                package = identity.resolve_import_from_module(
+                    imported_module=node.module,
+                    level=node.level,
+                )
+                for alias in node.names:
+                    alias_parts = (*(package or "").split("."), alias.name)
+                    if package and source_parts[: len(alias_parts)] == alias_parts:
+                        yield (alias.asname or alias.name, *source_parts[len(alias_parts) :])
+
+    @staticmethod
+    def _bound_name_counts(module: ast.Module) -> Counter[str]:
+        counts: Counter[str] = Counter()
+        for node in ast.walk(module):
+            if isinstance(node, ast.Name) and not isinstance(node.ctx, ast.Load):
+                counts[node.id] += 1
+            elif isinstance(node, ast.arg):
+                counts[node.arg] += 1
+            elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                counts[node.name] += 1
+            elif isinstance(node, ast.alias) and node.name != "*":
+                counts[node.asname or node.name.split(".")[0]] += 1
+        return counts
+
+    @staticmethod
+    def _read_chain(
+        node: ast.Name,
+        parents: dict[ast.AST, ast.AST],
+        depth: int,
+    ) -> tuple[ast.expr, tuple[str, ...]]:
+        outermost: ast.expr = node
+        parts = [node.id]
+        while len(parts) < depth:
+            parent = parents.get(outermost)
+            if not (isinstance(parent, ast.Attribute) and parent.value is outermost):
+                break
+            outermost = parent
+            parts.append(parent.attr)
+        return outermost, tuple(parts)
+
+    def rewrite(self, source: str) -> NominalSourceEdit:
+        geometry = SourceTextGeometry(source)
+        return geometry.nominal_edit(
+            file_path=self.file_path,
+            replacements=tuple(
+                SourceTextSpanReplacement.from_offsets(
+                    start_offset=start,
+                    end_offset=end,
+                    replacement_source=name,
+                )
+                for node, name in self.reads
+                for start, end in (geometry.required_node_offsets(node),)
+            ),
+        )
+
 
 @dataclass(frozen=True, kw_only=True)
 class SourceTopLevelSymbolClosureMoveCarrier:
@@ -87,7 +388,7 @@ class SourceTopLevelSymbolClosureMovePlan(SourceTopLevelSymbolClosureMoveCarrier
     source_blocks: tuple[MovedTopLevelDeclarationSource, ...]
     dependency_report: ModuleMoveDependencyReport
     source_binding_import_sources: tuple[str, ...]
-    consumer_import_mutations: tuple[ModuleImportMutation, ...]
+    consumer_edits: tuple[NominalSourceEdit, ...]
 
     @classmethod
     def from_request(
@@ -133,11 +434,12 @@ class SourceTopLevelSymbolClosureMovePlan(SourceTopLevelSymbolClosureMoveCarrier
             destination_path=request.destination_path,
             moved_symbol_names=moved_symbol_names,
         )
-        consumer_import_mutations = cls._consumer_import_mutations(
-            context,
+        consumer_edits = ModuleNameRedirect(
             source_path=request.source_path,
-            destination_path=request.destination_path,
-            moved_symbol_names=moved_symbol_names,
+            destinations={name: request.destination_path for name in moved_symbol_names},
+        ).consumer_edits(
+            context,
+            excluded_paths=frozenset((request.source_path, request.destination_path)),
         )
         return cls(
             source_path=request.source_path,
@@ -147,76 +449,9 @@ class SourceTopLevelSymbolClosureMovePlan(SourceTopLevelSymbolClosureMoveCarrier
             ),
             dependency_report=report,
             source_binding_import_sources=source_binding_import_sources,
-            consumer_import_mutations=consumer_import_mutations,
+            consumer_edits=consumer_edits,
             rationale=request.rationale,
         )
-
-    def _consumer_import_mutations(
-        context: CodemodSelectorContext,
-        *,
-        source_path: str,
-        destination_path: str,
-        moved_symbol_names: tuple[str, ...],
-    ) -> tuple[ModuleImportMutation, ...]:
-        import_graph = context.module_import_graph
-        source_module_name = import_graph.module_name_for_file_path(source_path)
-        if source_module_name is None:
-            raise ValueError(
-                f"Source module identity is unavailable for {source_path!r}"
-            )
-        moved_names = frozenset(moved_symbol_names)
-        mutations: list[ModuleImportMutation] = []
-        for source_file in context.source_index.files:
-            consumer_path = source_file.file_path
-            if consumer_path in (source_path, destination_path):
-                continue
-            module = context.module_nodes_by_file_path.get(consumer_path)
-            if module is None:
-                continue
-            for scope in ModuleImportScope:
-                for statement in scope.import_statements(module):
-                    if not isinstance(statement, ast.ImportFrom):
-                        continue
-                    imported_module = (
-                        source_file.module_path_identity.resolve_import_from_module(
-                            imported_module=statement.module,
-                            level=statement.level,
-                        )
-                    )
-                    if imported_module != source_module_name:
-                        continue
-                    moved_aliases = tuple(
-                        alias for alias in statement.names if alias.name in moved_names
-                    )
-                    if not moved_aliases:
-                        continue
-                    destination_reference = scope.required_module_reference(
-                        import_graph,
-                        importing_file_path=consumer_path,
-                        imported_file_path=destination_path,
-                        imported_name=moved_aliases[0].name,
-                    )
-                    mutations.extend(
-                        (
-                            ModuleImportMutation.remove_names(
-                                file_path=consumer_path,
-                                module_name=ImportFromModuleName.from_node(
-                                    statement
-                                ).source,
-                                names=(alias.name for alias in moved_aliases),
-                                scope=scope,
-                            ),
-                            ModuleImportMutation.from_source(
-                                file_path=consumer_path,
-                                import_source=ImportFromSource(
-                                    module_name=destination_reference,
-                                    aliases=moved_aliases,
-                                ).source,
-                                scope=scope,
-                            ),
-                        )
-                    )
-        return tuple(mutations)
 
     @staticmethod
     def _validate_destination(
@@ -502,7 +737,7 @@ class SourceTopLevelSymbolClosureMovePlan(SourceTopLevelSymbolClosureMoveCarrier
             )
             for import_source in self.source_binding_import_sources
         )
-        edits.extend(self.consumer_import_mutations)
+        edits.extend(self.consumer_edits)
         return tuple(edits)
 
     def destination_insertion(
@@ -728,6 +963,10 @@ class NewModuleSymbolMoveOperationABC(ModuleSymbolMoveOperation, ABC):
         OptionalStringPayloadValueCodec(),
         default=None,
     )
+    destination_docstring: str | None = codemod_payload_field(
+        OptionalStringPayloadValueCodec(),
+        default=None,
+    )
 
     def source_file_creations(
         self,
@@ -743,7 +982,8 @@ class NewModuleSymbolMoveOperationABC(ModuleSymbolMoveOperation, ABC):
         )
 
     def initial_destination_source(self, context: CodemodSelectorContext) -> str:
-        """Resolve caller source or derive the source module's annotation policy."""
+        """Resolve caller source, or the caller's module docstring followed by the
+        source module's derived annotation policy."""
 
         if self.destination_source is not None:
             return self.destination_source
@@ -751,7 +991,9 @@ class NewModuleSymbolMoveOperationABC(ModuleSymbolMoveOperation, ABC):
         annotation_mode = ModuleAnnotationEvaluationMode.from_module(
             context.module_nodes_by_file_path[source_path]
         )
-        return annotation_mode.new_module_prelude()
+        if self.destination_docstring is None:
+            return annotation_mode.new_module_prelude()
+        return f'"""{self.destination_docstring}"""\n\n{annotation_mode.new_module_prelude()}'
 
     def source_edits_from_snapshot(
         self,
