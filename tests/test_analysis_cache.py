@@ -3740,6 +3740,42 @@ def test_single_file_rebuild_does_not_start_idle_projection_workers(tmp_path):
     assert incremental.findings == expected.findings
 
 
+def test_content_signature_index_drops_entries_a_family_has_superseded(
+    tmp_path: Path,
+) -> None:
+    """An entry under an older implementation of a family this scan answered can
+    never be looked up again, so storing drops it; a family the scan did not
+    touch keeps its entries. The 11-08 agent-comms index had grown to 208,600
+    entries under 298 schemas, 1.2 s to load on every scan."""
+
+    cache_dir = tmp_path / "collected-family"
+    source = ast_tools_module.CollectedFamilyCacheContext(
+        path=Path("/checkout/pkg/mod.py"),
+        module_name="pkg.mod",
+        source_signature="source-v1",
+        family_cache_dir=cache_dir,
+    )
+    current = source.identity(RegistrationShapeFamily)
+    older = replace(
+        current,
+        family_schema=replace(current.family_schema, item_schema_signature="older"),
+    )
+    untouched = source.identity(class_index_module.CompactModuleClassProjectionFamily)
+    index = ast_tools_module.CollectedFamilyContentSignatureIndex.load(cache_dir)
+    index.record(older, content_signature="content-older")
+    index.record(untouched, content_signature="content-untouched")
+    index.store_if_dirty()
+
+    later = ast_tools_module.CollectedFamilyContentSignatureIndex.load(cache_dir)
+    later.record(current, content_signature="content-current")
+    later.store_if_dirty()
+
+    stored = ast_tools_module.CollectedFamilyContentSignatureIndex.load(cache_dir)
+    assert stored.lookup(current) == "content-current"
+    assert stored.lookup(untouched) == "content-untouched"
+    assert stored.lookup(older) is None
+
+
 def test_collected_family_content_signature_index_rejects_stale_source(
     tmp_path: Path,
 ) -> None:
