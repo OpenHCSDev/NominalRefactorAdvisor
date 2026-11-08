@@ -45,15 +45,20 @@ class ServedSubclassHeader:
         node = self.node
         if node.decorator_list:
             raise ValueError("Served header carries decorators; write them on the class body")
-        if not any(isinstance(base, ast.Name) and base.id == source_class.name for base in node.bases):
+        if not any(
+            isinstance(named := base.value if isinstance(base, ast.Subscript) else base, ast.Name)
+            and named.id == source_class.name
+            for base in node.bases
+        ):
             raise ValueError(f"Served header {self.source!r} does not name {source_class.name!r} as a base")
         if node.name in module_names:
             raise ValueError(f"{node.name!r} is already bound in {source_class.file_path}")
+        parameters = frozenset(parameter.name for parameter in node.type_params)
         unbound = sorted(
             name.id
             for part in (*node.bases, *(keyword.value for keyword in node.keywords))
             for name in ast.walk(part)
-            if isinstance(name, ast.Name) and name.id not in module_names
+            if isinstance(name, ast.Name) and name.id not in module_names | parameters
             and not hasattr(builtins, name.id)
         )
         if unbound:
