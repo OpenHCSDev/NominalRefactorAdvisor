@@ -133,7 +133,7 @@ def test_process_cli_hard_exits_after_publishing_deadline_payload(
     monkeypatch.setattr(
         sys,
         "argv",
-        ["nominal-refactor-advisor", "--json", "sample.py"],
+        ["nominal-refactor-advisor", "--json", "--scan-budget-seconds", "1", "sample.py"],
     )
 
     with pytest.raises(SystemExit, match="124"):
