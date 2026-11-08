@@ -9,7 +9,6 @@ from abc import (
 )
 from collections import Counter
 from collections.abc import (
-    Callable,
     Iterable,
     Iterator,
     Mapping,
@@ -297,16 +296,7 @@ class ModuleNameRedirect:
             retargets = _SourceModuleAliasRetargets.of(
                 parsed.fact(ModuleNodeIndex),
                 source_module_name=source_module_name,
-                owner_modules={
-                    name: owner
-                    for name, path in self.destinations.items()
-                    if (owner := import_graph.module_name_for_file_path(path)) is not None
-                },
-                access_owner=lambda access: (
-                    None
-                    if (path := access.reached_path(self)) is None
-                    else import_graph.module_name_for_file_path(path)
-                ),
+                owners=_RedirectOwners(self, import_graph),
             )
             if retargets.aliases:
                 edits.append(retargets.rewrite(consumer_path, context.sources_by_file_path[consumer_path]))
@@ -542,23 +532,24 @@ class ModuleNameRedirect:
             )
         return tuple(replacements)
 
-    def name_reader_path(self, name: str) -> str | None:
-        """The module whose code reads `name` once it leaves the source. These
-        owners spread the readers, so no one module is it."""
+    def name_reader_paths(self, name: str) -> frozenset[str]:
+        """The modules whose code reads `name` once it leaves the source. These
+        owners spread the readers, so no module is known to be one."""
 
         del name
-        return None
+        return frozenset()
 
     def patched_reader_path(self, name: str, file_path: str) -> str:
-        """The module a patch of `source.name` must target instead."""
+        """The module a patch of `source.name` must target instead: its one reader."""
 
-        reader_path = self.name_reader_path(name)
-        if reader_path is None:
-            raise ValueError(
-                f"{file_path!r} patches {name!r} on the source module, whose readers "
-                "the move spreads across owners"
-            )
-        return reader_path
+        match tuple(self.name_reader_paths(name)):
+            case (reader_path,):
+                return reader_path
+            case _:
+                raise ValueError(
+                    f"{file_path!r} patches {name!r} on the source module, whose readers "
+                    "the move spreads across owners"
+                )
 
     def _accessed_module_objects(
         self,
@@ -630,9 +621,9 @@ class RelocationNameRedirect(ModuleNameRedirect):
 
     reader_path: str
 
-    def name_reader_path(self, name: str) -> str | None:
+    def name_reader_paths(self, name: str) -> frozenset[str]:
         del name
-        return self.reader_path
+        return frozenset((self.reader_path,))
 
 
 @dataclass(frozen=True)
@@ -738,8 +729,8 @@ class _NamedModuleMemberAccess:
     def target_path(self, redirect: ModuleNameRedirect, file_path: str) -> str:
         raise NotImplementedError
 
-    def reached_path(self, redirect: ModuleNameRedirect) -> str | None:
-        """The one module this access reaches once its name leaves the source."""
+    def reached_paths(self, redirect: ModuleNameRedirect) -> frozenset[str]:
+        """The modules this access may reach once its name leaves the source."""
         raise NotImplementedError
 
 
@@ -754,8 +745,8 @@ class _NamedModuleMemberRead(_NamedModuleMemberAccess):
     def target_path(self, redirect: ModuleNameRedirect, file_path: str) -> str:
         return redirect.destinations[self.member_name]
 
-    def reached_path(self, redirect: ModuleNameRedirect) -> str | None:
-        return redirect.destinations[self.member_name]
+    def reached_paths(self, redirect: ModuleNameRedirect) -> frozenset[str]:
+        return frozenset((redirect.destinations[self.member_name],))
 
 
 @dataclass(frozen=True)
@@ -772,8 +763,63 @@ class _NamedModuleMemberPatch(_NamedModuleMemberAccess):
     def target_path(self, redirect: ModuleNameRedirect, file_path: str) -> str:
         return redirect.patched_reader_path(self.member_name, file_path)
 
-    def reached_path(self, redirect: ModuleNameRedirect) -> str | None:
-        return redirect.name_reader_path(self.member_name)
+    def reached_paths(self, redirect: ModuleNameRedirect) -> frozenset[str]:
+        return redirect.name_reader_paths(self.member_name)
+
+
+class _AliasOwners(ABC):
+    """Which modules a use of a source-module alias reaches once the moved names
+    leave the source: an attribute read `s.Name`, or a by-name access
+    `getattr(s, "Name")`. A use reaching anything but one module keeps the alias."""
+
+    @abstractmethod
+    def attribute_owners(self, name: str) -> frozenset[str]:
+        raise NotImplementedError
+
+    @abstractmethod
+    def access_owners(self, access: _NamedModuleMemberAccess) -> frozenset[str]:
+        raise NotImplementedError
+
+
+@dataclass(frozen=True)
+class _RedirectOwners(_AliasOwners):
+    """A consumer's alias, followed through the move's redirect."""
+
+    redirect: ModuleNameRedirect
+    import_graph: SourceModuleImportGraph
+
+    def attribute_owners(self, name: str) -> frozenset[str]:
+        if name not in self.redirect.destinations:
+            return frozenset()
+        return self._modules((self.redirect.destinations[name],))
+
+    def access_owners(self, access: _NamedModuleMemberAccess) -> frozenset[str]:
+        if access.member_name not in self.redirect.destinations:
+            return frozenset()
+        return self._modules(access.reached_paths(self.redirect))
+
+    def _modules(self, paths: Iterable[str]) -> frozenset[str]:
+        return frozenset(
+            module
+            for path in paths
+            if (module := self.import_graph.module_name_for_file_path(path))
+        )
+
+
+@dataclass(frozen=True)
+class _DestinationOwners(_AliasOwners):
+    """The destination's own alias of the source: its reads of the moved names
+    now read the destination itself. A by-name access stays an alias use."""
+
+    module_name: str
+    names: frozenset[str]
+
+    def attribute_owners(self, name: str) -> frozenset[str]:
+        return frozenset((self.module_name,)) if name in self.names else frozenset()
+
+    def access_owners(self, access: _NamedModuleMemberAccess) -> frozenset[str]:
+        del access
+        return frozenset()
 
 
 @dataclass(frozen=True)
@@ -799,8 +845,7 @@ class _SourceModuleAliasRetargets:
         index: ModuleNodeIndex,
         *,
         source_module_name: str,
-        owner_modules: Mapping[str, str],
-        access_owner: Callable[[_NamedModuleMemberAccess], str | None] = lambda access: None,
+        owners: _AliasOwners,
     ) -> _SourceModuleAliasRetargets:
         candidates = tuple(
             alias
@@ -817,9 +862,7 @@ class _SourceModuleAliasRetargets:
                 for alias in candidates
                 if alias.asname is not None
                 and index.bindings_in(alias.asname, scope := index.scope_of(alias)) == 1
-                for owner in cls._sole_owner(
-                    index, alias.asname, scope, owner_modules, access_owner
-                )
+                for owner in cls._sole_owner(index, alias.asname, scope, owners)
             )
         )
 
@@ -828,28 +871,24 @@ class _SourceModuleAliasRetargets:
         index: ModuleNodeIndex,
         binding: str,
         scope: ast.AST | None,
-        owner_modules: Mapping[str, str],
-        access_owner: Callable[[_NamedModuleMemberAccess], str | None],
+        owners: _AliasOwners,
     ) -> tuple[str, ...]:
         """The one module every use of the alias's variable in `scope` reaches a
         moved name in, or none."""
 
-        owners: set[str | None] = set()
+        reached: set[str] = set()
         for node in index.uses_of(binding, scope):
             parent = index.parents.get(node)
-            if (
-                isinstance(parent, ast.Attribute)
-                and parent.value is node
-                and parent.attr in owner_modules
-            ):
-                owners.add(owner_modules[parent.attr])
-            elif (
-                access := _NamedModuleMemberAccess.of(node, index.parents)
-            ) is not None and access.member_name in owner_modules:
-                owners.add(access_owner(access))
+            if isinstance(parent, ast.Attribute) and parent.value is node:
+                use_owners = owners.attribute_owners(parent.attr)
+            elif access := _NamedModuleMemberAccess.of(node, index.parents):
+                use_owners = owners.access_owners(access)
             else:
                 return ()
-        return tuple(owners) if len(owners) == 1 and None not in owners else ()
+            if len(use_owners) != 1:
+                return ()
+            reached |= use_owners
+        return tuple(reached) if len(reached) == 1 else ()
 
     def localized_edits(
         self,
@@ -1234,7 +1273,7 @@ class SourceTopLevelSymbolClosureMovePlan(SourceTopLevelSymbolClosureMoveCarrier
                     request.destination_path
                 ).fact(ModuleNodeIndex),
                 source_module_name=source_module_name,
-                owner_modules={name: destination_module_name for name in moved_symbol_names},
+                owners=_DestinationOwners(destination_module_name, frozenset(moved_symbol_names)),
             ).localized_edits(
                 destination_index,
                 file_path=request.destination_path,
