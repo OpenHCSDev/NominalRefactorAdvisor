@@ -48,6 +48,7 @@ from .analysis_cache import (
 from .collection_algebra import DeferredBatchSequence
 from .python_module_identity import PythonModulePathIdentity
 from .scan_cache import ScanCache
+from .type_checker_session import TypeCheckerTiming, TypeCheckerTimingLedger
 from .source_geometry import read_source_text
 from .ast_tools import (
     CollectedFamily,
@@ -1238,6 +1239,64 @@ def build_compact_projection_shard(
     )
 
 
+@dataclass(frozen=True)
+class CompactGroupWorkerState:
+    """What a forked group worker inherits: the manifest that loads each family
+    from the cache, the config, and the family groups to join."""
+
+    manifest: BoundedCompactProjectionManifest
+    config: DetectorConfig
+    groups: tuple[
+        tuple[tuple[type[CollectedFamily], ...], tuple[type[IssueDetector], ...]], ...
+    ]
+    active: ClassVar[CompactGroupWorkerState | None] = None
+
+    @classmethod
+    def install(cls, state: CompactGroupWorkerState | None) -> None:
+        cls.active = state
+
+    @staticmethod
+    def analyze_group(
+        index: int,
+    ) -> tuple[
+        tuple[tuple[type[IssueDetector], list[RefactorFinding]], ...],
+        dict[tuple[type[CollectedFamily], str], int],
+        TypeCheckerTiming,
+    ]:
+        """One group's findings, materialized to cross the process boundary,
+        the projection counts its families loaded, and its type-checker time:
+        the worker's ledger is its own, so the parent records what it spent."""
+
+        state = CompactGroupWorkerState.active
+        if state is None:
+            raise RuntimeError("compact group worker started without its state")
+        families, detector_types = state.groups[index]
+        manifest = state.manifest
+        projections_by_family = {
+            family: manifest.deferred_projections_for_family(
+                family, derive_content_identity=False
+            )
+            for family in families
+        }
+        collected: list[tuple[type[IssueDetector], list[RefactorFinding]]] = []
+        with TypeCheckerTimingLedger.scope() as ledger:
+            _compact_findings_by_detector(
+                tuple(detector_types),
+                projections_by_family,
+                state.config,
+                shared_contexts={},
+                finding_consumer=lambda detector_type, detector_findings: (
+                    collected.append((detector_type, list(detector_findings)))
+                ),
+                retain_findings=False,
+            )
+        return (
+            tuple(collected),
+            dict(manifest._materialized_source_counts),
+            ledger.timing,
+        )
+
+
 @dataclass
 class BoundedCompactProjectionManifest:
     """Load compact families only for the repository join currently running."""
@@ -1591,8 +1650,17 @@ class BoundedCompactProjectionManifest:
             | None
         ) = None,
         retain_findings: bool = True,
+        worker_count: int = 1,
     ) -> dict[type[IssueDetector], list[RefactorFinding]]:
-        """Join bounded families, optionally consuming detector shards eagerly."""
+        """Join bounded families, optionally consuming detector shards eagerly.
+
+        With a worker budget, each family group's join runs in a forked
+        worker: the groups are independent, and run one after another they
+        were a cold scan's whole analysis phase (42.9 s on agent-comms, the
+        longest group 17.9 s). The cache filter runs here in the parent, where
+        the identities it records are read, and only the detectors it leaves
+        are sent to a worker.
+        """
 
         detector_types_by_families: dict[
             tuple[type[CollectedFamily], ...], list[type[IssueDetector]]
@@ -1614,6 +1682,45 @@ class BoundedCompactProjectionManifest:
                 finding_consumer(detector_type, detector_findings)
             if retain_findings:
                 findings[detector_type] = list(detector_findings)
+
+        group_plan = DetectorAnalysisWorkerPlan(
+            requested_worker_count=worker_count,
+            work_item_count=len(detector_types_by_families),
+            minimum_auto_work_items=2,
+        )
+        if group_plan.uses_process_pool:
+            groups = tuple(
+                (families, selected)
+                for families, detector_types in detector_types_by_families.items()
+                if (
+                    selected := (
+                        tuple(detector_types)
+                        if detector_type_filter is None
+                        else detector_type_filter(
+                            tuple(detector_types),
+                            {
+                                family: self.deferred_projections_for_family(
+                                    family, derive_content_identity=True
+                                )
+                                for family in families
+                            },
+                        )
+                    )
+                )
+            )
+            CompactGroupWorkerState.install(CompactGroupWorkerState(self, config, groups))
+            try:
+                group_results = group_plan.map(
+                    CompactGroupWorkerState.analyze_group, range(len(groups))
+                )
+            finally:
+                CompactGroupWorkerState.install(None)
+            for group_findings, materialized_counts, timing in group_results:
+                self._materialized_source_counts.update(materialized_counts)
+                TypeCheckerTimingLedger.active().record(timing)
+                for detector_type, detector_findings in group_findings:
+                    accept_detector_findings(detector_type, detector_findings)
+            return findings
 
         shared_contexts: dict[Hashable, object] = {}
 
@@ -2553,6 +2660,7 @@ def analyze_compact_roots_with_cache(
                 else None
             ),
             retain_findings=False,
+            worker_count=parse_workers,
         )
     findings = (
         list(aggregate_lookup.findings)
