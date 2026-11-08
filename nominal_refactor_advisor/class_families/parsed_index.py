@@ -36,6 +36,7 @@ from ..class_namespace import ClassNamespaceExecutionEvidence
 from ..class_symbols import (
     ClassSymbolResolutionAuthority,
     _unique_known_symbol_by_suffix,
+    _UniqueKnownSymbolSuffixIndex,
     iter_class_definitions,
 )
 from ..collection_algebra import (
@@ -317,8 +318,11 @@ class ClassFamilyIndexBuilder:
             ).values()
         )
         known_symbols = frozenset(record.symbol for record in class_records)
+        unique_symbols_by_suffix = _unique_known_symbol_by_suffix(known_symbols)
         classes_by_symbol = {
-            record.symbol: self.resolved_record(record, known_symbols)
+            record.symbol: self.resolved_record(
+                record, known_symbols, unique_symbols_by_suffix
+            )
             for record in class_records
         }
         authority = RegisteringMetaclassAuthority(
@@ -350,11 +354,13 @@ class ClassFamilyIndexBuilder:
         self,
         record: IndexedClass,
         known_symbols: frozenset[str],
+        unique_symbols_by_suffix: _UniqueKnownSymbolSuffixIndex,
     ) -> IndexedClass:
+        """One record's bases resolved against the build's one suffix index."""
+
         parsed_module = self.parsed_module_by_name.get(record.module_name)
         if parsed_module is None:
             return self.base_record_with_current_bases(record, known_symbols)
-        unique_symbols_by_suffix = _unique_known_symbol_by_suffix(known_symbols)
         return record.with_resolved_base_symbols(
             tuple(
                 resolved
