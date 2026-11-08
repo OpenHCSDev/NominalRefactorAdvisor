@@ -1554,6 +1554,13 @@ class CodemodSimulationReport(DataclassJsonReport):
                 rewritten_sources.pop(file_path, None)
                 deleted_file_paths.add(file_path)
             validated_file_paths.update(report.validated_file_paths)
+        # A file the sequence created and later deleted was never on disk: absent
+        # at the base and absent at the end is no deletion.
+        deleted_file_paths.difference_update(
+            file_path
+            for file_path, revision in initial_revisions.items()
+            if revision.source_hash is None
+        )
         backend = report_tuple[0].backend
         return cls(
             rewrites=tuple(
