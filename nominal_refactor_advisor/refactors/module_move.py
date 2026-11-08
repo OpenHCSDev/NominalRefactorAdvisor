@@ -72,6 +72,8 @@ from ..codemod_source_edits import (
     SourceTargetEditor,
     SourceTextGeometry,
     SourceTextSpanReplacement,
+    TextFileCarryEnd,
+    TextFileChange,
     TextFileEdit,
 )
 from ..codemod_spacing import DestinationInsertionSpacing
@@ -1247,7 +1249,7 @@ class SourceTopLevelSymbolClosureMovePlan(SourceTopLevelSymbolClosureMoveCarrier
             for declaration in declarations
         )
         report = cls._dependency_report(
-            context.module_import_graph,
+            context,
             source_table,
             destination_table,
             request,
@@ -1452,7 +1454,7 @@ class SourceTopLevelSymbolClosureMovePlan(SourceTopLevelSymbolClosureMoveCarrier
     @classmethod
     def _dependency_report(
         cls,
-        import_graph: SourceModuleImportGraph,
+        context: CodemodSelectorContext,
         source_table: ModuleSymbolTable,
         destination_table: ModuleSymbolTable,
         request: SourceTopLevelSymbolClosureMoveRequest,
@@ -1472,11 +1474,12 @@ class SourceTopLevelSymbolClosureMovePlan(SourceTopLevelSymbolClosureMoveCarrier
         destination_annotation_mode = ModuleAnnotationEvaluationMode.from_module(
             destination_table.module
         )
+        import_graph = context.module_import_graph
         source_module_context_names = tuple(
             sorted(
                 moved_dependencies.names
                 & source_table.implicit_module_names
-                - operation.module_context_names_following(source_table, moved_names)
+                - operation.module_context_names_following(context, source_table, moved_names)
             )
         )
         builtin_dependency_names = (
@@ -1802,10 +1805,14 @@ class ModuleSymbolMoveOperation(RepositorySourceReprovedOperation, ABC):
     destination_path: str = codemod_payload_field(SourcePathPayloadValueCodec())
 
     def module_context_names_following(
-        self, source_table: ModuleSymbolTable, moved_names: frozenset[str]
+        self,
+        context: CodemodSelectorContext,
+        source_table: ModuleSymbolTable,
+        moved_names: frozenset[str],
     ) -> frozenset[str]:
         """Module-context names whose meaning moves with the code. Into a module that
         already exists, none: `__name__` there names another module."""
+        del context
         return frozenset()
 
     def dependency_report(
@@ -1994,23 +2001,174 @@ class ExistingModuleSymbolMoveOperationABC(ModuleSymbolMoveOperation, ABC):
         return self.move_source_edits(context)
 
 
+class _ModuleSiblingData(ABC):
+    """What a module reads beside itself through `__file__`. A move that takes the
+    whole module either carries those files with it, so `__file__` keeps naming the
+    module's own directory, or leaves `__file__` behind and refuses."""
+
+    @property
+    @abstractmethod
+    def following(self) -> frozenset[str]:
+        """The module-context names whose meaning this data lets follow the code."""
+
+    @abstractmethod
+    def carry(self, operation: RefactorRecipeOperation) -> tuple[TextFileChange, ...]: ...
+
+    @classmethod
+    def of(
+        cls, context: CodemodSelectorContext, source_path: str, destination_path: str
+    ) -> _ModuleSiblingData:
+        """Carried only when every `__file__` read is `Path(__file__).with_name(NAME)` or
+        `Path(__file__).parent / NAME` for a literal NAME, each NAME exists beside the
+        source, no other indexed module beside it spells that NAME, and nothing of that
+        name stands beside the destination yet."""
+
+        source_dir = Path(source_path).parent
+        destination_dir = Path(destination_path).parent
+        try:
+            names = _SiblingFileReads.names(context.module_nodes_by_file_path[source_path])
+        except _UnrecognizedFileRead:
+            return _NoSiblingCarry()
+        # A neighbour reaches the file only by spelling its name.
+        if not names or any(
+            names & _SiblingFileReads.spelled(other_module)
+            for other_path, other_module in context.module_nodes_by_file_path.items()
+            if other_path != source_path and Path(other_path).parent == source_dir
+        ):
+            return _NoSiblingCarry()
+        files: list[tuple[Path, Path]] = []
+        for name in sorted(names):
+            sibling = source_dir / name
+            if not sibling.exists() or (destination_dir / name).exists():
+                return _NoSiblingCarry()
+            members = (
+                sorted(path for path in sibling.rglob("*") if path.is_file() and "__pycache__" not in path.parts)
+                if sibling.is_dir()
+                else [sibling]
+            )
+            files.extend((member, destination_dir / member.relative_to(source_dir)) for member in members)
+        try:
+            texts = tuple(
+                (source.as_posix(), destination.as_posix(), source.read_text(encoding="utf-8"))
+                for source, destination in files
+            )
+        except UnicodeDecodeError:
+            return _NoSiblingCarry()
+        return _CarriedSiblingData(texts)
+
+
+@dataclass(frozen=True)
+class _NoSiblingCarry(_ModuleSiblingData):
+    @property
+    def following(self) -> frozenset[str]:
+        return frozenset()
+
+    def carry(self, operation: RefactorRecipeOperation) -> tuple[TextFileChange, ...]:
+        del operation
+        return ()
+
+
+@dataclass(frozen=True)
+class _CarriedSiblingData(_ModuleSiblingData):
+    files: tuple[tuple[str, str, str], ...]
+
+    @property
+    def following(self) -> frozenset[str]:
+        return frozenset(("__file__",))
+
+    def carry(self, operation: RefactorRecipeOperation) -> tuple[TextFileChange, ...]:
+        return tuple(
+            change
+            for source, destination, text in self.files
+            for change in TextFileCarryEnd.carry(
+                operation, source_path=source, destination_path=destination, text=text
+            )
+        )
+
+
+class _UnrecognizedFileRead(ValueError):
+    """A read of `__file__` other than naming a file beside the module."""
+
+
+class _SiblingFileReads:
+    """The literal names a module reads beside itself through `__file__`."""
+
+    @staticmethod
+    def names(module: ast.Module) -> frozenset[str]:
+        parents = {child: node for node in ast.walk(module) for child in ast.iter_child_nodes(node)}
+        names: set[str] = set()
+        for node in ast.walk(module):
+            if not (isinstance(node, ast.Name) and node.id == "__file__"):
+                continue
+            names.add(_SiblingFileReads._read(node, parents))
+        return frozenset(names)
+
+    @staticmethod
+    def spelled(module: ast.Module) -> frozenset[str]:
+        """Every string constant the module spells, any one of which may name a file."""
+        return frozenset(
+            node.value
+            for node in ast.walk(module)
+            if isinstance(node, ast.Constant) and isinstance(node.value, str)
+        )
+
+    @staticmethod
+    def _read(node: ast.Name, parents: Mapping[ast.AST, ast.AST]) -> str:
+        call = parents.get(node)
+        if not (
+            isinstance(call, ast.Call)
+            and isinstance(call.func, ast.Name)
+            and call.func.id == "Path"
+            and call.args == [node]
+            and not call.keywords
+        ):
+            raise _UnrecognizedFileRead(ast.unparse(call))
+        step = parents.get(call)
+        if isinstance(step, ast.Attribute) and step.attr == "with_name":
+            named = parents.get(step)
+            if (
+                isinstance(named, ast.Call)
+                and named.func is step
+                and len(named.args) == 1
+                and isinstance(named.args[0], ast.Constant)
+                and isinstance(named.args[0].value, str)
+            ):
+                return named.args[0].value
+        if isinstance(step, ast.Attribute) and step.attr == "parent":
+            joined = parents.get(step)
+            if (
+                isinstance(joined, ast.BinOp)
+                and isinstance(joined.op, ast.Div)
+                and joined.left is step
+                and isinstance(joined.right, ast.Constant)
+                and isinstance(joined.right.value, str)
+            ):
+                return joined.right.value
+        raise _UnrecognizedFileRead(ast.unparse(step or call))
+
+
 @dataclass(frozen=True, kw_only=True)
 class NewModuleSymbolMoveOperationABC(ModuleSymbolMoveOperation, ABC):
     """Module move whose destination source is created atomically."""
 
     def module_context_names_following(
-        self, source_table: ModuleSymbolTable, moved_names: frozenset[str]
+        self,
+        context: CodemodSelectorContext,
+        source_table: ModuleSymbolTable,
+        moved_names: frozenset[str],
     ) -> frozenset[str]:
         """When every name the source declares moves into the module this move creates,
         the moved code is that module under its new name, so `__name__` (a logger's, say)
         names the destination, and `__doc__` (an argparse description) reads the
-        docstring the destination opens with. `__file__` never follows: a path beside
-        the module stays."""
+        docstring the destination opens with. `__file__` follows only when every read
+        of it is a file beside the module that the move carries along
+        (_ModuleSiblingData)."""
         if not source_table.declared_names <= moved_names:
             return frozenset()
+        following = frozenset(("__name__",)) | self.sibling_data(context).following
         if self.carries_source_docstring:
-            return frozenset(("__name__", "__doc__"))
-        return frozenset(("__name__",))
+            return following | {"__doc__"}
+        return following
 
     @property
     def carries_source_docstring(self) -> bool:
@@ -2030,6 +2188,20 @@ class NewModuleSymbolMoveOperationABC(ModuleSymbolMoveOperation, ABC):
             for declaration in self.move_selection(context, source_path).declarations
         )
         return source_table.declared_names <= moved_names
+
+    def sibling_data(self, context: CodemodSelectorContext) -> _ModuleSiblingData:
+        source_path = self.required_source_path(context, self.operation_key())
+        return _ModuleSiblingData.of(context, source_path, self.destination_path)
+
+    def text_file_changes(
+        self,
+        context: CodemodSelectorContext,
+    ) -> tuple[TextFileChange, ...]:
+        """The data beside the source that moves with it, when the whole module moves."""
+
+        if not self.moves_whole_module(context):
+            return ()
+        return self.sibling_data(context).carry(self)
 
     destination_source: str | None = codemod_payload_field(
         OptionalStringPayloadValueCodec(),
@@ -2901,8 +3073,7 @@ class _ModuleIdentityStrings:
                 replacements=replacements,
                 rationale=f"Entry points and settings naming {self.source_module_name!r} follow it.",
             )
-            (rewrite,) = TextFileEdit.rewrites((edit,))
-            tomllib.loads(rewrite.after)
+            tomllib.loads(edit.rewritten)
             edits.append(edit)
         return tuple(edits)
 
@@ -3080,7 +3251,7 @@ class DissolveModuleOperation(RetainedCallOperation):
         default=None,
     )
 
-    def text_file_edits(
+    def text_file_changes(
         self,
         context: CodemodSelectorContext,
     ) -> tuple[TextFileEdit, ...]:
