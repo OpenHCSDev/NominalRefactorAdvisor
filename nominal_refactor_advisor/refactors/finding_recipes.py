@@ -17,6 +17,7 @@ from .semantic_mirror import SemanticMirrorFindingRecipeStrategy
 from ..codemod_authority_claims import AstTargetAuthorityClaim
 from ..codemod_preflight import CodemodOperationPreflightError
 from ..codemod_runtime import (
+    DelegatedRecipeDeclaration,
     CodemodPlanDocument,
     CodemodSourceSnapshot,
     ExecutableRecipeEvaluation,
@@ -323,23 +324,6 @@ class FindingRecipeSynthesizer(FindingRecipeEvaluator, ABC):
         )
 
 
-class SelfDeclaredRecipeSynthesizer(FindingRecipeSynthesizer, ABC):
-    """A synthesizer whose every evaluation names its own declaration.
-
-    It returns only `rejected_evaluation` and `executable_evaluation`, both of
-    which name `type(self)`, so a finding's concept is read off the type with
-    no evaluation.
-    """
-
-    def evaluation_declaration_for_finding(
-        self,
-        finding: RefactorFinding,
-        context: CodemodSelectorContext,
-    ) -> type[object]:
-        del finding, context
-        return type(self)
-
-
 class PrimaryEvidenceActionKeysMixin:
     """Derive one conflict key from a finding's primary source witness."""
 
@@ -634,7 +618,9 @@ class CasesFindingRecipeSynthesizer(
     )
 
 
-class SemanticMirrorFindingRecipeEvaluator(FindingRecipeEvaluator):
+class SemanticMirrorFindingRecipeEvaluator(
+    DelegatedRecipeDeclaration, FindingRecipeEvaluator
+):
     """Evaluate a declared semantic-mirror finding through its metric contract."""
 
     def action_keys_for_finding(

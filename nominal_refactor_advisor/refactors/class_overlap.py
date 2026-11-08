@@ -27,7 +27,7 @@ from .class_member_authority import (
 )
 from .finding_recipes import (
     FindingEvidenceActionKeysMixin,
-    SelfDeclaredRecipeSynthesizer,
+    FindingRecipeSynthesizer,
 )
 from ..ast_projection import CallKeywords
 from ..ast_tools import (
@@ -2549,7 +2549,7 @@ class KeywordizeConstructionOperation(RepositorySourceReprovedOperation):
 
 class ClassOverlapFindingRecipeSynthesizer(
     FindingEvidenceActionKeysMixin,
-    SelfDeclaredRecipeSynthesizer,
+    FindingRecipeSynthesizer,
     ClassBodyCompositionConcept,
 ):
     """The verdict's move as a recipe, when the move keeps every class identity.
