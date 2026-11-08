@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+import builtins
 import re
 import tomllib
 from abc import (
@@ -79,7 +80,7 @@ from ..codemod_source_edits import (
 from ..codemod_spacing import DestinationInsertionSpacing
 from ..declaration_dependencies import DeclarationDependencyProjection
 from ..json_reports import DataclassJsonReport
-from ..lexical_bindings import ImportFromModuleName
+from ..lexical_bindings import LEXICAL_SCOPE_BINDING_AUTHORITY, ImportFromModuleName
 from ..public_exports import (
     CompactModulePublicExportContract,
     module_public_export_contract,
@@ -2672,40 +2673,102 @@ class _ScriptEntry:
             cls(cast(ast.If, statement)) for statement in module.body if cls.is_guard(statement)
         )
 
-    def successor_edit(
+    def successor_edits(
         self,
         context: CodemodSelectorContext,
         source_path: str,
-        owners: Mapping[str, str],
         successor_path: str | None,
-    ) -> SourceInsertion:
+    ) -> tuple[NominalSourceEdit, ...]:
+        """The block at the end of the successor, and the imports it needs there.
+        Each name it runs is the source's import of it, the same proved
+        dependency a relocated declaration carries: one the successor declares or
+        already imports needs nothing, one it binds to another object refuses,
+        and every other one is imported into the successor from where it is
+        declared. A name the source does not bind refuses."""
+
         where = f"{source_path!r}:{self.statement.lineno}"
         if successor_path is None:
             raise ValueError(f"{where} runs the module as a script; declare its successor_path")
-        read = {
+        source_module = context.module_nodes_by_file_path[source_path]
+        successor_module = context.module_nodes_by_file_path[successor_path]
+        if _ScriptEntry.of(successor_module):
+            raise ValueError(f"{successor_path!r} already runs as a script; {where} cannot join it")
+        import_graph = context.module_import_graph
+        source_table = ModuleSymbolTable(
+            file_path=source_path,
+            source=context.sources_by_file_path[source_path],
+            module=source_module,
+        )
+        successor_table = ModuleSymbolTable(
+            file_path=successor_path,
+            source=context.sources_by_file_path[successor_path],
+            module=successor_module,
+        )
+        imports: list[ModuleImportMutation] = []
+        unbound: list[str] = []
+        for name in sorted(self.runs(source_module)):
+            resolved = source_table.import_binding_for_dependency(
+                name, import_graph=import_graph, permits_guarded_import=False
+            )
+            if resolved is None:
+                unbound.append(name)
+                continue
+            binding, identity = resolved
+            if identity.is_destination_declaration(
+                import_graph, destination_path=successor_path, bound_name=name
+            ) or successor_table.satisfies_import_binding(
+                name, identity, binding.scope, import_graph=import_graph
+            ):
+                continue
+            if successor_table.conflicts_with_import_binding(name, identity, import_graph=import_graph):
+                raise ValueError(
+                    f"{where} runs {name!r}, which {successor_path!r} binds to another object"
+                )
+            imports.append(
+                ModuleImportMutation.from_source(
+                    file_path=successor_path,
+                    import_source=identity.source_for(
+                        import_graph,
+                        importing_file_path=successor_path,
+                        scope=binding.scope,
+                        bound_name=name,
+                    ),
+                    rationale=f"The script entry moved from {source_path!r} runs {name!r}.",
+                )
+            )
+        if unbound:
+            raise ValueError(
+                f"{where} runs {unbound!r} as a script, which the source "
+                f"{source_path!r} does not bind"
+            )
+        successor_source = context.sources_by_file_path[successor_path]
+        return (
+            *imports,
+            SourceInsertion(
+                file_path=successor_path,
+                insertion_line=len(successor_source.splitlines()) + 1,
+                inserted_lines=SourceTargetEditor.source_lines(
+                    "\n\n"
+                    + ast.get_source_segment(context.sources_by_file_path[source_path], self.statement)
+                    + "\n"
+                ),
+                rationale=f"Running {source_path!r} as a script now runs {successor_path!r}.",
+            ),
+        )
+
+    def runs(self, module: ast.Module) -> frozenset[str]:
+        """The names the block reads from the module: its loads, less the names it
+        binds itself and the builtins the module does not shadow."""
+
+        loads = {
             node.id
             for node in ast.walk(self.statement)
             if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load)
-        } - {"__name__"}
-        foreign = sorted(name for name in read if owners.get(name) != successor_path)
-        if foreign:
-            raise ValueError(
-                f"{where} runs {foreign!r} as a script, which the successor "
-                f"{successor_path!r} does not declare"
-            )
-        if _ScriptEntry.of(context.module_nodes_by_file_path[successor_path]):
-            raise ValueError(f"{successor_path!r} already runs as a script; {where} cannot join it")
-        successor_source = context.sources_by_file_path[successor_path]
-        return SourceInsertion(
-            file_path=successor_path,
-            insertion_line=len(successor_source.splitlines()) + 1,
-            inserted_lines=SourceTargetEditor.source_lines(
-                "\n\n"
-                + ast.get_source_segment(context.sources_by_file_path[source_path], self.statement)
-                + "\n"
-            ),
-            rationale=f"Running {source_path!r} as a script now runs {successor_path!r}.",
-        )
+        }
+        bound = LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(self.statement.body)
+        module_bound = LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(module.body)
+        builtin = frozenset(dir(builtins)) - module_bound
+        return frozenset(loads - bound - builtin - {"__name__"})
 
 
 class _GluedModuleName:
@@ -3354,10 +3417,9 @@ class DissolveModuleOperation(RetainedCallOperation):
             ),
             *strings.edits(context),
             *(
-                entry.successor_edit(
-                    context, strings.source_path, bindings.owners, strings.successor_path
-                )
+                edit
                 for entry in _ScriptEntry.of(context.module_nodes_by_file_path[strings.source_path])
+                for edit in entry.successor_edits(context, strings.source_path, strings.successor_path)
             ),
         )
 
