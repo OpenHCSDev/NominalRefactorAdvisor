@@ -282,6 +282,12 @@ class ModuleNameRedirect:
                         tuple((node, name) for node, name, _source in module_objects),
                     )
                 )
+            edits.extend(
+                ModuleImportMutation.remove_bound_names(
+                    file_path=consumer_path, names=(binding,), scope=scope
+                )
+                for binding, scope in module_reads.unread_bindings
+            )
             local_imports = self._in_place_import_replacements(
                 import_graph,
                 module,
@@ -635,12 +641,15 @@ class _SourceModuleObjectReads:
     source module object, and its by-name accesses (`getattr(module, "Name")`,
     `monkeypatch.setattr(module, "Name", ...)`) of them. The move refuses when
     such a binding is used any other way, is rebound, or when a name it would
-    bind is already bound there."""
+    bind is already bound there. A module-level import that reaches the source
+    module and is used only by the reads and accesses rewritten here has no
+    reader left, and goes with them (`unread_bindings`)."""
 
     file_path: str
     reads: tuple[tuple[ast.Attribute, str], ...]
     accesses: tuple[tuple[ast.expr, _NamedModuleMemberAccess], ...]
     bound_names: frozenset[str]
+    unread_bindings: tuple[tuple[str, ModuleImportScope], ...]
 
     @property
     def names(self) -> tuple[str, ...]:
@@ -659,7 +668,7 @@ class _SourceModuleObjectReads:
         source_parts = tuple(source_module_name.split("."))
         chains = frozenset(cls._bound_chains(module, identity, source_parts))
         if not chains:
-            return cls(file_path, (), (), frozenset())
+            return cls(file_path, (), (), frozenset(), ())
         bindings = cls._bound_name_counts(module)
         parents = {
             child: parent
@@ -668,6 +677,7 @@ class _SourceModuleObjectReads:
         }
         reads: list[tuple[ast.Attribute, str]] = []
         accesses: list[tuple[ast.expr, _NamedModuleMemberAccess]] = []
+        rewritten_loads: Counter[str] = Counter()
         for chain in chains:
             if bindings[chain[0]] > 1:
                 raise ValueError(
@@ -681,6 +691,7 @@ class _SourceModuleObjectReads:
                 if parts[: len(chain)] == chain and len(parts) > len(chain):
                     if parts[-1] in moved_names:
                         reads.append((outermost, parts[-1]))
+                        rewritten_loads[chain[0]] += 1
                 elif chain[: len(parts)] == parts and (
                     named := _NamedModuleMemberAccess.of(outermost, parents)
                 ):
@@ -692,6 +703,7 @@ class _SourceModuleObjectReads:
                         )
                     if parts == chain and named.member_name in moved_names:
                         accesses.append((outermost, named))
+                        rewritten_loads[chain[0]] += 1
                 elif parts == chain:
                     raise ValueError(
                         f"{file_path!r} uses the source module object "
@@ -708,6 +720,38 @@ class _SourceModuleObjectReads:
             tuple(reads),
             tuple(accesses),
             frozenset(name for name, count in bindings.items() if count),
+            cls._unread_bindings(module, chains, rewritten_loads),
+        )
+
+    @staticmethod
+    def _unread_bindings(
+        module: ast.Module,
+        chains: frozenset[tuple[str, ...]],
+        rewritten_loads: Counter[str],
+    ) -> tuple[tuple[str, ModuleImportScope], ...]:
+        """The module-level bindings that reach the source module and whose every
+        load is a rewritten read or access, each with the import scope that binds
+        it."""
+
+        loads = Counter(
+            node.id
+            for node in ast.walk(module)
+            if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load)
+        )
+        scope_by_bound_name = {
+            alias.asname or alias.name.split(".")[0]: scope
+            for scope in ModuleImportScope
+            for statement in scope.import_statements(module)
+            for alias in statement.names
+        }
+        return tuple(
+            sorted(
+                (binding, scope_by_bound_name[binding])
+                for binding in {chain[0] for chain in chains}
+                if binding in scope_by_bound_name
+                and rewritten_loads[binding]
+                and rewritten_loads[binding] == loads[binding]
+            )
         )
 
     @staticmethod
