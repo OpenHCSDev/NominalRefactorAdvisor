@@ -7450,8 +7450,24 @@ def _relocate_moved_with_consumer(tmp_path: Path, consumer: dict[str, str]):
         {"pkg/reader.py": "import pkg.source as s\n\nvalue = s.Moved.value\nkept = s.Kept\n"},
         {"pkg/reader.py": "import pkg.source\n\nvalue = pkg.source.Moved.value\n"},
         {"pkg/reader.py": "from pkg import source\n\nvalue = source.Moved.value\n"},
+        {
+            "pkg/reader.py": "import pkg.source as s\n\n"
+            "assert hasattr(s, 'Kept')\nsetattr(s, 'Patched', 1)\n"
+            "value = s.Moved.value\n"
+        },
+        {
+            "pkg/reader.py": "import pkg as p\nfrom pkg import source\n\n"
+            "assert not hasattr(p, 'retired')\nvalue = source.Moved.value\n"
+        },
     ),
-    ids=("star-reexport", "module-alias", "dotted-module", "from-package"),
+    ids=(
+        "star-reexport",
+        "module-alias",
+        "dotted-module",
+        "from-package",
+        "named-unmoved-member",
+        "named-package-member",
+    ),
 )
 def test_relocation_keeps_star_and_module_object_readers_working(
     tmp_path: Path,
@@ -7482,8 +7498,21 @@ def test_relocation_keeps_star_and_module_object_readers_working(
     ("reader", "message"),
     (
         (
-            "import pkg.source as s\n\nvalue = getattr(s, 'Moved')\n",
+            "import pkg.source as s\n\nname = 'Moved'\nvalue = getattr(s, name)\n",
             "uses the source module object 's' other than by reading an attribute",
+        ),
+        (
+            "import pkg.source as s\n\nvalue = getattr(s, 'Moved')\n",
+            "names 's.Moved', which reaches the moved names, through 'getattr'",
+        ),
+        (
+            "import pkg.source as s\n\n\ndef test_patch(monkeypatch):\n"
+            "    monkeypatch.setattr(s, 'Moved', None)\n",
+            "through 'monkeypatch.setattr'",
+        ),
+        (
+            "import pkg as p\n\nsource = getattr(p, 'source')\n",
+            "names 'p.source', which reaches the moved names, through 'getattr'",
         ),
         (
             "import pkg.source as s\n\nMoved = None\nvalue = s.Moved\n",
@@ -7494,7 +7523,14 @@ def test_relocation_keeps_star_and_module_object_readers_working(
             "rebinds 's'",
         ),
     ),
-    ids=("escaping-module-object", "taken-name", "rebound-module-name"),
+    ids=(
+        "escaping-module-object",
+        "named-moved-member",
+        "patched-moved-member",
+        "named-source-from-package",
+        "taken-name",
+        "rebound-module-name",
+    ),
 )
 def test_relocation_refuses_a_module_object_reader_it_cannot_rewrite(
     tmp_path: Path,
