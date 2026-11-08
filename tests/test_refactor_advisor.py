@@ -7556,6 +7556,52 @@ def test_relocation_keeps_star_and_module_object_readers_working(
 
 
 @pytest.mark.parametrize(
+    ("reader", "expected"),
+    (
+        (
+            "from pkg import source\n\nvalue = source.Moved.value\n\n\n"
+            "def local(source):\n    return source\n\n\n"
+            "names = [source for source in range(2)]\n",
+            "value = Moved.value\n",
+        ),
+        (
+            "from pkg import source\nfrom pkg.source import Moved\n\n"
+            "value = source.Moved.value + Moved.value - 3\n",
+            "value = Moved.value + Moved.value - 3\n",
+        ),
+    ),
+    ids=("local-variables-of-the-binding-name", "name-the-file-also-imports"),
+)
+def test_relocation_reads_only_the_module_scope_uses_of_a_source_binding(
+    tmp_path: Path,
+    reader: str,
+    expected: str,
+) -> None:
+    """A function, lambda or comprehension that binds the module object's name
+    has its own variable, so its uses are neither a rebinding nor reads of the
+    module. A name the file also imports from the source at top level is the
+    moved declaration itself: `source.Moved` becomes `Moved`, imported once."""
+
+    operation, snapshot = _relocate_moved_with_consumer(tmp_path, {"pkg/reader.py": reader})
+
+    simulation = RefactorRecipe("relocate-scoped").with_operation(operation).simulate(snapshot)
+
+    assert simulation.is_clean
+    rewritten = simulation.simulation.rewritten_sources[(tmp_path / "pkg/reader.py").as_posix()]
+    assert expected in rewritten
+    assert rewritten.count("import Moved") == 1
+    simulation.apply()
+    imported = subprocess.run(
+        [sys.executable, "-c", "from pkg.reader import value; assert value == 3"],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert imported.returncode == 0, imported.stderr
+
+
+@pytest.mark.parametrize(
     ("reader", "message"),
     (
         (
@@ -7575,8 +7621,13 @@ def test_relocation_keeps_star_and_module_object_readers_working(
             "already binds ('Moved',)",
         ),
         (
-            "import pkg.source as s\n\n\ndef read(s):\n    return s.Moved\n",
+            "import pkg.source as s\n\nvalue = s.Moved\ns = None\n",
             "rebinds 's'",
+        ),
+        (
+            "from typing import TYPE_CHECKING\n\nimport pkg.source as s\n\n"
+            "if TYPE_CHECKING:\n    from pkg.source import Moved\n\nvalue = s.Moved\nkept = s.Kept\n",
+            "already binds ('Moved',)",
         ),
     ),
     ids=(
@@ -7585,6 +7636,7 @@ def test_relocation_keeps_star_and_module_object_readers_working(
         "named-source-from-package",
         "taken-name",
         "rebound-module-name",
+        "name-bound-only-under-type-checking",
     ),
 )
 def test_relocation_refuses_a_module_object_reader_it_cannot_rewrite(

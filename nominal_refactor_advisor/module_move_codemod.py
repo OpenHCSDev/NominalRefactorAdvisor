@@ -715,8 +715,9 @@ class _SourceModuleAliasRetargets:
             tuple(
                 (alias, owner)
                 for alias in candidates
-                if alias.asname is not None and index.bound_name_counts[alias.asname] == 1
-                for owner in cls._sole_owner(index, alias.asname, owner_modules)
+                if alias.asname is not None
+                and index.bindings_in(alias.asname, scope := index.scope_of(alias)) == 1
+                for owner in cls._sole_owner(index, alias.asname, scope, owner_modules)
             )
         )
 
@@ -724,12 +725,14 @@ class _SourceModuleAliasRetargets:
     def _sole_owner(
         index: ModuleNodeIndex,
         binding: str,
+        scope: ast.AST | None,
         owner_modules: Mapping[str, str],
     ) -> tuple[str, ...]:
-        """The one module every load of `binding` reads a moved name from, or none."""
+        """The one module every use of the alias's variable in `scope` reads a
+        moved name from, or none."""
 
         owners: set[str] = set()
-        for node in index.names(binding):
+        for node in index.uses_of(binding, scope):
             parent = index.parents.get(node)
             if not (
                 isinstance(parent, ast.Attribute)
@@ -761,20 +764,29 @@ class _SourceModuleObjectReads:
     """A consumer's `module.Name` reads of moved names through its bindings of the
     source module object, and its by-name accesses (`getattr(module, "Name")`,
     `monkeypatch.setattr(module, "Name", ...)`) of them. The move refuses when
-    such a binding is used any other way, is rebound, or when a name it would
-    bind is already bound there. A module-level import that reaches the source
-    module and is used only by the reads and accesses rewritten here has no
-    reader left, and goes with them (`unread_bindings`)."""
+    such a binding is used any other way, is rebound in the module's own scope,
+    or when a name it would bind is already bound there to anything but that
+    same moved declaration. A function, lambda or comprehension with its own
+    variable of the binding's name shadows it only for its own uses
+    (`ModuleNodeIndex.module_scope_names`). A module-level import that reaches
+    the source module and is used only by the reads and accesses rewritten here
+    has no reader left, and goes with them (`unread_bindings`)."""
 
     file_path: str
     reads: tuple[tuple[ast.Attribute, str], ...]
     accesses: tuple[tuple[ast.expr, _NamedModuleMemberAccess], ...]
     bound_names: frozenset[str]
     unread_bindings: tuple[tuple[str, ModuleImportScope], ...]
+    imported_names: frozenset[str] = frozenset()
 
     @property
     def names(self) -> tuple[str, ...]:
-        return tuple(sorted({name for _node, name in self.reads}))
+        """The read names the consumer must now import: a name its top-level
+        `from <source> import Name` already binds is rewritten with that import."""
+
+        return tuple(
+            sorted({name for _node, name in self.reads if name not in self.imported_names})
+        )
 
     @classmethod
     def of(
@@ -802,12 +814,12 @@ class _SourceModuleObjectReads:
         accesses: list[tuple[ast.expr, _NamedModuleMemberAccess]] = []
         rewritten_loads: Counter[str] = Counter()
         for chain in chains:
-            if bindings[chain[0]] > 1:
+            if index.module_scope_bindings(chain[0]) > 1:
                 raise ValueError(
                     f"{file_path!r} rebinds {chain[0]!r}, which binds the source "
                     f"module {source_module_name!r}"
                 )
-            for node in index.names(chain[0]):
+            for node in index.module_scope_names(chain[0]):
                 outermost, parts = cls._read_chain(node, parents, len(chain) + 1)
                 if parts[: len(chain)] == chain and len(parts) > len(chain):
                     if parts[-1] in moved_names:
@@ -830,7 +842,14 @@ class _SourceModuleObjectReads:
                         f"{file_path!r} uses the source module object "
                         f"{'.'.join(parts)!r} other than by reading an attribute"
                     )
-        taken = tuple(sorted({name for _node, name in reads if bindings[name]}))
+        imported = frozenset(
+            name
+            for _node, name in reads
+            if cls._imports_source_name(parsed, identity, source_module_name, name)
+        )
+        taken = tuple(
+            sorted({name for _node, name in reads if bindings[name] and name not in imported})
+        )
         if taken:
             raise ValueError(
                 f"{file_path!r} already binds {taken!r}, which its source-module "
@@ -842,6 +861,30 @@ class _SourceModuleObjectReads:
             tuple(accesses),
             frozenset(name for name, count in bindings.items() if count),
             cls._unread_bindings(parsed, chains, rewritten_loads),
+            imported,
+        )
+
+    @staticmethod
+    def _imports_source_name(
+        parsed: ParsedModule,
+        identity: PythonModulePathIdentity,
+        source_module_name: str,
+        name: str,
+    ) -> bool:
+        """Whether every binding of `name` is a top-level, runtime
+        `from <source> import name`: the move rewrites that import to the name's
+        owner, so `module.name` and `name` stay one object."""
+
+        sites = parsed.node_index.binding_sites.get(name, ())
+        return bool(sites) and all(
+            isinstance(site, ast.ImportFrom)
+            and site in parsed.module.body
+            and identity.resolve_import_from_module(
+                imported_module=site.module, level=site.level
+            )
+            == source_module_name
+            and any(alias.name == name and alias.asname in (None, name) for alias in site.names)
+            for site in sites
         )
 
     @staticmethod
@@ -855,7 +898,7 @@ class _SourceModuleObjectReads:
         it. A name several aliases bind (`import pkg.a, pkg.b`) stays: removing
         it would take the other modules' imports with it."""
 
-        loads = parsed.node_index.loads
+        index = parsed.node_index
         bound_by_alias = tuple(
             (alias.asname or alias.name.split(".")[0], scope)
             for scope in ModuleImportScope
@@ -872,7 +915,7 @@ class _SourceModuleObjectReads:
                 for binding in {chain[0] for chain in chains}
                 if binding in scope_by_bound_name
                 and rewritten_loads[binding]
-                and rewritten_loads[binding] == loads[binding]
+                and rewritten_loads[binding] == index.module_scope_loads(binding)
             )
         )
 
