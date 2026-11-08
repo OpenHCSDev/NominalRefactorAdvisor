@@ -680,8 +680,8 @@ class NameUseKind(StrEnum):
     OTHER = "other"
 
     @classmethod
-    def of(cls, node: ast.AST, parents: Mapping[int, ast.AST]) -> NameUseKind:
-        parent = parents.get(id(node))
+    def of(cls, node: ast.AST, parents: Mapping[ast.AST, ast.AST]) -> NameUseKind:
+        parent = parents.get(node)
         match parent:
             case ast.Call(func=callee) if callee is node:
                 return cls.CONSTRUCT
@@ -694,10 +694,10 @@ class NameUseKind(StrEnum):
         return cls.OTHER
 
     @staticmethod
-    def caught(node: ast.AST, parents: Mapping[int, ast.AST]) -> bool:
+    def caught(node: ast.AST, parents: Mapping[ast.AST, ast.AST]) -> bool:
         """Whether `node` is what an `except` clause or a raises-matcher catches."""
 
-        match parents.get(id(node)):
+        match parents.get(node):
             case ast.ExceptHandler(type=classes) if classes is node:
                 return True
             case ast.Call() as call:
@@ -732,11 +732,9 @@ class NameUse:
         by what they do; the capitalised words of strings and comments, and
         explicit re-exports (`from m import X as X`), as other uses."""
 
-        module = parsed_module.module
-        parents = {
-            id(child): node for node in ast.walk(module) for child in ast.iter_child_nodes(node)
-        }
-        for node in ast.walk(module):
+        index = parsed_module.syntax_index
+        parents = index.parent_by_node
+        for node in index.breadth_first_nodes:
             match node:
                 case ast.Name(id=name) | ast.Attribute(attr=name):
                     yield name, NameUseKind.of(node, parents), node.lineno
