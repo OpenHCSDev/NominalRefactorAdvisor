@@ -76,13 +76,13 @@ from .analysis_cache import (
 from .ast_tools import (
     ParsedModule,
     PythonModulePathAuthority,
-    PythonModuleRootParser,
     PythonSourcePathPolicy,
     parse_python_module_roots,
     python_source_paths_for_roots,
 )
 from .installed_source import InstalledModule
 from .cache_paths import (
+    ParseCacheDirectory,
     ParseCachePolicy,
     default_parse_cache_dir,
     maintain_default_cache,
@@ -2381,6 +2381,15 @@ class CliArguments:
         ).parse_cache_dir()
 
     @property
+    def installed_family_cache_dir(self) -> Path | None:
+        """Where installed modules' collected families cache: beside the scan's own."""
+
+        return ParseCacheDirectory(
+            parse_cache_dir=self.configured_parse_cache_dir,
+            use_parse_cache=self.args.use_parse_cache,
+        ).collected_family_cache_dir
+
+    @property
     def scan_deadline_request(self) -> CliScanDeadlineRequest | None:
         owner = self.selected_command_type or self.execution_mode.strategy
         return owner.scan_deadline_request(self)
@@ -4202,24 +4211,17 @@ class ColdScanAnalysis:
     def compact_global(
         self, include_semantic_descent_graph: bool
     ) -> CompactPathAnalysisResult:
-        # Installed modules the scan reads share its first root's family cache.
-        installed_family_cache_dir = PythonModuleRootParser.for_root(
-            self.roots[0],
+        return analyze_compact_roots_with_cache(
+            self.roots,
+            self.config,
             cache_dir=self.parse_cache_dir,
+            analysis_cache_dir=self.analysis_cache_dir,
             use_parse_cache=self.args.use_parse_cache,
-        ).collected_family_cache_dir
-        with InstalledModule.cached_in(installed_family_cache_dir):
-            return analyze_compact_roots_with_cache(
-                self.roots,
-                self.config,
-                cache_dir=self.parse_cache_dir,
-                analysis_cache_dir=self.analysis_cache_dir,
-                use_parse_cache=self.args.use_parse_cache,
-                parse_workers=self.args.parse_workers,
-                source_policy=self.source_policy,
-                report_scope=self.path_scope,
-                include_semantic_descent_graph=include_semantic_descent_graph,
-            )
+            parse_workers=self.args.parse_workers,
+            source_policy=self.source_policy,
+            report_scope=self.path_scope,
+            include_semantic_descent_graph=include_semantic_descent_graph,
+        )
 
     def parsed(self) -> UnanalysedScan:
         """The roots parsed, with no detector run."""
@@ -4433,7 +4435,19 @@ def _main_without_deadline(invocation: CliArguments) -> int:
         early_exit_code = selected_command_type.run_before_scan(parser, args)
         if early_exit_code is not None:
             return early_exit_code
+    with InstalledModule.cached_in(invocation.installed_family_cache_dir):
+        return _scan_main(invocation, selected_command_type, codemod_execution_mode)
 
+
+def _scan_main(
+    invocation: CliArguments,
+    selected_command_type: type[CliCommand] | None,
+    codemod_execution_mode: CodemodExecutionMode,
+) -> int:
+    """The scan and every command it serves, with installed modules' families
+    cached beside the scan's own for the whole run."""
+
+    parser, args = invocation.parser, invocation.args
     config = invocation.detector_config
     try:
         json_payload_profile = JsonPayloadProfile.from_cli_value(args.json_payload)
