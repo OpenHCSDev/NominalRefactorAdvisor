@@ -33,7 +33,7 @@ import json
 import sys
 import tomllib
 from collections.abc import Iterable, Iterator
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from enum import StrEnum
 from functools import cache
 from importlib import metadata
@@ -42,16 +42,7 @@ from pathlib import Path
 from .cache_paths import AdvisorCacheLayout
 from .class_creation_store import CreatedClassStore
 from .class_index import CompactModuleClassHeader
-from .codemod_payload import (
-    CodemodPayloadRecord,
-    PayloadRecordArrayValueCodec,
-    RequiredIntegerPayloadValueCodec,
-    RequiredStrEnumPayloadValueCodec,
-    RequiredStringPayloadValueCodec,
-    codemod_payload_field,
-)
 from .declared_root import DeclaredRoot
-from .json_reports import json_report_object
 from .models import SourceLocation
 from .owner_candidates import OwnerCandidate, OwnerCost, OwnerReceiptKind
 from .python_module_identity import PythonModulePathIdentity
@@ -85,6 +76,12 @@ class RegistrationRole(StrEnum):
         "stores each subclass in a mapping from `__init_subclass__`",
     )
     """Its `__init_subclass__` stores each subclass."""
+
+    @classmethod
+    def decoded(cls, value: str) -> RegistrationRole:
+        """The member a cache entry wrote by value."""
+
+        return {role.value: role for role in cls}[value]
 
     @classmethod
     def played(
@@ -157,18 +154,16 @@ class DeclaredOwnerPackages(OwnerPackagesDeclaration):
 
 
 @dataclass(frozen=True)
-class InstalledRegistrationOwner(CodemodPayloadRecord):
+class InstalledRegistrationOwner:
     """One installed class that registers its family's classes, with its receipt."""
 
-    distribution: str = codemod_payload_field(RequiredStringPayloadValueCodec())
-    version: str = codemod_payload_field(RequiredStringPayloadValueCodec())
-    record_digest: str = codemod_payload_field(RequiredStringPayloadValueCodec())
-    symbol: str = codemod_payload_field(RequiredStringPayloadValueCodec())
-    file_path: str = codemod_payload_field(RequiredStringPayloadValueCodec())
-    line: int = codemod_payload_field(RequiredIntegerPayloadValueCodec())
-    role: RegistrationRole = codemod_payload_field(
-        RequiredStrEnumPayloadValueCodec(RegistrationRole)
-    )
+    distribution: str
+    version: str
+    record_digest: str
+    symbol: str
+    file_path: str
+    line: int
+    role: RegistrationRole
 
     @property
     def receipt(self) -> str:
@@ -196,16 +191,13 @@ class InstalledOwner(OwnerCandidate):
 
 
 @dataclass(frozen=True)
-class InstalledDistributionOwners(CodemodPayloadRecord):
-    """The registration owners one installed distribution declares; its payload is
-    the cache entry."""
+class InstalledDistributionOwners:
+    """The registration owners one installed distribution declares."""
 
-    distribution: str = codemod_payload_field(RequiredStringPayloadValueCodec())
-    version: str = codemod_payload_field(RequiredStringPayloadValueCodec())
-    record_digest: str = codemod_payload_field(RequiredStringPayloadValueCodec())
-    owners: tuple[InstalledRegistrationOwner, ...] = codemod_payload_field(
-        PayloadRecordArrayValueCodec(InstalledRegistrationOwner)
-    )
+    distribution: str
+    version: str
+    record_digest: str
+    owners: tuple[InstalledRegistrationOwner, ...]
 
     JUDGE_SOURCES = ("class_creation_store.py", "installed_owners.py")
 
@@ -239,7 +231,7 @@ class InstalledDistributionOwners(CodemodPayloadRecord):
             f"{name}-{version}-{record_digest[:16]}-{cls.judge_digest()[:16]}.json"
         )
         if cache_path.is_file():
-            return cls.from_json_value(json.loads(cache_path.read_text()))
+            return cls.decoded(json.loads(cache_path.read_text()))
         found = cls(
             name,
             version,
@@ -247,8 +239,24 @@ class InstalledDistributionOwners(CodemodPayloadRecord):
             tuple(cls._owners(distribution, name, version, record_digest)),
         )
         cache_path.parent.mkdir(parents=True, exist_ok=True)
-        cache_path.write_text(json.dumps(json_report_object(found), sort_keys=True))
+        cache_path.write_text(json.dumps(asdict(found), sort_keys=True))
         return found
+
+    @classmethod
+    def decoded(cls, payload: dict[str, object]) -> InstalledDistributionOwners:
+        owners = payload["owners"]
+        assert isinstance(owners, list)
+        return cls(
+            str(payload["distribution"]),
+            str(payload["version"]),
+            str(payload["record_digest"]),
+            tuple(
+                InstalledRegistrationOwner(
+                    **{**owner, "role": RegistrationRole.decoded(owner["role"])}
+                )
+                for owner in owners
+            ),
+        )
 
     @staticmethod
     def _modules(distribution: metadata.Distribution) -> Iterator[tuple[str, Path]]:

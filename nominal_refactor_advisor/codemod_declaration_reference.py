@@ -55,7 +55,6 @@ from .quoted_reference import (
     SpelledModules,
 )
 from .refactor_concepts import DeclarationReferenceConcept
-from .semantic_match import loaded_concrete_nominal_descendants
 
 
 @dataclass(frozen=True)
@@ -517,6 +516,13 @@ class DeclarationReferenceFindingRecipeSynthesizer(
     and a finding with no rewritable site is rejected.
     """
 
+    reference_operations: tuple[type[DeclarationReferenceOperation], ...] = (
+        UnquoteResolvedTypeNamesOperation,
+        ReferenceImportedModuleOperation,
+        ReferenceClassNameOperation,
+        ReferenceEnumMemberOperation,
+    )
+
     @staticmethod
     def reference_metrics(finding: RefactorFinding) -> DeclarationReferenceMetrics:
         """How the finding stands toward the scan's reference rewrites; a finding the detector gave no such record carries and is covered by none."""
@@ -532,9 +538,7 @@ class DeclarationReferenceFindingRecipeSynthesizer(
         return tuple(
             (operation, files)
             for kind, files in self.reference_metrics(finding).carried_rewrites
-            for operation in loaded_concrete_nominal_descendants(
-                DeclarationReferenceOperation
-            )
+            for operation in self.reference_operations
             if kind in operation.position_tags
         )
 
