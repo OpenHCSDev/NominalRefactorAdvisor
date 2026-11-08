@@ -384,10 +384,24 @@ def test_retained_files_keep_the_dissolved_modules_old_name(tmp_path: Path) -> N
     assert (tmp_path / "pkg/reader.py").read_text() == "NAME = 'pkg.owner'\n"
 
 
-def test_a_move_keeps_a_source_import_that_consumers_import(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    ("origin", "kept"),
+    (("from .base import Base", False), ("from enum import Enum as Base", True)),
+    ids=("indexed-origin", "aliased-outside-origin"),
+)
+def test_a_move_points_importers_of_a_removed_source_import_at_its_owner(
+    tmp_path: Path,
+    origin: str,
+    kept: bool,
+) -> None:
+    """agent-comms tools.py re-exported CommsUserSendTool to tests/test_connector.py:82
+    only through an import the moved class used. The import goes with the move and
+    the consumer imports the name from where it is declared, unless that is outside
+    the index: then nothing names an owner to point at, and the import stays."""
+
     _write(tmp_path, "pkg/__init__.py", "")
     _write(tmp_path, "pkg/base.py", "class Base:\n    pass\n")
-    _write(tmp_path, "pkg/source.py", "from .base import Base\n\n\nclass Moved(Base):\n    pass\n")
+    _write(tmp_path, "pkg/source.py", f"{origin}\n\n\nclass Moved(Base):\n    pass\n")
     _write(tmp_path, "pkg/consumer.py", "from .source import Base, Moved\n")
     simulation = (
         RefactorRecipe("relocate-moved")
@@ -402,5 +416,7 @@ def test_a_move_keeps_a_source_import_that_consumers_import(tmp_path: Path) -> N
     )
     assert simulation.is_clean
     simulation.apply()
+    assert ("Base" in (tmp_path / "pkg/source.py").read_text()) is kept
+    assert ("base import Base" in (tmp_path / "pkg/consumer.py").read_text()) is not kept
     imported = _run(tmp_path, "from pkg.consumer import Base, Moved; assert issubclass(Moved, Base)")
     assert imported.returncode == 0, imported.stderr

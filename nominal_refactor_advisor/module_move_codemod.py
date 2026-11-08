@@ -813,10 +813,7 @@ class SourceTopLevelSymbolClosureMovePlan(SourceTopLevelSymbolClosureMoveCarrier
             destination_table,
             request,
             operation,
-            consumer_imported_names=cls._consumer_imported_names(
-                context,
-                request.source_path,
-            ),
+            kept_reexports=cls._kept_reexports(context, source_table),
         )
         source_binding_import_sources = operation.source_binding_import_sources(
             context,
@@ -949,31 +946,48 @@ class SourceTopLevelSymbolClosureMovePlan(SourceTopLevelSymbolClosureMoveCarrier
             )
 
     @staticmethod
-    def _consumer_imported_names(
+    def _kept_reexports(
         context: CodemodSelectorContext,
-        source_path: str,
+        source_table: ModuleSymbolTable,
     ) -> frozenset[str]:
-        """Names other files import from the source, at any scope: an import the
-        source keeps only so they can is a re-export, not a dead dependency."""
+        """Source imports other files import through the source and that no
+        redirect can point them past: the name is declared outside the index, or
+        the source binds it under another name. Every other such import is removed
+        with the move, and its importers read the name from its declaring module
+        (`_removed_binding_owners`)."""
 
-        source_module_name = context.module_import_graph.module_name_for_file_path(
-            source_path
-        )
-        names: set[str] = set()
+        source_path = source_table.file_path
+        import_graph = context.module_import_graph
+        source_module_name = import_graph.module_name_for_file_path(source_path)
+        kept: set[str] = set()
         for source_file in context.source_index.files:
             module = context.module_nodes_by_file_path.get(source_file.file_path)
             if source_file.file_path == source_path or module is None:
                 continue
             for node in ast.walk(module):
-                if isinstance(node, ast.ImportFrom) and (
+                if not isinstance(node, ast.ImportFrom) or (
                     source_file.module_path_identity.resolve_import_from_module(
                         imported_module=node.module,
                         level=node.level,
                     )
-                    == source_module_name
+                    != source_module_name
                 ):
-                    names.update(alias.name for alias in node.names)
-        return frozenset(names)
+                    continue
+                for alias in node.names:
+                    binding = source_table.import_binding_for_dependency(
+                        alias.name,
+                        import_graph=import_graph,
+                        permits_guarded_import=True,
+                    )
+                    if binding is not None and (
+                        binding[1].imported_name != alias.name
+                        or ImportedNameOwner.declaring_path(
+                            context, binding[1].module_name, alias.name
+                        )
+                        is None
+                    ):
+                        kept.add(alias.name)
+        return frozenset(kept)
 
     @classmethod
     def _dependency_report(
@@ -984,7 +998,7 @@ class SourceTopLevelSymbolClosureMovePlan(SourceTopLevelSymbolClosureMoveCarrier
         request: SourceTopLevelSymbolClosureMoveRequest,
         operation: ModuleSymbolMoveOperation,
         *,
-        consumer_imported_names: frozenset[str] = frozenset(),
+        kept_reexports: frozenset[str] = frozenset(),
     ) -> ModuleMoveDependencyReport:
         selection = request.selection
         declarations = selection.declarations
@@ -1095,7 +1109,7 @@ class SourceTopLevelSymbolClosureMovePlan(SourceTopLevelSymbolClosureMoveCarrier
                     binding.supports_bound_name_removal
                     and name not in remaining_references
                     and name not in source_table.explicit_reexport_bound_names
-                    and name not in consumer_imported_names
+                    and name not in kept_reexports
                 ),
             )
             for name, (binding, identity) in sorted(
