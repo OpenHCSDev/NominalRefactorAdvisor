@@ -3053,7 +3053,7 @@ class SemanticDescentGraphCacheContext:
                     if previous_signatures_by_path.get(module_signature.path)
                     != current_signatures_by_path[module_signature.path]
                 )
-                graph = latest_graph.overlay_modules(changed_modules)
+                graph = latest_graph.overlay_modules(tuple(modules), changed_modules)
                 cache.store(identity, graph)
                 self._loaded_graphs_by_token[identity.cache_token] = graph
                 return graph
@@ -3085,7 +3085,9 @@ class SemanticDescentGraphAnalysisSource:
 
     def graph_for_modules(self, modules: ParsedModuleSet) -> SemanticDescentGraph:
         if self.cached_graph is not None:
-            return self.cached_graph.overlay_modules(tuple(modules))
+            return self.cached_graph.overlay_modules(
+                tuple(modules), tuple(modules)
+            )
         return self.cache_context.graph_for_modules(modules)
 
     def with_latest_cached_graph(self) -> SemanticDescentGraphAnalysisSource:

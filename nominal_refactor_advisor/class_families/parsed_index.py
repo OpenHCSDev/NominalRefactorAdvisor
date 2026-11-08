@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import ast
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import cached_property
 from typing import Iterable
 
@@ -45,7 +45,6 @@ from ..collection_algebra import (
 )
 from ..descriptor_algebra import AliasProperty
 from ..native_declarations import ClassNamespaceDeclaration
-from ..source_identity import resolved_source_path_text
 
 
 @dataclass(frozen=True)
@@ -124,6 +123,21 @@ class IndexedClass(ClassDeclaration, ClassNamespaceDeclaration):
 
 @dataclass(frozen=True)
 class ClassFamilyIndex(ClassDeclarationIndex[IndexedClass], ParsedModuleSetFact):
+    resolved_by_record: dict[int, tuple[IndexedClass, IndexedClass]] = field(
+        default_factory=dict, repr=False, compare=False
+    )
+    """Each module class record this build resolved, by identity, with what it
+    resolved to; the record is held so its identity stays its own. Identities
+    mean nothing in another process, so a pickled index carries none."""
+
+    def __getstate__(self) -> dict[str, object]:
+        state = dict(self.__dict__)
+        state["resolved_by_record"] = {}
+        return state
+
+    def __setstate__(self, state: dict[str, object]) -> None:
+        self.__dict__.update(state)
+
     @classmethod
     def derive(cls, modules: ParsedModuleSet) -> ClassFamilyIndex:
         return ClassFamilyIndexBuilder(modules.modules).build()
@@ -136,8 +150,9 @@ class ClassFamilyIndex(ClassDeclarationIndex[IndexedClass], ParsedModuleSetFact)
         """This index over a projected source state. Its inputs are each module's
         class records and header core; when every module that left or replaced
         a parse declares no class and keeps an equal header core, the inputs are
-        unchanged and so is the index. Otherwise the projected set derives its
-        own, from the facts its unchanged parses already hold."""
+        unchanged and so is the index. Otherwise it is rebuilt from the facts
+        its unchanged parses already hold, resolving again only the records a
+        changed symbol could resolve differently."""
 
         previous = {module.file_path: module for module in previous_modules}
         projected = {module.file_path: module for module in projected_modules}
@@ -155,17 +170,7 @@ class ClassFamilyIndex(ClassDeclarationIndex[IndexedClass], ParsedModuleSetFact)
             for old, new in replaced
         ):
             return self
-        return ParsedModuleSet(projected_modules).fact(ClassFamilyIndex)
-
-    def class_records_excluding_files(
-        self,
-        file_paths: frozenset[str],
-    ) -> tuple[IndexedClass, ...]:
-        return tuple(
-            indexed_class
-            for indexed_class in self.classes_by_symbol.values()
-            if resolved_source_path_text(indexed_class.file_path) not in file_paths
-        )
+        return ClassFamilyIndexBuilder(projected_modules, previous=self).build()
 
 
 @dataclass(frozen=True)
@@ -291,57 +296,75 @@ def build_class_family_index(modules: Sequence[ParsedModule]) -> ClassFamilyInde
     return ClassFamilyIndexBuilder(tuple(modules)).build()
 
 
-def overlay_class_family_index(
-    base_index: ClassFamilyIndex,
-    changed_modules: tuple[ParsedModule, ...],
-) -> ClassFamilyIndex:
-    """Rebuild a class index by replacing changed-module class records."""
-
-    changed_path_texts = _resolved_module_path_texts(changed_modules)
-    unchanged_records = base_index.class_records_excluding_files(changed_path_texts)
-    return ClassFamilyIndexBuilder(
-        changed_modules,
-        base_records=unchanged_records,
-    ).build()
-
-
 @dataclass(frozen=True)
 class ClassFamilyIndexBuilder:
     modules: tuple[ParsedModule, ...]
-    base_records: tuple[IndexedClass, ...] = ()
+    previous: ClassFamilyIndex | None = None
 
     def build(self) -> ClassFamilyIndex:
         class_records = tuple(
             UniqueIdentityIndexAuthority.unambiguous_declarations_by_handle(
-                (*self.base_records, *self.module_class_records()),
+                self.module_class_records(),
                 lambda record: record.symbol,
             ).values()
         )
         known_symbols = frozenset(record.symbol for record in class_records)
         unique_symbols_by_suffix = _unique_known_symbol_by_suffix(known_symbols)
-        classes_by_symbol = {
-            record.symbol: self.resolved_record(
-                record, known_symbols, unique_symbols_by_suffix
-            )
-            for record in class_records
-        }
+        moved_terminal_names = self.moved_terminal_names(known_symbols)
+        resolved_by_record: dict[int, tuple[IndexedClass, IndexedClass]] = {}
+        classes_by_symbol: dict[str, IndexedClass] = {}
+        for record in class_records:
+            resolved = self.reused_record(record, moved_terminal_names)
+            if resolved is None:
+                resolved = self.resolved_record(
+                    record, known_symbols, unique_symbols_by_suffix
+                )
+            resolved_by_record[id(record)] = (record, resolved)
+            classes_by_symbol[record.symbol] = resolved
         authority = RegisteringMetaclassAuthority(
             classes_by_symbol,
             CompactRepositoryPublicExposureIndex(
                 CompactModuleClassProjectionFamily.header_core_projections(self.modules)
             ),
         )
-        rebuilt = frozenset(module.module_name for module in self.modules)
+        for symbol, record in classes_by_symbol.items():
+            if record.registry_facts.metaclass_references:
+                classes_by_symbol[symbol] = record.with_registering_metaclass(authority)
         return ClassFamilyIndex(
-            classes_by_symbol={
-                symbol: (
-                    record.with_registering_metaclass(authority)
-                    if record.module_name in rebuilt
-                    else record
-                )
-                for symbol, record in classes_by_symbol.items()
-            }
+            classes_by_symbol=classes_by_symbol,
+            resolved_by_record=resolved_by_record,
         )
+
+    def moved_terminal_names(self, known_symbols: frozenset[str]) -> frozenset[str]:
+        """The terminal names of symbols this build knows and the previous did
+        not, or the reverse. A base reference resolves against the known
+        symbols that end in its own terminal name and no others, so a record
+        none of whose bases end in one of these resolves as it did."""
+
+        if self.previous is None:
+            return frozenset()
+        return frozenset(
+            symbol.rsplit(".", 1)[-1]
+            for symbol in known_symbols ^ self.previous.known_symbols
+        )
+
+    def reused_record(
+        self, record: IndexedClass, moved_terminal_names: frozenset[str]
+    ) -> IndexedClass | None:
+        """The previous build's resolution of this same record, when no changed
+        symbol could resolve one of its bases differently."""
+
+        if self.previous is None:
+            return None
+        previous = self.previous.resolved_by_record.get(id(record))
+        if previous is None or previous[0] is not record:
+            return None
+        if any(
+            reference.resolved_parts[-1] in moved_terminal_names
+            for reference in record.registry_facts.base_references
+        ):
+            return None
+        return previous[1]
 
     def module_class_records(self) -> tuple[IndexedClass, ...]:
         return tuple(
@@ -358,9 +381,6 @@ class ClassFamilyIndexBuilder:
     ) -> IndexedClass:
         """One record's bases resolved against the build's one suffix index."""
 
-        parsed_module = self.parsed_module_by_name.get(record.module_name)
-        if parsed_module is None:
-            return self.base_record_with_current_bases(record, known_symbols)
         return record.with_resolved_base_symbols(
             tuple(
                 resolved
@@ -377,23 +397,3 @@ class ClassFamilyIndexBuilder:
             )
         )
 
-    @cached_property
-    def parsed_module_by_name(self) -> dict[str, ParsedModule]:
-        return {module.module_name: module for module in self.modules}
-
-    @staticmethod
-    def base_record_with_current_bases(
-        record: IndexedClass,
-        known_symbols: frozenset[str],
-    ) -> IndexedClass:
-        return record.with_resolved_base_symbols(
-            tuple(
-                base_symbol
-                for base_symbol in record.resolved_base_symbols
-                if base_symbol in known_symbols
-            )
-        )
-
-
-def _resolved_module_path_texts(modules: tuple[ParsedModule, ...]) -> frozenset[str]:
-    return frozenset(module.resolved_file_path for module in modules)
