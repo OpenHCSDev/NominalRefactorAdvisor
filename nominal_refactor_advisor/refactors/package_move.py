@@ -29,17 +29,17 @@ from ..codemod_module_declarations import ModuleSymbolTable
 from ..codemod_runtime import FindingRecipeEvaluation, RefactorRecipe
 from ..codemod_selection_context import CodemodSelectorContext
 from ..codemod_selector_models import SourceRewriteTarget
-from ..module_node_index import ModuleNodeIndex
 from ..models import PackageDestinationMetrics, RefactorFinding, SourceLocation
-from .module_move import (
-    DissolveModuleOperation,
-    RelocateSymbolsToModuleOperation,
-    RelocateSymbolsToNewModuleOperation,
-)
+from ..module_node_index import ModuleNodeIndex
 from ..refactor_concepts import PackageMoveConcept
 from .finding_recipes import (
     PrimaryEvidenceActionKeysMixin,
     FindingRecipeSynthesizer,
+)
+from .module_move import (
+    DissolveModuleOperation,
+    RelocateSymbolsToModuleOperation,
+    RelocateSymbolsToNewModuleOperation,
 )
 
 _ROW = re.compile(r"^\s*\|\s*`(?P<package>[A-Za-z_][\w./]*)`\s*\|(?P<owners>[^|]*)\|")
@@ -103,22 +103,49 @@ class DestinationTable:
     def destinations(
         self, modules: Iterable[CompactModuleClassHeader]
     ) -> tuple[FlatModuleDestination, ...]:
-        """Each flat module the table sends somewhere, per root package."""
+        """Each flat module the table sends somewhere. A table describes the one root
+        package holding the most of its row packages; every other root (a consumer
+        scanned beside it, `tools`, a test package) keeps every module where it is,
+        even one whose name a row lists, and only its imports follow. Two roots
+        holding equally many are refused by name rather than guessed between. A
+        flat module named like a row package holds that name too, so the root it
+        shadows a package in is still the subject and the move reports the shadow."""
 
         flat_by_root: dict[str, list[CompactModuleClassHeader]] = {}
         packaged_by_root: dict[str, list[CompactModuleClassHeader]] = {}
+        packages_by_root: dict[str, set[str]] = {}
         for module in modules:
             parts = module.module_name.split(".")
+            if len(parts) >= 2:
+                packages_by_root.setdefault(parts[0], set()).add(parts[1])
             if PurePosixPath(module.file_path).name == "__init__.py" or len(parts) < 2:
                 continue
             by_root = flat_by_root if len(parts) == 2 else packaged_by_root
             by_root.setdefault(parts[0], []).append(module)
-        return tuple(
-            destination
-            for root, root_modules in flat_by_root.items()
-            for destination in self.root_destinations(
-                tuple(root_modules), tuple(packaged_by_root.get(root, ()))
+        table_packages = {row.package.split("/")[0] for row in self.rows}
+        held = {
+            root: len(table_packages & packages)
+            for root, packages in packages_by_root.items()
+            if table_packages & packages
+        }
+        if not table_packages:
+            return ()
+        if not held:
+            raise ValueError(
+                "no scanned root holds any of the table's packages: "
+                f"{', '.join(sorted(table_packages))}; create one of them in the root "
+                "the table describes"
             )
+        most = max(held.values())
+        described = sorted(root for root, count in held.items() if count == most)
+        if len(described) > 1:
+            raise ValueError(
+                f"the table's packages are split evenly between {' and '.join(described)}; "
+                "add one of the table's packages to the root it describes"
+            )
+        (root,) = described
+        return self.root_destinations(
+            tuple(flat_by_root.get(root, ())), tuple(packaged_by_root.get(root, ()))
         )
 
     def root_destinations(
