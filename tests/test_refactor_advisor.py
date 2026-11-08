@@ -8014,6 +8014,34 @@ def test_relocated_code_launches_itself_from_its_destination(tmp_path: Path) -> 
     assert launched.stdout == "forked\n"
 
 
+def test_relocation_retargets_an_import_string_the_destination_already_holds(
+    tmp_path: Path,
+) -> None:
+    """The destination is not one of the consumers the redirect walks, yet its own
+    text can import the moved name from the source: that string names the
+    destination once the name lands there."""
+
+    for relative_path, source in {
+        "pkg/__init__.py": "",
+        "pkg/source.py": "class Moved:\n    value = 3\n",
+        "pkg/destination.py": 'PROGRAM = "from pkg.source import Moved; print(Moved.value)"\n',
+    }.items():
+        _write_module(tmp_path, relative_path, source)
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    operation = RelocateSymbolsToModuleOperation(
+        target=SourceRewriteTarget(file_path=(tmp_path / "pkg/source.py").as_posix()),
+        symbol_qualnames=("Moved",),
+        destination_path=(tmp_path / "pkg/destination.py").as_posix(),
+    )
+
+    simulation = RefactorRecipe("relocate-into-reader").with_operation(operation).simulate(snapshot)
+
+    assert simulation.is_clean
+    assert 'PROGRAM = "from pkg.destination import Moved; print(Moved.value)"' in (
+        simulation.simulation.rewritten_sources[(tmp_path / "pkg/destination.py").as_posix()]
+    )
+
+
 def test_refactor_recipe_relocates_symbol_and_rewrites_consumers(
     tmp_path: Path,
 ) -> None:

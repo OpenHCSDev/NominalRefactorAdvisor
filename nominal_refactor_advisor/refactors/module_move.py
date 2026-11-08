@@ -255,11 +255,7 @@ class ModuleNameRedirect:
         excluded_paths: frozenset[str],
     ) -> tuple[NominalSourceEdit, ...]:
         import_graph = context.module_import_graph
-        source_module_name = import_graph.module_name_for_file_path(self.source_path)
-        if source_module_name is None:
-            raise ValueError(
-                f"Source module identity is unavailable for {self.source_path!r}"
-            )
+        source_module_name = self.source_module_name(import_graph)
         moved_names = frozenset(self.destinations)
         star_exported = _StarExportedNames.of(
             module_public_export_contract(
@@ -350,18 +346,7 @@ class ModuleNameRedirect:
                 consumer_path,
                 source_module_name,
             )
-            import_strings = self._import_string_replacements(
-                import_graph,
-                parsed,
-                source_module_name,
-            )
-            if import_strings:
-                edits.append(
-                    SourceTextGeometry(context.sources_by_file_path[consumer_path]).nominal_edit(
-                        file_path=consumer_path,
-                        replacements=import_strings,
-                    )
-                )
+            edits.extend(self.import_string_edits(context, consumer_path))
             if local_imports:
                 geometry = SourceTextGeometry(context.sources_by_file_path[consumer_path])
                 edits.append(
@@ -500,15 +485,45 @@ class ModuleNameRedirect:
             )
         return tuple(replacements)
 
+    def source_module_name(self, import_graph: SourceModuleImportGraph) -> str:
+        """The dotted name every rewrite of the source's readers matches. A move
+        plan has resolved it before any reader is read, so a source without one
+        is refused, never read as naming nothing."""
+
+        source_module_name = import_graph.module_name_for_file_path(self.source_path)
+        if source_module_name is None:
+            raise ValueError(f"Source module identity is unavailable for {self.source_path!r}")
+        return source_module_name
+
+    def import_string_edits(
+        self,
+        context: CodemodSelectorContext,
+        file_path: str,
+    ) -> tuple[NominalSourceEdit, ...]:
+        """The edit that points one file's import strings at each moved name's owner."""
+
+        import_graph = context.module_import_graph
+        replacements = self._import_string_replacements(
+            import_graph,
+            context.parsed_module_for_source_path(file_path),
+            self.source_module_name(import_graph),
+        )
+        if not replacements:
+            return ()
+        return (
+            SourceTextGeometry(context.sources_by_file_path[file_path]).nominal_edit(
+                file_path=file_path,
+                replacements=replacements,
+            ),
+        )
+
     def moved_text(self, import_graph: SourceModuleImportGraph, text: str) -> str:
         """Code leaving the source reads the source's names as text too: an import
         string in the moved code follows each moved name to its owner, the way a
         consumer's does, so the moved text never names a module that no longer
         binds them."""
 
-        source_module_name = import_graph.module_name_for_file_path(self.source_path)
-        if source_module_name is None:
-            return text
+        source_module_name = self.source_module_name(import_graph)
         parsed = ParsedModule(
             path=Path(self.source_path),
             module_name=source_module_name,
@@ -1322,6 +1337,7 @@ class SourceTopLevelSymbolClosureMovePlan(SourceTopLevelSymbolClosureMoveCarrier
         )
         consumer_edits = (
             *destination_localizations,
+            *name_redirect.import_string_edits(context, request.destination_path),
             *(
                 ModuleImportMutation.remove_names(
                     file_path=request.destination_path,
