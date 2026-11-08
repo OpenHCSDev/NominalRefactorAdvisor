@@ -17,7 +17,7 @@ from .codemod import (
 from .codemod_foreign_adapter_source import ForeignAdapterBindChainModuleFamily
 from .codemod_foreign_family_source import ForeignFamilyFilterModuleFamily
 from .codemod_static_projection_source import StaticProjectionCallModuleFamily
-from .codemod_function_operations import (
+from .refactors.function_operations import (
     FoldAdapterBindChainOperation,
     ProjectStaticCallsToAdapterOperation,
     RouteForeignFamilyFilterOperation,

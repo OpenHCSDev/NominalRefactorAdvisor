@@ -14,7 +14,7 @@ from ..assignment_projection import (
     SingleAssignmentAndValueNameProjection,
 )
 from ..ast_projection import ExpressionReference
-from ..class_member_authority_codemod import (
+from .class_member_authority import (
     ClassDeclarationPromotionStatement,
     ClassMemberPromotionTargets,
 )
@@ -23,7 +23,7 @@ from .finding_recipes import (
     FindingRecipeSynthesizer,
     SingleSourcePathFindingMixin,
 )
-from .dataclass_projection import ResolvedFunctionProjectionTarget
+from .function_projection_targets import ResolvedFunctionProjectionTarget
 from .semantic_mirror import (
     RegistrationSemanticMirrorRecipeBuilder,
     SemanticMirrorFindingRecipeStrategy,

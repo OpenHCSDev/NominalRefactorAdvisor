@@ -1,5 +1,3 @@
-"""Dependency-closed source movement codemods."""
-
 from __future__ import annotations
 
 import ast
@@ -9,27 +7,28 @@ from abc import (
     abstractmethod,
 )
 from collections import Counter
-from collections.abc import Iterator, Mapping
-from itertools import product
+from collections.abc import (
+    Iterator,
+    Mapping,
+)
 from dataclasses import dataclass
+from itertools import product
 from typing import ClassVar
 
-from .ast_tools import ModuleAnnotationEvaluationMode
-from .codemod_operations import RefactorRecipeOperation
-from .json_reports import DataclassJsonReport
-from .codemod_import_bindings import FromModuleImportBindingIdentity
-from .codemod_import_graph import SourceModuleImportGraph
-from .codemod_import_scopes import ModuleImportScope
-from .codemod_imports import (
+from ..ast_tools import ModuleAnnotationEvaluationMode
+from ..codemod_import_bindings import FromModuleImportBindingIdentity
+from ..codemod_import_graph import SourceModuleImportGraph
+from ..codemod_import_scopes import ModuleImportScope
+from ..codemod_imports import (
     ImportFromSource,
     ModuleImportMutation,
 )
-from .codemod_module_declarations import (
+from ..codemod_module_declarations import (
     ModuleSymbolTable,
     MovedTopLevelDeclarationSource,
     SourceTopLevelSymbolMoveSelection,
 )
-from .codemod_module_move_reports import (
+from ..codemod_module_move_reports import (
     ModuleMoveDependencyReport,
     ModuleMoveImportDependency,
     ModuleMoveObstacle,
@@ -37,27 +36,28 @@ from .codemod_module_move_reports import (
     ModuleMoveSourceLocalDependency,
     ModuleMoveSourceLocalDependencyResolution,
 )
-from .codemod_paths import SourcePathResolutionAuthority
-from .codemod_payload import (
+from ..codemod_operations import RefactorRecipeOperation
+from ..codemod_paths import SourcePathResolutionAuthority
+from ..codemod_payload import (
     OptionalStringPayloadValueCodec,
     RequiredIntegerPayloadValueCodec,
     RequiredStringPayloadValueCodec,
     StringArrayPayloadValueCodec,
     codemod_payload_field,
 )
-from .codemod_preflight import (
+from ..codemod_preflight import (
     CodemodOperationPreflightError,
     CodemodOperationPreflightReport,
 )
-from .codemod_reproof import RepositorySourceReprovedOperation
-from .codemod_runtime import CodemodSourceSnapshot
-from .codemod_selection_context import CodemodSelectorContext
-from .codemod_selector_models import SourcePathPayloadValueCodec
-from .codemod_semantics import (
+from ..codemod_reproof import RepositorySourceReprovedOperation
+from ..codemod_runtime import CodemodSourceSnapshot
+from ..codemod_selection_context import CodemodSelectorContext
+from ..codemod_selector_models import SourcePathPayloadValueCodec
+from ..codemod_semantics import (
     CodemodPreflightStatus,
     CodemodSourceDependencyScope,
 )
-from .codemod_source_edits import (
+from ..codemod_source_edits import (
     NominalSourceEdit,
     SourceFileCreation,
     SourceFileDeletion,
@@ -66,14 +66,15 @@ from .codemod_source_edits import (
     SourceTextGeometry,
     SourceTextSpanReplacement,
 )
-from .codemod_spacing import DestinationInsertionSpacing
-from .declaration_dependencies import DeclarationDependencyProjection
-from .lexical_bindings import ImportFromModuleName
-from .public_exports import (
+from ..codemod_spacing import DestinationInsertionSpacing
+from ..declaration_dependencies import DeclarationDependencyProjection
+from ..json_reports import DataclassJsonReport
+from ..lexical_bindings import ImportFromModuleName
+from ..public_exports import (
     CompactModulePublicExportContract,
     module_public_export_contract,
 )
-from .python_module_identity import PythonModulePathIdentity
+from ..python_module_identity import PythonModulePathIdentity
 
 
 @dataclass(frozen=True, kw_only=True)

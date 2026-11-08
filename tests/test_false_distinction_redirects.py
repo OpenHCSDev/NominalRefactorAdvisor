@@ -17,7 +17,7 @@ from nominal_refactor_advisor.codemod import (
     CodemodSourceSnapshot,
     SourceRewriteTarget,
 )
-from nominal_refactor_advisor.codemod_false_distinctions import (
+from nominal_refactor_advisor.refactors.false_distinctions import (
     FoldEnumMembersOperation,
     RedirectEmptySubclassOperation,
 )

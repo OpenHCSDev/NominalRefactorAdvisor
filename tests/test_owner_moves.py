@@ -15,7 +15,7 @@ from nominal_refactor_advisor.class_overlap import (
     ComposeExisting,
     ExtractMixin,
 )
-from nominal_refactor_advisor.class_overlap_codemod import (
+from nominal_refactor_advisor.refactors.class_overlap import (
     CreateMixinOperation,
     ExtendOwnerOperation,
 )

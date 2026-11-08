@@ -16,21 +16,19 @@ from typing import (
 )
 
 
-from .codemod_mapping_observation import (
-    RequireDictionaryCopyMappingOperation as RequireDictionaryCopyMappingOperation,
-)
-from .codemod_declaration_operations import (
+from .refactors.mapping_observation import RequireDictionaryCopyMappingOperation as RequireDictionaryCopyMappingOperation
+from .refactors.declaration_operations import (
     DeclarationDecoratorsPayload as DeclarationDecoratorsPayload,
     DeclarationMutationOperationABC as DeclarationMutationOperationABC,
     ReplaceDeclarationDecoratorsOperation as ReplaceDeclarationDecoratorsOperation,
 )
 from .codemod_statement_source import PythonBlockSource
-from .codemod_class_operations import (
+from .refactors.class_operations import (
     InsertClassMemberOperation as InsertClassMemberOperation,
     RemoveFieldMetadataKeywordsOperation as RemoveFieldMetadataKeywordsOperation,
     PruneFieldMetadataKeywordsOperation as PruneFieldMetadataKeywordsOperation,
 )
-from .codemod_assignment_operations import (
+from .refactors.assignment_operations import (
     AssignmentReplacementOperationABC as AssignmentReplacementOperationABC,
     ReplaceModuleAssignmentOperation as ReplaceModuleAssignmentOperation,
     ReplaceScopeAssignmentOperation as ReplaceScopeAssignmentOperation,
@@ -58,7 +56,7 @@ from .cancelable_composition import (
 from .cancelable_composition import (
     detect_cancelable_composition_signals as detect_cancelable_composition_signals,
 )
-from .class_member_authority_codemod import (
+from .refactors.class_member_authority import (
     ClassBaseAdditionReplacementPlan as ClassBaseAdditionReplacementPlan,
     ClassDeclarationPromotionStatement as ClassDeclarationPromotionStatement,
     ClassMemberDeletionReplacementPlan as ClassMemberDeletionReplacementPlan,
@@ -86,7 +84,7 @@ from .class_member_authority_codemod import (
     PromoteExactDataclassFieldsToExistingAuthorityOperation as PromoteExactDataclassFieldsToExistingAuthorityOperation,
     PromoteExactLeafMethodsToAncestorOperation as PromoteExactLeafMethodsToAncestorOperation,
 )
-from .codemod_function_operations import (
+from .refactors.function_operations import (
     AliasFunctionOperation as AliasFunctionOperation,
     CallExpressionSourcePayload as CallExpressionSourcePayload,
     DeclaredCallMutationOperationABC as DeclaredCallMutationOperationABC,
@@ -111,7 +109,7 @@ from .codemod_operations import (
     RefactorRecipeOperation as RefactorRecipeOperation,
     SourcePayloadOperation as SourcePayloadOperation,
 )
-from .codemod_call_declarations import (
+from .refactors.call_declarations import (
     DeleteModuleCallDeclarationsOperation as DeleteModuleCallDeclarationsOperation,
     ModuleCallDeclaration as ModuleCallDeclaration,
     ModuleCallDeclarationSelector as ModuleCallDeclarationSelector,
@@ -554,7 +552,7 @@ from .lexical_bindings import (
     ImportFromModuleName as ImportFromModuleName,
 )
 from .lexical_scopes import FunctionBindingProjection
-from .module_move_codemod import (
+from .refactors.module_move import (
     DependencyClosureModuleSymbolSelectionOperationABC as DependencyClosureModuleSymbolSelectionOperationABC,
     ExistingModuleSymbolMoveOperationABC as ExistingModuleSymbolMoveOperationABC,
     ExplicitModuleSymbolSelectionOperationABC as ExplicitModuleSymbolSelectionOperationABC,
@@ -574,9 +572,7 @@ from .module_move_codemod import (
     SourceTopLevelSymbolClosureMovePlan as SourceTopLevelSymbolClosureMovePlan,
     SourceTopLevelSymbolClosureMoveRequest as SourceTopLevelSymbolClosureMoveRequest,
 )
-from .projection_descent_codemod import (
-    TypedMirror as TypedMirror,
-)
+from .refactors.projection_descent import TypedMirror as TypedMirror
 from .source_index import (
     AstTargetNode,
     CodemodSourceIndexReport as CodemodSourceIndexReport,

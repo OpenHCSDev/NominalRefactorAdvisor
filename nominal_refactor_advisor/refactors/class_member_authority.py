@@ -1,5 +1,3 @@
-"""Source-proven codemods for consolidating class-member authority."""
-
 from __future__ import annotations
 
 import ast
@@ -15,70 +13,75 @@ from dataclasses import (
 )
 from functools import cached_property
 
-from .annotation_semantics import StringizedAnnotationSurface
-
-from .ast_tools import (
+from ..annotation_semantics import StringizedAnnotationSurface
+from ..ast_tools import (
     EagerNameLoadCollector,
     statements_without_docstring,
 )
-from .class_families.parsed_index import IndexedClass
-from .class_member_lookup import ClassMemberLookupProof, ClassNamespaceDelta
-from .class_method_facets import (
+from ..class_families.parsed_index import IndexedClass
+from ..class_member_lookup import (
+    ClassMemberLookupProof,
+    ClassNamespaceDelta,
+)
+from ..class_method_facets import (
     ClassMethodPromotionSafetyProfile,
     ClassMethodReceiverRequirements,
 )
-from .class_symbols import ClassSymbolResolutionAuthority
-from .codemod_authority_claims import AstTargetAuthorityClaim
-from .codemod_declaration_source import (
+from ..class_symbols import ClassSymbolResolutionAuthority
+from ..codemod_authority_claims import AstTargetAuthorityClaim
+from ..codemod_declaration_source import (
     ClassBodySourceAuthority,
     ClassHeaderSpanSourceAuthority,
 )
-from .codemod_paths import SourcePathResolutionAuthority
-from .codemod_payload import (
+from ..codemod_paths import SourcePathResolutionAuthority
+from ..codemod_payload import (
     PayloadRecordValueCodec,
     RequiredStringPayloadValueCodec,
     StringArrayPayloadValueCodec,
     codemod_payload_field,
 )
-from .codemod_reproof import RepositorySourceReprovedOperation
-from .codemod_runtime import CodemodSourceSnapshot
-from .codemod_selection_context import (
+from ..codemod_reproof import RepositorySourceReprovedOperation
+from ..codemod_runtime import CodemodSourceSnapshot
+from ..codemod_selection_context import (
     CodemodSelectorContext,
     ResolvedClassTarget,
 )
-from .codemod_selector_models import SourceRewriteTarget
-from .codemod_statement_source import StatementDeletionSource, StatementSource
-from .codemod_source_edits import (
+from ..codemod_selector_models import SourceRewriteTarget
+from ..codemod_source_edits import (
+    Include,
     PhysicalSourceEdit,
     SourceInsertion,
-    Include,
+    SourceLineSpan,
     SourceNodeSpan,
     SourceSpanDeletion,
     SourceSpanReplacement,
     SourceTargetEditor,
     SourceTextGeometry,
-    SourceLineSpan,
 )
-from .exact_field_authority import ExactDataclassFieldAuthorityComponent
-from .exact_method_authority import (
+from ..codemod_statement_source import (
+    StatementDeletionSource,
+    StatementSource,
+)
+from ..exact_field_authority import ExactDataclassFieldAuthorityComponent
+from ..exact_method_authority import (
     ExactLeafMethodAncestorPromotionComponent,
     ExactMethodRoleComponent,
     ParallelMirroredLeafFamilyComponent,
 )
-from .foreign_family import FunctionDefinition
-from .lexical_bindings import LEXICAL_SCOPE_BINDING_AUTHORITY
-from .semantic_descent import (
+from ..foreign_family import FunctionDefinition
+from ..lexical_bindings import LEXICAL_SCOPE_BINDING_AUTHORITY
+from ..semantic_descent import (
     AuthorityClaim,
     SemanticAuthorityKind,
 )
-from .semantic_match import loaded_concrete_nominal_descendants
-from .source_index import (
+from ..semantic_match import loaded_concrete_nominal_descendants
+from ..source_index import (
     AstTargetDigest,
     AstTargetNode,
     AstTargetNodeKind,
     SourceIndex,
 )
-from .source_native_mro import SourceNativeClassMro
+from ..source_native_mro import SourceNativeClassMro
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -619,6 +622,7 @@ class ClassMemberDeletionReplacementPlan(ClassMemberSetSpec):
             for statement in node.body
             if self.statement_type(statement).name in self.member_names
         )
+
 
 @dataclass(frozen=True)
 class ClassBaseAdditionReplacementPlan:

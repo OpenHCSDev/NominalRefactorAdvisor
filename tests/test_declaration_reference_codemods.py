@@ -12,7 +12,7 @@ from nominal_refactor_advisor.codemod import (
     RefactorRecipeOperation,
     codemod_plan_from_findings,
 )
-from nominal_refactor_advisor.codemod_declaration_reference import (
+from nominal_refactor_advisor.refactors.declaration_reference import (
     ReferenceClassNameOperation,
     ReferenceEnumMemberOperation,
     ReferenceImportedModuleOperation,

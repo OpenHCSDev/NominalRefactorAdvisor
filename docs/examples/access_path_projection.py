@@ -26,7 +26,7 @@ source = SourceRewriteTarget(
     file_path="nominal_refactor_advisor/codemod_declaration_source.py"
 )
 operations = SourceRewriteTarget(
-    file_path="nominal_refactor_advisor/codemod_function_operations.py"
+    file_path="nominal_refactor_advisor/refactors/function_operations.py"
 )
 exports = SourceRewriteTarget(file_path="nominal_refactor_advisor/codemod.py")
 authority = replace(source, qualname="FunctionBindingProjectionSourceAuthority")

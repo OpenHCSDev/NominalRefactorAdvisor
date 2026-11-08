@@ -8,7 +8,7 @@ from ..ast_projection import CallKeywords
 from ..ast_tools import AstParentIndex
 from ..binding_proofs import FunctionNominalParameterBindingAuthority
 from ..class_index import ModuleNominalBindingAuthority
-from ..class_member_authority_codemod import (
+from .class_member_authority import (
     ClassDeclarationPromotionStatement,
     _class_base_source_names,
 )
