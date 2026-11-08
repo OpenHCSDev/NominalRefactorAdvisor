@@ -25,16 +25,15 @@ def _write(root: Path, relative_path: str, source: str) -> None:
     path.write_text(source, encoding="utf-8")
 
 
-def _operation(root: Path, *reviewed: str) -> StringizeAnnotationsOperation:
+def _operation(root: Path) -> StringizeAnnotationsOperation:
     return StringizeAnnotationsOperation(
         target=SourceRewriteTarget(file_path=(root / "pkg/plans.py").as_posix()),
-        reviewed_annotation_readers=reviewed,
     )
 
 
-def _preflight(root: Path, *reviewed: str):
+def _preflight(root: Path):
     snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(root))
-    (report,) = _operation(root, *reviewed).preflight_reports(snapshot)
+    (report,) = _operation(root).preflight_reports(snapshot)
     return report
 
 
@@ -107,33 +106,62 @@ def test_an_annotation_reading_an_enclosing_scope_is_refused(tmp_path: Path) -> 
     assert "Kind" in report.message
 
 
-def test_a_raw_annotation_reader_must_be_reviewed(tmp_path: Path) -> None:
+_TOLERANT_READERS = (
+    "import annotationlib\n"
+    "from inspect import get_annotations\n"
+    "from typing import get_type_hints\n\n\n"
+    "def names(owner):\n"
+    "    return tuple(get_annotations(owner))\n\n\n"
+    "def declared(owner, name):\n"
+    "    own = get_annotations(owner)\n"
+    "    return name in own\n\n\n"
+    "def strings(owner):\n"
+    "    return get_annotations(owner, format=annotationlib.Format.STRING)\n\n\n"
+    "def evaluated(owner):\n"
+    "    return get_annotations(owner, eval_str=True)\n\n\n"
+    "class Codec:\n"
+    "    @staticmethod\n"
+    "    def _evaluate(declaration, annotations):\n"
+    "        own = type(declaration.__name__, (), {})\n"
+    "        own.__annotations__ = annotations\n"
+    "        return get_type_hints(own)\n\n"
+    "    @classmethod\n"
+    "    def types(cls, owner):\n"
+    "        return cls._evaluate(\n"
+    "            owner, get_annotations(owner, format=annotationlib.Format.FORWARDREF)\n"
+    "        )\n\n"
+    "    @classmethod\n"
+    "    def field(cls, owner, name):\n"
+    "        stored = get_annotations(owner, format=annotationlib.Format.FORWARDREF)\n"
+    "        return cls._evaluate(owner, {name: stored[name]})[name]\n"
+)
+
+
+def test_reads_that_use_keys_or_reach_get_type_hints_are_proved(tmp_path: Path) -> None:
     _package(tmp_path)
-    _write(
-        tmp_path,
-        "pkg/reader.py",
-        "from inspect import get_annotations\n\n"
-        "def names(owner):\n"
-        "    return tuple(get_annotations(owner))\n\n"
-        "def strings(owner):\n"
-        "    return get_annotations(owner, format=Format.STRING)\n\n"
-        "def evaluated(owner):\n"
-        "    return get_annotations(owner, eval_str=True)\n\n"
-        "def written(owner, annotations):\n"
-        "    owner.__annotations__ = annotations\n\n"
+    _write(tmp_path, "pkg/reader.py", _TOLERANT_READERS)
+
+    report = _preflight(tmp_path)
+
+    assert report.status is CodemodPreflightStatus.PASSED, report.message
+
+
+def test_a_read_that_keeps_the_stored_values_is_refused(tmp_path: Path) -> None:
+    _package(tmp_path)
+    reader = (
+        _TOLERANT_READERS + "\n\n"
         "if True:\n"
         "    class Guarded:\n"
         "        def stored(self, owner):\n"
-        "            return owner.__annotations__\n",
+        "            return owner.__annotations__\n"
     )
-    readers = ("pkg.reader.Guarded.stored", "pkg.reader.names")
+    _write(tmp_path, "pkg/reader.py", reader)
+    line = reader.splitlines().index("            return owner.__annotations__") + 1
 
-    refused = _preflight(tmp_path)
-    accepted = _preflight(tmp_path, *readers)
+    report = _preflight(tmp_path)
 
-    assert refused.status is CodemodPreflightStatus.FAILED
-    assert refused.detail.unreviewed_annotation_readers == readers
-    assert accepted.status is CodemodPreflightStatus.PASSED
+    assert report.status is CodemodPreflightStatus.FAILED
+    assert report.detail.unproved_annotation_reads == (f"pkg.reader.Guarded.stored:{line}",)
 
 
 def test_a_stringized_module_is_refused(tmp_path: Path) -> None:
