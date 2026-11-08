@@ -3224,8 +3224,7 @@ def test_compact_module_public_export_contract_is_exact_and_fails_closed() -> No
     assert implicit.exposure_for("_private") is (
         CompactPublicNameExposure.PRIVATE
     )
-    assert implicit.allows_binding_relocation("public") is True
-    assert implicit.allows_binding_relocation("_private") is True
+    assert implicit.blocked_relocations(("public", "_private")) == ()
     assert isinstance(
         explicit,
         CompactExplicitPublicExportContract,
@@ -3237,8 +3236,8 @@ def test_compact_module_public_export_contract_is_exact_and_fails_closed() -> No
     assert explicit.exposure_for("public") is (
         CompactPublicNameExposure.PRIVATE
     )
-    assert explicit.allows_binding_relocation("_private") is False
-    assert explicit.allows_binding_relocation("public") is True
+    assert explicit.blocked_relocations(("_private", "public")) == ("_private",)
+    assert explicit.blocked_relocations(("_private", "__all__")) == ()
     assert isinstance(
         dynamic,
         CompactUnresolvedPublicExportContract,
@@ -3246,7 +3245,7 @@ def test_compact_module_public_export_contract_is_exact_and_fails_closed() -> No
     assert dynamic.exposure_for("first") is (
         CompactPublicNameExposure.UNRESOLVED
     )
-    assert dynamic.allows_binding_relocation("first") is False
+    assert dynamic.blocked_relocations(("first",)) == ("first",)
     assert isinstance(
         non_dunder_globals,
         CompactUnresolvedPublicExportContract,
