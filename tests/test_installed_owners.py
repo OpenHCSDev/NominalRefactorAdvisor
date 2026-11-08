@@ -77,7 +77,7 @@ def test_an_installed_owner_is_found_by_what_its_source_does(tmp_path: Path) -> 
     ]
     (cached,) = (tmp_path / "cache" / "installed-owners").iterdir()
     assert cached.name.startswith(f"metaclass-registry-{owners.version}-")
-    assert InstalledDistributionOwners.decoded(json.loads(cached.read_text())) == owners
+    assert InstalledDistributionOwners.from_json_value(json.loads(cached.read_text())) == owners
 
 
 def test_owner_packages_absent_declares_nothing(tmp_path: Path) -> None:
