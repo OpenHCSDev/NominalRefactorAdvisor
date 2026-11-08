@@ -6,15 +6,17 @@ import ast
 from collections import Counter, deque
 from dataclasses import dataclass, field
 
+from .ast_tools import ParsedModule, ParsedModuleFact
+
 
 @dataclass(frozen=True)
-class ModuleNodeIndex:
+class ModuleNodeIndex(ParsedModuleFact):
     """The nodes of one module that consumer passes look up, from a single walk.
 
     The walk is `ast.walk`'s own breadth-first order, so every list keeps the
-    order a pass that walked the module itself would have seen. A `ParsedModule`
-    holds its index, and a plan's snapshots hand unchanged modules from stage to
-    stage, so each unchanged file is walked once per plan instead of once per
+    order a pass that walked the module itself would have seen. It is a fact of the
+    parse (`parsed.fact(ModuleNodeIndex)`), and a plan's snapshots hand unchanged
+    parses from stage to stage, so each unchanged file is walked once per plan instead of once per
     pass, per operation, per stage.
 
     `bound_name_counts` counts each name's bindings, where every `import pkg.x`
@@ -30,7 +32,7 @@ class ModuleNodeIndex:
     bound_name_counts: Counter[str] = field(repr=False)
 
     @classmethod
-    def of(cls, module: ast.Module) -> ModuleNodeIndex:
+    def derive(cls, parsed_module: ParsedModule) -> ModuleNodeIndex:
         imports: list[ast.Import | ast.ImportFrom] = []
         strings: list[ast.Constant] = []
         calls: list[ast.Call] = []
@@ -40,7 +42,7 @@ class ModuleNodeIndex:
         attribute_bases: set[str] = set()
         bound: Counter[str] = Counter()
         package_heads: set[str] = set()
-        pending: deque[ast.AST] = deque([module])
+        pending: deque[ast.AST] = deque([parsed_module.module])
         while pending:
             node = pending.popleft()
             for child in ast.iter_child_nodes(node):

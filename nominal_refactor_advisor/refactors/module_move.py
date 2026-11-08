@@ -195,7 +195,7 @@ class FilesReachingModule:
     whose `__init__.py` is the module, `from . import name` reaches it without spelling
     it, so those files count too. Every other file is skipped unread: on agent-comms with
     its tests, a dissolve otherwise walked about 1,100 modules to find the few dozen that
-    name it. Each file comes with its parsed module, whose node index every pass shares."""
+    name it. Each file comes with its parse, whose `ModuleNodeIndex` fact every pass shares."""
 
     context: CodemodSelectorContext
     module_name: str
@@ -288,7 +288,7 @@ class ModuleNameRedirect:
                         )
                     )
             retargets = _SourceModuleAliasRetargets.of(
-                parsed.node_index,
+                parsed.fact(ModuleNodeIndex),
                 source_module_name=source_module_name,
                 owner_modules={
                     name: owner
@@ -393,7 +393,7 @@ class ModuleNameRedirect:
             for statement in scope.import_statements(parsed.module)
         }
         replacements: list[tuple[ast.ImportFrom, str]] = []
-        for statement in parsed.node_index.import_froms():
+        for statement in parsed.fact(ModuleNodeIndex).import_froms():
             if (
                 identity.resolve_import_from_module(
                     imported_module=statement.module,
@@ -454,7 +454,7 @@ class ModuleNameRedirect:
         geometry = SourceTextGeometry(source)
         embedded = _EmbeddedImportFrom(source_module_name)
         replacements: list[SourceTextSpanReplacement] = []
-        for node in parsed.node_index.string_constants:
+        for node in parsed.fact(ModuleNodeIndex).string_constants:
             statement = _SingleImportFromText.of(node.value)
             if statement is None or statement.level or statement.module != source_module_name:
                 replacements.extend(
@@ -852,7 +852,7 @@ class _SourceModuleObjectReads:
         retargeted: frozenset[str] = frozenset(),
     ) -> _SourceModuleObjectReads:
         source_parts = tuple(source_module_name.split("."))
-        index = parsed.node_index
+        index = parsed.fact(ModuleNodeIndex)
         chains = frozenset(
             chain
             for chain in cls._bound_chains(index, identity, source_parts)
@@ -919,7 +919,7 @@ class _SourceModuleObjectReads:
         it. A name several aliases bind (`import pkg.a, pkg.b`) stays: removing
         it would take the other modules' imports with it."""
 
-        loads = parsed.node_index.loads
+        loads = parsed.fact(ModuleNodeIndex).loads
         bound_by_alias = tuple(
             (alias.asname or alias.name.split(".")[0], scope)
             for scope in ModuleImportScope
@@ -1232,7 +1232,7 @@ class SourceTopLevelSymbolClosureMovePlan(SourceTopLevelSymbolClosureMoveCarrier
         for source_file, parsed in FilesReachingModule(context, source_module_name):
             if source_file.file_path == source_path:
                 continue
-            for node in parsed.node_index.import_froms():
+            for node in parsed.fact(ModuleNodeIndex).import_froms():
                 if (
                     source_file.module_path_identity.resolve_import_from_module(
                         imported_module=node.module,
@@ -2246,9 +2246,9 @@ class _ModuleIdentityStrings:
                 continue
             source = parsed.source
             geometry = SourceTextGeometry(source)
-            retained = self._retained_nodes(parsed.node_index)
+            retained = self._retained_nodes(parsed.fact(ModuleNodeIndex))
             replacements: list[SourceTextSpanReplacement] = []
-            for node in parsed.node_index.string_constants:
+            for node in parsed.fact(ModuleNodeIndex).string_constants:
                 if id(node) in retained:
                     continue
                 offsets = geometry.node_offsets(node)
@@ -2451,7 +2451,7 @@ class DissolveModuleOperation(RetainedCallOperation):
             if source_file.file_path in excluded_paths:
                 continue
             identity = source_file.module_path_identity
-            for node in parsed.node_index.import_froms():
+            for node in parsed.fact(ModuleNodeIndex).import_froms():
                 if (
                     identity.resolve_import_from_module(
                         imported_module=node.module,
@@ -2494,7 +2494,7 @@ class DissolveModuleOperation(RetainedCallOperation):
                 for statement in scope.import_statements(parsed.module)
             }
             for scope, statement in (
-                (scoped.get(id(node)), node) for node in parsed.node_index.imports
+                (scoped.get(id(node)), node) for node in parsed.fact(ModuleNodeIndex).imports
             ):
                 if isinstance(statement, ast.Import):
                     if any(
@@ -2517,7 +2517,7 @@ class DissolveModuleOperation(RetainedCallOperation):
                     continue
                 aliases = tuple(alias for alias in statement.names if alias.name == leaf)
                 for alias in aliases:
-                    if (alias.asname or alias.name) not in parsed.node_index.attribute_bases:
+                    if (alias.asname or alias.name) not in parsed.fact(ModuleNodeIndex).attribute_bases:
                         raise ValueError(
                             f"{source_file.file_path!r}:{statement.lineno} binds "
                             f"{source_module_name!r} for its import side effect"
