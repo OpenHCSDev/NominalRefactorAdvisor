@@ -78,6 +78,7 @@ from .ast_tools import (
 from .class_namespace import ClassNamespaceExecutionEvidence, NATIVE_METHOD_DECORATORS
 from .collection_algebra import (
     IdentityHandleMultiplicityProjection,
+    SequenceViews,
     UniqueIdentityIndexAuthority,
     sorted_tuple,
 )
@@ -3430,9 +3431,9 @@ class CompactClassFamilyIndex(ClassDeclarationIndex[CompactIndexedClass]):
     ) -> Self:
         """Join complete class declarations without collecting unrelated analyses."""
 
-        return CompactClassFamilyIndexBuilder(
+        return build_compact_class_family_index(
             CompactModuleClassHeader.from_modules(modules)
-        ).build()
+        )
 
     @classmethod
     def from_projection_groups(
@@ -3444,9 +3445,9 @@ class CompactClassFamilyIndex(ClassDeclarationIndex[CompactIndexedClass]):
     ) -> Self:
         """Build the class anchor declared by a compact multi-family join."""
 
-        return CompactClassFamilyIndexBuilder(
+        return build_compact_class_family_index(
             CompactModuleClassProjectionFamily.modules_in(projections_by_family)
-        ).build()
+        )
 
     @classmethod
     def require(cls, context: object | None) -> Self:
@@ -8596,8 +8597,15 @@ class CompactClassFamilyIndexBuilder:
 
 
 def build_compact_class_family_index(projections: Sequence[CompactModuleClassHeader]) -> CompactClassFamilyIndex:
-    """Build an exact inheritance graph from AST-free per-module facts."""
+    """The exact inheritance graph of AST-free per-module facts, built once per
+    projection sequence that holds its views."""
 
+    return SequenceViews.of(projections).view(_built_class_family_index)
+
+
+def _built_class_family_index(
+    projections: Sequence[CompactModuleClassHeader],
+) -> CompactClassFamilyIndex:
     return CompactClassFamilyIndexBuilder(projections).build()
 
 

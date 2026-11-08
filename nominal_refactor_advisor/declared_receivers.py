@@ -44,7 +44,6 @@ from .class_index import (
     CompactAnnotatedMethod,
     CompactAnnotatedProperty,
     CompactClassFamilyIndex,
-    CompactClassFamilyIndexBuilder,
     CompactClassMemberDeclaration,
     CompactClassReferenceResolver,
     CompactIndexedClass,
@@ -52,6 +51,7 @@ from .class_index import (
     CompactModuleClassProjectionFamily,
     CompactUnannotatedCallable,
     native_identity,
+    build_compact_class_family_index,
 )
 from .typeshed_stubs import AnswerT, StubAnswers, StubRoot, installed_stub_root
 
@@ -1239,7 +1239,7 @@ class StubDeclarations:
             projections = tuple(self.projections.values())
             self.built.append(
                 DeclaredReceiverTyping.declared_over(
-                    projections, CompactClassFamilyIndexBuilder(projections).build(), self
+                    projections, build_compact_class_family_index(projections), self
                 )
             )
         return self.built[0]
