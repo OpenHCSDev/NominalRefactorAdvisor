@@ -8945,15 +8945,11 @@ class ClassFamilyIndexBuilder:
         parsed_module = self.parsed_module_by_name.get(record.module_name)
         if parsed_module is None:
             return self.base_record_with_current_bases(record, known_symbols)
-        base_references = _compact_base_references(
-            record.node,
-            ModuleNominalBindingAuthority(parsed_module).snapshot_before(record.line),
-        )
         unique_symbols_by_suffix = _unique_known_symbol_by_suffix(known_symbols)
         return record.with_resolved_base_symbols(
             tuple(
                 resolved
-                for reference in base_references
+                for reference in record.registry_facts.base_references
                 if (
                     resolved := CompactClassFamilyIndexBuilder._resolved_bound_symbol(
                         reference,
