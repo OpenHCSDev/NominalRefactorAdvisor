@@ -2603,6 +2603,43 @@ class RemoveImportNamesOperation(RefactorRecipeOperation):
         )
 
 
+@dataclass(frozen=True, kw_only=True)
+class RemoveImportBindingsOperation(RefactorRecipeOperation):
+    """Remove import bindings by bound name once the module no longer reads them.
+
+    Covers every import shape (``import a.b as c``, ``from a import b``), so a
+    deletion that leaves its imports unread can drop them in the next stage.
+    """
+
+    bound_names: tuple[str, ...] = codemod_payload_field(
+        StringArrayPayloadValueCodec()
+    )
+
+    def source_edits(
+        self,
+        context: CodemodSelectorContext,
+    ) -> tuple[ModuleImportMutation, ...]:
+        source_path = self.required_source_path(context, self.operation_key())
+        still_read = ModuleSymbolTable(
+            file_path=source_path,
+            source=context.sources_by_file_path[source_path],
+            module=context.module_nodes_by_file_path[source_path],
+        ).referenced_names_excluding((), self.bound_names)
+        if still_read:
+            raise ValueError(
+                f"{source_path!r} still reads import bindings "
+                f"{tuple(sorted(still_read))!r}"
+            )
+        return (
+            ModuleImportMutation.remove_bound_names(
+                file_path=source_path,
+                names=self.bound_names,
+                rationale=self.rationale
+                or f"Remove unread import bindings {self.bound_names!r}.",
+            ),
+        )
+
+
 @dataclass(frozen=True)
 class ClassAuthorityReferenceProof:
     """Prove one generated class-authority reference at a module boundary."""
