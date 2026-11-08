@@ -22,10 +22,6 @@ from .ast_tools import (
     REGISTERED_TYPE_LINEAGE,
     SharedRegistryRootBase,
 )
-from .class_index import (
-    ModulePublicExportSourceAuthority,
-    module_public_export_contract,
-)
 from .codemod_declaration_source import NamedDeclarationSourceAuthority
 from .codemod_import_bindings import (
     FromModuleImportBindingIdentity as FromModuleImportBindingIdentity,
@@ -67,6 +63,10 @@ from .lexical_bindings import (
     ImportAlias as ImportAlias,
     ImportBoundNameProjection,
     LEXICAL_SCOPE_BINDING_AUTHORITY,
+)
+from .public_exports import (
+    ModulePublicExportSourceAuthority,
+    module_public_export_contract,
 )
 from .semantic_match import single_item
 from .source_index import SourceFileDigest

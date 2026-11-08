@@ -8,7 +8,7 @@ from types import ModuleType
 import pytest
 
 from nominal_refactor_advisor.ast_tools import ParsedModule
-from nominal_refactor_advisor.class_index import (
+from nominal_refactor_advisor.public_exports import (
     CompactExplicitPublicExportContract,
     CompactUnresolvedPublicExportContract,
     ModulePublicExportSourceAuthority,

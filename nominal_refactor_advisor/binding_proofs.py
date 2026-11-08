@@ -8,21 +8,23 @@ from functools import cached_property
 from .ast_field_decoders import ParameterAnnotations
 from .ast_tools import ParsedModule
 from .class_index import (
-    CompactModulePublicExportContract,
     CompactModuleStarImportOrigin,
-    CompactPublicNameExposure,
     ModuleNominalBindingAuthority,
     ModuleNominalBindingSnapshotPolicy,
     ModuleNominalBindingView,
     ModuleNominalBindingWitness,
     RepositoryPublicExposureAuthority,
-    module_public_export_contract,
     module_star_import_origins,
     nominal_reference_root_name,
 )
 from .class_namespace import ClassNamespaceExecutionEvidence
 from .lexical_bindings import LEXICAL_SCOPE_BINDING_AUTHORITY
 from .lexical_scopes import FunctionBindingProjection
+from .public_exports import (
+    CompactModulePublicExportContract,
+    CompactPublicNameExposure,
+    module_public_export_contract,
+)
 
 
 @dataclass(frozen=True)

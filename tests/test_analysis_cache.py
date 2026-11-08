@@ -82,6 +82,12 @@ from nominal_refactor_advisor import (
     exact_method_authority as exact_method_authority_module,
 )
 from nominal_refactor_advisor import constructor_algebra as constructor_algebra_module
+from nominal_refactor_advisor.public_exports import (
+    CompactExplicitPublicExportContract,
+    CompactImplicitPublicExportContract,
+    CompactPublicNameExposure,
+    CompactUnresolvedPublicExportContract,
+)
 from nominal_refactor_advisor.scan_cache import ScanCache
 from nominal_refactor_advisor import native_syntax as native_syntax_module
 from nominal_refactor_advisor import semantic_descent as semantic_descent_module
@@ -2927,7 +2933,7 @@ def test_class_candidate_anchor_witnesses_follow_reported_seed_locations() -> No
         file_path="/repo/pkg/target.py",
         import_aliases=(),
         public_export_contract=(
-            class_index_module.CompactUnresolvedPublicExportContract()
+            CompactUnresolvedPublicExportContract()
         ),
         star_import_origins=(),
         classes=(),
@@ -3053,7 +3059,7 @@ def test_class_demand_omits_unreportable_autoregister_reference_graph(
         file_path=str(package_root / "target.py"),
         import_aliases=(),
         public_export_contract=(
-            class_index_module.CompactUnresolvedPublicExportContract()
+            CompactUnresolvedPublicExportContract()
         ),
         star_import_origins=(),
         classes=(),
@@ -3221,49 +3227,49 @@ def test_compact_module_public_export_contract_is_exact_and_fails_closed() -> No
 
     assert isinstance(
         implicit,
-        class_index_module.CompactImplicitPublicExportContract,
+        CompactImplicitPublicExportContract,
     )
     assert implicit.exposure_for("public") is (
-        class_index_module.CompactPublicNameExposure.PUBLIC
+        CompactPublicNameExposure.PUBLIC
     )
     assert implicit.exposure_for("_private") is (
-        class_index_module.CompactPublicNameExposure.PRIVATE
+        CompactPublicNameExposure.PRIVATE
     )
     assert implicit.allows_binding_relocation("public") is True
     assert implicit.allows_binding_relocation("_private") is True
     assert isinstance(
         explicit,
-        class_index_module.CompactExplicitPublicExportContract,
+        CompactExplicitPublicExportContract,
     )
     assert explicit.exported_names == ("_private",)
     assert explicit.exposure_for("_private") is (
-        class_index_module.CompactPublicNameExposure.PUBLIC
+        CompactPublicNameExposure.PUBLIC
     )
     assert explicit.exposure_for("public") is (
-        class_index_module.CompactPublicNameExposure.PRIVATE
+        CompactPublicNameExposure.PRIVATE
     )
     assert explicit.allows_binding_relocation("_private") is False
     assert explicit.allows_binding_relocation("public") is True
     assert isinstance(
         dynamic,
-        class_index_module.CompactUnresolvedPublicExportContract,
+        CompactUnresolvedPublicExportContract,
     )
     assert dynamic.exposure_for("first") is (
-        class_index_module.CompactPublicNameExposure.UNRESOLVED
+        CompactPublicNameExposure.UNRESOLVED
     )
     assert dynamic.allows_binding_relocation("first") is False
     assert isinstance(
         non_dunder_globals,
-        class_index_module.CompactUnresolvedPublicExportContract,
+        CompactUnresolvedPublicExportContract,
     )
     assert non_dunder_globals.exposure_for("PUBLIC") is (
-        class_index_module.CompactPublicNameExposure.UNRESOLVED
+        CompactPublicNameExposure.UNRESOLVED
     )
     assert non_dunder_globals.exposure_for("_PRIVATE") is (
-        class_index_module.CompactPublicNameExposure.UNRESOLVED
+        CompactPublicNameExposure.UNRESOLVED
     )
     assert non_dunder_globals.exposure_for("__all__") is (
-        class_index_module.CompactPublicNameExposure.UNRESOLVED
+        CompactPublicNameExposure.UNRESOLVED
     )
 
 
@@ -3346,10 +3352,10 @@ def test_native_class_header_core_matches_cached_minimal_projection(
     assert dict(actual[0].import_aliases)["ImportedParent"] == "support.Parent"
     assert isinstance(
         actual[0].public_export_contract,
-        class_index_module.CompactExplicitPublicExportContract,
+        CompactExplicitPublicExportContract,
     )
     assert actual[0].public_export_contract.exposure_for("Child") is (
-        class_index_module.CompactPublicNameExposure.PUBLIC
+        CompactPublicNameExposure.PUBLIC
     )
     assert tuple(origin.module_name for origin in actual[0].star_import_origins) == (
         "pkg.exports",

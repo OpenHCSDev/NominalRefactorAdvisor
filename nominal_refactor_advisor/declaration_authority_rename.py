@@ -17,9 +17,6 @@ from .annotation_semantics import StringizedAnnotationSurface
 from .ast_tools import ModuleAnnotationEvaluationMode, ParsedModule
 from .class_index import (
     ModuleNominalBindingAuthority,
-    ModulePublicExportSourceAuthority,
-    PublicExportNameReference,
-    module_public_export_contract,
     module_star_import_origins,
     nominal_reference_root,
 )
@@ -32,6 +29,11 @@ from .declaration_dependencies import (
     ModuleLexicalDependencyProjection,
     ModuleNameReferenceSurface,
     MovableDeclaration,
+)
+from .public_exports import (
+    ModulePublicExportSourceAuthority,
+    PublicExportNameReference,
+    module_public_export_contract,
 )
 from .source_index import AstTargetDigest
 
