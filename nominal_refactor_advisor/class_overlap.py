@@ -56,12 +56,14 @@ from .class_body import (
 )
 from .class_index import (
     ClassBodyDeclarationKind,
-    ClassReferenceRole,
     CompactClassFamilyIndex,
-    CompactClassReference,
     CompactClassReferenceResolver,
     CompactIndexedClass,
     CompactModuleClassProjection,
+)
+from .class_references import (
+    ClassReferenceRole,
+    CompactClassReference,
 )
 from .overlap_receipts import OverlapReceiptKind
 from .receipts import Receipt, ScoredByReceipts

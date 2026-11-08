@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from nominal_refactor_advisor.product_declarations import CompactProductAuthorityViolation
 from nominal_refactor_advisor.product_flow_authority import ResolvedCompactFunctionTarget
 import ast
 from dataclasses import fields
@@ -10,7 +11,6 @@ import pytest
 from nominal_refactor_advisor.ast_tools import ParsedModule
 from nominal_refactor_advisor.class_index import (
     CompactModuleClassProjectionFamily,
-    CompactProductAuthorityViolation,
     OpenCompactProductAuthority,
 )
 from nominal_refactor_advisor.product_flow import (

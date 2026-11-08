@@ -76,6 +76,10 @@ from .ast_tools import (
     statements_without_docstring,
 )
 from .class_namespace import NATIVE_METHOD_DECORATORS
+from .class_references import (
+    ClassReferenceRole,
+    CompactClassReference,
+)
 from .collection_algebra import (
     IdentityHandleMultiplicityProjection,
     SequenceViews,
@@ -87,6 +91,13 @@ from .overlap_receipts import OverlapReceiptKind
 from .foreign_family import (
     AssignmentStatement,
     FunctionDefinition,
+)
+from .product_declarations import (
+    CompactProductAuthorityFailure,
+    CompactProductAuthorityViolation,
+    CompactProductDeclarationFailure,
+    ProductDeclarationSite,
+    _dataclass_decorator_failures,
 )
 from .public_exports import (
     CompactModulePublicExportContract,
@@ -722,124 +733,6 @@ class CompactAnnotatedFunctionReturn:
     return_annotation_expression: str
 
 
-class CompactProductAuthorityViolation(StrEnum):
-    """One typed reason a dataclass declaration cannot prove a plain product."""
-
-    UNRESOLVED_DATACLASS_DECORATOR = (
-        "unresolved_dataclass_decorator",
-        "the dataclass decorator does not resolve to the standard-library declaration",
-        (),
-    )
-    MULTIPLE_DATACLASS_DECORATORS = (
-        "multiple_dataclass_decorators",
-        "more than one dataclass decorator applies to the same declaration",
-        (),
-    )
-    GENERATED_INIT_DISABLED = (
-        "generated_init_disabled",
-        "the dataclass declaration does not retain its generated initializer",
-        (),
-    )
-    DYNAMIC_DATACLASS_OPTIONS = (
-        "dynamic_dataclass_options",
-        "the dataclass constructor options cannot be resolved statically",
-        (),
-    )
-    CUSTOM_CLASS_DECORATOR = (
-        "custom_class_decorator",
-        "another class decorator can replace or mutate the dataclass declaration",
-        (),
-    )
-    CUSTOM_CLASS_CREATION = (
-        "custom_class_creation",
-        "class keywords or a custom metaclass can change construction semantics",
-        (),
-    )
-    CUSTOM_PRODUCT_LIFECYCLE = (
-        "custom_product_lifecycle",
-        "a class-owned lifecycle hook can change construction or field projection",
-        (
-            "__delattr__",
-            "__getattr__",
-            "__getattribute__",
-            "__init__",
-            "__init_subclass__",
-            "__new__",
-            "__post_init__",
-            "__setattr__",
-            "__slots__",
-        ),
-    )
-    FIELD_MEMBER_COLLISION = (
-        "field_member_collision",
-        "a dataclass field name is rebound by another class member",
-        (),
-    )
-    UNRESOLVED_FIELD_ROLE = (
-        "unresolved_field_role",
-        "a field role or default cannot be proven to preserve plain stored projection",
-        (),
-    )
-    INIT_ONLY_FIELD = (
-        "init_only_field",
-        "an InitVar constructor parameter is not a stored product field",
-        (),
-    )
-    NON_INIT_FIELD = (
-        "non_init_field",
-        "a stored field is excluded from the generated initializer",
-        (),
-    )
-    DYNAMIC_FIELD_SCHEMA = (
-        "dynamic_field_schema",
-        "class execution can add or replace annotations outside the direct field declarations",
-        (),
-    )
-    NESTED_CLASS_SCOPE = (
-        "nested_class_scope",
-        "the enclosing class namespace prevents exact module-binding recovery",
-        (),
-    )
-    INCOMPLETE_BASE_RESOLUTION = (
-        "incomplete_base_resolution",
-        "not every direct base resolves to one repository declaration",
-        (),
-    )
-    MULTIPLE_PRODUCT_BASES = (
-        "multiple_product_bases",
-        "the product schema requires an unproved multiple-inheritance linearization",
-        (),
-    )
-    NON_DATACLASS_BASE = (
-        "non_dataclass_base",
-        "a direct base lacks a closed dataclass product declaration",
-        (),
-    )
-    CYCLIC_PRODUCT_LINEAGE = (
-        "cyclic_product_lineage",
-        "the product declaration participates in a cyclic inheritance graph",
-        (),
-    )
-
-    explanation: str
-    implicated_member_names: tuple[str, ...]
-
-    def __new__(
-        cls,
-        value: str,
-        explanation: str,
-        implicated_member_names: tuple[str, ...],
-    ) -> Self:
-        member = str.__new__(cls, value)
-        member._value_ = value
-        member.explanation = explanation
-        member.implicated_member_names = implicated_member_names
-        return member
-
-    def is_violated_by_member_names(self, member_names: frozenset[str]) -> bool:
-        return bool(member_names.intersection(self.implicated_member_names))
-
-
 class CompactDataclassFieldRole(StrEnum):
     """Dataclass field kinds with declaration-owned product admissibility."""
 
@@ -1010,13 +903,6 @@ class CompactDataclassFieldDeclaration(NamedTuple):
         )
 
 
-class CompactProductDeclarationFailure(NamedTuple):
-    """One class-local product obligation retained at its exact source line."""
-
-    line: int
-    violation: CompactProductAuthorityViolation
-
-
 @dataclass(frozen=True)
 class CompactProductField:
     """One effective dataclass field retaining its nominal declaration source."""
@@ -1025,15 +911,6 @@ class CompactProductField:
     role: CompactDataclassFieldRole
     binding: DataclassInitBinding
     declaring_class_symbol: str
-    file_path: str
-    line: int
-
-
-@dataclass(frozen=True, kw_only=True)
-class ProductDeclarationSite:
-    """The source site that declares one product class: its symbol, file and line."""
-
-    class_symbol: str
     file_path: str
     line: int
 
@@ -1076,13 +953,6 @@ class CompactProductAuthority(ProductDeclarationSite):
             for field in self.fields
             if field.binding is DataclassInitBinding.POSITIONAL
         )
-
-
-@dataclass(frozen=True, kw_only=True)
-class CompactProductAuthorityFailure(ProductDeclarationSite):
-    """One failed product obligation attached to its declaration source."""
-
-    violation: CompactProductAuthorityViolation
 
 
 @dataclass(frozen=True)
@@ -2916,120 +2786,6 @@ class CompactExactTypeGuard(CompactQualifiedSourceLocation):
             f"isinstance({self.subject_expression}, {self.type_reference_expression})"
         )
         return membership if self.matches_exact_type_when_true else f"not {membership}"
-
-
-class ClassReferenceRole(StrEnum):
-    """How one expression uses a module-level name that may be a class."""
-
-    TYPE_TEST = "type_test"
-    CLASS_PATTERN = "class_pattern"
-    TYPE_KEY = "type_key"
-    CONSTRUCTION = "construction"
-    OTHER = "other"
-
-    @property
-    def distinguishes_identity(self) -> bool:
-        """The use answers differently for two classes even when their bodies agree."""
-
-        return self in (
-            ClassReferenceRole.TYPE_TEST,
-            ClassReferenceRole.CLASS_PATTERN,
-            ClassReferenceRole.TYPE_KEY,
-        )
-
-    @property
-    def binds_fields(self) -> bool:
-        """The read builds the class or matches against its fields."""
-
-        return self in (ClassReferenceRole.CONSTRUCTION, ClassReferenceRole.CLASS_PATTERN)
-
-    def positional_bindings(self, parent: ast.AST | None) -> int:
-        """How many arguments or subpatterns this read binds to fields by position."""
-
-        if self is ClassReferenceRole.CONSTRUCTION and isinstance(parent, ast.Call):
-            return len(parent.args)
-        if self is ClassReferenceRole.CLASS_PATTERN and isinstance(parent, ast.MatchClass):
-            return len(parent.patterns)
-        return 0
-
-    @classmethod
-    def of_reference(
-        cls,
-        node: ast.expr,
-        parent: ast.AST | None,
-        grandparent: ast.AST | None,
-        import_aliases: Mapping[str, str],
-    ) -> ClassReferenceRole:
-        """The role one read of a name plays, from the syntax around it."""
-
-        if isinstance(parent, ast.Call) and parent.func is node:
-            return cls.CONSTRUCTION
-        type_test_operand = (
-            parent.args[1]
-            if isinstance(parent, ast.Call)
-            and (_is_builtin_call(parent, "isinstance") or _is_builtin_call(parent, "issubclass"))
-            and len(parent.args) == 2
-            else None
-        )
-        if type_test_operand is node or (
-            isinstance(parent, ast.Tuple)
-            and isinstance(grandparent, ast.Call)
-            and (
-                _is_builtin_call(grandparent, "isinstance")
-                or _is_builtin_call(grandparent, "issubclass")
-            )
-            and len(grandparent.args) == 2
-            and grandparent.args[1] is parent
-        ):
-            return cls.TYPE_TEST
-        if (
-            isinstance(parent, ast.Compare)
-            and any(isinstance(op, (ast.Is, ast.IsNot, ast.Eq, ast.NotEq)) for op in parent.ops)
-            and any(
-                _is_builtin_call(operand, "type")
-                for operand in (parent.left, *parent.comparators)
-            )
-        ):
-            return cls.TYPE_TEST
-        if isinstance(parent, ast.MatchClass) and parent.cls is node:
-            return cls.CLASS_PATTERN
-        if isinstance(parent, ast.Dict) and any(key is node for key in parent.keys):
-            return cls.TYPE_KEY
-        if isinstance(parent, ast.Subscript) and parent.slice is node:
-            subscripted = ExpressionReference.decoded(parent.value).attribute_chain
-            root = (
-                None
-                if subscripted is None
-                else import_aliases.get(subscripted[0], subscripted[0])
-            )
-            if subscripted is not None and (
-                (subscripted[0] not in import_aliases and hasattr(builtins, subscripted[0]))
-                or (root is not None and root.split(".", 1)[0] in _GENERIC_ALIAS_ROOTS)
-            ):
-                return cls.OTHER
-            return cls.TYPE_KEY
-        return cls.OTHER
-
-
-class CompactClassReference(NamedTuple):
-    """One read of a module-level name by one consumer, and the role it plays.
-
-    `consumer` is the enclosing function or class qualname, or the module
-    itself (empty); `reference_parts` the full name or attribute chain read.
-    For a call, `positional_arguments` is the most positional arguments any
-    call in the consumer passes and `unpacked_arguments` whether one unpacks
-    `*args` or `**kwargs`, which hides how it binds fields.
-    """
-
-    consumer: str
-    reference_parts: tuple[str, ...]
-    role: ClassReferenceRole
-    line: int
-    positional_arguments: int = 0
-    unpacked_arguments: bool = False
-    copied_fields: tuple[str, ...] = ()
-    """For a construction, the most keywords one call passes as `x.<same name>`
-    from a single value `x`: fields copied off another object."""
 
 
 ClassDeclarationT = TypeVar("ClassDeclarationT", bound=ClassDeclaration)
@@ -6798,11 +6554,6 @@ def _compact_autoregister_reference_projection(
     )
 
 
-_GENERIC_ALIAS_ROOTS = frozenset(
-    ("builtins", "typing", "typing_extensions", "collections")
-)
-
-
 def _classmethod_receiver_class(
     node: ast.AST,
     scope: LexicalSyntaxScope,
@@ -6945,14 +6696,6 @@ def _compact_class_references(
         for (consumer, parts, role), facts in sorted(
             references.items(), key=lambda item: (item[1][0], item[0][0], item[0][1])
         )
-    )
-
-
-def _is_builtin_call(node: ast.AST | None, name: str) -> bool:
-    return (
-        isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Name)
-        and node.func.id == name
     )
 
 
@@ -7874,34 +7617,6 @@ def _dataclass_fields(
             class_aliases.pop(bound_name, None)
         class_aliases.update(direct_aliases)
     return tuple(fields)
-
-
-def _dataclass_decorator_failures(
-    decorator: ast.expr,
-) -> tuple[CompactProductDeclarationFailure, ...]:
-    if not isinstance(decorator, ast.Call):
-        return ()
-    violations: list[CompactProductAuthorityViolation] = []
-    keyword_names = tuple(keyword.arg for keyword in decorator.keywords)
-    if decorator.args or any(name is None for name in keyword_names):
-        violations.append(CompactProductAuthorityViolation.DYNAMIC_DATACLASS_OPTIONS)
-    init_values = tuple(
-        keyword.value for keyword in decorator.keywords if keyword.arg == "init"
-    )
-    if len(init_values) > 1 or (
-        init_values
-        and (
-            not isinstance(init_values[0], ast.Constant)
-            or not isinstance(init_values[0].value, bool)
-        )
-    ):
-        violations.append(CompactProductAuthorityViolation.DYNAMIC_DATACLASS_OPTIONS)
-    elif init_values and not init_values[0].value:
-        violations.append(CompactProductAuthorityViolation.GENERATED_INIT_DISABLED)
-    return tuple(
-        CompactProductDeclarationFailure(decorator.lineno, violation)
-        for violation in dict.fromkeys(violations)
-    )
 
 
 def _field_member_collision_lines(

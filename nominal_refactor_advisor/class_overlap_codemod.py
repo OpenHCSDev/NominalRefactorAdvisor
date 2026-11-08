@@ -34,7 +34,6 @@ from .ast_tools import ParsedModule, is_docstring_statement
 from .class_index import (
     CLASS_METHOD_OWNERSHIP_HOOK_NAMES,
     NATIVE_METACLASS_BASES,
-    ClassReferenceRole,
     CompactIndexedClass,
     module_import_aliases,
 )
@@ -54,6 +53,7 @@ from .class_overlap import (
     ExtractMixin,
     PromoteToSharedBase,
 )
+from .class_references import ClassReferenceRole
 from .codemod import (
     FindingEvidenceActionKeysMixin,
     SelfDeclaredRecipeSynthesizer,
