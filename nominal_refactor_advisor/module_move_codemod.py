@@ -1992,6 +1992,10 @@ class _ModuleIdentityStrings:
         module_pattern = re.compile(
             rf"(?<![\w.]){re.escape(self.source_module_name)}(?:\.(\w+))?(?!\w)"
         )
+        import_pattern = re.compile(
+            rf"from[ \t]+{re.escape(self.source_module_name)}[ \t]+import[ \t]+"
+            r"(\w+(?:[ \t]*,[ \t]*\w+)*)"
+        )
         file_name = self.source_path.rsplit("/", 1)[-1]
         path_pattern = re.compile(rf"(?<![\w./-])((?:[\w.-]+/)+{re.escape(file_name)})(?!\w)")
         edits: list[NominalSourceEdit] = []
@@ -2014,7 +2018,21 @@ class _ModuleIdentityStrings:
                     continue
                 start, end = offsets
                 segment = source[start:end]
+                routed: list[tuple[int, int]] = []
+                for match in import_pattern.finditer(segment):
+                    routed.append(match.span())
+                    replacements.append(
+                        SourceTextSpanReplacement.from_offsets(
+                            start_offset=start + match.start(),
+                            end_offset=start + match.end(),
+                            replacement_source=self._import_replacement(
+                                context, file_path, node, match.group(1)
+                            ),
+                        )
+                    )
                 for match in module_pattern.finditer(segment):
+                    if any(low <= match.start() < high for low, high in routed):
+                        continue
                     replacement = self._module_replacement(context, file_path, node, match)
                     replacements.append(
                         SourceTextSpanReplacement.from_offsets(
@@ -2052,6 +2070,33 @@ class _ModuleIdentityStrings:
             ) in self.retained_calls
             for argument in (*node.args, *(keyword.value for keyword in node.keywords))
             for inner in ast.walk(argument)
+        )
+
+    def _import_replacement(
+        self,
+        context: CodemodSelectorContext,
+        file_path: str,
+        node: ast.Constant,
+        imported: str,
+    ) -> str:
+        """An import statement written inside a string follows each name to its
+        owner, like a real import: one ``from`` per owner, joined by ``; `` so
+        the rewritten text is still one line wherever the original was."""
+
+        names = [name.strip() for name in imported.split(",")]
+        unowned = [name for name in names if name not in self.owners]
+        if unowned:
+            raise ValueError(
+                f"{file_path!r}:{node.lineno} imports {unowned!r} from the dissolved "
+                f"module {self.source_module_name!r} inside a string; it does not bind them"
+            )
+        import_graph = context.module_import_graph
+        by_owner: dict[str, list[str]] = {}
+        for name in names:
+            owner = import_graph.module_name_for_file_path(self.owners[name])
+            by_owner.setdefault(owner, []).append(name)
+        return "; ".join(
+            f"from {owner} import {', '.join(owned)}" for owner, owned in by_owner.items()
         )
 
     def _module_replacement(

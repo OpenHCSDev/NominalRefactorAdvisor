@@ -494,3 +494,29 @@ def test_a_moved_bodys_relative_import_is_rebased_for_its_new_package(tmp_path: 
     assert "from ..actions import Action  # noqa: local" in (tmp_path / "pkg/sub/moved.py").read_text()
     ran = _run(tmp_path, "from pkg.sub.moved import Moved; assert Moved().act() == 5")
     assert ran.returncode == 0, ran.stderr
+
+
+def test_an_import_written_in_a_string_follows_each_name_to_its_owner(tmp_path: Path) -> None:
+    _write(tmp_path, "pkg/__init__.py", "")
+    _write(tmp_path, "pkg/repo.py", "class Repo:\n    pass\n")
+    _write(tmp_path, "pkg/checkouts.py", "class Checkout:\n    pass\n")
+    _write(tmp_path, "pkg/hub.py", "from .repo import Repo\nfrom .checkouts import Checkout\n")
+    _write(
+        tmp_path,
+        "pkg/runner.py",
+        "PROGRAM = (\n"
+        "    \"import sys\\n\"\n"
+        "    \"from pkg.hub import Checkout, Repo\\n\"\n"
+        "    \"print(Checkout.__name__, Repo.__name__)\\n\"\n"
+        ")\n",
+    )
+    operation = DissolveModuleOperation(
+        target=SourceRewriteTarget(file_path=(tmp_path / "pkg/hub.py").as_posix()),
+        successor_path=(tmp_path / "pkg/repo.py").as_posix(),
+    )
+    simulation = RefactorRecipe("dissolve").with_operation(operation).simulate(_snapshot(tmp_path))
+    assert simulation.is_clean, simulation.preflight_report
+    simulation.apply()
+    ran = _run(tmp_path, "import pkg.runner; exec(pkg.runner.PROGRAM)")
+    assert ran.returncode == 0, ran.stderr
+    assert ran.stdout.split() == ["Checkout", "Repo"]
