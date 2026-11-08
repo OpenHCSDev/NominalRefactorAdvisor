@@ -366,23 +366,41 @@ def test_a_package_object_above_the_source_is_not_the_source(tmp_path: Path) -> 
     assert imported.returncode == 0, imported.stderr
 
 
-def test_retained_files_keep_the_dissolved_modules_old_name(tmp_path: Path) -> None:
+def test_absence_evidence_keeps_the_old_name_and_every_other_mention_follows(
+    tmp_path: Path,
+) -> None:
     _write(tmp_path, "pkg/__init__.py", "")
     _write(tmp_path, "pkg/owner.py", "class Moved:\n    pass\n")
     _write(tmp_path, "pkg/hub.py", "from .owner import Moved\n")
-    _write(tmp_path, "pkg/evidence.py", "GONE = ('pkg/hub.py',)\n")
-    _write(tmp_path, "pkg/reader.py", "NAME = 'pkg.hub'\n")
+    _write(
+        tmp_path,
+        "pkg/evidence.py",
+        "def PathsAbsent(paths):\n    return paths\n\n\n"
+        "def ClassDeclared(name, paths):\n    return paths\n\n\n"
+        "GONE = PathsAbsent(('pkg/hub.py',))\n"
+        "WHERE = ClassDeclared('Moved', ('pkg/hub.py',))\n",
+    )
+    _write(
+        tmp_path,
+        "pkg/reader.py",
+        '"""Serving them is in pkg.hub, which only the server imports."""\n\n'
+        "NAME = 'x'\n"
+        "PROGRAM = f\"loaded = 'pkg.hub' in modules; target = 'pkg.hub.Moved'; {NAME}\"\n",
+    )
     operation = DissolveModuleOperation(
         target=SourceRewriteTarget(file_path=(tmp_path / "pkg/hub.py").as_posix()),
         successor_path=(tmp_path / "pkg/owner.py").as_posix(),
-        retained_paths=((tmp_path / "pkg/evidence.py").as_posix(),),
+        retained_calls=("PathsAbsent",),
     )
     simulation = RefactorRecipe("dissolve").with_operation(operation).simulate(_snapshot(tmp_path))
-    assert simulation.is_clean
+    assert simulation.is_clean, simulation.preflight_report
     simulation.apply()
-    assert (tmp_path / "pkg/evidence.py").read_text() == "GONE = ('pkg/hub.py',)\n"
-    assert (tmp_path / "pkg/reader.py").read_text() == "NAME = 'pkg.owner'\n"
-
+    evidence = (tmp_path / "pkg/evidence.py").read_text()
+    reader = (tmp_path / "pkg/reader.py").read_text()
+    assert "GONE = PathsAbsent(('pkg/hub.py',))" in evidence
+    assert "WHERE = ClassDeclared('Moved', ('pkg/owner.py',))" in evidence
+    assert '"""Serving them is in pkg.owner, which only the server imports."""' in reader
+    assert "loaded = 'pkg.owner' in modules; target = 'pkg.owner.Moved'; {NAME}" in reader
 
 @pytest.mark.parametrize(
     ("origin", "kept"),
@@ -420,3 +438,29 @@ def test_a_move_points_importers_of_a_removed_source_import_at_its_owner(
     assert ("base import Base" in (tmp_path / "pkg/consumer.py").read_text()) is not kept
     imported = _run(tmp_path, "from pkg.consumer import Base, Moved; assert issubclass(Moved, Base)")
     assert imported.returncode == 0, imported.stderr
+
+
+def test_mentions_of_a_module_already_gone_follow_its_successor(tmp_path: Path) -> None:
+    from nominal_refactor_advisor.codemod import RetargetModuleMentionsOperation
+
+    _write(tmp_path, "pkg/__init__.py", "")
+    _write(tmp_path, "pkg/served.py", "class Moved:\n    pass\n")
+    _write(
+        tmp_path,
+        "pkg/reader.py",
+        '"""Serving is in pkg.tools."""\n\n'
+        "PROGRAM = \"assert 'pkg.tools' not in sys.modules\"\n",
+    )
+    operation = RetargetModuleMentionsOperation(
+        target=SourceRewriteTarget(file_path=(tmp_path / "pkg/reader.py").as_posix()),
+        retired_module_name="pkg.tools",
+        retired_path=(tmp_path / "pkg/tools.py").as_posix(),
+        successor_path=(tmp_path / "pkg/served.py").as_posix(),
+    )
+    simulation = RefactorRecipe("retarget").with_operation(operation).simulate(_snapshot(tmp_path))
+    assert simulation.is_clean, simulation.preflight_report
+    simulation.apply()
+    assert (tmp_path / "pkg/reader.py").read_text() == (
+        '"""Serving is in pkg.served."""\n\n'
+        "PROGRAM = \"assert 'pkg.served' not in sys.modules\"\n"
+    )

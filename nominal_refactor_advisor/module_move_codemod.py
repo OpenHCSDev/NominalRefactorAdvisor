@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import re
 from abc import (
     ABC,
     abstractmethod,
@@ -1891,77 +1892,117 @@ class _DissolvedModuleBindings:
 
 @dataclass(frozen=True)
 class _ModuleIdentityStrings:
-    """String constants naming the dissolved module: its dotted name, its path,
-    or `<module>.<Name>` (a patch target); each is rewritten to its owner."""
+    """Every mention of the dissolved module inside a string (docstrings and
+    f-string parts included): its dotted name, `<module>.<Name>` (a patch
+    target), or its path. Each mention is rewritten in place to the name's
+    owner or to the successor; a mention under a call named in
+    `retained_calls` (absence evidence such as PathsAbsent) stays."""
 
     source_path: str
     source_module_name: str
     owners: Mapping[str, str]
     successor_path: str | None
-    retained_paths: frozenset[str] = frozenset()
+    retained_calls: frozenset[str] = frozenset()
 
     def edits(self, context: CodemodSelectorContext) -> tuple[NominalSourceEdit, ...]:
+        module_pattern = re.compile(
+            rf"(?<![\w.]){re.escape(self.source_module_name)}(?:\.(\w+))?(?!\w)"
+        )
+        file_name = self.source_path.rsplit("/", 1)[-1]
+        path_pattern = re.compile(rf"(?<![\w./-])((?:[\w.-]+/)+{re.escape(file_name)})(?!\w)")
         edits: list[NominalSourceEdit] = []
         for source_file in context.source_index.files:
             file_path = source_file.file_path
             module = context.module_nodes_by_file_path.get(file_path)
-            if file_path == self.source_path or file_path in self.retained_paths or module is None:
+            if file_path == self.source_path or module is None:
                 continue
-            replacements = tuple(
-                (node, replacement)
-                for node in ast.walk(module)
-                if isinstance(node, ast.Constant) and isinstance(node.value, str)
-                for replacement in (self._replacement(context, file_path, node),)
-                if replacement is not None
-            )
-            if not replacements:
-                continue
-            geometry = SourceTextGeometry(context.sources_by_file_path[file_path])
-            edits.append(
-                geometry.nominal_edit(
-                    file_path=file_path,
-                    replacements=tuple(
+            source = context.sources_by_file_path[file_path]
+            geometry = SourceTextGeometry(source)
+            retained = self._retained_nodes(module)
+            replacements: list[SourceTextSpanReplacement] = []
+            for node in ast.walk(module):
+                if not (isinstance(node, ast.Constant) and isinstance(node.value, str)):
+                    continue
+                if id(node) in retained:
+                    continue
+                offsets = geometry.node_offsets(node)
+                if offsets is None:
+                    continue
+                start, end = offsets
+                segment = source[start:end]
+                for match in module_pattern.finditer(segment):
+                    replacement = self._module_replacement(context, file_path, node, match)
+                    replacements.append(
                         SourceTextSpanReplacement.from_offsets(
-                            start_offset=start,
-                            end_offset=end,
-                            replacement_source=repr(replacement),
+                            start_offset=start + match.start(),
+                            end_offset=start + match.end(),
+                            replacement_source=replacement,
                         )
-                        for node, replacement in replacements
-                        for start, end in (geometry.required_node_offsets(node),)
-                    ),
-                )
-            )
+                    )
+                for match in path_pattern.finditer(segment):
+                    path = match.group(1)
+                    if not (self.source_path == path or self.source_path.endswith(f"/{path}")):
+                        continue
+                    replacements.append(
+                        SourceTextSpanReplacement.from_offsets(
+                            start_offset=start + match.start(1),
+                            end_offset=start + match.end(1),
+                            replacement_source=self._path_replacement(file_path, node, path),
+                        )
+                    )
+            if replacements:
+                edits.append(geometry.nominal_edit(file_path=file_path, replacements=tuple(replacements)))
         return tuple(edits)
 
-    def _replacement(
+    def _retained_nodes(self, module: ast.Module) -> frozenset[int]:
+        if not self.retained_calls:
+            return frozenset()
+        return frozenset(
+            id(inner)
+            for node in ast.walk(module)
+            if isinstance(node, ast.Call)
+            and (
+                node.func.id if isinstance(node.func, ast.Name)
+                else node.func.attr if isinstance(node.func, ast.Attribute)
+                else None
+            ) in self.retained_calls
+            for argument in (*node.args, *(keyword.value for keyword in node.keywords))
+            for inner in ast.walk(argument)
+        )
+
+    def _module_replacement(
         self,
         context: CodemodSelectorContext,
         file_path: str,
         node: ast.Constant,
-    ) -> str | None:
-        value = node.value
+        match: re.Match[str],
+    ) -> str:
         import_graph = context.module_import_graph
-        prefix = f"{self.source_module_name}."
-        if value.startswith(prefix) and value[len(prefix):] in self.owners:
-            name = value[len(prefix):]
+        name = match.group(1)
+        if name is not None and name in self.owners:
             return f"{import_graph.module_name_for_file_path(self.owners[name])}.{name}"
-        names_module = value == self.source_module_name or value.startswith(prefix)
-        names_path = value.endswith(".py") and (
-            value == self.source_path or self.source_path.endswith(f"/{value}")
-        )
-        if not (names_module or names_path):
-            return None
-        if self.successor_path is None or value.startswith(prefix):
+        if name is not None:
             raise ValueError(
-                f"{file_path!r}:{node.lineno} names the dissolved module as {value!r}; "
-                "declare its successor_path"
+                f"{file_path!r}:{node.lineno} names {match.group(0)!r}, which the "
+                "dissolved module does not bind"
             )
-        if names_module:
-            return import_graph.module_name_for_file_path(self.successor_path)
-        root = self.source_path[: len(self.source_path) - len(value)]
+        if self.successor_path is None:
+            raise ValueError(
+                f"{file_path!r}:{node.lineno} names the dissolved module "
+                f"{match.group(0)!r}; declare its successor_path or retain the call"
+            )
+        return import_graph.module_name_for_file_path(self.successor_path)
+
+    def _path_replacement(self, file_path: str, node: ast.Constant, path: str) -> str:
+        if self.successor_path is None:
+            raise ValueError(
+                f"{file_path!r}:{node.lineno} names the dissolved module's path "
+                f"{path!r}; declare its successor_path or retain the call"
+            )
+        root = self.source_path[: len(self.source_path) - len(path)]
         if not self.successor_path.startswith(root):
             raise ValueError(
-                f"{file_path!r}:{node.lineno} names {value!r} relative to a root "
+                f"{file_path!r}:{node.lineno} names {path!r} relative to a root "
                 f"{self.successor_path!r} does not share"
             )
         return self.successor_path[len(root):]
@@ -1983,9 +2024,9 @@ class DissolveModuleOperation(RepositorySourceReprovedOperation):
     those names is removed, and every string naming the module follows it.
 
     `successor_path` names the module a string naming the dissolved module now
-    means; without one such a string is refused. `retained_paths` are files whose
-    strings record the module's old identity on purpose (evidence that the path
-    is gone, a history) and stay as written. A consumer that binds the
+    means; without one such a string is refused. Strings under a call named in
+    `retained_calls` record the module's old identity on purpose (evidence that
+    the path is gone, such as PathsAbsent) and stay as written. A consumer that binds the
     module for its import side effect, or imports a name the module took from
     outside the index, is refused: it has no owner to follow."""
 
@@ -1993,7 +2034,7 @@ class DissolveModuleOperation(RepositorySourceReprovedOperation):
         OptionalStringPayloadValueCodec(),
         default=None,
     )
-    retained_paths: tuple[str, ...] = codemod_payload_field(
+    retained_calls: tuple[str, ...] = codemod_payload_field(
         StringArrayPayloadValueCodec(),
         default=(),
     )
@@ -2064,13 +2105,7 @@ class DissolveModuleOperation(RepositorySourceReprovedOperation):
                 source_module_name,
                 bindings.owners,
                 successor_path,
-                frozenset(
-                    SourcePathResolutionAuthority.from_source_index(
-                        path,
-                        context.source_index,
-                    ).required_path()
-                    for path in self.retained_paths
-                ),
+                frozenset(self.retained_calls),
             ).edits(context),
         )
 
@@ -2179,3 +2214,55 @@ class DissolveModuleOperation(RepositorySourceReprovedOperation):
                         names=(alias.name for alias in aliases),
                         scope=scope,
                     )
+
+
+@dataclass(frozen=True, kw_only=True)
+class RetargetModuleMentionsOperation(RepositorySourceReprovedOperation):
+    """Point every string mention of a module that no longer exists at its
+    successor: the cleanup a dissolve does, for a module removed before the
+    dissolve could see the mention (prose, embedded program text)."""
+
+    retired_module_name: str = codemod_payload_field(RequiredStringPayloadValueCodec())
+    retired_path: str = codemod_payload_field(RequiredStringPayloadValueCodec())
+    successor_path: str = codemod_payload_field(SourcePathPayloadValueCodec())
+    retained_calls: tuple[str, ...] = codemod_payload_field(
+        StringArrayPayloadValueCodec(),
+        default=(),
+    )
+
+    def preflight_reports(
+        self,
+        context: CodemodSelectorContext,
+    ) -> tuple[CodemodOperationPreflightReport, ...]:
+        try:
+            self.required_reproof(lambda: self.source_edits_from_snapshot(context))
+        except CodemodOperationPreflightError as error:
+            return (error.report,)
+        return (
+            CodemodOperationPreflightReport(
+                operation=self.operation_key(),
+                status=CodemodPreflightStatus.PASSED,
+                message="Every mention of the retired module names its successor",
+                detail=DissolvedModuleReport(deleted_path=self.retired_path, owner_paths_by_name=()),
+            ),
+        )
+
+    def source_edits_from_snapshot(
+        self,
+        context: CodemodSourceSnapshot,
+    ) -> tuple[NominalSourceEdit, ...]:
+        if self.retired_module_name in context.module_import_graph.known_module_names:
+            raise ValueError(
+                f"{self.retired_module_name!r} still exists; dissolve it instead"
+            )
+        successor_path = SourcePathResolutionAuthority.from_source_index(
+            self.successor_path,
+            context.source_index,
+        ).required_path()
+        return _ModuleIdentityStrings(
+            self.retired_path,
+            self.retired_module_name,
+            {},
+            successor_path,
+            frozenset(self.retained_calls),
+        ).edits(context)

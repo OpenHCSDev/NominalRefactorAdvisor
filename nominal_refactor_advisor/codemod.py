@@ -401,6 +401,7 @@ from .codemod_module_declarations import (
 )
 from .codemod_module_declarations import (
     NamedSourceTopLevelDeclaration as NamedSourceTopLevelDeclaration,
+    TypeAliasSourceTopLevelDeclaration as TypeAliasSourceTopLevelDeclaration,
 )
 from .codemod_module_declarations import (
     SourceTopLevelDeclaration as SourceTopLevelDeclaration,
@@ -644,6 +645,7 @@ from .module_move_codemod import (
     ExtractSymbolClosureToNewModuleOperation as ExtractSymbolClosureToNewModuleOperation,
     ExtractSymbolsToNewModuleOperation as ExtractSymbolsToNewModuleOperation,
     DissolveModuleOperation as DissolveModuleOperation,
+    RetargetModuleMentionsOperation as RetargetModuleMentionsOperation,
     ModuleSymbolMoveOperation as ModuleSymbolMoveOperation,
     MoveSymbolClosureToModuleOperation as MoveSymbolClosureToModuleOperation,
     MoveSymbolsToModuleOperation as MoveSymbolsToModuleOperation,

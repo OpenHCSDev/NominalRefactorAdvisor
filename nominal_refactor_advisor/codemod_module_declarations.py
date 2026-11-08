@@ -769,6 +769,40 @@ class AssignedSourceTopLevelDeclaration(SourceTopLevelDeclaration):
 
 
 @dataclass(frozen=True)
+class TypeAliasSourceTopLevelDeclaration(SourceTopLevelDeclaration):
+    """Movable ``type Name = ...`` alias (PEP 695)."""
+
+    node: ast.TypeAlias
+
+    @classmethod
+    def from_supported_statement(
+        cls,
+        source_path: str,
+        statement: ast.stmt,
+    ) -> SourceTopLevelDeclaration | None:
+        if not isinstance(statement, ast.TypeAlias):
+            return None
+        return cls(source_path=source_path, node=statement)
+
+    @property
+    def name(self) -> str:
+        return self.node.name.id
+
+    def name_span(self, source: str) -> SourceTextSpan:
+        return SourceTextSpan.from_offsets(
+            SourceTextGeometry(source).required_node_offsets(self.node.name)
+        )
+
+    @property
+    def assigned_binding_names(self) -> frozenset[str]:
+        return frozenset((self.name,))
+
+    @property
+    def destination_boundary(self) -> SourceInsertionBoundary:
+        return SourceInsertionBoundary.ONE_BLANK_LINE
+
+
+@dataclass(frozen=True)
 class SourceTopLevelDeclarationIndex:
     """Movable declarations derived from one module's lexical bindings."""
 
