@@ -24,7 +24,7 @@ from dataclasses import dataclass
 from functools import cached_property
 from pathlib import PurePosixPath
 
-from ..ast_tools import ParsedModule, ParsedModuleSet
+from ..class_index import CompactModuleClassHeader
 from ..codemod_module_declarations import ModuleSymbolTable
 from ..codemod_runtime import FindingRecipeEvaluation, RefactorRecipe
 from ..codemod_selection_context import CodemodSelectorContext
@@ -89,15 +89,15 @@ class DestinationTable:
         )
 
     def destinations(
-        self, modules: Iterable[ParsedModule]
+        self, modules: Iterable[CompactModuleClassHeader]
     ) -> tuple[FlatModuleDestination, ...]:
         """Each flat module the table sends somewhere, per root package."""
 
-        flat_by_root: dict[str, list[ParsedModule]] = {}
-        packaged_by_root: dict[str, list[ParsedModule]] = {}
+        flat_by_root: dict[str, list[CompactModuleClassHeader]] = {}
+        packaged_by_root: dict[str, list[CompactModuleClassHeader]] = {}
         for module in modules:
             parts = module.module_name.split(".")
-            if module.path.name == "__init__.py" or len(parts) < 2:
+            if PurePosixPath(module.file_path).name == "__init__.py" or len(parts) < 2:
                 continue
             by_root = flat_by_root if len(parts) == 2 else packaged_by_root
             by_root.setdefault(parts[0], []).append(module)
@@ -111,24 +111,26 @@ class DestinationTable:
 
     def root_destinations(
         self,
-        flat_modules: tuple[ParsedModule, ...],
-        package_modules: tuple[ParsedModule, ...],
+        flat_modules: tuple[CompactModuleClassHeader, ...],
+        package_modules: tuple[CompactModuleClassHeader, ...],
     ) -> tuple[FlatModuleDestination, ...]:
         """A class names the flat module declaring it, or, once relocated into
         its row's package, the flat module of the same name it left behind."""
 
-        by_name = {module.path.stem: module for module in flat_modules}
-        declaring: dict[str, list[tuple[str, ParsedModule]]] = {}
+        by_stem = {
+            PurePosixPath(module.file_path).stem: module for module in flat_modules
+        }
+        declaring: dict[str, list[tuple[str, CompactModuleClassHeader]]] = {}
         for module in (*flat_modules, *package_modules):
             package = ".".join(module.module_name.split(".")[1:-1])
-            for statement in module.module.body:
-                if isinstance(statement, ast.ClassDef):
-                    declaring.setdefault(statement.name, []).append((package, module))
+            for declared in module.classes:
+                if "." not in declared.qualname:
+                    declaring.setdefault(declared.qualname, []).append((package, module))
         chosen: dict[str, str] = {}
         for row in self.rows:
             for name, destination in row.module_destinations():
-                if name in by_name:
-                    chosen.setdefault(by_name[name].file_path, destination)
+                if name in by_stem:
+                    chosen.setdefault(by_stem[name].file_path, destination)
             row_package = row.package.replace("/", ".")
             for word in sorted(row.owner_words()):
                 owners = [
@@ -136,11 +138,9 @@ class DestinationTable:
                     for package, module in declaring.get(word, ())
                     if package in ("", row_package)
                 ]
-                if len(owners) == 1 and owners[0].path.stem in by_name:
-                    chosen.setdefault(
-                        by_name[owners[0].path.stem].file_path,
-                        f"{row.package}/{owners[0].path.stem}",
-                    )
+                stem = PurePosixPath(owners[0].file_path).stem if len(owners) == 1 else ""
+                if stem in by_stem:
+                    chosen.setdefault(by_stem[stem].file_path, f"{row.package}/{stem}")
         cluster = tuple(sorted(chosen))
         return tuple(
             FlatModuleDestination(
@@ -297,7 +297,7 @@ class PackageMoveFindingRecipeSynthesizer(
         )
 
     def destination_findings(
-        self, modules: ParsedModuleSet, tables: Iterable[str]
+        self, modules: Iterable[CompactModuleClassHeader], tables: Iterable[str]
     ) -> list[RefactorFinding]:
         return [
             self.build_finding(
