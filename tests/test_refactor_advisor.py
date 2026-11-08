@@ -9778,6 +9778,47 @@ def test_module_move_rejects_implicit_module_context_dependencies(
         ).simulate(snapshot)
 
 
+def test_a_whole_module_relocated_to_a_new_module_takes_its_name_with_it(
+    tmp_path: Path,
+) -> None:
+    """Moving every declaration a module has into a module the move creates makes the
+    moved code that module under its new name, so `__name__` (a logger's name, say)
+    follows it. A partial move, or one into an existing module, still refuses."""
+    source_path = tmp_path / "pkg/source.py"
+    _write_module(
+        tmp_path,
+        "pkg/source.py",
+        "import logging\n\n_LOG = logging.getLogger(__name__)\n\n\n"
+        "def record():\n    _LOG.info('recorded')\n",
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+
+    def relocated(*names: str) -> RelocateSymbolsToNewModuleOperation:
+        return RelocateSymbolsToNewModuleOperation(
+            target=SourceRewriteTarget(file_path=source_path.as_posix()),
+            symbol_qualnames=names,
+            destination_path=(tmp_path / "pkg/moved.py").as_posix(),
+        )
+
+    simulation = (
+        RefactorRecipe("whole-module")
+        .with_operation(relocated("_LOG", "record"))
+        .simulate(snapshot)
+    )
+    assert simulation.is_clean
+    assert "logging.getLogger(__name__)" in simulation.simulation.rewritten_sources[
+        (tmp_path / "pkg/moved.py").as_posix()
+    ]
+
+    with pytest.raises(
+        CodemodOperationPreflightError,
+        match="module-context dependencies change",
+    ):
+        RefactorRecipe("part-of-module").with_operation(relocated("_LOG")).simulate(
+            snapshot
+        )
+
+
 def test_module_move_rejects_an_assignment_sharing_its_source_line(
     tmp_path: Path,
 ) -> None:

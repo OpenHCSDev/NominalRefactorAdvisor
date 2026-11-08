@@ -336,6 +336,16 @@ class ModuleSymbolTable:
             for name in self.bound_names_for_statement(statement)
         )
 
+    @cached_property
+    def declared_names(self) -> frozenset[str]:
+        """The names this module declares itself; an import binds a name another owns."""
+        return frozenset(
+            name
+            for statement in self.module.body
+            if not isinstance(statement, (ast.Import, ast.ImportFrom))
+            for name in self.bound_names_for_statement(statement)
+        )
+
     def binding_statements(self, name: str) -> tuple[ast.stmt, ...]:
         return tuple(
             statement
