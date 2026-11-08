@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import ast
-from collections.abc import Callable
+from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import TYPE_CHECKING, TypeAlias
@@ -121,6 +121,25 @@ class ModuleImportScope(StrEnum):
         """Project imports belonging to this declaration-owned scope."""
 
         return self._statement_projection(module)
+
+    def bindings(self, module: ast.Module) -> Iterator[str]:
+        """The name each alias of this scope's imports binds, once per alias."""
+
+        for statement in self.import_statements(module):
+            yield from ImportBoundNameProjection(statement).names()
+
+    @staticmethod
+    def bound_in(
+        module: ast.Module, names: Iterable[str]
+    ) -> Iterator[tuple[ModuleImportScope, tuple[str, ...]]]:
+        """Each scope whose imports bind some of `names`, with those names."""
+
+        requested = tuple(dict.fromkeys(names))
+        for scope in ModuleImportScope:
+            bound = frozenset(scope.bindings(module))
+            matched = tuple(name for name in requested if name in bound)
+            if matched:
+                yield scope, matched
 
     def required_module_reference(
         self,

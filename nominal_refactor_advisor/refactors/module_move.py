@@ -1135,10 +1135,9 @@ class _SourceModuleObjectReads:
 
         index = parsed.fact(ModuleNodeIndex)
         bound_by_alias = tuple(
-            (alias.asname or alias.name.split(".")[0], scope)
+            (name, scope)
             for scope in ModuleImportScope
-            for statement in scope.import_statements(parsed.module)
-            for alias in statement.names
+            for name in scope.bindings(parsed.module)
         )
         alias_counts = Counter(name for name, _scope in bound_by_alias)
         scope_by_bound_name = {

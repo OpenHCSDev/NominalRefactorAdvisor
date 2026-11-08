@@ -11,6 +11,7 @@ from ..codemod_imports import (
     ModuleImportInsertionPoint,
     ModuleImportMutation,
 )
+from ..codemod_import_scopes import ModuleImportScope
 from ..codemod_module_declarations import ModuleSymbolTable
 from ..codemod_operations import (
     RefactorRecipeOperation,
@@ -211,8 +212,9 @@ class RemoveImportNamesOperation(RefactorRecipeOperation):
 class RemoveImportBindingsOperation(RefactorRecipeOperation):
     """Remove import bindings by bound name once the module no longer reads them.
 
-    Covers every import shape (``import a.b as c``, ``from a import b``), so a
-    deletion that leaves its imports unread can drop them in the next stage.
+    Covers every import shape (``import a.b as c``, ``from a import b``) in every
+    scope that binds it, runtime or ``if TYPE_CHECKING:``, so a deletion that
+    leaves its imports unread can drop them in the next stage.
     """
 
     bound_names: tuple[str, ...] = codemod_payload_field(
@@ -234,11 +236,25 @@ class RemoveImportBindingsOperation(RefactorRecipeOperation):
                 f"{source_path!r} still reads import bindings "
                 f"{tuple(sorted(still_read))!r}"
             )
-        return (
+        bound = tuple(
+            ModuleImportScope.bound_in(
+                context.module_nodes_by_file_path[source_path], self.bound_names
+            )
+        )
+        unbound = set(self.bound_names).difference(
+            name for _scope, names in bound for name in names
+        )
+        if unbound:
+            raise ValueError(
+                f"{source_path!r} has no import binding {tuple(sorted(unbound))!r}"
+            )
+        return tuple(
             ModuleImportMutation.remove_bound_names(
                 file_path=source_path,
-                names=self.bound_names,
+                names=names,
+                scope=scope,
                 rationale=self.rationale
-                or f"Remove unread import bindings {self.bound_names!r}.",
-            ),
+                or f"Remove unread import bindings {names!r}.",
+            )
+            for scope, names in bound
         )

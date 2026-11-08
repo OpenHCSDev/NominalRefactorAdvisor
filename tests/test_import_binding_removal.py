@@ -56,13 +56,59 @@ def test_removes_unread_plain_and_from_import_bindings(tmp_path: Path) -> None:
     )
 
 
-def test_refuses_a_binding_the_module_still_reads(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    ("source", "names", "refusal"),
+    (
+        pytest.param(
+            "import pkg.helpers as helpers_module\n\nresult = helpers_module.VALUE\n",
+            ("helpers_module",),
+            "still reads import bindings",
+            id="still-read",
+        ),
+        pytest.param(
+            "from pkg.helpers import VALUE\n\nresult = VALUE\n",
+            ("helpers",),
+            "has no import binding \\('helpers',\\)",
+            id="never-bound",
+        ),
+    ),
+)
+def test_refuses_a_binding_it_cannot_remove(
+    tmp_path: Path, source: str, names: tuple[str, ...], refusal: str
+) -> None:
+    snapshot, consumer = _snapshot(tmp_path, source)
+
+    with pytest.raises(ValueError, match=refusal):
+        RefactorRecipe("drop").with_operation(_operation(consumer, *names)).simulate(
+            snapshot
+        )
+
+
+def test_removes_an_unread_binding_under_type_checking_and_the_guard_it_empties(
+    tmp_path: Path,
+) -> None:
+    """agent-comms child_process.py: deleting ProcessState.owns_turn leaves its
+    `if TYPE_CHECKING:` import of ActiveTurn unread. It goes, and so does the
+    guard and the flag it empties."""
     snapshot, consumer = _snapshot(
         tmp_path,
-        "import pkg.helpers as helpers_module\n\n" "result = helpers_module.VALUE\n",
+        "from __future__ import annotations\n\n"
+        "from typing import TYPE_CHECKING\n\n"
+        "from pkg.helpers import VALUE\n\n"
+        "if TYPE_CHECKING:\n"
+        "    from pkg import helpers\n\n"
+        "result = VALUE\n",
+    )
+    simulation = RefactorRecipe("drop-unread").with_operation(_operation(consumer, "helpers")).simulate(
+        snapshot
     )
 
-    with pytest.raises(ValueError, match="still reads import bindings"):
-        RefactorRecipe("drop-read").with_operation(
-            _operation(consumer, "helpers_module")
-        ).simulate(snapshot)
+    assert simulation.is_clean
+    rewritten = simulation.simulation.rewritten_sources[consumer.as_posix()]
+    assert "TYPE_CHECKING" not in rewritten
+    assert "from pkg import helpers" not in rewritten
+    assert [line for line in rewritten.splitlines() if line] == [
+        "from __future__ import annotations",
+        "from pkg.helpers import VALUE",
+        "result = VALUE",
+    ]
