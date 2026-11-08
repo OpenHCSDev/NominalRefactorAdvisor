@@ -432,7 +432,9 @@ class ModuleNameRedirect:
                     ).source.strip()
                 )
             replacements.append(
-                (statement, ("\n" + " " * statement.col_offset).join(lines))
+                # Each owner's statement can be several lines (a parenthesised
+                # list); every line after the first takes the reader's indent.
+                (statement, "\n".join(lines).replace("\n", "\n" + " " * statement.col_offset))
             )
         return tuple(replacements)
 

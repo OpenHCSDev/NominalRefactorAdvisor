@@ -289,6 +289,46 @@ def test_relocation_redirects_a_function_local_import(tmp_path: Path) -> None:
     assert imported.returncode == 0, imported.stderr
 
 
+def test_a_rewritten_local_import_keeps_its_indent_on_every_line(tmp_path: Path) -> None:
+    """A method's `from source import A, B` whose names move together is written as
+    the owner's import, which may be a parenthesised list: its names and its closing
+    parenthesis sit inside the method, not at the module's margin."""
+
+    _write(tmp_path, "pkg/__init__.py", "")
+    _write(
+        tmp_path,
+        "pkg/source.py",
+        "class Moved:\n    value = 3\n\n\nclass Other:\n    value = 4\n",
+    )
+    _write(
+        tmp_path,
+        "pkg/consumer.py",
+        "class Reader:\n"
+        "    def read(self):\n"
+        "        from pkg.source import Moved, Other\n"
+        "        return Moved.value + Other.value\n",
+    )
+    simulation = (
+        RefactorRecipe("relocate-both")
+        .with_operation(
+            RelocateSymbolsToNewModuleOperation(
+                target=SourceRewriteTarget(file_path=(tmp_path / "pkg/source.py").as_posix()),
+                symbol_qualnames=("Moved", "Other"),
+                destination_path=(tmp_path / "pkg/moved.py").as_posix(),
+            )
+        )
+        .simulate(_snapshot(tmp_path))
+    )
+    assert simulation.is_clean
+    simulation.apply()
+
+    body = (tmp_path / "pkg/consumer.py").read_text().splitlines()[2:-1]
+    assert body, "the rewritten import is missing"
+    assert all(line.startswith("        ") for line in body), body
+    imported = _run(tmp_path, "from pkg.consumer import Reader; assert Reader().read() == 7")
+    assert imported.returncode == 0, imported.stderr
+
+
 def _promote(root: Path, source: str, module: str, *names: str):
     from nominal_refactor_advisor.refactors.module_move import PromoteGuardedImportOperation
 
