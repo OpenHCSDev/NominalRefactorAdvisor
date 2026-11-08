@@ -19,6 +19,7 @@ from .codemod_operations import RefactorRecipeOperation
 from .json_reports import DataclassJsonReport
 from .codemod_import_bindings import FromModuleImportBindingIdentity
 from .codemod_import_graph import SourceModuleImportGraph
+from .source_index import SourceFileDigest
 from .codemod_import_scopes import ModuleImportScope
 from .codemod_imports import (
     ImportFromSource,
@@ -184,6 +185,39 @@ class PromotedGuardedImportReport(DataclassJsonReport):
 
 
 @dataclass(frozen=True)
+class FilesReachingModule:
+    """The parsed files that can reach one module, for every pass over its consumers.
+
+    A file that imports, binds, reads or names `pkg.source` (its dotted name, its file
+    name, an import written in a string) spells `source` in its text. Inside a package
+    whose `__init__.py` is the module, `from . import name` reaches it without spelling
+    it, so those files count too. Every other file is skipped unread: on agent-comms with
+    its tests, a dissolve otherwise walked about 1,100 modules to find the few dozen that
+    name it."""
+
+    context: CodemodSelectorContext
+    module_name: str
+
+    def __iter__(self) -> Iterator[tuple[SourceFileDigest, ast.Module]]:
+        leaf = self.module_name.rpartition(".")[2]
+        owner = self.context.module_import_graph.unique_source_file_for_module_name(
+            self.module_name
+        )
+        package_files = tuple(
+            owner.file_path.removesuffix("__init__.py")
+            for owner in (owner,)
+            if owner is not None and owner.file_path.endswith("/__init__.py")
+        )
+        for source_file in self.context.source_index.files:
+            module = self.context.module_nodes_by_file_path.get(source_file.file_path)
+            if module is not None and (
+                leaf in self.context.sources_by_file_path[source_file.file_path]
+                or source_file.file_path.startswith(package_files)
+            ):
+                yield source_file, module
+
+
+@dataclass(frozen=True)
 class ModuleNameRedirect:
     """Every importer of names leaving one module, redirected to each name's new
     owner, so each importer keeps working:
@@ -221,10 +255,9 @@ class ModuleNameRedirect:
             tuple(sorted(moved_names)),
         )
         edits: list[NominalSourceEdit] = []
-        for source_file in context.source_index.files:
+        for source_file, module in FilesReachingModule(context, source_module_name):
             consumer_path = source_file.file_path
-            module = context.module_nodes_by_file_path.get(consumer_path)
-            if consumer_path in excluded_paths or module is None:
+            if consumer_path in excluded_paths:
                 continue
             identity = source_file.module_path_identity
             for scope in ModuleImportScope:
@@ -2069,10 +2102,9 @@ class _ModuleIdentityStrings:
         file_name = self.source_path.rsplit("/", 1)[-1]
         path_pattern = re.compile(rf"(?<![\w./-])((?:[\w.-]+/)+{re.escape(file_name)})(?!\w)")
         edits: list[NominalSourceEdit] = []
-        for source_file in context.source_index.files:
+        for source_file, module in FilesReachingModule(context, self.source_module_name):
             file_path = source_file.file_path
-            module = context.module_nodes_by_file_path.get(file_path)
-            if file_path == self.source_path or module is None:
+            if file_path == self.source_path:
                 continue
             source = context.sources_by_file_path[file_path]
             geometry = SourceTextGeometry(source)
@@ -2309,9 +2341,8 @@ class DissolveModuleOperation(RetainedCallOperation):
         source_module_name: str,
         bindings: _DissolvedModuleBindings,
     ) -> None:
-        for source_file in context.source_index.files:
-            module = context.module_nodes_by_file_path.get(source_file.file_path)
-            if source_file.file_path in excluded_paths or module is None:
+        for source_file, module in FilesReachingModule(context, source_module_name):
+            if source_file.file_path in excluded_paths:
                 continue
             identity = source_file.module_path_identity
             for node in ast.walk(module):
@@ -2347,9 +2378,8 @@ class DissolveModuleOperation(RetainedCallOperation):
         other `from pkg import source` binding once its reads are redirected."""
 
         package, _, leaf = source_module_name.rpartition(".")
-        for source_file in context.source_index.files:
-            module = context.module_nodes_by_file_path.get(source_file.file_path)
-            if source_file.file_path in excluded_paths or module is None:
+        for source_file, module in FilesReachingModule(context, source_module_name):
+            if source_file.file_path in excluded_paths:
                 continue
             identity = source_file.module_path_identity
             scoped = {
