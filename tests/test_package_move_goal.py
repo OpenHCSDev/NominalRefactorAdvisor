@@ -165,9 +165,7 @@ def test_modules_importing_each_other_are_refused_by_name(tmp_path: Path) -> Non
     assert "merges into" in reasons
 
 
-def test_a_merge_row_orders_the_target_first_and_merges_into_its_destination(
-    tmp_path: Path,
-) -> None:
+def test_a_merge_row_folds_one_module_into_the_other(tmp_path: Path) -> None:
     _cyclic_pair(tmp_path)
     report = _goal(
         tmp_path,
@@ -175,19 +173,32 @@ def test_a_merge_row_orders_the_target_first_and_merges_into_its_destination(
         "`presentation.py` | |\n",
     )
 
+    assert report.stop_reason is CodemodWorkflowStopReason.ACHIEVED, report.to_markdown()
     operations = [
         (operation.operation_key(), Path(operation.target.file_path).name)
         for document in report.replay_sequence.documents
         for recipe in document.recipes
         for operation in recipe.operations
     ]
-    assert operations[:3] == [
+    assert operations == [
         ("relocate_symbols_to_new_module", "presentation.py"),
         ("dissolve_module", "presentation.py"),
         ("relocate_symbols_to_module", "session_load.py"),
+        ("dissolve_module", "session_load.py"),
     ]
-    merge = report.replay_sequence.documents[2].recipes[0].operations[0]
-    assert merge.destination_path.endswith("pkg/planning/presentation.py")
-    # The merged module still reads session_load through its old module alias,
-    # so the shell's dissolve is refused rather than planned broken.
-    assert report.stop_reason is CodemodWorkflowStopReason.PARTIALLY_ACHIEVED
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    replay = report.replay_sequence.simulate(snapshot)
+    assert replay.is_clean
+    replay.apply()
+    assert sorted(p.name for p in (tmp_path / "pkg").glob("*.py")) == ["__init__.py", "app.py"]
+    imported = subprocess.run(
+        [sys.executable, "-c", "from pkg.app import VALUE; print(VALUE)"],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert imported.returncode == 0, imported.stderr
+    assert imported.stdout.strip() == "<loaded>"
+    merged = (tmp_path / "pkg/planning/presentation.py").read_text()
+    assert "session_load" not in merged

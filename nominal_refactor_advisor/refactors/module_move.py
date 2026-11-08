@@ -807,6 +807,49 @@ class _SourceModuleAliasRetargets:
             owners.add(owner_modules[parent.attr])
         return tuple(owners) if len(owners) == 1 else ()
 
+    def localized_edits(
+        self,
+        index: ModuleNodeIndex,
+        *,
+        file_path: str,
+        source: str,
+        reader_module: str,
+    ) -> tuple[NominalSourceEdit, ...]:
+        """A module-level alias whose sole owner is the reading module itself
+        reads names the reader now declares: each `alias.Name` becomes `Name`
+        and the alias import goes, instead of the reader importing a module
+        that is about to stop existing or importing itself."""
+
+        local = tuple(
+            alias
+            for alias, owner in self.aliases
+            if owner == reader_module and index.scope_of(alias) is None
+        )
+        if not local:
+            return ()
+        geometry = SourceTextGeometry(source)
+        return (
+            geometry.nominal_edit(
+                file_path=file_path,
+                replacements=tuple(
+                    SourceTextSpanReplacement.from_offsets(
+                        start_offset=start,
+                        end_offset=end,
+                        replacement_source=parent.attr,
+                    )
+                    for alias in local
+                    for node in index.uses_of(alias.asname or "", None)
+                    if isinstance(parent := index.parents.get(node), ast.Attribute)
+                    for start, end in (geometry.required_node_offsets(parent),)
+                ),
+            ),
+            ModuleImportMutation.remove_bound_names(
+                file_path=file_path,
+                names=tuple(alias.asname for alias in local if alias.asname),
+                rationale="The reader declares every name the alias read.",
+            ),
+        )
+
     def rewrite(self, file_path: str, source: str) -> NominalSourceEdit:
         geometry = SourceTextGeometry(source)
         return geometry.nominal_edit(
@@ -1134,7 +1177,29 @@ class SourceTopLevelSymbolClosureMovePlan(SourceTopLevelSymbolClosureMoveCarrier
             destination_path=request.destination_path,
             moved_symbol_names=moved_symbol_names,
         )
+        import_graph = context.module_import_graph
+        destination_module_name = import_graph.module_name_for_file_path(
+            request.destination_path
+        )
+        source_module_name = import_graph.module_name_for_file_path(request.source_path)
+        destination_localizations = (
+            ()
+            if destination_module_name is None or source_module_name is None
+            else _SourceModuleAliasRetargets.of(
+                destination_index := context.parsed_module_for_source_path(
+                    request.destination_path
+                ).fact(ModuleNodeIndex),
+                source_module_name=source_module_name,
+                owner_modules={name: destination_module_name for name in moved_symbol_names},
+            ).localized_edits(
+                destination_index,
+                file_path=request.destination_path,
+                source=context.sources_by_file_path[request.destination_path],
+                reader_module=destination_module_name,
+            )
+        )
         consumer_edits = (
+            *destination_localizations,
             *(
                 ModuleImportMutation.remove_names(
                     file_path=request.destination_path,

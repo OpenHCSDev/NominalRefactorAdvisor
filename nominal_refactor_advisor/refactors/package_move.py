@@ -29,6 +29,7 @@ from ..codemod_module_declarations import ModuleSymbolTable
 from ..codemod_runtime import FindingRecipeEvaluation, RefactorRecipe
 from ..codemod_selection_context import CodemodSelectorContext
 from ..codemod_selector_models import SourceRewriteTarget
+from ..module_node_index import ModuleNodeIndex
 from ..models import PackageDestinationMetrics, RefactorFinding, SourceLocation
 from .module_move import (
     DissolveModuleOperation,
@@ -250,10 +251,10 @@ class ClusterLayers:
         source_file = graph.source_file_for_path(path)
         if source_file is None:
             return frozenset()
+        index = self.context.parsed_module_for_source_path(path).fact(ModuleNodeIndex)
         return frozenset(
             edge
-            for node in ast.walk(self.context.module_nodes_by_file_path[path])
-            if isinstance(node, (ast.Import, ast.ImportFrom))
+            for node in index.imports
             for edge in graph.statement_edges(source_file, node)
         )
 
