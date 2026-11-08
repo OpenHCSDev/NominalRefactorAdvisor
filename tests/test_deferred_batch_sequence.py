@@ -4,7 +4,10 @@ import pickle
 
 import pytest
 
-from nominal_refactor_advisor.collection_algebra import DeferredBatchSequence
+from nominal_refactor_advisor.collection_algebra import (
+    DeferredBatchSequence,
+    SequenceViews,
+)
 
 
 class Batches(DeferredBatchSequence):
@@ -105,3 +108,22 @@ def test_empty_sequence_has_no_fabricated_loads():
     assert tuple(values) == ()
     assert values.materialized_item_count == 0
     assert values.loads == []
+
+
+def test_a_derived_view_is_built_once_per_held_sequence_and_fresh_for_a_tuple():
+    """Every consumer of one projection sequence shares its class index; the
+    11-08 agent-comms warm scan built it three times from the same projections."""
+
+    built = []
+
+    def derive(sequence):
+        built.append(sequence)
+        return object()
+
+    values = Batches(((1,), (2,)))
+    assert SequenceViews.of(values).view(derive) is SequenceViews.of(values).view(derive)
+    assert built == [values]
+    plain = (1, 2)
+    assert SequenceViews.of(plain).view(derive) is not SequenceViews.of(plain).view(derive)
+    assert built == [values, plain, plain]
+    assert pickle.loads(pickle.dumps(values)) == (1, 2)

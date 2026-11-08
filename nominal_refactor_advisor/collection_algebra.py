@@ -14,14 +14,17 @@ from collections.abc import (
     Sequence,
 )
 from dataclasses import dataclass
+from functools import cached_property
 from typing import (
     Any,
     Generic,
     TypeVar,
+    cast,
     overload,
 )
 
 ItemT = TypeVar("ItemT")
+ViewT = TypeVar("ViewT")
 IdentityHandleT = TypeVar("IdentityHandleT")
 IdentityDeclarationT = TypeVar("IdentityDeclarationT")
 IdentityValueT = TypeVar("IdentityValueT")
@@ -109,6 +112,36 @@ class DeferredBatchSequence(Sequence[ItemT], ABC):
 
     def __reduce__(self) -> tuple[type[tuple], tuple[tuple[ItemT, ...]]]:
         return tuple, (tuple(self),)
+
+    @cached_property
+    def views(self) -> SequenceViews[ItemT]:
+        """Views derived from this sequence, shared by every consumer holding it."""
+        return SequenceViews(self)
+
+
+class SequenceViews(Generic[ItemT]):
+    """Views derived from one sequence, each built once while this holder lives.
+
+    A deferred sequence holds its own, so every consumer of the same projections
+    shares one view and it is released with them. Any other sequence is decoded
+    into a fresh holder per request, which builds the view for that request.
+    """
+
+    def __init__(self, sequence: Sequence[ItemT]) -> None:
+        self.sequence = sequence
+        self._views: dict[Callable[[Sequence[ItemT]], object], object] = {}
+
+    def view(self, derive: Callable[[Sequence[ItemT]], ViewT]) -> ViewT:
+        if derive not in self._views:
+            self._views[derive] = derive(self.sequence)
+        return cast(ViewT, self._views[derive])
+
+    @staticmethod
+    def of(sequence: Sequence[ItemT]) -> SequenceViews[ItemT]:
+        """The boundary decoder: a deferred sequence's own views, else a fresh holder."""
+        if isinstance(sequence, DeferredBatchSequence):
+            return sequence.views
+        return SequenceViews(sequence)
 
 
 @dataclass(frozen=True)
