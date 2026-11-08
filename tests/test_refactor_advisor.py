@@ -7522,6 +7522,23 @@ def test_relocation_keeps_star_and_module_object_readers_working(
     simulation = RefactorRecipe("relocate-readers").with_operation(operation).simulate(snapshot)
 
     assert simulation.is_clean
+    reader_path = tmp_path / "pkg/reader.py"
+    reader = ast.parse(
+        simulation.simulation.rewritten_sources.get(
+            reader_path.as_posix(), reader_path.read_text()
+        )
+    )
+    loaded = {
+        node.id
+        for node in ast.walk(reader)
+        if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load)
+    }
+    assert {
+        alias.asname or alias.name.split(".")[0]
+        for statement in reader.body
+        if isinstance(statement, (ast.Import, ast.ImportFrom))
+        for alias in statement.names
+    } <= loaded
     simulation.apply()
     imported = subprocess.run(
         [

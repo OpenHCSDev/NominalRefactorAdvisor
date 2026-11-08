@@ -5,7 +5,6 @@ from pathlib import Path
 
 import pytest
 
-from nominal_refactor_advisor import class_index as class_index_module
 from nominal_refactor_advisor.ast_tools import ParsedModule, SharedRegistryRootBase
 from nominal_refactor_advisor.class_index import CompactClassFamilyIndex
 from nominal_refactor_advisor.class_syntax_facets import _compact_class_syntax_facets
