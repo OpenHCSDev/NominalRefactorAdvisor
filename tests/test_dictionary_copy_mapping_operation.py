@@ -10,7 +10,6 @@ from nominal_refactor_advisor.codemod import (
     CodemodPlanDocument,
     CodemodPlanSequence,
     CodemodSourceSnapshot,
-    CreateFileOperation,
     PatchTargetOperation,
     RefactorRecipe,
     RequireDictionaryCopyMappingOperation,
@@ -25,6 +24,7 @@ from nominal_refactor_advisor.codemod_architecture_guards import (
 from nominal_refactor_advisor.codemod_preflight import CodemodOperationPreflightError
 from nominal_refactor_advisor.codemod_source_edits import SourceTextReplacement
 from nominal_refactor_advisor.json_reports import json_report_object
+from nominal_refactor_advisor.refactors.source_insertion import CreateFileOperation
 from nominal_refactor_advisor.source_geometry import SourceByteSpan
 
 

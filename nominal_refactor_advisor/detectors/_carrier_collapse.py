@@ -8,12 +8,6 @@ from ..ast_tools import ParsedModule, ParsedModuleSet
 from ..carrier_collapse import ClosedCarrierCollapseComponent
 from ..carrier_expansion import DeclaredCarrierExpansionBuilder
 from ..class_index import CompactModuleClassProjectionFamily
-from ..codemod import (
-    CarrierCollapseFindingRecipeSynthesizer,
-    CarrierCollapseOperationABC,
-    CollapseClosedParameterConveyorOperation,
-    CollapseDeclaredCarrierExpansionOperation,
-)
 from ..codemod_selector_models import SourceRewriteTarget
 from ..models import ParameterThreadMetrics, RefactorFinding, SourceLocation
 from ..parameter_conveyor import ClosedParameterConveyorComponentBuilder
@@ -23,6 +17,12 @@ from ..product_flow_authority import (
     CompactProductFlowRepository,
     ProductFlowRepository,
     SourceProductFlowRepository,
+)
+from ..refactors.carrier_collapse import (
+    CarrierCollapseFindingRecipeSynthesizer,
+    CarrierCollapseOperationABC,
+    CollapseClosedParameterConveyorOperation,
+    CollapseDeclaredCarrierExpansionOperation,
 )
 from ..taxonomy import CapabilityTag, ObservationTag
 from ._base import (

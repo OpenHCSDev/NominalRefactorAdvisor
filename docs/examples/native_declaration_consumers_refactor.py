@@ -5,8 +5,6 @@ import json
 
 from nominal_refactor_advisor.codemod import (
     CodemodPlanSequence,
-    EnsureImportOperation,
-    RemoveImportNamesOperation,
     ReplaceFunctionBodyOperation,
     ReplaceScopeAssignmentOperation,
     PatchTargetOperation,
@@ -14,6 +12,11 @@ from nominal_refactor_advisor.codemod import (
     SourceTextReplacement,
 )
 from nominal_refactor_advisor.json_reports import json_report_object
+from nominal_refactor_advisor.refactors.source_insertion import (
+    EnsureImportOperation,
+    RemoveImportNamesOperation,
+)
+
 
 forwarding = SourceRewriteTarget(
     file_path="nominal_refactor_advisor/positional_forwarding.py"

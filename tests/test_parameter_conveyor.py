@@ -15,7 +15,6 @@ import pytest
 from nominal_refactor_advisor.ast_tools import ParsedModule, parse_python_modules
 from nominal_refactor_advisor.codemod import (
     ArchitectureGuardSuite,
-    CollapseClosedParameterConveyorOperation,
     CodemodSourceSnapshot,
     FindingRecipeSynthesisStatus,
     RefactorRecipeOperation,
@@ -42,6 +41,7 @@ from nominal_refactor_advisor.refactor_search import RefactorSearch, SearchBudge
 from nominal_refactor_advisor.product_flow_authority import (
     CompactProductRuntimeViolation,
 )
+from nominal_refactor_advisor.refactors.carrier_collapse import CollapseClosedParameterConveyorOperation
 from nominal_refactor_advisor.value_expression import LexicalValueReference
 
 def _module(module_name: str, source: str) -> ParsedModule:

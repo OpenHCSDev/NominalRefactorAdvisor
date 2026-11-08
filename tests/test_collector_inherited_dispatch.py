@@ -13,9 +13,10 @@ from nominal_refactor_advisor.ast_tools import ParsedModule
 from nominal_refactor_advisor.codemod import (
     CodemodPlanSequence,
     CodemodSourceSnapshot,
-    DeriveCandidateCollectorOperation,
     SourceRewriteTarget,
 )
+from nominal_refactor_advisor.refactors.candidate_collector import DeriveCandidateCollectorOperation
+
 
 pytestmark = pytest.mark.native_proof
 

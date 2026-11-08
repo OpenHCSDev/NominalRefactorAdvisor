@@ -7,10 +7,11 @@ qualification label or import-loader callbacks. This does not prove activation.
 from nominal_refactor_advisor.codemod import (
     CodemodPlanSequence,
     CodemodSourceSnapshot,
-    EnsureImportOperation,
     ReplaceFunctionBodyOperation,
     SourceRewriteTarget,
 )
+from nominal_refactor_advisor.refactors.source_insertion import EnsureImportOperation
+
 
 PATH = "nominal_refactor_advisor/native_compilation.py"
 

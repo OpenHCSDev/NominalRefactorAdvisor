@@ -9,7 +9,6 @@ from nominal_refactor_advisor.codemod import (
     CodemodPlanDocument,
     CodemodPlanSequence,
     CodemodSourceSnapshot,
-    EnsureImportOperation,
     PatchTargetOperation,
     RefactorRecipe,
     SourceRewriteTarget,
@@ -20,6 +19,8 @@ from nominal_refactor_advisor.codemod_source_edits import (
     PhysicalSourceEditConflictError,
 )
 from nominal_refactor_advisor.json_reports import json_report_object
+from nominal_refactor_advisor.refactors.source_insertion import EnsureImportOperation
+
 
 PATH = Path(__file__).with_name("edit_batch_fixture.py").resolve().as_posix()
 SOURCE = "class Handler:\n    value = object\n"

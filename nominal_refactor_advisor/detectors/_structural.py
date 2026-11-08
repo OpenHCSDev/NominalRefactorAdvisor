@@ -9,15 +9,15 @@ from __future__ import annotations
 import ast
 from collections.abc import Sequence
 
+from ..refactors.finding_recipes import (
+    ExactLeafMethodAncestorPromotionFindingRecipeSynthesizer,
+    ExactMethodRoleFindingRecipeSynthesizer,
+)
 from ..semantic_algebra import ObjectFamilyShape
 from ..semantic_description_length import CompressionCertificate
 from ..class_index import (
     CompactModuleClassProjection,
     CompactModuleClassProjectionFamily,
-)
-from ..codemod import (
-    ExactLeafMethodAncestorPromotionFindingRecipeSynthesizer,
-    ExactMethodRoleFindingRecipeSynthesizer,
 )
 from ..exact_method_authority import (
     ExactLeafMethodAncestorPromotionComponent,

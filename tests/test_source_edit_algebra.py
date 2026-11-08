@@ -6,16 +6,12 @@ import pytest
 
 from nominal_refactor_advisor.ast_tools import parse_python_modules
 from nominal_refactor_advisor.codemod import (
-    CarrierFieldProjection,
     CodemodPlanDocument,
     CodemodPlanRoot,
     CodemodPlanSequence,
     CodemodSourceSnapshot,
-    CreateFileOperation,
-    EnsureImportOperation,
     RefactorRecipe,
     RefactorRecipeOperationCompiler,
-    ReplaceFieldsWithCarrierOperation,
     SourceRewriteTarget,
 )
 from nominal_refactor_advisor.codemod_import_scopes import ModuleImportScope
@@ -45,6 +41,14 @@ from nominal_refactor_advisor.codemod_source_edits import (
 from nominal_refactor_advisor.codemod_spacing import (
     DestinationInsertionSpacing,
     SourceInsertionBoundary,
+)
+from nominal_refactor_advisor.refactors.carrier_fields import (
+    CarrierFieldProjection,
+    ReplaceFieldsWithCarrierOperation,
+)
+from nominal_refactor_advisor.refactors.source_insertion import (
+    CreateFileOperation,
+    EnsureImportOperation,
 )
 
 

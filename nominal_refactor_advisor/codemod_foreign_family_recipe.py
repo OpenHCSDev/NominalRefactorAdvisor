@@ -6,8 +6,6 @@ from abc import ABC
 from typing import ClassVar
 
 from .codemod import (
-    FindingEvidenceActionKeysMixin,
-    FindingRecipeSynthesizer,
     ForeignAdapterBindChainConcept,
     ForeignFamilyRoutingConcept,
     StaticProjectionAdapterConcept,
@@ -35,6 +33,10 @@ from .observation_shapes import (
 )
 from .codemod_target_selectors import SourceIndexTargetSelector
 from .models import RefactorFinding
+from .refactors.finding_recipes import (
+    FindingEvidenceActionKeysMixin,
+    FindingRecipeSynthesizer,
+)
 from .source_index import AstTargetNodeKind
 
 

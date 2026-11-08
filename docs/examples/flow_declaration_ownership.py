@@ -6,10 +6,6 @@ from textwrap import dedent
 
 from nominal_refactor_advisor.codemod import (
     CodemodPlanSequence,
-    DeleteClassAssignmentsOperation,
-    DeleteTargetOperation,
-    EnsureImportOperation,
-    InsertBeforeTargetOperation,
     InsertClassMemberOperation,
     PatchTargetOperation,
     ReplaceFunctionBodyOperation,
@@ -17,6 +13,15 @@ from nominal_refactor_advisor.codemod import (
     SourceTextReplacement,
 )
 from nominal_refactor_advisor.json_reports import json_report_object
+from nominal_refactor_advisor.refactors.source_insertion import (
+    EnsureImportOperation,
+    InsertBeforeTargetOperation,
+)
+from nominal_refactor_advisor.refactors.target_deletion import (
+    DeleteClassAssignmentsOperation,
+    DeleteTargetOperation,
+)
+
 
 FLOW = SourceRewriteTarget(file_path="nominal_refactor_advisor/product_flow.py")
 REPOSITORY = SourceRewriteTarget(

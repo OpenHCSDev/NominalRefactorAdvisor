@@ -54,11 +54,7 @@ from .class_overlap import (
     PromoteToSharedBase,
 )
 from .class_references import ClassReferenceRole
-from .codemod import (
-    FindingEvidenceActionKeysMixin,
-    SelfDeclaredRecipeSynthesizer,
-    RefactorRecipe,
-)
+from .codemod import RefactorRecipe
 from .codemod_authority_claims import AstTargetAuthorityClaim
 from .codemod_declaration_source import (
     ClassBodySourceAuthority,
@@ -96,6 +92,10 @@ from .owner_candidates import (
     SharedBaseOwner,
 )
 from .refactor_concepts import ClassBodyCompositionConcept
+from .refactors.finding_recipes import (
+    FindingEvidenceActionKeysMixin,
+    SelfDeclaredRecipeSynthesizer,
+)
 from .semantic_descent import AuthorityClaim, SemanticAuthorityKind
 
 

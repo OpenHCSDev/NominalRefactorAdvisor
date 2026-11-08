@@ -5,19 +5,22 @@ import json
 from textwrap import dedent
 
 from nominal_refactor_advisor.codemod import (
-    AddClassBaseOperation,
     CodemodPlanSequence,
-    EnsureImportOperation,
     MoveSymbolClosureToModuleOperation,
     PatchTargetOperation,
     PromoteClassMembersToAncestorOperation,
-    RemoveImportNamesOperation,
     ReplaceDeclarationDecoratorsOperation,
     ReplaceFunctionBodyOperation,
     SourceRewriteTarget,
     SourceTextReplacement,
 )
 from nominal_refactor_advisor.json_reports import json_report_object
+from nominal_refactor_advisor.refactors.class_base import AddClassBaseOperation
+from nominal_refactor_advisor.refactors.source_insertion import (
+    EnsureImportOperation,
+    RemoveImportNamesOperation,
+)
+
 
 module = SourceRewriteTarget(
     file_path="nominal_refactor_advisor/declaration_dependencies.py"

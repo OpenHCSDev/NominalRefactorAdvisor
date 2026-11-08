@@ -5,14 +5,17 @@ import json
 from textwrap import dedent
 
 from nominal_refactor_advisor.codemod import (
-    AddClassBaseOperation,
     CodemodPlanSequence,
-    DeleteClassAssignmentsOperation,
-    DeleteTargetOperation,
     ReplaceFunctionBodyOperation,
     SourceRewriteTarget,
 )
 from nominal_refactor_advisor.json_reports import json_report_object
+from nominal_refactor_advisor.refactors.class_base import AddClassBaseOperation
+from nominal_refactor_advisor.refactors.target_deletion import (
+    DeleteClassAssignmentsOperation,
+    DeleteTargetOperation,
+)
+
 
 module = SourceRewriteTarget(file_path="nominal_refactor_advisor/class_index.py")
 PLAN = CodemodPlanSequence.from_operations(

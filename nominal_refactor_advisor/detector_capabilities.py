@@ -9,7 +9,6 @@ from enum import StrEnum
 from functools import cache
 import inspect
 
-from .codemod import FindingRecipeSynthesizer
 from .codemod_runtime import FindingRecipeEvaluator
 from .detectors._base import (IssueDetector, SemanticMirrorIssueDetector, SsotAuthorityBoundaryDetector)
 from .json_reports import (
@@ -21,6 +20,7 @@ from .json_reports import (
 from .models import NominalDeclarationIdentity, RequiredRelationIdentity, SourceLocation
 from .patterns import PatternId
 from .refactor_concepts import RefactorConcept
+from .refactors.finding_recipes import FindingRecipeSynthesizer
 
 
 class DetectorContributionRole(StrEnum):

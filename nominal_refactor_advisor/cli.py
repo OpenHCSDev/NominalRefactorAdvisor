@@ -23,6 +23,10 @@ from typing import ClassVar, Self, TypeAlias, cast
 
 from metaclass_registry import AutoRegisterMeta
 
+from .refactors.finding_recipes import (
+    FindingRecipeClassPlanReport,
+    codemod_class_plan_from_findings,
+)
 from .type_checker_session import TypeCheckerTimingLedger
 from .ast_tools import ParsedModuleSet
 from .scan_cache import ScanCache
@@ -91,10 +95,6 @@ from .calibration import (
     CalibrationReport,
     format_calibration_markdown,
     run_calibration_manifest,
-)
-from .codemod import (
-    FindingRecipeClassPlanReport,
-    codemod_class_plan_from_findings,
 )
 from .codemod_architecture_guards import (
     ArchitectureGuardReport,

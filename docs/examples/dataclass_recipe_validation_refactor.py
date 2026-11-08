@@ -5,12 +5,13 @@ import json
 
 from nominal_refactor_advisor.codemod import (
     CodemodPlanSequence,
-    DeleteTargetOperation,
     ReplaceDeclaredCallTargetOperation,
     SelectionCountExpectation,
     SourceRewriteTarget,
 )
 from nominal_refactor_advisor.json_reports import json_report_object
+from nominal_refactor_advisor.refactors.target_deletion import DeleteTargetOperation
+
 
 module = SourceRewriteTarget(file_path="nominal_refactor_advisor/codemod.py")
 PLAN = CodemodPlanSequence.from_operations(

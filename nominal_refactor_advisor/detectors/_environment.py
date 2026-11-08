@@ -13,6 +13,7 @@ from typing import ClassVar
 
 from metaclass_registry import AutoRegisterMeta
 
+from ..refactors.finding_recipes import EnvironmentBooleanAuthorityDriftFindingRecipeEvaluator
 from ..value_expression import CompactValueExpression
 from ..lexical_bindings import ImportBoundNameProjection
 from ..ast_projection import ExpressionReference
@@ -24,7 +25,6 @@ from ..ast_tools import (
     SourceModule,
     walk_function_body_nodes,
 )
-from ..codemod import EnvironmentBooleanAuthorityDriftFindingRecipeEvaluator
 from ..models import (
     EnvironmentBooleanDriftMetrics,
     EnvironmentReadKind,

@@ -6,6 +6,8 @@ scaffolding. The full historical module is replayed separately from Git.
 
 from __future__ import annotations
 
+from nominal_refactor_advisor.refactors.candidate_collector import DeclareCandidateFindingRendererOperation
+
 
 class DirectBuildFindingRendererFindingRecipeSynthesizer:
     @staticmethod
@@ -55,7 +57,6 @@ from nominal_refactor_advisor.ast_tools import (
 )
 from nominal_refactor_advisor.codemod import (
     CodemodSourceSnapshot,
-    DeclareCandidateFindingRendererOperation,
     SourceRewriteTarget,
 )
 from nominal_refactor_advisor.detectors._base import (

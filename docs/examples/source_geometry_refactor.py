@@ -4,11 +4,12 @@ import json
 
 from nominal_refactor_advisor.codemod import (
     CodemodPlanSequence,
-    DeleteFunctionAssignmentsOperation,
     ProjectFunctionLocalOperation,
     SourceRewriteTarget,
 )
 from nominal_refactor_advisor.json_reports import json_report_object
+from nominal_refactor_advisor.refactors.target_deletion import DeleteFunctionAssignmentsOperation
+
 
 target = SourceRewriteTarget(
     file_path="nominal_refactor_advisor/codemod_declaration_source.py",

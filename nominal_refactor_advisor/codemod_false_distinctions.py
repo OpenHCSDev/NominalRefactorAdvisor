@@ -15,11 +15,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import ClassVar, TypeVar, cast
 
-from .codemod import (
-    FindingRecipeSynthesizer,
-    PrimaryEvidenceActionKeysMixin,
-    RefactorRecipeOperation,
-)
+from .codemod import RefactorRecipeOperation
 from .codemod_imports import ModuleImportMutation
 from .codemod_foreign_family_source import RewrittenLineFit
 from .codemod_payload import (
@@ -72,6 +68,10 @@ from .false_distinction_observations import (
 )
 from .models import RefactorFinding
 from .refactor_concepts import FalseDistinctionErasureConcept
+from .refactors.finding_recipes import (
+    FindingRecipeSynthesizer,
+    PrimaryEvidenceActionKeysMixin,
+)
 from .source_index import AstTargetNodeKind
 
 FoundT = TypeVar("FoundT")

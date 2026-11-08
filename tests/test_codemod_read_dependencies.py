@@ -12,12 +12,12 @@ from nominal_refactor_advisor.codemod import (
     CodemodPlanSequence,
     CodemodSimulationReport,
     CodemodSourceSnapshot,
-    CreateFileOperation,
     ReplaceDeclaredCallArgumentsOperation,
     ReplaceFunctionBodyOperation,
     SourceRewriteTarget,
 )
 from nominal_refactor_advisor.codemod_source_edits import CodemodSourceRevisionError
+from nominal_refactor_advisor.refactors.source_insertion import CreateFileOperation
 
 
 def test_apply_rejects_changed_read_only_callee_before_writing(tmp_path: Path) -> None:

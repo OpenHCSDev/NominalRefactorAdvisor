@@ -10,15 +10,16 @@ from textwrap import dedent
 
 from nominal_refactor_advisor.codemod import (
     CodemodPlanSequence,
-    DeleteClassAssignmentsOperation,
-    InsertBeforeTargetOperation,
-    ReplaceClassBaseOperation,
     SourceRewriteTarget,
 )
 from nominal_refactor_advisor.codemod_declaration_operations import (
     ReplaceDeclarationDecoratorsOperation,
 )
 from nominal_refactor_advisor.json_reports import json_report_object
+from nominal_refactor_advisor.refactors.class_base import ReplaceClassBaseOperation
+from nominal_refactor_advisor.refactors.source_insertion import InsertBeforeTargetOperation
+from nominal_refactor_advisor.refactors.target_deletion import DeleteClassAssignmentsOperation
+
 
 module = SourceRewriteTarget(file_path="nominal_refactor_advisor/class_namespace.py")
 native = replace(module, qualname="NativeClassNamespaceEffect")

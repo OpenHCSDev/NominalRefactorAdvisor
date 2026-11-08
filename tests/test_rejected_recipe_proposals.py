@@ -6,6 +6,10 @@ from types import ModuleType
 import sys
 
 import pytest
+from nominal_refactor_advisor.refactors.semantic_mirror import (
+    MappingSemanticMirrorRecipeStrategy,
+    SemanticDescentRecipeEvaluation,
+)
 from registry_test_sources import _type_keyed_behavior_projection_source
 
 from nominal_refactor_advisor.ast_tools import ParsedModuleSet
@@ -14,9 +18,7 @@ from nominal_refactor_advisor.codemod import (
     CodemodPlanDocument,
     CodemodSourceSnapshot,
     TypedMirror,
-    MappingSemanticMirrorRecipeStrategy,
     RefactorRecipe,
-    SemanticDescentRecipeEvaluation,
 )
 from nominal_refactor_advisor.codemod_authority_claims import (
     AuthorityClaimDeclarationPreflightDetail,

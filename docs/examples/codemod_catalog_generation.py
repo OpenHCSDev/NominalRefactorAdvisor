@@ -6,14 +6,17 @@ from textwrap import dedent
 
 from nominal_refactor_advisor.codemod import (
     CodemodPlanSequence,
-    EnsureImportOperation,
-    InsertBeforeTargetOperation,
     PatchTargetOperation,
     ReplaceScopeAssignmentOperation,
     SourceRewriteTarget,
     SourceTextReplacement,
 )
 from nominal_refactor_advisor.json_reports import json_report_object
+from nominal_refactor_advisor.refactors.source_insertion import (
+    EnsureImportOperation,
+    InsertBeforeTargetOperation,
+)
+
 
 module = SourceRewriteTarget(file_path="docs/source/_ext/catalog_generation.py")
 PLAN = CodemodPlanSequence.from_operations(

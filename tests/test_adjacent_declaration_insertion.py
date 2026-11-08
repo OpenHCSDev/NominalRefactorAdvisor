@@ -12,13 +12,15 @@ from nominal_refactor_advisor.ast_tools import ParsedModule, parse_python_module
 from nominal_refactor_advisor.codemod import (
     CodemodPlanSequence,
     CodemodSourceSnapshot,
-    DeriveCandidateCollectorOperation,
-    InsertAfterTargetOperation,
-    InsertBeforeTargetOperation,
     SourceRewriteTarget,
 )
 from nominal_refactor_advisor.json_reports import json_report_object
+from nominal_refactor_advisor.refactors.candidate_collector import DeriveCandidateCollectorOperation
 from nominal_refactor_advisor.refactors.dispatch_polymorphism import DispatchToPolymorphismOperation
+from nominal_refactor_advisor.refactors.source_insertion import (
+    InsertAfterTargetOperation,
+    InsertBeforeTargetOperation,
+)
 
 
 @pytest.mark.parametrize(

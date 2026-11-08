@@ -7,7 +7,6 @@ import pytest
 
 from nominal_refactor_advisor.codemod import (
     CodemodSourceSnapshot,
-    EnsureImportOperation,
     InsertClassMemberOperation,
     RefactorRecipe,
     SourceRewriteTarget,
@@ -33,6 +32,8 @@ from nominal_refactor_advisor.codemod_source_edits import (
     SourceTextSpan,
     SourceTextSpanReplacement,
 )
+from nominal_refactor_advisor.refactors.source_insertion import EnsureImportOperation
+
 
 PATH = Path(__file__).with_name("window_retention_fixture.py").resolve().as_posix()
 SOURCE = "left = object; right = type; tail = sorted\n"

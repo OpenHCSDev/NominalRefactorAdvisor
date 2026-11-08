@@ -5,12 +5,13 @@ import json
 
 from nominal_refactor_advisor.codemod import (
     CodemodPlanSequence,
-    EnsureImportOperation,
     PrependFunctionBodyOperation,
     ReplaceScopeAssignmentOperation,
     SourceRewriteTarget,
 )
 from nominal_refactor_advisor.json_reports import json_report_object
+from nominal_refactor_advisor.refactors.source_insertion import EnsureImportOperation
+
 
 module = SourceRewriteTarget(file_path="nominal_refactor_advisor/analysis.py")
 

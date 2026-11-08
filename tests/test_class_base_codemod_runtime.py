@@ -9,18 +9,20 @@ import sys
 import pytest
 
 from nominal_refactor_advisor.codemod import (
-    AddClassBaseOperation,
     CodemodOperationPreflightError,
     CodemodPlanSequence,
     CodemodSourceSnapshot,
     RefactorRecipeOperation,
-    RemoveClassBaseOperation,
-    ReplaceClassBaseOperation,
     SourceRewriteTarget,
 )
 from nominal_refactor_advisor.json_reports import json_report_object
 from nominal_refactor_advisor.ast_tools import parse_python_modules
 from nominal_refactor_advisor.codemod_source_edits import CodemodSourceRevisionError
+from nominal_refactor_advisor.refactors.class_base import (
+    AddClassBaseOperation,
+    RemoveClassBaseOperation,
+    ReplaceClassBaseOperation,
+)
 
 
 @pytest.mark.parametrize("newline", ("\n", "\r\n"))

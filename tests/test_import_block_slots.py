@@ -10,9 +10,9 @@ from nominal_refactor_advisor.ast_tools import ParsedModule
 from nominal_refactor_advisor.codemod import (
     CodemodPlanSequence,
     CodemodSourceSnapshot,
-    EnsureImportOperation,
     SourceRewriteTarget,
 )
+from nominal_refactor_advisor.refactors.source_insertion import EnsureImportOperation
 
 
 def ensured(initial: str, requested: str) -> str:

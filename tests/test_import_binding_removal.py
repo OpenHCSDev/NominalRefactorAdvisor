@@ -11,10 +11,10 @@ from nominal_refactor_advisor.codemod import (
     CodemodSourceSnapshot,
     RefactorRecipe,
     RefactorRecipeOperation,
-    RemoveImportBindingsOperation,
     SourceRewriteTarget,
 )
 from nominal_refactor_advisor.json_reports import json_report_object
+from nominal_refactor_advisor.refactors.source_insertion import RemoveImportBindingsOperation
 
 
 def _snapshot(root: Path, source: str) -> tuple[CodemodSourceSnapshot, Path]:

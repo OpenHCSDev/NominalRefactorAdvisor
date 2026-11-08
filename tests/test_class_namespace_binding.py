@@ -15,7 +15,6 @@ from nominal_refactor_advisor.ast_tools import parse_python_modules
 from nominal_refactor_advisor.codemod import (
     CodemodPlanSequence,
     CodemodSourceSnapshot,
-    RenameTopLevelBindingAuthorityOperation,
     SourceRewriteTarget,
 )
 from nominal_refactor_advisor.declaration_dependencies import (
@@ -24,6 +23,7 @@ from nominal_refactor_advisor.declaration_dependencies import (
 )
 from nominal_refactor_advisor.json_reports import json_report_object
 from nominal_refactor_advisor.lexical_bindings import LexicalScopeBindingAuthority
+from nominal_refactor_advisor.refactors.binding_rename import RenameTopLevelBindingAuthorityOperation
 
 
 @pytest.mark.parametrize(

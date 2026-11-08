@@ -30,11 +30,6 @@ from .ast_tools import (
     ParsedModuleSourceProjection,
     parse_python_module_roots,
 )
-from .codemod import (
-    FindingRecipeClassPlan,
-    FindingRecipeClassPlanReport,
-    FindingRecipeSynthesizer,
-)
 from .codemod_architecture_guards import (
     ArchitectureGuardReport,
     ArchitectureGuardSuite,
@@ -62,6 +57,11 @@ from .json_reports import (
     json_report_property,
 )
 from .models import FindingObligationClass, RefactorFinding
+from .refactors.finding_recipes import (
+    FindingRecipeClassPlan,
+    FindingRecipeClassPlanReport,
+    FindingRecipeSynthesizer,
+)
 from .source_index import SourceIndex
 from .refactor_concepts import RefactorConcept
 
