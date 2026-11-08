@@ -673,6 +673,11 @@ class IssueDetector(RequiredRelationDeclaration, metaclass=AutoRegisterMeta):
             return cls.detector_id
         return _detector_id_from_class_name(cls.__name__, cls)
 
+    @classmethod
+    def scan_stage(cls, phase: str) -> str:
+        """The scan-deadline stage while ``phase`` runs this detector."""
+        return f"{phase}:{cls.effective_detector_id() or cls.__qualname__}"
+
     def detect(
         self, modules: ParsedModuleSet, config: DetectorConfig
     ) -> list[RefactorFinding]:
