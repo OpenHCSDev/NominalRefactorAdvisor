@@ -191,10 +191,12 @@ class DestinationTable:
             ".".join(module.module_name.split(".")[1:]).replace(".", "/")
             for module in package_modules
         }
+        merge_sources: set[str] = set()
         for row in self.rows:
             for name, target in row.module_merges():
                 if name not in by_stem:
                     continue
+                merge_sources.add(by_stem[name].file_path)
                 if target in by_stem:
                     target_path = by_stem[target].file_path
                     chosen[by_stem[name].file_path] = chosen.get(target_path, target)
@@ -206,12 +208,14 @@ class DestinationTable:
         }
         cluster = tuple(sorted(chosen))
         cluster_destinations = tuple(destination_paths[path] for path in cluster)
+        cluster_merge_sources = tuple(path for path in cluster if path in merge_sources)
         return tuple(
             FlatModuleDestination(
                 source_path=source_path,
                 destination_path=destination_paths[source_path],
                 cluster_paths=cluster,
                 cluster_destination_paths=cluster_destinations,
+                cluster_merge_source_paths=cluster_merge_sources,
             )
             for source_path in cluster
         )
@@ -223,12 +227,14 @@ class FlatModuleDestination:
     destination_path: str
     cluster_paths: tuple[str, ...]
     cluster_destination_paths: tuple[str, ...]
+    cluster_merge_source_paths: tuple[str, ...]
 
     def metrics(self) -> PackageDestinationMetrics:
         return PackageDestinationMetrics(
             destination_path=self.destination_path,
             cluster_paths=self.cluster_paths,
             cluster_destination_paths=self.cluster_destination_paths,
+            cluster_merge_source_paths=self.cluster_merge_source_paths,
         )
 
 
@@ -239,6 +245,7 @@ class ClusterLayers:
     context: CodemodSelectorContext
     cluster_paths: tuple[str, ...]
     cluster_destinations: tuple[str, ...]
+    merge_sources: tuple[str, ...]
 
     @cached_property
     def destinations(self) -> dict[str, str]:
@@ -355,13 +362,14 @@ class ClusterLayers:
         )
 
     def ready(self, path: str) -> bool:
-        """It can move now: its destination exists, it is the namesake that
-        creates it, or no other present module will."""
+        """It can move now: its destination exists, it is not a module a row
+        merges into another (the merge target creates the destination, its
+        sources join it), or no other present module will."""
 
         destination = self.destinations[path]
         return (
             destination in self.context.module_nodes_by_file_path
-            or PurePosixPath(destination).stem == PurePosixPath(path).stem
+            or path not in self.merge_sources
             or not any(
                 other != path and self.destinations[other] == destination
                 for other in self.present_paths
@@ -409,7 +417,10 @@ class PackageMoveFindingRecipeSynthesizer(
             )
         source_path = evidence.file_path
         layers = ClusterLayers(
-            context, metrics.cluster_paths, metrics.cluster_destination_paths
+            context,
+            metrics.cluster_paths,
+            metrics.cluster_destination_paths,
+            metrics.cluster_merge_source_paths,
         )
         if source_path not in layers.present_paths:
             return self.rejected_evaluation(f"{source_path!r} is already gone")
