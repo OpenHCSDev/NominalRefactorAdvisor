@@ -80,6 +80,7 @@ class CodemodWorkflowStopReason(StrEnum):
 
     ACHIEVED = ("achieved", True)
     PARTIALLY_ACHIEVED = ("partially_achieved", True)
+    PROVED_PREFIX = ("proved_prefix", True)
     ARCHITECTURE_GUARD_FAILED = ("architecture_guard_failed", False)
     APPLICATION_VERIFICATION_FAILED = ("application_verification_failed", False)
     UNPROVED_TRAJECTORY = ("unproved_trajectory", False)
@@ -128,11 +129,17 @@ class CodemodRefactorTrajectoryStatus(StrEnum):
             )
         ),
     )
+    PREFIX_PROVED = (
+        "prefix_proved",
+        CodemodWorkflowStopReason.PROVED_PREFIX,
+        True,
+        lambda proof: proof.landable_prefix,
+    )
     INCOMPLETE = (
         "incomplete",
         CodemodWorkflowStopReason.UNPROVED_TRAJECTORY,
         False,
-        lambda proof: bool(proof.obstacles),
+        lambda proof: bool(proof.obstacles) and not proof.landable_prefix,
     )
 
     def __new__(
@@ -907,6 +914,52 @@ class CodemodRefactorTrajectoryTerminal(CodemodRefactorGuardEvaluatedTerminal):
 
 
 @dataclass(frozen=True)
+class CodemodRefactorBudgetPrefix(CodemodRefactorGuardEvaluatedTerminal):
+    """A state at the depth budget that still has moves left, settled clean.
+
+    Its stages are proved and the exact scan, guards and finding classes
+    agree, so they land as a plan; the targets it leaves are the next run's.
+    """
+
+    stop_reason: ClassVar[CodemodWorkflowStopReason] = (
+        CodemodWorkflowStopReason.PROVED_PREFIX
+    )
+    remaining_target_ids: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        if not self.guard_report.is_clean:
+            raise ValueError("proved prefix requires clean guard evidence")
+        if not self.state.stages:
+            raise ValueError("proved prefix requires at least one stage")
+
+    @json_report_property()
+    def remaining_target_count(self) -> int:
+        return len(self.remaining_target_ids)
+
+    def verifies(self, committed_target_findings: Iterable[RefactorFinding]) -> bool:
+        """The commit left exactly the targets the prefix proved it leaves."""
+
+        return sorted(finding.stable_id for finding in committed_target_findings) == (
+            sorted(self.remaining_target_ids)
+        )
+
+    def markdown_lines(self) -> tuple[str, ...]:
+        return (
+            f"   - Proved prefix: {self.stage_count} stages land; "
+            f"{self.remaining_target_count} targets left for the next run",
+        )
+
+
+@dataclass(frozen=True)
+class CodemodExactSettlement:
+    """A state's exact scan and guards, and why it cannot settle ("" when it can)."""
+
+    scan: CodemodWorkflowScan
+    guard_report: ArchitectureGuardReport
+    rejection: str
+
+
+@dataclass(frozen=True)
 class CodemodRefactorRemainingTargets(DataclassJsonReport):
     """Target findings a partial terminal leaves, for one synthesis outcome and reason."""
 
@@ -1103,6 +1156,22 @@ class CodemodRefactorTrajectoryProof(DataclassJsonReport):
     dead_ends: tuple[CodemodRefactorTrajectoryDeadEnd, ...] = ()
     obstacles: tuple[CodemodRefactorTrajectoryObstacle, ...] = ()
     partial_terminals: tuple[CodemodRefactorPartialTerminal, ...] = ()
+    budget_prefixes: tuple[CodemodRefactorBudgetPrefix, ...] = ()
+
+    @property
+    def landable_prefix(self) -> bool:
+        """Only the depth budget stopped exploration, along one clean path."""
+
+        return (
+            bool(self.obstacles)
+            and all(
+                obstacle.kind is CodemodRefactorTrajectoryObstacleKind.DEPTH_BUDGET
+                for obstacle in self.obstacles
+            )
+            and not self.terminals
+            and not self.partial_terminals
+            and len(self.budget_prefixes) == 1
+        )
 
     @json_report_property()
     def status(self) -> CodemodRefactorTrajectoryStatus:
@@ -1145,9 +1214,15 @@ class CodemodRefactorTrajectoryProof(DataclassJsonReport):
     @property
     def proved_terminal(
         self,
-    ) -> CodemodRefactorTrajectoryTerminal | CodemodRefactorPartialTerminal:
+    ) -> (
+        CodemodRefactorTrajectoryTerminal
+        | CodemodRefactorPartialTerminal
+        | CodemodRefactorBudgetPrefix
+    ):
         if not self.status.proved:
             raise TypeError("trajectory proof has no unique proved terminal state")
+        if self.landable_prefix:
+            return self.budget_prefixes[0]
         if self.terminals:
             return next(iter(self.terminals))
         (best,) = self.best_partial_terminals
@@ -1208,6 +1283,7 @@ class CodemodRefactorGoalReport(DataclassJsonReport):
                 "unjustified_debt_terminals="
                 f"{len(self.trajectory_proof.unjustified_debt_terminals)}, "
                 f"partial_terminals={len(self.trajectory_proof.partial_terminals)}, "
+                f"budget_prefixes={len(self.trajectory_proof.budget_prefixes)}, "
                 f"dead_ends={len(self.trajectory_proof.dead_ends)}, "
                 f"obstacles={len(self.trajectory_proof.obstacles)}"
             ),
@@ -1836,6 +1912,13 @@ class CodemodRefactorGoalRunner:
     ) -> CodemodRefactorTrajectoryProof:
         """Exhaust exact reachable source states without ranking local moves."""
 
+        budget = replace(
+            self.trajectory_budget,
+            max_depth=self.migration_type.trajectory_depth(
+                len(self.target_findings(starting_scan)),
+                self.trajectory_budget.max_depth,
+            ),
+        )
         initial_state = CodemodRefactorTrajectoryState(scan=starting_scan)
         pending = deque((initial_state,))
         visited_source_state_ids = {initial_state.source_state_id}
@@ -1847,6 +1930,7 @@ class CodemodRefactorGoalRunner:
         unjustified_debt_terminals: list[CodemodRefactorUnjustifiedDebtTerminal] = []
         dead_ends: list[CodemodRefactorTrajectoryDeadEnd] = []
         partial_terminals: list[CodemodRefactorPartialTerminal] = []
+        budget_prefixes: list[CodemodRefactorBudgetPrefix] = []
         obstacles: list[CodemodRefactorTrajectoryObstacle] = []
         transition_count = 0
 
@@ -1912,7 +1996,7 @@ class CodemodRefactorGoalRunner:
             with self.progress.phase(f"depth {state.depth} plan") as details:
                 plan = snapshot.plan_from_findings(
                     target_findings,
-                    frontier_budget=self.trajectory_budget.recipe_frontier,
+                    frontier_budget=budget.recipe_frontier,
                 )
                 details.append(f"{len(plan.trajectory_frontier.branches)} branches")
             class_plan_report = FindingRecipeClassPlanReport.from_finding_plan(
@@ -1933,14 +2017,30 @@ class CodemodRefactorGoalRunner:
             if not frontier.branches:
                 settle_dead_end(state, class_plan_report)
                 continue
-            if state.depth >= self.trajectory_budget.max_depth:
+            if state.depth >= budget.max_depth:
                 obstacles.append(
                     CodemodRefactorDepthBudgetObstacle(
                         source_state_id=state.source_state_id,
                         depth=state.depth,
-                        max_depth=self.trajectory_budget.max_depth,
+                        max_depth=budget.max_depth,
                     )
                 )
+                with self.progress.phase(f"depth {state.depth} prefix") as details:
+                    settlement = self.exact_settlement(starting_scan, state)
+                    details.append(settlement.rejection or "clean")
+                if not settlement.rejection:
+                    budget_prefixes.append(
+                        CodemodRefactorBudgetPrefix(
+                            state=replace(state, scan=settlement.scan),
+                            guard_report=settlement.guard_report,
+                            remaining_target_ids=tuple(
+                                sorted(
+                                    finding.stable_id
+                                    for finding in self.target_findings(settlement.scan)
+                                )
+                            ),
+                        )
+                    )
                 continue
 
             valid_transition_count = 0
@@ -1978,12 +2078,12 @@ class CodemodRefactorGoalRunner:
                 )
                 if next_state.source_state_id in visited_source_state_ids:
                     continue
-                if len(visited_source_state_ids) >= self.trajectory_budget.max_states:
+                if len(visited_source_state_ids) >= budget.max_states:
                     obstacles.append(
                         CodemodRefactorStateBudgetObstacle(
                             source_state_id=state.source_state_id,
                             depth=state.depth,
-                            max_states=self.trajectory_budget.max_states,
+                            max_states=budget.max_states,
                         )
                     )
                     continue
@@ -1994,7 +2094,7 @@ class CodemodRefactorGoalRunner:
 
         return CodemodRefactorTrajectoryProof(
             initial_source_state_id=initial_state.source_state_id,
-            budget=self.trajectory_budget,
+            budget=budget,
             visited_state_count=len(visited_source_state_ids),
             transition_count=transition_count,
             terminals=tuple(
@@ -2008,6 +2108,7 @@ class CodemodRefactorGoalRunner:
             partial_terminals=tuple(
                 sorted(partial_terminals, key=lambda terminal: terminal.source_state_id)
             ),
+            budget_prefixes=tuple(budget_prefixes),
         )
 
     def terminal_guard_report(self, scan: CodemodWorkflowScan) -> ArchitectureGuardReport:
@@ -2040,40 +2141,50 @@ class CodemodRefactorGoalRunner:
 
         if not state.stages:
             return dead_end()
-        projected_targets = self.target_findings(state.scan)
-        exact_scan = self.exact_scan(state.scan)
-        exact_targets = self.target_findings(exact_scan)
-        if sorted(finding.stable_id for finding in exact_targets) != sorted(
-            finding.stable_id for finding in projected_targets
-        ):
-            return dead_end("the exact scan's remaining targets differ from the projected ones")
+        settlement = self.exact_settlement(starting_scan, state)
+        if settlement.rejection:
+            return dead_end(settlement.rejection)
         try:
             remaining = CodemodRefactorRemainingTargets.grouped(
-                exact_targets, class_plan_report.finding_plan.report.records
+                self.target_findings(settlement.scan),
+                class_plan_report.finding_plan.report.records,
             )
         except ValueError as error:
             return dead_end(str(error))
+        return CodemodRefactorPartialTerminal(
+            state=replace(state, scan=settlement.scan),
+            guard_report=settlement.guard_report,
+            remaining_targets=remaining,
+        )
+
+    def exact_settlement(
+        self,
+        starting_scan: CodemodWorkflowScan,
+        state: CodemodRefactorTrajectoryState,
+    ) -> CodemodExactSettlement:
+        """Rescan a projected state exactly: its targets must match the
+        projection, no finding class may grow, and the guards must pass."""
+
+        exact_scan = self.exact_scan(state.scan)
+        guard_report = self.terminal_guard_report(exact_scan)
+        exact_ids = sorted(f.stable_id for f in self.target_findings(exact_scan))
+        projected_ids = sorted(f.stable_id for f in self.target_findings(state.scan))
         increased = CodemodFindingClassDelta.from_findings(
             tuple(starting_scan.findings), tuple(exact_scan.findings)
         ).increased_changes
-        if increased:
-            return dead_end(
-                f"it grows {len(increased)} finding class(es): "
-                + "; ".join(
-                    f"{change.obligation_class.declaration.qualname} "
-                    f"{change.before_count}->{change.after_count} "
-                    f"(added {', '.join(change.added_ids)})"
-                    for change in increased
-                )
+        rejection = ""
+        if exact_ids != projected_ids:
+            rejection = "the exact scan's remaining targets differ from the projected ones"
+        elif increased:
+            rejection = f"it grows {len(increased)} finding class(es): " + "; ".join(
+                f"{change.obligation_class.declaration.qualname} "
+                f"{change.before_count}->{change.after_count} "
+                f"(added {', '.join(change.added_ids)})"
+                for change in increased
             )
-        guard_report = self.terminal_guard_report(exact_scan)
-        if not guard_report.is_clean:
-            return dead_end("its architecture guards fail")
-        return CodemodRefactorPartialTerminal(
-            state=replace(state, scan=exact_scan),
-            guard_report=guard_report,
-            remaining_targets=remaining,
-        )
+        elif not guard_report.is_clean:
+            rejection = "its architecture guards fail"
+        return CodemodExactSettlement(exact_scan, guard_report, rejection)
 
     def stages_with_terminal_guards(
         self,
@@ -2095,7 +2206,11 @@ class CodemodRefactorGoalRunner:
     def achieved_report(
         self,
         *,
-        terminal: CodemodRefactorTrajectoryTerminal | CodemodRefactorPartialTerminal,
+        terminal: (
+            CodemodRefactorTrajectoryTerminal
+            | CodemodRefactorPartialTerminal
+            | CodemodRefactorBudgetPrefix
+        ),
         starting_snapshot: CodemodSourceSnapshot,
         trajectory_proof: CodemodRefactorTrajectoryProof,
     ) -> CodemodRefactorGoalReport:
