@@ -4,7 +4,9 @@ checkout sits: a new worktree reads what another worktree already paid for."""
 from __future__ import annotations
 
 import io
-from pathlib import Path, PurePosixPath
+from dataclasses import dataclass
+from pathlib import Path, PosixPath, PurePosixPath
+from typing import NamedTuple
 
 from nominal_refactor_advisor.analysis_cache import (
     AnalysisCacheStorage,
@@ -12,6 +14,7 @@ from nominal_refactor_advisor.analysis_cache import (
 )
 from nominal_refactor_advisor.ast_tools import (
     CollectedFamilyCacheContext,
+    StableCacheValue,
     parse_python_modules,
 )
 from nominal_refactor_advisor.cache_checkout import CheckoutRelocation
@@ -110,3 +113,57 @@ def test_the_default_cache_is_one_home_shared_by_every_checkout(
 
     assert default_parse_cache_dir() == tmp_path / "cache-home" / "shared" / "ast"
     assert default_analysis_cache_dir().parent == default_parse_cache_dir().parent
+
+
+class _Label(str):
+    pass
+
+
+class _Located(PosixPath):
+    pass
+
+
+class _Pair(NamedTuple):
+    path: str
+    line: int
+
+
+@dataclass(frozen=True)
+class _Site:
+    path: str
+
+
+@dataclass(frozen=True)
+class _NamedSite(_Site):
+    name: str
+
+
+def test_subclasses_of_fast_path_types_relocate_like_their_bases(tmp_path: Path) -> None:
+    """The walk's exact-type fast paths and its general branches must agree: a
+    subclass value is relocated exactly as its base is, so every checkout of the
+    same content derives one signature, and a tuple subclass has the tuple's form."""
+
+    first = CheckoutRelocation(tmp_path / "first")
+    second = CheckoutRelocation(tmp_path / "second")
+
+    def at(root: Path) -> tuple[object, ...]:
+        text = f"{root}/pkg/mod.py"
+        return (
+            text,
+            _Label(text),
+            Path(text),
+            _Located(text),
+            (text, 3),
+            _Pair(text, 3),
+            _Site(text),
+            _NamedSite(text, "x"),
+        )
+
+    first_values, second_values = at(first.root), at(second.root)
+    for one, other in zip(first_values, second_values):
+        relocated = StableCacheValue.of(one, first)
+        assert relocated.signature == StableCacheValue.of(other, second).signature
+        assert str(first.root) not in repr(relocated.form)
+    assert StableCacheValue.of(first_values[4], first).form == (
+        StableCacheValue.of(first_values[5], first).form
+    )
