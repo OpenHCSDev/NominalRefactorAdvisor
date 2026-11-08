@@ -14,7 +14,7 @@ from typing import (
     cast,
 )
 
-from .class_index import ClassFamilyIndex
+from .class_families.parsed_index import ClassFamilyIndex
 from .codemod_payload import (
     BooleanPayloadValueCodec,
     DiscriminatedPayloadRecord,

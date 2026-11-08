@@ -15,7 +15,6 @@ from typing import ClassVar
 from .ast_tools import ModuleAnnotationEvaluationMode
 from .codemod_operations import RefactorRecipeOperation
 from .json_reports import DataclassJsonReport
-from .class_index import CompactModulePublicExportContract, module_public_export_contract
 from .codemod_import_bindings import FromModuleImportBindingIdentity
 from .codemod_import_graph import SourceModuleImportGraph
 from .codemod_import_scopes import ModuleImportScope
@@ -68,6 +67,10 @@ from .codemod_source_edits import (
 from .codemod_spacing import DestinationInsertionSpacing
 from .declaration_dependencies import DeclarationDependencyProjection
 from .lexical_bindings import ImportFromModuleName
+from .public_exports import (
+    CompactModulePublicExportContract,
+    module_public_export_contract,
+)
 from .python_module_identity import PythonModulePathIdentity
 
 
@@ -725,7 +728,10 @@ class SourceTopLevelSymbolClosureMovePlan(SourceTopLevelSymbolClosureMoveCarrier
             ),
             *ModuleNameRedirect(
                 source_path=request.source_path,
-                destinations={name: request.destination_path for name in moved_symbol_names},
+                destinations={
+                    **{name: request.destination_path for name in moved_symbol_names},
+                    **cls._removed_import_origins(context.module_import_graph, report),
+                },
             ).consumer_edits(
                 context,
                 excluded_paths=frozenset((request.source_path, request.destination_path)),
@@ -784,6 +790,28 @@ class SourceTopLevelSymbolClosureMovePlan(SourceTopLevelSymbolClosureMoveCarrier
                         (ImportFromModuleName.from_node(statement).source, names, scope)
                     )
         return tuple(removals)
+
+    @staticmethod
+    def _removed_import_origins(
+        import_graph: SourceModuleImportGraph,
+        report: ModuleMoveDependencyReport,
+    ) -> dict[str, str]:
+        """Each import the move removes from the source, by the scanned file that
+        declares it: a module that read the name through the source reads it from
+        there instead. An aliased binding or an origin outside the scan is not
+        redirected."""
+
+        return {
+            dependency.name: origin.file_path
+            for dependency in report.source_removal_dependencies
+            if dependency.identity.imported_name == dependency.name
+            for origin in (
+                import_graph.unique_source_file_for_module_name(
+                    dependency.identity.module_name
+                ),
+            )
+            if origin is not None
+        }
 
     @staticmethod
     def _validate_destination(
@@ -1491,7 +1519,11 @@ class SourceBindingRelocatingModuleSymbolMoveOperationABC(
         destination_path: str,
         moved_symbol_names: tuple[str, ...],
     ) -> tuple[str, ...]:
-        del destination_path
+        """The source imports back, without re-exporting, each moved name it still
+        reads: every other importer is redirected to the destination. Refused when
+        the moved declarations also read names the source keeps defining, since
+        the two modules would then import each other."""
+
         export_contract = module_public_export_contract(
             context.parsed_module_for_source_path(source_path)
         )
@@ -1509,12 +1541,39 @@ class SourceBindingRelocatingModuleSymbolMoveOperationABC(
             moved_symbol_names,
             moved_symbol_names,
         ).intersection(moved_symbol_names)
-        if retained_names:
-            raise ValueError(
-                "Relocated symbols remain referenced by their source module: "
-                f"{tuple(sorted(retained_names))!r}"
+        if not retained_names:
+            return ()
+        defined_in_source = (
+            source_table.top_level_names
+            - frozenset(source_table.import_bindings_by_name)
+            - frozenset(moved_symbol_names)
+        )
+        read_back = tuple(
+            sorted(
+                {
+                    node.id
+                    for name in moved_symbol_names
+                    for statement in source_table.binding_statements(name)
+                    for node in ast.walk(statement)
+                    if isinstance(node, ast.Name)
+                }
+                & defined_in_source
             )
-        return ()
+        )
+        if read_back:
+            raise ValueError(
+                "Relocated symbols remain referenced by their source module "
+                f"{tuple(sorted(retained_names))!r} while reading names it keeps "
+                f"{read_back!r}: source and destination would import each other"
+            )
+        return tuple(
+            context.module_import_graph.required_import_source(
+                importing_file_path=source_path,
+                imported_file_path=destination_path,
+                imported_name=name,
+            )
+            for name in sorted(retained_names)
+        )
 
 
 @dataclass(frozen=True, kw_only=True)

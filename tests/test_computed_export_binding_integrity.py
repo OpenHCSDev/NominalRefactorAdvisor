@@ -9,7 +9,6 @@ from types import ModuleType
 import pytest
 
 from nominal_refactor_advisor.ast_tools import ParsedModule, parse_python_modules
-from nominal_refactor_advisor.class_index import module_public_export_contract
 from nominal_refactor_advisor.codemod import (
     CodemodOperationPreflightError,
     CodemodSourceSnapshot,
@@ -19,6 +18,7 @@ from nominal_refactor_advisor.codemod import (
     RefactorRecipe,
     SourceRewriteTarget,
 )
+from nominal_refactor_advisor.public_exports import module_public_export_contract
 
 
 @pytest.mark.parametrize(

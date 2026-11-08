@@ -21,11 +21,11 @@ from .ast_tools import (
     EagerNameLoadCollector,
     statements_without_docstring,
 )
+from .class_families.parsed_index import IndexedClass
 from .class_index import (
     ClassMethodPromotionSafetyProfile,
     ClassMethodReceiverRequirements,
     ClassSymbolResolutionAuthority,
-    IndexedClass,
 )
 from .class_member_lookup import ClassMemberLookupProof, ClassNamespaceDelta
 from .codemod_authority_claims import AstTargetAuthorityClaim

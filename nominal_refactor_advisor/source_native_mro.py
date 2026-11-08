@@ -12,10 +12,10 @@ from functools import cached_property
 from graphlib import CycleError, TopologicalSorter
 
 from .binding_proofs import RepositoryModuleBindingProof
+from .class_families.parsed_index import IndexedClass
 from .class_index import (
     CLASS_METHOD_OWNERSHIP_HOOK_NAMES,
     ClassSymbolResolutionAuthority,
-    IndexedClass,
 )
 from .class_member_lookup import ClassMemberLookupProof, ClassNamespaceDelta
 from .class_mro import DeclarationMroType, NativeMroBase

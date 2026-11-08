@@ -22,7 +22,10 @@ from ..ast_tools import (
     statements_without_docstring,
     _walk_nodes,
 )
-from ..class_index import ClassFamilyIndex, IndexedClass
+from ..class_families.parsed_index import (
+    ClassFamilyIndex,
+    IndexedClass,
+)
 from ..collection_algebra import sorted_tuple
 from ..foreign_family import FunctionDefinition
 from ..name_algebra import CLASS_NAME_ALGEBRA, ClassNameAlgebra

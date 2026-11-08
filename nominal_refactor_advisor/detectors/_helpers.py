@@ -26,6 +26,10 @@ from ..ast_field_decoders import (
     ParameterAnnotations,
     variadic_parameters,
 )
+from ..class_families.parsed_index import (
+    ClassFamilyIndex,
+    IndexedClass,
+)
 from ..value_expression import CompactValueExpression
 from ..annotation_semantics import CLASSVAR_ANNOTATION_AUTHORITY, TypeWrapper
 from ..ast_projection import ExpressionReference
@@ -85,7 +89,7 @@ from ..ast_tools import (
     ScopedAstObservation,
     statements_without_docstring,
 )
-from ..class_index import ClassFamilyIndex, IndexedClass, annotation_type_names
+from ..class_index import annotation_type_names
 from ..collection_algebra import sorted_tuple
 from ..models import SourceLocation
 from ..name_algebra import CLASS_NAME_ALGEBRA

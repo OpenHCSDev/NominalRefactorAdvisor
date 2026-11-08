@@ -49,8 +49,10 @@ class DirectBuildFindingRendererFindingRecipeSynthesizer:
 import ast
 from pathlib import Path
 
-from nominal_refactor_advisor.ast_tools import parse_python_modules
-from nominal_refactor_advisor.class_index import ParsedModuleSet
+from nominal_refactor_advisor.ast_tools import (
+    ParsedModuleSet,
+    parse_python_modules,
+)
 from nominal_refactor_advisor.codemod import (
     CodemodSourceSnapshot,
     DeclareCandidateFindingRendererOperation,

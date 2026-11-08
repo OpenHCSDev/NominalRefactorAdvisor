@@ -24,7 +24,7 @@ from .ast_tools import (
     ParsedModule,
     SourceModule,
 )
-from .class_index import (
+from .class_families.parsed_index import (
     ClassFamilyIndex,
     ModuleClassReferenceResolver,
 )

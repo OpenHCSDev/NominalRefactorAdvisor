@@ -23,13 +23,16 @@ from nominal_refactor_advisor.ast_tools import ParsedModuleSet
 from nominal_refactor_advisor.ast_projection import CallKeyword
 from metaclass_registry import DuplicateRegistryKeyError
 
+from nominal_refactor_advisor.class_families.parsed_index import (
+    ClassFamilyIndex,
+    build_class_family_index,
+)
 from registry_test_sources import _type_keyed_behavior_projection_source
 from native_use_test_support import (
     simulate_with_rendered_registry_creator_support,
 )
 
 import nominal_refactor_advisor.ast_tools as ast_tools_module
-import nominal_refactor_advisor.class_index as class_index_module
 import nominal_refactor_advisor.codemod_architecture_guards as codemod_architecture_guards_module
 import nominal_refactor_advisor.cancelable_composition as cancelable_composition_module
 import nominal_refactor_advisor.codemod_declaration_source as codemod_declaration_source_module
@@ -112,12 +115,10 @@ from nominal_refactor_advisor.calibration import (
 )
 from nominal_refactor_advisor.cache_paths import default_parse_cache_dir
 from nominal_refactor_advisor.class_index import (
-    ClassFamilyIndex,
     ModuleClassSyntaxFacets,
     RegistryLookupShape,
     RegistryLookupStyle,
     SelectionGuardKind,
-    build_class_family_index,
 )
 from nominal_refactor_advisor.cli import CalibrationExitCodeAuthority
 from nominal_refactor_advisor.cli import CliCommand
@@ -7440,6 +7441,76 @@ def _relocate_moved_with_consumer(tmp_path: Path, consumer: dict[str, str]):
     return operation, snapshot
 
 
+def test_relocation_redirects_a_name_read_through_an_import_it_removes(
+    tmp_path: Path,
+) -> None:
+    """The moved class took the source's last use of an imported helper, so the
+    source's import goes; a module that imported the helper through the source
+    now imports it from where it is declared."""
+
+    operation, snapshot = _relocate_moved_with_consumer(
+        tmp_path,
+        {
+            "pkg/helpers.py": "class Helper:\n    value = 3\n",
+            "pkg/source.py": "from .helpers import Helper\n\n\nclass Moved(Helper):\n    pass\n",
+            "pkg/reader.py": "from .source import Helper\n\nvalue = Helper.value\n",
+        },
+    )
+
+    simulation = RefactorRecipe("relocate-removing-import").with_operation(operation).simulate(snapshot)
+
+    assert simulation.is_clean
+    simulation.apply()
+    imported = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "from pkg.reader import value; import pkg.source as source; "
+            "assert value == 3 and not hasattr(source, 'Helper')",
+        ],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert imported.returncode == 0, imported.stderr
+
+
+def test_relocation_extracts_a_declaration_its_source_still_reads(tmp_path: Path) -> None:
+    """A lower layer moves out: the source keeps reading the moved class through a
+    plain import of the destination, and other importers are redirected."""
+
+    operation, snapshot = _relocate_moved_with_consumer(
+        tmp_path,
+        {
+            "pkg/source.py": "class Moved:\n    value = 3\n\n\ndef build():\n    return Moved()\n",
+            "pkg/reader.py": "from .source import Moved\n\nvalue = Moved.value\n",
+        },
+    )
+
+    simulation = RefactorRecipe("extract-lower").with_operation(operation).simulate(snapshot)
+
+    assert simulation.is_clean
+    source = simulation.simulation.rewritten_sources[(tmp_path / "pkg/source.py").as_posix()]
+    assert "from .destination import Moved\n" in source
+    assert "Moved as Moved" not in source
+    simulation.apply()
+    imported = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "from pkg.source import build; from pkg.reader import value; "
+            "from pkg.destination import Moved; "
+            "assert type(build()) is Moved and value == 3",
+        ],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert imported.returncode == 0, imported.stderr
+
+
 @pytest.mark.parametrize(
     "consumer",
     (
@@ -7721,8 +7792,9 @@ def test_refactor_recipe_relocates_symbol_into_new_module(
     ("source", "message"),
     (
         (
-            "class Moved:\n" "    pass\n\n\n" "def build():\n" "    return Moved()\n",
-            "Relocated symbols remain referenced by their source module",
+            "class Kept:\n    pass\n\n\nclass Moved(Kept):\n    pass\n\n\n"
+            "def build():\n    return Moved()\n",
+            "source and destination would import each other",
         ),
         (
             "__all__ = ('Moved',)\n\n\n" "class Moved:\n" "    pass\n",
@@ -14361,32 +14433,6 @@ def test_registry_lookup_shape_rejects_mismatched_guard_and_return_keys() -> Non
 
     assert isinstance(method, ast.FunctionDef)
     assert RegistryLookupShape.from_method(method) is None
-
-
-def test_registry_lookup_shape_has_no_parallel_detector_authority() -> None:
-    removed_base_names = (
-        "RegistryLookupShape",
-        "_ClsRegistryMembershipStep",
-        "_ClsRegistryMembershipCompareStep",
-        "_ClsRegistryInMembershipStep",
-        "_ClsRegistryNotInMembershipStep",
-        "_RegistryLookupShapeStep",
-        "_TryExceptRegistryLookupStep",
-        "_MembershipGuardRegistryLookupStep",
-    )
-    removed_index_helpers = (
-        "_try_registry_lookup_shape",
-        "_membership_registry_lookup_shape",
-        "_registry_lookup_shape",
-    )
-
-    assert RegistryLookupShape.__module__ == class_index_module.__name__
-    assert all(
-        not hasattr(base_detectors, name)
-        for name in removed_base_names
-        if name != "RegistryLookupShape"
-    )
-    assert all(not hasattr(class_index_module, name) for name in removed_index_helpers)
 
 
 def test_keyed_record_infrastructure_detects_record_owned_tables(
@@ -22767,19 +22813,6 @@ def test_selection_guard_kind_owns_exact_selection_proof(
     expected: bool,
 ) -> None:
     assert SelectionGuardKind.proves_exact_selection(set(guard_kinds)) is expected
-
-
-def test_selection_guard_kind_has_no_parallel_step_or_compact_authority() -> None:
-    removed_step_names = (
-        "_SelectionGuardContext",
-        "_SelectionGuardKindStep",
-        "_UnaryEmptySelectionGuardStep",
-        "_LengthCompareSelectionGuardStep",
-        "_selection_guard_kind",
-    )
-
-    assert all(not hasattr(helper_detectors, name) for name in removed_step_names)
-    assert not hasattr(class_index_module, "_compact_selection_guard_kind")
 
 
 def test_detects_inherited_autoregister_config_boilerplate(

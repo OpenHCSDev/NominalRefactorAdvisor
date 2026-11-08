@@ -6,11 +6,11 @@ from unittest.mock import patch
 import pytest
 
 from nominal_refactor_advisor.ast_tools import ParsedModule, parse_python_modules
-from nominal_refactor_advisor.class_index import (
-    ModuleNominalBindingAuthority,
+from nominal_refactor_advisor.class_families.parsed_index import (
     build_class_family_index,
     overlay_class_family_index,
 )
+from nominal_refactor_advisor.class_index import ModuleNominalBindingAuthority
 
 
 @pytest.fixture

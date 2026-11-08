@@ -19,14 +19,16 @@ from .ast_tools import (
     ModuleAnnotationEvaluationMode,
     ParsedModule,
 )
+from .class_families.parsed_index import (
+    ClassFamilyIndex,
+    IndexedClass,
+    build_class_family_index,
+)
 from .class_index import (
     ClassBodyModuleScope,
     ClassBodyNormalForm,
-    ClassFamilyIndex,
     CompactDataclassFieldRole,
-    IndexedClass,
     ModuleNominalBindingSnapshot,
-    build_class_family_index,
 )
 from .collection_algebra import sorted_tuple
 from .foreign_family import FunctionDefinition

@@ -13,14 +13,16 @@ from .ast_tools import (
     statements_without_docstring,
 )
 from .binding_proofs import RepositoryModuleBindingProof
-from .class_index import (
+from .class_families.parsed_index import (
     ClassFamilyIndex,
     IndexedClass,
     ModuleClassReferenceResolver,
+    build_class_family_index,
+)
+from .class_index import (
     ModuleNominalBindingWitness,
     ModuleNominalBindingView,
     NamedImportModuleBindingProjection,
-    build_class_family_index,
 )
 from .collection_algebra import sorted_tuple
 from .enum_semantics import PYTHON_ENUM_BASE_AUTHORITY

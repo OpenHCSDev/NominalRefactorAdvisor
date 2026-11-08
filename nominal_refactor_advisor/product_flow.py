@@ -99,8 +99,8 @@ from .value_graph import (
 
 if TYPE_CHECKING:
     from .native_reference import NativeReferenceEnvironment
-    from .class_index import CompactPublicNameExposure
     from .product_flow_authority import ProductFlowRepository
+    from .public_exports import CompactPublicNameExposure
 
 
 SourcePositionedNode: TypeAlias = (

@@ -34,6 +34,12 @@ from metaclass_registry import AutoRegisterMeta
 
 from .ast_field_decoders import variadic_parameters
 from .ast_projection import ExpressionReference
+from .class_families.parsed_index import (
+    ClassFamilyIndex,
+    IndexedClass,
+    ModuleClassReferenceResolver,
+    overlay_class_family_index,
+)
 from .foreign_family import FunctionDefinition
 from .interpreter import PythonVersion
 from .assignment_projection import SingleAssignmentAndValueNameProjection
@@ -65,17 +71,13 @@ from .case_root import Case
 from .class_index import (
     NotStandardDataclass,
     ClassDeclaration,
-    ClassFamilyIndex,
     CompactClassFamilyIndex,
     CompactClassReferenceResolver,
     CompactIndexedClass,
     CompactModuleClassProjection,
     CompactModuleClassProjectionFamily,
-    IndexedClass,
-    ModuleClassReferenceResolver,
     build_compact_class_family_index,
     iter_class_definitions,
-    overlay_class_family_index,
 )
 from .codemod_payload import (
     CodemodPayloadRecord,

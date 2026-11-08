@@ -8,14 +8,16 @@ from dataclasses import dataclass, field
 
 from .ast_projection import ExpressionReference
 from .ast_tools import ParsedModule
+from .class_families.parsed_index import (
+    ClassFamilyIndex,
+    IndexedClass,
+    ModuleClassReferenceResolver,
+)
 from .class_index import (
     ClassBodyModuleScope,
     ClassBodyNormalForm,
     ClassMethodPromotionSafetyProfile,
-    ClassFamilyIndex,
     ClassSymbolResolutionAuthority,
-    IndexedClass,
-    ModuleClassReferenceResolver,
     ModuleNominalBindingSnapshot,
     module_star_import_origins,
 )

@@ -36,6 +36,11 @@ from .binding_proofs import (
     FunctionNominalParameterBindingAuthority,
     RepositoryModuleBindingProof,
 )
+from .class_families.parsed_index import (
+    ClassFamilyIndex,
+    IndexedClass,
+    ModuleClassReferenceResolver,
+)
 from .value_expression import CompactValueExpression
 from .annotation_semantics import NOMINAL_ANNOTATION_SOURCE_AUTHORITY
 from .ast_projection import ExpressionReference
@@ -258,11 +263,8 @@ from .codemod_target_selectors import (
 )
 from .declaration_authority_rename import DeclarationAuthorityRenameProof
 from .class_index import (
-    ClassFamilyIndex,
     ClassMethodReceiverRequirements,
     CompactClassFamilyIndex,
-    IndexedClass,
-    ModuleClassReferenceResolver,
     ModuleNominalBindingAuthority,
     declared_nominal_base_count,
 )

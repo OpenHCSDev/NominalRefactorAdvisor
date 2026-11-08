@@ -69,15 +69,17 @@ from .ast_tools import (
     LexicalSyntaxScope,
     ParsedModule,
     ParsedModuleFact,
-    ParsedModuleSet,
-    ParsedModuleSetFact,
     PythonSourcePathPolicy,
     SourceModule,
     _walk_nodes,
     collect_family_items,
     statements_without_docstring,
 )
-from .class_namespace import ClassNamespaceExecutionEvidence, NATIVE_METHOD_DECORATORS
+from .class_namespace import NATIVE_METHOD_DECORATORS
+from .class_references import (
+    ClassReferenceRole,
+    CompactClassReference,
+)
 from .collection_algebra import (
     IdentityHandleMultiplicityProjection,
     SequenceViews,
@@ -89,6 +91,18 @@ from .overlap_receipts import OverlapReceiptKind
 from .foreign_family import (
     AssignmentStatement,
     FunctionDefinition,
+)
+from .product_declarations import (
+    CompactProductAuthorityFailure,
+    CompactProductAuthorityViolation,
+    CompactProductDeclarationFailure,
+    ProductDeclarationSite,
+    _dataclass_decorator_failures,
+)
+from .public_exports import (
+    CompactModulePublicExportContract,
+    CompactPublicNameExposure,
+    module_public_export_contract,
 )
 from .scan_cache import ScanCache
 from .source_entry import ImportedSourceModuleEntryPremise
@@ -113,7 +127,6 @@ from .lexical_bindings import (
     LEXICAL_SCOPE_BINDING_AUTHORITY,
 )
 from .native_declarations import (
-    ClassNamespaceDeclaration,
     DataclassRuntimeDeclaration as DataclassRuntimeDeclaration,
     NativeDeclaration,
     QualifiedDeclaration,
@@ -130,7 +143,6 @@ from .registry_identity import REGISTRY_ATTRIBUTE_NAME, REGISTRY_KEY_ATTRIBUTE_N
 from .source_execution import SourceModuleExecution
 from .semantic_algebra import DirectedGraph
 from .source_geometry import ClassHeaderSourceSpan as ClassHeaderSourceSpan
-from .source_identity import resolved_source_path_text
 
 
 class ClassRegistryFacts(NamedTuple):
@@ -352,80 +364,6 @@ class ClassDeclaration(QualifiedDeclaration):
         self, authority: RegisteringMetaclassAuthority[Any]
     ) -> Self:
         return replace(self, declares_autoregister_meta=authority.registers_remembered(self))
-
-
-@dataclass(frozen=True)
-class IndexedClass(ClassDeclaration, ClassNamespaceDeclaration):
-    node: ast.ClassDef
-
-    member_binding_names = AliasProperty[frozenset[str]](
-        "namespace_execution.binding_names"
-    )
-
-    @cached_property
-    def namespace_execution(self) -> ClassNamespaceExecutionEvidence:
-        return ClassNamespaceExecutionEvidence.from_class(self.node)
-
-    @property
-    def is_final(self) -> bool:
-        return any(
-            (isinstance(decorator, ast.Name) and decorator.id == "final")
-            or (isinstance(decorator, ast.Attribute) and decorator.attr == "final")
-            for decorator in self.node.decorator_list
-        )
-
-    @classmethod
-    def from_parsed_class(
-        cls,
-        parsed_module: ParsedModule,
-        qualname: str,
-        node: ast.ClassDef,
-        module_binding_snapshot: ModuleNominalBindingSnapshot,
-    ) -> IndexedClass:
-        return cls(
-            symbol=f"{parsed_module.module_name}.{qualname}",
-            module_name=parsed_module.module_name,
-            qualname=qualname,
-            simple_name=qualname.rsplit(".", 1)[-1],
-            file_path=parsed_module.file_path,
-            line=node.lineno,
-            node=node,
-            declared_base_names=tuple(
-                declared_base_name
-                for base in node.bases
-                if (
-                    declared_base_name := ClassSymbolResolutionAuthority.declared_base_name(
-                        base
-                    )
-                )
-                is not None
-            ),
-            resolved_base_symbols=(),
-            registry_facts=ClassRegistryFacts.of_class(
-                node, module_binding_snapshot, parsed_module.module
-            ),
-            dataclass_declaration=_dataclass_declaration(
-                module_binding_snapshot,
-                qualname,
-                node,
-            ),
-            class_decorators_are_promotion_safe=all(
-                ClassMethodPromotionSafeDecorator.for_qualified_name(
-                    _class_scope_qualified_import_name(
-                        module_binding_snapshot,
-                        {},
-                        (
-                            decorator.func
-                            if isinstance(decorator, ast.Call)
-                            else decorator
-                        ),
-                        frozenset(),
-                    )
-                )
-                is not None
-                for decorator in node.decorator_list
-            ),
-        )
 
 
 @dataclass(frozen=True)
@@ -795,124 +733,6 @@ class CompactAnnotatedFunctionReturn:
     return_annotation_expression: str
 
 
-class CompactProductAuthorityViolation(StrEnum):
-    """One typed reason a dataclass declaration cannot prove a plain product."""
-
-    UNRESOLVED_DATACLASS_DECORATOR = (
-        "unresolved_dataclass_decorator",
-        "the dataclass decorator does not resolve to the standard-library declaration",
-        (),
-    )
-    MULTIPLE_DATACLASS_DECORATORS = (
-        "multiple_dataclass_decorators",
-        "more than one dataclass decorator applies to the same declaration",
-        (),
-    )
-    GENERATED_INIT_DISABLED = (
-        "generated_init_disabled",
-        "the dataclass declaration does not retain its generated initializer",
-        (),
-    )
-    DYNAMIC_DATACLASS_OPTIONS = (
-        "dynamic_dataclass_options",
-        "the dataclass constructor options cannot be resolved statically",
-        (),
-    )
-    CUSTOM_CLASS_DECORATOR = (
-        "custom_class_decorator",
-        "another class decorator can replace or mutate the dataclass declaration",
-        (),
-    )
-    CUSTOM_CLASS_CREATION = (
-        "custom_class_creation",
-        "class keywords or a custom metaclass can change construction semantics",
-        (),
-    )
-    CUSTOM_PRODUCT_LIFECYCLE = (
-        "custom_product_lifecycle",
-        "a class-owned lifecycle hook can change construction or field projection",
-        (
-            "__delattr__",
-            "__getattr__",
-            "__getattribute__",
-            "__init__",
-            "__init_subclass__",
-            "__new__",
-            "__post_init__",
-            "__setattr__",
-            "__slots__",
-        ),
-    )
-    FIELD_MEMBER_COLLISION = (
-        "field_member_collision",
-        "a dataclass field name is rebound by another class member",
-        (),
-    )
-    UNRESOLVED_FIELD_ROLE = (
-        "unresolved_field_role",
-        "a field role or default cannot be proven to preserve plain stored projection",
-        (),
-    )
-    INIT_ONLY_FIELD = (
-        "init_only_field",
-        "an InitVar constructor parameter is not a stored product field",
-        (),
-    )
-    NON_INIT_FIELD = (
-        "non_init_field",
-        "a stored field is excluded from the generated initializer",
-        (),
-    )
-    DYNAMIC_FIELD_SCHEMA = (
-        "dynamic_field_schema",
-        "class execution can add or replace annotations outside the direct field declarations",
-        (),
-    )
-    NESTED_CLASS_SCOPE = (
-        "nested_class_scope",
-        "the enclosing class namespace prevents exact module-binding recovery",
-        (),
-    )
-    INCOMPLETE_BASE_RESOLUTION = (
-        "incomplete_base_resolution",
-        "not every direct base resolves to one repository declaration",
-        (),
-    )
-    MULTIPLE_PRODUCT_BASES = (
-        "multiple_product_bases",
-        "the product schema requires an unproved multiple-inheritance linearization",
-        (),
-    )
-    NON_DATACLASS_BASE = (
-        "non_dataclass_base",
-        "a direct base lacks a closed dataclass product declaration",
-        (),
-    )
-    CYCLIC_PRODUCT_LINEAGE = (
-        "cyclic_product_lineage",
-        "the product declaration participates in a cyclic inheritance graph",
-        (),
-    )
-
-    explanation: str
-    implicated_member_names: tuple[str, ...]
-
-    def __new__(
-        cls,
-        value: str,
-        explanation: str,
-        implicated_member_names: tuple[str, ...],
-    ) -> Self:
-        member = str.__new__(cls, value)
-        member._value_ = value
-        member.explanation = explanation
-        member.implicated_member_names = implicated_member_names
-        return member
-
-    def is_violated_by_member_names(self, member_names: frozenset[str]) -> bool:
-        return bool(member_names.intersection(self.implicated_member_names))
-
-
 class CompactDataclassFieldRole(StrEnum):
     """Dataclass field kinds with declaration-owned product admissibility."""
 
@@ -1083,13 +903,6 @@ class CompactDataclassFieldDeclaration(NamedTuple):
         )
 
 
-class CompactProductDeclarationFailure(NamedTuple):
-    """One class-local product obligation retained at its exact source line."""
-
-    line: int
-    violation: CompactProductAuthorityViolation
-
-
 @dataclass(frozen=True)
 class CompactProductField:
     """One effective dataclass field retaining its nominal declaration source."""
@@ -1098,15 +911,6 @@ class CompactProductField:
     role: CompactDataclassFieldRole
     binding: DataclassInitBinding
     declaring_class_symbol: str
-    file_path: str
-    line: int
-
-
-@dataclass(frozen=True, kw_only=True)
-class ProductDeclarationSite:
-    """The source site that declares one product class: its symbol, file and line."""
-
-    class_symbol: str
     file_path: str
     line: int
 
@@ -1149,13 +953,6 @@ class CompactProductAuthority(ProductDeclarationSite):
             for field in self.fields
             if field.binding is DataclassInitBinding.POSITIONAL
         )
-
-
-@dataclass(frozen=True, kw_only=True)
-class CompactProductAuthorityFailure(ProductDeclarationSite):
-    """One failed product obligation attached to its declaration source."""
-
-    violation: CompactProductAuthorityViolation
 
 
 @dataclass(frozen=True)
@@ -1511,122 +1308,6 @@ class CompactIndexedClass(CompactClassHeader):
             for declaration in self.direct_value_writes_by_name.values()
             if not declaration.value.value_is_none_literal
         )
-
-
-def has_complete_concrete_mro_composite(
-    direct_child_symbols: tuple[str, ...],
-    concrete_descendants: tuple[IndexedClass, ...] | tuple[CompactIndexedClass, ...],
-) -> bool:
-    """Return whether one descendant composes every concrete root branch."""
-
-    concrete_descendant_symbols = {
-        descendant.symbol for descendant in concrete_descendants
-    }
-    concrete_branch_symbols = concrete_descendant_symbols.intersection(
-        direct_child_symbols
-    )
-    if len(concrete_branch_symbols) < 2:
-        return False
-    return any(
-        concrete_branch_symbols.issubset(descendant.resolved_base_symbols)
-        for descendant in concrete_descendants
-    )
-
-
-class CompactPublicNameExposure(StrEnum):
-    """Proof result for one name on a module's declared public surface."""
-
-    PUBLIC = "public", True
-    PRIVATE = "private", False
-    UNRESOLVED = "unresolved", True
-
-    def __new__(cls, value: str, blocks_closed_boundary: bool) -> Self:
-        member = str.__new__(cls, value)
-        member._value_ = value
-        member._blocks_closed_boundary = blocks_closed_boundary
-        return member
-
-    @property
-    def blocks_closed_boundary(self) -> bool:
-        return self._blocks_closed_boundary
-
-    @property
-    def proves_public_exposure(self) -> bool:
-        return self is type(self).PUBLIC
-
-    @property
-    def introduces_uncertainty(self) -> bool:
-        return self is type(self).UNRESOLVED
-
-
-class CompactModulePublicExportContract(ABC):
-    """Representation-independent declaration of one module's export policy."""
-
-    @abstractmethod
-    def exposure_for(self, name: str) -> CompactPublicNameExposure:
-        raise NotImplementedError
-
-    @abstractmethod
-    def allows_binding_relocation(self, name: str) -> bool:
-        """Return whether removing this module binding preserves the contract."""
-
-        raise NotImplementedError
-
-
-@dataclass(frozen=True)
-class CompactImplicitPublicExportContract(CompactModulePublicExportContract):
-    """Python's implicit convention: leading-underscore bindings are private."""
-
-    def exposure_for(self, name: str) -> CompactPublicNameExposure:
-        return (
-            CompactPublicNameExposure.PRIVATE
-            if name.startswith("_")
-            else CompactPublicNameExposure.PUBLIC
-        )
-
-    def allows_binding_relocation(self, name: str) -> bool:
-        del name
-        return True
-
-
-@dataclass(frozen=True)
-class CompactExplicitPublicExportContract(CompactModulePublicExportContract):
-    """One statically complete ``__all__`` membership declaration."""
-
-    exported_names: tuple[str, ...]
-
-    @classmethod
-    def from_declaration(
-        cls,
-        declaration: ModulePublicExportSourceAuthority,
-    ) -> CompactExplicitPublicExportContract | None:
-        references = declaration.literal_references
-        if references is None:
-            return None
-        return cls(sorted_tuple({reference.name for reference in references}))
-
-    def exposure_for(self, name: str) -> CompactPublicNameExposure:
-        return (
-            CompactPublicNameExposure.PUBLIC
-            if name in self.exported_names
-            else CompactPublicNameExposure.PRIVATE
-        )
-
-    def allows_binding_relocation(self, name: str) -> bool:
-        return name not in self.exported_names
-
-
-@dataclass(frozen=True)
-class CompactUnresolvedPublicExportContract(CompactModulePublicExportContract):
-    """A dynamic or otherwise incomplete ``__all__`` declaration."""
-
-    def exposure_for(self, name: str) -> CompactPublicNameExposure:
-        del name
-        return CompactPublicNameExposure.UNRESOLVED
-
-    def allows_binding_relocation(self, name: str) -> bool:
-        del name
-        return False
 
 
 class StarNameSettlement(ABC):
@@ -3107,120 +2788,6 @@ class CompactExactTypeGuard(CompactQualifiedSourceLocation):
         return membership if self.matches_exact_type_when_true else f"not {membership}"
 
 
-class ClassReferenceRole(StrEnum):
-    """How one expression uses a module-level name that may be a class."""
-
-    TYPE_TEST = "type_test"
-    CLASS_PATTERN = "class_pattern"
-    TYPE_KEY = "type_key"
-    CONSTRUCTION = "construction"
-    OTHER = "other"
-
-    @property
-    def distinguishes_identity(self) -> bool:
-        """The use answers differently for two classes even when their bodies agree."""
-
-        return self in (
-            ClassReferenceRole.TYPE_TEST,
-            ClassReferenceRole.CLASS_PATTERN,
-            ClassReferenceRole.TYPE_KEY,
-        )
-
-    @property
-    def binds_fields(self) -> bool:
-        """The read builds the class or matches against its fields."""
-
-        return self in (ClassReferenceRole.CONSTRUCTION, ClassReferenceRole.CLASS_PATTERN)
-
-    def positional_bindings(self, parent: ast.AST | None) -> int:
-        """How many arguments or subpatterns this read binds to fields by position."""
-
-        if self is ClassReferenceRole.CONSTRUCTION and isinstance(parent, ast.Call):
-            return len(parent.args)
-        if self is ClassReferenceRole.CLASS_PATTERN and isinstance(parent, ast.MatchClass):
-            return len(parent.patterns)
-        return 0
-
-    @classmethod
-    def of_reference(
-        cls,
-        node: ast.expr,
-        parent: ast.AST | None,
-        grandparent: ast.AST | None,
-        import_aliases: Mapping[str, str],
-    ) -> ClassReferenceRole:
-        """The role one read of a name plays, from the syntax around it."""
-
-        if isinstance(parent, ast.Call) and parent.func is node:
-            return cls.CONSTRUCTION
-        type_test_operand = (
-            parent.args[1]
-            if isinstance(parent, ast.Call)
-            and (_is_builtin_call(parent, "isinstance") or _is_builtin_call(parent, "issubclass"))
-            and len(parent.args) == 2
-            else None
-        )
-        if type_test_operand is node or (
-            isinstance(parent, ast.Tuple)
-            and isinstance(grandparent, ast.Call)
-            and (
-                _is_builtin_call(grandparent, "isinstance")
-                or _is_builtin_call(grandparent, "issubclass")
-            )
-            and len(grandparent.args) == 2
-            and grandparent.args[1] is parent
-        ):
-            return cls.TYPE_TEST
-        if (
-            isinstance(parent, ast.Compare)
-            and any(isinstance(op, (ast.Is, ast.IsNot, ast.Eq, ast.NotEq)) for op in parent.ops)
-            and any(
-                _is_builtin_call(operand, "type")
-                for operand in (parent.left, *parent.comparators)
-            )
-        ):
-            return cls.TYPE_TEST
-        if isinstance(parent, ast.MatchClass) and parent.cls is node:
-            return cls.CLASS_PATTERN
-        if isinstance(parent, ast.Dict) and any(key is node for key in parent.keys):
-            return cls.TYPE_KEY
-        if isinstance(parent, ast.Subscript) and parent.slice is node:
-            subscripted = ExpressionReference.decoded(parent.value).attribute_chain
-            root = (
-                None
-                if subscripted is None
-                else import_aliases.get(subscripted[0], subscripted[0])
-            )
-            if subscripted is not None and (
-                (subscripted[0] not in import_aliases and hasattr(builtins, subscripted[0]))
-                or (root is not None and root.split(".", 1)[0] in _GENERIC_ALIAS_ROOTS)
-            ):
-                return cls.OTHER
-            return cls.TYPE_KEY
-        return cls.OTHER
-
-
-class CompactClassReference(NamedTuple):
-    """One read of a module-level name by one consumer, and the role it plays.
-
-    `consumer` is the enclosing function or class qualname, or the module
-    itself (empty); `reference_parts` the full name or attribute chain read.
-    For a call, `positional_arguments` is the most positional arguments any
-    call in the consumer passes and `unpacked_arguments` whether one unpacks
-    `*args` or `**kwargs`, which hides how it binds fields.
-    """
-
-    consumer: str
-    reference_parts: tuple[str, ...]
-    role: ClassReferenceRole
-    line: int
-    positional_arguments: int = 0
-    unpacked_arguments: bool = False
-    copied_fields: tuple[str, ...] = ()
-    """For a construction, the most keywords one call passes as `x.<same name>`
-    from a single value `x`: fields copied off another object."""
-
-
 ClassDeclarationT = TypeVar("ClassDeclarationT", bound=ClassDeclaration)
 
 
@@ -3761,58 +3328,6 @@ def declared_nominal_base_count(declaration: ClassDeclaration) -> int:
     )
 
 
-@dataclass(frozen=True)
-class ClassFamilyIndex(ClassDeclarationIndex[IndexedClass], ParsedModuleSetFact):
-    @classmethod
-    def derive(cls, modules: ParsedModuleSet) -> ClassFamilyIndex:
-        return ClassFamilyIndexBuilder(modules.modules).build()
-
-    def class_records_excluding_files(
-        self,
-        file_paths: frozenset[str],
-    ) -> tuple[IndexedClass, ...]:
-        return tuple(
-            indexed_class
-            for indexed_class in self.classes_by_symbol.values()
-            if resolved_source_path_text(indexed_class.file_path) not in file_paths
-        )
-
-    def projected_with_module_overlay(
-        self,
-        projected_modules: Iterable[ParsedModule],
-        changed_modules: Iterable[ParsedModule],
-    ) -> ClassFamilyIndex:
-        """Derive an exact projected index using an overlay only when closed."""
-
-        projected_module_tuple = tuple(projected_modules)
-        changed_module_tuple = tuple(changed_modules)
-        changed_file_paths = frozenset(
-            module.file_path for module in changed_module_tuple
-        )
-        retained_records = tuple(
-            record
-            for record in self.classes_by_symbol.values()
-            if record.file_path not in changed_file_paths
-        )
-        replaced_symbols = frozenset(self.classes_by_symbol).difference(
-            record.symbol for record in retained_records
-        )
-        projected_symbols = frozenset(
-            record.symbol
-            for record in ClassFamilyIndexBuilder(
-                changed_module_tuple
-            ).module_class_records()
-        )
-        if not replaced_symbols and not projected_symbols:
-            return self
-        if replaced_symbols != projected_symbols:
-            return build_class_family_index(list(projected_module_tuple))
-        return ClassFamilyIndexBuilder(
-            changed_module_tuple,
-            base_records=retained_records,
-        ).build()
-
-
 def iter_class_definitions(
     statements: list[ast.stmt],
     *,
@@ -3896,141 +3411,6 @@ def _unique_known_symbol_by_suffix(
     """Share a bounded lazy suffix resolver for one repository symbol set."""
 
     return _UniqueKnownSymbolSuffixIndex(known_symbols)
-
-
-class _ModuleScopeNameReferenceCollector(ast.NodeVisitor):
-    """Collect one module binding's syntax without entering child namespaces."""
-
-    def __init__(self, name: str) -> None:
-        self.name = name
-        self.references: list[ast.Name] = []
-
-    def visit_Name(self, node: ast.Name) -> None:
-        if node.id == self.name:
-            self.references.append(node)
-
-    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
-        return
-
-    visit_AsyncFunctionDef = visit_FunctionDef
-
-    def visit_ClassDef(self, node: ast.ClassDef) -> None:
-        return
-
-    def visit_Lambda(self, node: ast.Lambda) -> None:
-        return
-
-
-def _module_scope_name_references(
-    module: ast.Module,
-    name: str,
-) -> tuple[ast.Name, ...]:
-    collector = _ModuleScopeNameReferenceCollector(name)
-    collector.visit(module)
-    return tuple(collector.references)
-
-
-@dataclass(frozen=True)
-class PublicExportNameReference:
-    """One exact string literal in a static public-export declaration."""
-
-    literal: ast.Constant
-
-    @property
-    def name(self) -> str:
-        return cast(str, self.literal.value)
-
-    def __post_init__(self) -> None:
-        if not isinstance(self.literal.value, str):
-            raise ValueError("Public export reference must contain a string")
-
-    def renamed_source(self, literal_source: str, new_name: str) -> str:
-        if literal_source.count(self.name) != 1:
-            raise ValueError("Public export reference cannot be reconstructed")
-        return literal_source.replace(self.name, new_name, 1)
-
-
-@dataclass(frozen=True)
-class ModulePublicExportSourceAuthority:
-    """Exact source declaration from which a module export contract is derived."""
-
-    statement: ast.Assign | ast.AnnAssign
-    target: ast.Name
-    value: ast.expr
-
-    @cached_property
-    def literal_references(self) -> tuple[PublicExportNameReference, ...] | None:
-        """Validate the whole literal sequence before exposing any member sites."""
-        if not isinstance(self.value, ast.List | ast.Tuple):
-            return None
-        references = []
-        for element in self.value.elts:
-            if not isinstance(element, ast.Constant):
-                return None
-            try:
-                references.append(PublicExportNameReference(element))
-            except ValueError:
-                return None
-        return tuple(references)
-
-    @staticmethod
-    def export_targets(
-        statement: ast.Assign | ast.AnnAssign,
-    ) -> tuple[ast.Name, ...]:
-        """The `__all__` name a module-scope assignment binds, if it binds it."""
-
-        return tuple(
-            target
-            for target in single_name_targets(statement)
-            if target.id == PYTHON_PUBLIC_EXPORT_ASSIGNMENT
-        )
-
-    @classmethod
-    def from_module(
-        cls,
-        module: ast.Module,
-    ) -> ModulePublicExportSourceAuthority | None:
-        # A bare `__all__: T` declares no export list.
-        declarations = tuple(
-            cls(statement, target, supplied.value)
-            for (target, statement), supplied in StatementValues.keyed(
-                ((target, statement), statement)
-                for statement in module.body
-                if isinstance(statement, ast.Assign | ast.AnnAssign)
-                for target in cls.export_targets(statement)
-            ).supplied
-        )
-        if len(declarations) != 1:
-            return None
-        declaration = declarations[0]
-        references = _module_scope_name_references(
-            module,
-            PYTHON_PUBLIC_EXPORT_ASSIGNMENT,
-        )
-        return declaration if references == (declaration.target,) else None
-
-    def name_references(self, name: str) -> tuple[PublicExportNameReference, ...]:
-        references = self.literal_references
-        if references is None:
-            return ()
-        return tuple(reference for reference in references if reference.name == name)
-
-
-def module_public_export_contract(
-    parsed_module: ParsedModule,
-) -> CompactModulePublicExportContract:
-    module = parsed_module.module
-    if PYTHON_PUBLIC_EXPORT_ASSIGNMENT not in (
-        LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(module.body)
-    ):
-        return CompactImplicitPublicExportContract()
-    declaration = ModulePublicExportSourceAuthority.from_module(module)
-    if declaration is None:
-        return CompactUnresolvedPublicExportContract()
-    return (
-        CompactExplicitPublicExportContract.from_declaration(declaration)
-        or CompactUnresolvedPublicExportContract()
-    )
 
 
 class CompactNominalBindingKind(StrEnum):
@@ -7174,11 +6554,6 @@ def _compact_autoregister_reference_projection(
     )
 
 
-_GENERIC_ALIAS_ROOTS = frozenset(
-    ("builtins", "typing", "typing_extensions", "collections")
-)
-
-
 def _classmethod_receiver_class(
     node: ast.AST,
     scope: LexicalSyntaxScope,
@@ -7321,14 +6696,6 @@ def _compact_class_references(
         for (consumer, parts, role), facts in sorted(
             references.items(), key=lambda item: (item[1][0], item[0][0], item[0][1])
         )
-    )
-
-
-def _is_builtin_call(node: ast.AST | None, name: str) -> bool:
-    return (
-        isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Name)
-        and node.func.id == name
     )
 
 
@@ -8252,34 +7619,6 @@ def _dataclass_fields(
     return tuple(fields)
 
 
-def _dataclass_decorator_failures(
-    decorator: ast.expr,
-) -> tuple[CompactProductDeclarationFailure, ...]:
-    if not isinstance(decorator, ast.Call):
-        return ()
-    violations: list[CompactProductAuthorityViolation] = []
-    keyword_names = tuple(keyword.arg for keyword in decorator.keywords)
-    if decorator.args or any(name is None for name in keyword_names):
-        violations.append(CompactProductAuthorityViolation.DYNAMIC_DATACLASS_OPTIONS)
-    init_values = tuple(
-        keyword.value for keyword in decorator.keywords if keyword.arg == "init"
-    )
-    if len(init_values) > 1 or (
-        init_values
-        and (
-            not isinstance(init_values[0], ast.Constant)
-            or not isinstance(init_values[0].value, bool)
-        )
-    ):
-        violations.append(CompactProductAuthorityViolation.DYNAMIC_DATACLASS_OPTIONS)
-    elif init_values and not init_values[0].value:
-        violations.append(CompactProductAuthorityViolation.GENERATED_INIT_DISABLED)
-    return tuple(
-        CompactProductDeclarationFailure(decorator.lineno, violation)
-        for violation in dict.fromkeys(violations)
-    )
-
-
 def _field_member_collision_lines(
     node: ast.ClassDef,
     fields: tuple[CompactDataclassFieldDeclaration, ...],
@@ -9178,97 +8517,6 @@ class ClassSymbolResolutionAuthority:
         )
 
 
-@dataclass(frozen=True)
-class ModuleClassReferenceResolver:
-    """Resolve class references in expression syntax against a class index."""
-
-    parsed_module: ParsedModule
-    class_index: ClassFamilyIndex
-
-    @cached_property
-    def known_symbols(self) -> frozenset[str]:
-        return self.class_index.known_symbols
-
-    @cached_property
-    def unique_symbols_by_name(self) -> dict[str, str]:
-        return self.class_index.unique_symbols_by_name
-
-    @cached_property
-    def import_aliases(self) -> dict[str, str]:
-        return module_import_aliases(self.parsed_module)
-
-    @cached_property
-    def constructor_assignment_symbols(self) -> dict[str, str]:
-        assignments: dict[str, str] = {}
-        for statement in self.parsed_module.module.body:
-            if not isinstance(statement, ast.Assign | ast.AnnAssign):
-                continue
-            target_name = _single_assignment_target_name(statement)
-            if target_name is None:
-                continue
-            value = statement.value
-            if value is None:
-                continue
-            symbol = self._direct_constructor_symbol(value)
-            if symbol is not None:
-                assignments[target_name] = symbol
-        return assignments
-
-    @cached_property
-    def reference_resolution(self) -> ClassSymbolResolutionAuthority:
-        return ClassSymbolResolutionAuthority(
-            parsed_module=self.parsed_module,
-            import_aliases=self.import_aliases,
-            known_symbols=self.known_symbols,
-            unique_symbols_by_name=self.unique_symbols_by_name,
-            allow_unique_unqualified=False,
-        )
-
-    def symbols_for_node(self, node: ast.AST) -> tuple[str, ...]:
-        collector = ClassReferenceSymbolCollector(self)
-        collector.visit(node)
-        return sorted_tuple(collector.symbols)
-
-    def symbol_for_reference(self, node: ast.AST) -> str | None:
-        if isinstance(node, ast.Call):
-            return self._direct_constructor_symbol(node)
-        if isinstance(node, ast.Name):
-            constructor_symbol = self.constructor_assignment_symbols.get(node.id)
-            if constructor_symbol is not None:
-                return constructor_symbol
-        return self.reference_resolution.symbol_for_node(node)
-
-    def _direct_constructor_symbol(self, node: ast.AST) -> str | None:
-        if not isinstance(node, ast.Call):
-            return None
-        return self.reference_resolution.symbol_for_node(node.func)
-
-
-class ClassReferenceSymbolCollector(ast.NodeVisitor):
-    """Collect expression nodes that reference classes without counting members."""
-
-    def __init__(self, resolver: ModuleClassReferenceResolver) -> None:
-        self.resolver = resolver
-        self.symbols: set[str] = set()
-
-    def visit_Call(self, node: ast.Call) -> None:
-        self._add_symbol(self.resolver._direct_constructor_symbol(node))
-        for argument in node.args:
-            self.visit(argument)
-        for keyword in node.keywords:
-            self.visit(keyword.value)
-
-    def visit_Attribute(self, node: ast.Attribute) -> None:
-        self._add_symbol(self.resolver.reference_resolution.symbol_for_node(node))
-
-    def visit_Name(self, node: ast.Name) -> None:
-        self._add_symbol(self.resolver.symbol_for_reference(node))
-
-    def _add_symbol(self, symbol: str | None) -> None:
-        if symbol is not None:
-            self.symbols.add(symbol)
-
-
 def _single_assignment_target_name(node: ast.Assign | ast.AnnAssign) -> str | None:
     if isinstance(node, ast.Assign):
         if len(node.targets) != 1:
@@ -9279,127 +8527,3 @@ def _single_assignment_target_name(node: ast.Assign | ast.AnnAssign) -> str | No
     if isinstance(target, ast.Name):
         return target.id
     return None
-
-
-def build_class_family_index(modules: Sequence[ParsedModule]) -> ClassFamilyIndex:
-    """Build one class-family index; the caller that owns the modules holds it."""
-
-    return ClassFamilyIndexBuilder(tuple(modules)).build()
-
-
-def overlay_class_family_index(
-    base_index: ClassFamilyIndex,
-    changed_modules: tuple[ParsedModule, ...],
-) -> ClassFamilyIndex:
-    """Rebuild a class index by replacing changed-module class records."""
-
-    changed_path_texts = _resolved_module_path_texts(changed_modules)
-    unchanged_records = base_index.class_records_excluding_files(changed_path_texts)
-    return ClassFamilyIndexBuilder(
-        changed_modules,
-        base_records=unchanged_records,
-    ).build()
-
-
-@dataclass(frozen=True)
-class ClassFamilyIndexBuilder:
-    modules: tuple[ParsedModule, ...]
-    base_records: tuple[IndexedClass, ...] = ()
-
-    def build(self) -> ClassFamilyIndex:
-        class_records = tuple(
-            UniqueIdentityIndexAuthority.unambiguous_declarations_by_handle(
-                (*self.base_records, *self.module_class_records()),
-                lambda record: record.symbol,
-            ).values()
-        )
-        known_symbols = frozenset(record.symbol for record in class_records)
-        classes_by_symbol = {
-            record.symbol: self.resolved_record(record, known_symbols)
-            for record in class_records
-        }
-        authority = RegisteringMetaclassAuthority(
-            classes_by_symbol,
-            CompactRepositoryPublicExposureIndex(
-                CompactModuleClassProjectionFamily.header_core_projections(self.modules)
-            ),
-        )
-        rebuilt = frozenset(module.module_name for module in self.modules)
-        return ClassFamilyIndex(
-            classes_by_symbol={
-                symbol: (
-                    record.with_registering_metaclass(authority)
-                    if record.module_name in rebuilt
-                    else record
-                )
-                for symbol, record in classes_by_symbol.items()
-            }
-        )
-
-    def module_class_records(self) -> tuple[IndexedClass, ...]:
-        records: list[IndexedClass] = []
-        for parsed_module in self.modules:
-            indexed_class_nodes = iter_class_definitions(
-                list(parsed_module.module.body)
-            )
-            binding_snapshots = _module_nominal_binding_snapshots(
-                ModuleNominalBindingAuthority(parsed_module),
-                tuple(node.lineno for _qualname, node in indexed_class_nodes),
-                include_final=False,
-            )
-            for qualname, node in indexed_class_nodes:
-                records.append(
-                    IndexedClass.from_parsed_class(
-                        parsed_module,
-                        qualname,
-                        node,
-                        binding_snapshots[node.lineno],
-                    )
-                )
-        return tuple(records)
-
-    def resolved_record(
-        self,
-        record: IndexedClass,
-        known_symbols: frozenset[str],
-    ) -> IndexedClass:
-        parsed_module = self.parsed_module_by_name.get(record.module_name)
-        if parsed_module is None:
-            return self.base_record_with_current_bases(record, known_symbols)
-        unique_symbols_by_suffix = _unique_known_symbol_by_suffix(known_symbols)
-        return record.with_resolved_base_symbols(
-            tuple(
-                resolved
-                for reference in record.registry_facts.base_references
-                if (
-                    resolved := CompactClassFamilyIndexBuilder._resolved_bound_symbol(
-                        reference,
-                        record.module_name,
-                        known_symbols,
-                        unique_symbols_by_suffix,
-                    )
-                )
-                is not None
-            )
-        )
-
-    @cached_property
-    def parsed_module_by_name(self) -> dict[str, ParsedModule]:
-        return {module.module_name: module for module in self.modules}
-
-    @staticmethod
-    def base_record_with_current_bases(
-        record: IndexedClass,
-        known_symbols: frozenset[str],
-    ) -> IndexedClass:
-        return record.with_resolved_base_symbols(
-            tuple(
-                base_symbol
-                for base_symbol in record.resolved_base_symbols
-                if base_symbol in known_symbols
-            )
-        )
-
-
-def _resolved_module_path_texts(modules: tuple[ParsedModule, ...]) -> frozenset[str]:
-    return frozenset(module.resolved_file_path for module in modules)
