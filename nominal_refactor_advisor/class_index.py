@@ -8305,12 +8305,27 @@ class InstalledClassDeclarations:
         return projection
 
     @classmethod
-    def declaration(cls, qualified_name: str) -> CompactIndexedClass | None:
-        """The installed class a qualified name reaches, following re-exports."""
+    def declaration(
+        cls,
+        qualified_name: str,
+        scan: CompactRepositoryPublicExposureIndex,
+    ) -> CompactIndexedClass | None:
+        """The class a qualified name reaches, following re-exports.
 
+        A module the scan holds is read from the scan, never from an installed
+        copy: the installed bytes of a scanned package can be another checkout
+        of it. A module the scan holds more than once is not known. Only a
+        module outside the scan is read from its installed source.
+        """
+
+        modules = scan.module_projection_multiplicity
         for _hop in range(cls.MAX_REEXPORTS):
             module_name, _dot, name = qualified_name.rpartition(".")
-            projection = cls.module(module_name) if module_name else None
+            if module_name in modules.ambiguous_handles:
+                return None
+            projection = modules.unambiguous_declarations_by_handle.get(module_name) or (
+                cls.module(module_name) if module_name else None
+            )
             if projection is None:
                 return None
             for declared in projection.classes:
@@ -8472,9 +8487,8 @@ class RegisteringMetaclassAuthority(Generic[ClassDeclarationT]):
         qualified_name = reference.settled_qualified_name(self, module_name)
         if qualified_name is None:
             return None
-        return self.scanned.get(
-            qualified_name
-        ) or InstalledClassDeclarations.declaration(qualified_name)
+        found = InstalledClassDeclarations.declaration(qualified_name, self.exposure)
+        return None if found is None else self.scanned.get(found.symbol, found)
 
     def star_settled_name(
         self, reference: CompactNominalReference, module_name: str
