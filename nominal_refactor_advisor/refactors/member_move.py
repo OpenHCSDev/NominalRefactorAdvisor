@@ -285,6 +285,14 @@ class MovedMethod:
         graph = snapshot.module_import_graph
         imports: list[ModuleImportMutation] = []
         for name in sorted(self.free_names()):
+            if name in destination_names:
+                if _binding(snapshot, destination_path, name) != _binding(
+                    snapshot, self.source_class.file_path, name,
+                ):
+                    raise ValueError(
+                        f"{self.name!r} reads {name!r}, which {destination_path} binds to something else"
+                    )
+                continue
             statement = next(
                 (
                     statement for statement in source_module.body
@@ -297,10 +305,6 @@ class MovedMethod:
                 alias = next(alias for alias in statement.names if (alias.asname or alias.name) == name)
                 spelled = alias.name if alias.asname is None else f"{alias.name} as {alias.asname}"
                 import_source = f"from {statement.module} import {spelled}\n"
-            elif name in destination_names:
-                raise ValueError(
-                    f"{self.name!r} reads {name!r}, which {destination_path} binds to something else"
-                )
             else:
                 import_source = graph.required_import_source(
                     importing_file_path=destination_path,
@@ -775,6 +779,28 @@ def _imported_file(snapshot: CodemodSourceSnapshot, file_path: str, statement: a
     return provider.file_path
 
 
+def _binding(snapshot: CodemodSourceSnapshot, file_path: str, name: str) -> tuple[str, str] | None:
+    """The declaration a module-level name resolves to: the module and name it imports or
+    declares, so two modules binding one object by different statements, relative or absolute,
+    compare equal."""
+
+    source_file = snapshot.module_import_graph.source_file_for_path(file_path)
+    if source_file is None:
+        raise ValueError(f"{file_path} is outside the scan")
+    identity = source_file.module_path_identity
+    for statement in snapshot.module_nodes_by_file_path[file_path].body:
+        if isinstance(statement, ast.ImportFrom):
+            for alias in statement.names:
+                if (alias.asname or alias.name) == name:
+                    module = identity.resolve_import_from_module(
+                        imported_module=statement.module, level=statement.level,
+                    )
+                    return str(module), alias.name
+        elif isinstance(statement, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)) and statement.name == name:
+            return str(snapshot.module_import_graph.module_name_for_file_path(file_path)), name
+    return None
+
+
 def _enclosing_class(
     snapshot: CodemodSourceSnapshot, file_path: str, node: ast.AST, parents: dict[ast.AST, ast.AST],
 ) -> str | None:
@@ -797,8 +823,30 @@ def _enclosing_class(
 
 
 @dataclass(frozen=True)
+class MethodReference:
+    """One attribute reference by the method's name, called or not, before its receiver is typed."""
+
+    file_path: str
+    attribute: ast.Attribute
+    call: ast.Call | None
+
+    @property
+    def where(self) -> str:
+        return f"{self.file_path}:{self.attribute.lineno}"
+
+    def answered(self, moved: MovedMethod, binding: ReceiverBinding) -> MethodCall:
+        """The reference as a call the moved method answers: one that is not a call would lose
+        the method, and the source shape may refuse the binding."""
+
+        if self.call is None:
+            raise ValueError(f"{self.where} uses {moved.name!r} other than by calling it")
+        moved.source.admits(binding, self.where)
+        return MethodCall(self.file_path, self.call, self.attribute)
+
+
+@dataclass(frozen=True)
 class MethodCall:
-    """One call by the method's name, and the receiver it is called on."""
+    """One call the moved method answers, and the receiver it is called on."""
 
     file_path: str
     call: ast.Call
@@ -807,6 +855,18 @@ class MethodCall:
     @property
     def where(self) -> str:
         return f"{self.file_path}:{self.call.lineno}"
+
+
+_DYNAMIC_ACCESS = frozenset({"getattr", "hasattr", "setattr", "delattr"})
+
+
+def _dynamic_access(node: ast.AST, name: str) -> bool:
+    """Whether a node reaches an attribute of this name by a string, past any receiver typing."""
+
+    return (
+        isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id in _DYNAMIC_ACCESS
+        and len(node.args) > 1 and isinstance(node.args[1], ast.Constant) and node.args[1].value == name
+    )
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -899,7 +959,7 @@ class MoveMethodToClassOperation(RepositorySourceReprovedOperation):
 
         typing = snapshot.declared_receiver_typing
         answering: list[MethodCall] = []
-        undeclared: dict[ReceiverSpan, MethodCall] = {}
+        undeclared: dict[ReceiverSpan, MethodReference] = {}
         for parsed in snapshot.parsed_modules:
             if moved.name not in parsed.source:
                 continue
@@ -910,33 +970,34 @@ class MoveMethodToClassOperation(RepositorySourceReprovedOperation):
             resolver = ProbeOwnerResolver.of(parsed)
             for node in ast.walk(parsed.module):
                 where = f"{parsed.file_path}:{getattr(node, 'lineno', 0)}"
-                if isinstance(node, ast.Constant) and node.value == moved.name:
-                    raise ValueError(f"{where} names {moved.name!r} in a string")
+                if _dynamic_access(node, moved.name):
+                    raise ValueError(f"{where} reaches {moved.name!r} by a string")
                 if node is moved.method or not (
                     isinstance(node, ast.Attribute) and node.attr == moved.name
                 ):
                     continue
-                call = parents.get(node)
-                if not (isinstance(call, ast.Call) and call.func is node):
-                    raise ValueError(f"{where} uses {moved.name!r} other than by calling it")
+                parent = parents.get(node)
+                site = MethodReference(
+                    parsed.file_path, node,
+                    parent if isinstance(parent, ast.Call) and parent.func is node else None,
+                )
+                enclosing = _enclosing_class(snapshot, parsed.file_path, node, parents)
                 if isinstance(node.value, ast.Call) and isinstance(node.value.func, ast.Name) and (
                     node.value.func.id == "super"
                 ):
-                    raise ValueError(f"{where} calls {moved.name!r} through super()")
-                site = MethodCall(parsed.file_path, call, node)
-                enclosing = _enclosing_class(snapshot, parsed.file_path, node, parents)
+                    if enclosing in moved.family:
+                        raise ValueError(f"{where} reaches {moved.name!r} through super()")
+                    continue
                 bound = moved.source.bound_class(node.value, parsed.file_path, enclosing)
                 if bound is not None:
-                    moved.source.admits(bound, site.where)
-                    answering.append(site)
+                    answering.append(site.answered(moved, bound))
                     continue
                 owner = resolver.owner(node.value).resolved(typing)
                 spans = owner.type_checker_spans()
                 if spans:
                     undeclared[spans[0]] = site
                 elif moved.answers(tuple(getattr(owner, "class_symbols", tuple)()), where):
-                    moved.source.admits(ReceiverBinding(moved.symbol), site.where)
-                    answering.append(site)
+                    answering.append(site.answered(moved, ReceiverBinding(moved.symbol)))
         if undeclared:
             with TypeCheckerSession.session(SourceTexts(snapshot.parsed_modules)) as session:
                 answers = session.receiver_types(undeclared)
@@ -945,8 +1006,7 @@ class MoveMethodToClassOperation(RepositorySourceReprovedOperation):
                 if not isinstance(answer, InferredReceiverType):
                     raise ValueError(f"{site.where}: the type checker gives no type for the receiver")
                 if moved.answers(answer.classes, site.where):
-                    moved.source.admits(ReceiverBinding(moved.symbol), site.where)
-                    answering.append(site)
+                    answering.append(site.answered(moved, ReceiverBinding(moved.symbol)))
         nested = [
             site for site in answering
             for other in answering
