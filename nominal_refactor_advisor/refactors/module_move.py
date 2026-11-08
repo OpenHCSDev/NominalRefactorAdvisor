@@ -13,8 +13,10 @@ from collections.abc import (
 )
 from dataclasses import dataclass
 from itertools import product
-from typing import ClassVar
+from typing import ClassVar, cast
 
+from ..ast_projection import ExpressionReference
+from ..declared_family import ForeignAdapter
 from ..ast_tools import ModuleAnnotationEvaluationMode, ParsedModule
 from ..module_node_index import ModuleNodeIndex
 from ..codemod_import_bindings import FromModuleImportBindingIdentity
@@ -2357,71 +2359,224 @@ class _GluedModuleName:
         cls, index: ModuleNodeIndex, node: ast.AST, name: str
     ) -> tuple[ast.Constant, ...] | None:
         """The string literals `name` takes where `node` reads it, or None when
-        its binding is not a parametrize value or a literal loop iterable."""
+        the nearest binding is not a parametrize value or a literal iterable."""
 
         while (node := index.parents.get(node)) is not None:
-            match node:
-                case ast.For(target=ast.Name(id=target), iter=iterable) if target == name:
-                    return cls._literals(iterable)
-                case ast.ListComp() | ast.SetComp() | ast.GeneratorExp() | ast.DictComp():
-                    for generator in node.generators:
-                        match generator.target:
-                            case ast.Name(id=target) if target == name:
-                                return cls._literals(generator.iter)
-                case ast.Lambda(args=arguments) if name in {a.arg for a in arguments.args}:
-                    return None
-                case ast.FunctionDef(args=arguments) | ast.AsyncFunctionDef(
-                    args=arguments
-                ) if name in {argument.arg for argument in arguments.args}:
-                    for decorator in node.decorator_list:
-                        literals = cls._parametrized(decorator, name)
-                        if literals is not None:
-                            return literals
-                    return None
+            binding = _NameBinding.decoded(node)
+            if binding.binds(name):
+                return binding.literals(name)
         return None
 
-    @classmethod
-    def _parametrized(cls, decorator: ast.expr, name: str) -> tuple[ast.Constant, ...] | None:
-        match decorator:
-            case ast.Call(
-                func=ast.Attribute(attr="parametrize"),
-                args=[ast.Constant(value=str(argnames)), ast.Tuple(elts=rows) | ast.List(elts=rows), *_],
-            ):
-                names = [part.strip() for part in argnames.split(",")]
-            case _:
-                return None
-        if name not in names:
-            return None
-        column = names.index(name)
-        cells: list[ast.expr] = []
-        for row in rows:
-            match row:
-                case ast.Call(func=ast.Attribute(attr="param"), args=values):
-                    pass
-                case ast.Tuple(elts=values) | ast.List(elts=values) if len(names) > 1:
-                    pass
-                case _:
-                    values = [row]
-            if len(values) <= column:
-                return None
-            cells.append(values[column])
-        return cls._literals(ast.Tuple(elts=cells))
 
-    @staticmethod
-    def _literals(iterable: ast.expr) -> tuple[ast.Constant, ...] | None:
-        match iterable:
-            case ast.Tuple(elts=elements) | ast.List(elts=elements) | ast.Set(elts=elements):
-                pass
-            case _:
-                return None
+class _NameBinding(ForeignAdapter):
+    """An enclosing node, asked whether it binds a name and to which literals."""
+
+    __registry_key__ = "adapts"
+
+    @classmethod
+    def decoded(cls, node: object) -> _NameBinding:
+        """Total: `_NoBinding` adapts `object`."""
+
+        return cast(_NameBinding, super().decoded(node))
+
+    def binds(self, name: str) -> bool:
+        return False
+
+    def literals(self, name: str) -> tuple[ast.Constant, ...] | None:
+        return None
+
+
+class _NoBinding(_NameBinding):
+    adapts = object
+
+
+class _ForBinding(_NameBinding):
+    """`for name in (...)`."""
+
+    adapts = ast.For
+
+    def binds(self, name: str) -> bool:
+        return ExpressionReference.decoded(self.node.target).identifier == name
+
+    def literals(self, name: str) -> tuple[ast.Constant, ...] | None:
+        return _LiteralSequence.decoded(self.node.iter).literals
+
+
+class _ComprehensionBinding(_NameBinding):
+    """`[... for name in (...)]`: the generator that binds the name."""
+
+    adapts = ast.ListComp
+
+    def _generator(self, name: str) -> ast.comprehension | None:
+        return next(
+            (
+                generator
+                for generator in self.node.generators
+                if ExpressionReference.decoded(generator.target).identifier == name
+            ),
+            None,
+        )
+
+    def binds(self, name: str) -> bool:
+        return self._generator(name) is not None
+
+    def literals(self, name: str) -> tuple[ast.Constant, ...] | None:
+        generator = self._generator(name)
+        return None if generator is None else _LiteralSequence.decoded(generator.iter).literals
+
+
+class _SetComprehensionBinding(_ComprehensionBinding):
+    adapts = ast.SetComp
+
+
+class _GeneratorBinding(_ComprehensionBinding):
+    adapts = ast.GeneratorExp
+
+
+class _DictComprehensionBinding(_ComprehensionBinding):
+    adapts = ast.DictComp
+
+
+class _LambdaBinding(_NameBinding):
+    """A lambda parameter: bound to whatever a caller passes, never traced."""
+
+    adapts = ast.Lambda
+
+    def binds(self, name: str) -> bool:
+        return name in {argument.arg for argument in self.node.args.args}
+
+
+class _FunctionBinding(_LambdaBinding):
+    """A function parameter: traced through a `pytest.mark.parametrize` decorator."""
+
+    adapts = ast.FunctionDef
+
+    def literals(self, name: str) -> tuple[ast.Constant, ...] | None:
+        return next(
+            (
+                literals
+                for decorator in self.node.decorator_list
+                for literals in (_parametrized(decorator, name),)
+                if literals is not None
+            ),
+            None,
+        )
+
+
+class _AsyncFunctionBinding(_FunctionBinding):
+    adapts = ast.AsyncFunctionDef
+
+
+def _parametrized(decorator: ast.expr, name: str) -> tuple[ast.Constant, ...] | None:
+    match decorator:
+        case ast.Call(
+            func=ast.Attribute(attr="parametrize"),
+            args=[ast.Constant(value=str(argnames)), rows_node, *_],
+        ):
+            names = [part.strip() for part in argnames.split(",")]
+        case _:
+            return None
+    rows = _LiteralSequence.decoded(rows_node).elements
+    if name not in names or rows is None:
+        return None
+    column = names.index(name)
+    cells = tuple(_ParametrizeRow.decoded(row).cells(len(names)) for row in rows)
+    if any(len(row_cells) <= column for row_cells in cells):
+        return None
+    return _LiteralSequence(ast.Tuple(elts=[row_cells[column] for row_cells in cells])).literals
+
+
+class _ParametrizeRow(ForeignAdapter):
+    """One row of a parametrize table, read as its cells."""
+
+    __registry_key__ = "adapts"
+
+    @classmethod
+    def decoded(cls, node: object) -> _ParametrizeRow:
+        """Total: `_ScalarRow` adapts `object`."""
+
+        return cast(_ParametrizeRow, super().decoded(node))
+
+    def cells(self, width: int) -> tuple[ast.expr, ...]:
+        return (self.node,)
+
+
+class _ScalarRow(_ParametrizeRow):
+    adapts = object
+
+
+class _ParamRow(_ParametrizeRow):
+    """`pytest.param(a, b, id=...)`."""
+
+    adapts = ast.Call
+
+    def cells(self, width: int) -> tuple[ast.expr, ...]:
+        return tuple(self.node.args)
+
+
+class _TupleRow(_ParametrizeRow):
+    """`(a, b)` for two argnames; a single argname takes the tuple itself."""
+
+    adapts = ast.Tuple
+
+    def cells(self, width: int) -> tuple[ast.expr, ...]:
+        return tuple(self.node.elts) if width > 1 else (self.node,)
+
+
+class _ListRow(_TupleRow):
+    adapts = ast.List
+
+
+class _LiteralSequence(ForeignAdapter):
+    """An expression read as a literal sequence of strings."""
+
+    __registry_key__ = "adapts"
+
+    @classmethod
+    def decoded(cls, node: object) -> _LiteralSequence:
+        """Total: `_OpaqueSequence` adapts `object`."""
+
+        return cast(_LiteralSequence, super().decoded(node))
+
+    @property
+    def elements(self) -> tuple[ast.expr, ...] | None:
+        return tuple(self.node.elts)
+
+    @property
+    def literals(self) -> tuple[ast.Constant, ...] | None:
+        """Every element when all are string constants, else None."""
+
+        elements = self.elements
+        if elements is None:
+            return None
         literals: list[ast.Constant] = []
-        for element in elements:
-            match element:
+        for node in elements:
+            match node:
                 case ast.Constant(value=str()):
-                    literals.append(element)
+                    literals.append(node)
                 case _:
                     return None
         return tuple(literals)
+
+
+class _TupleSequence(_LiteralSequence):
+    adapts = ast.Tuple
+
+
+class _ListSequence(_LiteralSequence):
+    adapts = ast.List
+
+
+class _SetSequence(_LiteralSequence):
+    adapts = ast.Set
+
+
+class _OpaqueSequence(_LiteralSequence):
+    adapts = object
+
+    @property
+    def elements(self) -> tuple[ast.expr, ...] | None:
+        return None
 
 
 @dataclass(frozen=True)
