@@ -2532,9 +2532,13 @@ class ExecutableRecipeEvaluation(DeclaredRecipeEvaluation):
             )
             reports = () if authority_report is None else (authority_report,)
         else:
-            reports = self.executable_recipe.preflight_reports(
-                self.executable_recipe.rewrite_context(context)
-            )
+            try:
+                rewrite_context = self.executable_recipe.rewrite_context(context)
+            except CodemodOperationPreflightError as error:
+                return self.rejected_by_preflight(
+                    CodemodPlanPreflightReport((error.report,))
+                )
+            reports = self.executable_recipe.preflight_reports(rewrite_context)
         preflight = CodemodPlanPreflightReport(reports)
         if preflight.is_clean:
             return self

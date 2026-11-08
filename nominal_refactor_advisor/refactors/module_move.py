@@ -1934,13 +1934,15 @@ class NewModuleSymbolMoveOperationABC(ModuleSymbolMoveOperation, ABC):
         self,
         context: CodemodSelectorContext,
     ) -> tuple[SourceFileCreation, ...]:
-        return (
-            SourceFileCreation.from_operation(
-                self,
-                requested_path=self.destination_path,
-                source_index=context.source_index,
-                source=self.initial_destination_source(context),
-            ),
+        return self.required_reproof(
+            lambda: (
+                SourceFileCreation.from_operation(
+                    self,
+                    requested_path=self.destination_path,
+                    source_index=context.source_index,
+                    source=self.initial_destination_source(context),
+                ),
+            )
         )
 
     def initial_destination_source(self, context: CodemodSelectorContext) -> str:
