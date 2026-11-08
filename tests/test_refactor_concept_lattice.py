@@ -38,6 +38,10 @@ from nominal_refactor_advisor.refactors.autoregister import (
     ManualClassRegistrationFindingRecipeSynthesizer,
     RegistrationSemanticMirrorRecipeStrategy,
 )
+from nominal_refactor_advisor.refactors.class_family_collection import (
+    ClassFamilyCollectionSemanticMirrorRecipeBuilder,
+    DeriveClassFamilyCollectionOperation,
+)
 from nominal_refactor_advisor.refactors.dispatch_polymorphism import (
     DispatchToPolymorphismOperation,
     NumericLiteralDispatchFindingRecipeSynthesizer,
@@ -65,7 +69,7 @@ EXPECTED_EXECUTABLE_CONCEPTS = {
     RegistrationSemanticMirrorRecipeStrategy: (
         codemod.AutoRegisterClassRegistryConcept
     ),
-    codemod.ClassFamilyCollectionSemanticMirrorRecipeBuilder: (
+    ClassFamilyCollectionSemanticMirrorRecipeBuilder: (
         codemod.ClassFamilyAuthorityConcept
     ),
     codemod.ExactLeafMethodAncestorPromotionFindingRecipeSynthesizer: (
@@ -154,7 +158,7 @@ EXPECTED_MAPPING_DECLARATIONS = frozenset(
 EXPECTED_REGISTRATION_DECLARATIONS = frozenset(
     {
         AutoregisterInstanceViewRecipeBuilder,
-        codemod.ClassFamilyCollectionSemanticMirrorRecipeBuilder,
+        ClassFamilyCollectionSemanticMirrorRecipeBuilder,
     }
 )
 
@@ -628,7 +632,7 @@ def test_source_derived_synthesized_operations_share_one_reproof_contract() -> N
         codemod.DeleteInheritedAutoRegisterConfigurationOperation,
         DeriveAutoregisterInstanceViewOperation,
         DeriveAutoRegisterMroOrderingOperation,
-        codemod.DeriveClassFamilyCollectionOperation,
+        DeriveClassFamilyCollectionOperation,
         codemod.DeriveDataclassConstructorProjectionOperation,
         codemod.DeriveDataclassFieldNameCollectionProjectionOperation,
         codemod.DeriveDataclassKeyValueSequenceProjectionOperation,

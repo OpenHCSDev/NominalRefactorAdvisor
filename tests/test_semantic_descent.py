@@ -17,7 +17,6 @@ from nominal_refactor_advisor.codemod import (
     CodemodPlanDocument,
     CodemodPreflightStatus,
     CodemodSourceSnapshot,
-    DeriveClassFamilyCollectionOperation,
     DeriveDataclassConstructorProjectionOperation,
     DeriveDataclassFieldNameCollectionProjectionOperation,
     DeriveDataclassKeyValueSequenceProjectionOperation,
@@ -48,6 +47,7 @@ from nominal_refactor_advisor.models import (
 )
 from nominal_refactor_advisor.name_algebra import CLASS_NAME_ALGEBRA
 from nominal_refactor_advisor.patterns import PatternId
+from nominal_refactor_advisor.refactors.class_family_collection import DeriveClassFamilyCollectionOperation
 from nominal_refactor_advisor.refactors.enum_subset import DeriveEnumSubsetOperation
 from nominal_refactor_advisor.semantic_descent import (
     AuthorityClaim,
