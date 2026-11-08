@@ -2369,33 +2369,23 @@ class _MethodFamilyMethodPlan(ClassFamilyWitnessCarrier):
         ).items():
             if len(indexed_classes) < 2:
                 continue
-            method_names = sorted_tuple(
-                {
-                    method_name
-                    for indexed_class in indexed_classes
-                    for method_name in methods_by_class.get(
-                        indexed_class.symbol,
-                        (),
-                    )
-                },
-            )
-            for method_name in method_names:
-                class_methods = tuple(
-                    (indexed_class, method)
-                    for indexed_class in indexed_classes
-                    if (
-                        method := methods_by_class.get(
-                            indexed_class.symbol,
-                            {},
-                        ).get(method_name)
-                    )
-                    is not None
-                )
+            # One pass over the family, in its order: each method name gets
+            # the (class, method) pairs that declare it, without rescanning
+            # every class once per name.
+            class_methods_by_name: dict[
+                str, list[tuple[CompactIndexedClass, CompactClassMethod]]
+            ] = defaultdict(list)
+            for indexed_class in indexed_classes:
+                for method_name, method in methods_by_class.get(
+                    indexed_class.symbol, {}
+                ).items():
+                    class_methods_by_name[method_name].append((indexed_class, method))
+            for method_name in sorted(class_methods_by_name):
                 method_plan = cls.from_class_methods(
                     base_symbol,
                     base_name,
                     method_name,
-                    class_methods,
+                    tuple(class_methods_by_name[method_name]),
                 )
                 if method_plan is not None:
                     method_plans.append(method_plan)
