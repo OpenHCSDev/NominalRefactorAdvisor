@@ -1689,6 +1689,17 @@ class ModuleSymbolMoveOperation(RepositorySourceReprovedOperation, ABC):
         self,
         context: CodemodSelectorContext,
     ) -> SourceTopLevelSymbolClosureMovePlan:
+        """The move's plan for this source state, built once: preflight reads its
+        dependency report and the edits read its source edits."""
+        return context.retained_operation_derivation(
+            (self, ModuleSymbolMoveOperation.move_plan),
+            lambda: self._derived_move_plan(context),
+        )
+
+    def _derived_move_plan(
+        self,
+        context: CodemodSelectorContext,
+    ) -> SourceTopLevelSymbolClosureMovePlan:
         source_path = self.required_source_path(context, self.operation_key())
         destination_path = SourcePathResolutionAuthority.from_source_index(
             self.destination_path,

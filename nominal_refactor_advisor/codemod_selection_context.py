@@ -8,6 +8,8 @@ from abc import (
     abstractmethod,
 )
 from collections.abc import (
+    Callable,
+    Hashable,
     Iterable,
     Mapping,
 )
@@ -91,6 +93,25 @@ class CodemodSelectorContext(IndexedSourceAuthority, ABC):
     _module_lexical_dependency_projections_by_file_path: dict[
         str, ModuleLexicalDependencyProjection
     ] = field(default_factory=dict, init=False, repr=False, compare=False)
+
+    _operation_derivations: dict[Hashable, object] = field(
+        default_factory=dict,
+        init=False,
+        repr=False,
+        compare=False,
+    )
+
+    def retained_operation_derivation[DerivedT](
+        self,
+        key: Hashable,
+        derive: Callable[[], DerivedT],
+    ) -> DerivedT:
+        """One derivation of an operation from this source state, however many
+        of its phases (preflight, edits) read it. A derivation that raises is
+        not retained, so each phase reports the refusal itself."""
+        if key not in self._operation_derivations:
+            self._operation_derivations[key] = derive()
+        return self._operation_derivations[key]  # type: ignore[return-value]
 
     def module_lexical_dependency_projection_for_source_path(
         self,
