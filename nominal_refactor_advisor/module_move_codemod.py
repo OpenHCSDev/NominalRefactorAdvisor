@@ -237,33 +237,16 @@ class ModuleNameRedirect:
                         != source_module_name
                     ):
                         continue
-                    named_aliases = tuple(
-                        alias for alias in statement.names if alias.name in moved_names
-                    )
-                    if named_aliases:
-                        edits.append(
-                            ModuleImportMutation.remove_names(
-                                file_path=consumer_path,
-                                module_name=ImportFromModuleName.from_node(
-                                    statement
-                                ).source,
-                                names=(alias.name for alias in named_aliases),
-                                scope=scope,
-                            )
-                        )
                     edits.extend(
                         self._owner_imports(
                             import_graph,
                             consumer_path,
                             scope,
-                            (
-                                *named_aliases,
-                                *(
-                                    ast.alias(name=name, asname=name)
-                                    for alias in statement.names
-                                    if alias.name == "*"
-                                    for name in star_exported.required(consumer_path)
-                                ),
+                            tuple(
+                                ast.alias(name=name, asname=name)
+                                for alias in statement.names
+                                if alias.name == "*"
+                                for name in star_exported.required(consumer_path)
                             ),
                         )
                     )
@@ -299,13 +282,26 @@ class ModuleNameRedirect:
                         tuple((node, name) for node, name, _source in module_objects),
                     )
                 )
-            local_imports = self._local_import_replacements(
+            local_imports = self._in_place_import_replacements(
                 import_graph,
                 module,
                 identity,
                 consumer_path,
                 source_module_name,
             )
+            import_strings = self._import_string_replacements(
+                import_graph,
+                module,
+                context.sources_by_file_path[consumer_path],
+                source_module_name,
+            )
+            if import_strings:
+                edits.append(
+                    SourceTextGeometry(context.sources_by_file_path[consumer_path]).nominal_edit(
+                        file_path=consumer_path,
+                        replacements=import_strings,
+                    )
+                )
             if local_imports:
                 geometry = SourceTextGeometry(context.sources_by_file_path[consumer_path])
                 edits.append(
@@ -324,7 +320,7 @@ class ModuleNameRedirect:
                 )
         return tuple(edits)
 
-    def _local_import_replacements(
+    def _in_place_import_replacements(
         self,
         import_graph: SourceModuleImportGraph,
         module: ast.Module,
@@ -332,19 +328,20 @@ class ModuleNameRedirect:
         consumer_path: str,
         source_module_name: str,
     ) -> tuple[tuple[ast.ImportFrom, str], ...]:
-        """Imports of moved names inside a function or class body, each rewritten in
-        place: one statement per owner, plus one for the names that stay."""
+        """Every `from source import ...` naming moved names, at module level, under
+        `TYPE_CHECKING` or inside a body, rewritten where it stands: one statement
+        per owner, plus one for the names that stay. The reader's imports keep
+        their place and grouping."""
 
-        scoped = frozenset(
-            id(statement)
+        scope_by_statement = {
+            id(statement): scope
             for scope in ModuleImportScope
             for statement in scope.import_statements(module)
-        )
+        }
         replacements: list[tuple[ast.ImportFrom, str]] = []
         for statement in ast.walk(module):
             if (
                 not isinstance(statement, ast.ImportFrom)
-                or id(statement) in scoped
                 or identity.resolve_import_from_module(
                     imported_module=statement.module,
                     level=statement.level,
@@ -358,9 +355,10 @@ class ModuleNameRedirect:
             if any(alias.name == "*" for alias in statement.names):
                 raise ValueError(f"{consumer_path!r}:{statement.lineno} star-imports locally")
             kept = tuple(alias for alias in statement.names if alias.name not in self.destinations)
+            scope = scope_by_statement.get(id(statement), ModuleImportScope.RUNTIME)
             lines = [
                 ImportFromSource(
-                    module_name=ModuleImportScope.RUNTIME.required_module_reference(
+                    module_name=scope.required_module_reference(
                         import_graph,
                         importing_file_path=consumer_path,
                         imported_file_path=destination_path,
@@ -382,6 +380,57 @@ class ModuleNameRedirect:
                 )
             replacements.append(
                 (statement, ("\n" + " " * statement.col_offset).join(lines))
+            )
+        return tuple(replacements)
+
+    def _import_string_replacements(
+        self,
+        import_graph: SourceModuleImportGraph,
+        module: ast.Module,
+        source: str,
+        source_module_name: str,
+    ) -> tuple[SourceTextSpanReplacement, ...]:
+        """A string literal that is exactly one `from <source> import ...`
+        statement naming moved names (a plan's `import_source`, say) is a reader
+        written as text: it names each owner instead. A string that only mentions
+        the module is prose, and a dissolve's mention rule owns it."""
+
+        geometry = SourceTextGeometry(source)
+        replacements: list[SourceTextSpanReplacement] = []
+        for node in ast.walk(module):
+            if not (isinstance(node, ast.Constant) and isinstance(node.value, str)):
+                continue
+            statement = _SingleImportFromText.of(node.value)
+            if statement is None or statement.level or statement.module != source_module_name:
+                continue
+            moved = tuple(alias for alias in statement.names if alias.name in self.destinations)
+            if not moved:
+                continue
+            kept = tuple(alias for alias in statement.names if alias.name not in self.destinations)
+            lines = [
+                ImportFromSource(
+                    module_name=import_graph.module_name_for_file_path(destination_path),
+                    aliases=tuple(
+                        alias for alias in moved if self.destinations[alias.name] == destination_path
+                    ),
+                ).source.strip()
+                for destination_path in sorted({self.destinations[alias.name] for alias in moved})
+            ]
+            if kept:
+                lines.append(ImportFromSource(module_name=source_module_name, aliases=kept).source.strip())
+            start, end = geometry.required_node_offsets(node)
+            quote = source[start]
+            text = "\n".join(lines)
+            if quote not in "\"'" or quote in text or "\n" in text:
+                text_literal = repr(text)
+            else:
+                text_literal = f"{quote}{text}{quote}"
+            replacements.append(
+                SourceTextSpanReplacement.from_offsets(
+                    start_offset=start,
+                    end_offset=end,
+                    replacement_source=text_literal,
+                )
             )
         return tuple(replacements)
 
@@ -498,6 +547,22 @@ class _StarExportedNames:
                 f"not decide {self.unresolved!r}"
             )
         return self.names
+
+
+class _SingleImportFromText:
+    """The `from ... import ...` statement a string's whole text is, if it is one."""
+
+    @staticmethod
+    def of(text: str) -> ast.ImportFrom | None:
+        if "import" not in text:
+            return None
+        try:
+            parsed = ast.parse(text)
+        except SyntaxError:
+            return None
+        if len(parsed.body) != 1 or not isinstance(parsed.body[0], ast.ImportFrom):
+            return None
+        return parsed.body[0]
 
 
 @dataclass(frozen=True)
@@ -1303,6 +1368,19 @@ class SourceTopLevelSymbolClosureMovePlan(SourceTopLevelSymbolClosureMoveCarrier
 
 
 @dataclass(frozen=True, kw_only=True)
+class RetainedCallOperation(RepositorySourceReprovedOperation, ABC):
+    """A module operation that rewrites strings naming the module, except under
+    a call named in `retained_calls`: those strings record the module's old
+    identity on purpose (evidence that the path is gone, such as PathsAbsent)
+    inside an otherwise live file, and stay as written."""
+
+    retained_calls: tuple[str, ...] = codemod_payload_field(
+        StringArrayPayloadValueCodec(),
+        default=(),
+    )
+
+
+@dataclass(frozen=True, kw_only=True)
 class ModuleSymbolMoveOperation(RepositorySourceReprovedOperation, ABC):
     """Repository-proved destination contract for module-symbol moves."""
 
@@ -2023,26 +2101,20 @@ class DissolvedModuleReport(DataclassJsonReport):
 
 
 @dataclass(frozen=True, kw_only=True)
-class DissolveModuleOperation(RepositorySourceReprovedOperation):
+class DissolveModuleOperation(RetainedCallOperation):
     """Delete a module that declares nothing: every name it still binds is
     imported by its consumers from the module that declares it (through
     `ModuleNameRedirect`), every binding of the module object that only read
     those names is removed, and every string naming the module follows it.
 
     `successor_path` names the module a string naming the dissolved module now
-    means; without one such a string is refused. Strings under a call named in
-    `retained_calls` record the module's old identity on purpose (evidence that
-    the path is gone, such as PathsAbsent) and stay as written. A consumer that binds the
+    means; without one such a string is refused. A consumer that binds the
     module for its import side effect, or imports a name the module took from
     outside the index, is refused: it has no owner to follow."""
 
     successor_path: str | None = codemod_payload_field(
         OptionalStringPayloadValueCodec(),
         default=None,
-    )
-    retained_calls: tuple[str, ...] = codemod_payload_field(
-        StringArrayPayloadValueCodec(),
-        default=(),
     )
 
     def source_file_deletions(
@@ -2099,13 +2171,13 @@ class DissolveModuleOperation(RepositorySourceReprovedOperation):
             ).required_path()
         )
         excluded = frozenset({source_path})
-        self._require_followable_consumers(context, source_path, source_module_name, bindings)
+        self._require_followable_consumers(context, excluded, source_module_name, bindings)
         return (
             *ModuleNameRedirect(source_path, bindings.owners).consumer_edits(
                 context,
                 excluded_paths=excluded,
             ),
-            *self._module_binding_removals(context, source_path, source_module_name),
+            *self._module_binding_removals(context, excluded, source_module_name),
             *_ModuleIdentityStrings(
                 source_path,
                 source_module_name,
@@ -2118,13 +2190,13 @@ class DissolveModuleOperation(RepositorySourceReprovedOperation):
     @staticmethod
     def _require_followable_consumers(
         context: CodemodSelectorContext,
-        source_path: str,
+        excluded_paths: frozenset[str],
         source_module_name: str,
         bindings: _DissolvedModuleBindings,
     ) -> None:
         for source_file in context.source_index.files:
             module = context.module_nodes_by_file_path.get(source_file.file_path)
-            if source_file.file_path == source_path or module is None:
+            if source_file.file_path in excluded_paths or module is None:
                 continue
             identity = source_file.module_path_identity
             for node in ast.walk(module):
@@ -2151,7 +2223,7 @@ class DissolveModuleOperation(RepositorySourceReprovedOperation):
     @staticmethod
     def _module_binding_removals(
         context: CodemodSelectorContext,
-        source_path: str,
+        excluded_paths: frozenset[str],
         source_module_name: str,
     ) -> Iterator[NominalSourceEdit]:
         """Remove `from pkg import source` bindings once their reads are redirected.
@@ -2163,7 +2235,7 @@ class DissolveModuleOperation(RepositorySourceReprovedOperation):
         package, _, leaf = source_module_name.rpartition(".")
         for source_file in context.source_index.files:
             module = context.module_nodes_by_file_path.get(source_file.file_path)
-            if source_file.file_path == source_path or module is None:
+            if source_file.file_path in excluded_paths or module is None:
                 continue
             identity = source_file.module_path_identity
             scoped = {
@@ -2223,7 +2295,7 @@ class DissolveModuleOperation(RepositorySourceReprovedOperation):
 
 
 @dataclass(frozen=True, kw_only=True)
-class RetargetModuleMentionsOperation(RepositorySourceReprovedOperation):
+class RetargetModuleMentionsOperation(RetainedCallOperation):
     """Point every string mention of a module that no longer exists at its
     successor: the cleanup a dissolve does, for a module removed before the
     dissolve could see the mention (prose, embedded program text)."""
@@ -2231,10 +2303,6 @@ class RetargetModuleMentionsOperation(RepositorySourceReprovedOperation):
     retired_module_name: str = codemod_payload_field(RequiredStringPayloadValueCodec())
     retired_path: str = codemod_payload_field(RequiredStringPayloadValueCodec())
     successor_path: str = codemod_payload_field(SourcePathPayloadValueCodec())
-    retained_calls: tuple[str, ...] = codemod_payload_field(
-        StringArrayPayloadValueCodec(),
-        default=(),
-    )
 
     def preflight_reports(
         self,

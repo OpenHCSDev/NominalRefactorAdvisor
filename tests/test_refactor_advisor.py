@@ -7675,6 +7675,67 @@ def test_relocation_points_a_patch_of_a_removed_import_at_its_new_reader(
     assert imported.returncode == 0, imported.stderr
 
 
+def test_relocation_rewrites_a_source_import_where_it_stands(tmp_path: Path) -> None:
+    """A reader's `from source import ...` is rewritten in place, one statement per
+    owner: the moved name's import stays where the reader put it, not at the top."""
+
+    reader = (
+        "from __future__ import annotations\n\n\n"
+        "class Early:\n    pass\n\n\n"
+        "from pkg.source import Kept, Moved\n\nvalue = Moved.value\n"
+    )
+    for relative_path, source in {
+        "pkg/__init__.py": "",
+        "pkg/source.py": "class Kept:\n    pass\n\n\nclass Moved:\n    value = 3\n",
+        "pkg/destination.py": "",
+        "pkg/reader.py": reader,
+    }.items():
+        _write_module(tmp_path, relative_path, source)
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    operation = RelocateSymbolsToModuleOperation(
+        target=SourceRewriteTarget(file_path=(tmp_path / "pkg/source.py").as_posix()),
+        symbol_qualnames=("Moved",),
+        destination_path=(tmp_path / "pkg/destination.py").as_posix(),
+    )
+
+    simulation = RefactorRecipe("relocate-in-place").with_operation(operation).simulate(snapshot)
+
+    assert simulation.is_clean
+    assert simulation.simulation.rewritten_sources[(tmp_path / "pkg/reader.py").as_posix()] == (
+        "from __future__ import annotations\n\n\n"
+        "class Early:\n    pass\n\n\n"
+        "from .destination import Moved\nfrom pkg.source import Kept\n\nvalue = Moved.value\n"
+    )
+
+
+def test_relocation_retargets_an_import_written_as_a_string(tmp_path: Path) -> None:
+    """A plan that carries `import_source="from pkg.source import Moved"` is a
+    reader written as text and follows the move; prose naming the module does not."""
+
+    for relative_path, source in {
+        "pkg/__init__.py": "",
+        "pkg/source.py": "class Kept:\n    pass\n\n\nclass Moved:\n    value = 3\n",
+        "pkg/destination.py": "",
+        "pkg/plan.py": 'IMPORT = "from pkg.source import Moved"\n'
+        'NOTE = "Moved used to live in pkg.source"\n',
+    }.items():
+        _write_module(tmp_path, relative_path, source)
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    operation = RelocateSymbolsToModuleOperation(
+        target=SourceRewriteTarget(file_path=(tmp_path / "pkg/source.py").as_posix()),
+        symbol_qualnames=("Moved",),
+        destination_path=(tmp_path / "pkg/destination.py").as_posix(),
+    )
+
+    simulation = RefactorRecipe("relocate-import-text").with_operation(operation).simulate(snapshot)
+
+    assert simulation.is_clean
+    assert simulation.simulation.rewritten_sources[(tmp_path / "pkg/plan.py").as_posix()] == (
+        'IMPORT = "from pkg.destination import Moved"\n'
+        'NOTE = "Moved used to live in pkg.source"\n'
+    )
+
+
 def test_refactor_recipe_relocates_symbol_and_rewrites_consumers(
     tmp_path: Path,
 ) -> None:
