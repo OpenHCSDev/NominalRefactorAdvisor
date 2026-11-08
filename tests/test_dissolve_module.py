@@ -935,8 +935,8 @@ def test_a_script_entry_takes_its_locals_builtins_and_imports_with_it(tmp_path: 
 
 def test_a_script_that_runs_the_dissolved_module_by_path_or_name_follows_it(tmp_path: Path) -> None:
     """`stack/native/prepare` runs the module by path after a variable and by
-    `-m`: both follow the successor. A text file that is not an executable
-    script, and a file name with no directory, stay as written."""
+    `-m`: both follow the successor. Its comments, a text file that is not an
+    executable script, and a file name with no directory stay as written."""
     _write(tmp_path, "pyproject.toml", '[project]\nname = "pkg"\n')
     _write(tmp_path, "pkg/__init__.py", "")
     _write(tmp_path, "pkg/execution/__init__.py", "")
@@ -944,9 +944,10 @@ def test_a_script_that_runs_the_dissolved_module_by_path_or_name_follows_it(tmp_
     _write(tmp_path, "pkg/worker.py", "from .execution.worker import main\n")
     script = (
         "#!/bin/sh\n"
-        '"$python" -I "$repo_root/pkg/worker.py"\n'
+        "# pkg/worker.py builds the inputs\n"
+        '"$python" -I "$repo_root/pkg/worker.py"  # see pkg.worker\n'
         '"$python" -m pkg.worker\n'
-        "echo worker.py\n"
+        'echo "#$# worker.py"\n'
     )
     _write(tmp_path, "stack/native/prepare", script)
     (tmp_path / "stack/native/prepare").chmod(0o755)
@@ -961,9 +962,10 @@ def test_a_script_that_runs_the_dissolved_module_by_path_or_name_follows_it(tmp_
 
     assert (tmp_path / "stack/native/prepare").read_text(encoding="utf-8") == (
         "#!/bin/sh\n"
-        '"$python" -I "$repo_root/pkg/execution/worker.py"\n'
+        "# pkg/worker.py builds the inputs\n"
+        '"$python" -I "$repo_root/pkg/execution/worker.py"  # see pkg.worker\n'
         '"$python" -m pkg.execution.worker\n'
-        "echo worker.py\n"
+        'echo "#$# worker.py"\n'
     )
     assert (tmp_path / "stack/native/prepare").stat().st_mode & 0o111
     assert (tmp_path / "docs/notes.md").read_text(encoding="utf-8") == "Run pkg/worker.py by hand.\n"

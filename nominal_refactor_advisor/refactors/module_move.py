@@ -3071,6 +3071,36 @@ class _ProjectScripts:
             return script.read(2) == b"#!"
 
 
+class _ScriptCode:
+    """Offsets of a script's code: everything but its comments. A `#` starts a
+    comment at the start of a line or after whitespace, outside quotes; the
+    shebang is one."""
+
+    @staticmethod
+    def spans(source: str) -> Iterator[tuple[int, int]]:
+        start = index = 0
+        quote = ""
+        previous = "\n"
+        while index < len(source):
+            character = source[index]
+            if quote:
+                if character == "\\" and quote == '"':
+                    index += 1
+                elif character == quote:
+                    quote = ""
+            elif character in "\"'":
+                quote = character
+            elif character == "#" and previous.isspace():
+                yield start, index
+                newline = source.find("\n", index)
+                index = start = len(source) if newline < 0 else newline
+                previous = "\n"
+                continue
+            previous = character
+            index += 1
+        yield start, len(source)
+
+
 class _TomlStrings:
     """Offsets of every string's text in a TOML document: basic and literal,
     single- and multi-line, skipping comments."""
@@ -3211,14 +3241,24 @@ class _ModuleIdentityStrings:
         return tuple(edits)
 
     def script_edits(self, context: CodemodSelectorContext) -> tuple[TextFileEdit, ...]:
-        """Every mention of the module in an executable script the governing
-        projects ship: `python -m module`, or its path after `$repo_root/`."""
+        """Every mention of the module in the code of an executable script the
+        governing projects ship: `python -m module`, or its path after
+        `$repo_root/`. Comments are prose and stay as written."""
 
         manifests = _ProjectManifests.governing(context.execution_snapshot().sources_by_file_path)
         edits: list[TextFileEdit] = []
         for script in _ProjectScripts.governing(manifests):
             source = script.read_text(encoding="utf-8")
-            replacements = self.string_replacements(context, repr(script.as_posix()), source, 0)
+            replacements = tuple(
+                replacement
+                for start, end in _ScriptCode.spans(source)
+                for replacement in self.string_replacements(
+                    context,
+                    f"{script.as_posix()!r}:{source.count(chr(10), 0, start) + 1}",
+                    source[start:end],
+                    start,
+                )
+            )
             if replacements:
                 edits.append(
                     TextFileEdit(
