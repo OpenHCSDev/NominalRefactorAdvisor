@@ -32,6 +32,7 @@ from ..codemod_selector_models import SourceRewriteTarget
 from ..models import PackageDestinationMetrics, RefactorFinding, SourceLocation
 from .module_move import (
     DissolveModuleOperation,
+    RelocateSymbolsToModuleOperation,
     RelocateSymbolsToNewModuleOperation,
 )
 from ..refactor_concepts import PackageMoveConcept
@@ -44,6 +45,9 @@ _ROW = re.compile(r"^\s*\|\s*`(?P<package>[A-Za-z_][\w./]*)`\s*\|(?P<owners>[^|]
 _MODULE_FILE = re.compile(r"`(?P<name>[A-Za-z_]\w*)\.py`")
 _RENAMED_MODULE = re.compile(
     r"`(?P<name>[A-Za-z_]\w*)`\s+moves\s+to\s+`(?P<destination>[A-Za-z_][\w/]*)`"
+)
+_MERGED_MODULE = re.compile(
+    r"`(?P<name>[A-Za-z_]\w*)\.py`\s+merges\s+into\s+`(?P<target>[A-Za-z_]\w*)\.py`"
 )
 _WORD = re.compile(r"[A-Za-z_]\w*")
 
@@ -62,10 +66,17 @@ class DestinationRow:
             match["name"]: match["destination"]
             for match in _RENAMED_MODULE.finditer(self.owners)
         }
+        merged = frozenset(name for name, _target in self.module_merges())
         yield from renamed.items()
         for match in _MODULE_FILE.finditer(self.owners):
-            if match["name"] not in renamed:
+            if match["name"] not in renamed and match["name"] not in merged:
                 yield match["name"], f"{self.package}/{match['name']}"
+
+    def module_merges(self) -> Iterator[tuple[str, str]]:
+        """(flat module name, flat module whose destination it joins)."""
+
+        for match in _MERGED_MODULE.finditer(self.owners):
+            yield match["name"], match["target"]
 
     def owner_words(self) -> frozenset[str]:
         return frozenset(_WORD.findall(self.owners))
@@ -141,16 +152,38 @@ class DestinationTable:
                 stem = PurePosixPath(owners[0].file_path).stem if len(owners) == 1 else ""
                 if stem in by_stem:
                     chosen.setdefault(by_stem[stem].file_path, f"{row.package}/{stem}")
+        declared = {
+            name: destination
+            for row in self.rows
+            for name, destination in row.module_destinations()
+        }
+        packaged = {
+            ".".join(module.module_name.split(".")[1:]).replace(".", "/")
+            for module in package_modules
+        }
+        for row in self.rows:
+            for name, target in row.module_merges():
+                if name not in by_stem:
+                    continue
+                if target in by_stem:
+                    target_path = by_stem[target].file_path
+                    chosen[by_stem[name].file_path] = chosen.get(target_path, target)
+                elif declared.get(target) in packaged:
+                    chosen[by_stem[name].file_path] = declared[target]
+        destination_paths = {
+            source_path: (PurePosixPath(source_path).parent / f"{destination}.py").as_posix()
+            for source_path, destination in chosen.items()
+        }
         cluster = tuple(sorted(chosen))
+        cluster_destinations = tuple(destination_paths[path] for path in cluster)
         return tuple(
             FlatModuleDestination(
                 source_path=source_path,
-                destination_path=(
-                    PurePosixPath(source_path).parent / f"{destination}.py"
-                ).as_posix(),
+                destination_path=destination_paths[source_path],
                 cluster_paths=cluster,
+                cluster_destination_paths=cluster_destinations,
             )
-            for source_path, destination in sorted(chosen.items())
+            for source_path in cluster
         )
 
 
@@ -159,11 +192,13 @@ class FlatModuleDestination:
     source_path: str
     destination_path: str
     cluster_paths: tuple[str, ...]
+    cluster_destination_paths: tuple[str, ...]
 
     def metrics(self) -> PackageDestinationMetrics:
         return PackageDestinationMetrics(
             destination_path=self.destination_path,
             cluster_paths=self.cluster_paths,
+            cluster_destination_paths=self.cluster_destination_paths,
         )
 
 
@@ -173,6 +208,11 @@ class ClusterLayers:
 
     context: CodemodSelectorContext
     cluster_paths: tuple[str, ...]
+    cluster_destinations: tuple[str, ...]
+
+    @cached_property
+    def destinations(self) -> dict[str, str]:
+        return dict(zip(self.cluster_paths, self.cluster_destinations, strict=True))
 
     @cached_property
     def present_paths(self) -> tuple[str, ...]:
@@ -202,31 +242,86 @@ class ClusterLayers:
     def emptied(self, path: str) -> bool:
         return not set(self.declared_names(path)) - {"__all__"}
 
-    def upper_importers(self, path: str) -> tuple[str, ...]:
-        """Flat modules of the cluster that still declare names and import `path`."""
+    def imported_module_names(self, path: str) -> frozenset[str]:
+        """Every module `path` imports at any scope, function-local included: a
+        lazy import is still an edge once the two modules share a package."""
 
         graph = self.context.module_import_graph
-        module_name = graph.module_name_for_file_path(path)
+        source_file = graph.source_file_for_path(path)
+        if source_file is None:
+            return frozenset()
+        return frozenset(
+            edge
+            for node in ast.walk(self.context.module_nodes_by_file_path[path])
+            if isinstance(node, (ast.Import, ast.ImportFrom))
+            for edge in graph.statement_edges(source_file, node)
+        )
+
+    def joins(self, path: str, other: str) -> bool:
+        """Whether `path`'s code moves into the module `other` moves to."""
+
+        return self.destinations[path] == self.destinations[other]
+
+    def imports(self, importer: str, imported: str) -> bool:
+        module_name = self.context.module_import_graph.module_name_for_file_path(imported)
+        return module_name in self.imported_module_names(importer)
+
+    def upper_importers(self, path: str) -> tuple[str, ...]:
+        """Flat modules of the cluster that still declare names, import `path`
+        and keep a module of their own."""
+
         return tuple(
             other
             for other in self.present_paths
             if other != path
             and not self.emptied(other)
-            and module_name
-            in graph.import_edges_by_module.get(
-                graph.module_name_for_file_path(other) or "", frozenset()
+            and not self.joins(other, path)
+            and self.imports(other, path)
+        )
+
+    @cached_property
+    def mutual_imports(self) -> tuple[tuple[str, str], ...]:
+        """Pairs of declaring flat modules that import each other at any scope
+        and keep separate modules: no move order separates them."""
+
+        declaring = [path for path in self.present_paths if not self.emptied(path)]
+        return tuple(
+            (path, other)
+            for index, path in enumerate(declaring)
+            for other in declaring[index + 1 :]
+            if not self.joins(path, other)
+            and self.imports(path, other)
+            and self.imports(other, path)
+        )
+
+    def ready(self, path: str) -> bool:
+        """It can move now: its destination exists, it is the namesake that
+        creates it, or no other present module will."""
+
+        destination = self.destinations[path]
+        return (
+            destination in self.context.module_nodes_by_file_path
+            or PurePosixPath(destination).stem == PurePosixPath(path).stem
+            or not any(
+                other != path and self.destinations[other] == destination
+                for other in self.present_paths
             )
         )
 
     @cached_property
     def next_path(self) -> str | None:
         """The one module that moves next: an emptied module dissolves before
-        anything else relocates; otherwise the first top-layer module by path."""
+        anything else relocates; otherwise the first top-layer module by path
+        whose destination it can move into."""
 
         emptied = [path for path in self.present_paths if self.emptied(path)]
         if emptied:
             return emptied[0]
-        tops = [path for path in self.present_paths if not self.upper_importers(path)]
+        tops = [
+            path
+            for path in self.present_paths
+            if not self.upper_importers(path) and self.ready(path)
+        ]
         return tops[0] if tops else None
 
 
@@ -253,9 +348,20 @@ class PackageMoveFindingRecipeSynthesizer(
                 "a package move needs source context and its destination metrics"
             )
         source_path = evidence.file_path
-        layers = ClusterLayers(context, metrics.cluster_paths)
+        layers = ClusterLayers(
+            context, metrics.cluster_paths, metrics.cluster_destination_paths
+        )
         if source_path not in layers.present_paths:
             return self.rejected_evaluation(f"{source_path!r} is already gone")
+        if layers.mutual_imports:
+            return self.rejected_evaluation(
+                "; ".join(
+                    f"{left} and {right} import each other"
+                    for left, right in layers.mutual_imports
+                )
+                + ", so no move order keeps either importable: declare one "
+                "merging into the other (`a.py` merges into `b.py`)"
+            )
         if layers.next_path is None:
             return self.rejected_evaluation(
                 "every flat module of the table is imported by another one that "
@@ -288,7 +394,11 @@ class PackageMoveFindingRecipeSynthesizer(
                 recipe_id=f"relocate-{stem}",
                 reason="Relocate every name the flat module declares into its package.",
             ).with_operation(
-                RelocateSymbolsToNewModuleOperation(
+                (
+                    RelocateSymbolsToModuleOperation
+                    if metrics.destination_path in context.module_nodes_by_file_path
+                    else RelocateSymbolsToNewModuleOperation
+                )(
                     target=target,
                     symbol_qualnames=layers.declared_names(source_path),
                     destination_path=metrics.destination_path,

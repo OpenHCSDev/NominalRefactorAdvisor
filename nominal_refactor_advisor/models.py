@@ -482,6 +482,7 @@ class PackageDestinationMetrics(FindingMetrics):
 
     destination_path: str
     cluster_paths: tuple[str, ...]
+    cluster_destination_paths: tuple[str, ...]
 
 
 @dataclass(frozen=True)
