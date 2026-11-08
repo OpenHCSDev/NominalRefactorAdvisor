@@ -1273,7 +1273,7 @@ class SourceTopLevelSymbolClosureMovePlan(SourceTopLevelSymbolClosureMoveCarrier
             file_path=self.destination_path,
             insertion_line=insertion_line,
             inserted_lines=SourceTargetEditor.source_lines(
-                self.destination_source(destination_source, insertion_line)
+                self.destination_source(destination_source, insertion_line, context)
             ),
             leading_boundary=leading_boundary,
             rationale=self.rationale
@@ -1283,9 +1283,15 @@ class SourceTopLevelSymbolClosureMovePlan(SourceTopLevelSymbolClosureMoveCarrier
             ),
         )
 
-    def destination_source(self, destination_source: str, insertion_line: int) -> str:
+    def destination_source(
+        self,
+        destination_source: str,
+        insertion_line: int,
+        context: CodemodSelectorContext,
+    ) -> str:
+        rebase = _RelativeImportRebase.between(context, self.source_path, self.destination_path)
         moved_source = "\n\n\n".join(
-            block.moved_source.strip("\n") for block in self.source_blocks
+            rebase.applied(block.moved_source.strip("\n")) for block in self.source_blocks
         )
         spacing = DestinationInsertionSpacing.from_source(
             destination_source,
@@ -2266,3 +2272,75 @@ class RetargetModuleMentionsOperation(RepositorySourceReprovedOperation):
             successor_path,
             frozenset(self.retained_calls),
         ).edits(context)
+
+
+_RELATIVE_FROM = re.compile(r"from\s+(\.+)([\w.]*)(?=\s+import\b)")
+
+
+@dataclass(frozen=True)
+class _RelativeImportRebase:
+    """A moved block's relative imports, re-expressed for the destination package.
+
+    Top-level imports the block needs are re-derived by the move's dependency
+    report; a relative import inside the block's body (a function-local
+    ``from .x import Y``) moves with the text, so when the destination sits in
+    another package it is re-resolved against the source package and written
+    relative to the destination's."""
+
+    source_identity: PythonModulePathIdentity
+    destination_package: tuple[str, ...]
+
+    @classmethod
+    def between(
+        cls,
+        context: CodemodSelectorContext,
+        source_path: str,
+        destination_path: str,
+    ) -> _RelativeImportRebase:
+        import_graph = context.module_import_graph
+        source_file = import_graph.source_file_for_path(source_path)
+        destination_file = import_graph.source_file_for_path(destination_path)
+        if source_file is None or destination_file is None:
+            raise ValueError("A move needs both modules' identities to rebase relative imports")
+        destination_module = destination_file.module_name
+        package = (
+            destination_module
+            if destination_file.is_package_init
+            else destination_module.rpartition(".")[0]
+        )
+        return cls(source_file.module_path_identity, tuple(filter(None, package.split("."))))
+
+    def applied(self, block: str) -> str:
+        tree = ast.parse(block)
+        geometry = SourceTextGeometry(block)
+        replacements: list[tuple[int, int, str]] = []
+        for node in ast.walk(tree):
+            if not (isinstance(node, ast.ImportFrom) and node.level):
+                continue
+            start, _end = geometry.required_node_offsets(node)
+            match = _RELATIVE_FROM.match(block, start)
+            if match is None:
+                raise ValueError(f"Cannot read the relative import at block line {node.lineno}")
+            absolute = self.source_identity.resolve_import_from_module(
+                imported_module=node.module,
+                level=node.level,
+            )
+            if absolute is None:
+                raise ValueError(f"Relative import at block line {node.lineno} leaves the package")
+            replacements.append((start, match.end(), f"from {self._relative(absolute)}"))
+        for start, end, text in sorted(replacements, reverse=True):
+            block = block[:start] + text + block[end:]
+        return block
+
+    def _relative(self, absolute: str) -> str:
+        target = tuple(absolute.split("."))
+        common = 0
+        while (
+            common < min(len(target), len(self.destination_package))
+            and target[common] == self.destination_package[common]
+        ):
+            common += 1
+        if common == 0:
+            return absolute
+        dots = "." * (len(self.destination_package) - common + 1)
+        return dots + ".".join(target[common:])
