@@ -680,6 +680,7 @@ from .module_move_codemod import (
     ExtractSymbolClosureToNewModuleOperation as ExtractSymbolClosureToNewModuleOperation,
     ExtractSymbolsToNewModuleOperation as ExtractSymbolsToNewModuleOperation,
     DissolveModuleOperation as DissolveModuleOperation,
+    RetargetModuleMentionsOperation as RetargetModuleMentionsOperation,
     ModuleSymbolMoveOperation as ModuleSymbolMoveOperation,
     MoveSymbolClosureToModuleOperation as MoveSymbolClosureToModuleOperation,
     MoveSymbolsToModuleOperation as MoveSymbolsToModuleOperation,
