@@ -17,9 +17,7 @@ from dataclasses import dataclass
 from typing import ClassVar, Generic, TypeVar
 
 from ..codemod import (
-    DispatchToPolymorphismOperation,
     EraseDeadCompatibilityOperation,
-    LiteralDispatchFindingRecipeSynthesizer,
     RefactorRecipeOperation,
 )
 from ..class_index import (
@@ -29,6 +27,10 @@ from ..class_index import (
 from ..ast_tools import ParsedModuleSet
 from ..declared_receivers import DeclaredReceiverTyping
 from ..probe_owner import ProbeOwnerContext, ReceiverSpan, ScannedClasses
+from ..refactors.dispatch_polymorphism import (
+    DispatchToPolymorphismOperation,
+    LiteralDispatchFindingRecipeSynthesizer,
+)
 from ..type_checker_session import (
     SourceFiles,
     SourceTexts,
