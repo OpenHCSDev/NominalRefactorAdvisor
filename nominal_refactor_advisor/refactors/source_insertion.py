@@ -11,6 +11,7 @@ from ..codemod_imports import (
     ModuleImportInsertionPoint,
     ModuleImportMutation,
 )
+from ..codemod_import_scopes import ModuleImportScope
 from ..codemod_module_declarations import ModuleSymbolTable
 from ..codemod_operations import (
     RefactorRecipeOperation,
@@ -23,6 +24,7 @@ from ..codemod_payload import (
     codemod_payload_field,
 )
 from ..codemod_reproof import SourceReprovedOperation
+from ..lexical_bindings import LEXICAL_SCOPE_BINDING_AUTHORITY
 from ..codemod_runtime import CodemodSourceSnapshot
 from ..codemod_selection_context import CodemodSelectorContext
 from ..codemod_source_edits import (
@@ -211,8 +213,9 @@ class RemoveImportNamesOperation(RefactorRecipeOperation):
 class RemoveImportBindingsOperation(RefactorRecipeOperation):
     """Remove import bindings by bound name once the module no longer reads them.
 
-    Covers every import shape (``import a.b as c``, ``from a import b``), so a
-    deletion that leaves its imports unread can drop them in the next stage.
+    Covers every import shape (``import a.b as c``, ``from a import b``) in every
+    scope that binds it, runtime or ``if TYPE_CHECKING:``, so a deletion that
+    leaves its imports unread can drop them in the next stage.
     """
 
     bound_names: tuple[str, ...] = codemod_payload_field(
@@ -234,11 +237,22 @@ class RemoveImportBindingsOperation(RefactorRecipeOperation):
                 f"{source_path!r} still reads import bindings "
                 f"{tuple(sorted(still_read))!r}"
             )
-        return (
+        module = context.module_nodes_by_file_path[source_path]
+        return tuple(
             ModuleImportMutation.remove_bound_names(
                 file_path=source_path,
-                names=self.bound_names,
+                names=names,
+                scope=scope,
                 rationale=self.rationale
-                or f"Remove unread import bindings {self.bound_names!r}.",
-            ),
+                or f"Remove unread import bindings {names!r}.",
+            )
+            for scope in ModuleImportScope
+            for names in (
+                tuple(
+                    name
+                    for name in self.bound_names
+                    if name in LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(scope.import_statements(module))
+                ),
+            )
+            if names
         )
