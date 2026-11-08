@@ -226,3 +226,35 @@ def test_a_star_import_that_does_not_export_the_name_keeps_its_binding() -> None
     assert build_class_family_index([support, family]).classes_by_symbol[
         "pkg.family.Detector"
     ].declares_autoregister_meta
+
+
+def test_a_registering_base_reached_through_a_scanned_reexport_is_read_from_the_scan() -> None:
+    """A scanned module re-exporting a base is followed through the scan, never
+    through an installed copy of the package: agent-comms resolved
+    `agent_comms.transcript_routes.WithoutRowid` and
+    `agent_comms_hooks.watch.SessionFailure` from installed source (11-08)."""
+
+    sources = {
+        "pkg.base": (
+            "class StoreMeta(type):\n"
+            "    def __init__(cls, name, bases, namespace):\n"
+            "        super().__init__(name, bases, namespace)\n"
+            "        cls.__registry__[namespace.get('key')] = cls\n\n\n"
+            "class Root(metaclass=StoreMeta):\n    pass\n"
+        ),
+        "pkg.reexport": "from pkg.base import Root\n",
+        "pkg.user": "from pkg.reexport import Root\n\n\nclass Member(Root):\n    pass\n",
+    }
+    modules = tuple(
+        ParsedModule(
+            path=Path(*name.split(".")).with_suffix(".py"),
+            module_name=name,
+            module=ast.parse(source),
+            source=source,
+        )
+        for name, source in sources.items()
+    )
+    index = build_compact_class_family_index(
+        CompactModuleClassProjectionFamily.collect_modules(modules)
+    )
+    assert index.classes_by_symbol["pkg.user.Member"].is_registration_authority
