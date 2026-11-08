@@ -1079,7 +1079,11 @@ class SourceTopLevelSymbolClosureMovePlan(SourceTopLevelSymbolClosureMoveCarrier
             destination_table.module
         )
         source_module_context_names = tuple(
-            sorted(moved_dependencies.names & source_table.implicit_module_names)
+            sorted(
+                moved_dependencies.names
+                & source_table.implicit_module_names
+                - operation.module_context_names_following(source_table, moved_names)
+            )
         )
         builtin_dependency_names = (
             moved_dependencies.names & source_table.unshadowed_builtin_names
@@ -1386,6 +1390,13 @@ class ModuleSymbolMoveOperation(RepositorySourceReprovedOperation, ABC):
 
     destination_path: str = codemod_payload_field(SourcePathPayloadValueCodec())
 
+    def module_context_names_following(
+        self, source_table: ModuleSymbolTable, moved_names: frozenset[str]
+    ) -> frozenset[str]:
+        """Module-context names whose meaning moves with the code. Into a module that
+        already exists, none: `__name__` there names another module."""
+        return frozenset()
+
     def dependency_report(
         self,
         context: CodemodSelectorContext,
@@ -1564,6 +1575,16 @@ class ExistingModuleSymbolMoveOperationABC(ModuleSymbolMoveOperation, ABC):
 @dataclass(frozen=True, kw_only=True)
 class NewModuleSymbolMoveOperationABC(ModuleSymbolMoveOperation, ABC):
     """Module move whose destination source is created atomically."""
+
+    def module_context_names_following(
+        self, source_table: ModuleSymbolTable, moved_names: frozenset[str]
+    ) -> frozenset[str]:
+        """When every name the source declares moves into the module this move creates,
+        the moved code is that module under its new name, so `__name__` (a logger's, say)
+        names the destination. `__file__` never follows: a path beside the module stays."""
+        if source_table.declared_names <= moved_names:
+            return frozenset(("__name__",))
+        return frozenset()
 
     destination_source: str | None = codemod_payload_field(
         OptionalStringPayloadValueCodec(),
