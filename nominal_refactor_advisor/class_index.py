@@ -4559,9 +4559,8 @@ class CompactModuleClassProjectionFamily(CollectedFamily[CompactModuleClassProje
         """Namespace and class headers only: enough to settle imports and exports."""
 
         return tuple(
-            projection
+            parsed_module.fact(ModuleClassHeaderCore).projection
             for parsed_module in parsed_modules
-            for projection in cls._collect_header_core(parsed_module)
         )
 
     @classmethod
