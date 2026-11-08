@@ -191,9 +191,11 @@ IDENTITY = (
     "        \"\"\"Read the identity its evidence names.\"\"\"\n"
     "        return cls(evidence.header(), evidence.path)\n\n"
     "    @classmethod\n"
-    "    def proof_for(cls, session: str):\n"
+    "    def proof_for(cls, session: str,\n"
+    "                  file: str = 'f'):\n"
     "        from pkg.proof import Proof\n\n"
-    "        return Proof(session, 'f')\n"
+    "        return Proof(session,\n"
+    "                     file)\n"
 )
 PROOF = (
     "from __future__ import annotations\n\n"
@@ -253,7 +255,8 @@ def _runs(root: Path, result) -> str:
          "        return Identity(self.header(), self.path)\n",
          "two = Evidence('p').identity()"),
         ("Identity.proof_for", "Proof", None,
-         "    @classmethod\n    def proof_for(cls, session: str):\n        return cls(session, 'f')\n",
+         "    @classmethod\n    def proof_for(cls, session: str,\n                  file: str = 'f'):\n"
+         "        return cls(session,\n                   file)\n",
          "three = Proof.proof_for('x')"),
     ),
 )
@@ -328,8 +331,8 @@ def test_another_class_s_method_of_the_same_name_and_an_alike_binding_do_not_ref
         "    return Identity.proof_for(value)\n"
     )
     identity = IDENTITY.replace(
-        "        from pkg.proof import Proof\n\n        return Proof(session, 'f')\n",
-        "        from pkg.proof import Proof\n\n        return Proof(session, field.__name__[0])\n",
+        "        from pkg.proof import Proof\n\n        return Proof(session,\n                     file)\n",
+        "        from pkg.proof import Proof\n\n        return Proof(session,\n                     field.__name__[0])\n",
     ).replace("from dataclasses import dataclass\n", "from dataclasses import dataclass, field\n")
     _write(tmp_path, {"identity": identity, "proof": proof, "use": use})
     result = _class_bound(tmp_path, "Identity.proof_for", "Proof")

@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import ast
 import builtins
-import copy
+import re
 from dataclasses import dataclass
 from functools import cached_property
 from typing import ClassVar
@@ -224,54 +224,63 @@ class MovedMethod:
         raise ValueError(f"{where} calls {self.name!r} on a receiver typed {symbols!r}")
 
     def destination_source(self) -> str:
-        """The method as its destination member: a header built from its new parameters, and
-        its body with the member's renames applied."""
+        """The method as its destination member: its own header and body text, with only what
+        the member changes rewritten, re-indented for the destination class."""
 
         source = self.snapshot.sources_by_file_path[self.source_class.file_path]
         geometry = SourceTextGeometry(source)
+        definition = geometry.required_node_offsets(self.method)[0]
         body_start = geometry.line_offsets[self.method.body[0].lineno - 1]
         end = method_deletion_offsets(geometry, self.method)[1]
-        renames = sorted(
-            (
-                (*geometry.required_node_offsets(node), replacement)
-                for node, replacement in self.member.body_renames()
-            ),
-            reverse=True,
+        signature = SignatureText(geometry, self.method)
+        header = _edited(source, definition, body_start, (
+            *self.member.signature_edits(signature),
+            *signature.renamed(self.new_name),
+        ))
+        body_renames = tuple(
+            (*geometry.required_node_offsets(node), replacement, node)
+            for node, replacement in self.member.body_renames()
         )
-        text = source[body_start:end]
-        for node_start, node_end, replacement in renames:
-            text = text[: node_start - body_start] + replacement + text[node_end - body_start:]
+        body = _edited(source, body_start, end, tuple(edit[:3] for edit in body_renames))
+        shifts = self.continuation_shifts(body_renames)
         source_indent = " " * self.method.col_offset
         destination_indent = " " * (self.destination.node.body[0].col_offset)
-        lines = [
-            line.removeprefix(source_indent) if line.strip() else line
-            for line in text.splitlines(keepends=True)
-        ]
         dropped = self.destination_self_imports
         kept: list[str] = []
         previous_dropped = False
-        for number, line in enumerate(lines, start=self.method.body[0].lineno):
+        for number, line in enumerate(body.splitlines(keepends=True), start=self.method.body[0].lineno):
             if number in dropped or (previous_dropped and not line.strip()):
                 previous_dropped = number in dropped
                 continue
             previous_dropped = False
-            kept.append(line)
-        body = "".join(destination_indent + line if line.strip() else line for line in kept)
-        return (
-            f"\n{self.member.decorator(destination_indent)}"
-            f"{destination_indent}{self.header()}\n{body.rstrip()}\n"
-        )
+            kept.append(_shifted(line, shifts.get(number, 0)))
+        lines = [
+            destination_indent + line.removeprefix(source_indent) if line.strip() else line
+            for line in (*header.splitlines(keepends=True), *kept)
+        ]
+        return f"\n{self.member.decorator(destination_indent)}{''.join(lines).rstrip()}\n"
 
-    def header(self) -> str:
-        definition = type(self.method)(
-            name=self.new_name,
-            args=self.member.arguments(),
-            body=[ast.Pass()],
-            decorator_list=[],
-            returns=copy.deepcopy(self.method.returns),
-            type_params=list(getattr(self.method, "type_params", [])),
-        )
-        return ast.unparse(ast.fix_missing_locations(definition)).splitlines()[0]
+    def continuation_shifts(self, renames: tuple[tuple[int, int, str, ast.AST], ...]) -> dict[int, int]:
+        """Lines aligned under a call whose head a rename changed move by the same columns: a
+        call whose first argument shares its opening line aligns its continuation to it."""
+
+        shifts: dict[int, int] = {}
+        calls = tuple(node for node in ast.walk(self.method) if isinstance(node, ast.Call))
+        for start, end, replacement, node in renames:
+            delta = len(replacement) - (end - start)
+            if not delta:
+                continue
+            for call in calls:
+                passed: tuple[ast.expr | ast.keyword, ...] = (*call.args, *call.keywords)
+                if not (
+                    passed and call.end_lineno and call.end_lineno > call.lineno
+                    and min(each.lineno for each in passed) == call.lineno
+                    and any(each is node for each in ast.walk(call.func))
+                ):
+                    continue
+                for line in range(call.lineno + 1, call.end_lineno + 1):
+                    shifts[line] = shifts.get(line, 0) + delta
+        return shifts
 
     @cached_property
     def destination_self_imports(self) -> frozenset[int]:
@@ -564,8 +573,8 @@ class DestinationMember:
 
     moved: MovedMethod
 
-    def arguments(self) -> ast.arguments:
-        """The member's parameters, as its header declares them."""
+    def signature_edits(self, signature: SignatureText) -> tuple[_Edit, ...]:
+        """What the member changes in the method's own parameter list."""
 
         raise NotImplementedError
 
@@ -599,25 +608,6 @@ class DestinationMember:
         if not self.moved.source.keeps_receiver and _calls(call.attribute.value):
             raise ValueError(f"{call.where}: the receiver calls, and the moved call no longer evaluates it")
 
-    def parameters(self, leading: list[ast.arg], kept: tuple[ast.arg, ...]) -> ast.arguments:
-        """The method's arguments with its leading parameters replaced and only `kept` left."""
-
-        original = self.moved.method.args
-        everything = original.posonlyargs + original.args
-        defaults = dict(zip(everything[len(everything) - len(original.defaults):], original.defaults))
-        positional = [argument for argument in everything if argument in kept]
-        keywords = [argument for argument in original.kwonlyargs if argument in kept]
-        keyword_defaults = dict(zip(original.kwonlyargs, original.kw_defaults))
-        return ast.arguments(
-            posonlyargs=[],
-            args=leading + [copy.deepcopy(argument) for argument in positional],
-            vararg=copy.deepcopy(original.vararg),
-            kwonlyargs=[copy.deepcopy(argument) for argument in keywords],
-            kw_defaults=[copy.deepcopy(keyword_defaults[argument]) for argument in keywords],
-            kwarg=copy.deepcopy(original.kwarg),
-            defaults=[copy.deepcopy(defaults[argument]) for argument in positional if argument in defaults],
-        )
-
 
 @dataclass(frozen=True)
 class DestinationInstanceMethod(DestinationMember):
@@ -639,19 +629,16 @@ class DestinationInstanceMethod(DestinationMember):
         if has_default:
             raise ValueError(f"{self.moved.name!r}'s {self.parameter.arg!r} has a default; calls may omit it")
 
-    def arguments(self) -> ast.arguments:
-        source = self.moved.source
+    def signature_edits(self, signature: SignatureText) -> tuple[_Edit, ...]:
         receiver = self.moved.receiver_parameter
-        if receiver is None:
-            return self.parameters(
-                [ast.arg("self")],
-                tuple(argument for argument in source.call_parameters if argument is not self.parameter),
-            )
-        arguments = self.parameters([ast.arg("self")], source.call_parameters)
-        for argument in arguments.args + arguments.kwonlyargs:
-            if argument.arg == self.parameter.arg:
-                argument.arg, argument.annotation = receiver, None
-        return arguments
+        if receiver is not None:
+            return (signature.replaced(self.parameter, receiver),)
+        leading = signature.leading(self.moved.source.leading_name)
+        return (
+            signature.removed(self.parameter),
+            signature.replaced(leading, "self") if leading is not None
+            else signature.prepended("self", without=self.parameter),
+        )
 
     def body_renames(self) -> tuple[tuple[ast.AST, str], ...]:
         return super().body_renames() + tuple(
@@ -746,11 +733,12 @@ class DestinationClassMethod(DestinationMember):
         if "cls" in LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(self.moved.method.body):
             raise ValueError(f"{self.moved.name!r} already binds 'cls'")
 
-    def arguments(self) -> ast.arguments:
-        leading = [ast.arg("cls")]
-        if self.moved.receiver_parameter is not None:
-            leading.append(ast.arg(self.moved.receiver_parameter))
-        return self.parameters(leading, self.moved.source.call_parameters)
+    def signature_edits(self, signature: SignatureText) -> tuple[_Edit, ...]:
+        receiver = self.moved.receiver_parameter
+        leading = signature.leading(self.moved.source.leading_name)
+        if receiver is not None and leading is not None:
+            return (signature.replaced(leading, f"cls, {receiver}"),)
+        return () if leading is not None else (signature.prepended("cls"),)
 
     def body_renames(self) -> tuple[tuple[ast.AST, str], ...]:
         return super().body_renames() + tuple((node, "cls") for node in self.moved.destination_reads)
@@ -792,6 +780,93 @@ class DestinationClassMethod(DestinationMember):
             start_offset=opening, end_offset=span_end, replacement_source=inserted,
         ))
         return tuple(replacements)
+
+
+type _Edit = tuple[int, int, str]
+
+
+def _edited(source: str, start: int, end: int, edits: tuple[_Edit, ...]) -> str:
+    """source[start:end] with each edit's offsets replaced, the latest first."""
+
+    text = source[start:end]
+    for edit_start, edit_end, replacement in sorted(edits, reverse=True):
+        text = text[: edit_start - start] + replacement + text[edit_end - start:]
+    return text
+
+
+def _shifted(line: str, shift: int) -> str:
+    if shift >= 0:
+        return " " * shift + line if line.strip() else line
+    return line[min(-shift, len(line) - len(line.lstrip(" "))):]
+
+
+@dataclass(frozen=True)
+class SignatureText:
+    """A method's header as written: edits replace, remove or add one parameter at a time and
+    leave every other character, line break and default as the source has it."""
+
+    geometry: SourceTextGeometry
+    method: ast.FunctionDef | ast.AsyncFunctionDef
+
+    @property
+    def source(self) -> str:
+        return self.geometry.source
+
+    @cached_property
+    def name_span(self) -> tuple[int, int]:
+        start = self.source.index(self.method.name, self.geometry.required_node_offsets(self.method)[0])
+        return start, start + len(self.method.name)
+
+    @cached_property
+    def opening(self) -> int:
+        return self.source.index("(", self.name_span[1]) + 1
+
+    @cached_property
+    def parameters(self) -> tuple[ast.arg, ...]:
+        arguments = self.method.args
+        return tuple(
+            argument for argument in (
+                *arguments.posonlyargs, *arguments.args, arguments.vararg,
+                *arguments.kwonlyargs, arguments.kwarg,
+            ) if argument is not None
+        )
+
+    def leading(self, name: str | None) -> ast.arg | None:
+        """The self or cls the source shape leads with, when it leads with one."""
+
+        return None if name is None else self.parameters[0]
+
+    def renamed(self, name: str) -> tuple[_Edit, ...]:
+        return () if name == self.method.name else ((*self.name_span, name),)
+
+    def replaced(self, parameter: ast.arg, text: str) -> _Edit:
+        return (*self.geometry.required_node_offsets(parameter), text)
+
+    def removed(self, parameter: ast.arg) -> _Edit:
+        """A parameter and its separator: its whole line when it stands alone on one."""
+
+        start, end = self.geometry.required_node_offsets(parameter)
+        line_start = self.source.rfind("\n", 0, start) + 1
+        rest = re.match(r"[ \t]*,?[ \t]*\n", self.source[end:])
+        if not self.source[line_start:start].strip() and rest is not None:
+            return line_start, end + rest.end(), ""
+        following = re.match(r"\s*,\s*", self.source[end:])
+        if following is not None and self.source[end + following.end()] != ")":
+            return start, end + following.end(), ""
+        comma = self.source.rfind(",", self.opening, start)
+        return (comma if comma >= 0 else start), end, ""
+
+    def prepended(self, text: str, without: ast.arg | None = None) -> _Edit:
+        """A new first parameter, on its own line when the first one stands on its own."""
+
+        remaining = tuple(parameter for parameter in self.parameters if parameter is not without)
+        if not remaining:
+            return self.opening, self.opening, text
+        first = remaining[0]
+        first_start = self.geometry.required_node_offsets(first)[0]
+        if "\n" in self.source[self.opening:first_start]:
+            return first_start, first_start, f"{text},\n{' ' * first.col_offset}"
+        return first_start, first_start, f"{text}, "
 
 
 @dataclass(frozen=True)
