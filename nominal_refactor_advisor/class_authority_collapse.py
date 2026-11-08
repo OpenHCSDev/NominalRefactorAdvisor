@@ -16,11 +16,11 @@ from .class_families.parsed_index import (
 from .class_index import (
     ClassBodyModuleScope,
     ClassBodyNormalForm,
-    ClassMethodPromotionSafetyProfile,
-    ClassSymbolResolutionAuthority,
     ModuleNominalBindingSnapshot,
     module_star_import_origins,
 )
+from .class_method_facets import ClassMethodPromotionSafetyProfile
+from .class_symbols import ClassSymbolResolutionAuthority
 from .foreign_family import FunctionDefinition
 from .lexical_bindings import LEXICAL_SCOPE_BINDING_AUTHORITY, ImportBoundNameProjection
 

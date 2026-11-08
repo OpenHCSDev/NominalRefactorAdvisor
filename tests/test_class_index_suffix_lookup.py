@@ -13,10 +13,13 @@ from nominal_refactor_advisor.ast_tools import (
 )
 from nominal_refactor_advisor.class_families.parsed_index import build_class_family_index
 from nominal_refactor_advisor.class_index import (
-    ClassSymbolResolutionAuthority,
     CompactClassReferenceResolver,
     CompactModuleClassProjectionFamily,
     build_compact_class_family_index,
+)
+from nominal_refactor_advisor.class_symbols import (
+    ClassSymbolResolutionAuthority,
+    _unique_known_symbol_by_suffix,
 )
 
 
@@ -121,9 +124,9 @@ def test_import_alias_suffix_index_is_lazy_and_repository_bounded() -> None:
             "root.right.types.Target",
         }
     )
-    class_index_module._unique_known_symbol_by_suffix.cache_clear()
+    _unique_known_symbol_by_suffix.cache_clear()
 
-    suffix_index = class_index_module._unique_known_symbol_by_suffix(symbols)
+    suffix_index = _unique_known_symbol_by_suffix(symbols)
 
     assert suffix_index._matches_by_suffix == {}
     assert sum(
@@ -132,7 +135,7 @@ def test_import_alias_suffix_index_is_lazy_and_repository_bounded() -> None:
     assert suffix_index.get("types.Unique") == "root.unique.types.Unique"
     assert suffix_index.get("types.Target") is None
     assert set(suffix_index._matches_by_suffix) == {"types.Unique", "types.Target"}
-    assert class_index_module._unique_known_symbol_by_suffix.cache_parameters() == {
+    assert _unique_known_symbol_by_suffix.cache_parameters() == {
         "maxsize": 8,
         "typed": False,
     }

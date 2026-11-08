@@ -13,6 +13,7 @@ from dataclasses import fields, is_dataclass, replace
 from pathlib import Path
 
 import pytest
+from nominal_refactor_advisor.class_syntax_facets import _compact_class_member_declarations
 from registry_test_sources import keyed_registry_source
 
 from nominal_refactor_advisor.ast_tools import ParsedModuleSet
@@ -23,7 +24,6 @@ from nominal_refactor_advisor.ast_tools import (
 )
 from nominal_refactor_advisor.class_index import (
     CompactModuleClassProjectionFamily,
-    _compact_class_member_declarations,
     build_compact_class_family_index,
 )
 from nominal_refactor_advisor.detectors import _systemic

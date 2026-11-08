@@ -14,13 +14,13 @@ from .class_index import (
     CLASS_METHOD_OWNERSHIP_HOOK_NAMES,
     ClosedLeafMethodAuthorityProof,
     CompactClassFamilyIndex,
-    CompactClassMethod,
     CompactIndexedClass,
     CompactModuleClassProjection,
     CompactModuleClassProjectionFamily,
-    ClassSymbolResolutionAuthority,
     build_compact_class_family_index,
 )
+from .class_method_facets import CompactClassMethod
+from .class_symbols import ClassSymbolResolutionAuthority
 from .collection_algebra import (
     IdentityHandleMultiplicityProjection,
     UniqueIdentityIndexAuthority,

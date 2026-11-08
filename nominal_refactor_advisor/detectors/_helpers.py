@@ -30,6 +30,15 @@ from ..class_families.parsed_index import (
     ClassFamilyIndex,
     IndexedClass,
 )
+from ..class_method_facets import (
+    CompactClassMethod,
+    CompactClassMethodSemanticProfile,
+    CompactMethodSemanticCoordinate,
+    CompactMethodSemanticCoordinateKind,
+    MethodFamilyResidueRole,
+)
+from ..class_symbols import ClassSymbolResolutionAuthority
+from ..class_syntax_facets import annotation_type_names
 from ..value_expression import CompactValueExpression
 from ..annotation_semantics import CLASSVAR_ANNOTATION_AUTHORITY, TypeWrapper
 from ..ast_projection import ExpressionReference
@@ -50,15 +59,9 @@ from ..ast_tools import (
     walk_function_body_nodes,
 )
 from ..class_index import (
-    ClassSymbolResolutionAuthority,
     CompactClassFamilyIndex,
-    CompactClassMethod,
-    CompactClassMethodSemanticProfile,
     CompactIndexedClass,
-    CompactMethodSemanticCoordinate,
-    CompactMethodSemanticCoordinateKind,
     CompactModuleClassProjection,
-    MethodFamilyResidueRole,
     build_compact_class_family_index,
 )
 from ..exact_method_authority import (
@@ -89,7 +92,6 @@ from ..ast_tools import (
     ScopedAstObservation,
     statements_without_docstring,
 )
-from ..class_index import annotation_type_names
 from ..collection_algebra import sorted_tuple
 from ..models import SourceLocation
 from ..name_algebra import CLASS_NAME_ALGEBRA

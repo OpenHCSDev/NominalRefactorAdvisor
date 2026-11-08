@@ -17,7 +17,6 @@ from dataclasses import dataclass
 from functools import cached_property
 from typing import cast
 
-from nominal_refactor_advisor.class_index import ClassMethodPromotionSafetyProfile
 from nominal_refactor_advisor.declaration_binding_transfer import (
     DeclarationModuleBindingEnvironment,
     DeclarationModuleBindingTransfer,
@@ -28,6 +27,7 @@ from .class_families.parsed_index import (
     IndexedClass,
     ModuleClassReferenceResolver,
 )
+from .class_method_facets import ClassMethodPromotionSafetyProfile
 from .value_expression import CompactValueExpression
 from .ast_tools import (
     BuiltinCallName,

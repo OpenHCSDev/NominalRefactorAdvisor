@@ -8,6 +8,7 @@ import pytest
 from nominal_refactor_advisor import class_index as class_index_module
 from nominal_refactor_advisor.ast_tools import ParsedModule, SharedRegistryRootBase
 from nominal_refactor_advisor.class_index import CompactClassFamilyIndex
+from nominal_refactor_advisor.class_syntax_facets import _compact_class_syntax_facets
 from nominal_refactor_advisor.codemod import AutoRegisterClassRegistryConcept
 from nominal_refactor_advisor.codemod_architecture_guards import ArchitectureGuardSuite
 from nominal_refactor_advisor.codemod_module_declarations import (
@@ -112,7 +113,7 @@ def test_registry_receiver_collection_does_not_rewalk_factory_functions(
 
     with monkeypatch.context() as patch:
         patch.setattr(ast, "walk", unexpected_walk)
-        facets = class_index_module._compact_class_syntax_facets(parsed)
+        facets = _compact_class_syntax_facets(parsed)
     index = facets.autoregister_reference_index
     assert index is not None
     assert index.function_qualnames == ("materialize",)

@@ -22,12 +22,12 @@ from .ast_tools import (
     statements_without_docstring,
 )
 from .class_families.parsed_index import IndexedClass
-from .class_index import (
+from .class_member_lookup import ClassMemberLookupProof, ClassNamespaceDelta
+from .class_method_facets import (
     ClassMethodPromotionSafetyProfile,
     ClassMethodReceiverRequirements,
-    ClassSymbolResolutionAuthority,
 )
-from .class_member_lookup import ClassMemberLookupProof, ClassNamespaceDelta
+from .class_symbols import ClassSymbolResolutionAuthority
 from .codemod_authority_claims import AstTargetAuthorityClaim
 from .codemod_declaration_source import (
     ClassBodySourceAuthority,

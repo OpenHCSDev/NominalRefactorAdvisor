@@ -13,12 +13,10 @@ from graphlib import CycleError, TopologicalSorter
 
 from .binding_proofs import RepositoryModuleBindingProof
 from .class_families.parsed_index import IndexedClass
-from .class_index import (
-    CLASS_METHOD_OWNERSHIP_HOOK_NAMES,
-    ClassSymbolResolutionAuthority,
-)
+from .class_index import CLASS_METHOD_OWNERSHIP_HOOK_NAMES
 from .class_member_lookup import ClassMemberLookupProof, ClassNamespaceDelta
 from .class_mro import DeclarationMroType, NativeMroBase
+from .class_symbols import ClassSymbolResolutionAuthority
 from .collection_algebra import UniqueIdentityIndexAuthority
 from .codemod_selection_context import CodemodSelectorContext
 from .native_class_mro import NativeClassMroDeclaration

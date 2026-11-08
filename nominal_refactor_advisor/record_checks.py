@@ -18,11 +18,11 @@ from .class_index import (
     CompactClassFamilyIndex,
     CompactClassReferenceResolver,
     CompactIndexedClass,
-    CompactClassMemberDeclaration,
     CompactNominalReference,
     ModuleNominalBindingAuthority,
     ModuleNominalBindingSnapshot,
 )
+from .class_syntax_facets import CompactClassMemberDeclaration
 from .lexical_bindings import LEXICAL_SCOPE_BINDING_AUTHORITY
 from .models import SourceLocation
 

@@ -37,7 +37,7 @@ from ..ast_tools import (
     walk_function_body_nodes,
 )
 from ..class_families.parsed_index import IndexedClass
-from ..class_index import ClassMethodReceiverRequirements
+from ..class_method_facets import ClassMethodReceiverRequirements
 from ..codemod import (
     DataclassAuthorityReferenceProof,
     DataclassPayloadAuthorityTarget,
