@@ -40,10 +40,10 @@ def _write(root: Path, family: str = FAMILY) -> Path:
     return path
 
 
-def _serve(root: Path) -> ServeClassMembersOperation:
+def _serve(root: Path, header: str = "class ServedPrompt(Prompt)") -> ServeClassMembersOperation:
     return ServeClassMembersOperation(
         target=SourceRewriteTarget(file_path=(root / "pkg/family.py").as_posix(), qualname="Prompt"),
-        served_header="class ServedPrompt(Prompt)",
+        served_header=header,
         member_names=("apply", "result"),
     )
 
@@ -55,15 +55,18 @@ def _simulate(root: Path, operation: ServeClassMembersOperation):
 
 
 @pytest.mark.native_proof
+@pytest.mark.parametrize(
+    "header", ("class ServedPrompt(Prompt)", "class ServedPrompt[T: str](Prompt[T])"),
+)
 def test_serving_members_moves_them_onto_a_subclass_declared_after_the_declaration(
-    tmp_path: Path,
+    tmp_path: Path, header: str,
 ) -> None:
-    path = _write(tmp_path)
-    result = _simulate(tmp_path, _serve(tmp_path))
+    path = _write(tmp_path, FAMILY.replace("class Prompt(Request):", "class Prompt[T: str = str](Request):"))
+    result = _simulate(tmp_path, _serve(tmp_path, header))
     rewritten = result.simulation.rewritten_sources[path.as_posix()]
 
     assert result.is_clean is True
-    assert "class Prompt(Request):\n    text = 'hi'\n\n\nclass ServedPrompt(Prompt):\n    def apply" in rewritten
+    assert f"    text = 'hi'\n\n\n{header}:\n    def apply" in rewritten
     path.write_text(rewritten)
     completed = subprocess.run(
         [sys.executable, "-c",
