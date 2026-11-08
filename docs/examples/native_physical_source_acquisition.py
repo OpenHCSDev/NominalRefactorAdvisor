@@ -4,10 +4,10 @@ Candidate paths come from the actual function's code and globals, not its
 qualification label or import-loader callbacks. This does not prove activation.
 """
 
+from nominal_refactor_advisor.refactors.source_insertion import EnsureImportOperation
 from nominal_refactor_advisor.codemod import (
     CodemodPlanSequence,
     CodemodSourceSnapshot,
-    EnsureImportOperation,
     ReplaceFunctionBodyOperation,
     SourceRewriteTarget,
 )

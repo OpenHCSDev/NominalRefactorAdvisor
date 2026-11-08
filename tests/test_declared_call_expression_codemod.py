@@ -11,11 +11,11 @@ import pytest
 
 from nominal_refactor_advisor.ast_tools import ParsedModuleSet
 from nominal_refactor_advisor.ast_tools import parse_python_modules
+from nominal_refactor_advisor.refactors.source_insertion import RemoveImportNamesOperation
+from nominal_refactor_advisor.refactors.target_deletion import DeleteFunctionAssignmentsOperation
 from nominal_refactor_advisor.codemod import (
     CodemodPlanSequence,
     CodemodSourceSnapshot,
-    DeleteFunctionAssignmentsOperation,
-    RemoveImportNamesOperation,
     ReplaceDeclaredCallOperation,
     SelectionCountExpectation,
     SourceRewriteTarget,

@@ -2,9 +2,9 @@
 
 import json
 
+from nominal_refactor_advisor.refactors.source_insertion import EnsureImportOperation
 from nominal_refactor_advisor.codemod import (
     CodemodPlanSequence,
-    EnsureImportOperation,
     InsertClassMemberOperation,
     PatchTargetOperation,
     SourceRewriteTarget,

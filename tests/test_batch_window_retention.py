@@ -5,9 +5,9 @@ from pathlib import Path
 
 import pytest
 
+from nominal_refactor_advisor.refactors.source_insertion import EnsureImportOperation
 from nominal_refactor_advisor.codemod import (
     CodemodSourceSnapshot,
-    EnsureImportOperation,
     InsertClassMemberOperation,
     RefactorRecipe,
     SourceRewriteTarget,

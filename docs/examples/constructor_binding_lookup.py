@@ -4,13 +4,13 @@ from dataclasses import replace
 import json
 from textwrap import dedent
 
+from nominal_refactor_advisor.refactors.binding_rename import RenameTopLevelDeclarationAuthorityOperation
+from nominal_refactor_advisor.refactors.source_insertion import InsertAfterTargetOperation
+from nominal_refactor_advisor.refactors.target_deletion import DeleteTargetOperation
 from nominal_refactor_advisor.codemod import (
     CodemodPlanSequence,
-    DeleteTargetOperation,
-    InsertAfterTargetOperation,
     InsertClassMemberOperation,
     PatchTargetOperation,
-    RenameTopLevelDeclarationAuthorityOperation,
     ReplaceDeclaredCallArgumentsOperation,
     ReplaceDeclaredCallOperation,
     ReplaceFunctionBodyOperation,

@@ -15,7 +15,7 @@ from ..class_index import (
     CompactModuleClassProjection,
     CompactModuleClassProjectionFamily,
 )
-from ..codemod import (
+from ..refactors.finding_recipes import (
     ExactLeafMethodAncestorPromotionFindingRecipeSynthesizer,
     ExactMethodRoleFindingRecipeSynthesizer,
 )

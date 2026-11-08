@@ -15,11 +15,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import ClassVar, TypeVar, cast
 
-from .codemod import (
+from .refactors.finding_recipes import (
     FindingRecipeSynthesizer,
     PrimaryEvidenceActionKeysMixin,
-    RefactorRecipeOperation,
 )
+from .codemod import RefactorRecipeOperation
 from .codemod_imports import ModuleImportMutation
 from .codemod_foreign_family_source import RewrittenLineFit
 from .codemod_payload import (

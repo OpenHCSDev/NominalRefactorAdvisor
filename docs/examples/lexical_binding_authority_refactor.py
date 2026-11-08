@@ -2,11 +2,11 @@
 
 import json
 
+from nominal_refactor_advisor.refactors.binding_rename import RenameTopLevelDeclarationAuthorityOperation
 from nominal_refactor_advisor.codemod import (
     CodemodPlanSequence,
     ExtractSymbolClosureToNewModuleOperation,
     MoveSymbolClosureToModuleOperation,
-    RenameTopLevelDeclarationAuthorityOperation,
     ReplaceFunctionBodyOperation,
     SourceRewriteTarget,
 )

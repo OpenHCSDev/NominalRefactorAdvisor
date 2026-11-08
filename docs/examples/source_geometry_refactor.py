@@ -2,9 +2,9 @@
 
 import json
 
+from nominal_refactor_advisor.refactors.target_deletion import DeleteFunctionAssignmentsOperation
 from nominal_refactor_advisor.codemod import (
     CodemodPlanSequence,
-    DeleteFunctionAssignmentsOperation,
     ProjectFunctionLocalOperation,
     SourceRewriteTarget,
 )

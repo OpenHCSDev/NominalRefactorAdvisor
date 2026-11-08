@@ -3,11 +3,13 @@
 from dataclasses import replace
 import json
 
-from nominal_refactor_advisor.codemod import (
-    CodemodPlanSequence,
-    DeleteTargetOperation,
+from nominal_refactor_advisor.refactors.source_insertion import (
     EnsureImportOperation,
     RemoveImportNamesOperation,
+)
+from nominal_refactor_advisor.refactors.target_deletion import DeleteTargetOperation
+from nominal_refactor_advisor.codemod import (
+    CodemodPlanSequence,
     ReplaceDeclaredCallOperation,
     SelectionCountExpectation,
     SourceRewriteTarget,

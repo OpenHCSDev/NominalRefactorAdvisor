@@ -8,10 +8,10 @@ from pathlib import Path
 import pytest
 
 from nominal_refactor_advisor.ast_tools import ParsedModule
+from nominal_refactor_advisor.refactors.source_insertion import CreateFileOperation
 from nominal_refactor_advisor.codemod import (
     CodemodPlanDocument,
     CodemodPlanSequence,
-    CreateFileOperation,
     TypedMirror,
     CodemodSourceSnapshot,
     RefactorRecipe,

@@ -8,7 +8,7 @@ from ..ast_tools import ParsedModule, ParsedModuleSet
 from ..carrier_collapse import ClosedCarrierCollapseComponent
 from ..carrier_expansion import DeclaredCarrierExpansionBuilder
 from ..class_index import CompactModuleClassProjectionFamily
-from ..codemod import (
+from ..refactors.carrier_collapse import (
     CarrierCollapseFindingRecipeSynthesizer,
     CarrierCollapseOperationABC,
     CollapseClosedParameterConveyorOperation,

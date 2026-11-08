@@ -38,14 +38,14 @@ from ..ast_tools import (
 )
 from ..class_families.parsed_index import IndexedClass
 from ..class_method_facets import ClassMethodReceiverRequirements
-from ..codemod import (
+from .finding_recipes import FindingRecipeSynthesizer
+from .dataclass_projection import (
     DataclassAuthorityReferenceProof,
     DataclassPayloadAuthorityTarget,
-    FindingRecipeSynthesizer,
-    NominalConstructorCall,
     ResolvedFunctionProjectionTarget,
-    SourceDerivedAuthorityProjectionOperation,
 )
+from .authority_extraction import SourceDerivedAuthorityProjectionOperation
+from ..codemod import NominalConstructorCall
 from ..codemod_authority_claims import AstTargetAuthorityClaim
 from ..codemod_declaration_source import (
     ClassBodySourceAuthority,

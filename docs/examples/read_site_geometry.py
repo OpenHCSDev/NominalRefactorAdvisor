@@ -1,8 +1,8 @@
 """Retain full read-site geometry and derive its human-facing line once."""
 
+from nominal_refactor_advisor.refactors.target_deletion import DeleteTargetOperation
 from nominal_refactor_advisor.codemod import (
     CodemodPlanSequence,
-    DeleteTargetOperation,
     InsertClassMemberOperation,
     PatchTargetOperation,
     ReplaceFunctionBodyOperation,

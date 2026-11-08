@@ -28,7 +28,10 @@ from metaclass_registry import AutoRegisterMeta, extract_key_from_class_name
 from . import ast_field_decoders, ast_projection
 from .ast_tools import ParsedModule
 from .cases_family import handback
-from .codemod import FindingEvidenceActionKeysMixin, FindingRecipeSynthesizer
+from .refactors.finding_recipes import (
+    FindingEvidenceActionKeysMixin,
+    FindingRecipeSynthesizer,
+)
 from .codemod_declaration_source import PythonExpressionSourceFormatter
 from .codemod_foreign_family_source import (
     FunctionRewriteAuthority,

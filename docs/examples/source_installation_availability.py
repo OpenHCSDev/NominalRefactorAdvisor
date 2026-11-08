@@ -1,8 +1,8 @@
 """Share original-event availability through the existing source-frame base."""
 
+from nominal_refactor_advisor.refactors.source_insertion import EnsureImportOperation
 from nominal_refactor_advisor.codemod import (
     CodemodPlanSequence,
-    EnsureImportOperation,
     InsertClassMemberOperation,
     PatchTargetOperation,
     ReplaceTargetOperation,

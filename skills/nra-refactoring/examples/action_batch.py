@@ -10,6 +10,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from textwrap import dedent
 
+from nominal_refactor_advisor.refactors.source_insertion import (
+    EnsureImportOperation,
+    InsertBeforeTargetOperation,
+)
 from nominal_refactor_advisor.codemod import (
     ArchitectureGuardRule,
     ArchitectureGuardSuite,
@@ -18,9 +22,7 @@ from nominal_refactor_advisor.codemod import (
     CodemodPlanSequence,
     CodemodSourceRevision,
     CodemodSourceSnapshot,
-    EnsureImportOperation,
     ForbiddenDispatchArchitectureGuardConstraint,
-    InsertBeforeTargetOperation,
     PatchTargetOperation,
     SourceRewriteTarget,
     SourceTextReplacement,

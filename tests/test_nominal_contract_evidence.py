@@ -5,7 +5,7 @@ import inspect
 
 import pytest
 
-from nominal_refactor_advisor.codemod import FindingRecipeSynthesizer
+from nominal_refactor_advisor.refactors.finding_recipes import FindingRecipeSynthesizer
 from nominal_refactor_advisor.detector_capabilities import (
     DetectorContributionRole,
     NominalContractMemberEvidence,

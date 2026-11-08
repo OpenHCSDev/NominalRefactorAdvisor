@@ -12,15 +12,17 @@ from nominal_refactor_advisor.json_reports import json_report_object
 from nominal_refactor_advisor.detectors import _semantic_descent as semantic_descent_detectors
 from nominal_refactor_advisor.analysis import analyze_modules, analyze_path
 from nominal_refactor_advisor.ast_tools import parse_python_modules
+from nominal_refactor_advisor.refactors.dataclass_projection import (
+    DeriveDataclassConstructorProjectionOperation,
+    DeriveDataclassFieldNameCollectionProjectionOperation,
+    DeriveDataclassKeyValueSequenceProjectionOperation,
+    DeriveDataclassPayloadProjectionOperation,
+)
 from nominal_refactor_advisor.codemod import (
     CodemodOperationPreflightError,
     CodemodPlanDocument,
     CodemodPreflightStatus,
     CodemodSourceSnapshot,
-    DeriveDataclassConstructorProjectionOperation,
-    DeriveDataclassFieldNameCollectionProjectionOperation,
-    DeriveDataclassKeyValueSequenceProjectionOperation,
-    DeriveDataclassPayloadProjectionOperation,
     RefactorRecipe,
     RefactorRecipeOperation,
     SourceRewriteTarget,

@@ -4,11 +4,11 @@ from dataclasses import replace
 import json
 from textwrap import dedent
 
+from nominal_refactor_advisor.refactors.source_insertion import RemoveImportNamesOperation
 from nominal_refactor_advisor.codemod import (
     CodemodPlanSequence,
     PatchTargetOperation,
     PrependFunctionBodyOperation,
-    RemoveImportNamesOperation,
     ReplaceFunctionBodyOperation,
     ReplaceFunctionSignatureOperation,
     ReplaceScopeAssignmentOperation,

@@ -5,11 +5,11 @@ This authored syntax plan changes ownership; it does not prove body activation.
 
 from textwrap import dedent
 
+from nominal_refactor_advisor.refactors.class_base import AddClassBaseOperation
+from nominal_refactor_advisor.refactors.source_insertion import EnsureImportOperation
 from nominal_refactor_advisor.codemod import (
-    AddClassBaseOperation,
     CodemodPlanSequence,
     CodemodSourceSnapshot,
-    EnsureImportOperation,
     InsertClassMemberOperation,
     PatchTargetOperation,
     ReplaceFunctionBodyOperation,

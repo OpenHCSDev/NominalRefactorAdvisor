@@ -9,13 +9,13 @@ from typing import cast
 
 from .class_family_collection import ClassFamilyCollectionFactory
 from ..assignment_projection import SingleAssignmentAndValueNameProjection
-from ..codemod import (
-    ClassAuthorityReferenceProof,
-    ClassDeclarationPromotionClass,
+from .semantic_mirror import (
     MappingSemanticMirrorRecipeBuilder,
     SemanticMirrorOperationTargets,
-    SourceDerivedAuthorityProjectionOperation,
 )
+from .class_base import ClassAuthorityReferenceProof
+from .carrier_fields import ClassDeclarationPromotionClass
+from .authority_extraction import SourceDerivedAuthorityProjectionOperation
 from ..codemod_authority_claims import AstTargetAuthorityClaim
 from ..codemod_declaration_source import ClassBodySourceAuthority
 from ..codemod_runtime import (

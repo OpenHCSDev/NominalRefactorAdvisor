@@ -24,7 +24,7 @@ from ..ast_tools import (
     SourceModule,
     walk_function_body_nodes,
 )
-from ..codemod import EnvironmentBooleanAuthorityDriftFindingRecipeEvaluator
+from ..refactors.finding_recipes import EnvironmentBooleanAuthorityDriftFindingRecipeEvaluator
 from ..models import (
     EnvironmentBooleanDriftMetrics,
     EnvironmentReadKind,

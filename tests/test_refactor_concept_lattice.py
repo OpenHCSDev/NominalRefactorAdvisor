@@ -23,11 +23,13 @@ from nominal_refactor_advisor.analysis import analyze_modules
 from nominal_refactor_advisor.ast_tools import parse_python_modules
 from nominal_refactor_advisor.models import (
     DispatchCountMetrics,
+    MappingMetrics,
     RefactorFinding,
     RegistrationMetrics,
     SourceLocation,
 )
 from nominal_refactor_advisor.patterns import PatternId
+from nominal_refactor_advisor.refactors.authority_extraction import AuthoritySourceOperation
 from nominal_refactor_advisor.refactors.autoregister import (
     AutoRegisterExplicitPriorityOrderingFindingRecipeSynthesizer,
     AutoregisterInstanceViewRecipeBuilder,
@@ -38,9 +40,36 @@ from nominal_refactor_advisor.refactors.autoregister import (
     ManualClassRegistrationFindingRecipeSynthesizer,
     RegistrationSemanticMirrorRecipeStrategy,
 )
+from nominal_refactor_advisor.refactors.binding_rename import RenameTopLevelDeclarationAuthorityOperation
+from nominal_refactor_advisor.refactors.candidate_collector import (
+    CandidateCollectorBoilerplateFindingRecipeSynthesizer,
+    DeclarativeDetectorClassFindingRecipeSynthesizer,
+    DirectBuildFindingRendererFindingRecipeSynthesizer,
+)
+from nominal_refactor_advisor.refactors.carrier_collapse import (
+    CollapseClosedParameterConveyorOperation,
+    CollapseDeclaredCarrierExpansionOperation,
+)
+from nominal_refactor_advisor.refactors.class_base import (
+    AddClassBaseOperation,
+    ClassBaseMutationOperationABC,
+    CollapseIntermediateClassAuthorityOperation,
+    CollapseRedundantClassAuthorityOperation,
+    RemoveClassBaseOperation,
+)
 from nominal_refactor_advisor.refactors.class_family_collection import (
     ClassFamilyCollectionSemanticMirrorRecipeBuilder,
     DeriveClassFamilyCollectionOperation,
+)
+from nominal_refactor_advisor.refactors.dataclass_projection import (
+    DataclassConstructorProjectionMappingRecipeBuilder,
+    DataclassFieldNameCollectionProjectionMappingRecipeBuilder,
+    DataclassKeyValueSequenceProjectionMappingRecipeBuilder,
+    DataclassPayloadProjectionMappingRecipeBuilder,
+    DeriveDataclassConstructorProjectionOperation,
+    DeriveDataclassFieldNameCollectionProjectionOperation,
+    DeriveDataclassKeyValueSequenceProjectionOperation,
+    DeriveDataclassPayloadProjectionOperation,
 )
 from nominal_refactor_advisor.refactors.dispatch_polymorphism import (
     DispatchToPolymorphismOperation,
@@ -50,11 +79,38 @@ from nominal_refactor_advisor.refactors.enum_subset import (
     DeriveEnumSubsetOperation,
     EnumSubsetSemanticMirrorRecipeBuilder,
 )
+from nominal_refactor_advisor.refactors.finding_recipes import (
+    CasesFindingRecipeSynthesizer,
+    ExactLeafMethodAncestorPromotionFindingRecipeSynthesizer,
+    FindingRecipeSynthesizer,
+    KeyedMirrorFindingRecipeSynthesizer,
+)
 from nominal_refactor_advisor.refactors.repeated_builder import (
     DeriveRepeatedBuilderAuthorityOperation,
     RepeatedBuilderAuthorityMethod,
     RepeatedBuilderCallFindingRecipeSynthesizer,
     RepeatedBuilderSourceProjectionAuthorityMethod,
+)
+from nominal_refactor_advisor.refactors.semantic_mirror import (
+    MappingSemanticMirrorRecipeBuilder,
+    MappingSemanticMirrorRecipeStrategy,
+    RegistrationSemanticMirrorRecipeBuilder,
+    SemanticMirrorFindingRecipeStrategy,
+    SemanticMirrorRecipeBuilder,
+)
+from nominal_refactor_advisor.refactors.source_insertion import (
+    CreateFileOperation,
+    EnsureImportOperation,
+    InsertAfterImportsOperation,
+    InsertAfterTargetOperation,
+    InsertBeforeTargetOperation,
+    TargetAdjacentInsertionOperationABC,
+)
+from nominal_refactor_advisor.refactors.target_deletion import (
+    AssignmentDeletionOperationABC,
+    DeleteClassAssignmentsOperation,
+    DeleteInheritedAutoRegisterConfigurationOperation,
+    DeleteModuleAssignmentsOperation,
 )
 
 
@@ -72,19 +128,19 @@ EXPECTED_EXECUTABLE_CONCEPTS = {
     ClassFamilyCollectionSemanticMirrorRecipeBuilder: (
         codemod.ClassFamilyAuthorityConcept
     ),
-    codemod.ExactLeafMethodAncestorPromotionFindingRecipeSynthesizer: (
+    ExactLeafMethodAncestorPromotionFindingRecipeSynthesizer: (
         codemod.ClassFamilyAuthorityConcept
     ),
-    codemod.DataclassPayloadProjectionMappingRecipeBuilder: (
+    DataclassPayloadProjectionMappingRecipeBuilder: (
         codemod.DataclassPayloadProjectionConcept
     ),
-    codemod.DataclassFieldNameCollectionProjectionMappingRecipeBuilder: (
+    DataclassFieldNameCollectionProjectionMappingRecipeBuilder: (
         codemod.DataclassPayloadProjectionConcept
     ),
-    codemod.DataclassKeyValueSequenceProjectionMappingRecipeBuilder: (
+    DataclassKeyValueSequenceProjectionMappingRecipeBuilder: (
         codemod.DataclassPayloadProjectionConcept
     ),
-    codemod.DataclassConstructorProjectionMappingRecipeBuilder: (
+    DataclassConstructorProjectionMappingRecipeBuilder: (
         codemod.ConstructorKwargCarrierProjectionConcept
     ),
     NumericLiteralDispatchFindingRecipeSynthesizer: (
@@ -96,19 +152,19 @@ EXPECTED_EXECUTABLE_CONCEPTS = {
     AutoRegisterExplicitPriorityOrderingFindingRecipeSynthesizer: (
         codemod.AutoRegisterMroOrderingConcept
     ),
-    codemod.CandidateCollectorBoilerplateFindingRecipeSynthesizer: (
+    CandidateCollectorBoilerplateFindingRecipeSynthesizer: (
         codemod.ClassFamilyAuthorityConcept
     ),
-    codemod.DeclarativeDetectorClassFindingRecipeSynthesizer: (
+    DeclarativeDetectorClassFindingRecipeSynthesizer: (
         codemod.ClassFamilyAuthorityConcept
     ),
-    codemod.DirectBuildFindingRendererFindingRecipeSynthesizer: (
+    DirectBuildFindingRendererFindingRecipeSynthesizer: (
         codemod.ClassFamilyAuthorityConcept
     ),
-    codemod.KeyedMirrorFindingRecipeSynthesizer: (
+    KeyedMirrorFindingRecipeSynthesizer: (
         codemod.ClassFamilyAuthorityConcept
     ),
-    codemod.CasesFindingRecipeSynthesizer: (
+    CasesFindingRecipeSynthesizer: (
         codemod.ClassFamilyAuthorityConcept
     ),
     RepeatedBuilderCallFindingRecipeSynthesizer: (
@@ -147,10 +203,10 @@ EXPECTED_EXECUTABLE_CONCEPTS = {
 
 EXPECTED_MAPPING_DECLARATIONS = frozenset(
     {
-        codemod.DataclassConstructorProjectionMappingRecipeBuilder,
-        codemod.DataclassFieldNameCollectionProjectionMappingRecipeBuilder,
-        codemod.DataclassKeyValueSequenceProjectionMappingRecipeBuilder,
-        codemod.DataclassPayloadProjectionMappingRecipeBuilder,
+        DataclassConstructorProjectionMappingRecipeBuilder,
+        DataclassFieldNameCollectionProjectionMappingRecipeBuilder,
+        DataclassKeyValueSequenceProjectionMappingRecipeBuilder,
+        DataclassPayloadProjectionMappingRecipeBuilder,
         EnumSubsetSemanticMirrorRecipeBuilder,
     }
 )
@@ -197,7 +253,7 @@ def test_concept_taxonomy_is_derived_without_a_parallel_registry() -> None:
     assert not hasattr(codemod_workflow, "CodemodRefactorGoalStageAttempt")
     assert "matches_finding" not in vars(codemod.NominalBoundaryConcept)
     assert "matches_finding" not in vars(codemod.RefactorConcept)
-    assert "finding_matches_concept" in vars(codemod.FindingRecipeSynthesizer)
+    assert "finding_matches_concept" in vars(FindingRecipeSynthesizer)
 
 
 def test_detector_declarations_own_recipe_evaluation_through_mro() -> None:
@@ -210,7 +266,7 @@ def test_detector_declarations_own_recipe_evaluation_through_mro() -> None:
     synthesis_types = tuple(
         detector_type
         for detector_type in evaluator_types
-        if issubclass(detector_type, codemod.FindingRecipeSynthesizer)
+        if issubclass(detector_type, FindingRecipeSynthesizer)
     )
     evaluator_only_types = frozenset(evaluator_types) - frozenset(synthesis_types)
 
@@ -222,7 +278,7 @@ def test_detector_declarations_own_recipe_evaluation_through_mro() -> None:
         )
         assert not issubclass(evaluation_owner, IssueDetector)
         assert codemod.FindingRecipeEvaluator in evaluation_owner.__bases__
-    assert "__registry__" not in vars(codemod.FindingRecipeSynthesizer)
+    assert "__registry__" not in vars(FindingRecipeSynthesizer)
     assert "__registry__" not in vars(codemod.FindingRecipeEvaluator)
     for detector_type in evaluator_types:
         detector_id = detector_type.effective_detector_id()
@@ -245,7 +301,7 @@ def test_detector_declarations_own_recipe_evaluation_through_mro() -> None:
             detector_type
         )
         assert detector_type.effective_detector_id() in (
-            codemod.FindingRecipeSynthesizer.detector_ids_for_concept(concept_type)
+            FindingRecipeSynthesizer.detector_ids_for_concept(concept_type)
         )
 
 
@@ -365,7 +421,7 @@ def test_unrelated_concepts_do_not_match() -> None:
         codemod.SemanticCarrierConcept,
     )
     assert not issubclass(
-        codemod.DataclassPayloadProjectionMappingRecipeBuilder,
+        DataclassPayloadProjectionMappingRecipeBuilder,
         codemod.AutoRegisterStrategyFamilyConcept,
     )
 
@@ -382,7 +438,7 @@ def test_nominal_boundary_does_not_select_unexecutable_ssot_detectors() -> None:
     )
     snapshot = codemod.CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(()), (finding,))
 
-    assert not codemod.FindingRecipeSynthesizer.finding_matches_concept(
+    assert not FindingRecipeSynthesizer.finding_matches_concept(
         finding,
         codemod.NominalBoundaryConcept,
         snapshot,
@@ -434,26 +490,26 @@ def test_semantic_mirror_contract_requires_projection_and_preserves_unknown_auth
 
 def test_mapping_builder_identity_is_nominally_owned() -> None:
     assert (
-        frozenset(codemod.MappingSemanticMirrorRecipeBuilder.builder_types())
+        frozenset(MappingSemanticMirrorRecipeBuilder.builder_types())
         == EXPECTED_MAPPING_DECLARATIONS
     )
     assert (
-        frozenset(codemod.RegistrationSemanticMirrorRecipeBuilder.builder_types())
+        frozenset(RegistrationSemanticMirrorRecipeBuilder.builder_types())
         == EXPECTED_REGISTRATION_DECLARATIONS
     )
-    assert frozenset(codemod.SemanticMirrorRecipeBuilder.builder_types()) == (
+    assert frozenset(SemanticMirrorRecipeBuilder.builder_types()) == (
         EXPECTED_MAPPING_DECLARATIONS | EXPECTED_REGISTRATION_DECLARATIONS
     )
     assert all(
         "__registry__" not in declaration.__dict__
         for declaration in (
-            codemod.SemanticMirrorRecipeBuilder,
-            codemod.MappingSemanticMirrorRecipeBuilder,
-            codemod.RegistrationSemanticMirrorRecipeBuilder,
+            SemanticMirrorRecipeBuilder,
+            MappingSemanticMirrorRecipeBuilder,
+            RegistrationSemanticMirrorRecipeBuilder,
         )
     )
     assert not hasattr(
-        codemod.MappingSemanticMirrorRecipeStrategy,
+        MappingSemanticMirrorRecipeStrategy,
         "enum_subset_builder_for_finding",
     )
     assert all(
@@ -468,7 +524,7 @@ def test_mapping_builder_identity_is_nominally_owned() -> None:
 
 
 def test_metric_dispatch_uses_nominal_mro_priority() -> None:
-    class SpecializedMappingMetrics(codemod.MappingMetrics):
+    class SpecializedMappingMetrics(MappingMetrics):
         def semantic_fact_names(self) -> tuple[str, ...]:
             return ("specialized",)
 
@@ -477,34 +533,34 @@ def test_metric_dispatch_uses_nominal_mro_priority() -> None:
         field_names=("value",),
     )
 
-    assert codemod.SemanticMirrorFindingRecipeStrategy.__registry__ == {
+    assert SemanticMirrorFindingRecipeStrategy.__registry__ == {
         RegistrationMetrics: RegistrationSemanticMirrorRecipeStrategy,
-        codemod.MappingMetrics: codemod.MappingSemanticMirrorRecipeStrategy,
+        MappingMetrics: MappingSemanticMirrorRecipeStrategy,
     }
     assert isinstance(
-        codemod.SemanticMirrorFindingRecipeStrategy.strategy_for(specialized_metrics),
-        codemod.MappingSemanticMirrorRecipeStrategy,
+        SemanticMirrorFindingRecipeStrategy.strategy_for(specialized_metrics),
+        MappingSemanticMirrorRecipeStrategy,
     )
     assert specialized_metrics.semantic_authority_name_candidates() == (None, None)
     assert specialized_metrics.semantic_fact_names() == ("specialized",)
 
-    class SpecializedMappingStrategy(codemod.MappingSemanticMirrorRecipeStrategy):
+    class SpecializedMappingStrategy(MappingSemanticMirrorRecipeStrategy):
         metric_type = SpecializedMappingMetrics
 
     try:
         assert (
             type(
-                codemod.SemanticMirrorFindingRecipeStrategy.strategy_for(
+                SemanticMirrorFindingRecipeStrategy.strategy_for(
                     specialized_metrics
                 )
             )
             is SpecializedMappingStrategy
         )
     finally:
-        del codemod.SemanticMirrorFindingRecipeStrategy.__registry__[
+        del SemanticMirrorFindingRecipeStrategy.__registry__[
             SpecializedMappingMetrics
         ]
-    assert not hasattr(codemod.SemanticMirrorFindingRecipeStrategy, "matches")
+    assert not hasattr(SemanticMirrorFindingRecipeStrategy, "matches")
 
 
 def test_codemod_selector_values_are_owned_outside_the_execution_monolith() -> None:
@@ -563,11 +619,11 @@ def test_codemod_selection_context_is_an_external_abstract_boundary() -> None:
         codemod.CodemodSourceSnapshot,
     )
     assert issubclass(
-        codemod.MappingSemanticMirrorRecipeBuilder,
+        MappingSemanticMirrorRecipeBuilder,
         codemod.CodemodSourceSnapshot,
     )
     assert issubclass(
-        codemod.RegistrationSemanticMirrorRecipeBuilder,
+        RegistrationSemanticMirrorRecipeBuilder,
         codemod.CodemodSourceSnapshot,
     )
 
@@ -617,33 +673,33 @@ def test_class_assignment_recipe_metadata_is_owned_by_its_synthesizer() -> None:
     assert synthesizer_type.recipe_id_suffix == "delete-inherited-autoregister-config"
     assert "already inherited" in synthesizer_type.recipe_reason
     assert issubclass(
-        codemod.DeleteInheritedAutoRegisterConfigurationOperation,
+        DeleteInheritedAutoRegisterConfigurationOperation,
         codemod.SourceReprovedOperation,
     )
 
 
 def test_source_derived_synthesized_operations_share_one_reproof_contract() -> None:
     operation_types = (
-        codemod.CollapseClosedParameterConveyorOperation,
-        codemod.CollapseDeclaredCarrierExpansionOperation,
-        codemod.CollapseIntermediateClassAuthorityOperation,
-        codemod.CollapseRedundantClassAuthorityOperation,
+        CollapseClosedParameterConveyorOperation,
+        CollapseDeclaredCarrierExpansionOperation,
+        CollapseIntermediateClassAuthorityOperation,
+        CollapseRedundantClassAuthorityOperation,
         ConvertManualRegistryToAutoregisterOperation,
-        codemod.DeleteInheritedAutoRegisterConfigurationOperation,
+        DeleteInheritedAutoRegisterConfigurationOperation,
         DeriveAutoregisterInstanceViewOperation,
         DeriveAutoRegisterMroOrderingOperation,
         DeriveClassFamilyCollectionOperation,
-        codemod.DeriveDataclassConstructorProjectionOperation,
-        codemod.DeriveDataclassFieldNameCollectionProjectionOperation,
-        codemod.DeriveDataclassKeyValueSequenceProjectionOperation,
-        codemod.DeriveDataclassPayloadProjectionOperation,
+        DeriveDataclassConstructorProjectionOperation,
+        DeriveDataclassFieldNameCollectionProjectionOperation,
+        DeriveDataclassKeyValueSequenceProjectionOperation,
+        DeriveDataclassPayloadProjectionOperation,
         DeriveEnumSubsetOperation,
         DeriveRepeatedBuilderAuthorityOperation,
         DispatchToPolymorphismOperation,
         codemod.FactorParallelMirroredLeafFamilyOperation,
         codemod.PromoteExactLeafMethodsToAncestorOperation,
         codemod.PromoteClassMembersToAncestorOperation,
-        codemod.RenameTopLevelDeclarationAuthorityOperation,
+        RenameTopLevelDeclarationAuthorityOperation,
     )
 
     assert all(
@@ -654,10 +710,10 @@ def test_source_derived_synthesized_operations_share_one_reproof_contract() -> N
 
 def test_class_base_operations_share_source_proof_and_own_leaf_mutation() -> None:
     for operation_type in (
-        codemod.AddClassBaseOperation,
-        codemod.RemoveClassBaseOperation,
+        AddClassBaseOperation,
+        RemoveClassBaseOperation,
     ):
-        assert issubclass(operation_type, codemod.ClassBaseMutationOperationABC)
+        assert issubclass(operation_type, ClassBaseMutationOperationABC)
         assert issubclass(operation_type, codemod.SourceReprovedOperation)
         assert "source_edits_from_snapshot" not in operation_type.__dict__
         assert "replacement_header_lines" in operation_type.__dict__
@@ -668,128 +724,17 @@ def test_class_base_operations_share_source_proof_and_own_leaf_mutation() -> Non
 
 
 def test_authority_source_payload_is_owned_by_its_operation_family() -> None:
-    assert "payload_value" not in codemod.AuthoritySourceOperation.__dataclass_fields__
+    assert "payload_value" not in AuthoritySourceOperation.__dataclass_fields__
     assert tuple(
         binding.field_name
-        for binding in codemod.AuthoritySourceOperation.payload_bindings()
+        for binding in AuthoritySourceOperation.payload_bindings()
     ) == ("target", "rationale", "authority_kind", "authority_source")
-    assert "authority_claim" not in codemod.AuthoritySourceOperation.__dataclass_fields__
-
-
-def test_module_symbol_move_derives_its_source_reexport() -> None:
-    for operation_type in (
-        codemod.MoveSymbolsToModuleOperation,
-        codemod.RelocateSymbolsToModuleOperation,
-        codemod.RelocateSymbolsToNewModuleOperation,
-        codemod.MoveSymbolClosureToModuleOperation,
-        codemod.ExtractSymbolsToNewModuleOperation,
-        codemod.ExtractSymbolClosureToNewModuleOperation,
-    ):
-        assert issubclass(operation_type, codemod.ModuleSymbolMoveOperation)
-        assert issubclass(operation_type, codemod.RepositorySourceReprovedOperation)
-        assert (
-            codemod.RefactorRecipeOperation.__registry__[
-                operation_type.operation_key()
-            ]
-            is operation_type
-        )
-    assert tuple(
-        binding.field_name
-        for binding in codemod.MoveSymbolsToModuleOperation.payload_bindings()
-    ) == ("target", "rationale", "destination_path", "symbol_qualnames")
-    assert tuple(
-        binding.field_name
-        for binding in codemod.RelocateSymbolsToModuleOperation.payload_bindings()
-    ) == ("target", "rationale", "destination_path", "symbol_qualnames")
-    assert tuple(
-        binding.field_name
-        for binding in codemod.RelocateSymbolsToNewModuleOperation.payload_bindings()
-    ) == (
-        "target",
-        "rationale",
-        "destination_path",
-        "symbol_qualnames",
-        "destination_source",
-        "destination_docstring",
-    )
-    assert tuple(
-        binding.field_name
-        for binding in codemod.MoveSymbolClosureToModuleOperation.payload_bindings()
-    ) == (
-        "target",
-        "rationale",
-        "destination_path",
-        "root_symbol_qualnames",
-        "maximum_moved_symbol_count",
-    )
-    assert tuple(
-        binding.field_name
-        for binding in codemod.ExtractSymbolsToNewModuleOperation.payload_bindings()
-    ) == (
-        "target",
-        "rationale",
-        "destination_path",
-        "symbol_qualnames",
-        "destination_source",
-        "destination_docstring",
-    )
-    assert tuple(
-        binding.field_name
-        for binding in codemod.ExtractSymbolClosureToNewModuleOperation.payload_bindings()
-    ) == (
-        "target",
-        "rationale",
-        "destination_path",
-        "root_symbol_qualnames",
-        "maximum_moved_symbol_count",
-        "destination_source",
-        "destination_docstring",
-    )
-    assert (
-        "source_edits_from_snapshot"
-        in codemod.ExistingModuleSymbolMoveOperationABC.__dict__
-    )
-    assert (
-        "source_edits_from_snapshot"
-        in codemod.NewModuleSymbolMoveOperationABC.__dict__
-    )
-    assert (
-        "move_selection"
-        in codemod.ExplicitModuleSymbolSelectionOperationABC.__dict__
-    )
-    assert (
-        "move_selection"
-        in codemod.DependencyClosureModuleSymbolSelectionOperationABC.__dict__
-    )
-    assert (
-        "moved_symbol_count_limit"
-        in codemod.ExplicitModuleSymbolSelectionOperationABC.__dict__
-    )
-    assert (
-        "moved_symbol_count_limit"
-        in codemod.DependencyClosureModuleSymbolSelectionOperationABC.__dict__
-    )
-    assert "move_symbol_qualnames" in codemod.ModuleSymbolMoveOperation.__dict__
-    assert "move_plan" in codemod.ModuleSymbolMoveOperation.__dict__
-    assert (
-        "source_binding_import_sources"
-        in codemod.SourceBindingPreservingModuleSymbolMoveOperationABC.__dict__
-    )
-    assert (
-        "source_binding_import_sources"
-        in codemod.SourceBindingRelocatingModuleSymbolMoveOperationABC.__dict__
-    )
-    assert "move_plan" not in codemod.MoveSymbolsToModuleOperation.__dict__
-    assert "move_plan" not in codemod.ExtractSymbolsToNewModuleOperation.__dict__
-    assert (
-        "move_plan"
-        not in codemod.ExtractSymbolClosureToNewModuleOperation.__dict__
-    )
+    assert "authority_claim" not in AuthoritySourceOperation.__dataclass_fields__
 
 
 def test_edit_payloads_are_owned_by_their_semantic_operations() -> None:
     for operation_type, field_name in (
-        (codemod.EnsureImportOperation, "import_source"),
+        (EnsureImportOperation, "import_source"),
         (codemod.ReplaceFunctionSignatureOperation, "signature_suffix"),
         (codemod.ReplaceFunctionBodyOperation, "body_source"),
     ):
@@ -832,9 +777,9 @@ def test_class_body_source_authority_owns_insertion_geometry() -> None:
 
 def test_source_payload_operations_share_the_source_declaration() -> None:
     operation_types = (
-        codemod.CreateFileOperation,
+        CreateFileOperation,
         codemod.ReplaceModuleAssignmentOperation,
-        codemod.InsertAfterImportsOperation,
+        InsertAfterImportsOperation,
     )
 
     for operation_type in operation_types:
@@ -856,12 +801,12 @@ def test_source_payload_operations_share_the_source_declaration() -> None:
 
 def test_target_adjacent_insertions_share_source_proof_and_own_geometry() -> None:
     for operation_type in (
-        codemod.InsertBeforeTargetOperation,
-        codemod.InsertAfterTargetOperation,
+        InsertBeforeTargetOperation,
+        InsertAfterTargetOperation,
     ):
         assert issubclass(
             operation_type,
-            codemod.TargetAdjacentInsertionOperationABC,
+            TargetAdjacentInsertionOperationABC,
         )
         assert issubclass(operation_type, codemod.SourceReprovedOperation)
         assert "source_edits_from_snapshot" not in operation_type.__dict__
@@ -873,10 +818,10 @@ def test_target_adjacent_insertions_share_source_proof_and_own_geometry() -> Non
 
 def test_assignment_deletions_share_validated_source_reproof() -> None:
     for operation_type in (
-        codemod.DeleteClassAssignmentsOperation,
-        codemod.DeleteModuleAssignmentsOperation,
+        DeleteClassAssignmentsOperation,
+        DeleteModuleAssignmentsOperation,
     ):
-        assert issubclass(operation_type, codemod.AssignmentDeletionOperationABC)
+        assert issubclass(operation_type, AssignmentDeletionOperationABC)
         assert issubclass(operation_type, codemod.SourceReprovedOperation)
         assert tuple(
             binding.field_name for binding in operation_type.payload_bindings()
@@ -885,10 +830,10 @@ def test_assignment_deletions_share_validated_source_reproof() -> None:
 
 def test_semantic_mirror_builder_families_publish_no_parallel_registry_or_priority() -> None:
     builder_declarations = (
-        codemod.SemanticMirrorRecipeBuilder,
-        codemod.MappingSemanticMirrorRecipeBuilder,
+        SemanticMirrorRecipeBuilder,
+        MappingSemanticMirrorRecipeBuilder,
         *EXPECTED_MAPPING_DECLARATIONS,
-        codemod.RegistrationSemanticMirrorRecipeBuilder,
+        RegistrationSemanticMirrorRecipeBuilder,
         *EXPECTED_REGISTRATION_DECLARATIONS,
     )
 
@@ -926,7 +871,7 @@ def _repeated_builder_evaluation_for_source(
     )
     assert len(findings) == 1
     snapshot = codemod.CodemodSourceSnapshot.from_modules(modules, findings)
-    synthesizer = codemod.FindingRecipeSynthesizer.for_finding(findings[0])
+    synthesizer = FindingRecipeSynthesizer.for_finding(findings[0])
     assert synthesizer is not None
     return synthesizer.evaluate_recipe_for_finding(findings[0], snapshot)
 

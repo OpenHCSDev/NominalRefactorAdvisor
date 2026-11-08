@@ -2,11 +2,13 @@
 
 import json
 
-from nominal_refactor_advisor.codemod import (
-    CodemodPlanSequence,
+from nominal_refactor_advisor.refactors.source_insertion import EnsureImportOperation
+from nominal_refactor_advisor.refactors.target_deletion import (
     DeleteModuleAssignmentsOperation,
     DeleteTargetOperation,
-    EnsureImportOperation,
+)
+from nominal_refactor_advisor.codemod import (
+    CodemodPlanSequence,
     SourceRewriteTarget,
 )
 from nominal_refactor_advisor.json_reports import json_report_object

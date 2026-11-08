@@ -10,10 +10,10 @@ import pytest
 
 from nominal_refactor_advisor.ast_tools import ParsedModuleSet
 from nominal_refactor_advisor.ast_tools import ParsedModule
+from nominal_refactor_advisor.refactors.candidate_collector import DeriveCandidateCollectorOperation
 from nominal_refactor_advisor.codemod import (
     CodemodPlanSequence,
     CodemodSourceSnapshot,
-    DeriveCandidateCollectorOperation,
     SourceRewriteTarget,
 )
 

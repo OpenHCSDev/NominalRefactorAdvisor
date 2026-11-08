@@ -9,12 +9,14 @@ import pytest
 
 from nominal_refactor_advisor.ast_tools import ParsedModuleSet
 from nominal_refactor_advisor.ast_tools import ParsedModule, parse_python_modules
+from nominal_refactor_advisor.refactors.candidate_collector import DeriveCandidateCollectorOperation
+from nominal_refactor_advisor.refactors.source_insertion import (
+    InsertAfterTargetOperation,
+    InsertBeforeTargetOperation,
+)
 from nominal_refactor_advisor.codemod import (
     CodemodPlanSequence,
     CodemodSourceSnapshot,
-    DeriveCandidateCollectorOperation,
-    InsertAfterTargetOperation,
-    InsertBeforeTargetOperation,
     SourceRewriteTarget,
 )
 from nominal_refactor_advisor.json_reports import json_report_object

@@ -4,11 +4,11 @@ from dataclasses import dataclass
 
 import pytest
 
+from nominal_refactor_advisor.refactors.target_deletion import DeleteFunctionAssignmentsOperation
 from nominal_refactor_advisor.codemod import (
     CodemodPlanDocument,
     CodemodPlanSequence,
     CodemodSourceSnapshot,
-    DeleteFunctionAssignmentsOperation,
     ExtractSymbolsToNewModuleOperation,
     PrependFunctionBodyOperation,
     PromoteClassMembersToAncestorOperation,

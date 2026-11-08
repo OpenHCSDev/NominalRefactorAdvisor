@@ -54,11 +54,11 @@ from .class_overlap import (
     PromoteToSharedBase,
 )
 from .class_references import ClassReferenceRole
-from .codemod import (
+from .refactors.finding_recipes import (
     FindingEvidenceActionKeysMixin,
     SelfDeclaredRecipeSynthesizer,
-    RefactorRecipe,
 )
+from .codemod import RefactorRecipe
 from .codemod_authority_claims import AstTargetAuthorityClaim
 from .codemod_declaration_source import (
     ClassBodySourceAuthority,

@@ -1,8 +1,8 @@
 """Reuse the scan's engine signature instead of reconstructing it per source."""
 
+from nominal_refactor_advisor.refactors.source_insertion import EnsureImportOperation
 from nominal_refactor_advisor.codemod import (
     CodemodPlanSequence,
-    EnsureImportOperation,
     ReplaceDeclarationDecoratorsOperation,
     SourceRewriteTarget,
 )

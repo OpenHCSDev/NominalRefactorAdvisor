@@ -8,11 +8,11 @@ import sys
 import pytest
 
 from nominal_refactor_advisor.ast_tools import parse_python_modules
+from nominal_refactor_advisor.refactors.source_insertion import CreateFileOperation
 from nominal_refactor_advisor.codemod import (
     CodemodPlanSequence,
     CodemodSimulationReport,
     CodemodSourceSnapshot,
-    CreateFileOperation,
     ReplaceDeclaredCallArgumentsOperation,
     ReplaceFunctionBodyOperation,
     SourceRewriteTarget,

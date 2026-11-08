@@ -4,11 +4,11 @@ from __future__ import annotations
 
 from abc import ABC
 
-from .codemod import (
-    EraseDeadCompatibilityOperation,
+from .refactors.finding_recipes import (
     FindingRecipeSynthesizer,
     PrimaryEvidenceActionKeysMixin,
 )
+from .refactors.target_deletion import EraseDeadCompatibilityOperation
 from .codemod_runtime import FindingRecipeEvaluation, RefactorRecipe
 from .codemod_selection_context import CodemodSelectorContext
 from .codemod_selector_models import SourceRewriteTarget

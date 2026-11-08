@@ -53,9 +53,9 @@ from nominal_refactor_advisor.ast_tools import (
     ParsedModuleSet,
     parse_python_modules,
 )
+from nominal_refactor_advisor.refactors.candidate_collector import DeclareCandidateFindingRendererOperation
 from nominal_refactor_advisor.codemod import (
     CodemodSourceSnapshot,
-    DeclareCandidateFindingRendererOperation,
     SourceRewriteTarget,
 )
 from nominal_refactor_advisor.detectors._base import (

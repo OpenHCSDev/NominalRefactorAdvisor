@@ -7,10 +7,10 @@ import pytest
 
 from nominal_refactor_advisor.ast_tools import ParsedModuleSet
 from nominal_refactor_advisor.ast_tools import ParsedModule
+from nominal_refactor_advisor.refactors.source_insertion import EnsureImportOperation
 from nominal_refactor_advisor.codemod import (
     CodemodPlanSequence,
     CodemodSourceSnapshot,
-    EnsureImportOperation,
     RefactorRecipeOperationCompiler,
     SourceRewriteTarget,
 )

@@ -13,9 +13,9 @@ from types import ModuleType
 import pytest
 
 from nominal_refactor_advisor.ast_tools import ParsedModule, parse_python_modules
+from nominal_refactor_advisor.refactors.carrier_collapse import CollapseClosedParameterConveyorOperation
 from nominal_refactor_advisor.codemod import (
     ArchitectureGuardSuite,
-    CollapseClosedParameterConveyorOperation,
     CodemodSourceSnapshot,
     FindingRecipeSynthesisStatus,
     RefactorRecipeOperation,

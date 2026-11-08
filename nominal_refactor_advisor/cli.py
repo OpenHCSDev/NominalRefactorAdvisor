@@ -92,7 +92,7 @@ from .calibration import (
     format_calibration_markdown,
     run_calibration_manifest,
 )
-from .codemod import (
+from .refactors.finding_recipes import (
     FindingRecipeClassPlanReport,
     codemod_class_plan_from_findings,
 )

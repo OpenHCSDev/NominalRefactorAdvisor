@@ -67,7 +67,7 @@ from ..codemod_foreign_family_recipe import (
     ForeignFamilySiteFindingRecipeSynthesizer,
 )
 from ..codemod_foreign_family_source import ForeignFamilyFilterModuleFamily
-from ..codemod import (
+from ..refactors.finding_recipes import (
     KeyedMirrorFindingRecipeSynthesizer,
     ParallelMirroredLeafFamilyFindingRecipeSynthesizer,
     SemanticMirrorFindingRecipeEvaluator,
