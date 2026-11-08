@@ -9,6 +9,7 @@ from abc import (
 )
 from collections import Counter
 from collections.abc import Iterator, Mapping
+from itertools import product
 from dataclasses import dataclass
 from typing import ClassVar
 
@@ -281,8 +282,21 @@ class ModuleNameRedirect:
                         tuple(ast.alias(name=name) for name in module_reads.names),
                     )
                 )
+            module_objects = self._accessed_module_objects(
+                import_graph, consumer_path, module_reads
+            )
+            edits.extend(
+                ModuleImportMutation.from_source(
+                    file_path=consumer_path, import_source=import_source
+                )
+                for import_source in sorted({source for _node, _name, source in module_objects})
+            )
+            if module_reads.reads or module_objects:
                 edits.append(
-                    module_reads.rewrite(context.sources_by_file_path[consumer_path])
+                    module_reads.rewrite(
+                        context.sources_by_file_path[consumer_path],
+                        tuple((node, name) for node, name, _source in module_objects),
+                    )
                 )
             local_imports = self._local_import_replacements(
                 import_graph,
@@ -370,6 +384,51 @@ class ModuleNameRedirect:
             )
         return tuple(replacements)
 
+    def patched_reader_path(self, name: str, file_path: str) -> str:
+        """The module whose code reads `name` once it leaves the source, which a
+        patch of `source.name` must target instead. These owners spread the
+        readers, so no one module is it."""
+
+        raise ValueError(
+            f"{file_path!r} patches {name!r} on the source module, whose readers "
+            "the move spreads across owners"
+        )
+
+    def _accessed_module_objects(
+        self,
+        import_graph: SourceModuleImportGraph,
+        consumer_path: str,
+        module_reads: _SourceModuleObjectReads,
+    ) -> tuple[tuple[ast.expr, str, str], ...]:
+        """Each by-name access's module object, the binding of the module it now
+        targets, and the import that binds it."""
+
+        module_objects: list[tuple[ast.expr, str, str]] = []
+        for node, access in module_reads.accesses:
+            module_name = import_graph.module_name_for_file_path(
+                access.target_path(self, consumer_path)
+            )
+            if module_name is None:
+                raise ValueError(
+                    f"{consumer_path!r} reaches {access.member_name!r} through "
+                    f"{access.accessor!r} in a module outside the index"
+                )
+            package, _, binding = module_name.rpartition(".")
+            if binding in module_reads.bound_names:
+                raise ValueError(
+                    f"{consumer_path!r} already binds {binding!r}, which its "
+                    f"{access.accessor!r} of {access.member_name!r} would be "
+                    "redirected to"
+                )
+            module_objects.append(
+                (
+                    node,
+                    binding,
+                    f"from {package} import {binding}\n" if package else f"import {binding}\n",
+                )
+            )
+        return tuple(module_objects)
+
     def _owner_imports(
         self,
         import_graph: SourceModuleImportGraph,
@@ -396,6 +455,17 @@ class ModuleNameRedirect:
                 ).source,
                 scope=scope,
             )
+
+
+@dataclass(frozen=True)
+class RelocationNameRedirect(ModuleNameRedirect):
+    """The redirect of one relocation: every moved declaration, and so every
+    reader of a removed source import, lands in `reader_path`."""
+
+    reader_path: str
+
+    def patched_reader_path(self, name: str, file_path: str) -> str:
+        return self.reader_path
 
 
 @dataclass(frozen=True)
@@ -433,18 +503,13 @@ class _StarExportedNames:
 class _NamedModuleMemberAccess:
     """`getattr(m, "Name")`-shaped access: the module object is the first argument
     of a by-name accessor and the member is a string literal, so the name it
-    reaches is as static as `m.Name`."""
+    reaches is as static as `m.Name`. Each member says which module the access
+    targets once the name leaves the source."""
 
     accessor: str
     member_name: str
 
-    BUILTIN_ACCESSORS: ClassVar[frozenset[str]] = frozenset(
-        accessor.__name__ for accessor in (getattr, hasattr, setattr, delattr)
-    )
-    PATCH_ACCESSORS: ClassVar[frozenset[str]] = frozenset(
-        accessor.__name__ for accessor in (setattr, delattr)
-    )
-    PATCH_FIXTURE = "monkeypatch"
+    ACCESSORS: ClassVar[frozenset[str]] = frozenset()
 
     @classmethod
     def of(
@@ -462,21 +527,54 @@ class _NamedModuleMemberAccess:
         ):
             return None
         accessor = ast.unparse(call.func)
-        if accessor in cls.BUILTIN_ACCESSORS or accessor in {
-            f"{cls.PATCH_FIXTURE}.{name}" for name in cls.PATCH_ACCESSORS
-        }:
-            return cls(accessor=accessor, member_name=member.value)
+        for member_type in cls.__subclasses__():
+            if accessor in member_type.ACCESSORS:
+                return member_type(accessor=accessor, member_name=member.value)
         return None
+
+    def target_path(self, redirect: ModuleNameRedirect, file_path: str) -> str:
+        raise NotImplementedError
+
+
+@dataclass(frozen=True)
+class _NamedModuleMemberRead(_NamedModuleMemberAccess):
+    """`getattr`/`hasattr` reads the name where it is now declared."""
+
+    ACCESSORS: ClassVar[frozenset[str]] = frozenset(
+        accessor.__name__ for accessor in (getattr, hasattr)
+    )
+
+    def target_path(self, redirect: ModuleNameRedirect, file_path: str) -> str:
+        return redirect.destinations[self.member_name]
+
+
+@dataclass(frozen=True)
+class _NamedModuleMemberPatch(_NamedModuleMemberAccess):
+    """`setattr`/`delattr` (or the `monkeypatch` fixture's) replace the name in the
+    module whose code reads it, which is not its declaring module when the name
+    is an import: the patch follows the reader."""
+
+    ACCESSORS: ClassVar[frozenset[str]] = frozenset(
+        f"{fixture}{accessor.__name__}"
+        for fixture, accessor in product(("", "monkeypatch."), (setattr, delattr))
+    )
+
+    def target_path(self, redirect: ModuleNameRedirect, file_path: str) -> str:
+        return redirect.patched_reader_path(self.member_name, file_path)
 
 
 @dataclass(frozen=True)
 class _SourceModuleObjectReads:
     """A consumer's `module.Name` reads of moved names through its bindings of the
-    source module object. The move refuses when such a binding is used other than
-    by attribute reads, is rebound, or when a read name is already bound there."""
+    source module object, and its by-name accesses (`getattr(module, "Name")`,
+    `monkeypatch.setattr(module, "Name", ...)`) of them. The move refuses when
+    such a binding is used any other way, is rebound, or when a name it would
+    bind is already bound there."""
 
     file_path: str
     reads: tuple[tuple[ast.Attribute, str], ...]
+    accesses: tuple[tuple[ast.expr, _NamedModuleMemberAccess], ...]
+    bound_names: frozenset[str]
 
     @property
     def names(self) -> tuple[str, ...]:
@@ -495,7 +593,7 @@ class _SourceModuleObjectReads:
         source_parts = tuple(source_module_name.split("."))
         chains = frozenset(cls._bound_chains(module, identity, source_parts))
         if not chains:
-            return cls(file_path, ())
+            return cls(file_path, (), (), frozenset())
         bindings = cls._bound_name_counts(module)
         parents = {
             child: parent
@@ -503,6 +601,7 @@ class _SourceModuleObjectReads:
             for child in ast.iter_child_nodes(parent)
         }
         reads: list[tuple[ast.Attribute, str]] = []
+        accesses: list[tuple[ast.expr, _NamedModuleMemberAccess]] = []
         for chain in chains:
             if bindings[chain[0]] > 1:
                 raise ValueError(
@@ -520,13 +619,13 @@ class _SourceModuleObjectReads:
                     named := _NamedModuleMemberAccess.of(outermost, parents)
                 ):
                     reached = (*parts, named.member_name)
-                    if reached == chain or (
-                        parts == chain and named.member_name in moved_names
-                    ):
+                    if reached == chain:
                         raise ValueError(
                             f"{file_path!r} names {'.'.join(reached)!r}, which "
                             f"reaches the moved names, through {named.accessor!r}"
                         )
+                    if parts == chain and named.member_name in moved_names:
+                        accesses.append((outermost, named))
                 elif parts == chain:
                     raise ValueError(
                         f"{file_path!r} uses the source module object "
@@ -538,7 +637,12 @@ class _SourceModuleObjectReads:
                 f"{file_path!r} already binds {taken!r}, which its source-module "
                 "reads would be redirected to"
             )
-        return cls(file_path, tuple(reads))
+        return cls(
+            file_path,
+            tuple(reads),
+            tuple(accesses),
+            frozenset(name for name, count in bindings.items() if count),
+        )
 
     @staticmethod
     def _bound_chains(
@@ -609,7 +713,14 @@ class _SourceModuleObjectReads:
             parts.append(parent.attr)
         return outermost, tuple(parts)
 
-    def rewrite(self, source: str) -> NominalSourceEdit:
+    def rewrite(
+        self,
+        source: str,
+        module_objects: tuple[tuple[ast.expr, str], ...],
+    ) -> NominalSourceEdit:
+        """Each read becomes its bare name; each by-name access's module object
+        becomes the binding of the module it now targets."""
+
         geometry = SourceTextGeometry(source)
         return geometry.nominal_edit(
             file_path=self.file_path,
@@ -617,9 +728,9 @@ class _SourceModuleObjectReads:
                 SourceTextSpanReplacement.from_offsets(
                     start_offset=start,
                     end_offset=end,
-                    replacement_source=name,
+                    replacement_source=replacement,
                 )
-                for node, name in self.reads
+                for node, replacement in (*self.reads, *module_objects)
                 for start, end in (geometry.required_node_offsets(node),)
             ),
         )
@@ -726,12 +837,13 @@ class SourceTopLevelSymbolClosureMovePlan(SourceTopLevelSymbolClosureMoveCarrier
                 )
                 for module_text, names, scope in self_binding_removals
             ),
-            *ModuleNameRedirect(
+            *RelocationNameRedirect(
                 source_path=request.source_path,
                 destinations={
                     **cls._removed_binding_owners(context, report),
                     **{name: request.destination_path for name in moved_symbol_names},
                 },
+                reader_path=request.destination_path,
             ).consumer_edits(
                 context,
                 excluded_paths=frozenset((request.source_path, request.destination_path)),

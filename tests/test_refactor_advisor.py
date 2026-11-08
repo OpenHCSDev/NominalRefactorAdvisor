@@ -7495,6 +7495,10 @@ def test_relocation_extracts_a_declaration_its_source_still_reads(tmp_path: Path
             "pkg/reader.py": "import pkg as p\nfrom pkg import source\n\n"
             "assert not hasattr(p, 'retired')\nvalue = source.Moved.value\n"
         },
+        {
+            "pkg/reader.py": "import pkg.source as s\n\n"
+            "assert hasattr(s, 'Moved')\nvalue = getattr(s, 'Moved').value\n"
+        },
     ),
     ids=(
         "star-reexport",
@@ -7503,6 +7507,7 @@ def test_relocation_extracts_a_declaration_its_source_still_reads(tmp_path: Path
         "from-package",
         "named-unmoved-member",
         "named-package-member",
+        "named-moved-member",
     ),
 )
 def test_relocation_keeps_star_and_module_object_readers_working(
@@ -7538,13 +7543,8 @@ def test_relocation_keeps_star_and_module_object_readers_working(
             "uses the source module object 's' other than by reading an attribute",
         ),
         (
-            "import pkg.source as s\n\nvalue = getattr(s, 'Moved')\n",
-            "names 's.Moved', which reaches the moved names, through 'getattr'",
-        ),
-        (
-            "import pkg.source as s\n\n\ndef test_patch(monkeypatch):\n"
-            "    monkeypatch.setattr(s, 'Moved', None)\n",
-            "through 'monkeypatch.setattr'",
+            "import pkg.source as s\n\ndestination = None\nvalue = getattr(s, 'Moved')\n",
+            "already binds 'destination', which its 'getattr' of 'Moved'",
         ),
         (
             "import pkg as p\n\nsource = getattr(p, 'source')\n",
@@ -7561,8 +7561,7 @@ def test_relocation_keeps_star_and_module_object_readers_working(
     ),
     ids=(
         "escaping-module-object",
-        "named-moved-member",
-        "patched-moved-member",
+        "named-member-binding-taken",
         "named-source-from-package",
         "taken-name",
         "rebound-module-name",
@@ -7631,6 +7630,56 @@ def test_relocation_redirects_readers_of_a_source_import_it_removes(
             "from pkg.reader import value; from pkg.destination import Moved; "
             "assert value == 6 and Moved.value == 3",
         ],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert imported.returncode == 0, imported.stderr
+
+
+@pytest.mark.parametrize(
+    "patch",
+    (
+        "setattr(s, 'base', lambda: 7)",
+        "monkeypatch = pytest.MonkeyPatch()\nmonkeypatch.setattr(s, 'base', lambda: 7)",
+    ),
+    ids=("setattr", "monkeypatch"),
+)
+def test_relocation_points_a_patch_of_a_removed_import_at_its_new_reader(
+    tmp_path: Path,
+    patch: str,
+) -> None:
+    """Patching `source.base`, an import only the moved code reads, replaced
+    what that code calls; after the move the code reads `base` from the
+    destination, so the patch targets the destination, not `base`'s owner."""
+
+    for relative_path, source in {
+        "pkg/__init__.py": "",
+        "pkg/helpers.py": "def base():\n    return 3\n",
+        "pkg/source.py": "from .helpers import base\n\n\n"
+        "class Kept:\n    pass\n\n\n"
+        "class Moved:\n    @staticmethod\n    def value():\n        return base()\n",
+        "pkg/destination.py": "",
+        "pkg/reader.py": f"import pytest\nimport pkg.source as s\n\n{patch}\n"
+        "value = s.Moved.value()\n",
+    }.items():
+        _write_module(tmp_path, relative_path, source)
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    operation = RelocateSymbolsToModuleOperation(
+        target=SourceRewriteTarget(file_path=(tmp_path / "pkg/source.py").as_posix()),
+        symbol_qualnames=("Moved",),
+        destination_path=(tmp_path / "pkg/destination.py").as_posix(),
+    )
+
+    simulation = RefactorRecipe("relocate-patched-import").with_operation(
+        operation
+    ).simulate(snapshot)
+
+    assert simulation.is_clean
+    simulation.apply()
+    imported = subprocess.run(
+        [sys.executable, "-c", "from pkg.reader import value; assert value == 7, value"],
         cwd=tmp_path,
         capture_output=True,
         text=True,
