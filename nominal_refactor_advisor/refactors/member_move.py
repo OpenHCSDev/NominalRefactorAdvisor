@@ -126,6 +126,16 @@ class MovedMethod:
         return self.descendants | {self.symbol}
 
     @cached_property
+    def family_declarations(self) -> dict[tuple[str, str], str]:
+        """Each family class by the file and qualname that declare it."""
+
+        classes = self.snapshot.required_class_family_index.classes_by_symbol
+        return {
+            (classes[symbol].file_path, classes[symbol].qualname): symbol
+            for symbol in self.family if symbol in classes
+        }
+
+    @cached_property
     def locals(self) -> frozenset[str]:
         return LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(self.method.body) | frozenset(
             argument.arg for argument in ast.walk(self.method.args) if isinstance(argument, ast.arg)
@@ -361,10 +371,15 @@ class SourceShape:
     def free_names(self) -> frozenset[str]:
         return frozenset()
 
-    def class_receiver(self, receiver: ast.expr, file_path: str, enclosing: str | None) -> bool:
-        """Whether a call receiver is the source class itself."""
+    def bound_class(
+        self, receiver: ast.expr, file_path: str, enclosing: str | None,
+    ) -> ClassBinding | None:
+        """The family class a call receiver names, when it names one rather than an instance."""
 
-        return False
+        return None
+
+    def admits(self, binding: ReceiverBinding, where: str) -> None:
+        """Refuse a call whose receiver would change what the moved method means."""
 
 
 @dataclass(frozen=True)
@@ -390,21 +405,28 @@ class ClassBoundSource(SourceShape):
     """A staticmethod or classmethod: calls are spelled on the class itself, by its binding, or
     inside it on cls or self; the destination member takes no receiver from them."""
 
-    def class_receiver(self, receiver: ast.expr, file_path: str, enclosing: str | None) -> bool:
+    def bound_class(
+        self, receiver: ast.expr, file_path: str, enclosing: str | None,
+    ) -> ClassBinding | None:
         if not isinstance(receiver, ast.Name):
-            return False
+            return None
+        family = self.moved.family_declarations
         if receiver.id in {"cls", "self"}:
-            return enclosing == self.moved.symbol
+            return None if enclosing not in self.moved.family else ImplicitClass(enclosing)
+        local = family.get((file_path, receiver.id))
+        if local is not None:
+            return NamedClass(local)
         snapshot = self.moved.snapshot
-        name = self.moved.source_class.name
-        if file_path == self.moved.source_class.file_path:
-            return receiver.id == name
-        return any(
-            isinstance(statement, ast.ImportFrom)
-            and any(alias.name == name and (alias.asname or alias.name) == receiver.id for alias in statement.names)
-            and _imported_file(snapshot, file_path, statement) == self.moved.source_class.file_path
-            for statement in ast.walk(snapshot.module_nodes_by_file_path[file_path])
-        )
+        for statement in ast.walk(snapshot.module_nodes_by_file_path[file_path]):
+            if not isinstance(statement, ast.ImportFrom):
+                continue
+            for alias in statement.names:
+                if (alias.asname or alias.name) != receiver.id:
+                    continue
+                imported = family.get((_imported_file(snapshot, file_path, statement), alias.name))
+                if imported is not None:
+                    return NamedClass(imported)
+        return None
 
 
 @dataclass(frozen=True)
@@ -417,19 +439,22 @@ class StaticSource(ClassBoundSource):
 
 @dataclass(frozen=True)
 class ClassSource(ClassBoundSource):
-    """A classmethod: its cls is the source class, which a descendant would change, so the move
-    requires a class without descendants; on the destination cls reads become that class."""
+    """A classmethod: on the destination its cls reads become the source class, so a call that
+    could bind cls to a descendant refuses (`admits`)."""
 
     decorators: ClassVar[tuple[str, ...] | None] = ("classmethod",)
     leading_name: ClassVar[str | None] = "cls"
     describes: ClassVar[str] = "a classmethod"
 
-    def __post_init__(self) -> None:
-        super().__post_init__()
-        if self.moved.descendants:
+    def admits(self, binding: ReceiverBinding, where: str) -> None:
+        """cls becomes the source class on the destination, which changes the method only where
+        its body reads cls and a call may bind cls to a descendant: one naming a descendant, or
+        through cls, self or an instance, whose class is known only at run time."""
+
+        if self.moved.body_reads("cls") and self.moved.descendants and not binding.names(self.moved.symbol):
             raise ValueError(
-                f"{self.moved.name!r} is a classmethod of a class with descendants; "
-                "cls would stop naming them"
+                f"{where} calls {self.moved.name!r} {binding.describes}, which may bind cls to a "
+                f"descendant of {self.moved.source_class.name}; move that caller first or call the class"
             )
 
     def body_renames(self) -> tuple[tuple[ast.AST, str], ...]:
@@ -437,6 +462,41 @@ class ClassSource(ClassBoundSource):
 
     def free_names(self) -> frozenset[str]:
         return frozenset({self.moved.source_class.name}) if self.moved.body_reads("cls") else frozenset()
+
+
+@dataclass(frozen=True)
+class ReceiverBinding:
+    """What a call's receiver says about the class the moved method runs on."""
+
+    symbol: str
+    describes: ClassVar[str] = "on an instance"
+
+    def names(self, symbol: str) -> bool:
+        """Whether the receiver fixes the runtime class to exactly this one."""
+
+        return False
+
+
+@dataclass(frozen=True)
+class ClassBinding(ReceiverBinding):
+    """A receiver that is a family class rather than an instance of one."""
+
+
+@dataclass(frozen=True)
+class NamedClass(ClassBinding):
+    """The class spelled by its binding: the runtime class is exactly it."""
+
+    describes: ClassVar[str] = "on a class named outright"
+
+    def names(self, symbol: str) -> bool:
+        return self.symbol == symbol
+
+
+@dataclass(frozen=True)
+class ImplicitClass(ClassBinding):
+    """cls or self inside a family class: the runtime class is that class or any descendant."""
+
+    describes: ClassVar[str] = "through cls or self"
 
 
 @dataclass(frozen=True)
@@ -865,7 +925,9 @@ class MoveMethodToClassOperation(RepositorySourceReprovedOperation):
                     raise ValueError(f"{where} calls {moved.name!r} through super()")
                 site = MethodCall(parsed.file_path, call, node)
                 enclosing = _enclosing_class(snapshot, parsed.file_path, node, parents)
-                if moved.source.class_receiver(node.value, parsed.file_path, enclosing):
+                bound = moved.source.bound_class(node.value, parsed.file_path, enclosing)
+                if bound is not None:
+                    moved.source.admits(bound, site.where)
                     answering.append(site)
                     continue
                 owner = resolver.owner(node.value).resolved(typing)
@@ -873,6 +935,7 @@ class MoveMethodToClassOperation(RepositorySourceReprovedOperation):
                 if spans:
                     undeclared[spans[0]] = site
                 elif moved.answers(tuple(getattr(owner, "class_symbols", tuple)()), where):
+                    moved.source.admits(ReceiverBinding(moved.symbol), site.where)
                     answering.append(site)
         if undeclared:
             with TypeCheckerSession.session(SourceTexts(snapshot.parsed_modules)) as session:
@@ -882,6 +945,7 @@ class MoveMethodToClassOperation(RepositorySourceReprovedOperation):
                 if not isinstance(answer, InferredReceiverType):
                     raise ValueError(f"{site.where}: the type checker gives no type for the receiver")
                 if moved.answers(answer.classes, site.where):
+                    moved.source.admits(ReceiverBinding(moved.symbol), site.where)
                     answering.append(site)
         nested = [
             site for site in answering

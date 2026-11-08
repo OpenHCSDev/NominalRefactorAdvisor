@@ -280,8 +280,14 @@ def test_a_static_method_call_inside_its_class_moves_with_it(tmp_path: Path) -> 
 @pytest.mark.parametrize(
     "identity,qualname,fields,refusal",
     (
-        (IDENTITY + "\n\nclass Child(Identity):\n    pass\n", "Identity.from_evidence",
-         {"destination_name": "identity"}, "class with descendants"),
+        (IDENTITY + "\n\nclass Child(Identity):\n    pass\n\n\nCHILD = Child.from_evidence\n",
+         "Identity.from_evidence", {"destination_name": "identity"}, "other than by calling it"),
+        (IDENTITY + "\n\nclass Child(Identity):\n    @classmethod\n    def read(cls, evidence):\n"
+         "        return cls.from_evidence(evidence)\n", "Identity.from_evidence",
+         {"destination_name": "identity"}, "through cls or self, which may bind cls to a descendant"),
+        (IDENTITY + "\n\nclass Child(Identity):\n    pass\n\n\ndef read(evidence):\n"
+         "    return Child.from_evidence(evidence)\n", "Identity.from_evidence",
+         {"destination_name": "identity"}, "on a class named outright, which may bind cls"),
         (IDENTITY, "Identity.from_proof", {"receiver_parameter": "identity"},
          "is a staticmethod; receiver_parameter is not taken"),
     ),
@@ -294,3 +300,15 @@ def test_moving_a_class_bound_method_refuses_what_would_change(
 
     with pytest.raises(CodemodOperationPreflightError, match=refusal):
         _class_bound(tmp_path, qualname, destination, **fields)
+
+
+@pytest.mark.native_proof
+def test_descendants_only_matter_where_a_call_could_bind_cls_to_one(tmp_path: Path) -> None:
+    identity = IDENTITY + "\n\nclass Child(Identity):\n    pass\n"
+    _write(tmp_path, {"identity": identity, "proof": PROOF, "use": USE})
+
+    reads_cls = _class_bound(tmp_path, "Identity.from_evidence", "Evidence", destination_name="identity")
+    unread_cls = _class_bound(tmp_path, "Identity.proof_for", "Proof")
+
+    assert "two = Evidence('p').identity()" in _source(tmp_path, reads_cls, "use")
+    assert "three = Proof.proof_for('x')" in _source(tmp_path, unread_cls, "use")
