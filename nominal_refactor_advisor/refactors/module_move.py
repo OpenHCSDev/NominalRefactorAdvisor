@@ -15,9 +15,11 @@ from dataclasses import dataclass
 from itertools import product
 from typing import ClassVar
 
-from ..ast_tools import ModuleAnnotationEvaluationMode
+from ..ast_tools import ModuleAnnotationEvaluationMode, ParsedModule
+from ..module_node_index import ModuleNodeIndex
 from ..codemod_import_bindings import FromModuleImportBindingIdentity
 from ..codemod_import_graph import SourceModuleImportGraph
+from ..source_index import SourceFileDigest
 from ..codemod_import_scopes import ModuleImportScope
 from ..codemod_imports import (
     ImportFromSource,
@@ -185,6 +187,40 @@ class PromotedGuardedImportReport(DataclassJsonReport):
 
 
 @dataclass(frozen=True)
+class FilesReachingModule:
+    """The parsed files that can reach one module, for every pass over its consumers.
+
+    A file that imports, binds, reads or names `pkg.source` (its dotted name, its file
+    name, an import written in a string) spells `source` in its text. Inside a package
+    whose `__init__.py` is the module, `from . import name` reaches it without spelling
+    it, so those files count too. Every other file is skipped unread: on agent-comms with
+    its tests, a dissolve otherwise walked about 1,100 modules to find the few dozen that
+    name it. Each file comes with its parse, whose `ModuleNodeIndex` fact every pass shares."""
+
+    context: CodemodSelectorContext
+    module_name: str
+
+    def __iter__(self) -> Iterator[tuple[SourceFileDigest, ParsedModule]]:
+        leaf = self.module_name.rpartition(".")[2]
+        owner = self.context.module_import_graph.unique_source_file_for_module_name(
+            self.module_name
+        )
+        package_files = tuple(
+            owner.file_path.removesuffix("__init__.py")
+            for owner in (owner,)
+            if owner is not None and owner.file_path.endswith("/__init__.py")
+        )
+        for source_file in self.context.source_index.files:
+            if source_file.file_path in self.context.module_nodes_by_file_path and (
+                leaf in self.context.sources_by_file_path[source_file.file_path]
+                or source_file.file_path.startswith(package_files)
+            ):
+                yield source_file, self.context.parsed_module_for_source_path(
+                    source_file.file_path
+                )
+
+
+@dataclass(frozen=True)
 class ModuleNameRedirect:
     """Every importer of names leaving one module, redirected to each name's new
     owner, so each importer keeps working:
@@ -222,11 +258,11 @@ class ModuleNameRedirect:
             tuple(sorted(moved_names)),
         )
         edits: list[NominalSourceEdit] = []
-        for source_file in context.source_index.files:
+        for source_file, parsed in FilesReachingModule(context, source_module_name):
             consumer_path = source_file.file_path
-            module = context.module_nodes_by_file_path.get(consumer_path)
-            if consumer_path in excluded_paths or module is None:
+            if consumer_path in excluded_paths:
                 continue
+            module = parsed.module
             identity = source_file.module_path_identity
             for scope in ModuleImportScope:
                 for statement in scope.import_statements(module):
@@ -252,7 +288,7 @@ class ModuleNameRedirect:
                         )
                     )
             retargets = _SourceModuleAliasRetargets.of(
-                module,
+                parsed.fact(ModuleNodeIndex),
                 source_module_name=source_module_name,
                 owner_modules={
                     name: owner
@@ -263,7 +299,7 @@ class ModuleNameRedirect:
             if retargets.aliases:
                 edits.append(retargets.rewrite(consumer_path, context.sources_by_file_path[consumer_path]))
             module_reads = _SourceModuleObjectReads.of(
-                module,
+                parsed,
                 identity,
                 source_module_name=source_module_name,
                 moved_names=moved_names,
@@ -303,15 +339,14 @@ class ModuleNameRedirect:
             )
             local_imports = self._in_place_import_replacements(
                 import_graph,
-                module,
+                parsed,
                 identity,
                 consumer_path,
                 source_module_name,
             )
             import_strings = self._import_string_replacements(
                 import_graph,
-                module,
-                context.sources_by_file_path[consumer_path],
+                parsed,
                 source_module_name,
             )
             if import_strings:
@@ -342,7 +377,7 @@ class ModuleNameRedirect:
     def _in_place_import_replacements(
         self,
         import_graph: SourceModuleImportGraph,
-        module: ast.Module,
+        parsed: ParsedModule,
         identity: PythonModulePathIdentity,
         consumer_path: str,
         source_module_name: str,
@@ -355,13 +390,12 @@ class ModuleNameRedirect:
         scope_by_statement = {
             id(statement): scope
             for scope in ModuleImportScope
-            for statement in scope.import_statements(module)
+            for statement in scope.import_statements(parsed.module)
         }
         replacements: list[tuple[ast.ImportFrom, str]] = []
-        for statement in ast.walk(module):
+        for statement in parsed.fact(ModuleNodeIndex).import_froms():
             if (
-                not isinstance(statement, ast.ImportFrom)
-                or identity.resolve_import_from_module(
+                identity.resolve_import_from_module(
                     imported_module=statement.module,
                     level=statement.level,
                 )
@@ -405,8 +439,7 @@ class ModuleNameRedirect:
     def _import_string_replacements(
         self,
         import_graph: SourceModuleImportGraph,
-        module: ast.Module,
-        source: str,
+        parsed: ParsedModule,
         source_module_name: str,
     ) -> tuple[SourceTextSpanReplacement, ...]:
         """An import of moved names written as text is a reader: a string that
@@ -417,12 +450,11 @@ class ModuleNameRedirect:
         that did not move stay on the source. A string that only mentions the
         module is prose, and a dissolve's mention rule owns it."""
 
+        source = parsed.source
         geometry = SourceTextGeometry(source)
         embedded = _EmbeddedImportFrom(source_module_name)
         replacements: list[SourceTextSpanReplacement] = []
-        for node in ast.walk(module):
-            if not (isinstance(node, ast.Constant) and isinstance(node.value, str)):
-                continue
+        for node in parsed.fact(ModuleNodeIndex).string_constants:
             statement = _SingleImportFromText.of(node.value)
             if statement is None or statement.level or statement.module != source_module_name:
                 replacements.extend(
@@ -729,49 +761,40 @@ class _SourceModuleAliasRetargets:
     @classmethod
     def of(
         cls,
-        module: ast.Module,
+        index: ModuleNodeIndex,
         *,
         source_module_name: str,
         owner_modules: Mapping[str, str],
     ) -> _SourceModuleAliasRetargets:
         candidates = tuple(
             alias
-            for node in ast.walk(module)
+            for node in index.imports
             if isinstance(node, ast.Import)
             for alias in node.names
             if alias.asname is not None and alias.name == source_module_name
         )
         if not candidates:
             return cls(())
-        bindings = _SourceModuleObjectReads._bound_name_counts(module)
-        parents = {
-            child: parent
-            for parent in ast.walk(module)
-            for child in ast.iter_child_nodes(parent)
-        }
         return cls(
             tuple(
                 (alias, owner)
                 for alias in candidates
-                if alias.asname is not None and bindings[alias.asname] == 1
-                for owner in cls._sole_owner(module, parents, alias.asname, owner_modules)
+                if alias.asname is not None and index.bound_name_counts[alias.asname] == 1
+                for owner in cls._sole_owner(index, alias.asname, owner_modules)
             )
         )
 
     @staticmethod
     def _sole_owner(
-        module: ast.Module,
-        parents: dict[ast.AST, ast.AST],
+        index: ModuleNodeIndex,
         binding: str,
         owner_modules: Mapping[str, str],
     ) -> tuple[str, ...]:
         """The one module every load of `binding` reads a moved name from, or none."""
 
         owners: set[str] = set()
-        for node in ast.walk(module):
-            if not (isinstance(node, ast.Name) and node.id == binding):
-                continue
-            parent = parents.get(node)
+        for node in index.names(binding):
+            parent = index.parents.get(node)
             if not (
                 isinstance(parent, ast.Attribute)
                 and parent.value is node
@@ -820,7 +843,7 @@ class _SourceModuleObjectReads:
     @classmethod
     def of(
         cls,
-        module: ast.Module,
+        parsed: ParsedModule,
         identity: PythonModulePathIdentity,
         *,
         source_module_name: str,
@@ -829,19 +852,16 @@ class _SourceModuleObjectReads:
         retargeted: frozenset[str] = frozenset(),
     ) -> _SourceModuleObjectReads:
         source_parts = tuple(source_module_name.split("."))
+        index = parsed.fact(ModuleNodeIndex)
         chains = frozenset(
             chain
-            for chain in cls._bound_chains(module, identity, source_parts)
+            for chain in cls._bound_chains(index, identity, source_parts)
             if chain[0] not in retargeted
         )
         if not chains:
             return cls(file_path, (), (), frozenset(), ())
-        bindings = cls._bound_name_counts(module)
-        parents = {
-            child: parent
-            for parent in ast.walk(module)
-            for child in ast.iter_child_nodes(parent)
-        }
+        bindings = index.bound_name_counts
+        parents = index.parents
         reads: list[tuple[ast.Attribute, str]] = []
         accesses: list[tuple[ast.expr, _NamedModuleMemberAccess]] = []
         rewritten_loads: Counter[str] = Counter()
@@ -851,9 +871,7 @@ class _SourceModuleObjectReads:
                     f"{file_path!r} rebinds {chain[0]!r}, which binds the source "
                     f"module {source_module_name!r}"
                 )
-            for node in ast.walk(module):
-                if not (isinstance(node, ast.Name) and node.id == chain[0]):
-                    continue
+            for node in index.names(chain[0]):
                 outermost, parts = cls._read_chain(node, parents, len(chain) + 1)
                 if parts[: len(chain)] == chain and len(parts) > len(chain):
                     if parts[-1] in moved_names:
@@ -887,12 +905,12 @@ class _SourceModuleObjectReads:
             tuple(reads),
             tuple(accesses),
             frozenset(name for name, count in bindings.items() if count),
-            cls._unread_bindings(module, chains, rewritten_loads),
+            cls._unread_bindings(parsed, chains, rewritten_loads),
         )
 
     @staticmethod
     def _unread_bindings(
-        module: ast.Module,
+        parsed: ParsedModule,
         chains: frozenset[tuple[str, ...]],
         rewritten_loads: Counter[str],
     ) -> tuple[tuple[str, ModuleImportScope], ...]:
@@ -901,15 +919,11 @@ class _SourceModuleObjectReads:
         it. A name several aliases bind (`import pkg.a, pkg.b`) stays: removing
         it would take the other modules' imports with it."""
 
-        loads = Counter(
-            node.id
-            for node in ast.walk(module)
-            if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load)
-        )
+        loads = parsed.fact(ModuleNodeIndex).loads
         bound_by_alias = tuple(
             (alias.asname or alias.name.split(".")[0], scope)
             for scope in ModuleImportScope
-            for statement in scope.import_statements(module)
+            for statement in scope.import_statements(parsed.module)
             for alias in statement.names
         )
         alias_counts = Counter(name for name, _scope in bound_by_alias)
@@ -928,13 +942,13 @@ class _SourceModuleObjectReads:
 
     @staticmethod
     def _bound_chains(
-        module: ast.Module,
+        index: ModuleNodeIndex,
         identity: PythonModulePathIdentity,
         source_parts: tuple[str, ...],
     ) -> Iterator[tuple[str, ...]]:
         """The attribute chain that reaches the source module from each binding."""
 
-        for node in ast.walk(module):
+        for node in index.imports:
             if isinstance(node, ast.Import):
                 for alias in node.names:
                     alias_parts = tuple(alias.name.split("."))
@@ -951,33 +965,6 @@ class _SourceModuleObjectReads:
                     alias_parts = (*(package or "").split("."), alias.name)
                     if package and source_parts[: len(alias_parts)] == alias_parts:
                         yield (alias.asname or alias.name, *source_parts[len(alias_parts) :])
-
-    @staticmethod
-    def _bound_name_counts(module: ast.Module) -> Counter[str]:
-        """How many bindings each name has. Every `import pkg.x` binds the same
-        package object to `pkg`, so those count as one binding however many."""
-
-        counts: Counter[str] = Counter()
-        package_heads: set[str] = set()
-        for node in ast.walk(module):
-            if isinstance(node, ast.Name) and not isinstance(node.ctx, ast.Load):
-                counts[node.id] += 1
-            elif isinstance(node, ast.arg):
-                counts[node.arg] += 1
-            elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-                counts[node.name] += 1
-            elif isinstance(node, ast.Import):
-                for alias in node.names:
-                    if alias.asname is None:
-                        package_heads.add(alias.name.split(".")[0])
-                    else:
-                        counts[alias.asname] += 1
-            elif isinstance(node, ast.ImportFrom):
-                for alias in node.names:
-                    if alias.name != "*":
-                        counts[alias.asname or alias.name] += 1
-        counts.update(package_heads)
-        return counts
 
     @staticmethod
     def _read_chain(
@@ -1242,12 +1229,11 @@ class SourceTopLevelSymbolClosureMovePlan(SourceTopLevelSymbolClosureMoveCarrier
         import_graph = context.module_import_graph
         source_module_name = import_graph.module_name_for_file_path(source_path)
         kept: set[str] = set()
-        for source_file in context.source_index.files:
-            module = context.module_nodes_by_file_path.get(source_file.file_path)
-            if source_file.file_path == source_path or module is None:
+        for source_file, parsed in FilesReachingModule(context, source_module_name):
+            if source_file.file_path == source_path:
                 continue
-            for node in ast.walk(module):
-                if not isinstance(node, ast.ImportFrom) or (
+            for node in parsed.fact(ModuleNodeIndex).import_froms():
+                if (
                     source_file.module_path_identity.resolve_import_from_module(
                         imported_module=node.module,
                         level=node.level,
@@ -2254,18 +2240,15 @@ class _ModuleIdentityStrings:
         file_name = self.source_path.rsplit("/", 1)[-1]
         path_pattern = re.compile(rf"(?<![\w./-])((?:[\w.-]+/)+{re.escape(file_name)})(?!\w)")
         edits: list[NominalSourceEdit] = []
-        for source_file in context.source_index.files:
+        for source_file, parsed in FilesReachingModule(context, self.source_module_name):
             file_path = source_file.file_path
-            module = context.module_nodes_by_file_path.get(file_path)
-            if file_path == self.source_path or module is None:
+            if file_path == self.source_path:
                 continue
-            source = context.sources_by_file_path[file_path]
+            source = parsed.source
             geometry = SourceTextGeometry(source)
-            retained = self._retained_nodes(module)
+            retained = self._retained_nodes(parsed.fact(ModuleNodeIndex))
             replacements: list[SourceTextSpanReplacement] = []
-            for node in ast.walk(module):
-                if not (isinstance(node, ast.Constant) and isinstance(node.value, str)):
-                    continue
+            for node in parsed.fact(ModuleNodeIndex).string_constants:
                 if id(node) in retained:
                     continue
                 offsets = geometry.node_offsets(node)
@@ -2309,14 +2292,13 @@ class _ModuleIdentityStrings:
                 edits.append(geometry.nominal_edit(file_path=file_path, replacements=tuple(replacements)))
         return tuple(edits)
 
-    def _retained_nodes(self, module: ast.Module) -> frozenset[int]:
+    def _retained_nodes(self, index: ModuleNodeIndex) -> frozenset[int]:
         if not self.retained_calls:
             return frozenset()
         return frozenset(
             id(inner)
-            for node in ast.walk(module)
-            if isinstance(node, ast.Call)
-            and (
+            for node in index.calls
+            if (
                 node.func.id if isinstance(node.func, ast.Name)
                 else node.func.attr if isinstance(node.func, ast.Attribute)
                 else None
@@ -2465,13 +2447,12 @@ class DissolveModuleOperation(RetainedCallOperation):
         source_module_name: str,
         bindings: _DissolvedModuleBindings,
     ) -> None:
-        for source_file in context.source_index.files:
-            module = context.module_nodes_by_file_path.get(source_file.file_path)
-            if source_file.file_path in excluded_paths or module is None:
+        for source_file, parsed in FilesReachingModule(context, source_module_name):
+            if source_file.file_path in excluded_paths:
                 continue
             identity = source_file.module_path_identity
-            for node in ast.walk(module):
-                if not isinstance(node, ast.ImportFrom) or (
+            for node in parsed.fact(ModuleNodeIndex).import_froms():
+                if (
                     identity.resolve_import_from_module(
                         imported_module=node.module,
                         level=node.level,
@@ -2503,20 +2484,17 @@ class DissolveModuleOperation(RetainedCallOperation):
         other `from pkg import source` binding once its reads are redirected."""
 
         package, _, leaf = source_module_name.rpartition(".")
-        for source_file in context.source_index.files:
-            module = context.module_nodes_by_file_path.get(source_file.file_path)
-            if source_file.file_path in excluded_paths or module is None:
+        for source_file, parsed in FilesReachingModule(context, source_module_name):
+            if source_file.file_path in excluded_paths:
                 continue
             identity = source_file.module_path_identity
             scoped = {
                 id(statement): scope
                 for scope in ModuleImportScope
-                for statement in scope.import_statements(module)
+                for statement in scope.import_statements(parsed.module)
             }
             for scope, statement in (
-                (scoped.get(id(node)), node)
-                for node in ast.walk(module)
-                if isinstance(node, (ast.Import, ast.ImportFrom))
+                (scoped.get(id(node)), node) for node in parsed.fact(ModuleNodeIndex).imports
             ):
                 if isinstance(statement, ast.Import):
                     if any(
@@ -2539,13 +2517,7 @@ class DissolveModuleOperation(RetainedCallOperation):
                     continue
                 aliases = tuple(alias for alias in statement.names if alias.name == leaf)
                 for alias in aliases:
-                    bound = alias.asname or alias.name
-                    if not any(
-                        isinstance(node, ast.Attribute)
-                        and isinstance(node.value, ast.Name)
-                        and node.value.id == bound
-                        for node in ast.walk(module)
-                    ):
+                    if (alias.asname or alias.name) not in parsed.fact(ModuleNodeIndex).attribute_bases:
                         raise ValueError(
                             f"{source_file.file_path!r}:{statement.lineno} binds "
                             f"{source_module_name!r} for its import side effect"
