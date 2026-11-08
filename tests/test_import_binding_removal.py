@@ -56,16 +56,32 @@ def test_removes_unread_plain_and_from_import_bindings(tmp_path: Path) -> None:
     )
 
 
-def test_refuses_a_binding_the_module_still_reads(tmp_path: Path) -> None:
-    snapshot, consumer = _snapshot(
-        tmp_path,
-        "import pkg.helpers as helpers_module\n\n" "result = helpers_module.VALUE\n",
-    )
+@pytest.mark.parametrize(
+    ("source", "names", "refusal"),
+    (
+        pytest.param(
+            "import pkg.helpers as helpers_module\n\nresult = helpers_module.VALUE\n",
+            ("helpers_module",),
+            "still reads import bindings",
+            id="still-read",
+        ),
+        pytest.param(
+            "from pkg.helpers import VALUE\n\nresult = VALUE\n",
+            ("helpers",),
+            "has no import binding \\('helpers',\\)",
+            id="never-bound",
+        ),
+    ),
+)
+def test_refuses_a_binding_it_cannot_remove(
+    tmp_path: Path, source: str, names: tuple[str, ...], refusal: str
+) -> None:
+    snapshot, consumer = _snapshot(tmp_path, source)
 
-    with pytest.raises(ValueError, match="still reads import bindings"):
-        RefactorRecipe("drop-read").with_operation(
-            _operation(consumer, "helpers_module")
-        ).simulate(snapshot)
+    with pytest.raises(ValueError, match=refusal):
+        RefactorRecipe("drop").with_operation(_operation(consumer, *names)).simulate(
+            snapshot
+        )
 
 
 def test_removes_an_unread_binding_under_type_checking_and_the_guard_it_empties(

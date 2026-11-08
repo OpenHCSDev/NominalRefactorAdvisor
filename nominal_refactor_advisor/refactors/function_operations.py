@@ -830,19 +830,12 @@ def imports_only_read_by(
         for name in ast.walk(module)
         if isinstance(name, ast.Name) and not _within(name, node)
     }
-    for scope in ModuleImportScope:
-        for statement in scope.import_statements(module):
-            names = tuple(
-                alias.asname or alias.name
-                for alias in statement.names
-                if (alias.asname or alias.name) in used_by_node - used_elsewhere
-            )
-            if names:
-                yield ModuleImportMutation.remove_bound_names(
-                    file_path=source_path,
-                    names=names,
-                    scope=scope,
-                )
+    for scope, names in ModuleImportScope.bound_in(module, used_by_node - used_elsewhere):
+        yield ModuleImportMutation.remove_bound_names(
+            file_path=source_path,
+            names=names,
+            scope=scope,
+        )
 
 
 def _source_position(call: ast.Call, name: str) -> tuple[int, int]:

@@ -24,7 +24,6 @@ from ..codemod_payload import (
     codemod_payload_field,
 )
 from ..codemod_reproof import SourceReprovedOperation
-from ..lexical_bindings import LEXICAL_SCOPE_BINDING_AUTHORITY
 from ..codemod_runtime import CodemodSourceSnapshot
 from ..codemod_selection_context import CodemodSelectorContext
 from ..codemod_source_edits import (
@@ -237,7 +236,18 @@ class RemoveImportBindingsOperation(RefactorRecipeOperation):
                 f"{source_path!r} still reads import bindings "
                 f"{tuple(sorted(still_read))!r}"
             )
-        module = context.module_nodes_by_file_path[source_path]
+        bound = tuple(
+            ModuleImportScope.bound_in(
+                context.module_nodes_by_file_path[source_path], self.bound_names
+            )
+        )
+        unbound = set(self.bound_names).difference(
+            name for _scope, names in bound for name in names
+        )
+        if unbound:
+            raise ValueError(
+                f"{source_path!r} has no import binding {tuple(sorted(unbound))!r}"
+            )
         return tuple(
             ModuleImportMutation.remove_bound_names(
                 file_path=source_path,
@@ -246,13 +256,5 @@ class RemoveImportBindingsOperation(RefactorRecipeOperation):
                 rationale=self.rationale
                 or f"Remove unread import bindings {names!r}.",
             )
-            for scope in ModuleImportScope
-            for names in (
-                tuple(
-                    name
-                    for name in self.bound_names
-                    if name in LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(scope.import_statements(module))
-                ),
-            )
-            if names
+            for scope, names in bound
         )
