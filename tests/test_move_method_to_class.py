@@ -323,7 +323,9 @@ def test_another_class_s_method_of_the_same_name_and_an_alike_binding_do_not_ref
         "READER = Codec.proof_for\nNOTE = 'proof_for'\n\n\n"
         "def stdlib_named(value: bytes) -> str:\n    from codecs import decode as proof_for\n\n"
         "    from json import JSONDecoder\n    return JSONDecoder.proof_for if False else proof_for(value)\n\n\n"
-        "def scanned_named(value: str) -> str:\n    from pkg.use import Codec\n\n    return Codec.proof_for(value)\n"
+        "def scanned_named(value: str) -> str:\n    from pkg.use import Codec\n\n    return Codec.proof_for(value)\n\n\n"
+        "def shadowed(value: str) -> str:\n    from pkg.use import Codec as Identity\n\n"
+        "    return Identity.proof_for(value)\n"
     )
     identity = IDENTITY.replace(
         "        from pkg.proof import Proof\n\n        return Proof(session, 'f')\n",
@@ -333,6 +335,8 @@ def test_another_class_s_method_of_the_same_name_and_an_alike_binding_do_not_ref
     result = _class_bound(tmp_path, "Identity.proof_for", "Proof")
 
     assert result.is_clean is True
-    assert "READER = Codec.proof_for" in _source(tmp_path, result, "use")
+    use = _source(tmp_path, result, "use")
+    assert "READER = Codec.proof_for" in use
+    assert "    return Identity.proof_for(value)\n" in use and "three = Proof.proof_for('x')" in use
     assert "from dataclasses import dataclass, field\n" in _source(tmp_path, result, "proof")
     assert _runs(tmp_path, result) == "s/s-p/x"

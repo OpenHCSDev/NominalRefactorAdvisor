@@ -135,33 +135,17 @@ class MovedMethod:
             for symbol in self.family if symbol in classes
         }
 
-    def named_class(self, file_path: str, name: str) -> ClassBinding | None:
-        """What a name in a file binds by its declaration or import (module-level or local), when
-        that says whether it is the family: a family class, another class the scan declares, or an
-        import from outside the scan. A name bound otherwise is typed as an instance."""
+    def named_class(self, file_path: str, name: str, scopes: tuple[ast.AST, ...]) -> ClassBinding | None:
+        """What a name binds where a call reads it, when that says whether it is the family: a
+        family class, another class the scan declares, a module, or an import from outside the
+        scan. The innermost of `scopes` (the call's enclosing functions, then its module) that
+        binds the name decides; a name it binds any other way is typed as an instance."""
 
-        local = self.declared_class(file_path, name)
-        if local is not None:
-            return local
-        graph = self.snapshot.module_import_graph
-        source_file = graph.source_file_for_path(file_path)
-        if source_file is None:
-            return None
-        for statement in ast.walk(self.snapshot.module_nodes_by_file_path[file_path]):
-            if not isinstance(statement, ast.ImportFrom):
+        for scope in scopes:
+            binding = _ScopeBindings(scope).binding(name)
+            if binding is None:
                 continue
-            for alias in statement.names:
-                if (alias.asname or alias.name) != name:
-                    continue
-                module = source_file.module_path_identity.resolve_import_from_module(
-                    imported_module=statement.module, level=statement.level,
-                )
-                provider = None if module is None else graph.unique_source_file_for_module_name(module)
-                if provider is None:
-                    return OutsideScan(str(module))
-                imported = self.declared_class(provider.file_path, alias.name)
-                if imported is not None:
-                    return imported
+            return binding.class_binding(self, file_path, scope)
         return None
 
     def declared_class(self, file_path: str, qualname: str) -> ClassBinding | None:
@@ -419,15 +403,15 @@ class SourceShape:
         return frozenset()
 
     def bound_class(
-        self, receiver: ast.expr, file_path: str, enclosing: str | None,
+        self, receiver: ast.expr, file_path: str, enclosing: str | None, scopes: tuple[ast.AST, ...],
     ) -> ClassBinding | None:
-        """The class a call receiver names by its module binding, when it names one: a family
-        class, or a name bound from outside the scan (the standard library, a dependency), which
-        no family class is, whatever its attribute is called."""
+        """The class a call receiver names by its binding, when it names one: a family class,
+        or a class, module or import from outside the scan, which no family class is, whatever
+        its attribute is called."""
 
         if not isinstance(receiver, ast.Name):
             return None
-        return self.moved.named_class(file_path, receiver.id)
+        return self.moved.named_class(file_path, receiver.id, scopes)
 
     def admits(self, binding: ReceiverBinding, where: str) -> None:
         """Refuse a call whose receiver would change what the moved method means."""
@@ -457,11 +441,11 @@ class ClassBoundSource(SourceShape):
     inside it on cls or self; the destination member takes no receiver from them."""
 
     def bound_class(
-        self, receiver: ast.expr, file_path: str, enclosing: str | None,
+        self, receiver: ast.expr, file_path: str, enclosing: str | None, scopes: tuple[ast.AST, ...],
     ) -> ClassBinding | None:
         if isinstance(receiver, ast.Name) and receiver.id in {"cls", "self"}:
             return None if enclosing not in self.moved.family else ImplicitClass(enclosing)
-        return super().bound_class(receiver, file_path, enclosing)
+        return super().bound_class(receiver, file_path, enclosing, scopes)
 
 
 @dataclass(frozen=True)
@@ -861,6 +845,122 @@ def _binding(snapshot: CodemodSourceSnapshot, file_path: str, name: str) -> tupl
     return None
 
 
+@dataclass(frozen=True)
+class OtherModule(ForeignClass):
+    """A module bound by `import`: its attribute of the method's name is its own."""
+
+
+@dataclass(frozen=True)
+class NameBinding:
+    """How one scope binds a name: by default as a value, typed as an instance."""
+
+    def class_binding(self, moved: MovedMethod, file_path: str, scope: ast.AST) -> ClassBinding | None:
+        return None
+
+
+@dataclass(frozen=True)
+class ImportedName(NameBinding):
+    """`from module import name`: the class it resolves to, or outside the scan."""
+
+    statement: ast.ImportFrom
+    alias: ast.alias
+
+    def class_binding(self, moved: MovedMethod, file_path: str, scope: ast.AST) -> ClassBinding | None:
+        graph = moved.snapshot.module_import_graph
+        source_file = graph.source_file_for_path(file_path)
+        if source_file is None:
+            return None
+        module = source_file.module_path_identity.resolve_import_from_module(
+            imported_module=self.statement.module, level=self.statement.level,
+        )
+        provider = None if module is None else graph.unique_source_file_for_module_name(module)
+        if provider is None:
+            return OutsideScan(str(module))
+        return moved.declared_class(provider.file_path, self.alias.name)
+
+
+@dataclass(frozen=True)
+class ImportedModule(NameBinding):
+    """`import module`: a module, never a family class."""
+
+    alias: ast.alias
+
+    def class_binding(self, moved: MovedMethod, file_path: str, scope: ast.AST) -> ClassBinding | None:
+        return OtherModule(self.alias.name)
+
+
+@dataclass(frozen=True)
+class DeclaredClass(NameBinding):
+    """`class Name:` in the scope: the class the index declares there, when it is top-level."""
+
+    node: ast.ClassDef
+
+    def class_binding(self, moved: MovedMethod, file_path: str, scope: ast.AST) -> ClassBinding | None:
+        return moved.declared_class(file_path, self.node.name) if isinstance(scope, ast.Module) else None
+
+
+_NESTED_SCOPES = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)
+
+
+@dataclass(frozen=True)
+class _ScopeBindings:
+    """The names one scope binds itself, without the scopes nested in it."""
+
+    scope: ast.AST
+
+    def nodes(self) -> list[ast.AST]:
+        found: list[ast.AST] = []
+        pending = list(ast.iter_child_nodes(self.scope))
+        while pending:
+            node = pending.pop()
+            found.append(node)
+            if not isinstance(node, _NESTED_SCOPES):
+                pending.extend(ast.iter_child_nodes(node))
+        return found
+
+    def binding(self, name: str) -> NameBinding | None:
+        last: NameBinding | None = None
+        for node in self.nodes():
+            if isinstance(node, ast.ImportFrom):
+                for alias in node.names:
+                    if (alias.asname or alias.name) == name:
+                        last = ImportedName(node, alias)
+            elif isinstance(node, ast.Import):
+                for alias in node.names:
+                    if (alias.asname or alias.name.partition(".")[0]) == name:
+                        last = ImportedModule(alias)
+            elif isinstance(node, ast.ClassDef) and node.name == name:
+                last = DeclaredClass(node)
+            elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == name:
+                last = NameBinding()
+            elif isinstance(node, ast.Name) and node.id == name and isinstance(node.ctx, ast.Store):
+                last = NameBinding()
+            elif isinstance(node, ast.arg) and node.arg == name:
+                last = NameBinding()
+        return last
+
+
+def _name_scopes(node: ast.AST, parents: dict[ast.AST, ast.AST]) -> tuple[ast.AST, ...]:
+    """The scopes a name read at `node` resolves through: enclosing functions innermost first,
+    a class body only when the read sits directly in it, then the module."""
+
+    scopes: list[ast.AST] = []
+    current = parents.get(node)
+    direct = True
+    while current is not None:
+        if isinstance(current, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+            scopes.append(current)
+            direct = False
+        elif isinstance(current, ast.ClassDef):
+            if direct:
+                scopes.append(current)
+            direct = False
+        elif isinstance(current, ast.Module):
+            scopes.append(current)
+        current = parents.get(current)
+    return tuple(scopes)
+
+
 def _enclosing_class(
     snapshot: CodemodSourceSnapshot, file_path: str, node: ast.AST, parents: dict[ast.AST, ast.AST],
 ) -> str | None:
@@ -1048,7 +1148,9 @@ class MoveMethodToClassOperation(RepositorySourceReprovedOperation):
                     if enclosing in moved.family:
                         raise ValueError(f"{where} reaches {moved.name!r} through super()")
                     continue
-                bound = moved.source.bound_class(node.value, parsed.file_path, enclosing)
+                bound = moved.source.bound_class(
+                    node.value, parsed.file_path, enclosing, _name_scopes(node, parents),
+                )
                 if bound is not None:
                     if bound.reaches_family():
                         answering.append(site.answered(moved, bound))
