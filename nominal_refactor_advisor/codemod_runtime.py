@@ -34,6 +34,7 @@ from typing import (
     cast,
 )
 
+from .implementation_identity import AnswerFreeDeclaration
 from .ast_tools import (
     ParsedModule,
     ParsedModuleSourceProjection,
@@ -2811,8 +2812,11 @@ class FindingRecipePlanSimulation(
         return self.document_simulation.simulation_payload()
 
 
-class FindingRecipeEvaluator(ABC):
-    """Declaration-owned proof evaluation for one detector finding."""
+class FindingRecipeEvaluator(AnswerFreeDeclaration, ABC):
+    """Declaration-owned proof evaluation for one detector finding.
+
+    It runs on findings after they are cached, so it is answer-free: editing a
+    recipe never re-keys a detector's cached findings."""
 
     @classmethod
     def detector_declaration_type(cls) -> type[IssueDetector]:
