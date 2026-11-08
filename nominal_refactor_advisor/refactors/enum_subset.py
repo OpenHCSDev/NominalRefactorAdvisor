@@ -7,11 +7,11 @@ from dataclasses import dataclass
 from functools import cached_property
 from typing import cast
 
+from .class_family_collection import ClassFamilyCollectionFactory
 from ..assignment_projection import SingleAssignmentAndValueNameProjection
 from ..codemod import (
     ClassAuthorityReferenceProof,
     ClassDeclarationPromotionClass,
-    ClassFamilyCollectionFactory,
     MappingSemanticMirrorRecipeBuilder,
     SemanticMirrorOperationTargets,
     SourceDerivedAuthorityProjectionOperation,

@@ -21073,11 +21073,11 @@ def test_class_family_migration_reports_native_proof_before_depth_budget(
 
 
 def test_class_family_name_projection_reads_registered_family_authority() -> None:
-    from nominal_refactor_advisor.codemod import (
-        ClassFamilyCollectionElementProjection,
-        ClassFamilyCollectionFactory,
-        ClassFamilyCollectionMembershipProjection,
-    )
+    from nominal_refactor_advisor.refactors.class_family_collection import (
+    ClassFamilyCollectionElementProjection,
+    ClassFamilyCollectionFactory,
+    ClassFamilyCollectionMembershipProjection,
+)
 
     membership_projection = (
         ClassFamilyCollectionMembershipProjection.for_authority_declaration(
