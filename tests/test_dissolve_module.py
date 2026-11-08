@@ -382,3 +382,25 @@ def test_retained_files_keep_the_dissolved_modules_old_name(tmp_path: Path) -> N
     simulation.apply()
     assert (tmp_path / "pkg/evidence.py").read_text() == "GONE = ('pkg/hub.py',)\n"
     assert (tmp_path / "pkg/reader.py").read_text() == "NAME = 'pkg.owner'\n"
+
+
+def test_a_move_keeps_a_source_import_that_consumers_import(tmp_path: Path) -> None:
+    _write(tmp_path, "pkg/__init__.py", "")
+    _write(tmp_path, "pkg/base.py", "class Base:\n    pass\n")
+    _write(tmp_path, "pkg/source.py", "from .base import Base\n\n\nclass Moved(Base):\n    pass\n")
+    _write(tmp_path, "pkg/consumer.py", "from .source import Base, Moved\n")
+    simulation = (
+        RefactorRecipe("relocate-moved")
+        .with_operation(
+            RelocateSymbolsToNewModuleOperation(
+                target=SourceRewriteTarget(file_path=(tmp_path / "pkg/source.py").as_posix()),
+                symbol_qualnames=("Moved",),
+                destination_path=(tmp_path / "pkg/moved.py").as_posix(),
+            )
+        )
+        .simulate(_snapshot(tmp_path))
+    )
+    assert simulation.is_clean
+    simulation.apply()
+    imported = _run(tmp_path, "from pkg.consumer import Base, Moved; assert issubclass(Moved, Base)")
+    assert imported.returncode == 0, imported.stderr
