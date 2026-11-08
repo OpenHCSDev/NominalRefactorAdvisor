@@ -29,6 +29,7 @@ from pathlib import Path
 
 from metaclass_registry.mro_dispatch import MroDispatch, handles
 
+from ..json_reports import DataclassJsonReport, JsonText, json_report_object, json_report_property
 from .family import Family
 from .lexical import DecoratorBinding, ModuleScope, NominalProof, UnprovedIdentity
 from .measures import Measure, WholeModule, parsed, scoped
@@ -163,9 +164,9 @@ class Compared(Measure, Runner[P]):
 
 
 @dataclass(frozen=True)
-class MeasureCount:
+class MeasureCount(JsonText):
     """What one reported count counts: here, a measure's total over the change. Its text is
-    only the report's key; the comparison matches the record."""
+    only the report's key and its order; the comparison matches the record."""
 
     measure: type[Compared[typing.Never]]
     """Any measure: a count names its measure and never hands it a project, and a measure of
@@ -174,6 +175,9 @@ class MeasureCount:
     @property
     def text(self) -> str:
         return self.measure.__name__
+
+    def __lt__(self, other: MeasureCount) -> bool:
+        return self.text < other.text
 
     def moved(self, changed: ChangedPaths) -> MeasureCount:
         """The count at its head path; a total belongs to no path."""
@@ -375,7 +379,7 @@ class CountedSource(Compared):
 
 
 @dataclass(frozen=True)
-class Site:
+class Site(DataclassJsonReport):
     """One counted occurrence: the file and line a grown measure points at."""
 
     path: str
@@ -1016,7 +1020,9 @@ class CleanChangedLines(OccurrenceMeasure):
 
 
 @dataclass(frozen=True)
-class Comparison:
+class Comparison(DataclassJsonReport):
+    """The JSON report: the compared revisions and paths, then each count keyed by its text."""
+
     root: str
     base_revision: str
     head_revision: str
@@ -1026,33 +1032,15 @@ class Comparison:
     introduced: dict[FileCount, list[int]]
     found: dict[MeasureCount, list[Site]]
 
-    @property
+    @json_report_property()
     def delta(self) -> dict[MeasureCount, int]:
         return {name: value - self.base[name] for name, value in self.head.items()}
 
-    @staticmethod
-    def keyed[Count: MeasureCount, Value](counts: dict[Count, Value]) -> dict[str, Value]:
-        """The report's JSON keys: the one place a count's record becomes text."""
-        return {identity.text: value for identity, value in counts.items()}
-
-    def report(self) -> dict[str, object]:
-        """The JSON report: the compared revisions and paths, then each count keyed by its text."""
-        return {
-            "root": self.root, "base_revision": self.base_revision,
-            "head_revision": self.head_revision, "paths": list(self.paths),
-            "base": self.keyed(self.base), "head": self.keyed(self.head),
-            "introduced": self.keyed(self.introduced),
-            "found": {name: [dataclasses.asdict(site) for site in sites]
-                      for name, sites in self.keyed(self.found).items()},
-            "delta": self.keyed(self.delta),
-            "missing": sorted(key.text for key in self.missing),
-        }
-
-    @property
+    @json_report_property()
     def missing(self) -> list[MeasureCount]:
-        """Counts whose measure's required evidence the comparison lacks."""
-        return [key for measure in Compared.members()
-                for key in measure.missing(self.head, self.introduced)]
+        """Counts whose measure's required evidence the comparison lacks, in order."""
+        return sorted(key for measure in Compared.members()
+                      for key in measure.missing(self.head, self.introduced))
 
     @property
     def failed(self) -> bool:
@@ -1135,19 +1123,19 @@ def gate(repo: Project, base: str, head: str, root: str, workers: int) -> int:
     repo.prune()
     result = compare(repo, base, head, root, workers, Compared.members())
     # Flushed first: stdout is block-buffered into a pipe, and the growth lines must end the log.
-    print(json.dumps(result.report(), indent=2), flush=True)
+    print(json.dumps(json_report_object(result), indent=2), flush=True)
     # The failing step's last lines become check annotations (.github/run-step.sh merges
     # stderr), so what grew goes to stderr last; stdout stays the one JSON report.
-    for key, grown in sorted(result.delta.items(), key=lambda item: item[0].text):
+    for key, grown in sorted(result.delta.items()):
         if grown > 0:
             print(key.measure.grew(key, grown), file=sys.stderr)
-    for name, sites in sorted(Comparison.keyed(result.found).items()):
-        print(f"found {name} at {' '.join(site.text() for site in sites)}", file=sys.stderr)
-    for identity, lines in sorted(Comparison.keyed(result.introduced).items()):
+    for key, sites in sorted(result.found.items()):
+        print(f"found {key.text} at {' '.join(site.text() for site in sites)}", file=sys.stderr)
+    for key, lines in sorted(result.introduced.items()):
         if lines:
-            print(f"introduced {identity} at lines {lines}", file=sys.stderr)
-    for identity in sorted(key.text for key in result.missing):
-        print(f"missing introduced-site report for {identity}", file=sys.stderr)
+            print(f"introduced {key.text} at lines {lines}", file=sys.stderr)
+    for key in result.missing:
+        print(f"missing introduced-site report for {key.text}", file=sys.stderr)
     return int(result.failed)
 
 

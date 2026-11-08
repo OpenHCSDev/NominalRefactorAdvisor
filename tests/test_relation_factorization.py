@@ -4,6 +4,8 @@ from dataclasses import replace
 
 import pytest
 
+from nominal_refactor_advisor.json_reports import json_report_object
+
 from nominal_refactor_advisor.relation_factorization import (
     CERTIFICATE_SCHEMA,
     COVER_TIE_BREAK,
@@ -479,7 +481,7 @@ def test_canonical_json_and_digest_ignore_input_iteration_order() -> None:
     assert first.schema == CERTIFICATE_SCHEMA
     assert first.canonical_json() == second.canonical_json()
     assert first.content_digest() == second.content_digest()
-    assert "retained" not in first.to_dict()["laminar_repair"]["arrangement"]
+    assert "retained" not in json_report_object(first)["laminar_repair"]["arrangement"]
 
 
 @pytest.mark.parametrize("value", [True, 1.5, "1", -1, 0])

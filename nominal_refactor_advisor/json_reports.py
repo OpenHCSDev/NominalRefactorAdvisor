@@ -69,6 +69,19 @@ class JsonReport(ABC):
         raise NotImplementedError
 
 
+class JsonText(ABC):
+    """A value whose JSON form is the text it declares, as a mapping key or a value."""
+
+    @property
+    @abstractmethod
+    def text(self) -> str:
+        raise NotImplementedError
+
+
+class DataclassJsonRow(ABC):
+    """A record whose JSON form is the array of its field values, in declaration order."""
+
+
 class JsonReportValueProjection:
     """Project the closed JSON value algebra through nominal runtime types."""
 
@@ -101,6 +114,23 @@ class JsonReportValueProjection:
         return [self.project(item) for item in value]
 
     @project.register
+    def _project_frozenset(self, value: frozenset) -> tuple[JsonValue, ...]:
+        """JSON has no set: a set's members travel in sorted order."""
+
+        return tuple(sorted(self.project(item) for item in value))
+
+    @project.register
+    def _project_text(self, value: JsonText) -> str:
+        return value.text
+
+    @project.register
+    def _project_row(self, value: DataclassJsonRow) -> tuple[JsonValue, ...]:
+        return tuple(
+            self.project(getattr(value, record_field.name))
+            for record_field in dataclass_fields(value)
+        )
+
+    @project.register
     def _project_mapping(self, value: Mapping) -> JsonObject:
         return JsonObject(
             {
@@ -112,12 +142,16 @@ class JsonReportValueProjection:
     @singledispatchmethod
     def mapping_key(self, key: object) -> str:
         raise TypeError(
-            "JSON report mappings require string, StrEnum or case class keys"
+            "JSON report mappings require string, StrEnum, case class or JsonText keys"
         )
 
     @mapping_key.register
     def _string_key(self, key: str) -> str:
         return key
+
+    @mapping_key.register
+    def _text_key(self, key: JsonText) -> str:
+        return key.text
 
     @mapping_key.register
     def _enum_key(self, key: StrEnum) -> str:
