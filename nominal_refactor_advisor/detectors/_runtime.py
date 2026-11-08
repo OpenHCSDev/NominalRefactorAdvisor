@@ -72,7 +72,6 @@ from ..codemod import (
     KeyedMirrorFindingRecipeSynthesizer,
     ManualClassRegistrationFindingRecipeSynthesizer,
     ParallelMirroredLeafFamilyFindingRecipeSynthesizer,
-    RepeatedBuilderCallFindingRecipeSynthesizer,
     SemanticMirrorFindingRecipeEvaluator,
     TypedMirrorFindingRecipeSynthesizer,
 )
@@ -91,6 +90,7 @@ from ..observation_shapes import (
 )
 from ..patterns import PatternId
 from ..refactors.dispatch_polymorphism import NumericLiteralDispatchFindingRecipeSynthesizer
+from ..refactors.repeated_builder import RepeatedBuilderCallFindingRecipeSynthesizer
 from ..semantic_identity import (
     InheritanceIdentityAttributeProjection,
     SemanticIdentifierTokenProjection,

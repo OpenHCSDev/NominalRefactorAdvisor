@@ -27,13 +27,19 @@ from nominal_refactor_advisor.refactors.dispatch_polymorphism import (
     DispatchToPolymorphismOperation,
     NumericLiteralDispatchFindingRecipeSynthesizer,
 )
+from nominal_refactor_advisor.refactors.repeated_builder import (
+    DeriveRepeatedBuilderAuthorityOperation,
+    RepeatedBuilderAuthorityMethod,
+    RepeatedBuilderCallFindingRecipeSynthesizer,
+    RepeatedBuilderSourceProjectionAuthorityMethod,
+)
 
 
 EXPECTED_EXECUTABLE_CONCEPTS = {
-    codemod.RepeatedBuilderSourceProjectionAuthorityMethod: (
+    RepeatedBuilderSourceProjectionAuthorityMethod: (
         codemod.ConstructorKwargCarrierProjectionConcept
     ),
-    codemod.RepeatedBuilderAuthorityMethod: (codemod.ConstructorKwargCollapseConcept),
+    RepeatedBuilderAuthorityMethod: (codemod.ConstructorKwargCollapseConcept),
     codemod.ManualClassRegistrationFindingRecipeSynthesizer: (
         codemod.AutoRegisterClassRegistryConcept
     ),
@@ -82,7 +88,7 @@ EXPECTED_EXECUTABLE_CONCEPTS = {
     codemod.CasesFindingRecipeSynthesizer: (
         codemod.ClassFamilyAuthorityConcept
     ),
-    codemod.RepeatedBuilderCallFindingRecipeSynthesizer: (
+    RepeatedBuilderCallFindingRecipeSynthesizer: (
         codemod.ConstructorKwargCollapseConcept
     ),
     ManualClassRegistrationDetector: (
@@ -609,7 +615,7 @@ def test_source_derived_synthesized_operations_share_one_reproof_contract() -> N
         codemod.DeriveDataclassKeyValueSequenceProjectionOperation,
         codemod.DeriveDataclassPayloadProjectionOperation,
         codemod.DeriveEnumSubsetOperation,
-        codemod.DeriveRepeatedBuilderAuthorityOperation,
+        DeriveRepeatedBuilderAuthorityOperation,
         DispatchToPolymorphismOperation,
         codemod.FactorParallelMirroredLeafFamilyOperation,
         codemod.PromoteExactLeafMethodsToAncestorOperation,
@@ -933,7 +939,7 @@ def test_repeated_builder_dynamic_rule_preserves_the_exact_concept_leaf(
     )
 
     declaration = evaluation.required_executable_declaration_type
-    assert declaration is codemod.RepeatedBuilderSourceProjectionAuthorityMethod
+    assert declaration is RepeatedBuilderSourceProjectionAuthorityMethod
     assert (
         codemod.RefactorConcept.leaf_concept_for_declaration(declaration)
         is codemod.ConstructorKwargCarrierProjectionConcept
