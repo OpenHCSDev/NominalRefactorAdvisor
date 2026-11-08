@@ -247,18 +247,19 @@ class ServedHeaderBindings:
                         failures.append(
                             f"{served.request.served_name!r} reads {name!r}, served later in its module"
                         )
-                elif graph.import_would_create_cycle(
-                    importing_file_path=served.file_path, imported_file_path=provider.file_path,
-                ):
-                    failures.append(
-                        f"{served.file_path} importing {name!r} from {provider.file_path} closes a cycle"
-                    )
                 else:
+                    try:
+                        import_source = graph.required_import_source(
+                            importing_file_path=served.file_path,
+                            imported_file_path=provider.file_path,
+                            imported_name=name,
+                        )
+                    except ValueError as refusal:
+                        failures.append(str(refusal))
+                        continue
                     imports.append(ModuleImportMutation.from_source(
                         file_path=served.file_path,
-                        import_source=(
-                            f"from {graph.module_name_for_file_path(provider.file_path)} import {name}"
-                        ),
+                        import_source=import_source,
                         rationale=f"{served.request.served_name!r} is served from {name!r}.",
                     ))
         if failures:
