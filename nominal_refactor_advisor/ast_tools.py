@@ -244,6 +244,11 @@ class CollectedFamilySchemaIdentity(CachedDataclassRepresentation):
     item_schema_signature: str
     implementation: CollectedFamilyImplementationIdentity
 
+    @property
+    def family(self) -> tuple[str, str]:
+        """The family this schema is one implementation of."""
+        return self.family_module, self.family_qualname
+
     @staticmethod
     def schema_signature_of(item_type: type[object]) -> str:
         """Persisted-item compatibility, derived from the item's own declaration."""
@@ -401,6 +406,9 @@ class CollectedFamilyContentSignatureIndex:
         self.cache_dir = cache_dir
         self._entries = entries
         self._dirty = False
+        # The schema each family answered under in this scan; an entry under an
+        # older schema of the same family can never be looked up again here.
+        self._live_schemas: dict[tuple[str, str], CollectedFamilySchemaIdentity] = {}
 
     @classmethod
     def load(cls, cache_dir: Path) -> CollectedFamilyContentSignatureIndex:
@@ -439,6 +447,7 @@ class CollectedFamilyContentSignatureIndex:
         self,
         identity: CollectedFamilyCacheIdentity,
     ) -> str | None:
+        self._live(identity)
         entry = self._entries.get(
             CollectedFamilyContentSignatureIndexKey.from_identity(identity)
         )
@@ -451,6 +460,7 @@ class CollectedFamilyContentSignatureIndex:
         identity: CollectedFamilyCacheIdentity,
         content_signature: str,
     ) -> None:
+        self._live(identity)
         key = CollectedFamilyContentSignatureIndexKey.from_identity(identity)
         entry = identity.source_signature, content_signature
         if self._entries.get(key) == entry:
@@ -458,19 +468,29 @@ class CollectedFamilyContentSignatureIndex:
         self._entries[key] = entry
         self._dirty = True
 
+    def _live(self, identity: CollectedFamilyCacheIdentity) -> None:
+        schema = identity.family_schema
+        self._live_schemas[schema.family] = schema
+
+    def _current(self, key: CollectedFamilyContentSignatureIndexKey) -> bool:
+        """False for an entry under a schema this scan's family has superseded."""
+        schema = key.projection.family_schema
+        return self._live_schemas.get(schema.family, schema) == schema
+
     def store_if_dirty(self) -> None:
-        if not self._dirty:
+        current = {
+            key: entry for key, entry in self._entries.items() if self._current(key)
+        }
+        if not self._dirty and len(current) == len(self._entries):
             return
+        self._entries = current
         payload = CollectedFamilyContentSignatureIndexPayload(
             schema=collected_family_content_signature_index_schema,
             family_cache_schema=collected_family_cache_schema,
             python_version=PythonVersion.running(),
-            entries=tuple(
-                (key, *entry)
-                for key, entry in sorted(
-                    self._entries.items(), key=lambda item: repr(item[0])
-                )
-            ),
+            # `load` rebuilds a dict, so order carries nothing; sorting every
+            # key by its repr cost each one-edit scan a pass over all entries.
+            entries=tuple((key, *entry) for key, entry in self._entries.items()),
         )
         temp_path = self.cache_dir / f".{self._file_name}.{os.getpid()}.tmp"
         try:
