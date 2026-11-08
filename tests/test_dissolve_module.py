@@ -12,6 +12,7 @@ import pytest
 from nominal_refactor_advisor.ast_tools import parse_python_modules
 from nominal_refactor_advisor.codemod import (
     CodemodPlanDocument,
+    CodemodPlanSequence,
     CodemodPreflightStatus,
     CodemodSourceSnapshot,
     DissolveModuleOperation,
@@ -134,6 +135,69 @@ def test_an_emptied_module_dissolves_after_relocation_with_its_successor(
         "from pkg.consumer import Order, MODULES; "
         "assert Order.__module__ == 'pkg.sub.orders'; "
         "assert MODULES == ('pkg.sub.orders', 'pkg/sub/orders.py'), MODULES",
+    )
+    assert imported.returncode == 0, imported.stderr
+
+
+def test_a_module_a_plan_creates_and_dissolves_is_never_written(tmp_path: Path) -> None:
+    """A move that needs an intermediate module (the destination package's name is
+    the source module's own) creates it in one stage and dissolves it in a later
+    one. The intermediate never reaches disk, so applying the plan deletes only
+    what was there at its base."""
+
+    _write(tmp_path, "pkg/__init__.py", "")
+    _write(tmp_path, "pkg/orders.py", "class Order:\n    value = 3\n")
+    _write(tmp_path, "pkg/consumer.py", "from .orders import Order\n\nvalue = Order.value\n")
+    hop = (tmp_path / "pkg/ordering.py").as_posix()
+    final = (tmp_path / "pkg/sub/orders.py").as_posix()
+    _write(tmp_path, "pkg/sub/__init__.py", "")
+
+    def relocate(source: str, destination: str) -> CodemodPlanDocument:
+        return CodemodPlanDocument(
+            recipes=(
+                RefactorRecipe(f"relocate-{Path(source).stem}").with_operation(
+                    RelocateSymbolsToNewModuleOperation(
+                        target=SourceRewriteTarget(file_path=source),
+                        symbol_qualnames=("Order",),
+                        destination_path=destination,
+                    )
+                ),
+            )
+        )
+
+    def dissolve(source: str, successor: str) -> CodemodPlanDocument:
+        return CodemodPlanDocument(
+            recipes=(
+                RefactorRecipe(f"dissolve-{Path(source).stem}").with_operation(
+                    DissolveModuleOperation(
+                        target=SourceRewriteTarget(file_path=source),
+                        successor_path=successor,
+                    )
+                ),
+            )
+        )
+
+    source = (tmp_path / "pkg/orders.py").as_posix()
+    sequence = CodemodPlanSequence(
+        documents=(
+            relocate(source, hop),
+            dissolve(source, hop),
+            relocate(hop, final),
+            dissolve(hop, final),
+        )
+    )
+
+    result = sequence.simulate(_snapshot(tmp_path))
+
+    assert result.is_clean
+    assert result.simulation.deleted_file_paths == (source,)
+    result.apply()
+    assert not (tmp_path / "pkg/orders.py").exists()
+    assert not (tmp_path / "pkg/ordering.py").exists()
+    imported = _run(
+        tmp_path,
+        "from pkg.consumer import value; from pkg.sub.orders import Order; "
+        "assert value == 3 and Order.__module__ == 'pkg.sub.orders'",
     )
     assert imported.returncode == 0, imported.stderr
 
