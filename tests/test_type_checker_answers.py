@@ -58,9 +58,11 @@ def test_an_edited_file_is_answered_by_a_new_build(tmp_path: Path) -> None:
     sources = SourceFiles(frozenset((span.file_path,)))
     with ActiveScanCache.opened(tmp_path / "cache"):
         before = sources.answer_key((span,))
-        Path(span.file_path).write_text(_SOURCE.replace("int | None", "str | None"))
+        first = sources.receiver_types((span,))[span]
+        Path(span.file_path).write_text(_SOURCE.replace("made = Goal()", "made = 3"))
         after = sources.answer_key((span,))
-        answer = sources.receiver_types((span,))[span]
+        edited = sources.receiver_types((span,))[span]
 
     assert before != after
-    assert isinstance(answer, InferredReceiverType) and "str" in answer.spelled
+    assert isinstance(first, InferredReceiverType) and first.classes == ("owner.Goal",)
+    assert isinstance(edited, InferredReceiverType) and edited.classes == ("builtins.int",)
