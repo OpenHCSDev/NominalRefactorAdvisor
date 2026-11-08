@@ -15,7 +15,10 @@ from nominal_refactor_advisor.codemod import (
     SourceRewriteTarget,
 )
 from nominal_refactor_advisor.json_reports import json_report_object
-from nominal_refactor_advisor.refactors.served_subclass import ServeClassMembersOperation
+from nominal_refactor_advisor.refactors.served_subclass import (
+    ServeClassMembersOperation,
+    ServedClass,
+)
 
 FAMILY = (
     "from abc import ABC, abstractmethod\n\n\n"
@@ -32,49 +35,97 @@ FAMILY = (
 )
 
 
-def _write(root: Path, family: str = FAMILY) -> Path:
+def _write(root: Path, sources: dict[str, str]) -> None:
     (root / "pkg").mkdir()
     (root / "pkg/__init__.py").write_text("")
-    path = root / "pkg/family.py"
-    path.write_text(family)
-    return path
+    for name, source in sources.items():
+        (root / f"pkg/{name}.py").write_text(source)
 
 
-def _serve(root: Path, header: str = "class ServedPrompt(Prompt)") -> ServeClassMembersOperation:
-    return ServeClassMembersOperation(
-        target=SourceRewriteTarget(file_path=(root / "pkg/family.py").as_posix(), qualname="Prompt"),
+def _served(root: Path, module: str, qualname: str, header: str, *members: str) -> ServedClass:
+    return ServedClass(
+        target=SourceRewriteTarget(file_path=(root / f"pkg/{module}.py").as_posix(), qualname=qualname),
         served_header=header,
-        member_names=("apply", "result"),
+        member_names=members,
     )
 
 
-def _simulate(root: Path, operation: ServeClassMembersOperation):
+def _simulate(root: Path, *classes: ServedClass):
     snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(root))
+    operation = ServeClassMembersOperation(classes=classes)
     replayed = RefactorRecipeOperation.from_json_value(json_report_object(operation))
     return RefactorRecipe(recipe_id="serve").with_operation(replayed).simulate(snapshot)
+
+
+def _run(root: Path, script: str) -> list[str]:
+    completed = subprocess.run(
+        [sys.executable, "-c", script], cwd=root, check=True, capture_output=True, text=True,
+    )
+    return completed.stdout.split()
+
+
+def _apply(root: Path, result) -> None:
+    for path, source in result.simulation.rewritten_sources.items():
+        Path(path).write_text(source)
 
 
 @pytest.mark.native_proof
 @pytest.mark.parametrize(
     "header", ("class ServedPrompt(Prompt)", "class ServedPrompt[T: str](Prompt[T])"),
 )
-def test_serving_members_moves_them_onto_a_subclass_declared_after_the_declaration(
+def test_serving_moves_members_onto_a_subclass_declared_after_the_declaration(
     tmp_path: Path, header: str,
 ) -> None:
-    path = _write(tmp_path, FAMILY.replace("class Prompt(Request):", "class Prompt[T: str = str](Request):"))
-    result = _simulate(tmp_path, _serve(tmp_path, header))
-    rewritten = result.simulation.rewritten_sources[path.as_posix()]
+    _write(tmp_path, {"family": FAMILY.replace("class Prompt(Request):", "class Prompt[T: str = str](Request):")})
+    result = _simulate(tmp_path, _served(tmp_path, "family", "Prompt", header, "apply", "result"))
+    rewritten = result.simulation.rewritten_sources[(tmp_path / "pkg/family.py").as_posix()]
 
     assert result.is_clean is True
     assert f"    text = 'hi'\n\n\n{header}:\n    def apply" in rewritten
-    path.write_text(rewritten)
-    completed = subprocess.run(
-        [sys.executable, "-c",
-         "from pkg.family import Prompt, ServedPrompt; "
-         "print(ServedPrompt().apply(), hasattr(Prompt(), 'apply'), Prompt().describe())"],
-        cwd=tmp_path, check=True, capture_output=True, text=True,
+    _apply(tmp_path, result)
+    assert _run(tmp_path, (
+        "from pkg.family import Prompt, ServedPrompt; "
+        "print(ServedPrompt().apply(), hasattr(Prompt(), 'apply'), Prompt().describe())"
+    )) == ["hi!", "False", "main"]
+
+
+@pytest.mark.native_proof
+def test_a_chain_calling_super_is_served_together_across_modules(tmp_path: Path) -> None:
+    _write(tmp_path, {
+        "base": (
+            "from abc import ABC, abstractmethod\n\n\n"
+            "class Request(ABC):\n"
+            "    thread = 'main'\n\n"
+            "    def apply(self) -> str:\n"
+            "        return self.result()\n\n"
+            "    @abstractmethod\n"
+            "    def result(self) -> str: ...\n"
+        ),
+        "leaf": (
+            "from pkg.base import Request\n\n\n"
+            "class Prompt(Request):\n"
+            "    def apply(self) -> str:\n"
+            "        return super().apply() + '!'\n\n"
+            "    def result(self) -> str:\n"
+            "        return self.thread\n"
+        ),
+    })
+    alone = (_served(tmp_path, "base", "Request", "class ServedRequest(Request)", "apply", "result"),)
+    with pytest.raises(CodemodOperationPreflightError, match="Prompt reads 'apply'"):
+        _simulate(tmp_path, *alone)
+
+    result = _simulate(
+        tmp_path,
+        *alone,
+        _served(tmp_path, "leaf", "Prompt", "class ServedPrompt(ServedRequest, Prompt)", "apply", "result"),
     )
-    assert completed.stdout.split() == ["hi!", "False", "main"]
+
+    assert result.is_clean is True
+    _apply(tmp_path, result)
+    assert _run(tmp_path, (
+        "from pkg.leaf import Prompt, ServedPrompt; "
+        "print(ServedPrompt().apply(), Prompt().thread, hasattr(Prompt, 'apply'))"
+    )) == ["main!", "main", "False"]
 
 
 @pytest.mark.parametrize(
@@ -97,7 +148,14 @@ def test_serving_members_moves_them_onto_a_subclass_declared_after_the_declarati
 def test_serving_refuses_a_member_the_plain_family_still_needs(
     tmp_path: Path, family: str, refusal: str,
 ) -> None:
-    _write(tmp_path, family)
+    _write(tmp_path, {"family": family})
 
     with pytest.raises(CodemodOperationPreflightError, match=refusal):
-        _simulate(tmp_path, _serve(tmp_path))
+        _simulate(tmp_path, _served(tmp_path, "family", "Prompt", "class ServedPrompt(Prompt)", "apply", "result"))
+
+
+def test_a_served_header_reads_only_names_bound_where_it_is_declared(tmp_path: Path) -> None:
+    _write(tmp_path, {"family": FAMILY})
+
+    with pytest.raises(CodemodOperationPreflightError, match="reads unbound 'Missing'"):
+        _simulate(tmp_path, _served(tmp_path, "family", "Prompt", "class ServedPrompt(Missing, Prompt)", "apply"))

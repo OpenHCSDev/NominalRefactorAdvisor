@@ -1,13 +1,20 @@
-"""Split a class in place: named members move onto a new subclass declared right after it.
+"""Split classes in place: named members move onto new subclasses declared right after them.
 
 A wire declaration and the class that serves it are one class until the serving members move
-down. This operation does that move inside the source module; relocating the declaration to
-its own module afterwards is ordinary relocation, which owns imports, consumers and cycles."""
+down. This operation does that move for a whole family at once, each served class beside its
+declaration; relocating the declarations to their own module afterwards is ordinary relocation,
+which owns imports, consumers and cycles.
+
+A family is served in one operation because its members call each other: a leaf's apply calls
+super().apply on its base, so serving the base alone leaves the plain leaf reading a member that
+moved, and serving the leaf alone leaves it under its base's abstract declaration. Only the
+whole move keeps every plain class instantiable and every plain read answered."""
 
 from __future__ import annotations
 
 import ast
 import builtins
+from collections.abc import Mapping
 from dataclasses import dataclass
 from functools import cached_property
 
@@ -15,7 +22,11 @@ from .class_member_authority import (
     ClassMemberMoveProofContext,
     ClassMemberPromotionStatement,
 )
+from ..codemod_imports import ModuleImportMutation
 from ..codemod_payload import (
+    CodemodPayloadRecord,
+    PayloadRecordArrayValueCodec,
+    PayloadRecordValueCodec,
     RequiredStringPayloadValueCodec,
     StringArrayPayloadValueCodec,
     codemod_payload_field,
@@ -23,46 +34,200 @@ from ..codemod_payload import (
 from ..codemod_reproof import RepositorySourceReprovedOperation
 from ..codemod_runtime import CodemodSourceSnapshot
 from ..codemod_selection_context import ResolvedClassTarget
-from ..codemod_source_edits import PhysicalSourceEdit, SourceTextSpanReplacement
+from ..codemod_selector_models import SourceRewriteTarget
+from ..codemod_source_edits import (
+    NominalSourceEdit,
+    SourceTextSpanReplacement,
+)
 from ..codemod_statement_source import StatementDeletionSource
 from ..lexical_bindings import LEXICAL_SCOPE_BINDING_AUTHORITY
 
 
-@dataclass(frozen=True)
-class ServedSubclassHeader:
-    """The served class's header as written, proved to name the source class as a base."""
+@dataclass(frozen=True, kw_only=True)
+class ServedClass(CodemodPayloadRecord):
+    """One declaration, the header of the class that serves it, and the members that move."""
 
-    source: str
+    target: SourceRewriteTarget = codemod_payload_field(
+        PayloadRecordValueCodec(SourceRewriteTarget)
+    )
+    served_header: str = codemod_payload_field(RequiredStringPayloadValueCodec())
+    member_names: tuple[str, ...] = codemod_payload_field(
+        StringArrayPayloadValueCodec(), default=()
+    )
 
     @cached_property
-    def node(self) -> ast.ClassDef:
-        module = ast.parse(f"{self.source}:\n    pass\n")
+    def header(self) -> ast.ClassDef:
+        module = ast.parse(f"{self.served_header}:\n    pass\n")
         if len(module.body) != 1 or not isinstance(module.body[0], ast.ClassDef):
-            raise ValueError(f"Served header {self.source!r} is not one class header")
-        return module.body[0]
-
-    def require_serves(self, source_class: ResolvedClassTarget, module_names: frozenset[str]) -> None:
-        node = self.node
+            raise ValueError(f"Served header {self.served_header!r} is not one class header")
+        node = module.body[0]
         if node.decorator_list:
             raise ValueError("Served header carries decorators; write them on the class body")
-        if not any(
-            isinstance(named := base.value if isinstance(base, ast.Subscript) else base, ast.Name)
-            and named.id == source_class.name
-            for base in node.bases
-        ):
-            raise ValueError(f"Served header {self.source!r} does not name {source_class.name!r} as a base")
-        if node.name in module_names:
-            raise ValueError(f"{node.name!r} is already bound in {source_class.file_path}")
+        return node
+
+    @property
+    def served_name(self) -> str:
+        return self.header.name
+
+    @property
+    def header_reads(self) -> frozenset[str]:
+        """Module-level names the header reads: its bases and keywords, minus its own type
+        parameters and builtins."""
+
+        node = self.header
         parameters = frozenset(parameter.name for parameter in node.type_params)
-        unbound = sorted(
+        return frozenset(
             name.id
             for part in (*node.bases, *(keyword.value for keyword in node.keywords))
             for name in ast.walk(part)
-            if isinstance(name, ast.Name) and name.id not in module_names | parameters
+            if isinstance(name, ast.Name)
+            and name.id not in parameters
             and not hasattr(builtins, name.id)
         )
-        if unbound:
-            raise ValueError(f"Served header reads names the module does not bind: {tuple(unbound)!r}")
+
+    def serves(self, source_class: ResolvedClassTarget) -> bool:
+        return any(
+            isinstance(named := base.value if isinstance(base, ast.Subscript) else base, ast.Name)
+            and named.id == source_class.name
+            for base in self.header.bases
+        )
+
+
+@dataclass(frozen=True)
+class ResolvedServedClass:
+    """A served class against current source: its declaration and the statements that move."""
+
+    request: ServedClass
+    source_class: ResolvedClassTarget
+    members: tuple[ClassMemberPromotionStatement, ...]
+
+    @classmethod
+    def require(cls, snapshot: CodemodSourceSnapshot, request: ServedClass) -> ResolvedServedClass:
+        source_class = ResolvedClassTarget.from_rewrite_target(snapshot, request.target)
+        module = snapshot.module_nodes_by_file_path[source_class.file_path]
+        if source_class.node not in module.body:
+            raise ValueError(f"Serving {source_class.qualname!r} requires a module-level class")
+        if not request.serves(source_class):
+            raise ValueError(
+                f"Served header {request.served_header!r} does not name "
+                f"{source_class.name!r} as a base"
+            )
+        members = ClassMemberPromotionStatement.selected(source_class.node, request.member_names)
+        resolved = cls(request, source_class, members)
+        context = ClassMemberMoveProofContext(
+            source_class=source_class,
+            destination_class=source_class,
+            source=snapshot.sources_by_file_path[source_class.file_path],
+            module_bound_names=resolved.module_names(snapshot),
+        )
+        ServedMemberScope(source_class, frozenset(request.member_names), members).require_safe(
+            context
+        )
+        return resolved
+
+    @property
+    def file_path(self) -> str:
+        return self.source_class.file_path
+
+    @property
+    def moved(self) -> frozenset[str]:
+        return frozenset(self.request.member_names)
+
+    @property
+    def statements(self) -> frozenset[ast.stmt]:
+        return frozenset(member.statement for member in self.members)
+
+    def module_names(self, snapshot: CodemodSourceSnapshot) -> frozenset[str]:
+        return LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(
+            snapshot.module_nodes_by_file_path[self.file_path].body
+        )
+
+    def source_edits(self, snapshot: CodemodSourceSnapshot, rationale: str) -> tuple[NominalSourceEdit, ...]:
+        source = snapshot.sources_by_file_path[self.file_path]
+        deletion = StatementDeletionSource(
+            source=source, node=self.source_class.node, file_path=self.file_path,
+        )
+        end_line = self.source_class.node.end_lineno or self.source_class.node.lineno
+        insertion_offset = (
+            deletion.line_offsets[end_line] if end_line < len(deletion.lines) else deletion.end_offset
+        )
+        separator = "" if source[:insertion_offset].endswith("\n") else "\n"
+        body = "\n".join(
+            member.source_from(source, indentation="    ") for member in self.members
+        ) or "    pass\n"
+        served_source = f"{separator}\n\n{self.request.served_header}:\n{body}"
+        return deletion.physical_edits(
+            file_path=self.file_path,
+            replacements=(
+                *deletion.replacements_for_statements(
+                    tuple(member.statement for member in self.members)
+                ),
+                SourceTextSpanReplacement.from_offsets(
+                    start_offset=insertion_offset,
+                    end_offset=insertion_offset,
+                    replacement_source=(
+                        served_source if served_source.endswith("\n") else served_source + "\n"
+                    ),
+                ),
+            ),
+            rationale=rationale
+            or f"Serve {self.request.member_names!r} from {self.request.served_name!r}.",
+        )
+
+
+@dataclass(frozen=True)
+class ServedHeaderBindings:
+    """Every name a served header reads is bound where the served class is declared: by its
+    module, by a served class this operation declares earlier in that module, or by a served
+    class it declares in a module this one may import without closing a cycle, which the
+    operation then imports."""
+
+    snapshot: CodemodSourceSnapshot
+    served: tuple[ResolvedServedClass, ...]
+
+    @cached_property
+    def served_by_name(self) -> Mapping[str, ResolvedServedClass]:
+        names: dict[str, ResolvedServedClass] = {}
+        for served in self.served:
+            if served.request.served_name in names:
+                raise ValueError(f"Two classes would be served as {served.request.served_name!r}")
+            names[served.request.served_name] = served
+        return names
+
+    def required_imports(self) -> tuple[ModuleImportMutation, ...]:
+        graph = self.snapshot.module_import_graph
+        imports: list[ModuleImportMutation] = []
+        failures: list[str] = []
+        for served in self.served:
+            module_names = served.module_names(self.snapshot)
+            if served.request.served_name in module_names:
+                failures.append(f"{served.request.served_name!r} is already bound in {served.file_path}")
+            for name in sorted(served.request.header_reads - module_names):
+                provider = self.served_by_name.get(name)
+                if provider is None:
+                    failures.append(f"{served.request.served_name!r} reads unbound {name!r}")
+                elif provider.file_path == served.file_path:
+                    if provider.source_class.node.lineno > served.source_class.node.lineno:
+                        failures.append(
+                            f"{served.request.served_name!r} reads {name!r}, served later in its module"
+                        )
+                elif graph.import_would_create_cycle(
+                    importing_file_path=served.file_path, imported_file_path=provider.file_path,
+                ):
+                    failures.append(
+                        f"{served.file_path} importing {name!r} from {provider.file_path} closes a cycle"
+                    )
+                else:
+                    imports.append(ModuleImportMutation.from_source(
+                        file_path=served.file_path,
+                        import_source=(
+                            f"from {graph.module_name_for_file_path(provider.file_path)} import {name}"
+                        ),
+                        rationale=f"{served.request.served_name!r} is served from {name!r}.",
+                    ))
+        if failures:
+            raise ValueError("Served headers cannot bind: " + "; ".join(failures))
+        return tuple(imports)
 
 
 @dataclass(frozen=True)
@@ -141,47 +306,49 @@ def _class_scope_reads(statement: ast.stmt) -> frozenset[str]:
 
 @dataclass(frozen=True)
 class FamilyMemberReads:
-    """The source class's family, read for the members that move: a class that stays a plain
-    declaration must not read them through its own receiver, and an ancestor's abstract
-    declaration of one would leave the declaration uninstantiable once the concrete member
-    leaves. A descendant's own definition stays with it and breaks nothing; it is served next."""
+    """Each served class's family, read for the members that leave it: a class that stays plain
+    must not read them through its own receiver, and an ancestor's abstract declaration of one
+    would leave the declaration uninstantiable once the concrete member leaves. Statements this
+    operation moves are not plain, so a chain served together answers its own super() calls."""
 
     snapshot: CodemodSourceSnapshot
-    source_class: ResolvedClassTarget
-    moved: frozenset[str]
-    moved_statements: frozenset[ast.stmt]
+    served: tuple[ResolvedServedClass, ...]
 
     def require_none(self) -> None:
         index = self.snapshot.required_class_family_index
-        symbol = self.source_class.required_symbol(self.snapshot)
-        ancestors = frozenset(index.ancestor_symbols(symbol))
+        moving = frozenset().union(*(served.statements for served in self.served))
         failures: list[str] = []
-        for member in (*ancestors, symbol, *index.descendant_symbols(symbol)):
-            declaration = index.classes_by_symbol.get(member)
-            if declaration is None:
-                continue  # declared outside the repository: no source to read or edit
-            node = self._class_node(declaration.file_path, declaration.qualname)
-            where = f"{declaration.file_path}:{{line}} {declaration.qualname}"
-            for statement in node.body:
-                if statement in self.moved_statements:
-                    continue
-                if (
-                    member in ancestors
-                    and isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef))
-                    and statement.name in self.moved
-                    and any(map(_names_abstractmethod, statement.decorator_list))
-                ):
-                    failures.append(
-                        f"{where.format(line=statement.lineno)} declares {statement.name!r} abstract"
+        for served in self.served:
+            symbol = served.source_class.required_symbol(self.snapshot)
+            ancestors = frozenset(index.ancestor_symbols(symbol))
+            for member in (*ancestors, symbol, *index.descendant_symbols(symbol)):
+                declaration = index.classes_by_symbol.get(member)
+                if declaration is None:
+                    continue  # declared outside the repository: no source to read or edit
+                node = self._class_node(declaration.file_path, declaration.qualname)
+                where = f"{declaration.file_path}:{{line}} {declaration.qualname}"
+                for statement in node.body:
+                    if statement in moving:
+                        continue
+                    if (
+                        member in ancestors
+                        and isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef))
+                        and statement.name in served.moved
+                        and any(map(_names_abstractmethod, statement.decorator_list))
+                    ):
+                        failures.append(
+                            f"{where.format(line=statement.lineno)} declares {statement.name!r} abstract"
+                        )
+                    failures.extend(
+                        f"{where.format(line=read.lineno)} reads {read.attr!r}"
+                        for read in ast.walk(statement)
+                        if isinstance(read, ast.Attribute) and read.attr in served.moved
+                        and _is_own_receiver(read.value)
                     )
-                failures.extend(
-                    f"{where.format(line=read.lineno)} reads {read.attr!r}"
-                    for read in ast.walk(statement)
-                    if isinstance(read, ast.Attribute) and read.attr in self.moved
-                    and _is_own_receiver(read.value)
-                )
         if failures:
-            raise ValueError("Members cannot leave the declaration: " + "; ".join(failures))
+            raise ValueError(
+                "Members cannot leave the declaration: " + "; ".join(sorted(set(failures)))
+            )
 
     def _class_node(self, file_path: str, qualname: str) -> ast.ClassDef:
         scope: ast.AST = self.snapshot.module_nodes_by_file_path[file_path]
@@ -210,66 +377,30 @@ def _is_own_receiver(value: ast.expr) -> bool:
 
 @dataclass(frozen=True, kw_only=True)
 class ServeClassMembersOperation(RepositorySourceReprovedOperation):
-    """Move named direct members of the target class onto a new subclass, declared right
-    after it with the given header. Plain instances of the target lose those members, so every
-    class in its family that stays plain must not read them; readers outside the family must
-    receive served instances, which the served header's metaclass owns (a ServesDeclaration
-    member takes the declaration's slot wherever its module is imported)."""
+    """Serve a family: for each declaration, move its named direct members onto a new subclass
+    declared right after it with the given header. Plain instances lose those members, so every
+    class that stays plain must not read them; readers outside the family must receive served
+    instances, which the served header's metaclass owns (a ServesDeclaration member takes the
+    declaration's slot wherever its module is imported)."""
 
-    served_header: str = codemod_payload_field(RequiredStringPayloadValueCodec())
-    member_names: tuple[str, ...] = codemod_payload_field(StringArrayPayloadValueCodec())
+    classes: tuple[ServedClass, ...] = codemod_payload_field(
+        PayloadRecordArrayValueCodec(ServedClass)
+    )
 
     def __post_init__(self) -> None:
-        if not self.member_names or len(set(self.member_names)) != len(self.member_names):
-            raise ValueError("Serving members requires unique member_names")
+        if not self.classes:
+            raise ValueError("Serving requires at least one class")
+        for served in self.classes:
+            if len(set(served.member_names)) != len(served.member_names):
+                raise ValueError(f"{served.served_name!r} names a member twice")
 
     def source_edits_from_snapshot(
         self, snapshot: CodemodSourceSnapshot,
-    ) -> tuple[PhysicalSourceEdit, ...]:
-        source_class = ResolvedClassTarget.from_rewrite_target(snapshot, self.target)
-        module = snapshot.module_nodes_by_file_path[source_class.file_path]
-        if source_class.node not in module.body:
-            raise ValueError("Serving members requires a module-level class")
-        source = snapshot.sources_by_file_path[source_class.file_path]
-        module_names = LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(module.body)
-        header = ServedSubclassHeader(self.served_header)
-        header.require_serves(source_class, module_names)
-        members = ClassMemberPromotionStatement.selected(source_class.node, self.member_names)
-        context = ClassMemberMoveProofContext(
-            source_class=source_class,
-            destination_class=source_class,
-            source=source,
-            module_bound_names=module_names,
+    ) -> tuple[NominalSourceEdit, ...]:
+        served = tuple(ResolvedServedClass.require(snapshot, request) for request in self.classes)
+        imports = ServedHeaderBindings(snapshot, served).required_imports()
+        FamilyMemberReads(snapshot, served).require_none()
+        return (
+            *imports,
+            *(edit for each in served for edit in each.source_edits(snapshot, self.rationale)),
         )
-        ServedMemberScope(
-            source_class, frozenset(self.member_names), members,
-        ).require_safe(context)
-        moved_statements = frozenset(member.statement for member in members)
-        FamilyMemberReads(
-            snapshot, source_class, frozenset(self.member_names), moved_statements,
-        ).require_none()
-        deletion = StatementDeletionSource(
-            source=source, node=source_class.node, file_path=source_class.file_path,
-        )
-        end_line = source_class.node.end_lineno or source_class.node.lineno
-        insertion_offset = (
-            deletion.line_offsets[end_line] if end_line < len(deletion.lines) else deletion.end_offset
-        )
-        separator = "" if source[:insertion_offset].endswith("\n") else "\n"
-        served_source = (
-            f"{separator}\n\n{self.served_header}:\n"
-            + "\n".join(member.source_from(source, indentation="    ") for member in members)
-        )
-        return deletion.physical_edits(
-            file_path=source_class.file_path,
-            replacements=(
-                *deletion.replacements_for_statements(tuple(member.statement for member in members)),
-                SourceTextSpanReplacement.from_offsets(
-                    start_offset=insertion_offset,
-                    end_offset=insertion_offset,
-                    replacement_source=served_source if served_source.endswith("\n") else served_source + "\n",
-                ),
-            ),
-            rationale=self.rationale or f"Serve {self.member_names!r} from {header.node.name!r}.",
-        )
-
