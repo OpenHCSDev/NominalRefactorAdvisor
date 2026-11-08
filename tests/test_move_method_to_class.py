@@ -113,7 +113,8 @@ def test_a_method_moves_onto_the_class_it_builds_and_only_its_receivers_follow(t
         ({"threads": THREADS + "\n\nclass Loud(Thread):\n    def environment(self, root: str) -> dict[str, str]:\n        return {}\n",
           "requests": REQUESTS, "config": CONFIG}, "override 'environment'"),
         ({"threads": THREADS, "requests": REQUESTS,
-          "config": CONFIG + "\n\nNAME = 'environment'\n"}, "names 'environment' in a string"),
+          "config": CONFIG + "\n\ndef dynamic(thread):\n    return getattr(thread, 'environment')\n"},
+         "reaches 'environment' by a string"),
         ({"threads": THREADS, "requests": REQUESTS,
           "config": CONFIG + "\n\ndef pick(thread: Thread):\n    return thread.environment\n"},
          "other than by calling it"),
@@ -312,3 +313,23 @@ def test_descendants_only_matter_where_a_call_could_bind_cls_to_one(tmp_path: Pa
 
     assert "two = Evidence('p').identity()" in _source(tmp_path, reads_cls, "use")
     assert "three = Proof.proof_for('x')" in _source(tmp_path, unread_cls, "use")
+
+
+@pytest.mark.native_proof
+def test_another_class_s_method_of_the_same_name_and_an_alike_binding_do_not_refuse(tmp_path: Path) -> None:
+    proof = PROOF.replace("from dataclasses import dataclass\n", "from dataclasses import dataclass, field\n")
+    use = USE + (
+        "\n\nclass Codec:\n    @staticmethod\n    def proof_for(value: str) -> str:\n        return value\n\n\n"
+        "READER = Codec.proof_for\nNOTE = 'proof_for'\n"
+    )
+    identity = IDENTITY.replace(
+        "        from pkg.proof import Proof\n\n        return Proof(session, 'f')\n",
+        "        from pkg.proof import Proof\n\n        return Proof(session, field.__name__[0])\n",
+    ).replace("from dataclasses import dataclass\n", "from dataclasses import dataclass, field\n")
+    _write(tmp_path, {"identity": identity, "proof": proof, "use": use})
+    result = _class_bound(tmp_path, "Identity.proof_for", "Proof")
+
+    assert result.is_clean is True
+    assert "READER = Codec.proof_for" in _source(tmp_path, result, "use")
+    assert "from dataclasses import dataclass, field\n" in _source(tmp_path, result, "proof")
+    assert _runs(tmp_path, result) == "s/s-p/x"
