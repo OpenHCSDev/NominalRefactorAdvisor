@@ -672,3 +672,72 @@ def test_an_import_written_in_a_string_follows_each_name_to_its_owner(tmp_path: 
     ran = _run(tmp_path, "import pkg.runner; exec(pkg.runner.PROGRAM)")
     assert ran.returncode == 0, ran.stderr
     assert ran.stdout.split() == ["Checkout", "Repo"]
+
+
+def test_entry_points_and_settings_in_the_governing_manifest_follow_the_dissolved_module(
+    tmp_path: Path,
+) -> None:
+    manifest = (
+        "[project]\n"
+        'name = "pkg"\n\n'
+        "[project.scripts]\n"
+        'pkg-worker = "pkg.worker:main"\n'
+        "# pkg.worker stays named in this comment\n\n"
+        '[project.entry-points."pkg.plugins"]\n'
+        "worker = 'pkg.worker'\n\n"
+        "[tool.coverage.run]\n"
+        'omit = ["pkg/worker.py", "pkg/workers.py"]\n'
+    )
+    _write(tmp_path, "pyproject.toml", manifest)
+    _write(tmp_path, "pkg/__init__.py", "")
+    _write(tmp_path, "pkg/execution/__init__.py", "")
+    _write(tmp_path, "pkg/execution/worker.py", "def main() -> int:\n    return 7\n")
+    _write(tmp_path, "pkg/worker.py", "from .execution.worker import main\n")
+    simulation = (
+        RefactorRecipe("dissolve-worker")
+        .with_operation(_dissolve(tmp_path, "pkg/worker.py", "pkg/execution/worker.py"))
+        .simulate(_snapshot(tmp_path))
+    )
+
+    assert simulation.is_clean
+    manifest_path = (tmp_path / "pyproject.toml").as_posix()
+    assert manifest_path in simulation.simulation.changed_file_paths
+    assert "-pkg-worker = \"pkg.worker:main\"" in simulation.unified_diff(
+        _snapshot(tmp_path).sources_by_file_path
+    )
+    simulation.apply()
+
+    assert not (tmp_path / "pkg/worker.py").exists()
+    assert (tmp_path / "pyproject.toml").read_text(encoding="utf-8") == (
+        "[project]\n"
+        'name = "pkg"\n\n'
+        "[project.scripts]\n"
+        'pkg-worker = "pkg.execution.worker:main"\n'
+        "# pkg.worker stays named in this comment\n\n"
+        '[project.entry-points."pkg.plugins"]\n'
+        "worker = 'pkg.execution.worker'\n\n"
+        "[tool.coverage.run]\n"
+        'omit = ["pkg/execution/worker.py", "pkg/workers.py"]\n'
+    )
+    completed = _run(
+        tmp_path,
+        "import tomllib, importlib\n"
+        "target = tomllib.load(open('pyproject.toml', 'rb'))['project']['scripts']['pkg-worker']\n"
+        "module, _, name = target.partition(':')\n"
+        "print(getattr(importlib.import_module(module), name)())\n",
+    )
+    assert completed.stdout == "7\n", completed.stderr
+
+
+def test_a_manifest_naming_a_name_the_dissolved_module_does_not_bind_refuses(
+    tmp_path: Path,
+) -> None:
+    _write(tmp_path, "pyproject.toml", '[project.scripts]\nx = "pkg.worker:gone"\n')
+    _write(tmp_path, "pkg/__init__.py", "")
+    _write(tmp_path, "pkg/owner.py", "def main() -> int:\n    return 7\n")
+    _write(tmp_path, "pkg/worker.py", "from .owner import main\n")
+
+    with pytest.raises(ValueError, match="'pkg.worker:gone', which the dissolved module does not bind"):
+        RefactorRecipe("dissolve-worker").with_operation(
+            _dissolve(tmp_path, "pkg/worker.py", "pkg/owner.py")
+        ).simulate(_snapshot(tmp_path))

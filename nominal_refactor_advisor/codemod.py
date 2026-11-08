@@ -493,6 +493,8 @@ from .codemod_source_edits import (
 from .codemod_source_edits import (
     SourceFileCreation as SourceFileCreation,
     SourceFileDeletion as SourceFileDeletion,
+    TextFileEdit as TextFileEdit,
+    TextFileRewrite as TextFileRewrite,
 )
 from .codemod_source_edits import (
     SourceInsertion as SourceInsertion,
