@@ -464,3 +464,33 @@ def test_mentions_of_a_module_already_gone_follow_its_successor(tmp_path: Path) 
         '"""Serving is in pkg.served."""\n\n'
         "PROGRAM = \"assert 'pkg.served' not in sys.modules\"\n"
     )
+
+
+def test_a_moved_bodys_relative_import_is_rebased_for_its_new_package(tmp_path: Path) -> None:
+    _write(tmp_path, "pkg/__init__.py", "")
+    _write(tmp_path, "pkg/sub/__init__.py", "")
+    _write(tmp_path, "pkg/actions.py", "class Action:\n    value = 5\n")
+    _write(
+        tmp_path,
+        "pkg/source.py",
+        "class Moved:\n"
+        "    def act(self):\n"
+        "        from .actions import Action  # noqa: local\n"
+        "        return Action.value\n",
+    )
+    simulation = (
+        RefactorRecipe("relocate-down")
+        .with_operation(
+            RelocateSymbolsToNewModuleOperation(
+                target=SourceRewriteTarget(file_path=(tmp_path / "pkg/source.py").as_posix()),
+                symbol_qualnames=("Moved",),
+                destination_path=(tmp_path / "pkg/sub/moved.py").as_posix(),
+            )
+        )
+        .simulate(_snapshot(tmp_path))
+    )
+    assert simulation.is_clean, simulation.preflight_report
+    simulation.apply()
+    assert "from ..actions import Action  # noqa: local" in (tmp_path / "pkg/sub/moved.py").read_text()
+    ran = _run(tmp_path, "from pkg.sub.moved import Moved; assert Moved().act() == 5")
+    assert ran.returncode == 0, ran.stderr
