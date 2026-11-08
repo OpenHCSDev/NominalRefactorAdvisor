@@ -47,6 +47,7 @@ from .codemod_imports import (
     RequestedImportStatement as RequestedImportStatement,
 )
 from .codemod_source_edits import (
+    DocumentedNodeSpan,
     Include,
     SourceLineSpan,
     SourceNodeSpan,
@@ -709,6 +710,12 @@ class SourceTopLevelDeclaration(
 
         return self
 
+    @property
+    def statements(self) -> tuple[ast.stmt, ...]:
+        """The module statements this declaration consists of."""
+
+        return (self.node,)
+
 
 @dataclass(frozen=True)
 class NamedSourceTopLevelDeclaration(SourceTopLevelDeclaration):
@@ -784,6 +791,15 @@ class AssignedSourceTopLevelDeclaration(SourceTopLevelDeclaration):
     def destination_boundary(self) -> SourceInsertionBoundary:
         return SourceInsertionBoundary.ONE_BLANK_LINE
 
+    def documented_by(self, following: ast.stmt) -> SourceTopLevelDeclaration:
+        if not is_docstring_statement(following):
+            return self
+        return DocumentedAssignedSourceTopLevelDeclaration(
+            source_path=self.source_path,
+            node=self.node,
+            docstring=cast(ast.Expr, following),
+        )
+
 
 @dataclass(frozen=True)
 class TypeAliasSourceTopLevelDeclaration(SourceTopLevelDeclaration):
@@ -818,21 +834,23 @@ class TypeAliasSourceTopLevelDeclaration(SourceTopLevelDeclaration):
     def destination_boundary(self) -> SourceInsertionBoundary:
         return SourceInsertionBoundary.ONE_BLANK_LINE
 
-    def documented_by(self, following: ast.stmt) -> SourceTopLevelDeclaration:
-        if not is_docstring_statement(following):
-            return self
-        return DocumentedAssignedSourceTopLevelDeclaration(
-            source_path=self.source_path,
-            node=self.node,
-            docstring=cast(ast.Expr, following),
-        )
-
 
 @dataclass(frozen=True)
 class DocumentedAssignedSourceTopLevelDeclaration(AssignedSourceTopLevelDeclaration):
     """An assignment and the attribute docstring under it, which moves with it."""
 
     docstring: ast.Expr
+
+    @classmethod
+    def from_supported_statement(
+        cls,
+        source_path: str,
+        statement: ast.stmt,
+    ) -> SourceTopLevelDeclaration | None:
+        """A documented assignment spans two statements, so no single statement
+        decodes as one; `AssignedSourceTopLevelDeclaration.documented_by` builds it."""
+
+        return None
 
     @cached_property
     def source_span(self) -> SourceNodeSpan:
@@ -844,6 +862,10 @@ class DocumentedAssignedSourceTopLevelDeclaration(AssignedSourceTopLevelDeclarat
 
     def documented_by(self, following: ast.stmt) -> SourceTopLevelDeclaration:
         return self
+
+    @property
+    def statements(self) -> tuple[ast.stmt, ...]:
+        return (self.node, self.docstring)
 
 
 @dataclass(frozen=True)
@@ -912,7 +934,7 @@ class SourceTopLevelDeclarationIndex:
     ) -> bool:
         span = declaration.source_span
         return all(
-            statement is declaration.node
+            any(statement is own for own in declaration.statements)
             or (statement.end_lineno or statement.lineno) < span.start_line
             or statement.lineno > span.end_line
             for statement in self.module.body
