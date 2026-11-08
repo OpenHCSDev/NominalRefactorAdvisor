@@ -10,6 +10,7 @@ from typing import ClassVar
 from ..codemod_runtime import CodemodSourceSnapshot
 from ..codemod_selection_context import ResolvedClassTarget
 from ..lexical_bindings import LEXICAL_SCOPE_BINDING_AUTHORITY
+from ..module_node_index import ModuleNodeIndex
 from ..probe_owner import (
     InferredReceiverType,
     ProbeOwnerResolver,
@@ -133,10 +134,7 @@ class AnsweredMethod:
         for parsed in snapshot.parsed_modules:
             if self.name not in parsed.source:
                 continue
-            parents = {
-                child: parent for parent in ast.walk(parsed.module)
-                for child in ast.iter_child_nodes(parent)
-            }
+            parents = parsed.fact(ModuleNodeIndex).parents
             resolver = ProbeOwnerResolver.of(parsed)
             for node in ast.walk(parsed.module):
                 where = f"{parsed.file_path}:{getattr(node, 'lineno', 0)}"

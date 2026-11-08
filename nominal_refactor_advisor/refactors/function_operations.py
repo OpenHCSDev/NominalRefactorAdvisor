@@ -17,6 +17,7 @@ from .declaration_operations import (
     DeclarationDecoratorsPayload,
     DeclarationMutationOperationABC,
 )
+from ..ast_tools import ParsedModule
 from ..codemod_call_source import (
     DeclaredCallArgumentsRewrite,
     DeclaredCallExpressionRewrite,
@@ -82,6 +83,7 @@ from ..declaration_dependencies import (
 )
 from ..declared_root import DeclaredRoot
 from ..lexical_bindings import LEXICAL_SCOPE_BINDING_AUTHORITY
+from ..module_node_index import ModuleNodeIndex
 from ..descriptor_algebra import AliasProperty
 from ..product_flow import BareCallTargetReference
 from ..source_index import AstTargetNodeKind
@@ -669,10 +671,11 @@ class InlineForwarderOperation(RepositorySourceReprovedOperation):
         answered = AnsweredMethod(snapshot, source_class, method)
         if answered.overriding:
             raise ValueError(f"{answered.overriding!r} override {method_name!r}; inlining skips their dispatch")
+        for parsed in snapshot.parsed_modules:
+            _MethodNameStrings.require_none(parsed, method_name)
         replacements: dict[str, list[tuple[ast.AST, str]]] = {source_path: [(method, "")]}
         for call in answered.answering_calls():
-            parsed = snapshot.parsed_module_for_source_path(call.file_path)
-            parents = {child: parent for parent in ast.walk(parsed.module) for child in ast.iter_child_nodes(parent)}
+            parents = snapshot.parsed_module_for_source_path(call.file_path).fact(ModuleNodeIndex).parents
             if not forwarder.returns and forwarder.value_used(call.call, parents):
                 raise ValueError(f"{call.where} uses the value of {method_name!r}, which returns None")
             replacements.setdefault(call.file_path, []).append(
@@ -707,6 +710,29 @@ class InlineForwarderOperation(RepositorySourceReprovedOperation):
         return tuple(edits)
 
 
+class _MethodNameStrings:
+    """A string spelling the forwarder's name outside a docstring (a dispatch
+    table, a compared name) reaches it past every typed call. The inline deletes
+    the method, so such a string would outlive it and the inline refuses."""
+
+    @staticmethod
+    def require_none(parsed: ParsedModule, name: str) -> None:
+        if name not in parsed.source:
+            return
+        index = parsed.fact(ModuleNodeIndex)
+        docstrings = {
+            id(node.body[0].value)
+            for node in (parsed.module, *index.parents)
+            if isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef))
+            and node.body
+            and isinstance(node.body[0], ast.Expr)
+            and isinstance(node.body[0].value, ast.Constant)
+        }
+        for node in index.string_constants:
+            if node.value == name and id(node) not in docstrings:
+                raise ValueError(f"{parsed.file_path!r}:{node.lineno} names {name!r} in a string")
+
+
 @dataclass(frozen=True)
 class _ForwardedNames:
     """What the forwarded call reads besides the forwarder's parameters, bound
@@ -737,19 +763,18 @@ class _ForwardedNames:
             source=self.snapshot.sources_by_file_path[file_path],
             module=self.snapshot.module_nodes_by_file_path[file_path],
         )
-        imports: list[ModuleImportMutation] = []
-        for name in sorted(self.forwarder.free_names - unshadowed):
-            import_source = self._import_source(graph, consumer, name)
-            if import_source:
-                imports.append(ModuleImportMutation.from_source(
-                    file_path=file_path,
-                    import_source=import_source,
-                    rationale=f"The inlined call reads {name!r}.",
-                ))
-        return tuple(imports)
+        return tuple(
+            ModuleImportMutation.from_source(
+                file_path=file_path,
+                import_source=import_source,
+                rationale=f"The inlined call reads {name!r}.",
+            )
+            for name in sorted(self.forwarder.free_names - unshadowed)
+            for import_source in self._imports_for(graph, consumer, name)
+        )
 
-    def _import_source(self, graph: SourceModuleImportGraph, consumer: ModuleSymbolTable, name: str) -> str:
-        """The import `consumer` needs for `name`, empty when it already binds it."""
+    def _imports_for(self, graph: SourceModuleImportGraph, consumer: ModuleSymbolTable, name: str) -> Iterator[str]:
+        """The import `consumer` needs for `name`: one, or none when it already binds it."""
 
         for table in self.tables:
             resolved = table.import_binding_for_dependency(
@@ -761,19 +786,20 @@ class _ForwardedNames:
             if identity.is_destination_declaration(
                 graph, destination_path=consumer.file_path, bound_name=name,
             ) or consumer.satisfies_import_binding(name, identity, binding.scope, import_graph=graph):
-                return ""
+                return
             if consumer.conflicts_with_import_binding(name, identity, import_graph=graph):
                 raise ValueError(f"{consumer.file_path!r} binds {name!r}, which the inlined call reads, to another object")
-            return identity.source_for(
+            yield identity.source_for(
                 graph, importing_file_path=consumer.file_path, scope=binding.scope, bound_name=name,
             )
+            return
         if name not in self.tables[1].declared_names:
             raise ValueError(f"The forwarded call reads {name!r}, which {self.source_path!r} does not bind")
         if consumer.file_path == self.source_path:
-            return ""
+            return
         if name in consumer.top_level_names:
             raise ValueError(f"{consumer.file_path!r} binds {name!r}, which the inlined call reads, to another object")
-        return graph.required_import_source(
+        yield graph.required_import_source(
             importing_file_path=consumer.file_path, imported_file_path=self.source_path, imported_name=name,
         )
 

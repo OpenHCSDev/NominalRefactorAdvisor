@@ -96,6 +96,7 @@ def test_a_forwarder_is_inlined_and_its_guarded_import_leaves(tmp_path: Path) ->
             "reorders the evaluation",
         ),
         ("def untyped(actor, todo):\n    actor.require_may_change(todo)\n", "on a receiver typed"),
+        ("TABLE = {'change': 'require_may_change'}\n", "in a string"),
     ),
 )
 def test_inlining_is_refused_where_a_call_cannot_inline(
