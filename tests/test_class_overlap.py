@@ -12,6 +12,7 @@ from nominal_refactor_advisor.class_index import (
     CompactModuleClassProjectionFamily,
     build_compact_class_family_index,
 )
+from tests.dataclass_field_wrappers import FIELD_WRAPPERS
 from nominal_refactor_advisor.class_overlap import (
     ClassOverlapCandidate,
     ComposeExisting,
@@ -354,3 +355,19 @@ def test_a_star_settled_builtin_and_a_direct_builtin_are_one_declaration():
     (verdict,) = verdicts
     assert {verdict.owner.qualname, verdict.restating.qualname} == {"Starred", "Direct"}
     assert set(verdict.shared_names) == {"file_path", "line", "symbol"}
+
+
+def test_a_shared_field_declared_differently_refuses_the_move():
+    records = (
+        "from dataclasses import dataclass\n"
+        "from pkg.fields import PathCodec, codec_field\n\n\n"
+        "@dataclass(frozen=True)\nclass Plain:\n"
+        "    path: str\n    line: int\n    column: int\n\n\n"
+        "@dataclass(frozen=True)\nclass Wrapped:\n"
+        "    path: str = codec_field(PathCodec())\n    line: int\n    column: int\n"
+    )
+    (candidate,) = _verdicts(("pkg.fields", FIELD_WRAPPERS), ("pkg.records", records))
+    assert {shared.name for shared in candidate.overlap.shared} == {"path", "line", "column"}
+    (refusal,) = candidate.refusals
+    assert refusal.kind is OverlapReceiptKind.DECLARATION_DIFFERS
+    assert not candidate.permitted

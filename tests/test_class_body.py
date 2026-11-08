@@ -13,6 +13,7 @@ from pathlib import Path
 from nominal_refactor_advisor.ast_tools import ParsedModule
 from nominal_refactor_advisor.class_body import ClassBodyIndex
 from nominal_refactor_advisor.class_index import CompactModuleClassProjectionFamily
+from tests.dataclass_field_wrappers import FIELD_WRAPPERS
 
 
 def _module(module_name: str, source: str) -> ParsedModule:
@@ -108,3 +109,85 @@ def test_overlaps_pair_classes_by_any_shared_declaration():
     assert [
         (overlap.first.qualname, overlap.second.qualname) for overlap in index.overlaps
     ] == [("Job", "Task")]
+
+
+
+def _field_records(*bodies: str) -> ClassBodyIndex:
+    """`Plain` declares bare fields; each body declares `Wrapped`."""
+
+    return _index(
+        ("pkg.fields", FIELD_WRAPPERS),
+        (
+            "pkg.records",
+            "from dataclasses import dataclass\n"
+            "from pkg.fields import LineCodec, PathCodec, codec_field, forwarded_field\n\n\n"
+            "@dataclass(frozen=True)\nclass Plain:\n    path: str\n    line: int\n\n\n"
+            "@dataclass(frozen=True)\nclass Wrapped:\n" + "".join(bodies),
+        ),
+    )
+
+
+def test_a_field_declared_through_a_wrapper_with_no_default_is_the_bare_field():
+    overlap = _field_records(
+        "    path: str = codec_field(PathCodec())\n",
+        "    line: int = codec_field(LineCodec())\n",
+    ).overlap("pkg.records.Plain", "pkg.records.Wrapped")
+    assert [(shared.name, shared.declaration_differs) for shared in overlap.shared] == [
+        ("path", True),
+        ("line", True),
+    ]
+
+
+def test_a_wrapper_call_that_supplies_a_default_is_a_different_field():
+    overlap = _field_records(
+        "    path: str = codec_field(PathCodec(), default='.')\n",
+        "    line: int = codec_field(LineCodec())\n",
+    ).overlap("pkg.records.Plain", "pkg.records.Wrapped")
+    assert [shared.name for shared in overlap.shared] == ["line"]
+
+
+def test_a_call_whose_arguments_cannot_be_read_is_never_the_bare_field():
+    overlap = _field_records(
+        "    path: str = codec_field(*(PathCodec(),))\n",
+        "    line: int = forwarded_field(metadata={})\n",
+    ).overlap("pkg.records.Plain", "pkg.records.Wrapped")
+    assert not overlap.shared
+
+
+def test_a_wrapped_field_with_no_default_is_stored_by_init():
+    (records,) = (
+        projection
+        for projection in CompactModuleClassProjectionFamily.collect_modules(
+            (
+                _module("pkg.fields", FIELD_WRAPPERS),
+                _module(
+                    "pkg.records",
+                    "from dataclasses import dataclass\n"
+                    "from pkg.fields import LineCodec, PathCodec, codec_field, forwarded_field\n\n\n"
+                    "@dataclass(frozen=True)\nclass Wrapped:\n"
+                    "    path: str = codec_field(PathCodec())\n"
+                    "    line: int = forwarded_field(init=False)\n",
+                ),
+            )
+        )
+        if projection.module_name == "pkg.records"
+    )
+    (wrapped,) = records.classes
+    assert {
+        member.name: member.role.value for member in wrapped.dataclass_declaration.fields
+    } == {"path": "stored_init", "line": "unresolved"}
+
+
+def test_a_keyword_only_field_with_no_default_is_the_bare_field():
+    overlap = _index(
+        (
+            "pkg.records",
+            "from dataclasses import dataclass, field\n\n\n"
+            "@dataclass(frozen=True)\nclass Plain:\n    path: str\n    line: int\n\n\n"
+            "@dataclass(frozen=True)\nclass Marked:\n"
+            "    path: str = field(kw_only=True)\n    line: int = field(default=0)\n",
+        )
+    ).overlap("pkg.records.Marked", "pkg.records.Plain")
+    assert [(shared.name, shared.declaration_differs) for shared in overlap.shared] == [
+        ("path", True)
+    ]

@@ -25,6 +25,7 @@ from .class_index import (
     CompactIndexedClass,
     CompactModuleClassHeader,
     CompactRepositoryPublicExposureIndex,
+    FieldDeclarationIndex,
     StarSettlements,
 )
 
@@ -63,6 +64,16 @@ class ClassBodyDeclaration(ABC):
         raise NotImplementedError
 
     @abstractmethod
+    def same_field_as(self, other: ClassBodyDeclaration) -> bool:
+        """Whether both declare one field, name and annotation, however each
+        declares it: bare, or through a call that declares a bare field."""
+        raise NotImplementedError
+
+    @abstractmethod
+    def has_field_identity(self, identity: ClassBodyDeclarationIdentity) -> bool:
+        raise NotImplementedError
+
+    @abstractmethod
     def require_proved(self, spelling: str) -> ProvedClassBodyDeclaration:
         raise NotImplementedError
 
@@ -84,16 +95,28 @@ class ProvedClassBodyDeclaration(ClassBodyDeclaration):
     """A declaration every name of which the repository binds."""
 
     identity: ClassBodyDeclarationIdentity
+    field_identity: ClassBodyDeclarationIdentity | None = None
+    """The bare field it declares, `name: annotation`; none for a value or a method."""
 
     @property
     def identities(self) -> tuple[ClassBodyDeclarationIdentity, ...]:
-        return (self.identity,)
+        return tuple(dict.fromkeys((self.identity, *self.field_identities)))
+
+    @property
+    def field_identities(self) -> tuple[ClassBodyDeclarationIdentity, ...]:
+        return () if self.field_identity is None else (self.field_identity,)
 
     def has_identity(self, identity: ClassBodyDeclarationIdentity) -> bool:
         return self.identity == identity
 
+    def has_field_identity(self, identity: ClassBodyDeclarationIdentity) -> bool:
+        return identity in self.field_identities
+
     def same_declaration_as(self, other: ClassBodyDeclaration) -> bool:
         return other.has_identity(self.identity)
+
+    def same_field_as(self, other: ClassBodyDeclaration) -> bool:
+        return any(other.has_field_identity(identity) for identity in self.field_identities)
 
     def require_proved(self, spelling: str) -> ProvedClassBodyDeclaration:
         return self
@@ -113,13 +136,22 @@ class UnprovedClassBodyDeclaration(ClassBodyDeclaration):
     def same_declaration_as(self, other: ClassBodyDeclaration) -> bool:
         return False
 
+    def same_field_as(self, other: ClassBodyDeclaration) -> bool:
+        return False
+
+    def has_field_identity(self, identity: ClassBodyDeclarationIdentity) -> bool:
+        return False
+
     def require_proved(self, spelling: str) -> ProvedClassBodyDeclaration:
         raise ValueError(f"{spelling} reads names nothing binds")
 
 
 class SharedClassBodyDeclaration(NamedTuple):
     """One declaration two classes both make, with the class that makes each
-    copy and its line: the class itself, or an ancestor it inherits it from."""
+    copy and its line: the class itself, or an ancestor it inherits it from.
+    `declaration_differs` marks one field both declare in different ways,
+    such as bare in one and through a wire declaration in the other: the
+    same fact, but no single declaration both could share."""
 
     kind: ClassBodyDeclarationKind
     name: str
@@ -127,6 +159,13 @@ class SharedClassBodyDeclaration(NamedTuple):
     second_line: int
     first_owner: CompactIndexedClass
     second_owner: CompactIndexedClass
+    declaration_differs: bool = False
+
+    @property
+    def receipt_text(self) -> str:
+        if self.declaration_differs:
+            return f"`{self.name}` is the same field, declared differently"
+        return f"`{self.name}` is declared identically"
 
 
 class ResolvedClassBodyDeclaration(NamedTuple):
@@ -180,6 +219,18 @@ class ClassBodyOverlap:
                         second,
                     )
                 )
+            elif first_declaration.same_field_as(second_declaration):
+                shared.append(
+                    SharedClassBodyDeclaration(
+                        ClassBodyDeclarationKind.FIELD,
+                        name,
+                        first_declaration.line,
+                        second_declaration.line,
+                        first,
+                        second,
+                        declaration_differs=True,
+                    )
+                )
             else:
                 divergent.append(
                     DivergentClassBodyDeclaration(
@@ -228,16 +279,18 @@ class ClassBodyOverlap:
                 and second.owner.symbol != self.second.symbol
             ):
                 continue
-            if not first.declaration.same_declaration_as(second.declaration):
+            identical = first.declaration.same_declaration_as(second.declaration)
+            if not identical and not first.declaration.same_field_as(second.declaration):
                 continue
             inherited.append(
                 SharedClassBodyDeclaration(
-                    first.declaration.kind,
+                    first.declaration.kind if identical else ClassBodyDeclarationKind.FIELD,
                     name,
                     first.declaration.line,
                     second.declaration.line,
                     first.owner,
                     second.owner,
+                    declaration_differs=not identical,
                 )
             )
         names = frozenset(shared.name for shared in inherited)
@@ -299,6 +352,14 @@ class ClassBodyIndex:
     @cached_property
     def exposure(self) -> CompactRepositoryPublicExposureIndex:
         return CompactRepositoryPublicExposureIndex(self.projections)
+
+    @cached_property
+    def field_declarations(self) -> FieldDeclarationIndex:
+        return FieldDeclarationIndex.of_wrappers(
+            wrapper
+            for projection in self.projections
+            for wrapper in projection.field_declaration_wrappers
+        )
 
     @cached_property
     def classes_by_symbol(self) -> Mapping[str, CompactIndexedClass]:
@@ -407,12 +468,29 @@ class ClassBodyIndex:
         )
         if settlements.unsettled:
             return UnprovedClassBodyDeclaration(declaration)
+        identity = ClassBodyDeclarationIdentity(
+            declaration.digest,
+            tuple(sorted((*declaration.bindings, *settlements.settled))),
+        )
         return ProvedClassBodyDeclaration(
             declaration,
-            ClassBodyDeclarationIdentity(
-                declaration.digest,
-                tuple(sorted((*declaration.bindings, *settlements.settled))),
-            ),
+            identity,
+            field_identity=self._field_identity(module_name, declaration, identity),
+        )
+
+    def _field_identity(
+        self,
+        module_name: str,
+        declaration: ClassBodyDeclarationDigest,
+        identity: ClassBodyDeclarationIdentity,
+    ) -> ClassBodyDeclarationIdentity | None:
+        """The bare field a declaration declares: itself when it is one, its
+        `name: annotation` when its value is a call declaring a bare field."""
+
+        return declaration.field_declaration.field_identity(
+            identity,
+            lambda bare: next(iter(self._declaration(module_name, bare).identities), None),
+            self.field_declarations,
         )
 
 

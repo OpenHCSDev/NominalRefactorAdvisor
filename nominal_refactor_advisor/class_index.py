@@ -12,6 +12,7 @@ import ast
 import builtins
 import copy
 import hashlib
+import inspect
 import re
 import sys
 import typing
@@ -24,9 +25,9 @@ from collections.abc import (
     Iterator,
     Sequence,
 )
-from dataclasses import MISSING, dataclass, field, fields, replace
+from dataclasses import MISSING, Field, dataclass, field, fields, replace
 from enum import StrEnum
-from functools import cache, cached_property, lru_cache
+from functools import cache, cached_property, lru_cache, singledispatchmethod
 from heapq import merge
 from typing import (
     Any,
@@ -50,6 +51,7 @@ from .ast_field_decoders import (
     TYPE_PARAMETERS,
     ParameterAnnotations,
     declared_annotations,
+    variadic_parameters,
 )
 from .ast_projection import ExpressionReference
 from .ast_projection import (
@@ -74,6 +76,7 @@ from .ast_tools import (
     SourceModule,
     _walk_nodes,
     collect_family_items,
+    statements_without_docstring,
 )
 from .class_namespace import ClassNamespaceExecutionEvidence, NATIVE_METHOD_DECORATORS
 from .collection_algebra import (
@@ -185,6 +188,12 @@ class CompactDataclassFacet(ABC):
     runtime_declaration: DataclassRuntimeDeclaration | None
     fields: tuple[CompactDataclassFieldDeclaration, ...]
     failures: tuple[CompactProductDeclarationFailure, ...]
+
+    def with_settled_field_declarations(self, index: FieldDeclarationIndex) -> Self:
+        settled = tuple(member.settled(index) for member in self.fields)
+        if settled == self.fields:
+            return self
+        return replace(self, fields=settled)
 
     @abstractmethod
     def require_standard(self, reason: str) -> CompactDataclassDeclaration:
@@ -939,6 +948,15 @@ class CompactDataclassFieldRole(StrEnum):
         CompactProductAuthorityViolation.UNRESOLVED_FIELD_ROLE,
         (),
     )
+    DECLARED_BY_CALL = (
+        "declared_by_call",
+        False,
+        False,
+        CompactProductAuthorityViolation.UNRESOLVED_FIELD_ROLE,
+        (),
+    )
+    """A value that calls a function the module cannot judge alone; the
+    repository's field declarations settle it to a role."""
 
     contributes_stored_init_field: bool
     contributes_semantic_field: bool
@@ -971,6 +989,29 @@ class CompactDataclassFieldRole(StrEnum):
             None,
         )
 
+    def declaration_call(
+        self,
+        statement: ast.AnnAssign,
+        module_binding_snapshot: ModuleNominalBindingSnapshot,
+        class_aliases: dict[str, str],
+        preceding_class_bound_names: frozenset[str],
+    ) -> CompactFieldDeclarationCall | None:
+        """The call a member declared by a call makes, kept for the repository to judge."""
+
+        if self is not CompactDataclassFieldRole.DECLARED_BY_CALL or not isinstance(
+            statement.value, ast.Call
+        ):
+            return None
+        callee = _class_scope_qualified_import_name(
+            module_binding_snapshot,
+            class_aliases,
+            statement.value.func,
+            preceding_class_bound_names,
+        )
+        if callee is None:
+            return None
+        return CompactFieldDeclarationCall.of_call(callee, statement.value)
+
     def binding_of_later_fields(
         self, binding: DataclassInitBinding
     ) -> DataclassInitBinding:
@@ -992,6 +1033,7 @@ class CompactDataclassFieldRole(StrEnum):
         return self not in (
             CompactDataclassFieldRole.KEYWORD_ONLY_SENTINEL,
             CompactDataclassFieldRole.UNRESOLVED,
+            CompactDataclassFieldRole.DECLARED_BY_CALL,
         )
 
 
@@ -1024,12 +1066,23 @@ class DataclassInitBinding(StrEnum):
 
 
 class CompactDataclassFieldDeclaration(NamedTuple):
-    """One direct annotated member, its exact dataclass role and its binding."""
+    """One direct annotated member, its exact dataclass role and its binding,
+    with the call its value makes while the repository has yet to judge it."""
 
     name: str
     line: int
     role: CompactDataclassFieldRole
     binding: DataclassInitBinding
+    declaration_call: CompactFieldDeclarationCall | None = None
+
+    def settled(self, index: FieldDeclarationIndex) -> CompactDataclassFieldDeclaration:
+        """The member once the repository says whether its call declares a field."""
+
+        if self.declaration_call is None:
+            return self
+        return self._replace(
+            role=index.field_role(self.declaration_call), declaration_call=None
+        )
 
 
 class CompactProductDeclarationFailure(NamedTuple):
@@ -1259,6 +1312,14 @@ class CompactIndexedClass(CompactClassHeader):
                 *(declaration.name for declaration in self.callable_member_declarations),
             )
         )
+
+    def with_settled_field_declarations(self, index: FieldDeclarationIndex) -> Self:
+        """The class once the repository judges the calls its fields' values make."""
+
+        settled = self.dataclass_declaration.with_settled_field_declarations(index)
+        if settled is self.dataclass_declaration:
+            return self
+        return replace(self, dataclass_declaration=settled)
 
     def resolved_past_star_imports(
         self, exposure: RepositoryPublicExposureAuthority
@@ -1834,17 +1895,35 @@ class CompactModuleClassHeader(CompactModuleIdentity):
     public_export_contract: CompactModulePublicExportContract
     star_import_origins: tuple[CompactModuleStarImportOrigin, ...]
     classes: tuple[CompactIndexedClass, ...]
+    field_declaration_wrappers: tuple[CompactFieldDeclarationWrapper, ...] = ()
 
     @classmethod
     @ScanCache.cached
     def from_modules(cls, modules: tuple[ParsedModule, ...]) -> tuple[Self, ...]:
         """Join original declarations with the repository's namespace proof."""
-        return star_resolved_projections(tuple(cls.from_module(module) for module in modules))
+        return repository_settled_projections(
+            tuple(cls.from_module(module) for module in modules)
+        )
 
     @classmethod
     @ScanCache.cached
     def from_module(cls, parsed_module: ParsedModule) -> Self:
         """Acquire complete class declarations without unrelated analysis surfaces."""
+        return cls.declared_in(parsed_module, include_body_facets=True)
+
+    @classmethod
+    def declared_in(
+        cls, parsed_module: ParsedModule, *, include_body_facets: bool
+    ) -> Self:
+        """The module's namespace, classes and field-declaration wrappers, from one
+        binding pass: each class reads the bindings before it, each wrapper the
+        module's final ones."""
+        indexed_class_nodes = iter_class_definitions(list(parsed_module.module.body))
+        binding_snapshots = _module_nominal_binding_snapshots(
+            ModuleNominalBindingAuthority(parsed_module),
+            tuple(node.lineno for _qualname, node in indexed_class_nodes),
+            include_final=True,
+        )
         return cls(
             module_name=parsed_module.module_name,
             file_path=parsed_module.file_path,
@@ -1853,8 +1932,12 @@ class CompactModuleClassHeader(CompactModuleIdentity):
             star_import_origins=module_star_import_origins(parsed_module),
             classes=_compact_indexed_classes(
                 parsed_module,
-                iter_class_definitions(list(parsed_module.module.body)),
-                include_body_facets=True,
+                indexed_class_nodes,
+                binding_snapshots,
+                include_body_facets=include_body_facets,
+            ),
+            field_declaration_wrappers=module_field_declaration_wrappers(
+                parsed_module, binding_snapshots[None]
             ),
         )
 
@@ -4642,6 +4725,78 @@ class StarDeferredName(NamedTuple):
     unshadowed: str | None
 
 
+IdentityT = TypeVar("IdentityT")
+
+
+class CompactFieldFact(ABC):
+    """The bare field, `name: annotation`, one class-body declaration makes:
+    none, the declaration itself, or what a call that declares one names."""
+
+    @abstractmethod
+    def field_identity(
+        self,
+        identity: IdentityT,
+        bare_identity: Callable[[ClassBodyDeclarationDigest], IdentityT | None],
+        field_declarations: FieldDeclarationIndex,
+    ) -> IdentityT | None:
+        raise NotImplementedError
+
+
+@dataclass(frozen=True)
+class NoFieldFact(CompactFieldFact):
+    """A value or a method: it declares no field."""
+
+    def field_identity(
+        self,
+        identity: IdentityT,
+        bare_identity: Callable[[ClassBodyDeclarationDigest], IdentityT | None],
+        field_declarations: FieldDeclarationIndex,
+    ) -> IdentityT | None:
+        return None
+
+
+@dataclass(frozen=True)
+class CompactBareFieldFact(CompactFieldFact):
+    """`name: annotation` with no value: the declaration is its own field."""
+
+    def field_identity(
+        self,
+        identity: IdentityT,
+        bare_identity: Callable[[ClassBodyDeclarationDigest], IdentityT | None],
+        field_declarations: FieldDeclarationIndex,
+    ) -> IdentityT | None:
+        return identity
+
+
+@dataclass(frozen=True)
+class CompactCalledFieldFact(CompactFieldFact):
+    """A field whose value is a call: it declares `bare` when the repository
+    proves the call declares a field without a default."""
+
+    call: CompactFieldDeclarationCall
+    bare: ClassBodyDeclarationDigest
+
+    def field_identity(
+        self,
+        identity: IdentityT,
+        bare_identity: Callable[[ClassBodyDeclarationDigest], IdentityT | None],
+        field_declarations: FieldDeclarationIndex,
+    ) -> IdentityT | None:
+        if field_declarations.declares_bare_field(self.call) is not True:
+            return None
+        return bare_identity(self.bare)
+
+
+class AnnotatedFieldFact(StatementValueQuestion[CompactFieldFact]):
+    """An annotation alone is its own field; with a plain value it is a value."""
+
+    def supplied(self, value: SuppliedValue) -> CompactFieldFact:
+        return NoFieldFact()
+
+    def bare(self, value: NoStatementValue) -> CompactFieldFact:
+        return CompactBareFieldFact()
+
+
 class ClassBodyDeclarationDigest(NamedTuple):
     """One class-body declaration as the index compares it: no AST.
 
@@ -4660,6 +4815,8 @@ class ClassBodyDeclarationDigest(NamedTuple):
     bindings: tuple[tuple[str, str], ...]
     deferred: tuple[StarDeferredName, ...]
     unbound: tuple[str, ...]
+    field_declaration: CompactFieldFact = NoFieldFact()
+    """The bare field, `name: annotation`, the declaration makes, if any."""
 
 
 @dataclass(frozen=True)
@@ -4757,6 +4914,7 @@ class ClassBodyNormalForm:
     class_scope_names: tuple[str, ...]
     deferred_names: tuple[StarDeferredName, ...]
     unresolved_names: tuple[str, ...]
+    field_declaration: CompactFieldFact = NoFieldFact()
 
     @property
     def is_resolved(self) -> bool:
@@ -4805,6 +4963,7 @@ class ClassBodyNormalForm:
             ),
             self.deferred_names,
             self.unresolved_names,
+            self.field_declaration,
         )
 
     @classmethod
@@ -4861,15 +5020,31 @@ class ClassBodyNormalForm:
             if not isinstance(statement.target, ast.Name):
                 return ()
             kind = StatementValue.of(statement).answer(AnnotatedDeclarationKind())
-            names: tuple[str, ...] = (statement.target.id,)
-        else:
-            kind = ClassBodyDeclarationKind.VALUE
-            names = tuple(
-                target.id for target in statement.targets if isinstance(target, ast.Name)
+            if isinstance(statement.value, ast.Call):
+                return (
+                    cls.of_called_field(statement, statement.value, scope, class_bound_names),
+                )
+            return (
+                replace(
+                    cls._of_statement(
+                        kind,
+                        statement.target.id,
+                        statement,
+                        statement,
+                        scope,
+                        class_bound_names - {statement.target.id},
+                    ),
+                    field_declaration=StatementValue.of(statement).answer(
+                        AnnotatedFieldFact()
+                    ),
+                ),
             )
+        names = tuple(
+            target.id for target in statement.targets if isinstance(target, ast.Name)
+        )
         return tuple(
             cls._of_statement(
-                kind,
+                ClassBodyDeclarationKind.VALUE,
                 name,
                 statement,
                 statement,
@@ -4877,6 +5052,62 @@ class ClassBodyNormalForm:
                 class_bound_names - {name},
             )
             for name in names
+        )
+
+    @classmethod
+    def of_called_field(
+        cls,
+        statement: ast.AnnAssign,
+        call: ast.Call,
+        scope: ClassBodyModuleScope,
+        class_bound_names: frozenset[str],
+    ) -> ClassBodyNormalForm:
+        """A field whose value is a call, with the call and the bare field it
+        declares if the call declares a field without a default."""
+
+        name = cast(ast.Name, statement.target).id
+        bound_names = class_bound_names - {name}
+        bare_statement = ast.copy_location(
+            ast.AnnAssign(
+                target=statement.target,
+                annotation=statement.annotation,
+                value=None,
+                simple=statement.simple,
+            ),
+            statement,
+        )
+        parts = ExpressionReference.decoded(call.func).attribute_chain
+        witness = (
+            None
+            if parts is None or parts[0] in bound_names
+            else scope.witness_for(parts[0])
+        )
+        declaration = cls._of_statement(
+            ClassBodyDeclarationKind.DEFAULTED_FIELD,
+            name,
+            statement,
+            statement,
+            scope,
+            bound_names,
+        )
+        if witness is None:
+            return declaration
+        return replace(
+            declaration,
+            field_declaration=CompactCalledFieldFact(
+                CompactFieldDeclarationCall.of_call(
+                    ".".join((witness.qualified_name, *cast(tuple[str, ...], parts)[1:])),
+                    call,
+                ),
+                cls._of_statement(
+                    ClassBodyDeclarationKind.FIELD,
+                    name,
+                    bare_statement,
+                    bare_statement,
+                    scope,
+                    bound_names,
+                ).compact(),
+            ),
         )
 
     @classmethod
@@ -5500,15 +5731,11 @@ def _compact_class_binding_facets(
 def _compact_indexed_classes(
     parsed_module: ParsedModule,
     indexed_class_nodes: tuple[tuple[str, ast.ClassDef], ...],
+    binding_snapshots: Mapping[int | None, ModuleNominalBindingSnapshot],
     *,
     include_body_facets: bool,
 ) -> tuple[CompactIndexedClass, ...]:
     file_path = parsed_module.file_path
-    binding_snapshots = _module_nominal_binding_snapshots(
-        ModuleNominalBindingAuthority(parsed_module),
-        tuple(node.lineno for _qualname, node in indexed_class_nodes),
-        include_final=False,
-    )
     star_snapshots = (
         _module_nominal_binding_snapshots(
             ModuleNominalBindingAuthority(parsed_module),
@@ -5719,6 +5946,38 @@ def star_resolved_projections(
     )
 
 
+def repository_settled_projections(
+    projections: tuple[ClassProjectionT, ...],
+) -> tuple[ClassProjectionT, ...]:
+    """Settle every module fact the repository decides: names a star import
+    may rebind, then the role of each field whose value calls a function."""
+
+    return field_declaration_settled_projections(star_resolved_projections(projections))
+
+
+def field_declaration_settled_projections(
+    projections: tuple[ClassProjectionT, ...],
+) -> tuple[ClassProjectionT, ...]:
+    """Settle every field whose value calls a function, from the repository's
+    field declarations: the one place those roles are decided."""
+
+    index = FieldDeclarationIndex.of_wrappers(
+        wrapper
+        for projection in projections
+        for wrapper in projection.field_declaration_wrappers
+    )
+    return tuple(
+        replace(
+            projection,
+            classes=tuple(
+                indexed_class.with_settled_field_declarations(index)
+                for indexed_class in projection.classes
+            ),
+        )
+        for projection in projections
+    )
+
+
 def _class_reference_root_names(class_node: ast.ClassDef) -> frozenset[str]:
     """The module bindings one class declaration reads while it is projected."""
 
@@ -5839,7 +6098,7 @@ class CompactModuleClassProjectionFamily(CollectedFamily[CompactModuleClassProje
     ) -> tuple[CompactModuleClassProjection, ...]:
         """Collect the single module projection declared by this family."""
 
-        return star_resolved_projections(
+        return repository_settled_projections(
             tuple(cls._required_module_projection(module) for module in parsed_modules)
         )
 
@@ -5873,21 +6132,9 @@ class CompactModuleClassProjectionFamily(CollectedFamily[CompactModuleClassProje
         parsed_module: ParsedModule,
     ) -> list[CompactModuleClassProjection]:
         del cls
-        indexed_class_nodes = iter_class_definitions(list(parsed_module.module.body))
         return [
-            CompactModuleClassProjection(
-                module_name=parsed_module.module_name,
-                file_path=parsed_module.file_path,
-                import_aliases=tuple(
-                    sorted(module_import_aliases(parsed_module).items())
-                ),
-                public_export_contract=module_public_export_contract(parsed_module),
-                star_import_origins=module_star_import_origins(parsed_module),
-                classes=_compact_indexed_classes(
-                    parsed_module,
-                    indexed_class_nodes,
-                    include_body_facets=False,
-                ),
+            CompactModuleClassProjection.declared_in(
+                parsed_module, include_body_facets=False
             ).header_core()
         ]
 
@@ -7709,6 +7956,8 @@ class DataclassFieldDefaultRole(StatementValueQuestion[CompactDataclassFieldRole
         default_factory_declaration = DataclassRuntimeDeclaration.for_qualified_name(
             qualified_default_factory
         )
+        if qualified_default_factory is not None and default_factory_declaration is None:
+            return CompactDataclassFieldRole.DECLARED_BY_CALL
         if (
             default_factory_declaration is None
             or not default_factory_declaration.is_field_factory
@@ -7734,6 +7983,438 @@ class DataclassFieldDefaultRole(StatementValueQuestion[CompactDataclassFieldRole
             if init_value.value
             else CompactDataclassFieldRole.STORED_NON_INIT
         )
+
+
+def _native_qualified_name(value: object) -> str:
+    """The name a module binding resolves one native module attribute to."""
+
+    module = sys.modules[type(value).__module__]
+    return next(
+        f"{module.__name__}.{name}"
+        for name, attribute in vars(module).items()
+        if attribute is value
+    )
+
+
+_MISSING_QUALIFIED_NAME = _native_qualified_name(MISSING)
+_CAST_QUALIFIED_NAME = f"{typing.cast.__module__}.{typing.cast.__qualname__}"
+
+
+class CompactFieldDeclarationCall(NamedTuple):
+    """A call that may declare a dataclass field: its callee and what it supplies.
+
+    `positional_count` parameters are filled by position and `keywords` by
+    name; a `*` or `**` argument sets `splats`, and what the call supplies is
+    then unknown. A keyword forwarding a parameter the caller left absent
+    supplies nothing and is not listed.
+    """
+
+    callee: str
+    positional_count: int
+    keywords: tuple[str, ...]
+    splats: bool
+
+    @classmethod
+    def of_call(
+        cls, callee: str, call: ast.Call, absent: frozenset[str] = frozenset()
+    ) -> Self:
+        keywords = CallKeywords.of(call.keywords)
+        return cls(
+            callee=callee,
+            positional_count=len(call.args),
+            keywords=tuple(
+                sorted(
+                    name
+                    for name, value in keywords.by_name.items()
+                    if not (isinstance(value, ast.Name) and value.id in absent)
+                )
+            ),
+            splats=bool(keywords.splats)
+            or any(isinstance(argument, ast.Starred) for argument in call.args),
+        )
+
+
+class FieldDeclarationSignature(NamedTuple):
+    """What a field declaration accepts: its positional parameters in order, the
+    parameters that give the field a default when supplied, every
+    parameter name its own calls supply on the way to `dataclasses.field`, and
+    whether those calls already give the field a default."""
+
+    positional: tuple[str, ...]
+    missing: tuple[str, ...]
+    supplied_on_the_way: tuple[str, ...] = ()
+    defaulted: bool = False
+
+    @classmethod
+    def of_native(cls, declaration: Callable[..., object]) -> Self:
+        parameters = inspect.signature(declaration).parameters.values()
+        return cls(
+            positional=tuple(
+                parameter.name
+                for parameter in parameters
+                if parameter.kind
+                in (
+                    inspect.Parameter.POSITIONAL_ONLY,
+                    inspect.Parameter.POSITIONAL_OR_KEYWORD,
+                )
+            ),
+            missing=tuple(
+                parameter.name
+                for parameter in parameters
+                if parameter.default is MISSING
+                and cls._gives_a_default(declaration(**{parameter.name: list}))
+            ),
+        )
+
+    @staticmethod
+    def _gives_a_default(declared: object) -> bool:
+        """Whether a native field declaration, built with one parameter supplied,
+        has a default: dataclasses reads a field as defaulted exactly when its
+        `default` or `default_factory` is not MISSING (`kw_only` is not one)."""
+
+        return isinstance(declared, Field) and (
+            declared.default is not MISSING or declared.default_factory is not MISSING
+        )
+
+    def supplied(self, call: CompactFieldDeclarationCall) -> frozenset[str] | None:
+        """The parameters the call names, or None when a splat hides them."""
+
+        if call.splats or call.positional_count > len(self.positional):
+            return None
+        return frozenset((*self.positional[: call.positional_count], *call.keywords))
+
+    def declares_bare_field(self, call: CompactFieldDeclarationCall) -> bool | None:
+        """Whether the call declares a field with no default; None when it is open."""
+
+        supplied = self.supplied(call)
+        if supplied is None:
+            return None
+        return not self.defaulted and not supplied.intersection(self.missing)
+
+
+class _FieldDeclarationFoldOutcome(ABC):
+    """What a run of statements does once the absent parameters are folded."""
+
+    @abstractmethod
+    def then(
+        self, fold: _FieldDeclarationFold, rest: Sequence[ast.stmt]
+    ) -> _FieldDeclarationFoldOutcome:
+        raise NotImplementedError
+
+    def returned(self) -> ast.expr | None:
+        return None
+
+
+@dataclass(frozen=True)
+class _FieldDeclarationReturned(_FieldDeclarationFoldOutcome):
+    value: ast.expr
+
+    def then(
+        self, fold: _FieldDeclarationFold, rest: Sequence[ast.stmt]
+    ) -> _FieldDeclarationFoldOutcome:
+        return self
+
+    def returned(self) -> ast.expr | None:
+        return self.value
+
+
+class _FieldDeclarationRaised(_FieldDeclarationFoldOutcome):
+    def then(
+        self, fold: _FieldDeclarationFold, rest: Sequence[ast.stmt]
+    ) -> _FieldDeclarationFoldOutcome:
+        return self
+
+
+class _FieldDeclarationFellThrough(_FieldDeclarationFoldOutcome):
+    def then(
+        self, fold: _FieldDeclarationFold, rest: Sequence[ast.stmt]
+    ) -> _FieldDeclarationFoldOutcome:
+        return fold.statements(rest)
+
+
+class _FieldDeclarationUnfolded(_FieldDeclarationFoldOutcome):
+    """A statement or test the fold cannot decide: the function stays open."""
+
+    def then(
+        self, fold: _FieldDeclarationFold, rest: Sequence[ast.stmt]
+    ) -> _FieldDeclarationFoldOutcome:
+        return self
+
+
+class _ReturnedFieldDeclaration(StatementValueQuestion[_FieldDeclarationFoldOutcome]):
+    """A `return` hands back its value; a bare `return` declares no field."""
+
+    def supplied(self, value: SuppliedValue) -> _FieldDeclarationFoldOutcome:
+        return _FieldDeclarationReturned(value.value)
+
+    def bare(self, value: NoStatementValue) -> _FieldDeclarationFoldOutcome:
+        return _FieldDeclarationUnfolded()
+
+
+@dataclass(frozen=True)
+class _FieldDeclarationFold:
+    """Run a function body with its MISSING-defaulted parameters absent: each
+    `parameter is MISSING` test is decided, everything else stays open."""
+
+    snapshot: ModuleNominalBindingSnapshot
+    absent: frozenset[str]
+
+    def statements(self, statements: Sequence[ast.stmt]) -> _FieldDeclarationFoldOutcome:
+        if not statements:
+            return _FieldDeclarationFellThrough()
+        return self.statement(statements[0]).then(self, statements[1:])
+
+    @singledispatchmethod
+    def statement(self, statement: ast.stmt) -> _FieldDeclarationFoldOutcome:
+        return _FieldDeclarationUnfolded()
+
+    @statement.register
+    def _return(self, statement: ast.Return) -> _FieldDeclarationFoldOutcome:
+        return StatementValue.of(statement).answer(_ReturnedFieldDeclaration())
+
+    @statement.register
+    def _raise(self, statement: ast.Raise) -> _FieldDeclarationFoldOutcome:
+        return _FieldDeclarationRaised()
+
+    @statement.register
+    def _pass(self, statement: ast.Pass) -> _FieldDeclarationFoldOutcome:
+        return _FieldDeclarationFellThrough()
+
+    @statement.register
+    def _if(self, statement: ast.If) -> _FieldDeclarationFoldOutcome:
+        taken = self.test(statement.test)
+        if taken is None:
+            return _FieldDeclarationUnfolded()
+        return self.statements(statement.body if taken else statement.orelse)
+
+    @singledispatchmethod
+    def test(self, test: ast.expr) -> bool | None:
+        return None
+
+    @test.register
+    def _compare(self, test: ast.Compare) -> bool | None:
+        match test:
+            case ast.Compare(
+                left=ast.Name(id=name), ops=[op], comparators=[right]
+            ) if name in self.absent and self.qualified(right) == _MISSING_QUALIFIED_NAME:
+                return self.absence(op)
+        return None
+
+    @singledispatchmethod
+    def absence(self, op: ast.cmpop) -> bool | None:
+        """What `parameter <op> MISSING` says when the parameter is absent."""
+
+        return None
+
+    @absence.register
+    def _is(self, op: ast.Is) -> bool | None:
+        return True
+
+    @absence.register
+    def _is_not(self, op: ast.IsNot) -> bool | None:
+        return False
+
+    @test.register
+    def _boolean(self, test: ast.BoolOp) -> bool | None:
+        values = tuple(self.test(value) for value in test.values)
+        if None in values:
+            return None
+        return self.combined(test.op, values)
+
+    @singledispatchmethod
+    def combined(self, op: ast.boolop, values: tuple[bool, ...]) -> bool:
+        raise TypeError(f"no boolean operator {type(op).__name__}")
+
+    @combined.register
+    def _all(self, op: ast.And, values: tuple[bool, ...]) -> bool:
+        return all(values)
+
+    @combined.register
+    def _any(self, op: ast.Or, values: tuple[bool, ...]) -> bool:
+        return any(values)
+
+    @test.register
+    def _unary(self, test: ast.UnaryOp) -> bool | None:
+        value = self.test(test.operand)
+        return None if value is None else self.unary(test.op, value)
+
+    @singledispatchmethod
+    def unary(self, op: ast.unaryop, value: bool) -> bool | None:
+        return None
+
+    @unary.register
+    def _not(self, op: ast.Not, value: bool) -> bool:
+        return not value
+
+    def qualified(self, reference: ast.expr) -> str | None:
+        parts = ExpressionReference.decoded(reference).attribute_chain
+        if parts is None:
+            return None
+        binding = self.snapshot.binding_for(parts[0])
+        if binding is None:
+            return None
+        return ".".join((binding.qualified_name, *parts[1:]))
+
+    def returned_call(self, value: ast.expr) -> CompactFieldDeclarationCall | None:
+        """The field-declaration call a returned value makes, seeing through `cast`."""
+
+        if not isinstance(value, ast.Call):
+            return None
+        callee = self.qualified(value.func)
+        if callee is None:
+            return None
+        if callee == _CAST_QUALIFIED_NAME and len(value.args) == 2 and not value.keywords:
+            return self.returned_call(value.args[1])
+        return CompactFieldDeclarationCall.of_call(callee, value, self.absent)
+
+
+class CompactFieldDeclarationWrapper(NamedTuple):
+    """A module function that, with its MISSING-defaulted parameters absent,
+    returns one call: a field declaration when that call is one."""
+
+    qualified_name: str
+    signature: FieldDeclarationSignature
+    returned: CompactFieldDeclarationCall
+
+    @classmethod
+    def of_function(
+        cls,
+        module_name: str,
+        function: ast.FunctionDef,
+        snapshot: ModuleNominalBindingSnapshot,
+    ) -> Self | None:
+        """The wrapper the function is, or None when its body stays open."""
+
+        arguments = function.args
+        if variadic_parameters(arguments):
+            return None
+        positional = (*arguments.posonlyargs, *arguments.args)
+        defaulted = (
+            *zip(positional[len(positional) - len(arguments.defaults) :], arguments.defaults),
+            *(
+                (argument, default)
+                for argument, default in zip(arguments.kwonlyargs, arguments.kw_defaults)
+                if default is not None
+            ),
+        )
+        fold = _FieldDeclarationFold(snapshot, frozenset())
+        # Every MISSING parameter of a wrapper is read as giving a default when
+        # supplied: wrong only toward "a different field", never a false match.
+        missing = tuple(
+            argument.arg
+            for argument, default in defaulted
+            if fold.qualified(default) == _MISSING_QUALIFIED_NAME
+        )
+        fold = _FieldDeclarationFold(snapshot, frozenset(missing))
+        value = fold.statements(statements_without_docstring(function.body)).returned()
+        returned = None if value is None else fold.returned_call(value)
+        if returned is None:
+            return None
+        if not missing and DataclassRuntimeDeclaration.for_qualified_name(
+            returned.callee
+        ) is None:
+            return None
+        return cls(
+            qualified_name=f"{module_name}.{function.name}",
+            signature=FieldDeclarationSignature(
+                positional=tuple(argument.arg for argument in positional),
+                missing=missing,
+            ),
+            returned=returned,
+        )
+
+
+def module_field_declaration_wrappers(
+    parsed_module: ParsedModule,
+    snapshot: ModuleNominalBindingSnapshot,
+) -> tuple[CompactFieldDeclarationWrapper, ...]:
+    """Every top-level function of the module that may wrap `dataclasses.field`,
+    its names read through the module's final bindings."""
+
+    return tuple(
+        wrapper
+        for statement in parsed_module.module.body
+        if isinstance(statement, ast.FunctionDef)
+        if (
+            wrapper := CompactFieldDeclarationWrapper.of_function(
+                parsed_module.module_name, statement, snapshot
+            )
+        )
+        is not None
+    )
+
+
+@dataclass(frozen=True)
+class FieldDeclarationIndex:
+    """Which callees declare a dataclass field, across one repository.
+
+    A native field factory declares one directly. A wrapper declares one when
+    the call it returns does; the field has a default when that call supplies
+    one of the callee's MISSING parameters. A wrapper reaching itself again
+    declares nothing.
+    """
+
+    wrappers: Mapping[str, CompactFieldDeclarationWrapper]
+
+    @classmethod
+    def of_wrappers(cls, wrappers: Iterable[CompactFieldDeclarationWrapper]) -> Self:
+        return cls({wrapper.qualified_name: wrapper for wrapper in wrappers})
+
+    @cached_property
+    def signatures(self) -> Mapping[str, FieldDeclarationSignature]:
+        signatures: dict[str, FieldDeclarationSignature] = {
+            member.qualified_name: FieldDeclarationSignature.of_native(member.declaration)
+            for member in DataclassRuntimeDeclaration
+            if member.is_field_factory
+        }
+        refused: set[str] = set()
+
+        def settle(name: str, pending: frozenset[str]) -> FieldDeclarationSignature | None:
+            if name in signatures:
+                return signatures[name]
+            wrapper = self.wrappers.get(name)
+            if wrapper is None or name in refused or name in pending:
+                return None
+            callee = settle(wrapper.returned.callee, pending | {name})
+            supplied = None if callee is None else callee.supplied(wrapper.returned)
+            if callee is None or supplied is None:
+                refused.add(name)
+                return None
+            signature = wrapper.signature._replace(
+                supplied_on_the_way=tuple(sorted({*callee.supplied_on_the_way, *supplied})),
+                defaulted=callee.defaulted or bool(supplied.intersection(callee.missing)),
+            )
+            signatures[name] = signature
+            return signature
+
+        for name in self.wrappers:
+            settle(name, frozenset())
+        return signatures
+
+    def declares_bare_field(self, call: CompactFieldDeclarationCall) -> bool | None:
+        """Whether the call declares a field without a default: False when its
+        callee declares no field, None when a splat leaves it open."""
+
+        signature = self.signatures.get(call.callee)
+        if signature is None:
+            return False
+        return signature.declares_bare_field(call)
+
+    def field_role(self, call: CompactFieldDeclarationCall) -> CompactDataclassFieldRole:
+        """A stored init field when the call declares a field and nothing on its
+        way to `dataclasses.field` names `init`; otherwise unresolved."""
+
+        signature = self.signatures.get(call.callee)
+        if signature is None or signature.supplied(call) is None or self.supplies(call, "init"):
+            return CompactDataclassFieldRole.UNRESOLVED
+        return CompactDataclassFieldRole.STORED_INIT
+
+    def supplies(self, call: CompactFieldDeclarationCall, parameter: str) -> bool:
+        """Whether the call, or a declaration it reaches, names this parameter."""
+
+        signature = self.signatures[call.callee]
+        supplied = signature.supplied(call) or frozenset()
+        return parameter in supplied or parameter in signature.supplied_on_the_way
 
 
 def _dataclass_role_reference(annotation: ast.expr) -> ast.expr | None:
@@ -7830,6 +8511,12 @@ def _dataclass_fields(
                             else ()
                         ),
                         class_binding,
+                    ),
+                    declaration_call=role.declaration_call(
+                        statement,
+                        module_binding_snapshot,
+                        class_aliases,
+                        frozenset(preceding_bound_names),
                     ),
                 )
             )
@@ -8527,7 +9214,7 @@ class CompactClassFamilyIndexBuilder:
             UniqueIdentityIndexAuthority.unambiguous_declarations_by_handle(
                 (
                     record
-                    for projection in star_resolved_projections(tuple(self.projections))
+                    for projection in repository_settled_projections(tuple(self.projections))
                     for record in projection.classes
                 ),
                 lambda record: record.symbol,
