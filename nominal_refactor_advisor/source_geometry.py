@@ -11,6 +11,8 @@ from dataclasses import dataclass
 from functools import cached_property
 from operator import attrgetter
 from pathlib import Path
+from typing import ClassVar
+from weakref import WeakValueDictionary
 
 from .codemod_payload import (
     CodemodPayloadRecord,
@@ -247,6 +249,60 @@ class SourceByteSpan(CodemodPayloadRecord):
         return len(line.encode("utf-8")[:byte_offset].decode("utf-8"))
 
 
+@dataclass(frozen=True, eq=False)
+class SourceTextLayout:
+    """The tokens, lines and offsets of one source text, computed once per text.
+
+    Every geometry over the same text reads one layout (`of`), so a declaration,
+    an edit and the parse that hold the same file share its tokenization instead
+    of each caching its own copy. A layout lives while anything holds it; the
+    parse's `source_segments` holds its file's for the parse's lifetime."""
+
+    source: str
+    _interned: ClassVar[WeakValueDictionary[str, SourceTextLayout]] = WeakValueDictionary()
+
+    @classmethod
+    def of(cls, source: str) -> SourceTextLayout:
+        layout = cls._interned.get(source)
+        if layout is None:
+            layout = cls._interned[source] = cls(source)
+        return layout
+
+    @cached_property
+    def tokens(self) -> tuple[tokenize.TokenInfo, ...]:
+        return tuple(tokenize.generate_tokens(io.StringIO(self.source).readline))
+
+    @cached_property
+    def lines(self) -> tuple[str, ...]:
+        return tuple(self.source.splitlines(keepends=True))
+
+    @cached_property
+    def line_offsets(self) -> tuple[int, ...]:
+        """The offset of each logical line; an empty text still has one line."""
+        offsets = []
+        offset = 0
+        for line in self.lines or ("",):
+            offsets.append(offset)
+            offset += len(line)
+        return tuple(offsets)
+
+    @cached_property
+    def end_offset(self) -> int:
+        return sum(len(line) for line in self.lines)
+
+    def token_position_offset(self, position: tuple[int, int]) -> int:
+        line, column = position
+        if line == len(self.line_offsets) + 1 and column == 0:
+            return self.end_offset
+        if not 1 <= line <= len(self.line_offsets):
+            raise ValueError(f"Token position is outside source geometry: {position!r}")
+        return self.line_offsets[line - 1] + column
+
+    @cached_property
+    def token_start_offsets(self) -> tuple[int, ...]:
+        return tuple(self.token_position_offset(token.start) for token in self.tokens)
+
+
 @dataclass(frozen=True)
 class SourceLineSegmentAuthority:
     """Project parsed AST spans into exact source text from one line index."""
@@ -273,17 +329,21 @@ class SourceLineSegmentAuthority:
                 return token.start[0]
         raise ValueError("Decorated declaration has no source decorator marker")
 
-    @cached_property
+    @property
+    def layout(self) -> SourceTextLayout:
+        return SourceTextLayout.of(self.source)
+
+    @property
     def tokens(self) -> tuple[tokenize.TokenInfo, ...]:
-        return tuple(self.iter_tokens())
+        return self.layout.tokens
 
     def iter_tokens(self) -> Iterator[tokenize.TokenInfo]:
         """Read source tokens lazily when only a prefix is required."""
         return tokenize.generate_tokens(io.StringIO(self.source).readline)
 
-    @cached_property
+    @property
     def lines(self) -> tuple[str, ...]:
-        return tuple(self.source.splitlines(keepends=True))
+        return self.layout.lines
 
     @cached_property
     def line_ending(self) -> str:
