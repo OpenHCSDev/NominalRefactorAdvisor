@@ -70,7 +70,7 @@ from nominal_refactor_advisor.analysis_cache import (
     AnalysisFindingCacheChunkStreamHeader,
     AnalysisFindingCacheEntryPayload,
     AnalysisFindingCache,
-    DetectorSemanticEngineSignature,
+    detector_implementation_module_names,
     DetectorRegistrySignature,
     GlobalDetectorAnalysisCacheIdentity,
     GlobalDetectorFamilyAnalysisCacheIdentity,
@@ -641,23 +641,26 @@ def test_module_detector_cache_reuses_unchanged_implementation_bundle(
 def test_detector_shard_cache_identity_ignores_orchestration_implementation(
     tmp_path: Path,
 ) -> None:
-    """Detector-shard identities hash only the modules that decide findings;
-    the aggregate entry also hashes orchestration and persistence."""
+    """Detector-shard identities are keyed by their detectors' own code, through
+    the detector registry; only the aggregate entry also hashes orchestration and
+    persistence."""
 
     module_path = tmp_path / "module.py"
     module_path.write_text("VALUE = 1\n", encoding="utf-8", newline="")
     module = parse_python_modules(tmp_path, use_parse_cache=False)[0]
-    semantic = analysis_cache_module.DetectorSemanticEngineSignature
     orchestration = {
         "nominal_refactor_advisor.analysis",
         "nominal_refactor_advisor.analysis_cache",
     }
+    detector_modules = {
+        name
+        for detector_type in IssueDetector.registered_detector_types()
+        for name in detector_implementation_module_names(detector_type)
+    }
 
-    assert not orchestration & set(semantic.module_names())
-    assert "nominal_refactor_advisor.detectors._base" in semantic.module_names()
-    assert orchestration <= set(
-        analysis_cache_module.AnalysisEngineSignature.module_names()
-    )
+    assert not orchestration & detector_modules
+    assert "nominal_refactor_advisor.detectors._base" in detector_modules
+    assert set(analysis_cache_module.AnalysisEngineSignature.module_names()) == orchestration
     per_module = analysis_cache_module.PerModuleAnalysisCacheFamilyIdentity.from_module(
         module, DetectorConfig(), (tmp_path,)
     )
@@ -670,29 +673,35 @@ def test_detector_shard_cache_identity_ignores_orchestration_implementation(
         aggregate.source_context_token,
         (tmp_path,),
     )
-    assert type(per_module.engine) is semantic
-    assert type(global_identity.engine) is semantic
+    assert not hasattr(per_module, "engine")
+    assert not hasattr(global_identity, "engine")
     assert type(aggregate.engine) is analysis_cache_module.AnalysisEngineSignature
 
 
-def test_detector_semantic_engine_derives_registered_declaration_dependencies() -> None:
-    module_names = frozenset(DetectorSemanticEngineSignature.module_names())
+def test_each_detector_is_keyed_on_its_own_declaration_dependencies() -> None:
+    """A detector's signature hashes its implementation closure and the projection
+    families it reads, so an edit re-keys only the detectors it reaches."""
 
-    assert {
-        source.module_name
-        for family in DetectorSemanticEngineSignature.projection_families()
-        for source in family.implementation_identity().sources
-    } <= module_names
-    assert {
-        detector_type.__module__
+    closures = {
+        detector_type: frozenset(detector_implementation_module_names(detector_type))
         for detector_type in IssueDetector.registered_detector_types()
-    } <= module_names
+    }
+    for detector_type, module_names in closures.items():
+        assert detector_type.__module__ in module_names
+        if issubclass(detector_type, base_detectors.CompactModuleProjectionDetectorMixin):
+            assert {
+                source.module_name
+                for family in detector_type.compact_projection_families()
+                for source in family.implementation_identity().sources
+            } <= module_names
+    union = frozenset().union(*closures.values())
     assert {
         annotation_semantics_module.__name__,
         assignment_projection_module.__name__,
         constructor_algebra_module.__name__,
-    } <= module_names
-    assert analysis_module.__name__ not in module_names
+    } <= union
+    assert analysis_module.__name__ not in union
+    assert min(len(names) for names in closures.values()) < len(union)
 
 
 def test_semantic_graph_cache_identity_derives_every_graph_producer() -> None:

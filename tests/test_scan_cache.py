@@ -13,7 +13,7 @@ import pytest
 
 from nominal_refactor_advisor.analysis_cache import (
     AnalysisEngineSignature,
-    detector_module_source_hash,
+    detector_implementation_hash,
 )
 from nominal_refactor_advisor.observation_families import BuilderCallShapeFamily
 from nominal_refactor_advisor.implementation_identity import (
@@ -157,12 +157,12 @@ def test_detector_implementation_hash_refreshes_between_scans(tmp_path, monkeypa
     monkeypatch.setitem(sys.modules, module.__name__, module)
     declaration = type("Detector", (), {"__module__": module.__name__})
     with ScanCache.scope():
-        original = detector_module_source_hash(declaration)
-        assert detector_module_source_hash(declaration) == original
+        original = detector_implementation_hash(declaration)
+        assert detector_implementation_hash(declaration) == original
     path.write_text("value = 2\n")
     os.utime(path, ns=(stat.st_atime_ns, stat.st_mtime_ns))
     with ScanCache.scope():
-        assert detector_module_source_hash(declaration) != original
+        assert detector_implementation_hash(declaration) != original
 
 
 def test_threads_have_independent_scopes():
