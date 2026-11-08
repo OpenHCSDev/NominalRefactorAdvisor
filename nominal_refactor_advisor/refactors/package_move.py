@@ -107,16 +107,16 @@ class DestinationTable:
         package holding the most of its row packages; every other root (a consumer
         scanned beside it, `tools`, a test package) keeps every module where it is,
         even one whose name a row lists, and only its imports follow. Two roots
-        holding equally many are refused by name rather than guessed between."""
+        holding equally many are refused by name rather than guessed between. A
+        flat module named like a row package holds that name too, so the root it
+        shadows a package in is still the subject and the move reports the shadow."""
 
         flat_by_root: dict[str, list[CompactModuleClassHeader]] = {}
         packaged_by_root: dict[str, list[CompactModuleClassHeader]] = {}
         packages_by_root: dict[str, set[str]] = {}
         for module in modules:
             parts = module.module_name.split(".")
-            if len(parts) > 2 or (
-                len(parts) == 2 and PurePosixPath(module.file_path).name == "__init__.py"
-            ):
+            if len(parts) >= 2:
                 packages_by_root.setdefault(parts[0], set()).add(parts[1])
             if PurePosixPath(module.file_path).name == "__init__.py" or len(parts) < 2:
                 continue
