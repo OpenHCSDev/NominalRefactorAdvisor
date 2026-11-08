@@ -731,18 +731,23 @@ class _SourceModuleObjectReads:
     ) -> tuple[tuple[str, ModuleImportScope], ...]:
         """The module-level bindings that reach the source module and whose every
         load is a rewritten read or access, each with the import scope that binds
-        it."""
+        it. A name several aliases bind (`import pkg.a, pkg.b`) stays: removing
+        it would take the other modules' imports with it."""
 
         loads = Counter(
             node.id
             for node in ast.walk(module)
             if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load)
         )
-        scope_by_bound_name = {
-            alias.asname or alias.name.split(".")[0]: scope
+        bound_by_alias = tuple(
+            (alias.asname or alias.name.split(".")[0], scope)
             for scope in ModuleImportScope
             for statement in scope.import_statements(module)
             for alias in statement.names
+        )
+        alias_counts = Counter(name for name, _scope in bound_by_alias)
+        scope_by_bound_name = {
+            name: scope for name, scope in bound_by_alias if alias_counts[name] == 1
         }
         return tuple(
             sorted(
@@ -2216,12 +2221,12 @@ class DissolveModuleOperation(RetainedCallOperation):
         )
         excluded = frozenset({source_path})
         self._require_followable_consumers(context, excluded, source_module_name, bindings)
+        self._require_removable_module_bindings(context, excluded, source_module_name)
         return (
             *ModuleNameRedirect(source_path, bindings.owners).consumer_edits(
                 context,
                 excluded_paths=excluded,
             ),
-            *self._module_binding_removals(context, excluded, source_module_name),
             *_ModuleIdentityStrings(
                 source_path,
                 source_module_name,
@@ -2265,16 +2270,15 @@ class DissolveModuleOperation(RetainedCallOperation):
                     )
 
     @staticmethod
-    def _module_binding_removals(
+    def _require_removable_module_bindings(
         context: CodemodSelectorContext,
         excluded_paths: frozenset[str],
         source_module_name: str,
-    ) -> Iterator[NominalSourceEdit]:
-        """Remove `from pkg import source` bindings once their reads are redirected.
-
-        `ModuleNameRedirect` refuses any use other than an attribute read, so a
-        binding still standing here is either all reads (now redirected) or unused,
-        which means it was taken for its import side effect."""
+    ) -> None:
+        """Refuse the bindings of the dissolved module that its redirect cannot
+        remove: a module-path import, a binding taken only for its import side
+        effect, and one inside a function. `ModuleNameRedirect` removes every
+        other `from pkg import source` binding once its reads are redirected."""
 
         package, _, leaf = source_module_name.rpartition(".")
         for source_file in context.source_index.files:
@@ -2328,13 +2332,6 @@ class DissolveModuleOperation(RetainedCallOperation):
                     raise ValueError(
                         f"{source_file.file_path!r}:{statement.lineno} binds "
                         f"{source_module_name!r} inside a function"
-                    )
-                if aliases:
-                    yield ModuleImportMutation.remove_names(
-                        file_path=source_file.file_path,
-                        module_name=ImportFromModuleName.from_node(statement).source,
-                        names=(alias.name for alias in aliases),
-                        scope=scope,
                     )
 
 
