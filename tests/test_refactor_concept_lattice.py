@@ -42,6 +42,10 @@ from nominal_refactor_advisor.refactors.dispatch_polymorphism import (
     DispatchToPolymorphismOperation,
     NumericLiteralDispatchFindingRecipeSynthesizer,
 )
+from nominal_refactor_advisor.refactors.enum_subset import (
+    DeriveEnumSubsetOperation,
+    EnumSubsetSemanticMirrorRecipeBuilder,
+)
 from nominal_refactor_advisor.refactors.repeated_builder import (
     DeriveRepeatedBuilderAuthorityOperation,
     RepeatedBuilderAuthorityMethod,
@@ -131,7 +135,7 @@ EXPECTED_EXECUTABLE_CONCEPTS = {
     MissingMixinDetector: codemod.ClassBodyCompositionConcept,
     ClosedParameterConveyorDetector: codemod.SemanticCarrierConcept,
     DeclaredCarrierExpansionDetector: codemod.SemanticCarrierConcept,
-    codemod.EnumSubsetSemanticMirrorRecipeBuilder: (codemod.DerivedProjectionConcept),
+    EnumSubsetSemanticMirrorRecipeBuilder: (codemod.DerivedProjectionConcept),
     AutoregisterInstanceViewRecipeBuilder: (
         codemod.AutoRegisterClassRegistryConcept
     ),
@@ -143,7 +147,7 @@ EXPECTED_MAPPING_DECLARATIONS = frozenset(
         codemod.DataclassFieldNameCollectionProjectionMappingRecipeBuilder,
         codemod.DataclassKeyValueSequenceProjectionMappingRecipeBuilder,
         codemod.DataclassPayloadProjectionMappingRecipeBuilder,
-        codemod.EnumSubsetSemanticMirrorRecipeBuilder,
+        EnumSubsetSemanticMirrorRecipeBuilder,
     }
 )
 
@@ -629,7 +633,7 @@ def test_source_derived_synthesized_operations_share_one_reproof_contract() -> N
         codemod.DeriveDataclassFieldNameCollectionProjectionOperation,
         codemod.DeriveDataclassKeyValueSequenceProjectionOperation,
         codemod.DeriveDataclassPayloadProjectionOperation,
-        codemod.DeriveEnumSubsetOperation,
+        DeriveEnumSubsetOperation,
         DeriveRepeatedBuilderAuthorityOperation,
         DispatchToPolymorphismOperation,
         codemod.FactorParallelMirroredLeafFamilyOperation,
