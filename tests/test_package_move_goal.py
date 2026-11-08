@@ -218,3 +218,46 @@ def test_a_package_shadowed_by_a_module_file_is_refused(tmp_path: Path) -> None:
         for record in dead_end.class_plan_report.finding_plan.records
     )
     assert "pkg/messaging.py' is the module of that name" in reasons
+
+
+def test_a_cycle_only_through_a_local_import_moves_and_names_its_debt(tmp_path: Path) -> None:
+    _write(tmp_path, "pkg/__init__.py", "")
+    _write(tmp_path, "pkg/planning/__init__.py", "")
+    _write(
+        tmp_path,
+        "pkg/session_load.py",
+        "import pkg.presentation as presentation\n\n\n"
+        "def load() -> str:\n    return presentation.render('loaded')\n",
+    )
+    _write(
+        tmp_path,
+        "pkg/presentation.py",
+        "def render(text: str) -> str:\n    return f'<{text}>'\n\n\n"
+        "def reload() -> str:\n"
+        "    from pkg.session_load import load\n\n"
+        "    return load()\n",
+    )
+    _write(tmp_path, "pkg/app.py", "from pkg.presentation import reload\n\nVALUE = reload()\n")
+    table = TABLE.replace("`steps.py`", "`session_load.py`, `presentation.py`")
+    report = _goal(tmp_path, table)
+
+    assert report.stop_reason is CodemodWorkflowStopReason.ACHIEVED, report.to_markdown()
+    reasons = [
+        recipe.reason
+        for document in report.replay_sequence.documents
+        for recipe in document.recipes
+    ]
+    assert reasons[0].startswith("Relocate") and "session_load" in str(
+        report.replay_sequence.documents[0].recipes[0].operations[0].target.file_path
+    )
+    assert any("Debt carried:" in reason and "presentation.py" in reason for reason in reasons)
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    replay = report.replay_sequence.simulate(snapshot)
+    assert replay.is_clean
+    replay.apply()
+    imported = subprocess.run(
+        [sys.executable, "-c", "from pkg.app import VALUE; print(VALUE)"],
+        cwd=tmp_path, capture_output=True, text=True, check=False,
+    )
+    assert imported.returncode == 0, imported.stderr
+    assert imported.stdout.strip() == "<loaded>"
