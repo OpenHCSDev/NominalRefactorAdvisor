@@ -1622,6 +1622,23 @@ ClassProjectionT = TypeVar("ClassProjectionT", bound=CompactModuleClassHeader)
 
 
 @dataclass(frozen=True)
+class ModuleClassHeaderCore(ParsedModuleFact):
+    """One module's namespace and class headers, the part of its projection a
+    class-family index reads. A fact of the parse, so a plan's snapshots, which
+    hand unchanged parses from stage to stage, project each unchanged module once."""
+
+    projection: CompactModuleClassProjection
+
+    @classmethod
+    def derive(cls, parsed_module: ParsedModule) -> Self:
+        return cls(
+            CompactModuleClassProjection.declared_in(
+                parsed_module, include_body_facets=False
+            ).header_core()
+        )
+
+
+@dataclass(frozen=True)
 class CompactRepositoryPublicExposureIndex(RepositoryPublicExposureAuthority):
     """Derive transitive public exposure from module-owned namespace contracts."""
 
@@ -4530,11 +4547,7 @@ class CompactModuleClassProjectionFamily(CollectedFamily[CompactModuleClassProje
         parsed_module: ParsedModule,
     ) -> list[CompactModuleClassProjection]:
         del cls
-        return [
-            CompactModuleClassProjection.declared_in(
-                parsed_module, include_body_facets=False
-            ).header_core()
-        ]
+        return [parsed_module.fact(ModuleClassHeaderCore).projection]
 
     @classmethod
     def _collect(
