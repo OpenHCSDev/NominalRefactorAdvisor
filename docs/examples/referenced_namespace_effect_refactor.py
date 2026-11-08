@@ -15,9 +15,7 @@ from nominal_refactor_advisor.codemod import (
     CodemodPlanSequence,
     SourceRewriteTarget,
 )
-from nominal_refactor_advisor.codemod_declaration_operations import (
-    ReplaceDeclarationDecoratorsOperation,
-)
+from nominal_refactor_advisor.refactors.declaration_operations import ReplaceDeclarationDecoratorsOperation
 from nominal_refactor_advisor.json_reports import json_report_object
 
 module = SourceRewriteTarget(file_path="nominal_refactor_advisor/class_namespace.py")

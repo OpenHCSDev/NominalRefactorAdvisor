@@ -1,78 +1,79 @@
-"""Executable recipes that delete a distinction the code then treats identically.
-
-Each operation targets the scope that owns a branch (a function, a method or
-the module) and the branch's line, and re-derives its edits from current
-source: the branch must still be there, and its deleted tests must still be
-free of effects.
-"""
-
 from __future__ import annotations
 
 import ast
-from abc import ABC, abstractmethod
-from collections.abc import Iterator, Sequence
+from abc import (
+    ABC,
+    abstractmethod,
+)
+from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
-from typing import ClassVar, TypeVar, cast
+from typing import (
+    ClassVar,
+    TypeVar,
+    cast,
+)
 
-from .refactors.finding_recipes import (
+from .finding_recipes import (
     FindingRecipeSynthesizer,
     PrimaryEvidenceActionKeysMixin,
 )
-from .codemod import RefactorRecipeOperation
-from .codemod_imports import ModuleImportMutation
-from .codemod_foreign_family_source import RewrittenLineFit
-from .codemod_payload import (
+from ..ast_tools import ParsedModule
+from ..class_index import ModuleNominalBindingAuthority
+from ..codemod import RefactorRecipeOperation
+from ..codemod_foreign_family_source import RewrittenLineFit
+from ..codemod_imports import ModuleImportMutation
+from ..codemod_payload import (
     RequiredIntegerPayloadValueCodec,
     StringArrayPayloadValueCodec,
     codemod_payload_field,
 )
-from .codemod_reproof import RepositorySourceReprovedOperation, SourceReprovedOperation
-from .codemod_runtime import (
+from ..codemod_reproof import (
+    RepositorySourceReprovedOperation,
+    SourceReprovedOperation,
+)
+from ..codemod_runtime import (
     CodemodSourceSnapshot,
     FindingRecipeEvaluation,
     RefactorRecipe,
 )
-from .codemod_selection_context import CodemodSelectorContext
-from .codemod_selector_models import SourceRewriteTarget
-from .ast_tools import ParsedModule
-from .class_index import ModuleNominalBindingAuthority
-from .codemod_source_edits import (
+from ..codemod_selection_context import CodemodSelectorContext
+from ..codemod_selector_models import SourceRewriteTarget
+from ..codemod_source_edits import (
     NominalSourceEdit,
     SourceSpanDeletion,
     SourceTextGeometry,
-    SourceTextSpan,
     SourceTextSpanReplacement,
 )
-from .enum_semantics import PythonEnumBaseKind
-from .codemod_target_selectors import SourceIndexTargetSelector
-from .declaration_authority_rename import (
+from ..codemod_target_selectors import SourceIndexTargetSelector
+from ..declaration_authority_rename import (
     DeclarationAuthorityModuleRedirectProof,
     DeclarationAuthorityModuleRenameProof,
     DeclarationAuthorityRenameProof,
     DeclarationRedirectProof,
 )
-from .declared_root import DeclaredRoot
-from .false_distinction_observations import (
+from ..declared_root import DeclaredRoot
+from ..enum_semantics import PythonEnumBaseKind
+from ..false_distinction_observations import (
     EmptySubclass,
-    NameUse,
-    SiblingTestModules,
     EnumClassUse,
     EnumMemberIndex,
     EnumMemberUse,
     EnumMembers,
     EnumUseKind,
-    MemberGroup,
-    NameUseKind,
-    enum_uses,
     IdenticalArms,
+    MemberGroup,
+    NameUse,
+    NameUseKind,
     Scope,
     ScopeNode,
+    SiblingTestModules,
     UndistinguishedTypeArms,
+    enum_uses,
 )
-from .models import RefactorFinding
-from .refactor_concepts import FalseDistinctionErasureConcept
-from .source_index import AstTargetNodeKind
+from ..models import RefactorFinding
+from ..refactor_concepts import FalseDistinctionErasureConcept
+from ..source_index import AstTargetNodeKind
 
 FoundT = TypeVar("FoundT")
 

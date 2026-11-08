@@ -36,7 +36,7 @@ from ..type_checker_session import (
     TypeCheckerSources,
 )
 from ..codemod_legacy_path_recipe import LegacyPathErasureFindingRecipeSynthesizer
-from ..codemod_optional_ast_field import (
+from ..refactors.optional_ast_field import (
     OptionalAstFieldDecoderFindingRecipeSynthesizer,
     RouteOptionalAstFieldProbesOperation,
 )

@@ -16,7 +16,7 @@ from nominal_refactor_advisor.codemod import (
 from nominal_refactor_advisor.json_reports import json_report_object
 
 module = SourceRewriteTarget(
-    file_path="nominal_refactor_advisor/projection_descent_codemod.py"
+    file_path="nominal_refactor_advisor/refactors/projection_descent.py"
 )
 method_descent = replace(module, qualname="_TypeKeyedBehaviorMethodDescent")
 DERIVE_ARGUMENT_NAMES = ReplaceScopeAssignmentOperation(

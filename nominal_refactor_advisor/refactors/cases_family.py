@@ -1,19 +1,3 @@
-"""An enum that declares behaviour becomes the class family its members describe.
-
-``CasesFamily`` is the ``Cases`` input form with its own end state: the enum's
-name stays as an abstract root, each member becomes a subclass carrying its data
-as class attributes, and every method that read ``self`` to tell members apart
-splits into one body per member, decided once by folding the member's literals
-into its tests. Branches on member data outside the enum become calls of a new
-family method; the names for those methods are questions the caller answers.
-
-Members are classes, so identity (``status is Hit``), hashing and pickling keep
-their meaning. The root the family inherits is the target repository's own
-declaration (``DeclaredRoot``): it names the attribute members carry their wire
-value in and the classmethod that decodes one, so ``X(value)`` becomes
-``X.<decoder>(value)`` and wire names survive.
-"""
-
 from __future__ import annotations
 
 import ast
@@ -21,35 +5,54 @@ import builtins
 import operator
 import textwrap
 import tokenize
-from abc import ABC, abstractmethod
+from abc import (
+    ABC,
+    abstractmethod,
+)
 from collections import Counter
-from collections.abc import Callable, Iterable, Iterator
-from dataclasses import dataclass, field
+from collections.abc import (
+    Callable,
+    Iterable,
+    Iterator,
+)
+from dataclasses import (
+    dataclass,
+    field,
+)
 from functools import cached_property
 from pathlib import Path
 from typing import ClassVar
 
 from metaclass_registry import AutoRegisterMeta
 
-from .ast_field_decoders import declared_annotations
-from .value_expression import CompactValueExpression
-from .ast_projection import (
+from ..ast_field_decoders import declared_annotations
+from ..ast_projection import (
     NoStatementValue,
     StatementValue,
     StatementValueQuestion,
     StatementValues,
     SuppliedValue,
 )
-from .lexical_bindings import ImportBoundNameProjection
-from .ast_tools import (
+from ..ast_tools import (
     AstParentIndex,
     BuiltinCallName,
     ParsedModule,
     PythonSourcePathPolicy,
 )
-from .codemod_runtime import CodemodSourceSnapshot
-from .codemod_source_edits import SourceTextGeometry, SourceTextSpanReplacement
-from .descent import (
+from ..class_index import (
+    CLASS_METHOD_DECORATOR,
+    ModuleNominalBindingAuthority,
+    ModuleNominalBindingSnapshot,
+    PROPERTY_DECORATOR,
+    STATIC_METHOD_DECORATOR,
+)
+from ..codemod_runtime import CodemodSourceSnapshot
+from ..codemod_source_edits import (
+    SourceTextGeometry,
+    SourceTextSpanReplacement,
+)
+from ..declared_root import DeclaredRoot
+from ..descent import (
     Answers,
     Cases,
     Descent,
@@ -61,15 +64,12 @@ from .descent import (
     Rewrite,
     TailName,
 )
-from .declared_root import DeclaredRoot
-from .class_index import (
-    CLASS_METHOD_DECORATOR,
-    PROPERTY_DECORATOR,
-    STATIC_METHOD_DECORATOR,
-    ModuleNominalBindingAuthority,
-    ModuleNominalBindingSnapshot,
+from ..lexical_bindings import ImportBoundNameProjection
+from ..semantic_descent import (
+    AuthorityClaim,
+    SemanticAuthorityKind,
 )
-from .semantic_descent import AuthorityClaim, SemanticAuthorityKind
+from ..value_expression import CompactValueExpression
 
 BOOLEAN_CALLS = frozenset(
     (
@@ -713,7 +713,6 @@ def signature(
         *(f"    {parameter}," for parameter in parameters),
         f"){suffix}:",
     ]
-
 
 
 def authored_header(

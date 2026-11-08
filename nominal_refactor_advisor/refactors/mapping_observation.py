@@ -1,24 +1,28 @@
-"""Authored mapping observations checked against the complete simulated batch."""
-
 from __future__ import annotations
 
 from dataclasses import dataclass
 
-from .codemod_payload import PayloadRecordArrayValueCodec, codemod_payload_field
-from .codemod_preflight import CodemodOperationPreflightReport
-from .codemod_reproof import SourceReprovedOperation
-from .codemod_runtime import CodemodPlanDocumentSimulation, CodemodSourceSnapshot
-from .codemod_selector_models import SourceRewriteTargetPreflightDetail
-from .codemod_semantics import CodemodPreflightStatus
-from .codemod_source_correspondence import SourceReadCorrespondence
-from .codemod_source_edits import (
+from ..codemod_payload import (
+    PayloadRecordArrayValueCodec,
+    codemod_payload_field,
+)
+from ..codemod_preflight import CodemodOperationPreflightReport
+from ..codemod_reproof import SourceReprovedOperation
+from ..codemod_runtime import (
+    CodemodPlanDocumentSimulation,
+    CodemodSourceSnapshot,
+)
+from ..codemod_selector_models import SourceRewriteTargetPreflightDetail
+from ..codemod_semantics import CodemodPreflightStatus
+from ..codemod_source_correspondence import SourceReadCorrespondence
+from ..codemod_source_edits import (
     NominalSourceEdit,
     SourceTextGeometry,
 )
-from .native_call import CopiedNativeNamespace
-from .native_reference import NativeReferenceEnvironment
-from .product_flow import SourceFlowOperation
-from .source_geometry import SourceByteSpan
+from ..native_call import CopiedNativeNamespace
+from ..native_reference import NativeReferenceEnvironment
+from ..product_flow import SourceFlowOperation
+from ..source_geometry import SourceByteSpan
 
 
 @dataclass(frozen=True, kw_only=True)
