@@ -21,6 +21,7 @@ from .ast_tools import (
     ParsedModule,
     REGISTERED_TYPE_LINEAGE,
     SharedRegistryRootBase,
+    is_docstring_statement,
 )
 from .codemod_declaration_source import NamedDeclarationSourceAuthority
 from .codemod_import_bindings import (
@@ -702,6 +703,12 @@ class SourceTopLevelDeclaration(
             decorator_policy=Include,
         )
 
+    def documented_by(self, following: ast.stmt) -> SourceTopLevelDeclaration:
+        """This declaration, extended over the statement after it when that
+        statement documents it; a class or function documents itself."""
+
+        return self
+
 
 @dataclass(frozen=True)
 class NamedSourceTopLevelDeclaration(SourceTopLevelDeclaration):
@@ -811,6 +818,33 @@ class TypeAliasSourceTopLevelDeclaration(SourceTopLevelDeclaration):
     def destination_boundary(self) -> SourceInsertionBoundary:
         return SourceInsertionBoundary.ONE_BLANK_LINE
 
+    def documented_by(self, following: ast.stmt) -> SourceTopLevelDeclaration:
+        if not is_docstring_statement(following):
+            return self
+        return DocumentedAssignedSourceTopLevelDeclaration(
+            source_path=self.source_path,
+            node=self.node,
+            docstring=cast(ast.Expr, following),
+        )
+
+
+@dataclass(frozen=True)
+class DocumentedAssignedSourceTopLevelDeclaration(AssignedSourceTopLevelDeclaration):
+    """An assignment and the attribute docstring under it, which moves with it."""
+
+    docstring: ast.Expr
+
+    @cached_property
+    def source_span(self) -> SourceNodeSpan:
+        return DocumentedNodeSpan(
+            self.node,
+            decorator_policy=Include,
+            docstring=self.docstring,
+        )
+
+    def documented_by(self, following: ast.stmt) -> SourceTopLevelDeclaration:
+        return self
+
 
 @dataclass(frozen=True)
 class SourceTopLevelDeclarationIndex:
@@ -821,9 +855,10 @@ class SourceTopLevelDeclarationIndex:
 
     @cached_property
     def declarations(self) -> tuple[SourceTopLevelDeclaration, ...]:
+        body = self.module.body
         return tuple(
-            declaration
-            for statement in self.module.body
+            declaration.documented_by(following)
+            for statement, following in zip(body, (*body[1:], ast.Pass()))
             if (
                 declaration := SourceTopLevelDeclaration.from_statement(
                     self.source_path,
