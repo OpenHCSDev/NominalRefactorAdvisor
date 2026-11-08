@@ -7,7 +7,6 @@ import pytest
 from nominal_refactor_advisor.codemod import (
     CodemodPlanDocument,
     CodemodSourceSnapshot,
-    ConvertManualRegistryToAutoregisterOperation,
     PatchTargetOperation,
     RefactorRecipe,
     SourceRewriteTarget,
@@ -17,6 +16,7 @@ from nominal_refactor_advisor.codemod_source_correspondence import (
     SourceReadCorrespondence,
 )
 from nominal_refactor_advisor.codemod_source_edits import SourceTextReplacement
+from nominal_refactor_advisor.refactors.autoregister import ConvertManualRegistryToAutoregisterOperation
 from test_registry_policy_integrity import _execute
 
 pytestmark = pytest.mark.native_proof

@@ -18,9 +18,6 @@ from nominal_refactor_advisor.native_call import (
     DefaultObjectConstruction,
     NativeDataclassFactoryCall,
 )
-from nominal_refactor_advisor.codemod import (
-    ConvertManualRegistryToAutoregisterOperation,
-)
 from nominal_refactor_advisor.codemod_native_requirements import (
     DeclaredNativeUseInvariants,
     NativeUseProvenance,
@@ -34,6 +31,7 @@ from nominal_refactor_advisor.native_subscription import (
     NativeSubscriptionAuthority,
 )
 from nominal_refactor_advisor.product_flow import CompactSubscription
+from nominal_refactor_advisor.refactors.autoregister import ConvertManualRegistryToAutoregisterOperation
 from nominal_refactor_advisor.source_entry import (
     DeclaredNativeOperationBehavior,
     DeclaredOperationCompletion,
