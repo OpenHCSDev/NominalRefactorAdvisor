@@ -43,6 +43,7 @@ from .implementation_identity import (
 )
 from .models import RefactorFinding, SourceLocation
 from .planner import RefactorExecutionPlanReport
+from .quoted_reference import DeclaredInterpreter
 from .scan_cache import ScanCache
 from .semantic_descent import SemanticDescentModuleFamilySignature
 from .source_geometry import read_source_text
@@ -447,6 +448,9 @@ class SourceFileSignature:
 
     path: str
     source_hash: str
+    declared_python: tuple[int, int] | None = None
+    """The lowest Python the file's project declares; detectors read it (whether
+    annotations are lazy), so it is part of what the file means."""
 
     @classmethod
     def from_path(cls, path: Path) -> SourceFileSignature:
@@ -637,6 +641,8 @@ class ModuleSourceSignature(SemanticDescentModuleFamilySignature):
     """Parsed-module identity used for per-module detector-output shards."""
 
     source_hash: str
+    declared_python: tuple[int, int] | None
+    """The lowest Python the module's project declares, as on SourceFileSignature."""
 
     @classmethod
     def from_module(
@@ -651,6 +657,7 @@ class ModuleSourceSignature(SemanticDescentModuleFamilySignature):
             checkout_relative_path(module.path, effective_roots),
             module.module_name,
             semantic_module_hash(module),
+            DeclaredInterpreter.of(module.path).lowest,
         )
 
 
@@ -831,6 +838,7 @@ class AnalysisCacheIdentity(AnalysisCacheEntryContext):
             SourceFileSignature(
                 path=checkout_relative_path(source_file.path, roots),
                 source_hash=source_file.source_hash,
+                declared_python=DeclaredInterpreter.of(Path(source_file.path)).lowest,
             )
             for source_file in absolute_source_files
         )
@@ -870,6 +878,7 @@ class AnalysisCacheIdentity(AnalysisCacheEntryContext):
                 SourceFileSignature(
                     path=checkout_relative_path(module.path, roots),
                     source_hash=semantic_module_hash(module),
+                    declared_python=DeclaredInterpreter.of(module.path).lowest,
                 )
                 for module in modules
             ),
@@ -1031,6 +1040,7 @@ class PerModuleAnalysisCacheFamilyIdentity(ReprCacheTokenMixin):
                 path=checkout_relative_path(path, effective_roots),
                 parsed_import_name=module_name,
                 source_hash=semantic_hash,
+                declared_python=DeclaredInterpreter.of(path).lowest,
             ),
             presentation_roots=presentation_root_texts(effective_roots),
         )

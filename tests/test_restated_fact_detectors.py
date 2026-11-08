@@ -783,6 +783,28 @@ def test_a_quoted_type_checking_name_is_restated_where_annotations_are_lazy(
     assert len(findings) == found
 
 
+def test_editing_requires_python_changes_the_cached_answer(tmp_path: Path):
+    """Detectors read the declared Python, so the cache key carries it: lowering
+    `requires-python` below 3.14 makes the quote required again (11-08)."""
+
+    pyproject = tmp_path / "pyproject.toml"
+    pyproject.write_text('[project]\nname = "p"\nrequires-python = ">=3.14,<3.15"\n')
+    (tmp_path / "pkg").mkdir()
+    (tmp_path / "pkg" / "__init__.py").write_text("")
+    (tmp_path / "pkg" / "threads.py").write_text("class Thread:\n    pass\n")
+    source = (
+        "from typing import TYPE_CHECKING\n\n"
+        "if TYPE_CHECKING:\n    from .threads import Thread\n\n\n"
+        "def resolve(thread: 'Thread') -> None:\n    return None\n"
+    )
+    sources = {"pkg/load": source}
+    assert len(_findings(tmp_path, RestatedIdentityDetector, sources)) == 1
+
+    pyproject.write_text('[project]\nname = "p"\nrequires-python = ">=3.11"\n')
+
+    assert _findings(tmp_path, RestatedIdentityDetector, sources) == []
+
+
 # ---- type tests on the scan's own classes
 
 OWN_CLASSES = (

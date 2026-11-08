@@ -14,7 +14,7 @@ from nominal_refactor_advisor.collection_algebra import (
     UniqueIdentityIndexAuthority,
 )
 from nominal_refactor_advisor.structural_overlap import StructuralOverlapRequest
-from nominal_refactor_advisor.models import FindingSpec, SourceLocation
+from nominal_refactor_advisor.models import FindingSpec, RefactorFinding, SourceLocation
 from nominal_refactor_advisor.patterns import PatternId
 from nominal_refactor_advisor.source_index import (
     EvidenceDigest,
@@ -143,9 +143,11 @@ def test_source_index_rejects_unequal_evidence_with_same_handle() -> None:
         _ = source_index.evidence_by_id
 
 
-def test_structural_overlap_rejects_a_finding_handle_collision() -> None:
-    """The two summaries below are a real 40-bit collision of their findings'
-    stable ids, found by birthday search."""
+def test_structural_overlap_rejects_a_finding_handle_collision(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Two different findings that share one handle refuse the index. The handle
+    is forced, so the test holds whatever the id format is."""
 
     spec = FindingSpec(
         pattern_id=PatternId.SHARED_ALGORITHM_AUTHORITY,
@@ -166,7 +168,9 @@ def test_structural_overlap_rejects_a_finding_handle_collision() -> None:
             (SourceLocation("beta.py", 2, "beta"),),
         ),
     )
-    assert findings[0].stable_id == findings[1].stable_id == "cb44023e65"
+    monkeypatch.setattr(
+        RefactorFinding, "stable_id", property(lambda finding: "forced-collision")
+    )
 
     with pytest.raises(IdentityHandleCollisionError):
         build_source_index((), findings)

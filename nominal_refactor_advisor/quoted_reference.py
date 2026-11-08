@@ -17,11 +17,12 @@ import tomllib
 from collections.abc import Iterator
 from dataclasses import dataclass
 from enum import StrEnum
-from functools import cache, cached_property
+from functools import cached_property
 from itertools import pairwise
 from pathlib import Path
 
 from .lexical_bindings import ImportAlias, ImportBoundNameProjection
+from .scan_cache import ScanCache
 from .declared_root import DeclaredRoot
 
 
@@ -45,8 +46,10 @@ class DeclaredInterpreter:
         return cls.declared_by(DeclaredRoot.nearest_pyproject(source))
 
     @classmethod
-    @cache
+    @ScanCache.cached
     def declared_by(cls, pyproject: Path | None) -> DeclaredInterpreter:
+        """Read once per scan: an edited `requires-python` is read by the next one."""
+
         if pyproject is None:
             return cls(None)
         declared = tomllib.loads(pyproject.read_text()).get("project", {})

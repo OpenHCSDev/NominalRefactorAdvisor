@@ -278,8 +278,11 @@ class _RelocatingUnpickler(pickle.Unpickler):
 
 
 def checkout_identity_text(path: Path | str) -> str:
-    """A path as identity: where it sits in its checkout, else its absolute spelling."""
+    """A path as identity: where it sits in its checkout, else as spelled. A
+    relative path names no location, so it is its own identity."""
 
+    if not Path(path).is_absolute():
+        return str(path)
     checkout = CheckoutRelocation.containing(path)
     return str(path) if checkout is None else checkout.relative_text(path)
 
