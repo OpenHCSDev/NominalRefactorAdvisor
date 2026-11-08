@@ -41,6 +41,7 @@ from typing import (
 from metaclass_registry import AutoRegisterMeta, LazyDiscoveryDict, RegistryConfig
 
 from ..ast_field_decoders import ParameterAnnotations
+from ..implementation_identity import AnswerDeclaration
 from ..ast_projection import ExpressionReference
 from ..class_families.parsed_index import (
     ClassFamilyIndex,
@@ -500,7 +501,9 @@ class DetectorCacheGranularity(StrEnum):
         )
 
 
-class IssueDetector(RequiredRelationDeclaration, metaclass=AutoRegisterMeta):
+class IssueDetector(
+    RequiredRelationDeclaration, AnswerDeclaration, metaclass=AutoRegisterMeta
+):
     """Metaclass-registered detector base class. The registry imports every module of
     this package on its first read, so no importer has to load the family by hand."""
 

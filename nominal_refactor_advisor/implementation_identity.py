@@ -104,6 +104,28 @@ class _ImplementationDependencyTraversal:
         return tuple(sorted(self._module_names))
 
 
+class AnswerDeclaration:
+    """A declaration whose members compute the answers a cache holds (a detector)."""
+
+
+class AnswerFreeDeclaration:
+    """A declaration whose own members compute no cached answer.
+
+    A recipe synthesizer a detector inherits is one: findings are cached before
+    any recipe is built from them, so editing synthesis must not re-key them.
+    """
+
+    @staticmethod
+    def contributes_to(owner: type) -> bool:
+        """Whether an MRO owner's own members belong to its users' identity:
+        not when it is answer-free, unless it also declares answers (a detector
+        base that inherits a synthesizer keeps its detection code)."""
+
+        return not issubclass(owner, AnswerFreeDeclaration) or issubclass(
+            owner, AnswerDeclaration
+        )
+
+
 @dataclass(frozen=True)
 class _DependencyNode:
     """What one declared value contributes: its owner modules and the values it reaches."""
@@ -144,7 +166,8 @@ class _DependencyGraph:
 
         if isinstance(value, type) and expands_dependencies:
             for owner in value.__mro__:
-                dependencies.extend(tuple(vars(owner).values()))
+                if AnswerFreeDeclaration.contributes_to(owner):
+                    dependencies.extend(tuple(vars(owner).values()))
         elif is_dataclass(value) and not isinstance(value, type):
             module_names.append(type(value).__module__)
             dependencies.append(type(value))
