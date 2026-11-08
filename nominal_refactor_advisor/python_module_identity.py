@@ -5,6 +5,7 @@ from __future__ import annotations
 import keyword
 from dataclasses import dataclass
 from importlib.util import resolve_name
+from functools import cached_property
 from pathlib import Path, PurePath
 
 from .source_identity import (
@@ -108,18 +109,28 @@ class PythonModulePathIdentity(SourceFileIdentity):
             return Path(*module_parts, PACKAGE_INIT_FILE_NAME)
         return Path(*module_parts[:-1], f"{module_parts[-1]}.py")
 
-    @property
+    @cached_property
+    def resolved_path(self) -> Path:
+        return self.path.resolve()
+
+    @cached_property
     def declared_import_root(self) -> Path:
-        import_root = self.path.resolve()
+        import_root = self.resolved_path
         for _part in self.declared_source_relative_path.parts:
             import_root = import_root.parent
         if (
             import_root / self.declared_source_relative_path
-        ).resolve() != self.path.resolve():
+        ).resolve() != self.resolved_path:
             raise ValueError(
                 f"Module name {self.import_name!r} does not describe {self.path}"
             )
         return import_root
+
+    @cached_property
+    def declared_resolved_path(self) -> Path:
+        """The file the module name places under its import root, resolved."""
+
+        return (self.declared_import_root / self.declared_source_relative_path).resolve()
 
     @property
     def is_importable(self) -> bool:
