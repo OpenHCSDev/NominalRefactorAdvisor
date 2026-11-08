@@ -7420,6 +7420,95 @@ def test_refactor_recipe_moves_decorated_symbol_with_dependency_proof(
     )
 
 
+def _relocate_moved_with_consumer(tmp_path: Path, consumer: dict[str, str]):
+    """`Moved` relocates from `pkg.source` to `pkg.destination` with the given
+    consumer modules beside it."""
+
+    for relative_path, source in {
+        "pkg/__init__.py": "",
+        "pkg/source.py": "class Kept:\n    pass\n\n\nclass Moved(Kept):\n    value = 3\n",
+        "pkg/destination.py": "",
+        **consumer,
+    }.items():
+        _write_module(tmp_path, relative_path, source)
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    operation = RelocateSymbolsToModuleOperation(
+        target=SourceRewriteTarget(file_path=(tmp_path / "pkg/source.py").as_posix()),
+        symbol_qualnames=("Moved",),
+        destination_path=(tmp_path / "pkg/destination.py").as_posix(),
+    )
+    return operation, snapshot
+
+
+@pytest.mark.parametrize(
+    "consumer",
+    (
+        {
+            "pkg/__init__.py": "from .source import *\n",
+            "pkg/reader.py": "from pkg import Moved\n\nvalue = Moved.value\n",
+        },
+        {"pkg/reader.py": "import pkg.source as s\n\nvalue = s.Moved.value\nkept = s.Kept\n"},
+        {"pkg/reader.py": "import pkg.source\n\nvalue = pkg.source.Moved.value\n"},
+        {"pkg/reader.py": "from pkg import source\n\nvalue = source.Moved.value\n"},
+    ),
+    ids=("star-reexport", "module-alias", "dotted-module", "from-package"),
+)
+def test_relocation_keeps_star_and_module_object_readers_working(
+    tmp_path: Path,
+    consumer: dict[str, str],
+) -> None:
+    operation, snapshot = _relocate_moved_with_consumer(tmp_path, consumer)
+
+    simulation = RefactorRecipe("relocate-readers").with_operation(operation).simulate(snapshot)
+
+    assert simulation.is_clean
+    simulation.apply()
+    imported = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "from pkg.reader import value; from pkg.destination import Moved; "
+            "assert value == 3 and Moved.__module__ == 'pkg.destination'",
+        ],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert imported.returncode == 0, imported.stderr
+
+
+@pytest.mark.parametrize(
+    ("reader", "message"),
+    (
+        (
+            "import pkg.source as s\n\nvalue = getattr(s, 'Moved')\n",
+            "uses the source module object 's' other than by reading an attribute",
+        ),
+        (
+            "import pkg.source as s\n\nMoved = None\nvalue = s.Moved\n",
+            "already binds ('Moved',)",
+        ),
+        (
+            "import pkg.source as s\n\n\ndef read(s):\n    return s.Moved\n",
+            "rebinds 's'",
+        ),
+    ),
+    ids=("escaping-module-object", "taken-name", "rebound-module-name"),
+)
+def test_relocation_refuses_a_module_object_reader_it_cannot_rewrite(
+    tmp_path: Path,
+    reader: str,
+    message: str,
+) -> None:
+    operation, snapshot = _relocate_moved_with_consumer(tmp_path, {"pkg/reader.py": reader})
+
+    (report,) = operation.preflight_reports(snapshot)
+
+    assert report.status is CodemodPreflightStatus.FAILED
+    assert message in report.message
+
+
 def test_refactor_recipe_relocates_symbol_and_rewrites_consumers(
     tmp_path: Path,
 ) -> None:
@@ -7492,6 +7581,37 @@ def test_refactor_recipe_relocates_symbol_and_rewrites_consumers(
         check=False,
     )
     assert imported.returncode == 0, imported.stderr
+
+
+def test_a_new_module_move_opens_the_destination_with_its_docstring(
+    tmp_path: Path,
+) -> None:
+    source_path = tmp_path / "pkg/source.py"
+    destination_path = tmp_path / "pkg/relocated.py"
+    _write_module(tmp_path, "pkg/__init__.py", "")
+    _write_module(
+        tmp_path,
+        "pkg/source.py",
+        "class Kept:\n" "    pass\n\n\n" "class Moved(Kept):\n" "    value = 3\n",
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    operation = RelocateSymbolsToNewModuleOperation(
+        target=SourceRewriteTarget(file_path=source_path.as_posix()),
+        symbol_qualnames=("Moved",),
+        destination_path=destination_path.as_posix(),
+        destination_docstring="The moved class.",
+    )
+
+    simulation = (
+        RefactorRecipe("relocate-documented").with_operation(operation).simulate(snapshot)
+    )
+
+    assert RefactorRecipeOperation.from_json_value(json_report_object(operation)) == operation
+    assert simulation.is_clean
+    assert simulation.simulation.rewritten_sources[destination_path.as_posix()] == (
+        '"""The moved class."""\n\nfrom .source import Kept\n\n\n'
+        "class Moved(Kept):\n    value = 3\n"
+    )
 
 
 def test_refactor_recipe_relocates_symbol_into_new_module(

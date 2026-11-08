@@ -687,6 +687,7 @@ def test_module_symbol_move_derives_its_source_reexport() -> None:
         "destination_path",
         "symbol_qualnames",
         "destination_source",
+        "destination_docstring",
     )
     assert tuple(
         binding.field_name
@@ -707,6 +708,7 @@ def test_module_symbol_move_derives_its_source_reexport() -> None:
         "destination_path",
         "symbol_qualnames",
         "destination_source",
+        "destination_docstring",
     )
     assert tuple(
         binding.field_name
@@ -718,6 +720,7 @@ def test_module_symbol_move_derives_its_source_reexport() -> None:
         "root_symbol_qualnames",
         "maximum_moved_symbol_count",
         "destination_source",
+        "destination_docstring",
     )
     assert (
         "source_edits_from_snapshot"
