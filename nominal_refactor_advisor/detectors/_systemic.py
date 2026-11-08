@@ -15,6 +15,10 @@ from pathlib import Path
 from typing import Generic, TypeVar
 
 from ..ast_projection import ExpressionReference
+from ..refactors.autoregister import (
+    AutoRegisterExplicitPriorityOrderingFindingRecipeSynthesizer,
+    InheritedAutoRegisterConfigBoilerplateFindingRecipeSynthesizer,
+)
 from ..semantic_algebra import ObjectFamilyShape
 from ..semantic_description_length import CompressionCertificate
 from ..ast_tools import (
@@ -32,12 +36,10 @@ from ..class_index import (
     CompactSortedKeyCall,
 )
 from ..codemod import (
-    AutoRegisterExplicitPriorityOrderingFindingRecipeSynthesizer,
     CandidateCollectorBoilerplateFindingRecipeSynthesizer,
     CasesFindingRecipeSynthesizer,
     DeclarativeDetectorClassFindingRecipeSynthesizer,
     DirectBuildFindingRendererFindingRecipeSynthesizer,
-    InheritedAutoRegisterConfigBoilerplateFindingRecipeSynthesizer,
 )
 from ..native_syntax import NativePythonSyntaxIndex
 from ..registry_identity import (
