@@ -23,6 +23,7 @@ from .ast_tools import ParsedModule
 from .class_index import (
     ABSTRACT_METHOD_DECORATOR,
     PROPERTY_DECORATORS,
+    ClassSymbolResolutionAuthority,
     ModuleNominalBindingAuthority,
     ModuleNominalBindingSnapshot,
 )
@@ -153,7 +154,7 @@ def declares_abstract(
 
 
 def is_frozen_record(
-    node: ast.ClassDef, bindings: ModuleNominalBindingAuthority
+    node: ast.ClassDef, bindings: ModuleNominalBindingSnapshot
 ) -> bool:
     """A frozen dataclass or a NamedTuple: its state is fixed once built.
 
@@ -162,7 +163,10 @@ def is_frozen_record(
     """
 
     def resolves_to(reference: ast.expr, qualified_name: str) -> bool:
-        return bindings.qualified_name_at(reference, line=node.lineno) == qualified_name
+        parts = ExpressionReference.decoded(
+            ClassSymbolResolutionAuthority.reference_node(reference)
+        ).attribute_chain
+        return parts is not None and bindings.reference_for(parts).has_bound_name(qualified_name)
 
     if any(resolves_to(base, "typing.NamedTuple") for base in node.bases):
         return True
@@ -617,8 +621,7 @@ class OwnStateBoolSiteFamily(RestatingSiteFamily[RestatingSiteModule]):
 
     @classmethod
     def sites(cls, parsed_module: ParsedModule) -> Iterator[RestatingSite]:
-        bindings = ModuleNominalBindingAuthority(parsed_module)
-        for qualname, node in scoped_classes(parsed_module.module):
+        for qualname, node, bindings in bound_classes(parsed_module):
             if not is_frozen_record(node, bindings):
                 continue
             for statement in node.body:
@@ -633,7 +636,7 @@ class OwnStateBoolSiteFamily(RestatingSiteFamily[RestatingSiteModule]):
                         continue
                 match statements_after_docstring(body):
                     case [ast.Return(value=ast.expr() as expression)] if calls_only_pure_builtins(
-                        expression, bindings.snapshot_before(node.lineno)
+                        expression, bindings
                     ):
                         probes = list(own_state_probes(expression))
                     case _:
@@ -642,7 +645,7 @@ class OwnStateBoolSiteFamily(RestatingSiteFamily[RestatingSiteModule]):
                     case [first, *_]:
                         accessed = (
                             "property"
-                            if bindings.snapshot_before(node.lineno).decorated_by(
+                            if bindings.decorated_by(
                                 statement, PROPERTY_DECORATORS
                             )
                             else "method"
