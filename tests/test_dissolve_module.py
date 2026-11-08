@@ -364,3 +364,21 @@ def test_a_package_object_above_the_source_is_not_the_source(tmp_path: Path) -> 
     simulation.apply()
     imported = _run(tmp_path, "from pkg.consumer import value, ROOT; assert value == 3 and ROOT == 'pkg'")
     assert imported.returncode == 0, imported.stderr
+
+
+def test_retained_files_keep_the_dissolved_modules_old_name(tmp_path: Path) -> None:
+    _write(tmp_path, "pkg/__init__.py", "")
+    _write(tmp_path, "pkg/owner.py", "class Moved:\n    pass\n")
+    _write(tmp_path, "pkg/hub.py", "from .owner import Moved\n")
+    _write(tmp_path, "pkg/evidence.py", "GONE = ('pkg/hub.py',)\n")
+    _write(tmp_path, "pkg/reader.py", "NAME = 'pkg.hub'\n")
+    operation = DissolveModuleOperation(
+        target=SourceRewriteTarget(file_path=(tmp_path / "pkg/hub.py").as_posix()),
+        successor_path=(tmp_path / "pkg/owner.py").as_posix(),
+        retained_paths=((tmp_path / "pkg/evidence.py").as_posix(),),
+    )
+    simulation = RefactorRecipe("dissolve").with_operation(operation).simulate(_snapshot(tmp_path))
+    assert simulation.is_clean
+    simulation.apply()
+    assert (tmp_path / "pkg/evidence.py").read_text() == "GONE = ('pkg/hub.py',)\n"
+    assert (tmp_path / "pkg/reader.py").read_text() == "NAME = 'pkg.owner'\n"

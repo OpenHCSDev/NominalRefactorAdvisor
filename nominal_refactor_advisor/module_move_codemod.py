@@ -1672,13 +1672,14 @@ class _ModuleIdentityStrings:
     source_module_name: str
     owners: Mapping[str, str]
     successor_path: str | None
+    retained_paths: frozenset[str] = frozenset()
 
     def edits(self, context: CodemodSelectorContext) -> tuple[NominalSourceEdit, ...]:
         edits: list[NominalSourceEdit] = []
         for source_file in context.source_index.files:
             file_path = source_file.file_path
             module = context.module_nodes_by_file_path.get(file_path)
-            if file_path == self.source_path or module is None:
+            if file_path == self.source_path or file_path in self.retained_paths or module is None:
                 continue
             replacements = tuple(
                 (node, replacement)
@@ -1756,13 +1757,19 @@ class DissolveModuleOperation(RepositorySourceReprovedOperation):
     those names is removed, and every string naming the module follows it.
 
     `successor_path` names the module a string naming the dissolved module now
-    means; without one such a string is refused. A consumer that binds the
+    means; without one such a string is refused. `retained_paths` are files whose
+    strings record the module's old identity on purpose (evidence that the path
+    is gone, a history) and stay as written. A consumer that binds the
     module for its import side effect, or imports a name the module took from
     outside the index, is refused: it has no owner to follow."""
 
     successor_path: str | None = codemod_payload_field(
         OptionalStringPayloadValueCodec(),
         default=None,
+    )
+    retained_paths: tuple[str, ...] = codemod_payload_field(
+        StringArrayPayloadValueCodec(),
+        default=(),
     )
 
     def source_file_deletions(
@@ -1831,6 +1838,13 @@ class DissolveModuleOperation(RepositorySourceReprovedOperation):
                 source_module_name,
                 bindings.owners,
                 successor_path,
+                frozenset(
+                    SourcePathResolutionAuthority.from_source_index(
+                        path,
+                        context.source_index,
+                    ).required_path()
+                    for path in self.retained_paths
+                ),
             ).edits(context),
         )
 
