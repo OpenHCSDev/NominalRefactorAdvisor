@@ -89,10 +89,36 @@ def test_scan_default_and_abbreviated_flags_use_the_actual_parser():
         ("sample.py", "--scan-budget-sec=1.75", "--json")
     )
     assert invocation.scan_deadline_request == cli.CliScanDeadlineRequest(1.75, True)
-    default = cli.CliArguments.from_argv(("sample.py",))
-    assert (
-        default.scan_deadline_request.budget_seconds == default.args.scan_budget_seconds
+
+
+def test_a_scan_runs_to_completion_unless_the_caller_sets_a_budget():
+    """A default 20 s deadline stopped every cold full scan in its projection
+    build, exiting 124 with `"findings": []` (11-08)."""
+
+    assert cli.CliArguments.from_argv(("sample.py",)).scan_deadline_request is None
+    assert cli.CliArguments.from_argv(("sample.py", "--json")).scan_deadline_request is None
+
+
+@pytest.mark.parametrize("json_flag", ((), ("--json",)))
+def test_a_spent_budget_says_the_scan_is_incomplete_on_stderr(tmp_path, json_flag):
+    (tmp_path / "sample.py").write_text("VALUE = 1\n")
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "nominal_refactor_advisor",
+            str(tmp_path),
+            "--scan-budget-seconds=0.000001",
+            "--no-cache",
+            *json_flag,
+        ],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        cwd=Path(__file__).resolve().parents[1],
     )
+    assert result.returncode == 124, result.stdout + result.stderr
+    assert "SCAN INCOMPLETE" in result.stderr
 
 
 @pytest.mark.parametrize("owner", ("document", "recipe"))

@@ -477,12 +477,18 @@ def build_economics_proof_report(
     *,
     config: DetectorConfig | None = None,
     compare_ref: str = "HEAD",
-    scan_budget_seconds: float = _DEFAULT_SCAN_BUDGET_SECONDS,
+    scan_budget_seconds: float | None = None,
     cache_dir: Path | None = None,
     use_parse_cache: bool = True,
     parse_workers: int = 1,
 ) -> EconomicsProofReport:
-    """Run the standard proof scans for long-term advisor economics."""
+    """Run the standard proof scans for long-term advisor economics.
+
+    Each scan is judged against `scan_budget_seconds`, the proof's own default
+    when the caller gives none."""
+
+    if scan_budget_seconds is None:
+        scan_budget_seconds = _DEFAULT_SCAN_BUDGET_SECONDS
 
     config = config or DetectorConfig()
     repo_root = _git_root(root)
