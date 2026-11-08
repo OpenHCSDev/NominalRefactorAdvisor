@@ -29,17 +29,17 @@ from ..codemod_module_declarations import ModuleSymbolTable
 from ..codemod_runtime import FindingRecipeEvaluation, RefactorRecipe
 from ..codemod_selection_context import CodemodSelectorContext
 from ..codemod_selector_models import SourceRewriteTarget
+from ..models import PackageDestinationMetrics, RefactorFinding
 from ..module_node_index import ModuleNodeIndex
-from ..models import PackageDestinationMetrics, RefactorFinding, SourceLocation
+from ..refactor_concepts import PackageMoveConcept
+from .finding_recipes import (
+    FindingRecipeSynthesizer,
+    PrimaryEvidenceActionKeysMixin,
+)
 from .module_move import (
     DissolveModuleOperation,
     RelocateSymbolsToModuleOperation,
     RelocateSymbolsToNewModuleOperation,
-)
-from ..refactor_concepts import PackageMoveConcept
-from .finding_recipes import (
-    PrimaryEvidenceActionKeysMixin,
-    FindingRecipeSynthesizer,
 )
 
 _ROW = re.compile(r"^\s*\|\s*`(?P<package>[A-Za-z_][\w./]*)`\s*\|(?P<owners>[^|]*)\|")
@@ -406,17 +406,3 @@ class PackageMoveFindingRecipeSynthesizer(
                 )
             )
         )
-
-    def destination_findings(
-        self, modules: Iterable[CompactModuleClassHeader], tables: Iterable[str]
-    ) -> list[RefactorFinding]:
-        return [
-            self.build_finding(
-                f"`{destination.source_path}` belongs in "
-                f"`{destination.destination_path}`, the package its destination "
-                "table declares.",
-                (SourceLocation(destination.source_path, 1, "<module>"),),
-                metrics=destination.metrics(),
-            )
-            for destination in DestinationTable.from_texts(tables).destinations(modules)
-        ]
