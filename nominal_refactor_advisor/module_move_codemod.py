@@ -10,6 +10,7 @@ from abc import (
 from collections import Counter
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
+from typing import ClassVar
 
 from .ast_tools import ModuleAnnotationEvaluationMode
 from .class_index import CompactModulePublicExportContract, module_public_export_contract
@@ -227,6 +228,46 @@ class _StarExportedNames:
 
 
 @dataclass(frozen=True)
+class _NamedModuleMemberAccess:
+    """`getattr(m, "Name")`-shaped access: the module object is the first argument
+    of a by-name accessor and the member is a string literal, so the name it
+    reaches is as static as `m.Name`."""
+
+    accessor: str
+    member_name: str
+
+    BUILTIN_ACCESSORS: ClassVar[frozenset[str]] = frozenset(
+        accessor.__name__ for accessor in (getattr, hasattr, setattr, delattr)
+    )
+    PATCH_ACCESSORS: ClassVar[frozenset[str]] = frozenset(
+        accessor.__name__ for accessor in (setattr, delattr)
+    )
+    PATCH_FIXTURE = "monkeypatch"
+
+    @classmethod
+    def of(
+        cls,
+        module_object: ast.expr,
+        parents: dict[ast.AST, ast.AST],
+    ) -> _NamedModuleMemberAccess | None:
+        call = parents.get(module_object)
+        if not (
+            isinstance(call, ast.Call)
+            and len(call.args) >= 2
+            and call.args[0] is module_object
+            and isinstance(member := call.args[1], ast.Constant)
+            and isinstance(member.value, str)
+        ):
+            return None
+        accessor = ast.unparse(call.func)
+        if accessor in cls.BUILTIN_ACCESSORS or accessor in {
+            f"{cls.PATCH_FIXTURE}.{name}" for name in cls.PATCH_ACCESSORS
+        }:
+            return cls(accessor=accessor, member_name=member.value)
+        return None
+
+
+@dataclass(frozen=True)
 class _SourceModuleObjectReads:
     """A consumer's `module.Name` reads of moved names through its bindings of the
     source module object. The move refuses when such a binding is used other than
@@ -273,6 +314,17 @@ class _SourceModuleObjectReads:
                 if parts[: len(chain)] == chain and len(parts) > len(chain):
                     if parts[-1] in moved_names:
                         reads.append((outermost, parts[-1]))
+                elif chain[: len(parts)] == parts and (
+                    named := _NamedModuleMemberAccess.of(outermost, parents)
+                ):
+                    reached = (*parts, named.member_name)
+                    if reached == chain or (
+                        parts == chain and named.member_name in moved_names
+                    ):
+                        raise ValueError(
+                            f"{file_path!r} names {'.'.join(reached)!r}, which "
+                            f"reaches the moved names, through {named.accessor!r}"
+                        )
                 elif chain[: len(parts)] == parts:
                     raise ValueError(
                         f"{file_path!r} uses the source module object "
