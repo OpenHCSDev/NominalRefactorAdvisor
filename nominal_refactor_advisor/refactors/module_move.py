@@ -255,11 +255,7 @@ class ModuleNameRedirect:
         excluded_paths: frozenset[str],
     ) -> tuple[NominalSourceEdit, ...]:
         import_graph = context.module_import_graph
-        source_module_name = import_graph.module_name_for_file_path(self.source_path)
-        if source_module_name is None:
-            raise ValueError(
-                f"Source module identity is unavailable for {self.source_path!r}"
-            )
+        source_module_name = self.source_module_name(import_graph)
         moved_names = frozenset(self.destinations)
         star_exported = _StarExportedNames.of(
             module_public_export_contract(
@@ -350,18 +346,7 @@ class ModuleNameRedirect:
                 consumer_path,
                 source_module_name,
             )
-            import_strings = self._import_string_replacements(
-                import_graph,
-                parsed,
-                source_module_name,
-            )
-            if import_strings:
-                edits.append(
-                    SourceTextGeometry(context.sources_by_file_path[consumer_path]).nominal_edit(
-                        file_path=consumer_path,
-                        replacements=import_strings,
-                    )
-                )
+            edits.extend(self.import_string_edits(context, consumer_path))
             if local_imports:
                 geometry = SourceTextGeometry(context.sources_by_file_path[consumer_path])
                 edits.append(
@@ -499,6 +484,61 @@ class ModuleNameRedirect:
                 )
             )
         return tuple(replacements)
+
+    def source_module_name(self, import_graph: SourceModuleImportGraph) -> str:
+        """The dotted name every rewrite of the source's readers matches. A move
+        plan has resolved it before any reader is read, so a source without one
+        is refused, never read as naming nothing."""
+
+        source_module_name = import_graph.module_name_for_file_path(self.source_path)
+        if source_module_name is None:
+            raise ValueError(f"Source module identity is unavailable for {self.source_path!r}")
+        return source_module_name
+
+    def import_string_edits(
+        self,
+        context: CodemodSelectorContext,
+        file_path: str,
+    ) -> tuple[NominalSourceEdit, ...]:
+        """The edit that points one file's import strings at each moved name's owner."""
+
+        import_graph = context.module_import_graph
+        replacements = self._import_string_replacements(
+            import_graph,
+            context.parsed_module_for_source_path(file_path),
+            self.source_module_name(import_graph),
+        )
+        if not replacements:
+            return ()
+        return (
+            SourceTextGeometry(context.sources_by_file_path[file_path]).nominal_edit(
+                file_path=file_path,
+                replacements=replacements,
+            ),
+        )
+
+    def moved_text(self, import_graph: SourceModuleImportGraph, text: str) -> str:
+        """Code leaving the source reads the source's names as text too: an import
+        string in the moved code follows each moved name to its owner, the way a
+        consumer's does, so the moved text never names a module that no longer
+        binds them."""
+
+        source_module_name = self.source_module_name(import_graph)
+        parsed = ParsedModule(
+            path=Path(self.source_path),
+            module_name=source_module_name,
+            module=ast.parse(text),
+            source=text,
+        )
+        return TextFileEdit.applied(
+            text,
+            sorted(
+                (replacement.start_offset, replacement.end_offset, replacement.replacement_source)
+                for replacement in self._import_string_replacements(
+                    import_graph, parsed, source_module_name
+                )
+            ),
+        )
 
     def _embedded_import_replacements(
         self,
@@ -1209,6 +1249,7 @@ class SourceTopLevelSymbolClosureMovePlan(SourceTopLevelSymbolClosureMoveCarrier
     source_blocks: tuple[MovedTopLevelDeclarationSource, ...]
     dependency_report: ModuleMoveDependencyReport
     source_binding_import_sources: tuple[str, ...]
+    name_redirect: RelocationNameRedirect
     consumer_edits: tuple[NominalSourceEdit, ...]
 
     @classmethod
@@ -1286,8 +1327,17 @@ class SourceTopLevelSymbolClosureMovePlan(SourceTopLevelSymbolClosureMoveCarrier
                 reader_module=destination_module_name,
             )
         )
+        name_redirect = RelocationNameRedirect(
+            source_path=request.source_path,
+            destinations={
+                **cls._removed_binding_owners(context, report),
+                **{name: request.destination_path for name in moved_symbol_names},
+            },
+            reader_path=request.destination_path,
+        )
         consumer_edits = (
             *destination_localizations,
+            *name_redirect.import_string_edits(context, request.destination_path),
             *(
                 ModuleImportMutation.remove_names(
                     file_path=request.destination_path,
@@ -1299,14 +1349,7 @@ class SourceTopLevelSymbolClosureMovePlan(SourceTopLevelSymbolClosureMoveCarrier
                 )
                 for module_text, names, scope in self_binding_removals
             ),
-            *RelocationNameRedirect(
-                source_path=request.source_path,
-                destinations={
-                    **cls._removed_binding_owners(context, report),
-                    **{name: request.destination_path for name in moved_symbol_names},
-                },
-                reader_path=request.destination_path,
-            ).consumer_edits(
+            *name_redirect.consumer_edits(
                 context,
                 excluded_paths=frozenset((request.source_path, request.destination_path)),
             ),
@@ -1319,6 +1362,7 @@ class SourceTopLevelSymbolClosureMovePlan(SourceTopLevelSymbolClosureMoveCarrier
             ),
             dependency_report=report,
             source_binding_import_sources=source_binding_import_sources,
+            name_redirect=name_redirect,
             consumer_edits=consumer_edits,
             rationale=request.rationale,
         )
@@ -1776,7 +1820,11 @@ class SourceTopLevelSymbolClosureMovePlan(SourceTopLevelSymbolClosureMoveCarrier
     ) -> str:
         rebase = _RelativeImportRebase.between(context, self.source_path, self.destination_path)
         moved_source = "\n\n\n".join(
-            rebase.applied(block.moved_source.strip("\n")) for block in self.source_blocks
+            self.name_redirect.moved_text(
+                context.module_import_graph,
+                rebase.applied(block.moved_source.strip("\n")),
+            )
+            for block in self.source_blocks
         )
         spacing = DestinationInsertionSpacing.from_source(
             destination_source,
