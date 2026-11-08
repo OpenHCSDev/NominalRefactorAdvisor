@@ -2326,6 +2326,102 @@ class _DissolvedModuleBindings:
                     yield alias.name, imported_module
 
 
+class _GluedModuleName:
+    """`f"...pkg.{name}"`: a dotted constant prefix with one name formatted onto it."""
+
+    _PREFIX = re.compile(r"(?<![\w.])([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*\.)$")
+
+    @classmethod
+    def sites(cls, index: ModuleNodeIndex) -> Iterator[tuple[ast.JoinedStr, str, str]]:
+        for node in index.parents:
+            match node:
+                case ast.JoinedStr(values=values):
+                    pass
+                case _:
+                    continue
+            for before, part, after in zip(values, values[1:], (*values[2:], None)):
+                match before, part, after:
+                    case (
+                        ast.Constant(value=str(text)),
+                        ast.FormattedValue(value=ast.Name(id=name), format_spec=None),
+                        None | ast.Constant(value=str()),
+                    ) if (found := cls._PREFIX.search(text)) and not (
+                        after is not None and re.match(r"[\w.]", after.value)
+                    ):
+                        yield node, found.group(1), name
+
+    @classmethod
+    def bound_literals(
+        cls, index: ModuleNodeIndex, node: ast.AST, name: str
+    ) -> tuple[ast.Constant, ...] | None:
+        """The string literals `name` takes where `node` reads it, or None when
+        its binding is not a parametrize value or a literal loop iterable."""
+
+        while (node := index.parents.get(node)) is not None:
+            match node:
+                case ast.For(target=ast.Name(id=target), iter=iterable) if target == name:
+                    return cls._literals(iterable)
+                case ast.ListComp() | ast.SetComp() | ast.GeneratorExp() | ast.DictComp():
+                    for generator in node.generators:
+                        match generator.target:
+                            case ast.Name(id=target) if target == name:
+                                return cls._literals(generator.iter)
+                case ast.Lambda(args=arguments) if name in {a.arg for a in arguments.args}:
+                    return None
+                case ast.FunctionDef(args=arguments) | ast.AsyncFunctionDef(
+                    args=arguments
+                ) if name in {argument.arg for argument in arguments.args}:
+                    for decorator in node.decorator_list:
+                        literals = cls._parametrized(decorator, name)
+                        if literals is not None:
+                            return literals
+                    return None
+        return None
+
+    @classmethod
+    def _parametrized(cls, decorator: ast.expr, name: str) -> tuple[ast.Constant, ...] | None:
+        match decorator:
+            case ast.Call(
+                func=ast.Attribute(attr="parametrize"),
+                args=[ast.Constant(value=str(argnames)), ast.Tuple(elts=rows) | ast.List(elts=rows), *_],
+            ):
+                names = [part.strip() for part in argnames.split(",")]
+            case _:
+                return None
+        if name not in names:
+            return None
+        column = names.index(name)
+        cells: list[ast.expr] = []
+        for row in rows:
+            match row:
+                case ast.Call(func=ast.Attribute(attr="param"), args=values):
+                    pass
+                case ast.Tuple(elts=values) | ast.List(elts=values) if len(names) > 1:
+                    pass
+                case _:
+                    values = [row]
+            if len(values) <= column:
+                return None
+            cells.append(values[column])
+        return cls._literals(ast.Tuple(elts=cells))
+
+    @staticmethod
+    def _literals(iterable: ast.expr) -> tuple[ast.Constant, ...] | None:
+        match iterable:
+            case ast.Tuple(elts=elements) | ast.List(elts=elements) | ast.Set(elts=elements):
+                pass
+            case _:
+                return None
+        literals: list[ast.Constant] = []
+        for element in elements:
+            match element:
+                case ast.Constant(value=str()):
+                    literals.append(element)
+                case _:
+                    return None
+        return tuple(literals)
+
+
 @dataclass(frozen=True)
 class _ModuleIdentityStrings:
     """Every mention of the dissolved module inside a string (docstrings and
@@ -2396,9 +2492,67 @@ class _ModuleIdentityStrings:
                             replacement_source=self._path_replacement(file_path, node, path),
                         )
                     )
+            replacements.extend(
+                self._glued_replacements(context, file_path, parsed.fact(ModuleNodeIndex), geometry)
+            )
             if replacements:
                 edits.append(geometry.nominal_edit(file_path=file_path, replacements=tuple(replacements)))
         return tuple(edits)
+
+    def _glued_replacements(
+        self,
+        context: CodemodSelectorContext,
+        file_path: str,
+        index: ModuleNodeIndex,
+        geometry: SourceTextGeometry,
+    ) -> tuple[SourceTextSpanReplacement, ...]:
+        """A module name glued together in an f-string, `f"import pkg.{module}"`,
+        names the dissolved module through every literal bound to `module`: a
+        `pytest.mark.parametrize` value or a `for` loop's literal iterable. Each
+        literal spelling the module's remainder after the constant prefix follows
+        the successor. A glue whose name NRA cannot trace, in a file that spells
+        that remainder, refuses instead of leaving the string behind."""
+
+        replacements: list[SourceTextSpanReplacement] = []
+        for joined, prefix, name in _GluedModuleName.sites(index):
+            if not self.source_module_name.startswith(prefix):
+                continue
+            remainder = self.source_module_name[len(prefix):]
+            literals = _GluedModuleName.bound_literals(index, joined, name)
+            if literals is None:
+                if any(node.value == remainder for node in index.string_constants):
+                    raise ValueError(
+                        f"{file_path!r}:{joined.lineno} glues {prefix!r} onto {name!r}, "
+                        f"which NRA cannot trace, and the file spells {remainder!r}; "
+                        "bind the name from a parametrize or a literal for loop"
+                    )
+                continue
+            for literal in literals:
+                if literal.value != remainder:
+                    continue
+                if self.successor_path is None:
+                    raise ValueError(
+                        f"{file_path!r}:{literal.lineno} glues the dissolved module "
+                        f"{self.source_module_name!r} together; declare its successor_path"
+                    )
+                successor = context.module_import_graph.module_name_for_file_path(
+                    self.successor_path
+                )
+                if not successor.startswith(prefix):
+                    raise ValueError(
+                        f"{file_path!r}:{literal.lineno} glues {prefix!r} onto "
+                        f"{remainder!r}; the successor {successor!r} is not under it"
+                    )
+                start, end = geometry.required_node_offsets(literal)
+                quote = geometry.source[start]
+                replacements.append(
+                    SourceTextSpanReplacement.from_offsets(
+                        start_offset=start,
+                        end_offset=end,
+                        replacement_source=f"{quote}{successor[len(prefix):]}{quote}",
+                    )
+                )
+        return tuple(replacements)
 
     def _retained_nodes(self, index: ModuleNodeIndex) -> frozenset[int]:
         if not self.retained_calls:

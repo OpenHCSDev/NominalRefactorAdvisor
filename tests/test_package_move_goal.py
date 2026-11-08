@@ -202,3 +202,43 @@ def test_a_merge_row_folds_one_module_into_the_other(tmp_path: Path) -> None:
     assert imported.stdout.strip() == "<loaded>"
     merged = (tmp_path / "pkg/planning/presentation.py").read_text()
     assert "session_load" not in merged
+
+
+def test_a_module_name_glued_in_an_f_string_follows_the_move(tmp_path: Path) -> None:
+    _layered_package(tmp_path)
+    _write(
+        tmp_path,
+        "pkg/check_imports.py",
+        "import pytest\n\n\n"
+        '@pytest.mark.parametrize("module", ("goals", "app"))\n'
+        "def test_imports(module):\n"
+        '    __import__(f"pkg.{module}")\n\n\n'
+        'PROGRAMS = [f"import pkg.{name}" for name in ("steps", "app")]\n',
+    )
+    report = _goal(tmp_path, TABLE)
+    assert report.stop_reason is CodemodWorkflowStopReason.ACHIEVED, report.to_markdown()
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    replay = report.replay_sequence.simulate(snapshot)
+    assert replay.is_clean
+    replay.apply()
+    text = (tmp_path / "pkg/check_imports.py").read_text()
+    assert '("planning.goals", "app")' in text
+    assert '("planning.steps", "app")' in text
+
+
+def test_a_glue_nra_cannot_trace_refuses_by_name(tmp_path: Path) -> None:
+    _layered_package(tmp_path)
+    _write(
+        tmp_path,
+        "pkg/check_imports.py",
+        'NAMES = ("steps",)\n\n\ndef load(module):\n    return f"import pkg.{module}"\n',
+    )
+    report = _goal(tmp_path, TABLE)
+    import json
+
+    from nominal_refactor_advisor.json_reports import json_report_object
+
+    assert report.stop_reason is not CodemodWorkflowStopReason.ACHIEVED
+    assert "glues 'pkg.' onto 'module', which NRA cannot trace, and the file spells 'steps'" in (
+        json.dumps(json_report_object(report), default=str)
+    )
