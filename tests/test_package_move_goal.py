@@ -553,4 +553,4 @@ def test_data_another_module_also_reads_stays_and_refuses(tmp_path: Path) -> Non
     report = _goal(tmp_path, "| `planning` | `fork.py` | |\n")
 
     assert report.stages == ()
-    assert "__file__" in report.to_markdown()
+    assert "__file__ (" in report.to_markdown() and "also names" in report.to_markdown()

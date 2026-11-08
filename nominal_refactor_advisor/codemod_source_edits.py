@@ -1027,6 +1027,7 @@ class SourceFileDeletion:
         return self.operation_type.operation_key()
 
 
+@dataclass(frozen=True, kw_only=True)
 class TextFileChange(ABC):
     """One file outside the Python source index that an operation must keep true:
     a span edit of a manifest naming a module, or one end of a data file carried
@@ -1034,7 +1035,7 @@ class TextFileChange(ABC):
 
     operation_type: type[RefactorRecipeOperation]
     file_path: str
-    rationale: str
+    rationale: str = ""
 
     @classmethod
     @abstractmethod
@@ -1068,11 +1069,8 @@ class TextFileEdit(TextFileChange):
     text the spans index, as read when the edit was planned; the writer refuses
     the edit once the file on disk differs from it."""
 
-    operation_type: type[RefactorRecipeOperation]
-    file_path: str
     source: str
     replacements: tuple[SourceTextSpanReplacement, ...]
-    rationale: str = ""
 
     @property
     def rewritten(self) -> str:
@@ -1128,10 +1126,7 @@ class TextFileCarryEnd(TextFileChange, ABC):
     """One end of a data file moving with the module that reads it: the file, as
     read, appears at the destination and leaves the source. One carry per path."""
 
-    operation_type: type[RefactorRecipeOperation]
-    file_path: str
     text: str
-    rationale: str = ""
 
     @classmethod
     def carry(
@@ -1196,11 +1191,6 @@ class FileText(ABC):
     def sources(self, file_path: str) -> Mapping[str, str]:
         """The file's text keyed by its path, empty when there is no file."""
 
-    @property
-    def removed(self) -> bool:
-        """Whether a codemod ending here deletes the file."""
-        return False
-
 
 @dataclass(frozen=True)
 class PresentFileText(FileText):
@@ -1214,10 +1204,6 @@ class PresentFileText(FileText):
 class AbsentFileText(FileText):
     def sources(self, file_path: str) -> Mapping[str, str]:
         return {}
-
-    @property
-    def removed(self) -> bool:
-        return True
 
 
 @dataclass(frozen=True, kw_only=True)

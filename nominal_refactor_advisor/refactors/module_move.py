@@ -1636,7 +1636,10 @@ class SourceTopLevelSymbolClosureMovePlan(SourceTopLevelSymbolClosureMoveCarrier
                 ),
                 ModuleMoveObstacle(
                     ModuleMoveObstacleKind.SOURCE_MODULE_CONTEXT_DEPENDENCY,
-                    source_module_context_names,
+                    tuple(
+                        operation.module_context_detail(context, name)
+                        for name in source_module_context_names
+                    ),
                 ),
                 ModuleMoveObstacle(
                     ModuleMoveObstacleKind.DESTINATION_BUILTIN_CONFLICT,
@@ -1814,6 +1817,11 @@ class ModuleSymbolMoveOperation(RepositorySourceReprovedOperation, ABC):
         already exists, none: `__name__` there names another module."""
         del context
         return frozenset()
+
+    def module_context_detail(self, context: CodemodSelectorContext, name: str) -> str:
+        """How a module-context name the move leaves behind reads in its refusal."""
+        del context
+        return name
 
     def dependency_report(
         self,
@@ -2014,6 +2022,10 @@ class _ModuleSiblingData(ABC):
     @abstractmethod
     def carry(self, operation: RefactorRecipeOperation) -> tuple[TextFileChange, ...]: ...
 
+    def detail(self, name: str) -> str:
+        """How a module-context name that stays behind reads in the refusal."""
+        return name
+
     @classmethod
     def of(
         cls, context: CodemodSelectorContext, source_path: str, destination_path: str
@@ -2027,20 +2039,22 @@ class _ModuleSiblingData(ABC):
         destination_dir = Path(destination_path).parent
         try:
             names = _SiblingFileReads.names(context.module_nodes_by_file_path[source_path])
-        except _UnrecognizedFileRead:
-            return _NoSiblingCarry()
+        except _UnrecognizedFileRead as read:
+            return _NoSiblingCarry(f"it reads `__file__` as {read}, not as a file beside the module")
+        if not names:
+            return _NoSiblingCarry("it reads `__file__` without naming a file beside the module")
         # A neighbour reaches the file only by spelling its name.
-        if not names or any(
-            names & _SiblingFileReads.spelled(other_module)
-            for other_path, other_module in context.module_nodes_by_file_path.items()
-            if other_path != source_path and Path(other_path).parent == source_dir
-        ):
-            return _NoSiblingCarry()
+        for other_path, other_module in context.module_nodes_by_file_path.items():
+            if other_path != source_path and Path(other_path).parent == source_dir:
+                if shared := sorted(names & _SiblingFileReads.spelled(other_module)):
+                    return _NoSiblingCarry(f"{other_path!r} also names {shared!r}")
         files: list[tuple[Path, Path]] = []
         for name in sorted(names):
             sibling = source_dir / name
-            if not sibling.exists() or (destination_dir / name).exists():
-                return _NoSiblingCarry()
+            if not sibling.exists():
+                return _NoSiblingCarry(f"{sibling.as_posix()!r} does not exist")
+            if (destination_dir / name).exists():
+                return _NoSiblingCarry(f"{(destination_dir / name).as_posix()!r} already exists")
             members = (
                 sorted(path for path in sibling.rglob("*") if path.is_file() and "__pycache__" not in path.parts)
                 if sibling.is_dir()
@@ -2052,13 +2066,20 @@ class _ModuleSiblingData(ABC):
                 (source.as_posix(), destination.as_posix(), source.read_text(encoding="utf-8"))
                 for source, destination in files
             )
-        except UnicodeDecodeError:
-            return _NoSiblingCarry()
+        except UnicodeDecodeError as error:
+            return _NoSiblingCarry(f"a file it reads is not UTF-8 text ({error.reason})")
         return _CarriedSiblingData(texts)
 
 
 @dataclass(frozen=True)
 class _NoSiblingCarry(_ModuleSiblingData):
+    """`__file__` stays behind, for `reason`."""
+
+    reason: str
+
+    def detail(self, name: str) -> str:
+        return f"{name} ({self.reason})" if name == "__file__" else name
+
     @property
     def following(self) -> frozenset[str]:
         return frozenset()
@@ -2188,6 +2209,11 @@ class NewModuleSymbolMoveOperationABC(ModuleSymbolMoveOperation, ABC):
             for declaration in self.move_selection(context, source_path).declarations
         )
         return source_table.declared_names <= moved_names
+
+    def module_context_detail(self, context: CodemodSelectorContext, name: str) -> str:
+        if not self.moves_whole_module(context):
+            return name
+        return self.sibling_data(context).detail(name)
 
     def sibling_data(self, context: CodemodSelectorContext) -> _ModuleSiblingData:
         source_path = self.required_source_path(context, self.operation_key())

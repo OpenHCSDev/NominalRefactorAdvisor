@@ -1715,7 +1715,9 @@ class CodemodSimulationReport(DataclassJsonReport):
         leaving its source."""
 
         return frozenset(self.deleted_file_paths).union(
-            rewrite.file_path for rewrite in self.text_file_rewrites if rewrite.after.removed
+            rewrite.file_path
+            for rewrite in self.text_file_rewrites
+            if not rewrite.after.sources(rewrite.file_path)
         )
 
     @property
