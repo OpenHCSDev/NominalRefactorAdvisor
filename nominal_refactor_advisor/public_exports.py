@@ -59,8 +59,8 @@ class CompactModulePublicExportContract(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def allows_binding_relocation(self, name: str) -> bool:
-        """Return whether removing this module binding preserves the contract."""
+    def blocked_relocations(self, moved_names: tuple[str, ...]) -> tuple[str, ...]:
+        """The moved names whose removal from this module breaks its contract."""
 
         raise NotImplementedError
 
@@ -76,9 +76,9 @@ class CompactImplicitPublicExportContract(CompactModulePublicExportContract):
             else CompactPublicNameExposure.PUBLIC
         )
 
-    def allows_binding_relocation(self, name: str) -> bool:
-        del name
-        return True
+    def blocked_relocations(self, moved_names: tuple[str, ...]) -> tuple[str, ...]:
+        del moved_names
+        return ()
 
 
 @dataclass(frozen=True)
@@ -104,8 +104,16 @@ class CompactExplicitPublicExportContract(CompactModulePublicExportContract):
             else CompactPublicNameExposure.PRIVATE
         )
 
-    def allows_binding_relocation(self, name: str) -> bool:
-        return name not in self.exported_names
+    def blocked_relocations(self, moved_names: tuple[str, ...]) -> tuple[str, ...]:
+        """An exported name may not leave while `__all__` stays and lists it.
+        When `__all__` moves with every name it lists, the contract moves whole
+        and nothing is broken."""
+
+        if "__all__" in moved_names and frozenset(self.exported_names) <= frozenset(
+            moved_names
+        ):
+            return ()
+        return tuple(name for name in moved_names if name in self.exported_names)
 
 
 @dataclass(frozen=True)
@@ -116,9 +124,8 @@ class CompactUnresolvedPublicExportContract(CompactModulePublicExportContract):
         del name
         return CompactPublicNameExposure.UNRESOLVED
 
-    def allows_binding_relocation(self, name: str) -> bool:
-        del name
-        return False
+    def blocked_relocations(self, moved_names: tuple[str, ...]) -> tuple[str, ...]:
+        return moved_names
 
 
 class _ModuleScopeNameReferenceCollector(ast.NodeVisitor):

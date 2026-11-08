@@ -1912,11 +1912,7 @@ class SourceBindingRelocatingModuleSymbolMoveOperationABC(
         export_contract = module_public_export_contract(
             context.parsed_module_for_source_path(source_path)
         )
-        blocked_names = tuple(
-            symbol_name
-            for symbol_name in moved_symbol_names
-            if not export_contract.allows_binding_relocation(symbol_name)
-        )
+        blocked_names = export_contract.blocked_relocations(moved_symbol_names)
         if blocked_names:
             raise ValueError(
                 "Source export contract does not prove binding relocation for "
