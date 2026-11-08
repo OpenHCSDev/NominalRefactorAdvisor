@@ -7645,7 +7645,7 @@ def test_relocation_reads_only_the_module_scope_uses_of_a_source_binding(
             "uses the source module object 's' other than by reading an attribute",
         ),
         (
-            "import pkg.source as s\n\ndestination = None\nvalue = getattr(s, 'Moved')\n",
+            "import pkg.source as s\n\ndestination = None\nvalue = getattr(s, 'Moved')\nkept = s.Kept\n",
             "already binds 'destination', which its 'getattr' of 'Moved'",
         ),
         (

@@ -9,6 +9,7 @@ from abc import (
 )
 from collections import Counter
 from collections.abc import (
+    Callable,
     Iterable,
     Iterator,
     Mapping,
@@ -301,6 +302,11 @@ class ModuleNameRedirect:
                     for name, path in self.destinations.items()
                     if (owner := import_graph.module_name_for_file_path(path)) is not None
                 },
+                access_owner=lambda access: (
+                    None
+                    if (path := access.reached_path(self)) is None
+                    else import_graph.module_name_for_file_path(path)
+                ),
             )
             if retargets.aliases:
                 edits.append(retargets.rewrite(consumer_path, context.sources_by_file_path[consumer_path]))
@@ -536,15 +542,23 @@ class ModuleNameRedirect:
             )
         return tuple(replacements)
 
-    def patched_reader_path(self, name: str, file_path: str) -> str:
-        """The module whose code reads `name` once it leaves the source, which a
-        patch of `source.name` must target instead. These owners spread the
-        readers, so no one module is it."""
+    def name_reader_path(self, name: str) -> str | None:
+        """The module whose code reads `name` once it leaves the source. These
+        owners spread the readers, so no one module is it."""
 
-        raise ValueError(
-            f"{file_path!r} patches {name!r} on the source module, whose readers "
-            "the move spreads across owners"
-        )
+        del name
+        return None
+
+    def patched_reader_path(self, name: str, file_path: str) -> str:
+        """The module a patch of `source.name` must target instead."""
+
+        reader_path = self.name_reader_path(name)
+        if reader_path is None:
+            raise ValueError(
+                f"{file_path!r} patches {name!r} on the source module, whose readers "
+                "the move spreads across owners"
+            )
+        return reader_path
 
     def _accessed_module_objects(
         self,
@@ -616,7 +630,8 @@ class RelocationNameRedirect(ModuleNameRedirect):
 
     reader_path: str
 
-    def patched_reader_path(self, name: str, file_path: str) -> str:
+    def name_reader_path(self, name: str) -> str | None:
+        del name
         return self.reader_path
 
 
@@ -723,6 +738,10 @@ class _NamedModuleMemberAccess:
     def target_path(self, redirect: ModuleNameRedirect, file_path: str) -> str:
         raise NotImplementedError
 
+    def reached_path(self, redirect: ModuleNameRedirect) -> str | None:
+        """The one module this access reaches once its name leaves the source."""
+        raise NotImplementedError
+
 
 @dataclass(frozen=True)
 class _NamedModuleMemberRead(_NamedModuleMemberAccess):
@@ -733,6 +752,9 @@ class _NamedModuleMemberRead(_NamedModuleMemberAccess):
     )
 
     def target_path(self, redirect: ModuleNameRedirect, file_path: str) -> str:
+        return redirect.destinations[self.member_name]
+
+    def reached_path(self, redirect: ModuleNameRedirect) -> str | None:
         return redirect.destinations[self.member_name]
 
 
@@ -750,15 +772,20 @@ class _NamedModuleMemberPatch(_NamedModuleMemberAccess):
     def target_path(self, redirect: ModuleNameRedirect, file_path: str) -> str:
         return redirect.patched_reader_path(self.member_name, file_path)
 
+    def reached_path(self, redirect: ModuleNameRedirect) -> str | None:
+        return redirect.name_reader_path(self.member_name)
+
 
 @dataclass(frozen=True)
 class _SourceModuleAliasRetargets:
-    """`import source as s` whose every load of `s` reads a name now declared in
-    one module binds that module where it stands: the same scope, the same alias,
-    the reads as written. A function that imports the module to keep it off the
-    import path at load time keeps doing so. An alias that also reads a name
-    staying behind, reaches names moved to several owners, or is used any other
-    way stays with `_SourceModuleObjectReads`."""
+    """`import source as s` whose every load of `s` reaches a name in one module
+    binds that module where it stands: the same scope, the same alias, the uses
+    as written. A load reaches its name's owner by `s.Name`, and the module a
+    by-name access targets by `getattr(s, "Name")` or `monkeypatch.setattr(s,
+    "Name", ...)` (the reader of the name, for a patch). A function that imports
+    the module to keep it off the import path at load time keeps doing so. An
+    alias that also reads a name staying behind, reaches several modules, or is
+    used any other way stays with `_SourceModuleObjectReads`."""
 
     aliases: tuple[tuple[ast.alias, str], ...]
 
@@ -773,6 +800,7 @@ class _SourceModuleAliasRetargets:
         *,
         source_module_name: str,
         owner_modules: Mapping[str, str],
+        access_owner: Callable[[_NamedModuleMemberAccess], str | None] = lambda access: None,
     ) -> _SourceModuleAliasRetargets:
         candidates = tuple(
             alias
@@ -789,7 +817,9 @@ class _SourceModuleAliasRetargets:
                 for alias in candidates
                 if alias.asname is not None
                 and index.bindings_in(alias.asname, scope := index.scope_of(alias)) == 1
-                for owner in cls._sole_owner(index, alias.asname, scope, owner_modules)
+                for owner in cls._sole_owner(
+                    index, alias.asname, scope, owner_modules, access_owner
+                )
             )
         )
 
@@ -799,21 +829,27 @@ class _SourceModuleAliasRetargets:
         binding: str,
         scope: ast.AST | None,
         owner_modules: Mapping[str, str],
+        access_owner: Callable[[_NamedModuleMemberAccess], str | None],
     ) -> tuple[str, ...]:
-        """The one module every use of the alias's variable in `scope` reads a
-        moved name from, or none."""
+        """The one module every use of the alias's variable in `scope` reaches a
+        moved name in, or none."""
 
-        owners: set[str] = set()
+        owners: set[str | None] = set()
         for node in index.uses_of(binding, scope):
             parent = index.parents.get(node)
-            if not (
+            if (
                 isinstance(parent, ast.Attribute)
                 and parent.value is node
                 and parent.attr in owner_modules
             ):
+                owners.add(owner_modules[parent.attr])
+            elif (
+                access := _NamedModuleMemberAccess.of(node, index.parents)
+            ) is not None and access.member_name in owner_modules:
+                owners.add(access_owner(access))
+            else:
                 return ()
-            owners.add(owner_modules[parent.attr])
-        return tuple(owners) if len(owners) == 1 else ()
+        return tuple(owners) if len(owners) == 1 and None not in owners else ()
 
     def localized_edits(
         self,
