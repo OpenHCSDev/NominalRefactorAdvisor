@@ -322,9 +322,37 @@ def test_a_guard_hiding_no_cycle_becomes_a_runtime_import(tmp_path: Path) -> Non
 
     reader = (tmp_path / "pkg/reader.py").read_text()
     assert "if TYPE_CHECKING" not in reader
+    # The deleted guard was the flag's last reader, so its import goes too.
+    assert "TYPE_CHECKING" not in reader
     assert "from pkg.owner import Moved" in reader
     imported = _run(tmp_path, "import typing, pkg.reader; assert typing.get_type_hints(pkg.reader.read)")
     assert imported.returncode == 0, imported.stderr
+
+
+def test_a_promotion_keeps_the_flag_a_remaining_guard_reads(tmp_path: Path) -> None:
+    _write(tmp_path, "pkg/__init__.py", "")
+    _write(tmp_path, "pkg/owner.py", "class Moved:\n    pass\n")
+    _write(tmp_path, "pkg/other.py", "class Kept:\n    pass\n")
+    _write(
+        tmp_path,
+        "pkg/reader.py",
+        "from __future__ import annotations\n\n"
+        "from typing import TYPE_CHECKING\n\n"
+        "if TYPE_CHECKING:\n"
+        "    from pkg.owner import Moved\n\n"
+        "STRICT = not TYPE_CHECKING\n\n\n"
+        "def read(moved: Moved) -> Moved:\n"
+        "    return moved\n",
+    )
+    simulation = (
+        RefactorRecipe("promote")
+        .with_operation(_promote(tmp_path, "pkg/reader.py", "pkg.owner", "Moved"))
+        .simulate(_snapshot(tmp_path))
+    )
+    assert simulation.is_clean
+    reader = simulation.simulation.rewritten_sources[(tmp_path / "pkg/reader.py").as_posix()]
+    assert "if TYPE_CHECKING" not in reader
+    assert "from typing import TYPE_CHECKING" in reader
 
 
 def test_a_guard_hiding_a_cycle_is_refused(tmp_path: Path) -> None:

@@ -579,6 +579,42 @@ class ModuleImportMutation(KeyedSourceEditCoalescence):
             )
         )
 
+    @staticmethod
+    def _drop_unread_guard_flag(
+        module: ast.Module,
+        guard_projection: TypeCheckingGuardProjection,
+        deletable_guards: frozenset[int],
+        import_from_statements: tuple[ast.ImportFrom, ...],
+        scope_by_statement_id: dict[int, ModuleImportScope],
+        aliases_by_statement: dict[int, list[ImportAlias]],
+    ) -> None:
+        """This mutation adds `from typing import TYPE_CHECKING` for a guard it
+        writes; when the guards it deletes held the module's last reads of that
+        flag, the binding goes with them, or the module keeps an import nothing
+        reads."""
+
+        deleted_reads = frozenset(
+            id(node)
+            for guard in guard_projection.guards
+            if id(guard) in deletable_guards
+            for node in ast.walk(guard.test)
+        )
+        flag = ImportAlias("TYPE_CHECKING")
+        if not deleted_reads or any(
+            isinstance(node, ast.Name) and node.id == flag.name and id(node) not in deleted_reads
+            for node in ast.walk(module)
+        ):
+            return
+        for statement in import_from_statements:
+            if (
+                statement.module == "typing"
+                and not statement.level
+                and scope_by_statement_id[id(statement)] is ModuleImportScope.RUNTIME
+            ):
+                aliases_by_statement[id(statement)] = [
+                    alias for alias in aliases_by_statement[id(statement)] if alias != flag
+                ]
+
     def resolved_windows(
         self,
         context: CodemodSelectorContext,
@@ -763,6 +799,10 @@ class ModuleImportMutation(KeyedSourceEditCoalescence):
                 for statement in guard.body
             )
             and not _node_contains_comment(source, guard)
+        )
+        self._drop_unread_guard_flag(
+            module, guard_projection, deletable_guards, import_from_statements,
+            scope_by_statement_id, aliases_by_statement,
         )
         preserved_empty_guard_statement_ids = frozenset(
             id(guard.body[-1])
