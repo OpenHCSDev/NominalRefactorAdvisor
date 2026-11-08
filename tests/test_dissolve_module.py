@@ -741,3 +741,57 @@ def test_a_manifest_naming_a_name_the_dissolved_module_does_not_bind_refuses(
         RefactorRecipe("dissolve-worker").with_operation(
             _dissolve(tmp_path, "pkg/worker.py", "pkg/owner.py")
         ).simulate(_snapshot(tmp_path))
+
+
+def test_an_alias_patched_by_name_follows_the_whole_module_it_binds(tmp_path: Path) -> None:
+    """`import pkg.native_package as native_package` used by `native_package.read()`
+    and `setattr(native_package, "MANIFEST", ...)` keeps its name: the move binds
+    the alias to the module that now declares and reads MANIFEST, instead of
+    adding a second `native_package` binding beside it."""
+    _write(tmp_path, "pkg/__init__.py", "")
+    _write(tmp_path, "pkg/installer/__init__.py", "")
+    _write(
+        tmp_path,
+        "pkg/native_package.py",
+        "MANIFEST = 1\n\n\ndef read() -> int:\n    return MANIFEST\n",
+    )
+    _write(
+        tmp_path,
+        "pkg/check.py",
+        "import pkg.native_package as native_package\n\n\n"
+        "def patched() -> int:\n"
+        '    setattr(native_package, "MANIFEST", 5)\n'
+        "    return native_package.read()\n",
+    )
+    source = (tmp_path / "pkg/native_package.py").as_posix()
+    destination = (tmp_path / "pkg/installer/native_package.py").as_posix()
+    result = CodemodPlanSequence(
+        documents=(
+            CodemodPlanDocument(
+                recipes=(
+                    RefactorRecipe("move").with_operation(
+                        RelocateSymbolsToNewModuleOperation(
+                            target=SourceRewriteTarget(file_path=source),
+                            symbol_qualnames=("MANIFEST", "read"),
+                            destination_path=destination,
+                        )
+                    ),
+                )
+            ),
+            CodemodPlanDocument(
+                recipes=(
+                    RefactorRecipe("dissolve").with_operation(
+                        _dissolve(tmp_path, "pkg/native_package.py", "pkg/installer/native_package.py")
+                    ),
+                )
+            ),
+        )
+    ).simulate(_snapshot(tmp_path))
+    assert result.is_clean
+    result.apply()
+
+    check = (tmp_path / "pkg/check.py").read_text(encoding="utf-8")
+    assert check.startswith("import pkg.installer.native_package as native_package\n\n\n")
+    assert check.count("native_package") == 4
+    completed = _run(tmp_path, "from pkg.check import patched; print(patched())")
+    assert completed.stdout == "5\n", completed.stderr
