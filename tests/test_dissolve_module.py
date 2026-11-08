@@ -207,3 +207,60 @@ def test_relocation_redirects_a_function_local_import(tmp_path: Path) -> None:
     assert "    from .moved import Moved\n    from pkg.source import Kept\n" in consumer
     imported = _run(tmp_path, "from pkg.consumer import read; assert read()[0] == 3")
     assert imported.returncode == 0, imported.stderr
+
+
+def _promote(root: Path, source: str, module: str, *names: str):
+    from nominal_refactor_advisor.codemod import PromoteGuardedImportOperation
+
+    return PromoteGuardedImportOperation(
+        target=SourceRewriteTarget(file_path=(root / source).as_posix()),
+        module_name=module,
+        import_names=names,
+    )
+
+
+def test_a_guard_hiding_no_cycle_becomes_a_runtime_import(tmp_path: Path) -> None:
+    _write(tmp_path, "pkg/__init__.py", "")
+    _write(tmp_path, "pkg/owner.py", "class Moved:\n    pass\n")
+    _write(
+        tmp_path,
+        "pkg/reader.py",
+        "from __future__ import annotations\n\n"
+        "from typing import TYPE_CHECKING\n\n"
+        "if TYPE_CHECKING:\n"
+        "    from pkg.owner import Moved\n\n\n"
+        "def read(moved: Moved) -> Moved:\n"
+        "    return moved\n",
+    )
+    operation = _promote(tmp_path, "pkg/reader.py", "pkg.owner", "Moved")
+    assert operation.preflight_reports(_snapshot(tmp_path))[0].status is (
+        CodemodPreflightStatus.PASSED
+    )
+    simulation = RefactorRecipe("promote").with_operation(operation).simulate(_snapshot(tmp_path))
+    assert simulation.is_clean
+    simulation.apply()
+
+    reader = (tmp_path / "pkg/reader.py").read_text()
+    assert "if TYPE_CHECKING" not in reader
+    assert "from pkg.owner import Moved" in reader
+    imported = _run(tmp_path, "import typing, pkg.reader; assert typing.get_type_hints(pkg.reader.read)")
+    assert imported.returncode == 0, imported.stderr
+
+
+def test_a_guard_hiding_a_cycle_is_refused(tmp_path: Path) -> None:
+    _write(tmp_path, "pkg/__init__.py", "")
+    _write(tmp_path, "pkg/owner.py", "from pkg.reader import read\n\n\nclass Moved:\n    pass\n")
+    _write(
+        tmp_path,
+        "pkg/reader.py",
+        "from typing import TYPE_CHECKING\n\n"
+        "if TYPE_CHECKING:\n"
+        "    from pkg.owner import Moved\n\n\n"
+        "def read(moved: 'Moved') -> None:\n"
+        "    pass\n",
+    )
+    report = _promote(tmp_path, "pkg/reader.py", "pkg.owner", "Moved").preflight_reports(
+        _snapshot(tmp_path)
+    )[0]
+    assert report.status is CodemodPreflightStatus.FAILED
+    assert "hides a cycle" in report.message

@@ -2602,6 +2602,113 @@ class RemoveImportNamesOperation(RefactorRecipeOperation):
         )
 
 
+@dataclass(frozen=True, kw_only=True)
+class PromoteGuardedImportOperation(RefactorRecipeOperation):
+    """Move names out of an ``if TYPE_CHECKING:`` guard into a runtime import.
+
+    A guard that hides no cycle restates nothing but a fear of one; this proves
+    against the repository's runtime import graph that the import closes no cycle,
+    and refuses (naming the module that reaches back) when it would."""
+
+    module_name: str = codemod_payload_field(RequiredStringPayloadValueCodec())
+    import_names: tuple[str, ...] = codemod_payload_field(
+        StringArrayPayloadValueCodec()
+    )
+    source_dependency_scope: ClassVar[CodemodSourceDependencyScope] = (
+        CodemodSourceDependencyScope.REPOSITORY
+    )
+
+    def preflight_reports(
+        self,
+        context: CodemodSelectorContext,
+    ) -> tuple[CodemodOperationPreflightReport, ...]:
+        source_path = self.required_source_path(context, self.operation_key())
+        import_graph = context.module_import_graph
+        source_file = import_graph.source_file_for_path(source_path)
+        guarded = frozenset(
+            alias.name
+            for statement in ModuleImportScope.TYPE_CHECKING.import_statements(
+                context.module_nodes_by_file_path[source_path]
+            )
+            if isinstance(statement, ast.ImportFrom)
+            and ImportFromModuleName.from_node(statement).source == self.module_name
+            for alias in statement.names
+        )
+        missing = tuple(name for name in self.import_names if name not in guarded)
+        imported_module = source_file.module_path_identity.resolve_import_from_module(
+            imported_module=self.module_name.lstrip("."),
+            level=len(self.module_name) - len(self.module_name.lstrip(".")),
+        )
+        imported_file = (
+            None
+            if imported_module is None
+            else import_graph.unique_source_file_for_module_name(imported_module)
+        )
+        cycle = imported_file is not None and import_graph.import_would_create_cycle(
+            importing_file_path=source_path,
+            imported_file_path=imported_file.file_path,
+        )
+        message = (
+            f"{self.import_names!r} are not guarded imports of {self.module_name!r}: "
+            f"{missing!r}"
+            if missing
+            else f"{imported_module!r} already imports {source_file.module_name!r} at "
+            "runtime; the guard hides a cycle, so move the declaration instead"
+            if cycle
+            else "The guarded import closes no runtime import cycle"
+        )
+        return (
+            CodemodOperationPreflightReport(
+                operation=self.operation_key(),
+                status=(
+                    CodemodPreflightStatus.FAILED
+                    if missing or cycle
+                    else CodemodPreflightStatus.PASSED
+                ),
+                message=message,
+                detail=PromotedGuardedImportReport(
+                    file_path=source_path,
+                    module_name=self.module_name,
+                    import_names=self.import_names,
+                ),
+            ),
+        )
+
+    def source_edits(
+        self,
+        context: CodemodSelectorContext,
+    ) -> tuple[ModuleImportMutation, ...]:
+        source_path = self.required_source_path(context, self.operation_key())
+        rationale = self.rationale or (
+            f"Import {self.import_names!r} from {self.module_name!r} at runtime."
+        )
+        return (
+            ModuleImportMutation.remove_names(
+                file_path=source_path,
+                module_name=self.module_name,
+                names=self.import_names,
+                scope=ModuleImportScope.TYPE_CHECKING,
+                rationale=rationale,
+            ),
+            ModuleImportMutation.from_source(
+                file_path=source_path,
+                import_source=(
+                    f"from {self.module_name} import {', '.join(self.import_names)}\n"
+                ),
+                rationale=rationale,
+            ),
+        )
+
+
+@dataclass(frozen=True)
+class PromotedGuardedImportReport(DataclassJsonReport):
+    """Which guarded names a promotion moves to runtime."""
+
+    file_path: str
+    module_name: str
+    import_names: tuple[str, ...]
+
+
 @dataclass(frozen=True)
 class ClassAuthorityReferenceProof:
     """Prove one generated class-authority reference at a module boundary."""
