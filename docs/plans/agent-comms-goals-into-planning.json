@@ -1,0 +1,697 @@
+{
+ "stages": [
+  {
+   "recipes": [
+    {
+     "recipe_id": "relocate-goal_management",
+     "operations": [
+      {
+       "operation": "relocate_symbols_to_new_module",
+       "file_path": "src/agent_comms/goal_management.py",
+       "symbol_qualnames": [
+        "_LOG",
+        "GoalExecutionSource",
+        "GoalTarget",
+        "NamedGoalTarget",
+        "BornGoalTarget",
+        "Goals"
+       ],
+       "destination_path": "src/agent_comms/planning/goal_management.py"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "recipes": [
+    {
+     "recipe_id": "dissolve-goal_management",
+     "operations": [
+      {
+       "operation": "dissolve_module",
+       "file_path": "src/agent_comms/goal_management.py",
+       "successor_path": "src/agent_comms/planning/goal_management.py"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "recipes": [
+    {
+     "recipe_id": "relocate-goal_scheduler",
+     "operations": [
+      {
+       "operation": "relocate_symbols_to_new_module",
+       "file_path": "src/agent_comms/goal_scheduler.py",
+       "symbol_qualnames": [
+        "GOAL_CONTINUE_PROMPT",
+        "GoalRefresh",
+        "DeclaredGoalRefresh",
+        "GoalSessionPublication",
+        "GoalScheduler"
+       ],
+       "destination_path": "src/agent_comms/execution/goal_scheduler.py"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "recipes": [
+    {
+     "recipe_id": "dissolve-goal_scheduler",
+     "operations": [
+      {
+       "operation": "dissolve_module",
+       "file_path": "src/agent_comms/goal_scheduler.py",
+       "successor_path": "src/agent_comms/execution/goal_scheduler.py"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "recipes": [
+    {
+     "recipe_id": "relocate-goal_actions",
+     "operations": [
+      {
+       "operation": "relocate_symbols_to_new_module",
+       "file_path": "src/agent_comms/goal_actions.py",
+       "symbol_qualnames": [
+        "GoalActor",
+        "ModelInvocable",
+        "OwnerInvocable",
+        "RuntimeInvocable",
+        "OwnerControlInvocable",
+        "PeerInvocable",
+        "GoalPrecondition",
+        "GoalActionContext",
+        "GoalPublicationContext",
+        "GoalAction",
+        "TransitionGoalAction",
+        "GoalReportAction",
+        "ActiveGoalAction",
+        "CompliedGoalAction",
+        "StandbyGoalAction",
+        "PreparedStandbyGoalAction",
+        "CompletionGoalAction",
+        "CompletedGoalAction",
+        "HeldOrderGoalAction",
+        "SentBackOrderGoalAction",
+        "HeadReviewedOrderGoalAction",
+        "BlockedGoalAction",
+        "PausedGoalAction",
+        "ChokeholdPausedGoalAction",
+        "ReplacementGoalAction",
+        "SetGoalAction",
+        "ProblemOrderGoalAction",
+        "OrderGoalAction",
+        "ReissuedOrderGoalAction",
+        "CreateProblemGoalAction",
+        "ClearGoalAction",
+        "EditGoalAction",
+        "required_block_reason",
+        "RetryGoalAction"
+       ],
+       "destination_path": "src/agent_comms/planning/goal_actions.py"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "recipes": [
+    {
+     "recipe_id": "dissolve-goal_actions",
+     "operations": [
+      {
+       "operation": "dissolve_module",
+       "file_path": "src/agent_comms/goal_actions.py",
+       "successor_path": "src/agent_comms/planning/goal_actions.py"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "recipes": [
+    {
+     "recipe_id": "relocate-goal_history",
+     "operations": [
+      {
+       "operation": "relocate_symbols_to_new_module",
+       "file_path": "src/agent_comms/goal_history.py",
+       "symbol_qualnames": [
+        "GoalHistoryError",
+        "JournalState",
+        "PendingEntry",
+        "CommittedEntry",
+        "AbortedEntry",
+        "UncertainEntry",
+        "RevisionKind",
+        "TransitionRevision",
+        "BaselineRevision",
+        "ObservedGapRevision",
+        "RequestHistory",
+        "RecordedGoalRevision",
+        "JournalObserver",
+        "LockFreeObserver",
+        "RegistryWriterObserver",
+        "RecordedGoalHistory",
+        "GoalHistoryEntry",
+        "GoalHistoryStore",
+        "GoalHistoryTransaction"
+       ],
+       "destination_path": "src/agent_comms/planning/goal_history.py"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "recipes": [
+    {
+     "recipe_id": "dissolve-goal_history",
+     "operations": [
+      {
+       "operation": "dissolve_module",
+       "file_path": "src/agent_comms/goal_history.py",
+       "successor_path": "src/agent_comms/planning/goal_history.py"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "recipes": [
+    {
+     "recipe_id": "relocate-goal_mentions",
+     "operations": [
+      {
+       "operation": "relocate_symbols_to_new_module",
+       "file_path": "src/agent_comms/goal_mentions.py",
+       "symbol_qualnames": [
+        "_GOAL_TOKEN",
+        "_MAX_BINDINGS",
+        "_MAX_TOKEN_CHARS",
+        "bind_goal_mentions"
+       ],
+       "destination_path": "src/agent_comms/planning/goal_mentions.py"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "recipes": [
+    {
+     "recipe_id": "dissolve-goal_mentions",
+     "operations": [
+      {
+       "operation": "dissolve_module",
+       "file_path": "src/agent_comms/goal_mentions.py",
+       "successor_path": "src/agent_comms/planning/goal_mentions.py"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "recipes": [
+    {
+     "recipe_id": "relocate-goal_records",
+     "operations": [
+      {
+       "operation": "relocate_symbols_to_new_module",
+       "file_path": "src/agent_comms/goal_records.py",
+       "symbol_qualnames": [
+        "GoalRecords"
+       ],
+       "destination_path": "src/agent_comms/planning/goal_records.py"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "recipes": [
+    {
+     "recipe_id": "dissolve-goal_records",
+     "operations": [
+      {
+       "operation": "dissolve_module",
+       "file_path": "src/agent_comms/goal_records.py",
+       "successor_path": "src/agent_comms/planning/goal_records.py"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "recipes": [
+    {
+     "recipe_id": "relocate-goal_scope",
+     "operations": [
+      {
+       "operation": "relocate_symbols_to_new_module",
+       "file_path": "src/agent_comms/goal_scope.py",
+       "symbol_qualnames": [
+        "FailureKey",
+        "GoalScope",
+        "AllGoals",
+        "OneGoal"
+       ],
+       "destination_path": "src/agent_comms/planning/goal_scope.py"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "recipes": [
+    {
+     "recipe_id": "dissolve-goal_scope",
+     "operations": [
+      {
+       "operation": "dissolve_module",
+       "file_path": "src/agent_comms/goal_scope.py",
+       "successor_path": "src/agent_comms/planning/goal_scope.py"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "recipes": [
+    {
+     "recipe_id": "relocate-goal_attempts",
+     "operations": [
+      {
+       "operation": "relocate_symbols_to_new_module",
+       "file_path": "src/agent_comms/goal_attempts.py",
+       "symbol_qualnames": [
+        "FailedTurnObservation",
+        "OrdinaryGoalGrantCheck",
+        "OrdinaryGoalGrantRule",
+        "StorageUncertainError",
+        "ReservationConflictError",
+        "MissingGoalGenerationError",
+        "Generation",
+        "Reservation",
+        "AttemptRecord",
+        "LedgerAttempt",
+        "RecordedAttempt",
+        "MissingAttempt",
+        "NoAttempt",
+        "GoalWorkDecision",
+        "GoalProviderUsage",
+        "LaunchPermit",
+        "ProviderUsageTotal",
+        "_T",
+        "GoalAttemptFile",
+        "GoalAttemptStore"
+       ],
+       "destination_path": "src/agent_comms/planning/goal_attempts.py"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "recipes": [
+    {
+     "recipe_id": "dissolve-goal_attempts",
+     "operations": [
+      {
+       "operation": "dissolve_module",
+       "file_path": "src/agent_comms/goal_attempts.py",
+       "successor_path": "src/agent_comms/planning/goal_attempts.py"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "recipes": [
+    {
+     "recipe_id": "relocate-goal_generation",
+     "operations": [
+      {
+       "operation": "relocate_symbols_to_new_module",
+       "file_path": "src/agent_comms/goal_generation.py",
+       "symbol_qualnames": [
+        "GenerationState",
+        "ReadyGeneration",
+        "ReservedGeneration",
+        "BlockedGeneration",
+        "CompletedGeneration",
+        "CancelledGeneration"
+       ],
+       "destination_path": "src/agent_comms/planning/goal_generation.py"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "recipes": [
+    {
+     "recipe_id": "dissolve-goal_generation",
+     "operations": [
+      {
+       "operation": "dissolve_module",
+       "file_path": "src/agent_comms/goal_generation.py",
+       "successor_path": "src/agent_comms/planning/goal_generation.py"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "recipes": [
+    {
+     "recipe_id": "relocate-goal_attempt_phase",
+     "operations": [
+      {
+       "operation": "relocate_symbols_to_new_module",
+       "file_path": "src/agent_comms/goal_attempt_phase.py",
+       "symbol_qualnames": [
+        "ReadyAttempt",
+        "GoalAttemptPhase",
+        "ReservedAttempt",
+        "ClaimedAttempt",
+        "FailedAttempt",
+        "SucceededAttempt",
+        "ResolvedAttempt"
+       ],
+       "destination_path": "src/agent_comms/planning/goal_attempt_phase.py"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "recipes": [
+    {
+     "recipe_id": "dissolve-goal_attempt_phase",
+     "operations": [
+      {
+       "operation": "dissolve_module",
+       "file_path": "src/agent_comms/goal_attempt_phase.py",
+       "successor_path": "src/agent_comms/planning/goal_attempt_phase.py"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "recipes": [
+    {
+     "recipe_id": "relocate-goal_presentation",
+     "operations": [
+      {
+       "operation": "relocate_symbols_to_new_module",
+       "file_path": "src/agent_comms/goal_presentation.py",
+       "symbol_qualnames": [
+        "GoalWaitTarget",
+        "GoalExecution",
+        "IdleGoalExecution",
+        "BoundGoalExecution",
+        "WaitingExecution",
+        "ControlledExecution",
+        "ActiveExecution",
+        "RetryableExecution",
+        "RunnableExecution",
+        "RunningExecution",
+        "CompletedExecution",
+        "PausedExecution",
+        "StandbyExecution",
+        "BlockedExecution",
+        "RetryableBlockExecution",
+        "AttemptUnresolvedExecution",
+        "AttemptFailedExecution",
+        "GoalPublicationSnapshot",
+        "UnpublishedGoalSnapshot",
+        "GoalSnapshot"
+       ],
+       "destination_path": "src/agent_comms/planning/goal_presentation.py"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "recipes": [
+    {
+     "recipe_id": "dissolve-goal_presentation",
+     "operations": [
+      {
+       "operation": "dissolve_module",
+       "file_path": "src/agent_comms/goal_presentation.py",
+       "successor_path": "src/agent_comms/planning/goal_presentation.py"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "recipes": [
+    {
+     "recipe_id": "relocate-goal_failure_observation",
+     "operations": [
+      {
+       "operation": "relocate_symbols_to_new_module",
+       "file_path": "src/agent_comms/goal_failure_observation.py",
+       "symbol_qualnames": [
+        "GoalLedgerTable",
+        "GoalFailureEvidence",
+        "NoFailedTurnEvidence",
+        "FailedTurnEvidence",
+        "record_observation"
+       ],
+       "destination_path": "src/agent_comms/planning/goal_failure_observation.py"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "recipes": [
+    {
+     "recipe_id": "dissolve-goal_failure_observation",
+     "operations": [
+      {
+       "operation": "dissolve_module",
+       "file_path": "src/agent_comms/goal_failure_observation.py",
+       "successor_path": "src/agent_comms/planning/goal_failure_observation.py"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "recipes": [
+    {
+     "recipe_id": "relocate-goals",
+     "operations": [
+      {
+       "operation": "relocate_symbols_to_new_module",
+       "file_path": "src/agent_comms/goals.py",
+       "symbol_qualnames": [
+        "GoalUnavailable",
+        "GoalMentionBinding",
+        "UnresolvedMention",
+        "SelfMentionBinding",
+        "UnknownMentionBinding",
+        "AliasMentionBinding",
+        "MalformedMentionBinding",
+        "LimitExceededMentionBinding",
+        "NonExecutableMentionBinding",
+        "ResolvedMentionBinding",
+        "GoalMentionSource",
+        "GoalRevision",
+        "GoalCheckpoint",
+        "UnobservedGoalCheckpoint",
+        "AbsentGoalCheckpoint",
+        "PresentGoalCheckpoint",
+        "GoalConsentRequired",
+        "GoalChangedError",
+        "CheckResult",
+        "SilentCheckResult",
+        "CountCheckResult",
+        "CheckCommand",
+        "OrderCheck",
+        "CheckedCommit",
+        "GoalOrder",
+        "UnorderedGoalOrder",
+        "ProblemGoalOrder",
+        "GoalPeerChange",
+        "GoalDeclaration",
+        "NoGoal",
+        "Goal"
+       ],
+       "destination_path": "src/agent_comms/planning/goals.py"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "recipes": [
+    {
+     "recipe_id": "dissolve-goals",
+     "operations": [
+      {
+       "operation": "dissolve_module",
+       "file_path": "src/agent_comms/goals.py",
+       "successor_path": "src/agent_comms/planning/goals.py"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "recipes": [
+    {
+     "recipe_id": "relocate-goal_attempt_identity",
+     "operations": [
+      {
+       "operation": "relocate_symbols_to_new_module",
+       "file_path": "src/agent_comms/goal_attempt_identity.py",
+       "symbol_qualnames": [
+        "FailureNotObserved",
+        "GoalAttemptIdentity"
+       ],
+       "destination_path": "src/agent_comms/planning/goal_attempt_identity.py"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "recipes": [
+    {
+     "recipe_id": "dissolve-goal_attempt_identity",
+     "operations": [
+      {
+       "operation": "dissolve_module",
+       "file_path": "src/agent_comms/goal_attempt_identity.py",
+       "successor_path": "src/agent_comms/planning/goal_attempt_identity.py"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "recipes": [
+    {
+     "recipe_id": "relocate-goal_authority",
+     "operations": [
+      {
+       "operation": "relocate_symbols_to_new_module",
+       "file_path": "src/agent_comms/goal_authority.py",
+       "symbol_qualnames": [
+        "GoalTurnAuthority",
+        "NoGoalAuthority",
+        "GoalAuthority"
+       ],
+       "destination_path": "src/agent_comms/planning/goal_authority.py"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "recipes": [
+    {
+     "recipe_id": "dissolve-goal_authority",
+     "operations": [
+      {
+       "operation": "dissolve_module",
+       "file_path": "src/agent_comms/goal_authority.py",
+       "successor_path": "src/agent_comms/planning/goal_authority.py"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "recipes": [
+    {
+     "recipe_id": "relocate-goal_turn_permit",
+     "operations": [
+      {
+       "operation": "relocate_symbols_to_new_module",
+       "file_path": "src/agent_comms/goal_turn_permit.py",
+       "symbol_qualnames": [
+        "GoalTurnPermit",
+        "NoLaunchPermit"
+       ],
+       "destination_path": "src/agent_comms/execution/goal_turn_permit.py"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "recipes": [
+    {
+     "recipe_id": "dissolve-goal_turn_permit",
+     "operations": [
+      {
+       "operation": "dissolve_module",
+       "file_path": "src/agent_comms/goal_turn_permit.py",
+       "successor_path": "src/agent_comms/execution/goal_turn_permit.py"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "recipes": [
+    {
+     "recipe_id": "relocate-goal_states",
+     "operations": [
+      {
+       "operation": "relocate_symbols_to_new_module",
+       "file_path": "src/agent_comms/goal_states.py",
+       "symbol_qualnames": [
+        "PauseSource",
+        "OwnerPause",
+        "ModelPause",
+        "RuntimePause",
+        "ChokeholdPause",
+        "GoalState",
+        "FromOpenGoal",
+        "OpenGoal",
+        "ActiveGoal",
+        "PausedGoal",
+        "BlockedState",
+        "BlockedGoal",
+        "UnrecordedBlockGoal",
+        "CompletedGoal"
+       ],
+       "destination_path": "src/agent_comms/planning/goal_states.py"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "recipes": [
+    {
+     "recipe_id": "dissolve-goal_states",
+     "operations": [
+      {
+       "operation": "dissolve_module",
+       "file_path": "src/agent_comms/goal_states.py",
+       "successor_path": "src/agent_comms/planning/goal_states.py"
+      }
+     ]
+    }
+   ]
+  }
+ ]
+}
