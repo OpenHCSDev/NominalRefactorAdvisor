@@ -42,11 +42,12 @@ def _write(root: Path, sources: dict[str, str]) -> None:
         (root / f"pkg/{name}.py").write_text(source)
 
 
-def _served(root: Path, module: str, qualname: str, header: str, *members: str) -> ServedClass:
+def _served(root: Path, module: str, qualname: str, header: str, *members: str, **header_moves) -> ServedClass:
     return ServedClass(
         target=SourceRewriteTarget(file_path=(root / f"pkg/{module}.py").as_posix(), qualname=qualname),
         served_header=header,
         member_names=members,
+        **header_moves,
     )
 
 
@@ -159,3 +160,38 @@ def test_a_served_header_reads_only_names_bound_where_it_is_declared(tmp_path: P
 
     with pytest.raises(CodemodOperationPreflightError, match="reads unbound 'Missing'"):
         _simulate(tmp_path, _served(tmp_path, "family", "Prompt", "class ServedPrompt(Missing, Prompt)", "apply"))
+
+
+@pytest.mark.native_proof
+def test_an_abstract_base_moves_to_the_served_header_and_an_intermediate_stays_unnamed(tmp_path: Path) -> None:
+    _write(tmp_path, {"family": (
+        "from abc import ABC, abstractmethod\n\n\n"
+        "class Command(ABC):\n"
+        "    @abstractmethod\n"
+        "    def apply(self) -> str: ...\n\n\n"
+        "class Request(Command):\n"
+        "    def apply(self) -> str:\n"
+        "        return 'applied'\n"
+    )})
+    result = _simulate(tmp_path, _served(
+        tmp_path, "family", "Request",
+        "class ServedRequest(Command, Request, metaclass=type)", "apply",
+        moved_bases=("Command",), declaration_keywords=("metaclass=type",),
+    ))
+    rewritten = result.simulation.rewritten_sources[(tmp_path / "pkg/family.py").as_posix()]
+
+    assert "class Request(metaclass=type):\n    pass" in rewritten
+    _apply(tmp_path, result)
+    assert _run(tmp_path, (
+        "from pkg.family import Request, ServedRequest; "
+        "print(ServedRequest().apply(), type(Request()).__name__, hasattr(Request, 'apply'))"
+    )) == ["applied", "Request", "False"]
+
+
+def test_a_moved_base_must_be_declared_and_taken_by_the_served_header(tmp_path: Path) -> None:
+    _write(tmp_path, {"family": FAMILY})
+
+    with pytest.raises(CodemodOperationPreflightError, match="does not take base 'Request'"):
+        _simulate(tmp_path, _served(
+            tmp_path, "family", "Prompt", "class ServedPrompt(Prompt)", "apply", moved_bases=("Request",),
+        ))
