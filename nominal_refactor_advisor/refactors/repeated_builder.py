@@ -39,10 +39,10 @@ from ..ast_tools import (
 from ..class_families.parsed_index import IndexedClass
 from ..class_method_facets import ClassMethodReceiverRequirements
 from .finding_recipes import FindingRecipeSynthesizer
+from .function_projection_targets import ResolvedFunctionProjectionTarget
 from .dataclass_projection import (
     DataclassAuthorityReferenceProof,
     DataclassPayloadAuthorityTarget,
-    ResolvedFunctionProjectionTarget,
 )
 from .authority_extraction import SourceDerivedAuthorityProjectionOperation
 from ..codemod import NominalConstructorCall

@@ -8,7 +8,7 @@ import pytest
 
 from nominal_refactor_advisor.ast_tools import parse_python_modules
 from nominal_refactor_advisor.codemod import CodemodPlanSequence, CodemodSourceSnapshot
-from nominal_refactor_advisor.codemod_false_distinctions import (
+from nominal_refactor_advisor.refactors.false_distinctions import (
     CollapseIdenticalArmsOperation,
     MergeTypeTestArmsOperation,
 )

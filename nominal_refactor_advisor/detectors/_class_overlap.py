@@ -5,7 +5,7 @@ from __future__ import annotations
 from abc import ABC
 from typing import ClassVar
 
-from ..class_overlap_codemod import ClassOverlapFindingRecipeSynthesizer
+from ..refactors.class_overlap import ClassOverlapFindingRecipeSynthesizer
 from ..class_overlap import (
     ClassOverlapCandidate,
     ClassOverlapMetrics,

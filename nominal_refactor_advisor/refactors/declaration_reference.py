@@ -1,43 +1,16 @@
-"""Write a spelled declaration as the reference it spells.
-
-Three operations, each re-derived from the current source of one file and
-proved to change nothing but the strings it replaces (`require_only_replaced`):
-`UnquoteResolvedTypeNamesOperation` writes every quoted type string whose names
-all resolve unquoted as the expression it spells;
-`ReferenceImportedModuleOperation` writes a module's dotted name, where a string
-selects a module the file already imports eagerly or is the file's own
-package, as the module reference; `ReferenceClassNameOperation` writes a class
-name spelled as a value as `Name.__name__`, and `ReferenceEnumMemberOperation`
-a string in a position typed as an enum, equal to a member's value, as
-`Enum.MEMBER`. Where the
-names resolve is owned by `quoted_reference` and `class_identity_observations`,
-which the detector asks too.
-"""
-
 from __future__ import annotations
 
 import ast
-from abc import ABC, abstractmethod
+from abc import (
+    ABC,
+    abstractmethod,
+)
 from dataclasses import dataclass
-from typing import ClassVar
 from pathlib import Path
+from typing import ClassVar
 
-from .refactors.finding_recipes import FindingRecipeSynthesizer
-from .codemod_reproof import SourceReprovedOperation
-from .codemod_runtime import (
-    CodemodSourceSnapshot,
-    FindingRecipeEvaluation,
-    RefactorRecipe,
-)
-from .codemod_selection_context import CodemodSelectorContext
-from .codemod_selector_models import SourceRewriteTarget
-from .codemod_source_edits import (
-    NominalSourceEdit,
-    SourceTextGeometry,
-    SourceTextSpanReplacement,
-)
-from .finding_recipe_actions import FindingRecipeActionKey
-from .class_identity_observations import (
+from .finding_recipes import FindingRecipeSynthesizer
+from ..class_identity_observations import (
     ClassNameSpelling,
     DeclaredIdentities,
     EnumValueSpelling,
@@ -47,14 +20,31 @@ from .class_identity_observations import (
     NameImport,
     TypeSpelling,
 )
-from .models import DeclarationReferenceMetrics, RefactorFinding
-from .quoted_reference import (
+from ..codemod_reproof import SourceReprovedOperation
+from ..codemod_runtime import (
+    CodemodSourceSnapshot,
+    FindingRecipeEvaluation,
+    RefactorRecipe,
+)
+from ..codemod_selection_context import CodemodSelectorContext
+from ..codemod_selector_models import SourceRewriteTarget
+from ..codemod_source_edits import (
+    NominalSourceEdit,
+    SourceTextGeometry,
+    SourceTextSpanReplacement,
+)
+from ..finding_recipe_actions import FindingRecipeActionKey
+from ..models import (
+    DeclarationReferenceMetrics,
+    RefactorFinding,
+)
+from ..quoted_reference import (
     DeclaredInterpreter,
     ModuleReferenceScope,
     QuotedTypeName,
     SpelledModules,
 )
-from .refactor_concepts import DeclarationReferenceConcept
+from ..refactor_concepts import DeclarationReferenceConcept
 
 
 @dataclass(frozen=True)

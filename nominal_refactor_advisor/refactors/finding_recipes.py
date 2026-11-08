@@ -8,8 +8,8 @@ from functools import cached_property
 from pathlib import Path
 from typing import ClassVar
 
-from ..cases_family import CasesFamily
-from ..class_member_authority_codemod import (
+from .cases_family import CasesFamily
+from .class_member_authority import (
     FactorParallelMirroredLeafFamilyOperation,
     PromoteExactLeafMethodsToAncestorOperation,
 )
@@ -54,7 +54,7 @@ from ..planner import (
     build_refactor_execution_plan,
     build_refactor_execution_plan_from_groups,
 )
-from ..projection_descent_codemod import TypedMirror
+from .projection_descent import TypedMirror
 from ..refactor_concepts import (
     ClassFamilyAuthorityConcept,
     RefactorConcept,

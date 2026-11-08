@@ -15,7 +15,7 @@ from nominal_refactor_advisor.codemod import (
     RefactorRecipe,
     SourceRewriteTarget,
 )
-from nominal_refactor_advisor.codemod_function_operations import InlineForwarderOperation
+from nominal_refactor_advisor.refactors.function_operations import InlineForwarderOperation
 
 
 def _write(root: Path, relative_path: str, source: str) -> None:

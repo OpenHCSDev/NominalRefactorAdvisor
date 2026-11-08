@@ -1,50 +1,51 @@
-"""Execute the class-overlap moves (#68), and the owner moves a picker chose (#67).
-
-`ComposeExistingClassOperation` gives a class that restates another class's
-whole body that class as its first base and deletes the restated copy.
-`FoldSharedDeclarationsIntoBaseOperation` moves a block that every direct child
-of a base restates into that base, which becomes a keyword-only dataclass.
-
-An extracted block needs an owner a codemod cannot choose. On a picker's
-choice, `CreateMixinOperation` declares the block once in a new class, and
-`ExtendOwnerOperation` gives an existing partial owner the declarations it
-lacks; the restating classes then compose that owner by their own
-compose-existing verdicts at the next stage.
-
-Every operation re-derives the scan's verdict from the current source and
-refuses unless it names this move and no guard fired. Each then proves what the
-move itself changes: method resolution, attribute ownership, dataclass field
-order, frozen-ness and, where fields are added, every way a field can be bound.
-"""
 from __future__ import annotations
 
 import ast
 import difflib
-from abc import ABC, abstractmethod
 import keyword as keyword_module
 import tokenize
-from collections.abc import Iterable, Sequence
-from dataclasses import dataclass, replace
+from abc import (
+    ABC,
+    abstractmethod,
+)
+from collections.abc import (
+    Iterable,
+    Sequence,
+)
+from dataclasses import (
+    dataclass,
+    replace,
+)
 from functools import cached_property
 from importlib import import_module
 from typing import Self
 
-from .ast_projection import CallKeywords
-from .ast_tools import ParsedModule, is_docstring_statement
-from .class_index import (
-    CLASS_METHOD_OWNERSHIP_HOOK_NAMES,
-    NATIVE_METACLASS_BASES,
-    CompactIndexedClass,
-    module_import_aliases,
-)
-from .class_member_authority_codemod import (
+from .class_member_authority import (
     ClassMemberMoveProofContext,
     ClassMemberPromotionStatement,
     ModuleDeclarationRelocation,
 )
-from .class_body import ProvedClassBodyDeclaration
-from .class_mro import ClassMroAuthority, NativeMroBase
-from .class_overlap import (
+from .finding_recipes import (
+    FindingEvidenceActionKeysMixin,
+    SelfDeclaredRecipeSynthesizer,
+)
+from ..ast_projection import CallKeywords
+from ..ast_tools import (
+    ParsedModule,
+    is_docstring_statement,
+)
+from ..class_body import ProvedClassBodyDeclaration
+from ..class_index import (
+    CLASS_METHOD_OWNERSHIP_HOOK_NAMES,
+    CompactIndexedClass,
+    NATIVE_METACLASS_BASES,
+    module_import_aliases,
+)
+from ..class_mro import (
+    ClassMroAuthority,
+    NativeMroBase,
+)
+from ..class_overlap import (
     ClassOverlapCandidate,
     ClassOverlapMetrics,
     ClassOverlapMove,
@@ -53,50 +54,60 @@ from .class_overlap import (
     ExtractMixin,
     PromoteToSharedBase,
 )
-from .class_references import ClassReferenceRole
-from .refactors.finding_recipes import (
-    FindingEvidenceActionKeysMixin,
-    SelfDeclaredRecipeSynthesizer,
-)
-from .codemod import RefactorRecipe
-from .codemod_authority_claims import AstTargetAuthorityClaim
-from .codemod_declaration_source import (
+from ..class_references import ClassReferenceRole
+from ..codemod import RefactorRecipe
+from ..codemod_authority_claims import AstTargetAuthorityClaim
+from ..codemod_declaration_source import (
     ClassBodySourceAuthority,
     ClassHeaderSpanSourceAuthority,
 )
-from .codemod_imports import ModuleImportMutation
-from .codemod_payload import (
+from ..codemod_imports import ModuleImportMutation
+from ..codemod_payload import (
     PayloadRecordArrayValueCodec,
     PayloadRecordValueCodec,
     RequiredStringPayloadValueCodec,
     StringArrayPayloadValueCodec,
     codemod_payload_field,
 )
-from .codemod_preflight import CodemodOperationPreflightError
-from .codemod_reproof import RepositorySourceReprovedOperation
-from .codemod_runtime import FindingRecipeEvaluation
-from .codemod_runtime import CodemodSourceSnapshot
-from .codemod_selection_context import CodemodSelectorContext, ResolvedClassTarget
-from .codemod_selector_models import SourceRewriteTarget
-from .codemod_source_edits import (
+from ..codemod_preflight import CodemodOperationPreflightError
+from ..codemod_reproof import RepositorySourceReprovedOperation
+from ..codemod_runtime import (
+    CodemodSourceSnapshot,
+    FindingRecipeEvaluation,
+)
+from ..codemod_selection_context import (
+    CodemodSelectorContext,
+    ResolvedClassTarget,
+)
+from ..codemod_selector_models import SourceRewriteTarget
+from ..codemod_source_edits import (
     NominalSourceEdit,
     SourceInsertion,
     SourceTextGeometry,
     SourceTextSpanReplacement,
 )
-from .codemod_statement_source import StatementDeletionSource, StatementSource
-from .lexical_bindings import LEXICAL_SCOPE_BINDING_AUTHORITY, ImportBoundNameProjection
-from .native_class_mro import NativeClassMroDeclaration
-from .models import RefactorFinding
-from .owner_candidates import (
-    ExistingClassOwner,
+from ..codemod_statement_source import (
+    StatementDeletionSource,
+    StatementSource,
+)
+from ..lexical_bindings import (
+    ImportBoundNameProjection,
+    LEXICAL_SCOPE_BINDING_AUTHORITY,
+)
+from ..models import RefactorFinding
+from ..native_class_mro import NativeClassMroDeclaration
+from ..owner_candidates import (
     ComposeExistingOwner,
+    ExistingClassOwner,
     NewMixinOwner,
     OwnerCandidate,
     SharedBaseOwner,
 )
-from .refactor_concepts import ClassBodyCompositionConcept
-from .semantic_descent import AuthorityClaim, SemanticAuthorityKind
+from ..refactor_concepts import ClassBodyCompositionConcept
+from ..semantic_descent import (
+    AuthorityClaim,
+    SemanticAuthorityKind,
+)
 
 
 @dataclass(frozen=True)
@@ -686,8 +697,6 @@ class MetaclassMroProof:
             raise ValueError(f"`{qualified_name}` is not a metaclass")
         if NativeClassMroDeclaration(metaclass).member_owner("mro") is not type:
             raise ValueError(f"Metaclass `{qualified_name}` overrides `mro`")
-
-
 
 
 def require_verdict(

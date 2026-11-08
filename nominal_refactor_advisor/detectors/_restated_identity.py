@@ -11,7 +11,7 @@ from ..class_identity_observations import (
     IdentitySpelling,
     IdentitySpellingFamily,
 )
-from ..codemod_declaration_reference import (
+from ..refactors.declaration_reference import (
     DeclarationReferenceFindingRecipeSynthesizer,
     ReferenceClassNameOperation,
     ReferenceEnumMemberOperation,

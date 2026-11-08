@@ -11,7 +11,7 @@ from importlib import import_module
 from typing import ClassVar, Self
 
 from .ast_tools import BuiltinCallName, ParsedModule
-from .cases_family import handback
+from .refactors.cases_family import handback
 from .codemod_declaration_source import PythonExpressionSourceFormatter
 from .codemod_runtime import CodemodSourceSnapshot
 from .codemod_source_edits import (

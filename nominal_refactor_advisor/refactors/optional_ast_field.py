@@ -1,52 +1,65 @@
-"""Route absence probes of an optional ast field through its one boundary decoder.
-
-An optional ast field (``keyword.arg``, ``arg.annotation`` ...) has exactly
-two states, and a decoder owns the choice between them. A probe site that
-tests the field for ``None`` restates that choice; this recipe rewrites the
-site to read the decoder's answer instead, and refuses any site whose shape it
-cannot carry without changing what the code means.
-
-A project that does not declare a decoder gets it generated: the decoder's
-source is copied from the owner this package declares, into one
-``ast_field_decoders`` module per root package.
-"""
-
 from __future__ import annotations
 
 import ast
 import inspect
 import re
-from abc import ABC, abstractmethod
-from collections.abc import Callable, Iterable, Iterator, Mapping
-from dataclasses import dataclass, field
+from abc import (
+    ABC,
+    abstractmethod,
+)
+from collections.abc import (
+    Callable,
+    Iterable,
+    Iterator,
+    Mapping,
+)
+from dataclasses import (
+    dataclass,
+    field,
+)
 from functools import cached_property
 from pathlib import Path
-from typing import ClassVar, Generic, Self, TypeGuard, TypeVar
+from typing import (
+    ClassVar,
+    Generic,
+    Self,
+    TypeGuard,
+    TypeVar,
+)
 
-from metaclass_registry import AutoRegisterMeta, extract_key_from_class_name
+from metaclass_registry import (
+    AutoRegisterMeta,
+    extract_key_from_class_name,
+)
 
-from . import ast_field_decoders, ast_projection
-from .ast_tools import ParsedModule
 from .cases_family import handback
-from .refactors.finding_recipes import (
+from .finding_recipes import (
     FindingEvidenceActionKeysMixin,
     FindingRecipeSynthesizer,
 )
-from .codemod_declaration_source import PythonExpressionSourceFormatter
-from .codemod_foreign_family_source import (
+from .. import (
+    ast_field_decoders,
+    ast_projection,
+)
+from ..ast_tools import ParsedModule
+from ..codemod_declaration_source import PythonExpressionSourceFormatter
+from ..codemod_foreign_family_source import (
     FunctionRewriteAuthority,
     ImportedClassReference,
 )
-from .codemod_payload import RequiredStringPayloadValueCodec, codemod_payload_field
-from .codemod_reproof import SourceReprovedOperation
-from .codemod_runtime import (
+from ..codemod_payload import (
+    RequiredStringPayloadValueCodec,
+    codemod_payload_field,
+)
+from ..codemod_reproof import SourceReprovedOperation
+from ..codemod_runtime import (
     CodemodSourceSnapshot,
     FindingRecipeEvaluation,
     RefactorRecipe,
 )
-from .codemod_selection_context import CodemodSelectorContext
-from .codemod_selector_models import SourceRewriteTarget
-from .codemod_source_edits import (
+from ..codemod_selection_context import CodemodSelectorContext
+from ..codemod_selector_models import SourceRewriteTarget
+from ..codemod_source_edits import (
     NominalSourceEdit,
     SourceFileCreation,
     SourceLineSpan,
@@ -54,15 +67,19 @@ from .codemod_source_edits import (
     SourceTextSpan,
     SourceTextSpanReplacement,
 )
-from .codemod_target_selectors import SourceIndexTargetSelector
-from .declared_root import DeclaredRoot
-from .models import RefactorFinding
-from .native_declarations import NativeDeclaration
-from .refactor_concepts import OptionalAstFieldDecoderConcept
-from .registry_identity import DEFAULT_REGISTRY_KEY_ATTRIBUTE
+from ..codemod_target_selectors import SourceIndexTargetSelector
+from ..declared_root import DeclaredRoot
+from ..models import RefactorFinding
+from ..native_declarations import NativeDeclaration
+from ..refactor_concepts import OptionalAstFieldDecoderConcept
+from ..registry_identity import DEFAULT_REGISTRY_KEY_ATTRIBUTE
 
 FunctionNode = ast.FunctionDef | ast.AsyncFunctionDef
+
+
 FUNCTION_CLASSES = frozenset(("FunctionDef", "AsyncFunctionDef", "Lambda"))
+
+
 GENERATED_MODULE = "ast_field_decoders"
 
 
@@ -81,9 +98,6 @@ def _none_probe(node: ast.AST) -> TypeGuard[ast.Compare]:
         ):
             return True
     return False
-
-
-# --- shapes -----------------------------------------------------------------
 
 
 @dataclass(frozen=True)
@@ -920,9 +934,6 @@ class PairedProbeSite(SingleNodeProbeSite):
         )
 
 
-# --- decoders ---------------------------------------------------------------
-
-
 class OptionalAstFieldDecoder(ABC, metaclass=AutoRegisterMeta):
     """One registered decoder: the ast fields it owns and the shapes sites take.
 
@@ -1128,9 +1139,6 @@ class VariadicParameterDecoder(OptionalAstFieldDecoder):
     @classmethod
     def single(cls, subject_source: str) -> str:
         return f"variadic_parameters({subject_source})"
-
-
-# --- owners in a project ----------------------------------------------------
 
 
 @dataclass(frozen=True)
@@ -1407,9 +1415,6 @@ class SnapshotCache(Generic[CachedT]):
 
 
 _PROJECT_OWNERS = SnapshotCache[ProjectDecoderOwners]()
-
-
-# --- authority --------------------------------------------------------------
 
 
 @dataclass(frozen=True)
@@ -1807,9 +1812,6 @@ class OptionalAstFieldAuthority(FunctionRewriteAuthority):
         return tuple(sorted(replacements, key=lambda item: item.start_offset))
 
 
-# --- operations -------------------------------------------------------------
-
-
 @dataclass(frozen=True, kw_only=True)
 class RouteOptionalAstFieldProbesOperation(SourceReprovedOperation):
     """Rewrite one function's probes of an optional ast field onto its decoder."""
@@ -1908,9 +1910,6 @@ class DeclareAndRouteOptionalAstFieldProbesOperation(
             self.creation(snapshot),
             *super().source_edits_from_snapshot(snapshot),
         )
-
-
-# --- synthesis --------------------------------------------------------------
 
 
 @dataclass(frozen=True)

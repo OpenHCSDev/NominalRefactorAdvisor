@@ -12,7 +12,7 @@ from functools import cache, cached_property
 from typing import Self
 
 from .ast_tools import BuiltinCallName, ParsedModule
-from .cases_family import body_without_docstring
+from .refactors.cases_family import body_without_docstring
 from .codemod_foreign_family_source import (
     FunctionNode,
     FunctionRewriteAuthority,

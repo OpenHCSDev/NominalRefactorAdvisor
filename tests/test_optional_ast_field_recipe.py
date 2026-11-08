@@ -10,7 +10,7 @@ from nominal_refactor_advisor.detectors._registration_owners import HandRolledRe
 from nominal_refactor_advisor.detectors._restated_facts import ForeignAbsenceProbeDetector
 from nominal_refactor_advisor.detectors._runtime import ManualClassRegistrationDetector
 from nominal_refactor_advisor.ast_tools import SourceModule, parse_python_modules
-from nominal_refactor_advisor.codemod_optional_ast_field import (
+from nominal_refactor_advisor.refactors.optional_ast_field import (
     KeywordNameDecoder,
     CaptureNameDecoder,
     DeclaredAnnotationDecoder,
