@@ -13,8 +13,10 @@ from collections.abc import (
 )
 from dataclasses import dataclass
 from itertools import product
-from typing import ClassVar
+from typing import ClassVar, cast
 
+from ..ast_projection import ExpressionReference
+from ..declared_family import ForeignAdapter
 from ..ast_tools import ModuleAnnotationEvaluationMode, ParsedModule
 from ..module_node_index import ModuleNodeIndex
 from ..codemod_import_bindings import FromModuleImportBindingIdentity
@@ -2328,6 +2330,255 @@ class _DissolvedModuleBindings:
                     yield alias.name, imported_module
 
 
+class _GluedModuleName:
+    """`f"...pkg.{name}"`: a dotted constant prefix with one name formatted onto it."""
+
+    _PREFIX = re.compile(r"(?<![\w.])([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*\.)$")
+
+    @classmethod
+    def sites(cls, index: ModuleNodeIndex) -> Iterator[tuple[ast.JoinedStr, str, str]]:
+        for node in index.parents:
+            match node:
+                case ast.JoinedStr(values=values):
+                    pass
+                case _:
+                    continue
+            for before, part, after in zip(values, values[1:], (*values[2:], None)):
+                match before, part, after:
+                    case (
+                        ast.Constant(value=str(text)),
+                        ast.FormattedValue(value=ast.Name(id=name), format_spec=None),
+                        None | ast.Constant(value=str()),
+                    ) if (found := cls._PREFIX.search(text)) and not (
+                        after is not None and re.match(r"[\w.]", after.value)
+                    ):
+                        yield node, found.group(1), name
+
+    @classmethod
+    def bound_literals(
+        cls, index: ModuleNodeIndex, node: ast.AST, name: str
+    ) -> tuple[ast.Constant, ...] | None:
+        """The string literals `name` takes where `node` reads it, or None when
+        the nearest binding is not a parametrize value or a literal iterable."""
+
+        while (node := index.parents.get(node)) is not None:
+            binding = _NameBinding.decoded(node)
+            if binding.binds(name):
+                return binding.literals(name)
+        return None
+
+
+class _NameBinding(ForeignAdapter):
+    """An enclosing node, asked whether it binds a name and to which literals."""
+
+    __registry_key__ = "adapts"
+
+    @classmethod
+    def decoded(cls, node: object) -> _NameBinding:
+        """Total: `_NoBinding` adapts `object`."""
+
+        return cast(_NameBinding, super().decoded(node))
+
+    def binds(self, name: str) -> bool:
+        return False
+
+    def literals(self, name: str) -> tuple[ast.Constant, ...] | None:
+        return None
+
+
+class _NoBinding(_NameBinding):
+    adapts = object
+
+
+class _ForBinding(_NameBinding):
+    """`for name in (...)`."""
+
+    adapts = ast.For
+
+    def binds(self, name: str) -> bool:
+        return ExpressionReference.decoded(self.node.target).identifier == name
+
+    def literals(self, name: str) -> tuple[ast.Constant, ...] | None:
+        return _LiteralSequence.decoded(self.node.iter).literals
+
+
+class _ComprehensionBinding(_NameBinding):
+    """`[... for name in (...)]`: the generator that binds the name."""
+
+    adapts = ast.ListComp
+
+    def _generator(self, name: str) -> ast.comprehension | None:
+        return next(
+            (
+                generator
+                for generator in self.node.generators
+                if ExpressionReference.decoded(generator.target).identifier == name
+            ),
+            None,
+        )
+
+    def binds(self, name: str) -> bool:
+        return self._generator(name) is not None
+
+    def literals(self, name: str) -> tuple[ast.Constant, ...] | None:
+        generator = self._generator(name)
+        return None if generator is None else _LiteralSequence.decoded(generator.iter).literals
+
+
+class _SetComprehensionBinding(_ComprehensionBinding):
+    adapts = ast.SetComp
+
+
+class _GeneratorBinding(_ComprehensionBinding):
+    adapts = ast.GeneratorExp
+
+
+class _DictComprehensionBinding(_ComprehensionBinding):
+    adapts = ast.DictComp
+
+
+class _LambdaBinding(_NameBinding):
+    """A lambda parameter: bound to whatever a caller passes, never traced."""
+
+    adapts = ast.Lambda
+
+    def binds(self, name: str) -> bool:
+        return name in {argument.arg for argument in self.node.args.args}
+
+
+class _FunctionBinding(_LambdaBinding):
+    """A function parameter: traced through a `pytest.mark.parametrize` decorator."""
+
+    adapts = ast.FunctionDef
+
+    def literals(self, name: str) -> tuple[ast.Constant, ...] | None:
+        return next(
+            (
+                literals
+                for decorator in self.node.decorator_list
+                for literals in (_parametrized(decorator, name),)
+                if literals is not None
+            ),
+            None,
+        )
+
+
+class _AsyncFunctionBinding(_FunctionBinding):
+    adapts = ast.AsyncFunctionDef
+
+
+def _parametrized(decorator: ast.expr, name: str) -> tuple[ast.Constant, ...] | None:
+    match decorator:
+        case ast.Call(
+            func=ast.Attribute(attr="parametrize"),
+            args=[ast.Constant(value=str(argnames)), rows_node, *_],
+        ):
+            names = [part.strip() for part in argnames.split(",")]
+        case _:
+            return None
+    rows = _LiteralSequence.decoded(rows_node).elements
+    if name not in names or rows is None:
+        return None
+    column = names.index(name)
+    cells = tuple(_ParametrizeRow.decoded(row).cells(len(names)) for row in rows)
+    if any(len(row_cells) <= column for row_cells in cells):
+        return None
+    return _LiteralSequence(ast.Tuple(elts=[row_cells[column] for row_cells in cells])).literals
+
+
+class _ParametrizeRow(ForeignAdapter):
+    """One row of a parametrize table, read as its cells."""
+
+    __registry_key__ = "adapts"
+
+    @classmethod
+    def decoded(cls, node: object) -> _ParametrizeRow:
+        """Total: `_ScalarRow` adapts `object`."""
+
+        return cast(_ParametrizeRow, super().decoded(node))
+
+    def cells(self, width: int) -> tuple[ast.expr, ...]:
+        return (self.node,)
+
+
+class _ScalarRow(_ParametrizeRow):
+    adapts = object
+
+
+class _ParamRow(_ParametrizeRow):
+    """`pytest.param(a, b, id=...)`."""
+
+    adapts = ast.Call
+
+    def cells(self, width: int) -> tuple[ast.expr, ...]:
+        return tuple(self.node.args)
+
+
+class _TupleRow(_ParametrizeRow):
+    """`(a, b)` for two argnames; a single argname takes the tuple itself."""
+
+    adapts = ast.Tuple
+
+    def cells(self, width: int) -> tuple[ast.expr, ...]:
+        return tuple(self.node.elts) if width > 1 else (self.node,)
+
+
+class _ListRow(_TupleRow):
+    adapts = ast.List
+
+
+class _LiteralSequence(ForeignAdapter):
+    """An expression read as a literal sequence of strings."""
+
+    __registry_key__ = "adapts"
+
+    @classmethod
+    def decoded(cls, node: object) -> _LiteralSequence:
+        """Total: `_OpaqueSequence` adapts `object`."""
+
+        return cast(_LiteralSequence, super().decoded(node))
+
+    @property
+    def elements(self) -> tuple[ast.expr, ...] | None:
+        return tuple(self.node.elts)
+
+    @property
+    def literals(self) -> tuple[ast.Constant, ...] | None:
+        """Every element when all are string constants, else None."""
+
+        elements = self.elements
+        if elements is None:
+            return None
+        literals: list[ast.Constant] = []
+        for node in elements:
+            match node:
+                case ast.Constant(value=str()):
+                    literals.append(node)
+                case _:
+                    return None
+        return tuple(literals)
+
+
+class _TupleSequence(_LiteralSequence):
+    adapts = ast.Tuple
+
+
+class _ListSequence(_LiteralSequence):
+    adapts = ast.List
+
+
+class _SetSequence(_LiteralSequence):
+    adapts = ast.Set
+
+
+class _OpaqueSequence(_LiteralSequence):
+    adapts = object
+
+    @property
+    def elements(self) -> tuple[ast.expr, ...] | None:
+        return None
+
+
 @dataclass(frozen=True)
 class _ModuleIdentityStrings:
     """Every mention of the dissolved module inside a string (docstrings and
@@ -2398,9 +2649,67 @@ class _ModuleIdentityStrings:
                             replacement_source=self._path_replacement(file_path, node, path),
                         )
                     )
+            replacements.extend(
+                self._glued_replacements(context, file_path, parsed.fact(ModuleNodeIndex), geometry)
+            )
             if replacements:
                 edits.append(geometry.nominal_edit(file_path=file_path, replacements=tuple(replacements)))
         return tuple(edits)
+
+    def _glued_replacements(
+        self,
+        context: CodemodSelectorContext,
+        file_path: str,
+        index: ModuleNodeIndex,
+        geometry: SourceTextGeometry,
+    ) -> tuple[SourceTextSpanReplacement, ...]:
+        """A module name glued together in an f-string, `f"import pkg.{module}"`,
+        names the dissolved module through every literal bound to `module`: a
+        `pytest.mark.parametrize` value or a `for` loop's literal iterable. Each
+        literal spelling the module's remainder after the constant prefix follows
+        the successor. A glue whose name NRA cannot trace, in a file that spells
+        that remainder, refuses instead of leaving the string behind."""
+
+        replacements: list[SourceTextSpanReplacement] = []
+        for joined, prefix, name in _GluedModuleName.sites(index):
+            if not self.source_module_name.startswith(prefix):
+                continue
+            remainder = self.source_module_name[len(prefix):]
+            literals = _GluedModuleName.bound_literals(index, joined, name)
+            if literals is None:
+                if any(node.value == remainder for node in index.string_constants):
+                    raise ValueError(
+                        f"{file_path!r}:{joined.lineno} glues {prefix!r} onto {name!r}, "
+                        f"which NRA cannot trace, and the file spells {remainder!r}; "
+                        "bind the name from a parametrize or a literal for loop"
+                    )
+                continue
+            for literal in literals:
+                if literal.value != remainder:
+                    continue
+                if self.successor_path is None:
+                    raise ValueError(
+                        f"{file_path!r}:{literal.lineno} glues the dissolved module "
+                        f"{self.source_module_name!r} together; declare its successor_path"
+                    )
+                successor = context.module_import_graph.module_name_for_file_path(
+                    self.successor_path
+                )
+                if not successor.startswith(prefix):
+                    raise ValueError(
+                        f"{file_path!r}:{literal.lineno} glues {prefix!r} onto "
+                        f"{remainder!r}; the successor {successor!r} is not under it"
+                    )
+                start, end = geometry.required_node_offsets(literal)
+                quote = geometry.source[start]
+                replacements.append(
+                    SourceTextSpanReplacement.from_offsets(
+                        start_offset=start,
+                        end_offset=end,
+                        replacement_source=f"{quote}{successor[len(prefix):]}{quote}",
+                    )
+                )
+        return tuple(replacements)
 
     def _retained_nodes(self, index: ModuleNodeIndex) -> frozenset[int]:
         if not self.retained_calls:
