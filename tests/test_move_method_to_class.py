@@ -320,7 +320,9 @@ def test_another_class_s_method_of_the_same_name_and_an_alike_binding_do_not_ref
     proof = PROOF.replace("from dataclasses import dataclass\n", "from dataclasses import dataclass, field\n")
     use = USE + (
         "\n\nclass Codec:\n    @staticmethod\n    def proof_for(value: str) -> str:\n        return value\n\n\n"
-        "READER = Codec.proof_for\nNOTE = 'proof_for'\n"
+        "READER = Codec.proof_for\nNOTE = 'proof_for'\n\n\n"
+        "def stdlib_named(value: bytes) -> str:\n    from codecs import decode as proof_for\n\n"
+        "    from json import JSONDecoder\n    return JSONDecoder.proof_for if False else proof_for(value)\n"
     )
     identity = IDENTITY.replace(
         "        from pkg.proof import Proof\n\n        return Proof(session, 'f')\n",
