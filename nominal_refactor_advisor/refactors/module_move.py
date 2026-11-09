@@ -4503,6 +4503,14 @@ class DissolveModuleOperation(RetainedCallOperation):
         OptionalStringPayloadValueCodec(),
         default=None,
     )
+    peer_paths: tuple[str, ...] = codemod_payload_field(
+        StringArrayPayloadValueCodec(),
+        default=(),
+    )
+    """The other modules the same stage dissolves. Each is deleted by its own
+    dissolve, which sends its consumers to the modules that declare what they
+    import, so this one leaves them alone: an edit to a file the stage deletes
+    is a conflict, never a rewrite."""
 
     def text_file_changes(
         self,
@@ -4572,7 +4580,7 @@ class DissolveModuleOperation(RetainedCallOperation):
     ) -> tuple[NominalSourceEdit, ...]:
         strings = self._identity_strings(context)
         bindings = _DissolvedModuleBindings.of(context, strings.source_path)
-        excluded = frozenset({strings.source_path})
+        excluded = frozenset({strings.source_path, *self.peer_paths})
         self._require_followable_consumers(context, excluded, strings.source_module_name, bindings)
         return (
             *self._module_binding_edits(
