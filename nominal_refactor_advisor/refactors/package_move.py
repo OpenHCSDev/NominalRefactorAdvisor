@@ -42,6 +42,7 @@ from nominal_refactor_advisor.refactors.finding_recipes import (
     PrimaryEvidenceActionKeysMixin,
 )
 from nominal_refactor_advisor.refactors.module_move import (
+    BatchModuleMove,
     DissolveModuleOperation,
     RelocateSymbolsToModuleOperation,
     RelocateSymbolsToNewModuleOperation,
@@ -380,6 +381,64 @@ class ClusterLayers:
         )
 
     @cached_property
+    def batch_paths(self) -> tuple[str, ...]:
+        """The modules that relocate together in one stage: every present module
+        while each still declares names, keeps a module of its own and moves into
+        a destination of its own. Each move then derives from the same starting
+        state and names its peers' new homes (`BatchModuleMove`). Fewer than two,
+        or a shared destination, moves one module per stage."""
+
+        declaring = tuple(path for path in self.present_paths if not self.emptied(path))
+        destinations = [self.destinations[path] for path in declaring]
+        if (
+            len(declaring) < 2
+            or len(declaring) != len(self.present_paths)
+            or len(set(destinations)) != len(destinations)
+        ):
+            return ()
+        return declaring
+
+    def module_name_at(self, destination_path: str, source_path: str) -> str:
+        """The module a destination path names, beside the source's package."""
+
+        source_module = self.context.module_import_graph.module_name_for_file_path(source_path)
+        if source_module is None:
+            raise ValueError(f"{source_path!r} has no module name")
+        package = source_module.rpartition(".")[0]
+        relative = PurePosixPath(destination_path).relative_to(PurePosixPath(source_path).parent)
+        return ".".join((*filter(None, (package,)), *relative.with_suffix("").parts))
+
+    def batch_recipe(self, context: CodemodSelectorContext) -> RefactorRecipe:
+        import_graph = context.module_import_graph
+        moves = {
+            path: BatchModuleMove(
+                source_module=import_graph.module_name_for_file_path(path) or "",
+                destination_module=self.module_name_at(self.destinations[path], path),
+            )
+            for path in self.batch_paths
+        }
+        recipe = RefactorRecipe(
+            recipe_id="relocate-batch",
+            reason="Relocate every name each flat module of the table declares into "
+            "its package, in one stage.",
+        )
+        for path, own in moves.items():
+            destination = self.destinations[path]
+            recipe = recipe.with_operation(
+                (
+                    RelocateSymbolsToModuleOperation
+                    if destination in context.module_nodes_by_file_path
+                    else RelocateSymbolsToNewModuleOperation
+                )(
+                    target=SourceRewriteTarget(file_path=path),
+                    symbol_qualnames=self.declared_names(path),
+                    destination_path=destination,
+                    batch=tuple(move for move in moves.values() if move is not own),
+                )
+            )
+        return recipe
+
+    @cached_property
     def next_path(self) -> str | None:
         """The one module that moves next: an emptied module dissolves before
         anything else relocates; otherwise the first top-layer module by path
@@ -436,6 +495,11 @@ class PackageMoveFindingRecipeSynthesizer(
                 + ", so no move order keeps either importable: declare one "
                 "merging into the other (`a.py` merges into `b.py`)"
             )
+        batch = layers.batch_paths
+        if batch:
+            if source_path != batch[0]:
+                return self.rejected_evaluation(f"moves in {batch[0]}'s batch")
+            return self.executable_evaluation(layers.batch_recipe(context))
         if layers.next_path is None:
             return self.rejected_evaluation(
                 "every flat module of the table is imported by another one that "

@@ -15,7 +15,7 @@ from collections.abc import (
     Iterator,
     Mapping,
 )
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from itertools import product
 from pathlib import Path, PurePosixPath
 from typing import ClassVar, cast
@@ -60,7 +60,9 @@ from nominal_refactor_advisor.codemod_module_move_reports import (
 from nominal_refactor_advisor.codemod_operations import RefactorRecipeOperation
 from nominal_refactor_advisor.codemod_paths import SourcePathResolutionAuthority
 from nominal_refactor_advisor.codemod_payload import (
+    CodemodPayloadRecord,
     OptionalStringPayloadValueCodec,
+    PayloadRecordArrayValueCodec,
     RequiredIntegerPayloadValueCodec,
     RequiredStringPayloadValueCodec,
     StringArrayPayloadValueCodec,
@@ -1422,6 +1424,11 @@ class SourceTopLevelSymbolClosureMovePlan(SourceTopLevelSymbolClosureMoveCarrier
     source_binding_import_sources: tuple[str, ...]
     name_redirect: RelocationNameRedirect
     consumer_edits: tuple[NominalSourceEdit, ...]
+    batch: tuple[BatchModuleMove, ...] = ()
+
+    @property
+    def batch_modules(self) -> dict[str, str]:
+        return {move.source_module: move.destination_module for move in self.batch}
 
     @classmethod
     def from_request(
@@ -1525,10 +1532,26 @@ class SourceTopLevelSymbolClosureMovePlan(SourceTopLevelSymbolClosureMoveCarrier
             ),
             *name_redirect.consumer_edits(
                 context,
-                excluded_paths=frozenset((request.source_path, request.destination_path)),
+                excluded_paths=frozenset(
+                    (
+                        request.source_path,
+                        request.destination_path,
+                        *(
+                            source_file.file_path
+                            for move in operation.batch
+                            for source_file in (
+                                import_graph.unique_source_file_for_module_name(
+                                    move.source_module
+                                ),
+                            )
+                            if source_file is not None
+                        ),
+                    )
+                ),
             ),
         )
         return cls(
+            batch=operation.batch,
             source_path=request.source_path,
             destination_path=request.destination_path,
             source_blocks=tuple(
@@ -1921,6 +1944,7 @@ class SourceTopLevelSymbolClosureMovePlan(SourceTopLevelSymbolClosureMoveCarrier
                     import_source=dependency.destination_source(
                         context.module_import_graph,
                         self.destination_path,
+                        self.batch_modules,
                     ),
                     scope=dependency.scope,
                     rationale=self.rationale
@@ -2009,7 +2033,7 @@ class SourceTopLevelSymbolClosureMovePlan(SourceTopLevelSymbolClosureMoveCarrier
         insertion_line: int,
         context: CodemodSelectorContext,
     ) -> str:
-        rebase = _MovedRelativeImports.of(context, self.source_path)
+        rebase = _MovedImports.of(context, self.source_path, self.batch_modules)
         moved_source = "\n\n\n".join(
             self.name_redirect.moved_text(
                 context.module_import_graph,
@@ -2042,11 +2066,29 @@ class RetainedCallOperation(RepositorySourceReprovedOperation, ABC):
     )
 
 
+@dataclass(frozen=True)
+class BatchModuleMove(CodemodPayloadRecord):
+    """A module another move of the same stage takes, whole, to a new home."""
+
+    source_module: str = codemod_payload_field(RequiredStringPayloadValueCodec())
+    destination_module: str = codemod_payload_field(RequiredStringPayloadValueCodec())
+
+
 @dataclass(frozen=True, kw_only=True)
 class ModuleSymbolMoveOperation(RepositorySourceReprovedOperation, ABC):
     """Repository-proved destination contract for module-symbol moves."""
 
     destination_path: str = codemod_payload_field(SourcePathPayloadValueCodec())
+    batch: tuple[BatchModuleMove, ...] = codemod_payload_field(
+        PayloadRecordArrayValueCodec(BatchModuleMove), default=()
+    )
+    """The other moves of the same stage. Every move derives from the stage's
+    starting state, so the code this one carries names each batch module at its
+    new home, and this move leaves the batch's sources to their own moves."""
+
+    @property
+    def batch_modules(self) -> dict[str, str]:
+        return {move.source_module: move.destination_module for move in self.batch}
 
     def module_context_names_following(
         self,
@@ -4282,50 +4324,67 @@ class RetargetModuleMentionsOperation(RetainedCallOperation):
         ).edits(context)
 
 
-_RELATIVE_FROM = re.compile(r"from\s+(\.+)([\w.]*)(?=\s+import\b)")
+_FROM_MODULE = re.compile(r"from\s+(\.*)([\w.]*)(?=\s+import\b)")
 
 
 @dataclass(frozen=True)
-class _MovedRelativeImports:
-    """A moved block's relative imports, named absolutely at the destination.
+class _MovedImports:
+    """A moved block's from-imports, named absolutely at the destination and
+    pointed at the new home of every module the same stage moves.
 
     Top-level imports the block needs are re-derived by the move's dependency
-    report; a relative import inside the block's body (a function-local
-    ``from .x import Y``) moves with the text. It is resolved against the source
-    package, where it was written, and written with that module's absolute name:
-    text NRA writes names its modules absolutely."""
+    report; an import inside the block's body (a function-local
+    ``from .x import Y``, or one under ``if TYPE_CHECKING:``) moves with the text.
+    A relative one is resolved against the source package, where it was written,
+    and written with that module's absolute name: text NRA writes names its
+    modules absolutely. One naming a module the batch moves names its new home,
+    since every move of the batch derives from the stage's starting state.
+    A bare ``import`` of a batch module is refused: its readers spell the old
+    dotted path."""
 
     source_identity: PythonModulePathIdentity
+    moved_modules: Mapping[str, str] = field(default_factory=dict)
 
     @classmethod
     def of(
         cls,
         context: CodemodSelectorContext,
         source_path: str,
-    ) -> _MovedRelativeImports:
+        moved_modules: Mapping[str, str],
+    ) -> _MovedImports:
         source_file = context.module_import_graph.source_file_for_path(source_path)
         if source_file is None:
             raise ValueError("A move resolves relative imports in its source module's package")
-        return cls(source_file.module_path_identity)
+        return cls(source_file.module_path_identity, moved_modules)
 
     def applied(self, block: str) -> str:
         tree = ast.parse(block)
         geometry = SourceTextGeometry(block)
         replacements: list[tuple[int, int, str]] = []
         for node in ast.walk(tree):
-            if not (isinstance(node, ast.ImportFrom) and node.level):
+            if isinstance(node, ast.Import) and any(
+                alias.name in self.moved_modules for alias in node.names
+            ):
+                raise ValueError(
+                    f"The block imports a module its stage moves as a module at "
+                    f"line {node.lineno}; its readers spell the old dotted path"
+                )
+            if not isinstance(node, ast.ImportFrom):
                 continue
-            start, _end = geometry.required_node_offsets(node)
-            match = _RELATIVE_FROM.match(block, start)
-            if match is None:
-                raise ValueError(f"Cannot read the relative import at block line {node.lineno}")
             absolute = self.source_identity.resolve_import_from_module(
                 imported_module=node.module,
                 level=node.level,
             )
             if absolute is None:
                 raise ValueError(f"Relative import at block line {node.lineno} leaves the package")
-            replacements.append((start, match.end(), f"from {absolute}"))
+            named = self.moved_modules.get(absolute, absolute)
+            if not node.level and named == node.module:
+                continue
+            start, _end = geometry.required_node_offsets(node)
+            spelled = _FROM_MODULE.match(block, start)
+            if spelled is None:
+                raise ValueError(f"Cannot read the import at block line {node.lineno}")
+            replacements.append((start, spelled.end(), f"from {named}"))
         for start, end, text in sorted(replacements, reverse=True):
             block = block[:start] + text + block[end:]
         return block
