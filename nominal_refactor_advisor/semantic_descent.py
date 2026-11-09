@@ -2945,11 +2945,7 @@ class SemanticDescentGraphModuleOverlay:
         ).resolve()
 
     def merged_class_index(self) -> ClassFamilyIndex:
-        if self.base_graph.class_index is None:
-            raise ValueError("semantic graph overlay requires a cached class index")
-        return ClassFamilyIndexBuilder(
-            self.modules, previous=self.base_graph.class_index
-        ).build()
+        return ClassFamilyIndexBuilder(self.modules).build()
 
     def merged_projections(
         self,
