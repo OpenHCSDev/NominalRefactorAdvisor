@@ -189,7 +189,14 @@ class FromModuleImportBindingIdentity(ModuleImportBindingIdentity):
     def moved(
         self, moved_modules: Mapping[str, str], bound_name: str
     ) -> FromModuleImportBindingIdentity:
+        """`from pkg.a import Name` follows `pkg.a` to its new home; `from pkg import a`,
+        where `a` is itself a moved module, imports `a`'s new home from its new parent
+        package (bound as before, `source_for` aliases a renamed leaf)."""
         del bound_name
+        peer = moved_modules.get(f"{self.module_name}.{self.member_name}")
+        if peer is not None:
+            parent, _, leaf = peer.rpartition(".")
+            return replace(self, module_name=parent, member_name=leaf)
         return replace(
             self, module_name=moved_modules.get(self.module_name, self.module_name)
         )
