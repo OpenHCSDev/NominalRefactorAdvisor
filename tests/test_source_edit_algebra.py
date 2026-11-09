@@ -593,6 +593,22 @@ def test_import_mutation_refuses_to_erase_import_comments(tmp_path: Path) -> Non
         mutation.resolved_edits(context)
 
 
+def test_import_mutation_keeps_the_comment_trailing_a_one_line_import(tmp_path: Path) -> None:
+    module_path, context = _snapshot(
+        tmp_path,
+        "from .types import Alpha  # noqa: E402\n\n\nVALUE = 1\n",
+    )
+    mutation = ModuleImportMutation.from_source(
+        file_path=module_path.as_posix(),
+        import_source="from .types import Beta\n",
+    )
+
+    physical = mutation.resolved_edits(context)
+
+    assert len(physical) == 1
+    assert physical[0].replacement_lines == ("from .types import Alpha, Beta  # noqa: E402\n",)
+
+
 def test_import_mutation_preserves_group_boundaries_for_multiple_additions(
     tmp_path: Path,
 ) -> None:

@@ -348,6 +348,18 @@ def _indented_source_for_statement(
     )
 
 
+def _trailing_comment(source: str, statement: ast.stmt) -> str | None:
+    """The comment ending a one-line statement's line: it is about that statement, so a
+    rewrite of the statement keeps it there. A statement spanning lines, or sharing its line
+    with another statement, has no trailing comment of its own."""
+
+    if statement.lineno != statement.end_lineno or statement.end_col_offset is None:
+        return None
+    line = source.splitlines()[statement.lineno - 1].encode()
+    tail = line[statement.end_col_offset:].decode().strip()
+    return tail if tail.startswith("#") else None
+
+
 def _node_contains_comment(source: str, node: ast.AST) -> bool:
     if not hasattr(node, "lineno") or not hasattr(node, "end_lineno"):
         return False
@@ -845,7 +857,8 @@ class ModuleImportMutation(KeyedSourceEditCoalescence):
             aliases = tuple(aliases_by_statement[id(statement)])
             if aliases == original_aliases:
                 continue
-            if _node_contains_comment(source, statement):
+            comment = _trailing_comment(source, statement)
+            if comment is None and _node_contains_comment(source, statement):
                 raise ValueError(
                     f"Cannot rewrite commented import at {self.file_path!r}:"
                     f"{statement.lineno}"
@@ -870,6 +883,14 @@ class ModuleImportMutation(KeyedSourceEditCoalescence):
                 .with_aliases(aliases)
                 .source_in(self.file_path)
             )
+            if comment is not None and id(statement) not in preserved_empty_guard_statement_ids:
+                rewritten = replacement_source.splitlines()
+                if len(rewritten) != 1:
+                    raise ValueError(
+                        f"Cannot rewrite commented import at {self.file_path!r}:"
+                        f"{statement.lineno}: the rewrite spans lines and the comment ends one"
+                    )
+                replacement_source = f"{rewritten[0]}  {comment}\n"
             if scope.is_guarded and replacement_source:
                 replacement_source = _indented_source_for_statement(
                     source,
