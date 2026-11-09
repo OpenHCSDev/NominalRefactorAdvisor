@@ -139,6 +139,7 @@ from nominal_refactor_advisor.detectors import _structural as structural_detecto
 from nominal_refactor_advisor.detectors import _systemic as systemic_detectors
 from nominal_refactor_advisor.models import (
     FindingSpec,
+    PackageDestinationMetrics,
     RefactorFinding,
     SourceLocation,
 )
@@ -1154,6 +1155,50 @@ def test_cross_checkout_finding_rebase_preserves_declared_evidence_roles(
         rebased.authority_evidence.file_path
         == (target_root / "authority.py").as_posix()
     )
+
+
+def test_cross_checkout_finding_rebase_moves_the_paths_its_metrics_name(
+    tmp_path: Path,
+) -> None:
+    """A package move plans from its finding's metrics: a cached finding moved to
+    another checkout with its evidence rebased but its cluster paths left behind
+    names modules that are 'already gone' and refuses every relocate."""
+
+    source_root = tmp_path / "source"
+    target_root = tmp_path / "target"
+    for root in (source_root, target_root):
+        (root / "pkg").mkdir(parents=True)
+    flat = source_root / "flat.py"
+    flat.touch()
+    finding = FindingSpec(
+        pattern_id=PatternId.NOMINAL_BOUNDARY,
+        title="Package destination",
+        why="package destination",
+        capability_gap="package destination",
+        relation_context="package destination",
+    ).build(
+        "package_destination_cache_detector",
+        "flat.py belongs in pkg/flat.py",
+        (SourceLocation(flat.as_posix(), 1, "<module>"),),
+        metrics=PackageDestinationMetrics(
+            destination_path=(source_root / "pkg" / "flat.py").as_posix(),
+            cluster_paths=(flat.as_posix(),),
+            cluster_destination_paths=((source_root / "pkg" / "flat.py").as_posix(),),
+        ),
+    )
+
+    rebased = analysis_cache_module._rebase_findings(
+        (finding,),
+        (source_root.as_posix(),),
+        (target_root.as_posix(),),
+    )[0]
+
+    metrics = rebased.metrics
+    assert isinstance(metrics, PackageDestinationMetrics)
+    assert rebased.evidence[0].file_path == (target_root / "flat.py").as_posix()
+    assert metrics.cluster_paths == ((target_root / "flat.py").as_posix(),)
+    assert metrics.destination_path == (target_root / "pkg" / "flat.py").as_posix()
+    assert metrics.cluster_destination_paths == (metrics.destination_path,)
 
 
 def test_exact_finding_cache_chunks_pickles_and_loads_legacy_payloads(

@@ -363,6 +363,12 @@ class FindingMetrics(SemanticRecord, ABC):
 
         return ()
 
+    def with_checkout_paths(self, rebase: Callable[[str], str]) -> Self:
+        """These metrics with every source path they name moved by `rebase`, as
+        a cached finding moves to another checkout. Most metrics name none."""
+
+        return self
+
     def semantic_fact_names(self) -> tuple[str, ...]:
         """Return declaration-owned fact names for descent graphs."""
 
@@ -488,6 +494,15 @@ class PackageDestinationMetrics(FindingMetrics):
     cluster_destination_paths: tuple[str, ...]
     cluster_merge_source_paths: tuple[str, ...] = ()
     """The cluster's modules a row declares merging into another."""
+
+    def with_checkout_paths(self, rebase: Callable[[str], str]) -> Self:
+        return replace(
+            self,
+            destination_path=rebase(self.destination_path),
+            cluster_paths=tuple(map(rebase, self.cluster_paths)),
+            cluster_destination_paths=tuple(map(rebase, self.cluster_destination_paths)),
+            cluster_merge_source_paths=tuple(map(rebase, self.cluster_merge_source_paths)),
+        )
 
 
 @dataclass(frozen=True)
@@ -1159,6 +1174,19 @@ class RefactorFinding(FindingSemantics):
             projection_evidence=projection_evidence,
             authority_evidence=authority_evidence,
         )
+
+    def with_checkout_paths(self, rebase: Callable[[str], str]) -> Self:
+        """This finding moved to another checkout: its evidence and every source
+        path its metrics name, both by `rebase`."""
+
+        moved = self.map_evidence(
+            lambda location: (
+                replace(location, file_path=rebase(location.file_path))
+                if location.file_path
+                else location
+            )
+        )
+        return replace(moved, metrics=self.metrics.with_checkout_paths(rebase))
 
     @property
     def primary_evidence(self) -> SourceLocation | None:
