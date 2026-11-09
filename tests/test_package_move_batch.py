@@ -523,10 +523,10 @@ def test_a_shell_whose_own_dissolve_refuses_stays_and_the_rest_still_move(
     tmp_path: Path,
 ) -> None:
     """`held` and `plain` only re-export `Alpha` and dissolve before anything
-    relocates. Neither has a module to dissolve into, so each refuses on its own;
-    that used to refuse the whole dissolve stage and left `alpha` waiting behind
-    `held` forever. Each shell now stays with its reason and `alpha` moves, its
-    re-exports following it."""
+    relocates. `held` also runs as a script, and no successor module exists to run
+    that block from, so its dissolve refuses on its own; that used to refuse the
+    whole dissolve stage and left `alpha` waiting behind `held` forever. `held` now
+    stays with its reason, `plain` dissolves, and `alpha` moves."""
 
     _write(
         tmp_path,
@@ -534,7 +534,9 @@ def test_a_shell_whose_own_dissolve_refuses_stays_and_the_rest_still_move(
             "pkg/__init__.py": "",
             "pkg/messaging/__init__.py": "",
             "pkg/alpha.py": "class Alpha:\n    kind = 'a'\n",
-            "pkg/held.py": "from pkg.alpha import Alpha\n",
+            "pkg/held.py": (
+                "from pkg.alpha import Alpha\n\nif __name__ == '__main__':\n    print(Alpha.kind)\n"
+            ),
             "pkg/plain.py": "from pkg.alpha import Alpha\n",
             "pkg/app.py": (
                 "import pkg.held as held\nfrom pkg.plain import Alpha\n\n"
@@ -554,14 +556,15 @@ def test_a_shell_whose_own_dissolve_refuses_stays_and_the_rest_still_move(
         migration_type=PackageMoveConcept,
         guard_suite=ArchitectureGuardSuite(),
     ).run()
-    assert report.to_markdown().count("stays: its dissolve refused") == 2
+    assert report.to_markdown().count("stays: its dissolve refused") == 1
     replay = report.replay_sequence.simulate(
         CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     )
     assert replay.is_clean
     replay.apply()
     assert not (tmp_path / "pkg/alpha.py").exists()
-    assert (tmp_path / "pkg/plain.py").read_text() == "from pkg.messaging.alpha import Alpha\n"
+    assert not (tmp_path / "pkg/plain.py").exists()
+    assert (tmp_path / "pkg/held.py").exists()
     assert _runs(tmp_path, "VALUE") == "('a', 'a')"
 
 
@@ -704,3 +707,73 @@ def test_a_refusing_module_first_in_line_no_longer_holds_back_the_rest(
     assert (tmp_path / "pkg/astamp.py").exists()
     assert (tmp_path / "pkg/messaging/zeta.py").exists()
     assert _runs(tmp_path, "VALUE") == "('pkg', 'z')"
+
+
+def test_a_re_export_shell_named_in_a_table_dissolves_without_a_successor_module(
+    tmp_path: Path,
+) -> None:
+    """`plain` only re-exports `Alpha`. Its row names `messaging/plain.py`, which
+    nothing creates, and no string or script names `plain`, so nothing needs a
+    successor: it dissolves, its consumer importing `Alpha` from its new home."""
+
+    _write(
+        tmp_path,
+        {
+            "pkg/__init__.py": "",
+            "pkg/messaging/__init__.py": "",
+            "pkg/alpha.py": "class Alpha:\n    kind = 'a'\n",
+            "pkg/plain.py": "from pkg.alpha import Alpha\n",
+            "pkg/app.py": "from pkg.plain import Alpha\n\nVALUE = Alpha.kind\n",
+        },
+    )
+
+    _stages, root = _moved(tmp_path, "| `messaging` | `alpha.py`, `plain.py` | |\n")
+    assert not (root / "pkg/plain.py").exists()
+    assert "from pkg.messaging.alpha import Alpha" in (root / "pkg/app.py").read_text()
+    assert _runs(root, "VALUE") == "a"
+
+
+def test_a_refusal_holds_back_only_the_row_that_refused(tmp_path: Path) -> None:
+    """Three rows move into new modules, one operation class for all three, and
+    `astamp`'s refuses (it reads `__file__`). An operation key names a class of
+    operation, so a refusal matched by key landed on whichever row of the class came
+    last and held `beta` back for `astamp`'s reason. It belongs to `astamp` alone:
+    `alpha` and `beta` move together."""
+
+    _write(
+        tmp_path,
+        {
+            "pkg/__init__.py": "",
+            "pkg/messaging/__init__.py": "",
+            "pkg/alpha.py": "class Alpha:\n    kind = 'a'\n",
+            "pkg/astamp.py": (
+                "from pathlib import Path\n\nROOT = Path(__file__).resolve().parents[0].name\n"
+            ),
+            "pkg/beta.py": "class Beta:\n    kind = 'b'\n",
+            "pkg/app.py": (
+                "from pkg.alpha import Alpha\nfrom pkg.astamp import ROOT\nfrom pkg.beta import Beta\n\n"
+                "VALUE = (Alpha.kind, ROOT, Beta.kind)\n"
+            ),
+        },
+    )
+
+    report = CodemodRefactorGoalRunner(
+        roots=(tmp_path,),
+        config=DetectorConfig(
+            package_destination_tables=(
+                "| `messaging` | `alpha.py`, `astamp.py`, `beta.py` | |\n",
+            )
+        ),
+        dry_run=True,
+        migration_type=PackageMoveConcept,
+        guard_suite=ArchitectureGuardSuite(),
+    ).run()
+    replay = report.replay_sequence.simulate(
+        CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    )
+    assert replay.is_clean
+    replay.apply()
+    assert (tmp_path / "pkg/messaging/alpha.py").exists()
+    assert (tmp_path / "pkg/messaging/beta.py").exists()
+    assert (tmp_path / "pkg/astamp.py").exists()
+    assert _runs(tmp_path, "VALUE") == "('a', 'pkg', 'b')"
