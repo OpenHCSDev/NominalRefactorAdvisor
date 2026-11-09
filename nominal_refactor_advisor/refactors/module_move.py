@@ -22,7 +22,7 @@ from typing import ClassVar, cast
 
 from ..ast_projection import ExpressionReference
 from ..declared_family import ForeignAdapter
-from ..ast_tools import ModuleAnnotationEvaluationMode, ParsedModule
+from ..ast_tools import ModuleAnnotationEvaluationMode, ParsedModule, ParsedModuleFact
 from ..module_node_index import ModuleNodeIndex
 from ..codemod_import_bindings import FromModuleImportBindingIdentity
 from ..codemod_import_graph import SourceModuleImportGraph
@@ -3128,15 +3128,35 @@ class _ProjectManifests:
         return tuple(sorted(manifests))
 
 
+@dataclass(frozen=True)
+class DataFilePathLiterals(ParsedModuleFact):
+    """The string constants of one module that spell a data file's path, such as
+    `"stack/native/repository-inputs.json"`. A fact of the parse, read from its
+    `ModuleNodeIndex`, so an unchanged module is read once per plan."""
+
+    literal: ClassVar[re.Pattern[str]] = re.compile(
+        r"(?:[\w.-]+/)+[\w.-]+\.(?:json|toml|ya?ml|cfg|ini|txt)"
+    )
+    paths: frozenset[str]
+
+    @classmethod
+    def derive(cls, parsed_module: ParsedModule) -> DataFilePathLiterals:
+        return cls(
+            frozenset(
+                node.value
+                for node in parsed_module.fact(ModuleNodeIndex).string_constants
+                if isinstance(node.value, str) and cls.literal.fullmatch(node.value)
+            )
+        )
+
+
 class _CodeReadDataFiles:
     """Data files the indexed code reads by a literal path under its project root,
     such as `root / "stack/native/repository-inputs.json"`. The program consumes
     them, so a project path spelled inside one is a declaration that must stay
-    true; prose and records no code reads keep what they said."""
-
-    literal: ClassVar[re.Pattern[str]] = re.compile(
-        r"""["']((?:[\w.-]+/)+[\w.-]+\.(?:json|toml|ya?ml|cfg|ini|txt))["']"""
-    )
+    true; prose and records no code reads keep what they said. Each file is read
+    as the plan's state has it, so a later stage's carry edits an earlier stage's
+    rewrite, not the file on disk."""
 
     @classmethod
     def path_edits(
@@ -3145,37 +3165,39 @@ class _CodeReadDataFiles:
         operation: RefactorRecipeOperation,
         moves: tuple[tuple[str, str], ...],
     ) -> tuple[TextFileEdit, ...]:
-        sources = context.sources_by_file_path
-        literals = {match.group(1) for text in sources.values() for match in cls.literal.finditer(text)}
+        snapshot = context.execution_snapshot()
+        literals = frozenset().union(
+            *(module.fact(DataFilePathLiterals).paths for module in snapshot.parsed_modules)
+        )
         edits: list[TextFileEdit] = []
-        for manifest in _ProjectManifests.governing(sources):
+        for manifest in _ProjectManifests.governing(snapshot.sources_by_file_path):
             root = manifest.parent
             renames = tuple(
                 (Path(source).relative_to(root).as_posix(), Path(destination).relative_to(root).as_posix())
                 for source, destination in moves
                 if Path(source).is_relative_to(root) and Path(destination).is_relative_to(root)
             )
-            for data in sorted({root / literal for literal in literals if (root / literal).is_file()}):
-                text = data.read_text(encoding="utf-8")
-                replacements = tuple(
-                    SourceTextSpanReplacement.from_offsets(
-                        start_offset=match.start(), end_offset=match.end(), replacement_source=new
-                    )
-                    for old, new in renames
-                    for match in re.finditer(rf"(?<![\w./-]){re.escape(old)}(?![\w./-])", text)
-                )
-                if replacements:
-                    edits.append(
-                        TextFileEdit(
-                            operation_type=type(operation),
-                            file_path=data.as_posix(),
-                            source=text,
-                            replacements=replacements,
-                            rationale=operation.rationale_text(
-                                f"{data.as_posix()!r} names a carried file by its project path."
-                            ),
+            for data in sorted({root / literal for literal in literals}):
+                for file_path, text in snapshot.text_file(data).sources(data.as_posix()).items():
+                    replacements = tuple(
+                        SourceTextSpanReplacement.from_offsets(
+                            start_offset=match.start(), end_offset=match.end(), replacement_source=new
                         )
+                        for old, new in renames
+                        for match in re.finditer(rf"(?<![\w./-]){re.escape(old)}(?![\w./-])", text)
                     )
+                    if replacements:
+                        edits.append(
+                            TextFileEdit(
+                                operation_type=type(operation),
+                                file_path=file_path,
+                                source=text,
+                                replacements=replacements,
+                                rationale=operation.rationale_text(
+                                    f"{file_path!r} names a carried file by its project path."
+                                ),
+                            )
+                        )
         return tuple(edits)
 
 
