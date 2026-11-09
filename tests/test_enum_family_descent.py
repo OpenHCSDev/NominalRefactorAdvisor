@@ -429,7 +429,7 @@ def test_cases_family_keeps_sorted_imports_sorted(tmp_path: Path) -> None:
         "from nominal_refactor_advisor.case_root import Case\n"
     )
     assert rewritten[(tmp_path / "reader.py").as_posix()].startswith(
-        "from need import (\n    Holder,\n    Required,\n    helper,\n)\n"
+        "from need import Holder, Required, helper\n"
     )
 
 
@@ -543,7 +543,7 @@ def test_cases_family_follows_a_re_export_to_the_enum(tmp_path: Path) -> None:
     assert simulation.is_clean is True
     rewritten = simulation.simulation.rewritten_sources
     assert rewritten[(tmp_path / "hub.py").as_posix()] == (
-        "from need import (\n    Forbidden,\n    Need as Need,\n)\n\n"
+        "from need import Forbidden, Need as Need\n\n"
         "assert Forbidden.value\n"
     )
     assert rewritten[(tmp_path / "reader.py").as_posix()] == (

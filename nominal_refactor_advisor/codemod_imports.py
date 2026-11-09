@@ -48,6 +48,8 @@ if TYPE_CHECKING:
 class ImportBlockInsertionPointABC(ABC):
     """Shared insertion geometry for one contiguous Python import block."""
 
+    file_path: str
+
     @property
     @abstractmethod
     def scope(self) -> ModuleImportScope:
@@ -108,13 +110,12 @@ class ImportBlockInsertionPointABC(ABC):
         source: str,
         slot: ImportInsertionSlot,
         additions: tuple[RequestedImportStatement, ...],
-        file_path: str,
     ) -> str:
-        """Render additions in `file_path` with any required following group boundary."""
+        """Render additions with any required following group boundary."""
 
         existing_imports = self.leading_import_statements
-        inserted_source = RequestedImportBlock(additions).source_after(
-            slot.previous_statement(self), file_path
+        inserted_source = RequestedImportBlock(additions, self.file_path).source_after(
+            slot.previous_statement(self)
         )
         if (
             slot.index < len(existing_imports)
@@ -294,6 +295,7 @@ class TypeCheckingGuardImportInsertionPoint(ImportBlockInsertionPointABC):
 
     source: str
     guard: ast.If
+    file_path: str
 
     @property
     def scope(self) -> ModuleImportScope:
@@ -864,7 +866,7 @@ class ModuleImportMutation(KeyedSourceEditCoalescence):
                 if id(statement) in preserved_empty_guard_statement_ids
                 else RequestedImportStatement(statement, scope=scope)
                 .with_aliases(aliases)
-                .source
+                .source_in(self.file_path)
             )
             if scope.is_guarded and replacement_source:
                 replacement_source = _indented_source_for_statement(
@@ -970,7 +972,6 @@ class ModuleImportMutation(KeyedSourceEditCoalescence):
             source=source,
             slot=slot,
             additions=additions,
-            file_path=self.file_path,
         )
         spacing = DestinationInsertionSpacing.from_source(
             source,
@@ -994,7 +995,9 @@ class ModuleImportMutation(KeyedSourceEditCoalescence):
         guard: ast.If,
         additions: tuple[RequestedImportStatement, ...],
     ) -> tuple[SourceInsertion, ...]:
-        insertion_point = TypeCheckingGuardImportInsertionPoint(source, guard)
+        insertion_point = TypeCheckingGuardImportInsertionPoint(
+            source, guard, self.file_path
+        )
         existing_imports = insertion_point.leading_import_statements
         return tuple(
             self._guarded_import_group_insertion(
@@ -1021,7 +1024,6 @@ class ModuleImportMutation(KeyedSourceEditCoalescence):
             source=source,
             slot=slot,
             additions=additions,
-            file_path=self.file_path,
         )
         if slot.index == len(existing_imports):
             if len(existing_imports) < len(insertion_point.guard.body):
@@ -1066,11 +1068,13 @@ class ModuleImportMutation(KeyedSourceEditCoalescence):
             for addition in runtime_additions
             if insertion_point.insertion_index_for(addition) != import_boundary_index
         )
-        runtime_source = RequestedImportBlock(boundary_runtime_additions).source_after(
-            insertion_point.previous_import_statement, self.file_path
+        runtime_source = RequestedImportBlock(
+            boundary_runtime_additions, self.file_path
+        ).source_after(
+            insertion_point.previous_import_statement
         )
-        guarded_source = RequestedImportBlock(guarded_additions).source_after(
-            None, self.file_path
+        guarded_source = RequestedImportBlock(guarded_additions, self.file_path).source_after(
+            None
         )
         separator_before_guard = (
             "\n"
@@ -1296,8 +1300,24 @@ class RequestedImportStatement:
     def bound_names(self) -> tuple[str, ...]:
         return self.declaration.names()
 
+    def source_in(self, file_path: str) -> str:
+        """This import as written into `file_path`, fitted to its line length."""
+
+        return self._rendered(ImportLayout.of(self.statement, file_path))
+
     @property
-    def source(self) -> str:
+    def one_name_source(self) -> str:
+        """The source of an import of exactly one name, which every layout
+        writes on one line, so no file's line length decides it."""
+
+        if len(self.statement.names) != 1:
+            raise ValueError(
+                f"An import of {len(self.statement.names)} names needs its file's layout: "
+                f"{ast.unparse(self.statement)!r}"
+            )
+        return self._rendered(OneLineImportLayout())
+
+    def _rendered(self, layout: ImportLayout) -> str:
         if isinstance(self.statement, ast.Import):
             return "".join(
                 f"import {ImportFromSource.alias_source(alias)}\n"
@@ -1306,20 +1326,7 @@ class RequestedImportStatement:
         return ImportFromSource(
             module_name=ImportFromModuleName.from_node(self.statement).source,
             aliases=tuple(self.statement.names),
-            layout=ImportLayout.as_written(self.statement),
-        ).source
-
-    def source_in(self, file_path: str) -> str:
-        """This import as written into `file_path`: in its own layout, fitted to
-        the file's line limit, so a merge of one-line requests that no longer fits
-        becomes a column."""
-
-        if isinstance(self.statement, ast.Import):
-            return self.source
-        return ImportFromSource(
-            module_name=ImportFromModuleName.from_node(self.statement).source,
-            aliases=tuple(self.statement.names),
-            layout=ImportLayout.of(self.statement, file_path),
+            layout=layout,
         ).source
 
     def with_aliases(
@@ -1354,11 +1361,11 @@ class RequestedImportBlock:
     """Canonical source for a group of requested import statements."""
 
     statements: tuple[RequestedImportStatement, ...]
+    file_path: str
 
     def source_after(
         self,
         previous_statement: ast.Import | ast.ImportFrom | None,
-        file_path: str,
     ) -> str:
         previous = (
             RequestedImportStatement(previous_statement)
@@ -1372,7 +1379,7 @@ class RequestedImportBlock:
                 and previous.source_group is not statement.source_group
             ):
                 source_parts.append("\n")
-            source_parts.append(statement.source_in(file_path))
+            source_parts.append(statement.source_in(self.file_path))
             previous = statement
         return "".join(source_parts)
 
@@ -1395,15 +1402,19 @@ class ImportLayout(ABC):
         return f"{head}(\n{alias_lines})\n"
 
     @classmethod
-    def of(cls, statement: ast.ImportFrom, file_path: str) -> ImportLayout:
+    def of(cls, statement: ast.Import | ast.ImportFrom, file_path: str) -> ImportLayout:
         """The layout of `statement` as written in `file_path`: a parenthesised
         import stays a column, a one-line import stays one line while it fits."""
 
-        if statement.end_lineno != statement.lineno:
-            return ColumnImportLayout()
-        return FittedImportLayout(
-            DeclaredRoot.line_length_for(Path(file_path)) - statement.col_offset
-        )
+        match statement:
+            case ast.ImportFrom(lineno=int(start), end_lineno=int(end)) if end != start:
+                return ColumnImportLayout()
+            case ast.ImportFrom(col_offset=int(indent)):
+                return FittedImportLayout(
+                    DeclaredRoot.line_length_for(Path(file_path)) - indent
+                )
+        # Built in code, not written anywhere: a new import, fitted to the file.
+        return cls.fitted(file_path)
 
     @classmethod
     def fitted(cls, file_path: str) -> ImportLayout:
@@ -1412,11 +1423,9 @@ class ImportLayout(ABC):
         return FittedImportLayout(DeclaredRoot.line_length_for(Path(file_path)))
 
     @classmethod
-    def as_written(cls, statement: ast.ImportFrom) -> ImportLayout:
-        """An import rendered again from the statement its requester wrote."""
+    def in_string(cls) -> ImportLayout:
+        """An import written inside a string literal, which keeps it on one line."""
 
-        if statement.end_lineno != statement.lineno:
-            return ColumnImportLayout()
         return OneLineImportLayout()
 
 
