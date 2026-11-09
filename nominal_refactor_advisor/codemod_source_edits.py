@@ -14,7 +14,7 @@ from abc import (
     ABC,
     abstractmethod,
 )
-from collections import defaultdict
+from collections import Counter, defaultdict
 from collections.abc import (
     Callable,
     Hashable,
@@ -969,28 +969,35 @@ class SourceFileCreation(NominalSourceEdit):
 
         return self.operation_type.operation_key()
 
+    @classmethod
+    def distinct(cls, creations: Iterable[SourceFileCreation]) -> tuple[SourceFileCreation, ...]:
+        """Creations of one path with one text are one creation: two moves into
+        one new package both declare its empty `__init__.py`."""
+
+        return tuple(
+            {(creation.file_path, creation.source): creation for creation in creations}.values()
+        )
+
+    @staticmethod
+    def conflicting_paths(creations: tuple[SourceFileCreation, ...]) -> tuple[str, ...]:
+        """Paths that distinct creations give different texts."""
+
+        paths = Counter(creation.file_path for creation in creations)
+        return tuple(sorted(path for path, count in paths.items() if count > 1))
+
     def coalesced_with_peers(
         self,
         peers: tuple[NominalSourceEdit, ...],
         context: CodemodSelectorContext,
     ) -> tuple[NominalSourceEdit, ...]:
         del context
-        creations_by_path: dict[str, list[SourceFileCreation]] = defaultdict(list)
-        for peer in peers:
-            creation = cast(SourceFileCreation, peer)
-            creations_by_path[creation.file_path].append(creation)
-        duplicate_paths = tuple(
-            sorted(
-                file_path
-                for file_path, creations in creations_by_path.items()
-                if len(creations) > 1
-            )
-        )
+        creations = SourceFileCreation.distinct(cast(SourceFileCreation, peer) for peer in peers)
+        duplicate_paths = SourceFileCreation.conflicting_paths(creations)
         if duplicate_paths:
             raise ValueError(
                 f"Source files require one creation authority: {duplicate_paths!r}"
             )
-        return tuple(creations[0] for creations in creations_by_path.values())
+        return creations
 
     def resolved_windows(
         self,

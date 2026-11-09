@@ -493,11 +493,9 @@ class CodemodSourceSnapshot(CodemodSelectorContext):
         self,
         creations: Iterable[SourceFileCreation],
     ) -> CodemodSourceSnapshot:
-        creation_tuple = tuple(creations)
+        creation_tuple = SourceFileCreation.distinct(creations)
         path_tuple = tuple(creation.file_path for creation in creation_tuple)
-        duplicate_paths = tuple(
-            sorted(path for path, count in Counter(path_tuple).items() if count > 1)
-        )
+        duplicate_paths = SourceFileCreation.conflicting_paths(creation_tuple)
         existing_paths = tuple(
             sorted(set(path_tuple).intersection(self.sources_by_file_path))
         )
@@ -1255,7 +1253,13 @@ class CodemodPlanDocument(SourceRewriteReferences, CodemodPlanRoot):
         self,
         snapshot: CodemodSourceSnapshot,
     ) -> CodemodSourceSnapshot:
-        return snapshot.with_source_file_creations(
+        return snapshot.with_source_file_creations(self.source_file_creations(snapshot))
+
+    def source_file_creations(
+        self,
+        snapshot: CodemodSourceSnapshot,
+    ) -> tuple[SourceFileCreation, ...]:
+        return tuple(
             creation
             for recipe in self.recipes
             for creation in recipe.source_file_creations(snapshot)
@@ -1348,6 +1352,7 @@ class CodemodPlanDocumentPreflight:
                 edit_batch.planned_rewrites,
                 backend=backend,
             )
+            .with_creations(self.document.source_file_creations(self.base_snapshot))
             .with_deletions(self.document.source_file_deletions(self.rewrite_snapshot))
             .with_text_file_rewrites(
                 TextFileChange.rewrites(self.document.text_file_changes(self.rewrite_snapshot))
@@ -1718,6 +1723,23 @@ class CodemodSimulationReport(DataclassJsonReport):
                 text_file_rewrites[file_path] for file_path in sorted(text_file_rewrites)
             ),
         )
+
+    def with_creations(
+        self,
+        creations: Iterable[SourceFileCreation],
+    ) -> CodemodSimulationReport:
+        """The same rewrites, plus each created source file no rewrite fills, as its
+        creation declares it: an empty `__init__.py` is written although no edit
+        touches it."""
+
+        unfilled = {
+            creation.file_path: creation.source
+            for creation in creations
+            if creation.file_path not in self.rewritten_sources
+        }
+        if not unfilled:
+            return self
+        return replace(self, rewritten_sources={**self.rewritten_sources, **unfilled})
 
     def with_deletions(
         self,

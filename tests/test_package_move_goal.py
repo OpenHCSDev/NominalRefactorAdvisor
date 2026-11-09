@@ -831,3 +831,41 @@ def test_an_import_that_only_runs_a_moved_module_runs_where_its_declarations_wen
         assert imported.returncode == 0, imported.stderr
         assert imported.stdout.strip() == "['ToolTable']"
 
+
+
+def test_a_move_into_a_new_subpackage_declares_it(tmp_path: Path) -> None:
+    """`pkg/execution` is a declared package, so the `selected` directory a move
+    creates under it is declared too, with an empty `__init__.py`, instead of
+    being left a namespace package that relative imports cannot reach."""
+
+    _write(tmp_path, "pkg/__init__.py", "")
+    _write(tmp_path, "pkg/execution/__init__.py", "")
+    _write(tmp_path, "pkg/selected_claim.py", "class Claim:\n    held = 1\n")
+    _write(tmp_path, "pkg/selected_plan.py", "class Plan:\n    steps = 2\n")
+    _write(
+        tmp_path,
+        "pkg/app.py",
+        "from pkg.selected_claim import Claim\nfrom pkg.selected_plan import Plan\n\n"
+        "VALUE = (Claim.held, Plan.steps)\n",
+    )
+    table = """
+| Package | Existing owners | What belongs here |
+|---|---|---|
+| `execution` | `selected_claim` moves to `execution/selected/claim`, `selected_plan` moves to `execution/selected/plan` | Selected turns. |
+"""
+    report = _goal(tmp_path, table)
+
+    assert report.stop_reason is CodemodWorkflowStopReason.ACHIEVED, report.to_markdown()
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    replay = report.replay_sequence.simulate(snapshot)
+    assert replay.is_clean
+    replay.apply()
+    assert (tmp_path / "pkg/execution/selected/__init__.py").read_text() == ""
+    assert (tmp_path / "pkg/execution/selected/claim.py").is_file()
+    assert (tmp_path / "pkg/execution/selected/plan.py").is_file()
+    imported = subprocess.run(
+        [sys.executable, "-c", "from pkg.app import VALUE; print(VALUE)"],
+        cwd=tmp_path, capture_output=True, text=True, check=False,
+    )
+    assert imported.returncode == 0, imported.stderr
+    assert imported.stdout.strip() == "(1, 2)"

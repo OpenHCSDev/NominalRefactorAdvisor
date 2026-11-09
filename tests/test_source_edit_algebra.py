@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -660,9 +661,12 @@ def test_file_creation_is_explicit_and_has_one_authority(tmp_path: Path) -> None
     assert resolved[0].file_path == module_path.as_posix()
     assert resolved[0].insertion_line == 1
     assert resolved[0].inserted_lines == ()
+    assert NominalSourceEdit.coalesced_by_declaration(
+        (creation, creation), virtual_context
+    ) == (creation,)
     with pytest.raises(ValueError, match="one creation authority"):
         NominalSourceEdit.coalesced_by_declaration(
-            (creation, creation), virtual_context
+            (creation, replace(creation, source="VALUE = 2\n")), virtual_context
         )
 
 
