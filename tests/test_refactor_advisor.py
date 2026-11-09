@@ -9558,7 +9558,7 @@ def test_new_module_closure_extraction_derives_transitive_local_dependencies(
     assert rewritten_destination.startswith("from __future__ import annotations\n")
     assert "class Root" in rewritten_destination
     assert simulation.simulation.rewritten_sources[consumer_path.as_posix()].startswith(
-        "from pkg.extracted import Root\n" "from .source import Unrelated\n"
+        "from pkg.extracted import Root\n\n" "from .source import Unrelated\n"
     )
     simulation.apply()
     imported = subprocess.run(
@@ -10377,7 +10377,7 @@ def test_symbol_move_rewrites_repository_consumer_imports(
     ]
 
     assert rewritten_consumer.startswith(
-        "from pkg.destination import Helper as ImportedHelper\n"
+        "from pkg.destination import Helper as ImportedHelper\n\n"
         "from .source import Unmoved\n"
     )
     assert set(simulation.apply()) == {
