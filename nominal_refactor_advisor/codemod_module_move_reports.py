@@ -61,7 +61,7 @@ class ModuleMoveImportDependency(DataclassJsonReport):
         """The import at the destination, naming each module its stage moves at
         that module's new home."""
 
-        return self.identity.moved(moved_modules).source_for(
+        return self.identity.moved(moved_modules, self.name).source_for(
             import_graph,
             importing_file_path=destination_path,
             scope=self.scope,

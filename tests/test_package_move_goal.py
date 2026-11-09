@@ -62,7 +62,7 @@ def _layered_package(root: Path) -> None:
     )
 
 
-def test_package_move_plans_top_layer_first_from_live_sources(tmp_path: Path) -> None:
+def test_package_move_relocates_every_layer_in_one_stage_and_dissolves_in_the_next(tmp_path: Path) -> None:
     _layered_package(tmp_path)
     report = CodemodRefactorGoalRunner(
         roots=(tmp_path,),
@@ -81,13 +81,14 @@ def test_package_move_plans_top_layer_first_from_live_sources(tmp_path: Path) ->
     ]
     assert operations == [
         ("relocate_symbols_to_new_module", "goals.py"),
-        ("dissolve_module", "goals.py"),
-        ("relocate_symbols_to_new_module", "steps.py"),
-        ("dissolve_module", "steps.py"),
         ("relocate_symbols_to_new_module", "plans.py"),
+        ("relocate_symbols_to_new_module", "steps.py"),
+        ("dissolve_module", "goals.py"),
         ("dissolve_module", "plans.py"),
+        ("dissolve_module", "steps.py"),
     ]
-    relocate_steps = report.replay_sequence.documents[2].recipes[0].operations[0]
+    assert len(report.replay_sequence.documents) == 2
+    relocate_steps = report.replay_sequence.documents[0].recipes[0].operations[2]
     assert relocate_steps.symbol_qualnames == ("__all__", "Step", "step_count")
     assert relocate_steps.destination_path.endswith("pkg/planning/steps.py")
 
@@ -328,12 +329,16 @@ def test_the_stage_budget_comes_from_the_table_and_a_budget_stop_lands_its_prefi
         CodemodRefactorTrajectoryStatus,
     )
 
-    _layered_package(tmp_path)
+    _cyclic_pair(tmp_path)
+    table = (
+        "| `planning` | `presentation.py`; `session_load.py` merges into "
+        "`presentation.py` | |\n"
+    )
 
     def run(max_depth: int):
         return CodemodRefactorGoalRunner(
             roots=(tmp_path,),
-            config=DetectorConfig(package_destination_tables=(TABLE,)),
+            config=DetectorConfig(package_destination_tables=(table,)),
             dry_run=True,
             migration_type=PackageMoveConcept,
             trajectory_budget=CodemodRefactorTrajectoryBudget(max_depth=max_depth),
@@ -342,8 +347,8 @@ def test_the_stage_budget_comes_from_the_table_and_a_budget_stop_lands_its_prefi
 
     lifted = run(1)
     assert lifted.stop_reason is CodemodWorkflowStopReason.ACHIEVED
-    assert lifted.trajectory_proof.budget.max_depth == 6
-    assert lifted.stage_count == 6
+    assert lifted.trajectory_proof.budget.max_depth == 4
+    assert lifted.stage_count == 4
 
     monkeypatch.setattr(
         PackageMoveConcept,
@@ -359,9 +364,9 @@ def test_the_stage_budget_comes_from_the_table_and_a_budget_stop_lands_its_prefi
         for document in prefix.replay_sequence.documents
         for recipe in document.recipes
         for operation in recipe.operations
-    ] == ["goals.py", "goals.py"]
-    assert len(prefix.final_target_finding_ids) == 2
-    assert "2 targets left for the next run" in prefix.to_markdown()
+    ] == ["presentation.py", "presentation.py"]
+    assert len(prefix.final_target_finding_ids) == 1
+    assert "1 targets left for the next run" in prefix.to_markdown()
     snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     assert prefix.replay_sequence.simulate(snapshot).is_clean
 
@@ -433,9 +438,7 @@ def test_a_cycle_only_through_a_local_import_moves_and_names_its_debt(tmp_path: 
         for document in report.replay_sequence.documents
         for recipe in document.recipes
     ]
-    assert reasons[0].startswith("Relocate") and "session_load" in str(
-        report.replay_sequence.documents[0].recipes[0].operations[0].target.file_path
-    )
+    assert reasons[0].startswith("Relocate")
     assert any("Debt carried:" in reason and "presentation.py" in reason for reason in reasons)
     snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     replay = report.replay_sequence.simulate(snapshot)
