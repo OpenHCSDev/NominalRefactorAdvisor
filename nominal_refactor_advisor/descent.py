@@ -26,7 +26,6 @@ from .ast_field_decoders import declared_annotations
 from .ast_projection import StatementValue
 from .value_expression import CompactValueExpression
 from .ast_tools import (
-    AstParentIndex,
     BuiltinCallName,
     ParsedModule,
     PythonSourcePathPolicy,
