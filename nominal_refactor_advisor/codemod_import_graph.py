@@ -269,7 +269,23 @@ class SourceModuleImportGraph:
         return module_reference
 
     def module_reaches(self, start_module: str, target_module: str) -> bool:
+        return target_module in self.reachable_modules(start_module)
+
+    @cached_property
+    def _reachable_by_module(self) -> dict[str, frozenset[str]]:
+        """Each start's reachable set, kept: the graph is fixed for its source state."""
+        return {}
+
+    def reachable_modules(self, start_module: str) -> frozenset[str]:
+        """Every module `start_module` imports, directly or through others, at load."""
+
+        if start_module not in self._reachable_by_module:
+            self._reachable_by_module[start_module] = self._reached_from(start_module)
+        return self._reachable_by_module[start_module]
+
+    def _reached_from(self, start_module: str) -> frozenset[str]:
         visited: set[str] = set()
+        reached: set[str] = set()
         stack = [start_module]
         while stack:
             module_name = stack.pop()
@@ -277,7 +293,6 @@ class SourceModuleImportGraph:
                 continue
             visited.add(module_name)
             for imported_module in self.import_edges_by_module.get(module_name, ()):
-                if imported_module == target_module:
-                    return True
+                reached.add(imported_module)
                 stack.append(imported_module)
-        return False
+        return frozenset(reached)
