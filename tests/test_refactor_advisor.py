@@ -18,6 +18,7 @@ from unittest.mock import Mock
 
 import pytest
 
+from nominal_refactor_advisor.codemod_imports import ImportFromSource, ImportLayout
 from nominal_refactor_advisor.ast_tools import ParsedModuleSet
 from nominal_refactor_advisor.ast_projection import CallKeyword
 from metaclass_registry import DuplicateRegistryKeyError
@@ -7918,6 +7919,59 @@ def test_relocation_points_a_patch_of_a_removed_import_at_its_new_reader(
         check=False,
     )
     assert imported.returncode == 0, imported.stderr
+
+
+@pytest.mark.parametrize(
+    ("reader", "rewritten"),
+    (
+        (
+            "from pkg.source import First, Second\n",
+            "from .destination import First, Second\n",
+        ),
+        (
+            "from pkg.source import (\n    First,\n    Second,\n)\n",
+            "from .destination import (\n    First,\n    Second,\n)\n",
+        ),
+    ),
+    ids=("one-line-stays-one-line", "parenthesized-stays-parenthesized"),
+)
+def test_relocation_keeps_the_layout_of_the_import_it_rewrites(
+    tmp_path: Path, reader: str, rewritten: str
+) -> None:
+    """A reader's import of moved names is rewritten in the layout it was written
+    in: a one-line import stays one line while it fits."""
+
+    for relative_path, source in {
+        "pkg/__init__.py": "",
+        "pkg/source.py": "class Kept:\n    pass\n\n\nclass First:\n    pass\n\n\n"
+        "class Second:\n    pass\n",
+        "pkg/destination.py": "",
+        "pkg/reader.py": reader + "\nVALUE = (First, Second)\n",
+    }.items():
+        _write_module(tmp_path, relative_path, source)
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    operation = RelocateSymbolsToModuleOperation(
+        target=SourceRewriteTarget(file_path=(tmp_path / "pkg/source.py").as_posix()),
+        symbol_qualnames=("First", "Second"),
+        destination_path=(tmp_path / "pkg/destination.py").as_posix(),
+    )
+
+    simulation = RefactorRecipe("relocate-keeps-import-layout").with_operation(
+        operation
+    ).simulate(snapshot)
+
+    assert simulation.is_clean
+    assert simulation.simulation.rewritten_sources[
+        (tmp_path / "pkg/reader.py").as_posix()
+    ].startswith(rewritten)
+
+
+def test_a_one_line_import_past_its_width_is_parenthesized() -> None:
+    statement = ast.parse("def f():\n    from .a import First, Second\n").body[0].body[0]
+    narrow = ImportLayout.of(statement, line_length=30)
+    assert ImportFromSource("pkg.destination", statement.names, narrow).source == (
+        "from pkg.destination import (\n    First,\n    Second,\n)\n"
+    )
 
 
 def test_relocation_rewrites_a_source_import_where_it_stands(tmp_path: Path) -> None:
