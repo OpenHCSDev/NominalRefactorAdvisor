@@ -276,3 +276,33 @@ def test_a_module_bound_only_to_run_it_follows_the_move(tmp_path: Path) -> None:
     assert "import pkg.messaging.registry as registry\n" in app
     assert "from pkg.messaging import registry as reg\n" in app
     assert _runs(root, "VALUE") == "registered"
+
+
+def test_a_name_the_moved_module_only_rebinds_is_read_from_its_declaring_module(
+    tmp_path: Path,
+) -> None:
+    """`policy` re-binds `Grant` from `sources` and reads it nowhere; a consumer's
+    function-local `from pkg.policy import Grant` reads it from `sources` once
+    the move lands, so the re-export dies with the shell."""
+
+    _write(
+        tmp_path,
+        {
+            "pkg/__init__.py": "",
+            "pkg/messaging/__init__.py": "",
+            "pkg/sources.py": "class Grant:\n    kind = 'grant'\n",
+            "pkg/policy.py": "from pkg.sources import Grant\n\n\nclass Policy:\n    pass\n",
+            "pkg/app.py": (
+                "def kind() -> str:\n"
+                "    from pkg.policy import Grant\n\n"
+                "    return Grant.kind\n\n\n"
+                "VALUE = kind()\n"
+            ),
+        },
+    )
+
+    _stages, root = _moved(tmp_path, "| `messaging` | `policy.py` | |\n")
+    app = (root / "pkg/app.py").read_text()
+    assert "from pkg.sources import Grant" in app
+    assert not (root / "pkg/policy.py").exists()
+    assert _runs(root, "VALUE") == "grant"
