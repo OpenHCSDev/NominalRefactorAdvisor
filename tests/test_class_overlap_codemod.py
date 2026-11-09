@@ -246,7 +246,7 @@ def test_the_fold_refuses_a_positional_construction_of_its_own_class(
         ),
     )
     snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
-    with pytest.raises(CodemodOperationPreflightError, match="positional"):
+    with pytest.raises(CodemodOperationPreflightError, match="by position"):
         _fold(tmp_path).source_edits(snapshot)
 
 

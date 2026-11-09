@@ -250,6 +250,25 @@ class ClassUseIndex:
                     break
         return cls({symbol: tuple(found) for symbol, found in uses.items()})
 
+    def constructions_of(
+        self, indexed_class: CompactIndexedClass, *, positional: bool = False
+    ) -> tuple[ClassUse, ...]:
+        """Every call that constructs the class, its own methods' included: a
+        `cls(...)` in its classmethod binds fields exactly as an outside call
+        does, so a change to its fields breaks both. With `positional`, only
+        the calls that bind by position or unpacking."""
+
+        return tuple(
+            use
+            for use in self.uses_by_symbol.get(indexed_class.symbol, ())
+            if use.role is ClassReferenceRole.CONSTRUCTION
+            and (
+                not positional
+                or use.reference.positional_arguments
+                or use.reference.unpacked_arguments
+            )
+        )
+
     def uses_of(self, indexed_class: CompactIndexedClass) -> tuple[ClassUse, ...]:
         """Uses outside the class's own body."""
 
@@ -769,13 +788,7 @@ class ClassOverlapVerdicts:
                 return ()
             return tuple(
                 use.location
-                for use in self.uses.uses_of(indexed_class)
-                if use.role is ClassReferenceRole.CONSTRUCTION
-                and (
-                    not positional
-                    or use.reference.positional_arguments
-                    or use.reference.unpacked_arguments
-                )
+                for use in self.uses.constructions_of(indexed_class, positional=positional)
             )
 
         def copies_of(symbol: str) -> tuple[tuple[SourceLocation, tuple[str, ...]], ...]:
@@ -884,15 +897,7 @@ class ClassOverlapVerdicts:
             return ()
         receipts = []
         for indexed_class in classes:
-            positional = tuple(
-                use
-                for use in self.uses.uses_of(indexed_class)
-                if use.role is ClassReferenceRole.CONSTRUCTION
-                and (
-                    use.reference.positional_arguments
-                    or use.reference.unpacked_arguments
-                )
-            )
+            positional = self.uses.constructions_of(indexed_class, positional=True)
             if positional:
                 receipts.append(
                     Receipt(
