@@ -1629,20 +1629,37 @@ class CompactModuleClassHeader(CompactModuleIdentity):
 ClassProjectionT = TypeVar("ClassProjectionT", bound=CompactModuleClassHeader)
 
 
+class CompactModuleClassHeaderFamily(CollectedFamily[CompactModuleClassHeader]):
+    """One module's complete class declarations, persisted, so a later process
+    over unchanged source reads them instead of declaring every class again.
+    Its own family: the class-projection family is built on this header, so it
+    cannot be the header's source."""
+
+    item_type = CompactModuleClassHeader
+    cache_payload_max_bytes = 3_000_000
+
+    @classmethod
+    def collect(cls, parsed_module: ParsedModule) -> list[CompactModuleClassHeader]:
+        del cls
+        return [
+            CompactModuleClassHeader.declared_in(parsed_module, include_body_facets=True)
+        ]
+
+
 @dataclass(frozen=True)
 class ModuleClassHeader(ParsedModuleFact):
     """One module's complete class declarations, body facets included. A fact of
     the parse, like ModuleClassHeaderCore: a goal run's states hand unchanged
     parses from stage to stage, so each unchanged module is declared once per run
-    instead of once per scan."""
+    instead of once per scan, and through the parse's family batch, so a later
+    process over unchanged source reads it from the cache."""
 
     header: CompactModuleClassHeader
 
     @classmethod
     def derive(cls, parsed_module: ParsedModule) -> Self:
-        return cls(
-            CompactModuleClassHeader.declared_in(parsed_module, include_body_facets=True)
-        )
+        (header,) = parsed_module.family_batch(CompactModuleClassHeaderFamily).items
+        return cls(header)
 
 
 @dataclass(frozen=True)
