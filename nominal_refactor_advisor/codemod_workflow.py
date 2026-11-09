@@ -1549,6 +1549,19 @@ class FindingCoverage(DataclassJsonReport, ABC):
         """A finding count of this coverage, said with what it counts."""
         raise NotImplementedError
 
+    @property
+    def stale_file_paths(self) -> frozenset[str]:
+        """Files whose findings this coverage still owes; none by default."""
+
+        return frozenset()
+
+    def settled(
+        self, scans: CodemodRefactorGoalRunner, scan: CodemodWorkflowScan
+    ) -> CodemodWorkflowScan:
+        """The scan with every finding this coverage owes paid; already so here."""
+
+        return scan
+
 
 @dataclass(frozen=True)
 class EveryDetectorCoverage(FindingCoverage):
@@ -1586,6 +1599,38 @@ class StageProofCoverage(NamedDetectorCoverage):
 
     mode = CodemodProjectedScanMode.TARGET_DETECTOR_PARTIAL
     source = "the stage proof"
+
+
+@dataclass(frozen=True)
+class DeferredStageProofCoverage(StageProofCoverage):
+    """A stage proof's detectors, with the per-module ones not yet re-proved on
+    the files the stages so far rewrote. No stage plans from a per-module
+    finding (its targets are the concept's), so each rewritten file is
+    re-proved once, when the trajectory settles, not at every stage that
+    rewrites it again."""
+
+    deferred_detector_ids: tuple[str, ...] = ()
+    deferred_file_paths: tuple[str, ...] = ()
+
+    @property
+    def stale_file_paths(self) -> frozenset[str]:
+        return frozenset(self.deferred_file_paths)
+
+    def covers(self, finding: RefactorFinding) -> bool:
+        return super().covers(finding) and not (
+            finding.detector_id in self.deferred_detector_ids
+            and any(evidence.file_path in self.stale_file_paths for evidence in finding.evidence)
+        )
+
+    def settled(
+        self, scans: CodemodRefactorGoalRunner, scan: CodemodWorkflowScan
+    ) -> CodemodWorkflowScan:
+        return scans.reproved_files(
+            scan,
+            detector_ids=frozenset(self.deferred_detector_ids),
+            file_paths=self.stale_file_paths,
+            coverage=StageProofCoverage(self.detector_ids),
+        )
 
 
 @dataclass(frozen=True)
@@ -1995,28 +2040,17 @@ class CodemodRefactorGoalRunner(TrajectoryScans[CodemodWorkflowScan]):
         ) - detector_ids
         after = stage.required_after_snapshot
         module_set = after.module_set
-        touched = frozenset(simulation.changed_file_paths)
         present = frozenset(module.file_path for module in module_set)
+        stale = (scan.coverage.stale_file_paths | frozenset(simulation.changed_file_paths)) & present
         carried = [
             finding
             for finding in scan.findings
             if finding.detector_id in carried_ids
             and not any(
-                evidence.file_path in touched or evidence.file_path not in present
+                evidence.file_path in stale or evidence.file_path not in present
                 for evidence in finding.evidence
             )
         ]
-        recomputed = analyze_detector_types(
-            ParsedModuleSet.of(
-                module for module in module_set if module.file_path in touched
-            ),
-            self.config,
-            detector_types=tuple(
-                detector_type
-                for detector_type in registered
-                if detector_type.effective_detector_id() in carried_ids
-            ),
-        )
         return ProvedWorkflowScan(
             proved=after,
             findings=self.report_scoped_findings(
@@ -2028,11 +2062,49 @@ class CodemodRefactorGoalRunner(TrajectoryScans[CodemodWorkflowScan]):
                         analysis_workers=self.analysis_workers,
                     ),
                     *carried,
-                    *recomputed,
                 )
             ),
-            coverage=StageProofCoverage(tuple(sorted(detector_ids | carried_ids))),
+            coverage=DeferredStageProofCoverage(
+                tuple(sorted(detector_ids | carried_ids)),
+                deferred_detector_ids=tuple(sorted(carried_ids)),
+                deferred_file_paths=tuple(sorted(stale)),
+            ),
         )
+
+    def reproved_files(
+        self,
+        scan: CodemodWorkflowScan,
+        *,
+        detector_ids: frozenset[str],
+        file_paths: frozenset[str],
+        coverage: FindingCoverage,
+    ) -> CodemodWorkflowScan:
+        """`scan` with `detector_ids` rerun once over `file_paths`, the files the
+        stages rewrote since those detectors last ran there."""
+
+        return replace(
+            scan,
+            findings=self.report_scoped_findings(
+                (
+                    *scan.findings,
+                    *analyze_detector_types(
+                        ParsedModuleSet.of(
+                            module for module in scan.modules if module.file_path in file_paths
+                        ),
+                        self.config,
+                        detector_types=tuple(
+                            detector_type
+                            for detector_type in IssueDetector.registered_detector_types()
+                            if detector_type.effective_detector_id() in detector_ids
+                        ),
+                    ),
+                )
+            ),
+            coverage=coverage,
+        )
+
+    def settled(self, scan: CodemodWorkflowScan) -> CodemodWorkflowScan:
+        return scan.coverage.settled(self, scan)
 
     def exact_scan(self, scan: CodemodWorkflowScan) -> CodemodWorkflowScan:
         """Certify every detector over an in-memory migration state once."""
