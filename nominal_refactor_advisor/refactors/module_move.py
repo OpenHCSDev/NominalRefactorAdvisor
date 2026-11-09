@@ -47,6 +47,8 @@ from nominal_refactor_advisor.codemod_imports import (
     ModuleImportMutation,
 )
 from nominal_refactor_advisor.codemod_module_declarations import (
+    is_script_guard,
+    stays_in_shell,
     ModuleSymbolTable,
     MovedTopLevelDeclarationSource,
     SourceTopLevelSymbolMoveSelection,
@@ -3347,7 +3349,7 @@ class _DissolvedModuleBindings:
     ) -> _DissolvedModuleBindings:
         module = context.module_nodes_by_file_path[source_path]
         for index, statement in enumerate(module.body):
-            if not cls._binds_only_imports(statement, first=index == 0):
+            if not stays_in_shell(statement, first=index == 0):
                 raise ValueError(
                     f"{source_path!r} still declares {ast.unparse(statement).splitlines()[0]!r} "
                     f"at line {statement.lineno}; relocate its declarations first"
@@ -3371,7 +3373,7 @@ class _DissolvedModuleBindings:
         module = context.module_nodes_by_file_path[self.source_path]
         guards = TypeCheckingGuardProjection.from_module(module).guards
         for statement in module.body:
-            if isinstance(statement, ast.If) and statement not in guards and not _ScriptEntry.is_guard(statement):
+            if isinstance(statement, ast.If) and statement not in guards and not is_script_guard(statement):
                 raise ValueError(
                     f"{self.source_path!r} imports under the condition "
                     f"{ast.unparse(statement.test)!r} at line {statement.lineno}"
@@ -3403,25 +3405,6 @@ class _DissolvedModuleBindings:
                 if f"{imported_module}.{alias.name}" in known
             )
         return tuple(dict.fromkeys(run))
-
-    @staticmethod
-    def _binds_only_imports(statement: ast.stmt, *, first: bool) -> bool:
-        if isinstance(statement, (ast.Import, ast.ImportFrom)) or _ScriptEntry.is_guard(statement):
-            return True
-        if first and isinstance(statement, ast.Expr) and isinstance(
-            statement.value, ast.Constant
-        ) and isinstance(statement.value.value, str):
-            return True
-        if isinstance(statement, ast.Assign) and all(
-            isinstance(target, ast.Name) and target.id == "__all__"
-            for target in statement.targets
-        ):
-            return True
-        return (
-            isinstance(statement, ast.If)
-            and not statement.orelse
-            and all(isinstance(inner, (ast.Import, ast.ImportFrom)) for inner in statement.body)
-        )
 
     @staticmethod
     def _imported_names(
@@ -3467,23 +3450,10 @@ class _ScriptEntry:
 
     statement: ast.If
 
-    @staticmethod
-    def is_guard(statement: ast.stmt) -> bool:
-        test = statement.test if isinstance(statement, ast.If) else None
-        return (
-            isinstance(test, ast.Compare)
-            and isinstance(test.left, ast.Name)
-            and test.left.id == "__name__"
-            and len(test.ops) == 1
-            and isinstance(test.ops[0], ast.Eq)
-            and isinstance(test.comparators[0], ast.Constant)
-            and test.comparators[0].value == "__main__"
-        )
-
     @classmethod
     def of(cls, module: ast.Module) -> tuple[_ScriptEntry, ...]:
         return tuple(
-            cls(cast(ast.If, statement)) for statement in module.body if cls.is_guard(statement)
+            cls(cast(ast.If, statement)) for statement in module.body if is_script_guard(statement)
         )
 
     def successor_edits(

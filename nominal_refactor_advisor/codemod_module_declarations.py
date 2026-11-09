@@ -921,6 +921,44 @@ class CarryingSourceTopLevelDeclaration(SourceTopLevelDeclaration):
         return (*self.declaration.statements, *self.carried)
 
 
+def is_script_guard(statement: ast.stmt) -> bool:
+    """`if __name__ == "__main__":`, what running the module as a script does."""
+
+    test = statement.test if isinstance(statement, ast.If) else None
+    return (
+        isinstance(test, ast.Compare)
+        and isinstance(test.left, ast.Name)
+        and test.left.id == "__name__"
+        and len(test.ops) == 1
+        and isinstance(test.ops[0], ast.Eq)
+        and isinstance(test.comparators[0], ast.Constant)
+        and test.comparators[0].value == "__main__"
+    )
+
+
+def stays_in_shell(statement: ast.stmt, *, first: bool) -> bool:
+    """What a module emptied of its declarations may still hold and dissolve: its
+    imports (guarded by a bare `if` included), a script guard, its docstring and
+    `__all__`. Anything else would stop running once nothing imports the shell."""
+
+    if isinstance(statement, (ast.Import, ast.ImportFrom)) or is_script_guard(statement):
+        return True
+    if first and isinstance(statement, ast.Expr) and isinstance(
+        statement.value, ast.Constant
+    ) and isinstance(statement.value.value, str):
+        return True
+    if isinstance(statement, ast.Assign) and all(
+        isinstance(target, ast.Name) and target.id == "__all__"
+        for target in statement.targets
+    ):
+        return True
+    return (
+        isinstance(statement, ast.If)
+        and not statement.orelse
+        and all(isinstance(inner, (ast.Import, ast.ImportFrom)) for inner in statement.body)
+    )
+
+
 def _carried_statement(statement: ast.stmt) -> bool:
     """What a whole module's move carries with the declaration before it: an `assert`
     or a bare call (`register(Name)`). A script guard, an import or a binding stays."""
@@ -1215,6 +1253,15 @@ class WholeModuleSymbolMoveSelection(SourceTopLevelSymbolMoveSelection):
         declarations: tuple[SourceTopLevelDeclaration, ...],
     ) -> WholeModuleSymbolMoveSelection:
         carrying = tuple(map(index.carrying, declarations))
+        moving = {id(statement) for declaration in carrying for statement in declaration.statements}
+        for position, statement in enumerate(index.module.body):
+            if id(statement) not in moving and not stays_in_shell(statement, first=position == 0):
+                raise ValueError(
+                    f"{index.source_path!r} would keep "
+                    f"{ast.unparse(statement).splitlines()[0]!r} at line {statement.lineno} "
+                    "once every declaration leaves: it neither moves with one nor "
+                    "stays as an import, and nothing would import the module to run it"
+                )
         return cls(
             source_path=index.source_path,
             requested_declarations=carrying,

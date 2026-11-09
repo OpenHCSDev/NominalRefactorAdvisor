@@ -472,3 +472,48 @@ def test_a_batch_peer_import_heads_the_new_module_above_the_block_reading_it(
     moved = (root / "pkg/messaging/beta.py").read_text()
     assert moved.index("from pkg.messaging.alpha import Alpha") < moved.index("class Beta")
     assert _runs(root, "VALUE") == "b"
+
+
+def test_a_module_statement_no_declaration_carries_refuses_its_whole_move(
+    tmp_path: Path,
+) -> None:
+    """`gamma`'s loop fills `NAMES` when gamma loads. Moving `NAMES` would leave the
+    loop in a shell nothing imports, so `NAMES` would arrive empty: gamma's move
+    refuses with the stranded line, it leaves the batch, and the rest still move."""
+
+    _write(
+        tmp_path,
+        {
+            "pkg/__init__.py": "",
+            "pkg/messaging/__init__.py": "",
+            "pkg/alpha.py": "class Alpha:\n    kind = 'a'\n",
+            "pkg/beta.py": "class Beta:\n    kind = 'b'\n",
+            "pkg/gamma.py": "NAMES = []\nfor n in range(2):\n    NAMES.append(n)\n",
+            "pkg/app.py": (
+                "from pkg.alpha import Alpha\nfrom pkg.beta import Beta\n"
+                "from pkg.gamma import NAMES\n\nVALUE = (Alpha.kind, Beta.kind, NAMES)\n"
+            ),
+        },
+    )
+
+    report = CodemodRefactorGoalRunner(
+        roots=(tmp_path,),
+        config=DetectorConfig(
+            package_destination_tables=(
+                "| `messaging` | `alpha.py`, `beta.py`, `gamma.py` | |\n",
+            )
+        ),
+        dry_run=True,
+        migration_type=PackageMoveConcept,
+        guard_suite=ArchitectureGuardSuite(),
+    ).run()
+    assert "would keep 'for n in range(2):' at line 2" in report.to_markdown()
+    replay = report.replay_sequence.simulate(
+        CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    )
+    assert replay.is_clean
+    replay.apply()
+    assert not (tmp_path / "pkg/alpha.py").exists()
+    assert not (tmp_path / "pkg/beta.py").exists()
+    assert (tmp_path / "pkg/gamma.py").read_text().startswith("NAMES = []\n")
+    assert _runs(tmp_path, "VALUE") == "('a', 'b', [0, 1])"
