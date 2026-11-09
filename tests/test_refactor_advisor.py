@@ -20894,7 +20894,6 @@ def test_goal_runner_analyzes_equivalent_branch_state_once(
 ) -> None:
     from nominal_refactor_advisor.codemod import FindingRecipeActionKey
     from nominal_refactor_advisor.refactors.finding_recipes import FindingRecipeSynthesizer
-    from nominal_refactor_advisor.codemod_workflow import CodemodProjectedScanMode
     from nominal_refactor_advisor.codemod_workflow import CodemodRefactorGoalRunner
     from nominal_refactor_advisor.codemod_workflow import CodemodWorkflowScan
     from nominal_refactor_advisor.codemod_workflow import ProjectedScanModuleSet
@@ -20973,7 +20972,6 @@ def test_goal_runner_analyzes_equivalent_branch_state_once(
         return CodemodWorkflowScan(
             modules=ParsedModuleSet.of(list(projected_modules)),
             findings=[],
-            scan_mode=CodemodProjectedScanMode.EXACT,
         )
 
     previous_synthesizers = {
@@ -21026,6 +21024,10 @@ def test_goal_runner_crosses_local_worsening_move_to_unique_terminal(
     from nominal_refactor_advisor.codemod_workflow import CodemodWorkflowScan
     from nominal_refactor_advisor.codemod_workflow import CodemodWorkflowStopReason
     from nominal_refactor_advisor.codemod_workflow import ProjectedScanModuleSet
+    from nominal_refactor_advisor.codemod_workflow import (
+        EveryDetectorCoverage,
+        StageProofCoverage,
+    )
 
     module_path = tmp_path / "pkg/mod.py"
     original_source = "value = 1\n"
@@ -21180,7 +21182,7 @@ def test_goal_runner_crosses_local_worsening_move_to_unique_terminal(
         return CodemodWorkflowScan(
             modules=ParsedModuleSet.of(list(modules)),
             findings=list(findings_by_source[rewritten_source]),
-            scan_mode=CodemodProjectedScanMode.TARGET_DETECTOR_PARTIAL,
+            coverage=StageProofCoverage(()),
         )
 
     def exact_scan(
@@ -21188,7 +21190,7 @@ def test_goal_runner_crosses_local_worsening_move_to_unique_terminal(
         scan: CodemodWorkflowScan,
     ) -> CodemodWorkflowScan:
         del self
-        return replace(scan, scan_mode=CodemodProjectedScanMode.EXACT)
+        return replace(scan, coverage=EveryDetectorCoverage())
 
     synthesizer_types = (
         WorseningFirstMoveSynthesizer,
