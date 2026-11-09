@@ -861,6 +861,14 @@ class CompactDataclassFieldRole(StrEnum):
             return DataclassInitBinding.KEYWORD_ONLY
         return binding
 
+    def takes_init_parameter(self, field: str) -> bool:
+        """Whether the generated `__init__` takes `field` as a parameter. Raises
+        while the role is unresolved, naming the field."""
+
+        if self.init_parameter is None:
+            raise ValueError(f"{field} has an unresolved role")
+        return self.init_parameter
+
     @property
     def has_known_field_position(self) -> bool:
         """Whether this member's place in the dataclass field order is known.
@@ -918,13 +926,11 @@ class CompactDataclassFieldDeclaration(NamedTuple):
         """Whether a positional call to `class_symbol`'s generated `__init__`
         binds this field. Raises when its role or keyword-only-ness is unknown."""
 
-        if self.role.init_parameter is None:
-            raise ValueError(f"`{class_symbol}`'s field `{self.name}` has an unresolved role")
+        field = f"`{class_symbol}`'s field `{self.name}`"
+        takes_parameter = self.role.takes_init_parameter(field)
         if self.binding is DataclassInitBinding.UNKNOWN:
-            raise ValueError(
-                f"`{class_symbol}`'s field `{self.name}` is keyword-only by a non-literal"
-            )
-        return self.role.init_parameter and self.binding is DataclassInitBinding.POSITIONAL
+            raise ValueError(f"{field} is keyword-only by a non-literal")
+        return takes_parameter and self.binding is DataclassInitBinding.POSITIONAL
 
     def settled(self, index: FieldDeclarationIndex) -> CompactDataclassFieldDeclaration:
         """The member once the repository says whether its call declares a field."""
