@@ -31,7 +31,6 @@ from nominal_refactor_advisor.codemod_runtime import (
     FindingRecipePlanCandidate,
     FindingRecipeSetDisposition,
     FindingRecipeSynthesisRecord,
-    RefactorRecipeOperationCompiler,
 )
 from nominal_refactor_advisor.codemod_preflight import CodemodOperationPreflightError
 from nominal_refactor_advisor.codemod_reproof import SourceReproofDiagnostic
@@ -72,7 +71,7 @@ class RegistryEntryRepository(SourceProductFlowRepository):
     source_entry = staticmethod(registry_entry)
 
 
-class RegistryEntryCompiler(RefactorRecipeOperationCompiler):
+class RegistryEntryCompiler(CodemodSourceSnapshot):
     @cached_property
     def product_flow_repository(self):
         return RegistryEntryRepository.from_modules(self.parsed_modules)

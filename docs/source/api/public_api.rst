@@ -1385,7 +1385,7 @@ navigation locations rather than complete declaration boundaries.
    :members: ModuleCallDeclaration, ModuleCallDeclarationSelector, DeleteModuleCallDeclarationsOperation
 
 .. automodule:: nominal_refactor_advisor.codemod_runtime
-   :members: CodemodSourceSnapshot, RefactorRecipeOperationCompiler, RefactorRecipe, CodemodPlanRoot, CodemodPlanDocument, CodemodPlanSequence, CodemodPlanDocumentSimulation, CodemodPlanSequenceSimulation, CodemodSimulationReport, FindingRecipeProofObstacle, FindingRecipeSynthesisRecord, FindingRecipeFrontierBudget, FindingRecipeTrajectoryFrontier, format_codemod_unified_diff, apply_codemod_simulation, simulate_planned_rewrites, codemod_plan_from_findings
+   :members: CodemodSourceSnapshot, RefactorRecipe, CodemodPlanRoot, CodemodPlanDocument, CodemodPlanSequence, CodemodPlanDocumentSimulation, CodemodPlanSequenceSimulation, CodemodSimulationReport, FindingRecipeProofObstacle, FindingRecipeSynthesisRecord, FindingRecipeFrontierBudget, FindingRecipeTrajectoryFrontier, format_codemod_unified_diff, apply_codemod_simulation, simulate_planned_rewrites, codemod_plan_from_findings
 
 ``CodemodPlanSequenceContinuationReport`` retains the projected ``source_index``
 as typed provenance. Its default JSON projection includes continuation plans

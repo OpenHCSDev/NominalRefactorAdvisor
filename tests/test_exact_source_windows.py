@@ -17,7 +17,6 @@ from nominal_refactor_advisor.codemod import (
 )
 from nominal_refactor_advisor.codemod_runtime import (
     NominalEditBatch,
-    RefactorRecipeOperationCompiler,
 )
 from nominal_refactor_advisor.codemod_source_edits import (
     CodemodSourceRevisionError,
@@ -307,7 +306,7 @@ def test_exact_and_context_free_edits_share_the_actual_nominal_grouping_owner():
 
 
 def test_empty_module_sentinel_span_is_used_by_the_actual_batch_renderer():
-    compiler = RefactorRecipeOperationCompiler.from_context(context(""))
+    compiler = context("").execution_snapshot()
     target = next(iter(compiler.source_index.target_by_id.values()))
     assert (target.line, target.end_line) == (1, 1)
     edit = SourceSpanReplacement(

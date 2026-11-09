@@ -100,6 +100,8 @@ class CodemodSelectorContext(IndexedSourceAuthority, ABC):
         repr=False,
         compare=False,
     )
+    """The operations derived from this source state. One object holds each
+    state (a projection is retained by its parent), so each is derived once."""
 
     def retained_operation_derivation[DerivedT](
         self,

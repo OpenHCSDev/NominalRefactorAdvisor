@@ -5,9 +5,8 @@ from pathlib import Path
 import pytest
 
 from nominal_refactor_advisor.codemod_runtime import (
-    CodemodSourceSnapshot,
     NominalEditBatch,
-    RefactorRecipeOperationCompiler,
+    CodemodSourceSnapshot,
 )
 from nominal_refactor_advisor.codemod_source_edits import (
     SourceInsertion,
@@ -43,9 +42,7 @@ def test_editing_original_line_does_not_consume_a_separate_append(
     source, delete, reverse
 ):
     path = Path(__file__).with_name("empty_renderer_fixture.py").resolve().as_posix()
-    compiler = RefactorRecipeOperationCompiler.from_context(
-        CodemodSourceSnapshot.from_source_mapping({path: source})
-    )
+    compiler = CodemodSourceSnapshot.from_source_mapping({path: source}).execution_snapshot()
     first = (
         SourceSpanDeletion(file_path=path, span=SourceLineSpan(1, 1), )
         if delete

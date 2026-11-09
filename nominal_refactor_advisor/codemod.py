@@ -173,7 +173,6 @@ from .codemod_runtime import (
     MissingRecipeEvaluatorEvaluation as MissingRecipeEvaluatorEvaluation,
     NonPlanningExecutableRecipeEvaluation as NonPlanningExecutableRecipeEvaluation,
     RefactorRecipe as RefactorRecipe,
-    RefactorRecipeOperationCompiler as RefactorRecipeOperationCompiler,
     RefactorRecipeSimulation as RefactorRecipeSimulation,
     RejectedRecipeEvaluation as RejectedRecipeEvaluation,
     SourceRewriteSimulationAuthority as SourceRewriteSimulationAuthority,

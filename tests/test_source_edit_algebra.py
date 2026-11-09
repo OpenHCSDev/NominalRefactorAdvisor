@@ -17,9 +17,8 @@ from nominal_refactor_advisor.codemod import (
     CodemodPlanDocument,
     CodemodPlanRoot,
     CodemodPlanSequence,
-    CodemodSourceSnapshot,
     RefactorRecipe,
-    RefactorRecipeOperationCompiler,
+    CodemodSourceSnapshot,
     SourceRewriteTarget,
 )
 from nominal_refactor_advisor.codemod_import_scopes import ModuleImportScope
@@ -88,7 +87,7 @@ def test_exact_offset_edits_survive_line_projection_and_simulation(
     edits = geometry.physical_edits(
         file_path=path.as_posix(), replacements=replacements
     )
-    compiler = RefactorRecipeOperationCompiler.from_context(snapshot)
+    compiler = snapshot.execution_snapshot()
     rewrites = compiler._planned_rewrites_from_physical_edits(edits)
     simulation = snapshot.simulate_rewrites(rewrites)
     assert simulation.rewritten_sources[path.as_posix()] == expected
@@ -122,12 +121,12 @@ def test_document_compiler_supplies_one_context_authority_to_every_operation(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     module_path, snapshot = _snapshot(tmp_path, "VALUE = 1\n")
-    observed_contexts: list[RefactorRecipeOperationCompiler] = []
+    observed_contexts: list[CodemodSourceSnapshot] = []
     original_source_edits = EnsureImportOperation.source_edits
 
     def recording_source_edits(
         operation: EnsureImportOperation,
-        context: RefactorRecipeOperationCompiler,
+        context: CodemodSourceSnapshot,
     ) -> tuple[ModuleImportMutation, ...]:
         observed_contexts.append(context)
         return original_source_edits(operation, context)

@@ -8,7 +8,6 @@ import pytest
 from nominal_refactor_advisor.codemod import CodemodSourceSnapshot, SourceRewriteTarget
 from nominal_refactor_advisor.codemod_runtime import (
     NominalEditBatch,
-    RefactorRecipeOperationCompiler,
 )
 from nominal_refactor_advisor.codemod_source_edits import (
     CoalescedSourceWindow,
@@ -24,9 +23,7 @@ PATH = Path(__file__).with_name("target_window_fixture.py").resolve().as_posix()
 
 
 def context(source):
-    compiler = RefactorRecipeOperationCompiler.from_context(
-        CodemodSourceSnapshot.from_source_mapping({PATH: source})
-    )
+    compiler = CodemodSourceSnapshot.from_source_mapping({PATH: source}).execution_snapshot()
     target = SourceRewriteTarget(file_path=PATH)
     digest = compiler.source_index.target_by_id[
         target.required_target_id(compiler.source_index)

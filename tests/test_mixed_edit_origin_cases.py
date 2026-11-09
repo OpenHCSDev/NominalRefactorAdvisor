@@ -13,7 +13,6 @@ from nominal_refactor_advisor.codemod import (
 )
 from nominal_refactor_advisor.codemod_runtime import (
     NominalEditBatch,
-    RefactorRecipeOperationCompiler,
 )
 from nominal_refactor_advisor.codemod_source_edits import (
     SourceFileCreation,
@@ -31,9 +30,7 @@ SOURCE = "left = object; right = type\n"
 
 
 def owner():
-    return RefactorRecipeOperationCompiler.from_context(
-        CodemodSourceSnapshot.from_source_mapping({PATH: SOURCE})
-    )
+    return CodemodSourceSnapshot.from_source_mapping({PATH: SOURCE}).execution_snapshot()
 
 
 def exact(*replacements):
@@ -107,9 +104,7 @@ def test_two_phase_lowering_preserves_declaration_group_encounter_order():
 
 @pytest.mark.parametrize("reverse", (False, True))
 def test_empty_source_keeps_distinct_logical_insertion_anchors(reverse):
-    compiler = RefactorRecipeOperationCompiler.from_context(
-        CodemodSourceSnapshot.from_source_mapping({PATH: ""})
-    )
+    compiler = CodemodSourceSnapshot.from_source_mapping({PATH: ""}).execution_snapshot()
     edits = tuple(
         SourceInsertion(file_path=PATH, insertion_line=line, inserted_lines=(source,))
         for line, source in ((1, "first = object\n"), (2, "second = type\n"))
@@ -183,9 +178,7 @@ def test_equal_exact_outputs_can_have_different_retained_interiors(reverse):
     second = OtherExactDeclaration(
         revision=originals[1].revision, replacements=originals[1].replacements
     )
-    compiler = RefactorRecipeOperationCompiler.from_context(
-        CodemodSourceSnapshot.from_source_mapping({PATH: source})
-    )
+    compiler = CodemodSourceSnapshot.from_source_mapping({PATH: source}).execution_snapshot()
     batch = NominalEditBatch(compiler, (second, first) if reverse else (first, second))
     result = compiler.simulate_rewrites(batch.planned_rewrites)
     assert result.parse_valid
