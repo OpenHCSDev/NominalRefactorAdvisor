@@ -755,3 +755,35 @@ def test_a_package_init_re_exporting_the_module_moving_into_it_still_moves(
     _stages, root = _moved(tmp_path, "| `svc` | `unit.py` | |\n")
     assert (root / "pkg/svc/unit.py").exists()
     assert _runs(root, "VALUE") == "Unit"
+
+
+def test_a_string_naming_a_moved_class_follows_it(tmp_path: Path) -> None:
+    """A patch target (`"pkg.store.Profiles.directory"`) and a docstring naming
+    `pkg.store.Profiles` both name the class where it was. The relocation rewrites
+    them to its new home, so the dissolve after it finds nothing still pointing at
+    the shell and no string blocks it."""
+
+    _write(
+        tmp_path,
+        {
+            "pkg/__init__.py": "",
+            "pkg/messaging/__init__.py": "",
+            "pkg/store.py": "class Profiles:\n    directory = 'old'\n",
+            "pkg/patching.py": (
+                "import importlib\n\n\n"
+                "def target() -> str:\n"
+                "    return 'pkg.store.Profiles.directory'\n\n\n"
+                "def resolve() -> str:\n"
+                "    module, cls, attr = target().rsplit('.', 2)\n"
+                "    return getattr(getattr(importlib.import_module(module), cls), attr)\n"
+            ),
+            "pkg/doc.py": '"""Reads `pkg.store.Profiles` for its directory."""\n\nVALUE = 1\n',
+            "pkg/app.py": "from pkg.patching import resolve\n\nVALUE = resolve()\n",
+        },
+    )
+
+    _stages, root = _moved(tmp_path, "| `messaging` | `store.py` | |\n")
+    assert not (root / "pkg/store.py").exists()
+    assert "'pkg.messaging.store.Profiles.directory'" in (root / "pkg/patching.py").read_text()
+    assert "`pkg.messaging.store.Profiles`" in (root / "pkg/doc.py").read_text()
+    assert _runs(root, "VALUE") == "old"
