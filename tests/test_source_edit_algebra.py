@@ -33,7 +33,13 @@ from nominal_refactor_advisor.codemod_paths import (
     SourcePathCandidateSet,
     SourcePathResolutionAuthority,
 )
+from nominal_refactor_advisor.codemod_runtime import (
+    CodemodBackend,
+    CodemodParseValidationReport,
+    CodemodSimulationReport,
+)
 from nominal_refactor_advisor.codemod_source_edits import (
+    PhysicalSourceEditConflictError,
     NominalSourceEdit,
     PhysicalSourceEdit,
     SourceEditOrigin,
@@ -884,3 +890,22 @@ def test_plan_root_owns_document_sequence_input_algebra() -> None:
         ),
     ):
         CodemodPlanSequence.from_json_value(json_report_object(document))
+
+
+def test_a_source_both_deleted_and_rewritten_is_a_conflict_the_plan_refuses() -> None:
+    """A stage that deletes a shell while another edit rewrites it cannot both stand.
+    That is a physical edit conflict, the kind recipe-set simulation turns into a
+    refusal naming the file, not a crash that ends the whole run."""
+
+    with pytest.raises(PhysicalSourceEditConflictError, match="pkg/shell.py"):
+        CodemodSimulationReport(
+            rewrites=(),
+            rewritten_sources={"pkg/shell.py": "from pkg.bus import Bus\n"},
+            parse_validation=CodemodParseValidationReport(
+                backend=CodemodBackend.AST_SPAN,
+                validated_file_paths=("pkg/shell.py",),
+                parse_valid=True,
+            ),
+            base_revisions=(),
+            deleted_file_paths=("pkg/shell.py",),
+        )
