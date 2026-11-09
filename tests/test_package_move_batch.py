@@ -566,3 +566,40 @@ def test_a_shell_whose_own_dissolve_refuses_stays_and_the_rest_still_move(
         "",
     ]
     assert _runs(tmp_path, "VALUE") == "('a', 'a')"
+
+
+def test_a_bare_peer_import_holds_back_its_own_module_not_the_batch(
+    tmp_path: Path,
+) -> None:
+    """`messages` reads its peer as `pkg.records.Record`, which the batch cannot
+    rename in moved text. That holds back `messages` alone: `alpha`, `beta` and
+    `records` still relocate in one stage, and `messages` follows on its own with
+    its import rewritten like any consumer's. One such import used to drop a whole
+    table to one module per stage."""
+
+    _write(
+        tmp_path,
+        {
+            "pkg/__init__.py": "",
+            "pkg/messaging/__init__.py": "",
+            "pkg/alpha.py": "class Alpha:\n    kind = 'a'\n",
+            "pkg/beta.py": "class Beta:\n    kind = 'b'\n",
+            "pkg/records.py": "class Record:\n    kind = 'record'\n",
+            "pkg/messages.py": (
+                "import pkg.records\n\n\nclass Message(pkg.records.Record):\n    pass\n"
+            ),
+            "pkg/app.py": (
+                "from pkg.alpha import Alpha\nfrom pkg.beta import Beta\n"
+                "from pkg.messages import Message\n\n"
+                "VALUE = (Alpha.kind, Beta.kind, Message.kind)\n"
+            ),
+        },
+    )
+
+    stages, root = _moved(
+        tmp_path,
+        "| `messaging` | `alpha.py`, `beta.py`, `records.py`, `messages.py` | |\n",
+    )
+    assert stages == 4
+    assert not any((root / f"pkg/{name}.py").exists() for name in ("alpha", "beta", "records", "messages"))
+    assert _runs(root, "VALUE") == "('a', 'b', 'record')"

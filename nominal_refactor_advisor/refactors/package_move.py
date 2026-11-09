@@ -673,22 +673,45 @@ class ClusterLayers:
     def batch_candidates(self) -> tuple[str, ...]:
         """The modules that could relocate together in one stage: every present
         module while each still declares names, keeps a module of its own and
-        moves into a destination of its own. Each move then derives from the same
-        starting state and names its peers' new homes (`BatchModuleMove`). Fewer
-        than two, or a shared destination, moves one module per stage, as does a
-        module importing a peer bare (`import pkg.peer`): its readers spell the
-        old path."""
+        moves into a destination of its own, less the ones `batch_exclusions`
+        names. Each move then derives from the same starting state and names its
+        peers' new homes (`BatchModuleMove`). Fewer than two, or a shared
+        destination, moves one module per stage."""
 
         declaring = tuple(path for path in self.live_paths if not self.emptied(path))
-        destinations = [self.destinations[path] for path in declaring]
-        if (
-            len(declaring) < 2
-            or len(declaring) != len(self.live_paths)
-            or len(set(destinations)) != len(destinations)
-            or self.imports_a_peer_bare(declaring)
-        ):
+        if len(declaring) != len(self.live_paths):
             return ()
-        return declaring
+        candidates = tuple(path for path in declaring if path not in self.batch_exclusions)
+        destinations = [self.destinations[path] for path in candidates]
+        if len(candidates) < 2 or len(set(destinations)) != len(destinations):
+            return ()
+        return candidates
+
+    @cached_property
+    def batch_exclusions(self) -> dict[str, str]:
+        """Each module importing a peer bare (`import pkg.peer`, read as
+        `pkg.peer.Name`), with why: the batch cannot rename that path in moved
+        text, so this one module waits and moves on its own once its peers have
+        landed, its import rewritten like any consumer's. Its peers still move
+        together."""
+
+        declaring = tuple(path for path in self.live_paths if not self.emptied(path))
+        graph = self.context.module_import_graph
+        peers = frozenset(graph.module_name_for_file_path(path) for path in declaring)
+        return {
+            path: f"it imports {alias.name!r} bare, and the batch cannot rename "
+            f"{alias.name}.<name> in moved text; it moves on its own after"
+            for path in declaring
+            for node in self.context.parsed_module_for_source_path(path).fact(
+                ModuleNodeIndex
+            ).imports
+            if isinstance(node, ast.Import)
+            for alias in node.names
+            if alias.name in peers
+            and not DirectModuleImportBindingIdentity(module_name=alias.name).follows_move(
+                alias.asname or alias.name.partition(".")[0]
+            )
+        }
 
     @cached_property
     def batch_refusals(self) -> dict[str, str]:
@@ -748,22 +771,6 @@ class ClusterLayers:
             path for path in self.batch_candidates if path not in self.batch_refusals
         )
         return paths if len(paths) >= 2 else ()
-
-    def imports_a_peer_bare(self, paths: tuple[str, ...]) -> bool:
-        graph = self.context.module_import_graph
-        peers = frozenset(graph.module_name_for_file_path(path) for path in paths)
-        return any(
-            alias.name in peers
-            and not DirectModuleImportBindingIdentity(module_name=alias.name).follows_move(
-                alias.asname or alias.name.partition(".")[0]
-            )
-            for path in paths
-            for node in self.context.parsed_module_for_source_path(path).fact(
-                ModuleNodeIndex
-            ).imports
-            if isinstance(node, ast.Import)
-            for alias in node.names
-        )
 
     def batch_recipe(self) -> RefactorRecipe:
         return self.recipe_of(self.batch_paths)
@@ -875,6 +882,10 @@ class PackageMoveFindingRecipeSynthesizer(
         if batch and source_path in layers.batch_refusals:
             return self.rejected_evaluation(
                 f"left {batch[0]}'s batch, refused: {layers.batch_refusals[source_path]}"
+            )
+        if batch and source_path in layers.batch_exclusions:
+            return self.rejected_evaluation(
+                f"left {batch[0]}'s batch: {layers.batch_exclusions[source_path]}"
             )
         if batch:
             if source_path != batch[0]:
