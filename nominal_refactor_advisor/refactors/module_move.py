@@ -65,7 +65,10 @@ from nominal_refactor_advisor.codemod_module_move_reports import (
     ModuleMoveSourceLocalDependencyResolution,
 )
 from nominal_refactor_advisor.codemod_operations import RefactorRecipeOperation
-from nominal_refactor_advisor.codemod_paths import SourcePathResolutionAuthority
+from nominal_refactor_advisor.codemod_paths import (
+    SourceCreationPathAuthority,
+    SourcePathResolutionAuthority,
+)
 from nominal_refactor_advisor.codemod_payload import (
     CodemodPayloadRecord,
     OptionalStringPayloadValueCodec,
@@ -2340,6 +2343,16 @@ class RetainedCallOperation(RepositorySourceReprovedOperation, ABC):
     )
 
 
+def _package_inits(graph: SourceModuleImportGraph, path: str) -> frozenset[str]:
+    """The indexed packages above the file at `path`, by their `__init__.py`."""
+
+    return frozenset(
+        source_file.module_name
+        for directory in PurePosixPath(path).parents
+        if (source_file := graph.source_file_by_path.get(f"{directory}/__init__.py")) is not None
+    )
+
+
 @dataclass(frozen=True)
 class BatchModuleMove(CodemodPayloadRecord):
     """A module another move of the same stage takes, whole, to a new home."""
@@ -2458,11 +2471,47 @@ class ModuleSymbolMoveOperation(RepositorySourceReprovedOperation, ABC):
     ) -> ModuleMoveDependencyReport:
         return self.move_plan(context).dependency_report
 
+    def require_no_package_init_cycle(self, context: CodemodSelectorContext) -> None:
+        """Importing the new home runs each package `__init__` above it first. Every
+        module importing the source when it loads now imports the new home, so a
+        package the destination adds whose `__init__` imports one of those modules,
+        directly or through others, closes a cycle Python resolves to a half-built
+        module: the move refuses, naming it. The package's own modules are exempt:
+        Python loads a submodule while its package is mid-init."""
+
+        graph = context.module_import_graph
+        source_path = self.required_source_path(context, self.operation_key())
+        source = graph.module_name_for_file_path(source_path)
+        existing = graph.source_file_for_path(self.destination_path)
+        destination = (
+            existing.file_path
+            if existing is not None
+            else SourceCreationPathAuthority.from_source_index(
+                self.destination_path, context.source_index
+            ).resolved_path()
+        )
+        packages = _package_inits(graph, destination) - _package_inits(graph, source_path)
+        importers = sorted(
+            module for module, imported in graph.import_edges_by_module.items() if source in imported
+        )
+        for package in sorted(packages):
+            reached = graph.reachable_modules(package)
+            for importer in importers:
+                if importer == package or importer.startswith(f"{package}."):
+                    continue
+                if importer in reached:
+                    raise ValueError(
+                        f"{importer} imports {source}, which would then live under {package}: "
+                        f"loading it runs {package}'s __init__ first, which imports {importer} "
+                        "back, a cycle that leaves one of them half-built"
+                    )
+
     def preflight_reports(
         self,
         context: CodemodSelectorContext,
     ) -> tuple[CodemodOperationPreflightReport, ...]:
         try:
+            self.required_reproof(lambda: self.require_no_package_init_cycle(context))
             dependency_report = self.required_reproof(
                 lambda: self.dependency_report(context)
             )
