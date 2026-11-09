@@ -399,6 +399,8 @@ class ModuleSymbolTable:
     def bound_names_for_statement(statement: ast.stmt) -> tuple[str, ...]:
         if isinstance(statement, ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef):
             return (statement.name,)
+        if isinstance(statement, ast.TypeAlias):
+            return (statement.name.id,)
         return AssignmentStatementNameProjection(statement).names
 
     @cached_property
