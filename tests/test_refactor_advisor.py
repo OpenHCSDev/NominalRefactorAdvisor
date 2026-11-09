@@ -7998,7 +7998,8 @@ def test_relocation_rewrites_a_source_import_where_it_stands(tmp_path: Path) -> 
     assert simulation.simulation.rewritten_sources[(tmp_path / "pkg/reader.py").as_posix()] == (
         "from __future__ import annotations\n\n\n"
         "class Early:\n    pass\n\n\n"
-        "from pkg.destination import Moved\nfrom pkg.source import Kept\n\nvalue = Moved.value\n"
+        "from pkg.destination import Moved\nfrom pkg.source import Kept\n\n"
+        "value = Moved.value\n"
     )
 
 

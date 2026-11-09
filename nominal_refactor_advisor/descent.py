@@ -600,43 +600,28 @@ class Rewrite:
     def require_import(self, module: ParsedModule, source: str, name: str) -> None:
         self.imports[module.file_path].add((source, name))
 
-    @staticmethod
-    def import_spelling(module: ParsedModule, source: str) -> ImportFromModuleName:
-        """``source`` spelled as ``module`` spells imports of its own package: relative
-        when it already imports relatively, absolute otherwise."""
-
-        if not any(
-            isinstance(statement, ast.ImportFrom) and statement.level > 0
-            for statement in module.module.body
-        ):
-            return ImportFromModuleName(source)
-        package = module.module_path_identity.package_parts
-        target = source.split(".")
-        if not package or package[0] != target[0]:
-            return ImportFromModuleName(source)
-        shared = 0
-        for own, wanted in zip(package, target):
-            if own != wanted:
-                break
-            shared += 1
-        return ImportFromModuleName(
-            "." * (len(package) - shared + 1) + ".".join(target[shared:])
-        )
-
     def ensure_import(
         self, module: ParsedModule, source: str, names: tuple[str, ...]
     ) -> None:
-        """Extend the module's from-import of ``source``, or add one, spelled as the
-        module spells its own package's imports."""
+        """Extend the module's from-import of ``source`` in the spelling its author
+        wrote, or add one that names ``source`` absolutely."""
 
-        spelling = self.import_spelling(module, source)
-        source = spelling.source
+        identity = module.module_path_identity
         statements = [
             statement
             for statement in module.module.body
             if isinstance(statement, ast.ImportFrom)
-            and ImportFromModuleName.from_node(statement) == spelling
+            and identity.resolve_import_from_module(
+                imported_module=statement.module, level=statement.level
+            )
+            == source
         ]
+        spelling = (
+            ImportFromModuleName.from_node(statements[0])
+            if statements
+            else ImportFromModuleName(source)
+        )
+        source = spelling.source
         bound = {
             alias.name
             for statement in statements

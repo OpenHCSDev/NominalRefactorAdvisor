@@ -88,8 +88,14 @@ def test_documented_extraction_can_split_its_new_module_in_the_next_stage(
         "OpaqueValueExpression",
     }
     consumer = (package / "consumer.py").read_text(encoding="utf-8")
-    assert "from nominal_refactor_advisor.call_binding import CompactFunctionSignature" in consumer
-    assert "from nominal_refactor_advisor.value_expression import LexicalValueReference" in consumer
+    assert (
+        "from nominal_refactor_advisor.call_binding import CompactFunctionSignature"
+        in consumer
+    )
+    assert (
+        "from nominal_refactor_advisor.value_expression import LexicalValueReference"
+        in consumer
+    )
 
 
 @pytest.mark.parametrize("owner", (call_binding, value_expression))
