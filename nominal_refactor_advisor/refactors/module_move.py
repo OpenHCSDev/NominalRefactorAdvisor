@@ -27,7 +27,7 @@ from ..module_node_index import ModuleNodeIndex
 from ..codemod_import_bindings import FromModuleImportBindingIdentity
 from ..codemod_import_graph import SourceModuleImportGraph
 from ..source_index import SourceFileDigest
-from ..codemod_import_scopes import ModuleImportScope
+from ..codemod_import_scopes import ModuleImportScope, TypeCheckingGuardProjection
 from ..codemod_imports import (
     ImportFromSource,
     ModuleImportMutation,
@@ -344,6 +344,13 @@ class ModuleNameRedirect:
                 )
                 for binding, scope in module_reads.unread_bindings
             )
+            run_only = _RunOnlyImports.of(parsed, consumer_path, source_module_name)
+            if run_only.statements:
+                edits.extend(
+                    self.run_import_edits(
+                        import_graph, run_only, source_module_name, context.sources_by_file_path[consumer_path]
+                    )
+                )
             local_imports = self._in_place_import_replacements(
                 import_graph,
                 parsed,
@@ -369,6 +376,19 @@ class ModuleNameRedirect:
                     )
                 )
         return tuple(edits)
+
+    def run_import_edits(
+        self,
+        import_graph: SourceModuleImportGraph,
+        run_only: _RunOnlyImports,
+        source_module_name: str,
+        source: str,
+    ) -> tuple[NominalSourceEdit, ...]:
+        """How an import taken only to run the source follows the names leaving
+        it. Into their owners, nothing here: a dissolve replaces such an import
+        with what the dissolved module still runs (`DissolveModuleOperation`)."""
+        del import_graph, run_only, source_module_name, source
+        return ()
 
     def _in_place_import_replacements(
         self,
@@ -690,6 +710,88 @@ class RelocationNameRedirect(ModuleNameRedirect):
 
     def binding_reader_paths(self, name: str) -> frozenset[str]:
         return frozenset((self.reader_path,)) if name in self.reader_bindings else frozenset()
+
+    def run_import_edits(
+        self,
+        import_graph: SourceModuleImportGraph,
+        run_only: _RunOnlyImports,
+        source_module_name: str,
+        source: str,
+    ) -> tuple[NominalSourceEdit, ...]:
+        """The moved declarations run in `reader_path` now, so an import taken only
+        to run the source also runs it, right after the source."""
+        reader = import_graph.module_name_for_file_path(self.reader_path)
+        if reader is None:
+            raise ValueError(f"Destination module identity is unavailable for {self.reader_path!r}")
+        if reader.partition(".")[0] != source_module_name.partition(".")[0]:
+            raise ValueError(
+                f"{run_only.file_path!r}:{run_only.statements[0].lineno} imports "
+                f"{source_module_name!r} to run it, and {reader!r} binds another package head"
+            )
+        return (run_only.edit(source, source_module_name, (source_module_name, reader)),)
+
+
+@dataclass(frozen=True)
+class _RunOnlyImports:
+    """The bare `import pkg.module` statements of one file taken only to run the
+    module: nothing in the file reads through the dotted path, so what the import
+    does is run the module, and the import follows whatever runs it now."""
+
+    file_path: str
+    statements: tuple[ast.Import, ...]
+
+    @classmethod
+    def of(cls, parsed: ParsedModule, file_path: str, module_name: str) -> _RunOnlyImports:
+        if cls.reads_path(parsed.module, module_name):
+            return cls(file_path, ())
+        return cls(
+            file_path,
+            tuple(
+                statement
+                for statement in parsed.fact(ModuleNodeIndex).imports
+                if isinstance(statement, ast.Import)
+                and any(alias.asname is None and alias.name == module_name for alias in statement.names)
+            ),
+        )
+
+    @staticmethod
+    def reads_path(module: ast.Module, module_name: str) -> bool:
+        parts = tuple(module_name.split("."))
+        return any(
+            (reference := LexicalValueReference.from_expression(node)) is not None
+            and reference.parts == parts
+            for node in ast.walk(module)
+            if isinstance(node, ast.Attribute)
+        )
+
+    def edit(self, source: str, module_name: str, runs: tuple[str, ...]) -> NominalSourceEdit:
+        """Each statement imports `runs`, in order, where it imported `module_name`."""
+        geometry = SourceTextGeometry(source)
+        replacements: list[SourceTextSpanReplacement] = []
+        for statement in self.statements:
+            names = tuple(
+                dict.fromkeys(
+                    name
+                    for alias in statement.names
+                    for name in (
+                        runs
+                        if alias.asname is None and alias.name == module_name
+                        else (ast.unparse(alias),)
+                    )
+                )
+            )
+            if not names:
+                raise ValueError(
+                    f"{self.file_path!r}:{statement.lineno} imports {module_name!r} "
+                    "only to run it, and it runs nothing now"
+                )
+            start, end = geometry.required_node_offsets(statement)
+            replacements.append(
+                SourceTextSpanReplacement.from_offsets(
+                    start_offset=start, end_offset=end, replacement_source=f"import {', '.join(names)}"
+                )
+            )
+        return geometry.nominal_edit(file_path=self.file_path, replacements=tuple(replacements))
 
 
 @dataclass(frozen=True)
@@ -2857,6 +2959,48 @@ class _DissolvedModuleBindings:
                 owners[name] = owner
         return cls(source_path, owners, frozenset(foreign))
 
+    def run_modules(self, context: CodemodSelectorContext) -> tuple[str, ...]:
+        """The modules importing the dissolved module runs, in its order: each
+        module its top-level imports name, and each submodule a `from` import
+        names. A condition other than `TYPE_CHECKING` or a script guard would run
+        some of them only sometimes, so it is refused."""
+
+        module = context.module_nodes_by_file_path[self.source_path]
+        guards = TypeCheckingGuardProjection.from_module(module).guards
+        for statement in module.body:
+            if isinstance(statement, ast.If) and statement not in guards and not _ScriptEntry.is_guard(statement):
+                raise ValueError(
+                    f"{self.source_path!r} imports under the condition "
+                    f"{ast.unparse(statement.test)!r} at line {statement.lineno}"
+                )
+        import_graph = context.module_import_graph
+        source_file = import_graph.source_file_for_path(self.source_path)
+        if source_file is None:
+            raise ValueError(f"Source module identity is unavailable for {self.source_path!r}")
+        known = import_graph.known_module_names
+        run: list[str] = []
+        for statement in ModuleImportScope.RUNTIME.import_statements(module):
+            if isinstance(statement, ast.Import):
+                run.extend(alias.name for alias in statement.names)
+                continue
+            if statement.module == "__future__":
+                continue
+            imported_module = source_file.module_path_identity.resolve_import_from_module(
+                imported_module=statement.module, level=statement.level
+            )
+            if imported_module is None:
+                raise ValueError(
+                    f"{self.source_path!r} imports {ast.unparse(statement)!r}, "
+                    "whose module does not resolve"
+                )
+            run.append(imported_module)
+            run.extend(
+                f"{imported_module}.{alias.name}"
+                for alias in statement.names
+                if f"{imported_module}.{alias.name}" in known
+            )
+        return tuple(dict.fromkeys(run))
+
     @staticmethod
     def _binds_only_imports(statement: ast.stmt, *, first: bool) -> bool:
         if isinstance(statement, (ast.Import, ast.ImportFrom)) or _ScriptEntry.is_guard(statement):
@@ -3809,10 +3953,10 @@ class DissolveModuleOperation(RetainedCallOperation):
     those names is removed, and every string naming the module follows it.
 
     `successor_path` names the module a string naming the dissolved module now
-    means, and the module a bare import taken only to run it now runs; without
-    one such a string or import is refused. A consumer that binds the module
-    otherwise for its import side effect, or imports a name the module took from
-    outside the index, is refused: it has no owner to follow."""
+    means; without one such a string is refused. A bare import taken only to run
+    the module runs the modules it imported instead. A consumer that binds the
+    module otherwise for its import side effect, or imports a name the module took
+    from outside the index, is refused: it has no owner to follow."""
 
     successor_path: str | None = codemod_payload_field(
         OptionalStringPayloadValueCodec(),
@@ -3891,7 +4035,7 @@ class DissolveModuleOperation(RetainedCallOperation):
         self._require_followable_consumers(context, excluded, strings.source_module_name, bindings)
         return (
             *self._module_binding_edits(
-                context, excluded, strings.source_module_name, strings.successor_path
+                context, excluded, strings.source_module_name, bindings.run_modules(context)
             ),
             *ModuleNameRedirect(strings.source_path, bindings.owners).consumer_edits(
                 context,
@@ -3942,24 +4086,22 @@ class DissolveModuleOperation(RetainedCallOperation):
         context: CodemodSelectorContext,
         excluded_paths: frozenset[str],
         source_module_name: str,
-        successor_path: str | None,
+        run_modules: tuple[str, ...],
     ) -> tuple[NominalSourceEdit, ...]:
-        """Each bare `import pkg.source` taken only to run the module imports its
-        successor instead, which now declares everything the source did, when the
-        successor binds the same package head. Refuse the bindings of the
-        dissolved module that neither this nor its redirect can remove: a bare
-        import whose dotted path is read, or that has no such successor; one of a
-        submodule; another binding taken only for its import side effect; and
-        one inside a function. `ModuleNameRedirect` removes every other binding
-        (`from pkg import source`, `import pkg.source as alias`) once its reads
-        are redirected."""
+        """Each bare `import pkg.source` taken only to run the module imports, in
+        its place, the modules the dissolved module still runs (`run_modules`),
+        when each binds the same package head; a relocation already added the
+        modules its declarations went to. Refuse the bindings of the dissolved
+        module that neither this nor its redirect can remove: a bare import whose
+        dotted path is read, or whose run modules bind another head; one of a
+        submodule; another binding taken only for its import side effect; and one
+        inside a function. `ModuleNameRedirect` removes every other binding
+        (`from pkg import source`, `import pkg.source as alias`) once its reads are
+        redirected."""
 
         package, _, leaf = source_module_name.rpartition(".")
-        successor_module_name = (
-            None
-            if successor_path is None
-            else context.module_import_graph.module_name_for_file_path(successor_path)
-        )
+        head = source_module_name.partition(".")[0]
+        other_heads = tuple(module for module in run_modules if module.partition(".")[0] != head)
         edits: list[NominalSourceEdit] = []
         for source_file, parsed in FilesReachingModule(context, source_module_name):
             if source_file.file_path in excluded_paths:
@@ -3970,14 +4112,7 @@ class DissolveModuleOperation(RetainedCallOperation):
                 for scope in ModuleImportScope
                 for statement in scope.import_statements(parsed.module)
             }
-            source_parts = tuple(source_module_name.split("."))
-            reads_path = any(
-                (reference := LexicalValueReference.from_expression(node)) is not None
-                and reference.parts == source_parts
-                for node in ast.walk(parsed.module)
-                if isinstance(node, ast.Attribute)
-            )
-            run_only: list[tuple[ast.alias, str]] = []
+            reads_path = _RunOnlyImports.reads_path(parsed.module, source_module_name)
             for statement in parsed.fact(ModuleNodeIndex).imports:
                 if isinstance(statement, ast.Import):
                     for alias in statement.names:
@@ -3993,18 +4128,12 @@ class DissolveModuleOperation(RetainedCallOperation):
                                 f"{source_file.file_path!r}:{statement.lineno} imports "
                                 f"{source_module_name!r} as a module path and reads through it"
                             )
-                        if successor_module_name is None:
+                        if other_heads:
                             raise ValueError(
                                 f"{source_file.file_path!r}:{statement.lineno} imports "
-                                f"{source_module_name!r} to run it; declare its successor_path"
+                                f"{source_module_name!r} to run it, which runs "
+                                f"{other_heads!r}, outside {head!r}"
                             )
-                        if successor_module_name.partition(".")[0] != source_module_name.partition(".")[0]:
-                            raise ValueError(
-                                f"{source_file.file_path!r}:{statement.lineno} imports "
-                                f"{source_module_name!r} to run it, and its successor "
-                                f"{successor_module_name!r} binds another package head"
-                            )
-                        run_only.append((alias, successor_module_name))
                     bound = tuple(
                         alias.asname
                         for alias in statement.names
@@ -4038,20 +4167,13 @@ class DissolveModuleOperation(RetainedCallOperation):
                         f"{source_file.file_path!r}:{statement.lineno} binds "
                         f"{source_module_name!r} inside a function"
                     )
-            if run_only:
-                geometry = SourceTextGeometry(context.sources_by_file_path[source_file.file_path])
+            run_only = _RunOnlyImports.of(parsed, source_file.file_path, source_module_name)
+            if run_only.statements:
                 edits.append(
-                    geometry.nominal_edit(
-                        file_path=source_file.file_path,
-                        replacements=tuple(
-                            SourceTextSpanReplacement.from_offsets(
-                                start_offset=start,
-                                end_offset=end,
-                                replacement_source=successor,
-                            )
-                            for alias, successor in run_only
-                            for start, end in (geometry.required_node_offsets(alias),)
-                        ),
+                    run_only.edit(
+                        context.sources_by_file_path[source_file.file_path],
+                        source_module_name,
+                        run_modules,
                     )
                 )
         return tuple(edits)
