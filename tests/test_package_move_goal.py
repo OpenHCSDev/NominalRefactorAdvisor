@@ -784,3 +784,52 @@ def test_a_package_read_as_a_value_stays_and_refuses(tmp_path: Path) -> None:
 
     assert report.stages == ()
     assert "__package__ (it reads `__package__`" in report.to_markdown()
+
+
+def test_an_import_that_only_runs_a_moved_module_runs_its_successor(tmp_path: Path) -> None:
+    """agent-comms private_runtime_schema.py imports declaration modules inside a
+    method only so their tables register. Once the whole module moves, the
+    successor declares everything it did, so the import runs the successor."""
+
+    _write(tmp_path, "pkg/__init__.py", "")
+    _write(tmp_path, "pkg/installer/__init__.py", "")
+    _write(
+        tmp_path,
+        "pkg/registry.py",
+        "class Table:\n"
+        "    members: list[str] = []\n\n"
+        "    def __init_subclass__(cls) -> None:\n"
+        "        Table.members.append(cls.__name__)\n",
+    )
+    _write(
+        tmp_path,
+        "pkg/tool.py",
+        "from pkg.registry import Table\n\n\nclass ToolTable(Table):\n    pass\n",
+    )
+    _write(
+        tmp_path,
+        "pkg/schema.py",
+        "from pkg.registry import Table\n\n\n"
+        "def declarations() -> list[str]:\n"
+        "    import pkg.tool  # noqa: F401 - declarations register\n\n"
+        "    return Table.members\n",
+    )
+    report = _goal(tmp_path, "| `installer` | `tool.py` | |\n")
+
+    assert report.stop_reason is CodemodWorkflowStopReason.ACHIEVED, report.to_markdown()
+    replay = report.replay_sequence.simulate(
+        CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    )
+    assert replay.is_clean
+    replay.apply()
+    assert "    import pkg.installer.tool  # noqa" in (tmp_path / "pkg/schema.py").read_text()
+    imported = subprocess.run(
+        [sys.executable, "-c", "from pkg.schema import declarations; print(declarations())"],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert imported.returncode == 0, imported.stderr
+    assert imported.stdout.strip() == "['ToolTable']"
+

@@ -91,6 +91,7 @@ from ..public_exports import (
     module_public_export_contract,
 )
 from ..python_module_identity import PythonModulePathIdentity
+from ..value_expression import LexicalValueReference
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -3808,8 +3809,9 @@ class DissolveModuleOperation(RetainedCallOperation):
     those names is removed, and every string naming the module follows it.
 
     `successor_path` names the module a string naming the dissolved module now
-    means; without one such a string is refused. A consumer that binds the
-    module for its import side effect, or imports a name the module took from
+    means, and the module a bare import taken only to run it now runs; without
+    one such a string or import is refused. A consumer that binds the module
+    otherwise for its import side effect, or imports a name the module took from
     outside the index, is refused: it has no owner to follow."""
 
     successor_path: str | None = codemod_payload_field(
@@ -3887,8 +3889,10 @@ class DissolveModuleOperation(RetainedCallOperation):
         bindings = _DissolvedModuleBindings.of(context, strings.source_path)
         excluded = frozenset({strings.source_path})
         self._require_followable_consumers(context, excluded, strings.source_module_name, bindings)
-        self._require_removable_module_bindings(context, excluded, strings.source_module_name)
         return (
+            *self._module_binding_edits(
+                context, excluded, strings.source_module_name, strings.successor_path
+            ),
             *ModuleNameRedirect(strings.source_path, bindings.owners).consumer_edits(
                 context,
                 excluded_paths=excluded,
@@ -3934,19 +3938,29 @@ class DissolveModuleOperation(RetainedCallOperation):
                     )
 
     @staticmethod
-    def _require_removable_module_bindings(
+    def _module_binding_edits(
         context: CodemodSelectorContext,
         excluded_paths: frozenset[str],
         source_module_name: str,
-    ) -> None:
-        """Refuse the bindings of the dissolved module that its redirect cannot
-        remove: a bare `import pkg.source` (it binds the package head, which other
-        reads may still need), a binding taken only for its import side effect,
-        and one inside a function. `ModuleNameRedirect` removes every other
-        binding (`from pkg import source`, `import pkg.source as alias`) once its
-        reads are redirected."""
+        successor_path: str | None,
+    ) -> tuple[NominalSourceEdit, ...]:
+        """Each bare `import pkg.source` taken only to run the module imports its
+        successor instead, which now declares everything the source did, when the
+        successor binds the same package head. Refuse the bindings of the
+        dissolved module that neither this nor its redirect can remove: a bare
+        import whose dotted path is read, or that has no such successor; one of a
+        submodule; another binding taken only for its import side effect; and
+        one inside a function. `ModuleNameRedirect` removes every other binding
+        (`from pkg import source`, `import pkg.source as alias`) once its reads
+        are redirected."""
 
         package, _, leaf = source_module_name.rpartition(".")
+        successor_module_name = (
+            None
+            if successor_path is None
+            else context.module_import_graph.module_name_for_file_path(successor_path)
+        )
+        edits: list[NominalSourceEdit] = []
         for source_file, parsed in FilesReachingModule(context, source_module_name):
             if source_file.file_path in excluded_paths:
                 continue
@@ -3956,17 +3970,41 @@ class DissolveModuleOperation(RetainedCallOperation):
                 for scope in ModuleImportScope
                 for statement in scope.import_statements(parsed.module)
             }
+            source_parts = tuple(source_module_name.split("."))
+            reads_path = any(
+                (reference := LexicalValueReference.from_expression(node)) is not None
+                and reference.parts == source_parts
+                for node in ast.walk(parsed.module)
+                if isinstance(node, ast.Attribute)
+            )
+            run_only: list[tuple[ast.alias, str]] = []
             for statement in parsed.fact(ModuleNodeIndex).imports:
                 if isinstance(statement, ast.Import):
-                    if any(
-                        alias.asname is None and alias.name == source_module_name
-                        or alias.name.startswith(f"{source_module_name}.")
-                        for alias in statement.names
-                    ):
-                        raise ValueError(
-                            f"{source_file.file_path!r}:{statement.lineno} imports "
-                            f"{source_module_name!r} as a module path"
-                        )
+                    for alias in statement.names:
+                        if alias.name.startswith(f"{source_module_name}."):
+                            raise ValueError(
+                                f"{source_file.file_path!r}:{statement.lineno} imports "
+                                f"a submodule of {source_module_name!r}"
+                            )
+                        if alias.asname is not None or alias.name != source_module_name:
+                            continue
+                        if reads_path:
+                            raise ValueError(
+                                f"{source_file.file_path!r}:{statement.lineno} imports "
+                                f"{source_module_name!r} as a module path and reads through it"
+                            )
+                        if successor_module_name is None:
+                            raise ValueError(
+                                f"{source_file.file_path!r}:{statement.lineno} imports "
+                                f"{source_module_name!r} to run it; declare its successor_path"
+                            )
+                        if successor_module_name.partition(".")[0] != source_module_name.partition(".")[0]:
+                            raise ValueError(
+                                f"{source_file.file_path!r}:{statement.lineno} imports "
+                                f"{source_module_name!r} to run it, and its successor "
+                                f"{successor_module_name!r} binds another package head"
+                            )
+                        run_only.append((alias, successor_module_name))
                     bound = tuple(
                         alias.asname
                         for alias in statement.names
@@ -4000,6 +4038,23 @@ class DissolveModuleOperation(RetainedCallOperation):
                         f"{source_file.file_path!r}:{statement.lineno} binds "
                         f"{source_module_name!r} inside a function"
                     )
+            if run_only:
+                geometry = SourceTextGeometry(context.sources_by_file_path[source_file.file_path])
+                edits.append(
+                    geometry.nominal_edit(
+                        file_path=source_file.file_path,
+                        replacements=tuple(
+                            SourceTextSpanReplacement.from_offsets(
+                                start_offset=start,
+                                end_offset=end,
+                                replacement_source=successor,
+                            )
+                            for alias, successor in run_only
+                            for start, end in (geometry.required_node_offsets(alias),)
+                        ),
+                    )
+                )
+        return tuple(edits)
 
 
 @dataclass(frozen=True, kw_only=True)
