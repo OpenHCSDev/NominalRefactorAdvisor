@@ -1576,8 +1576,54 @@ class CodemodParseValidationReport(DataclassJsonReport):
     parse_valid: bool
 
 
+class WritesSources(ABC):
+    """What a codemod writer installs: each changed file's text after the change,
+    or its removal, against the revision of the source it was proved from."""
+
+    base_revisions: tuple[CodemodSourceRevision, ...]
+
+    @property
+    @abstractmethod
+    def written_sources(self) -> Mapping[str, str]:
+        """Every file the writer installs, with its text."""
+
+    @property
+    @abstractmethod
+    def removed_file_paths(self) -> frozenset[str]:
+        """Every file the writer deletes."""
+
+    @cached_property
+    def base_revision_by_file_path(self) -> Mapping[str, CodemodSourceRevision]:
+        return {revision.file_path: revision for revision in self.base_revisions}
+
+    def require_current_sources(self, *, encoding: str = "utf-8") -> None:
+        for revision in self.base_revisions:
+            revision.require_path_state(encoding=encoding)
+
+    @json_report_property()
+    def changed_file_paths(self) -> tuple[str, ...]:
+        return tuple(sorted({*self.written_sources, *self.removed_file_paths}))
+
+    def rewritten_source(self, file_path: str) -> str | None:
+        """The file's source after the rewrite; None when the rewrite deletes it."""
+
+        if file_path in self.removed_file_paths:
+            return None
+        return self.written_sources[file_path]
+
+    @cached_property
+    def rewritten_source_digest(self) -> str:
+        return hashlib.blake2s(
+            "\0".join(
+                f"{file_path}\0{self.rewritten_source(file_path)}"
+                for file_path in self.changed_file_paths
+            ).encode("utf-8"),
+            digest_size=16,
+        ).hexdigest()
+
+
 @dataclass(frozen=True)
-class CodemodSimulationReport(DataclassJsonReport):
+class CodemodSimulationReport(WritesSources, DataclassJsonReport):
     """Result of simulating planned rewrites without writing files."""
 
     rewrites: tuple[SimulatedSourceRewrite, ...]
@@ -1789,46 +1835,9 @@ class CodemodSimulationReport(DataclassJsonReport):
     def backend(self) -> CodemodBackend:
         return self.parse_validation.backend
 
-    @cached_property
-    def base_revision_by_file_path(self) -> Mapping[str, CodemodSourceRevision]:
-        return {revision.file_path: revision for revision in self.base_revisions}
-
-    def require_current_sources(self, *, encoding: str = "utf-8") -> None:
-        for revision in self.base_revisions:
-            revision.require_path_state(encoding=encoding)
-
     @json_report_property()
     def applied_rewrite_count(self) -> int:
         return len(self.rewrites)
-
-    @json_report_property()
-    def changed_file_paths(self) -> tuple[str, ...]:
-        return tuple(
-            sorted(
-                {
-                    *self.rewritten_sources,
-                    *self.deleted_file_paths,
-                    *self.text_file_rewrite_by_path,
-                }
-            )
-        )
-
-    def rewritten_source(self, file_path: str) -> str | None:
-        """The file's source after the rewrite; None when the rewrite deletes it."""
-
-        if file_path in self.removed_file_paths:
-            return None
-        return self.written_sources[file_path]
-
-    @cached_property
-    def rewritten_source_digest(self) -> str:
-        return hashlib.blake2s(
-            "\0".join(
-                f"{file_path}\0{self.rewritten_source(file_path)}"
-                for file_path in self.changed_file_paths
-            ).encode("utf-8"),
-            digest_size=16,
-        ).hexdigest()
 
     @property
     def validated_file_paths(self) -> tuple[str, ...]:
@@ -3971,7 +3980,7 @@ class CommittedCodemodSource:
 class CodemodSimulationWriter:
     """Validate, stage, commit, and roll back one simulated write set."""
 
-    simulation: CodemodSimulationReport
+    simulation: WritesSources
     encoding: str = "utf-8"
 
     def apply(self) -> tuple[str, ...]:
