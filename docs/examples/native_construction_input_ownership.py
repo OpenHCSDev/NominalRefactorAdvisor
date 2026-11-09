@@ -35,24 +35,3 @@ self.require_construction_inputs()
         ),
     )
 )
-
-COMPILER_RETENTION_PLAN = CodemodPlanSequence.from_operations(
-    (
-        ReplaceFunctionBodyOperation(
-            target=SourceRewriteTarget(
-                file_path="nominal_refactor_advisor/codemod_runtime.py",
-                qualname="RefactorRecipeOperationCompiler.from_context",
-            ),
-            body_source="""if isinstance(context, cls):
-    return context
-snapshot = context.execution_snapshot()
-return cls._from_modules_with_indexes(
-    snapshot.parsed_modules,
-    snapshot.required_class_family_index,
-    snapshot._source_index_build_artifacts,
-    snapshot.product_flow_repository,
-)
-""",
-        ),
-    )
-)
