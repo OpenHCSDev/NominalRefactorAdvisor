@@ -493,14 +493,9 @@ class CodemodSourceSnapshot(CodemodSelectorContext):
         self,
         creations: Iterable[SourceFileCreation],
     ) -> CodemodSourceSnapshot:
-        # Creations of one path with one text are one creation.
-        creation_tuple = tuple(
-            {(creation.file_path, creation.source): creation for creation in creations}.values()
-        )
+        creation_tuple = SourceFileCreation.distinct(creations)
         path_tuple = tuple(creation.file_path for creation in creation_tuple)
-        duplicate_paths = tuple(
-            sorted(path for path, count in Counter(path_tuple).items() if count > 1)
-        )
+        duplicate_paths = SourceFileCreation.conflicting_paths(creation_tuple)
         existing_paths = tuple(
             sorted(set(path_tuple).intersection(self.sources_by_file_path))
         )
