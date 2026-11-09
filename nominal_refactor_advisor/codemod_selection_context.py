@@ -96,10 +96,11 @@ class CodemodSelectorContext(IndexedSourceAuthority, ABC):
 
     _operation_derivations: dict[Hashable, object] = field(
         default_factory=dict,
-        init=False,
         repr=False,
         compare=False,
     )
+    """The operations derived from this source state, shared by every context
+    built over the same state, so each is derived once per state."""
 
     def retained_operation_derivation[DerivedT](
         self,

@@ -188,6 +188,14 @@ class CodemodSourceSnapshot(CodemodSelectorContext):
     """Files outside the Python index that earlier stages of the plan rewrote, as
     this state has them; every other one is as it is on disk."""
 
+    _projected_states: dict[tuple[tuple[str, str], ...], CodemodSourceSnapshot] = (
+        field(default_factory=dict, init=False, repr=False, compare=False)
+    )
+    """The states this one becomes under each source overlay. A projection is a
+    function of this state and its overlay, so every phase that projects the
+    same overlay (plan evaluation, preflight, edits) reads one state and
+    everything derived from it."""
+
     def text_file(self, path: Path) -> FileText:
         """A file outside the Python index as this state has it."""
 
@@ -217,6 +225,7 @@ class CodemodSourceSnapshot(CodemodSelectorContext):
             self._source_index_build_artifacts,
             retained_product_flow_repository=self._retained_product_flow_repository,
             text_files=text_files,
+            operation_derivations={},
         )
 
     _retained_product_flow_repository: SourceProductFlowRepository | None = field(
@@ -374,6 +383,7 @@ class CodemodSourceSnapshot(CodemodSelectorContext):
                     else AstTargetNodeIndex(ast_target_node_cache)
                 ),
             ),
+            operation_derivations={},
         )
 
     @classmethod
@@ -388,6 +398,7 @@ class CodemodSourceSnapshot(CodemodSelectorContext):
             modules.modules,
             modules.fact(ClassFamilyIndex),
             build_source_index_artifacts(modules.modules, tuple(findings)),
+            operation_derivations={},
         )
 
     @classmethod
@@ -398,8 +409,12 @@ class CodemodSourceSnapshot(CodemodSelectorContext):
         source_index_artifacts: SourceIndexBuildArtifacts,
         retained_product_flow_repository: SourceProductFlowRepository | None = None,
         text_files: Mapping[str, FileText] | None = None,
+        *,
+        operation_derivations: dict[Hashable, object],
     ) -> CodemodSourceSnapshot:
-        """Build from source and semantic indexes proved for that exact source."""
+        """Build from source and semantic indexes proved for that exact source.
+        A snapshot of the same state passes its own `operation_derivations`, so
+        the state's derivations are shared; a new state passes an empty one."""
 
         module_node_cache = {module.file_path: module.module for module in modules}
         snapshot = cls(
@@ -416,6 +431,7 @@ class CodemodSourceSnapshot(CodemodSelectorContext):
             ),
             _retained_product_flow_repository=retained_product_flow_repository,
             text_files={} if text_files is None else text_files,
+            _operation_derivations=operation_derivations,
         )
         snapshot._parsed_modules_by_file_path.update(
             (module.file_path, module) for module in modules
@@ -428,6 +444,15 @@ class CodemodSourceSnapshot(CodemodSelectorContext):
     ) -> CodemodSourceSnapshot:
         if not source_overlay:
             return self
+        overlay = tuple(sorted(source_overlay.items()))
+        if overlay not in self._projected_states:
+            self._projected_states[overlay] = self._projected_state(source_overlay)
+        return self._projected_states[overlay]
+
+    def _projected_state(
+        self,
+        source_overlay: Mapping[str, str],
+    ) -> CodemodSourceSnapshot:
         projection = self.source_projection(source_overlay)
         if not projection.changed_modules:
             return self
@@ -446,6 +471,7 @@ class CodemodSourceSnapshot(CodemodSelectorContext):
                 )
             ),
             text_files=self.text_files,
+            operation_derivations={},
         )
 
     @cached_property
@@ -515,6 +541,7 @@ class CodemodSourceSnapshot(CodemodSelectorContext):
                 remaining, ()
             ),
             text_files=self.text_files,
+            operation_derivations={},
         )
 
     def modules_with_source_overlay(
@@ -708,6 +735,7 @@ class RefactorRecipeOperationCompiler(CodemodSourceSnapshot):
             snapshot._source_index_build_artifacts,
             snapshot.product_flow_repository,
             text_files=snapshot.text_files,
+            operation_derivations=snapshot._operation_derivations,
         )
 
     def planned_rewrites_for_recipes(
