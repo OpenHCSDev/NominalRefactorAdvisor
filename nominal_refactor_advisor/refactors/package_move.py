@@ -33,6 +33,7 @@ from nominal_refactor_advisor.ast_tools import (
 )
 from nominal_refactor_advisor.class_index import CompactModuleClassHeader
 from nominal_refactor_advisor.detectors._base import DetectorConfig
+from nominal_refactor_advisor.codemod_import_bindings import DirectModuleImportBindingIdentity
 from nominal_refactor_advisor.codemod_import_scopes import ModuleImportScope
 from nominal_refactor_advisor.codemod_module_declarations import ModuleSymbolTable
 from nominal_refactor_advisor.codemod_runtime import (
@@ -653,7 +654,8 @@ class ClusterLayers:
         while each still declares names, keeps a module of its own and moves into
         a destination of its own. Each move then derives from the same starting
         state and names its peers' new homes (`BatchModuleMove`). Fewer than two,
-        or a shared destination, moves one module per stage."""
+        or a shared destination, moves one module per stage, as does a module
+        importing a peer bare (`import pkg.peer`): its readers spell the old path."""
 
         declaring = tuple(path for path in self.present_paths if not self.emptied(path))
         destinations = [self.destinations[path] for path in declaring]
@@ -661,9 +663,26 @@ class ClusterLayers:
             len(declaring) < 2
             or len(declaring) != len(self.present_paths)
             or len(set(destinations)) != len(destinations)
+            or self.imports_a_peer_bare(declaring)
         ):
             return ()
         return declaring
+
+    def imports_a_peer_bare(self, paths: tuple[str, ...]) -> bool:
+        graph = self.context.module_import_graph
+        peers = frozenset(graph.module_name_for_file_path(path) for path in paths)
+        return any(
+            alias.name in peers
+            and not DirectModuleImportBindingIdentity(module_name=alias.name).follows_move(
+                alias.asname or alias.name.partition(".")[0]
+            )
+            for path in paths
+            for node in self.context.parsed_module_for_source_path(path).fact(
+                ModuleNodeIndex
+            ).imports
+            if isinstance(node, ast.Import)
+            for alias in node.names
+        )
 
     def batch_recipe(self, context: CodemodSelectorContext) -> RefactorRecipe:
         moves = {

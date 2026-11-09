@@ -140,18 +140,21 @@ class DirectModuleImportBindingIdentity(ModuleImportBindingIdentity):
     def moved(
         self, moved_modules: Mapping[str, str], bound_name: str
     ) -> DirectModuleImportBindingIdentity:
-        """Readers of `import a.b as name` spell only `name`, so the module follows its
-        move. Readers of a bare `import a.b` spell the dotted path, which a move does
-        not rewrite here, so that one is refused."""
-
         if self.module_name not in moved_modules:
             return self
-        if bound_name == self.module_name.partition(".")[0]:
+        if not self.follows_move(bound_name):
             raise ValueError(
                 f"Moved code imports {self.module_name!r}, which its stage moves, as a "
                 "module; its readers spell the old dotted path"
             )
         return replace(self, module_name=moved_modules[self.module_name])
+
+    def follows_move(self, bound_name: str) -> bool:
+        """Readers of `import a.b as name` spell only `name`, so renaming the module
+        keeps them reading it. Readers of a bare `import a.b` spell the dotted path,
+        which a move does not rewrite in the importing code."""
+
+        return bound_name != self.module_name.partition(".")[0]
 
     def source_for(
         self,

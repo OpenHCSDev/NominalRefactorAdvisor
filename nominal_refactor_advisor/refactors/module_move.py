@@ -31,6 +31,7 @@ from nominal_refactor_advisor.ast_tools import (
 )
 from nominal_refactor_advisor.module_node_index import ModuleNodeIndex
 from nominal_refactor_advisor.codemod_import_bindings import (
+    DirectModuleImportBindingIdentity,
     FromModuleImportBindingIdentity,
 )
 from nominal_refactor_advisor.codemod_import_graph import SourceModuleImportGraph
@@ -4372,8 +4373,9 @@ class _MovedImports:
     and written with that module's absolute name: text NRA writes names its
     modules absolutely. One naming a module the batch moves names its new home,
     since every move of the batch derives from the stage's starting state.
-    A bare ``import`` of a batch module is refused: its readers spell the old
-    dotted path."""
+    ``import a.b as name`` of a batch module names its new home; a bare
+    ``import a.b`` is refused, since its readers spell the old dotted path
+    (``DirectModuleImportBindingIdentity.follows_move``)."""
 
     source_identity: PythonModulePathIdentity
     moved_modules: Mapping[str, str] = field(default_factory=dict)
@@ -4395,13 +4397,17 @@ class _MovedImports:
         geometry = SourceTextGeometry(block)
         replacements: list[tuple[int, int, str]] = []
         for node in ast.walk(tree):
-            if isinstance(node, ast.Import) and any(
-                alias.name in self.moved_modules for alias in node.names
-            ):
-                raise ValueError(
-                    f"The block imports a module its stage moves as a module at "
-                    f"line {node.lineno}; its readers spell the old dotted path"
-                )
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    if alias.name not in self.moved_modules:
+                        continue
+                    bound_name = alias.asname or alias.name.partition(".")[0]
+                    moved = DirectModuleImportBindingIdentity(module_name=alias.name).moved(
+                        self.moved_modules, bound_name
+                    )
+                    start, end = geometry.required_node_offsets(alias)
+                    replacements.append((start, end, f"{moved.module_name} as {bound_name}"))
+                continue
             if not isinstance(node, ast.ImportFrom):
                 continue
             absolute = self.source_identity.resolve_import_from_module(

@@ -109,3 +109,49 @@ def test_a_reexport_chain_across_two_moved_modules_resolves_from_the_start(
     assert sorted(path.name for path in (root / "pkg").glob("*.py")) == ["__init__.py", "app.py"]
     assert "pkg.records" not in (root / "pkg/app.py").read_text()
     assert _runs(root, "VALUE") == "('record', 'record')"
+
+
+def test_a_module_importing_a_peer_bare_moves_one_module_per_stage(tmp_path: Path) -> None:
+    """`import pkg.records` is read as `pkg.records.Record`: the batch cannot rename
+    it in the moved text, so the table stages instead and still lands."""
+
+    _write(
+        tmp_path,
+        {
+            "pkg/__init__.py": "",
+            "pkg/messaging/__init__.py": "",
+            "pkg/records.py": "class Record:\n    kind = 'record'\n",
+            "pkg/messages.py": (
+                "import pkg.records\n\n\nclass Message(pkg.records.Record):\n    pass\n"
+            ),
+            "pkg/app.py": "from pkg.messages import Message\n\nVALUE = Message.kind\n",
+        },
+    )
+
+    stages, root = _moved(tmp_path, "| `messaging` | `messages.py`, `records.py` | |\n")
+    assert stages > 2
+    assert _runs(root, "VALUE") == "record"
+
+
+def test_an_aliased_peer_import_inside_a_function_follows_the_batch(tmp_path: Path) -> None:
+    _write(
+        tmp_path,
+        {
+            "pkg/__init__.py": "",
+            "pkg/messaging/__init__.py": "",
+            "pkg/records.py": "class Record:\n    kind = 'record'\n",
+            "pkg/messages.py": (
+                "def kind() -> str:\n"
+                "    import pkg.records as records\n\n"
+                "    return records.Record.kind\n"
+            ),
+            "pkg/app.py": "from pkg.messages import kind\n\nVALUE = kind()\n",
+        },
+    )
+
+    stages, root = _moved(tmp_path, "| `messaging` | `messages.py`, `records.py` | |\n")
+    assert stages == 2
+    assert "import pkg.messaging.records as records" in (
+        root / "pkg/messaging/messages.py"
+    ).read_text()
+    assert _runs(root, "VALUE") == "record"
