@@ -94,9 +94,7 @@ class IndexedClass(ClassDeclaration, ClassNamespaceDeclaration):
                 is not None
             ),
             resolved_base_symbols=(),
-            registry_facts=ClassRegistryFacts.of_class(
-                node, module_binding_snapshot, parsed_module.module
-            ),
+            registry_facts=ClassRegistryFacts.of_class(node, module_binding_snapshot, parsed_module),
             dataclass_declaration=_dataclass_declaration(
                 module_binding_snapshot,
                 qualname,
