@@ -55,7 +55,7 @@ from nominal_refactor_advisor.codemod_payload import (
     codemod_payload_field,
 )
 from nominal_refactor_advisor.codemod_semantics import RewriteOperation
-from nominal_refactor_advisor.codemod_spacing import SourceInsertionBoundary
+from nominal_refactor_advisor.codemod_spacing import SourceInsertionBoundary, SourceInsertionLayer
 from nominal_refactor_advisor.collection_algebra import sorted_tuple
 from nominal_refactor_advisor.json_reports import (
     DataclassJsonReport,
@@ -888,6 +888,7 @@ class SourceInsertion(KeyedSourceEditCoalescence, PhysicalSourceEdit):
     insertion_line: int
     inserted_lines: tuple[str, ...] = ()
     leading_boundary: SourceInsertionBoundary = SourceInsertionBoundary.PRESERVE
+    layer: SourceInsertionLayer = SourceInsertionLayer.BODY
 
     def original_span(self, geometry: SourceTextGeometry) -> SourceTextSpan:
         offset = geometry.line_anchor_offset(self.insertion_line)
@@ -923,7 +924,6 @@ class SourceInsertion(KeyedSourceEditCoalescence, PhysicalSourceEdit):
     def _coalesced_group(
         insertions: tuple[SourceInsertion, ...],
     ) -> SourceInsertion:
-        first = insertions[0]
         unique_insertions: list[SourceInsertion] = []
         seen_sources: set[tuple[str, ...]] = set()
         for insertion in insertions:
@@ -931,12 +931,13 @@ class SourceInsertion(KeyedSourceEditCoalescence, PhysicalSourceEdit):
                 continue
             seen_sources.add(insertion.inserted_lines)
             unique_insertions.append(insertion)
+        unique_insertions.sort(key=lambda insertion: insertion.layer.rank)
         coalesced_lines = unique_insertions[0].inserted_lines
         for insertion in unique_insertions[1:]:
             coalesced_lines = insertion.leading_boundary.coalesce_lines(
                 coalesced_lines, insertion.inserted_lines
             )
-        return replace(first, inserted_lines=coalesced_lines)
+        return replace(unique_insertions[0], inserted_lines=coalesced_lines)
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -1608,15 +1609,16 @@ class SourceNodeSpan:
 
 
 @dataclass(frozen=True)
-class DocumentedNodeSpan(SourceNodeSpan):
-    """A statement and the attribute docstring right after it: the docstring
-    documents the statement, so the span ends where the docstring does."""
+class ExtendedNodeSpan(SourceNodeSpan):
+    """A statement and the statements right after it that move with it (the attribute
+    docstring documenting it, the statements a whole module's move carries with it):
+    the span ends where the last of them does."""
 
-    docstring: ast.Expr = field(kw_only=True)
+    through: ast.stmt = field(kw_only=True)
 
     @property
     def end_line(self) -> int:
-        return self.docstring.end_lineno or self.docstring.lineno
+        return self.through.end_lineno or self.through.lineno
 
 
 @dataclass(frozen=True)

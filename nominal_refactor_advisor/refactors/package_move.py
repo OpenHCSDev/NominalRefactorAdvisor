@@ -36,6 +36,7 @@ from nominal_refactor_advisor.detectors._base import DetectorConfig
 from nominal_refactor_advisor.codemod_import_bindings import DirectModuleImportBindingIdentity
 from nominal_refactor_advisor.codemod_import_scopes import ModuleImportScope
 from nominal_refactor_advisor.codemod_module_declarations import ModuleSymbolTable
+from nominal_refactor_advisor.codemod_preflight import CodemodOperationPreflightError
 from nominal_refactor_advisor.codemod_runtime import (
     FindingRecipeEvaluation,
     RefactorRecipe,
@@ -670,19 +671,39 @@ class ClusterLayers:
         )
 
     @cached_property
-    def dissolving_paths(self) -> tuple[str, ...]:
-        """Every emptied module: they dissolve together in one stage, before
-        anything else relocates, each consumer rewritten to the modules that
-        declare what it imports."""
+    def live_paths(self) -> tuple[str, ...]:
+        """The present modules that still take part: an emptied module whose own
+        dissolve refuses stays where it is and orders nothing."""
 
+        return tuple(path for path in self.present_paths if path not in self.dissolve_refusals)
+
+    @cached_property
+    def dissolve_candidates(self) -> tuple[str, ...]:
         return tuple(path for path in self.present_paths if self.emptied(path))
 
+    @cached_property
+    def dissolve_refusals(self) -> dict[str, str]:
+        return self.refusals(self.dissolve_candidates, self.dissolve_recipe_of)
+
+    @cached_property
+    def dissolving_paths(self) -> tuple[str, ...]:
+        """Every emptied module whose own dissolve does not refuse: they dissolve
+        together in one stage, before anything else relocates, each consumer
+        rewritten to the modules that declare what it imports."""
+
+        return tuple(
+            path for path in self.dissolve_candidates if path not in self.dissolve_refusals
+        )
+
     def dissolve_recipe(self) -> RefactorRecipe:
+        return self.dissolve_recipe_of(self.dissolving_paths)
+
+    def dissolve_recipe_of(self, paths: tuple[str, ...]) -> RefactorRecipe:
         recipe = RefactorRecipe(
             recipe_id="dissolve-emptied",
             reason="Dissolve every emptied flat module into its package module, in one stage.",
         )
-        for path in self.dissolving_paths:
+        for path in paths:
             recipe = recipe.with_operation(
                 DissolveModuleOperation(
                     target=SourceRewriteTarget(file_path=path),
@@ -692,57 +713,127 @@ class ClusterLayers:
         return recipe
 
     @cached_property
-    def batch_paths(self) -> tuple[str, ...]:
-        """The modules that relocate together in one stage: every present module
-        while each still declares names, keeps a module of its own and moves into
-        a destination of its own. Each move then derives from the same starting
-        state and names its peers' new homes (`BatchModuleMove`). Fewer than two,
-        or a shared destination, moves one module per stage, as does a module
-        importing a peer bare (`import pkg.peer`): its readers spell the old path."""
+    def batch_candidates(self) -> tuple[str, ...]:
+        """The modules that could relocate together in one stage: every present
+        module while each still declares names, keeps a module of its own and
+        moves into a destination of its own, less the ones `batch_exclusions`
+        names. Each move then derives from the same starting state and names its
+        peers' new homes (`BatchModuleMove`). Fewer than two, or a shared
+        destination, moves one module per stage."""
 
-        declaring = tuple(path for path in self.present_paths if not self.emptied(path))
-        destinations = [self.destinations[path] for path in declaring]
-        if (
-            len(declaring) < 2
-            or len(declaring) != len(self.present_paths)
-            or len(set(destinations)) != len(destinations)
-            or self.imports_a_peer_bare(declaring)
-        ):
+        declaring = tuple(path for path in self.live_paths if not self.emptied(path))
+        if len(declaring) != len(self.live_paths):
             return ()
-        return declaring
+        candidates = tuple(path for path in declaring if path not in self.batch_exclusions)
+        destinations = [self.destinations[path] for path in candidates]
+        if len(candidates) < 2 or len(set(destinations)) != len(destinations):
+            return ()
+        return candidates
 
-    def imports_a_peer_bare(self, paths: tuple[str, ...]) -> bool:
+    @cached_property
+    def batch_exclusions(self) -> dict[str, str]:
+        """Each module importing a peer bare (`import pkg.peer`, read as
+        `pkg.peer.Name`), with why: the batch cannot rename that path in moved
+        text, so this one module waits and moves on its own once its peers have
+        landed, its import rewritten like any consumer's. Its peers still move
+        together."""
+
+        declaring = tuple(path for path in self.live_paths if not self.emptied(path))
         graph = self.context.module_import_graph
-        peers = frozenset(graph.module_name_for_file_path(path) for path in paths)
-        return any(
-            alias.name in peers
-            and not DirectModuleImportBindingIdentity(module_name=alias.name).follows_move(
-                alias.asname or alias.name.partition(".")[0]
-            )
-            for path in paths
+        peers = frozenset(graph.module_name_for_file_path(path) for path in declaring)
+        return {
+            path: f"it imports {alias.name!r} bare, and the batch cannot rename "
+            f"{alias.name}.<name> in moved text; it moves on its own after"
+            for path in declaring
             for node in self.context.parsed_module_for_source_path(path).fact(
                 ModuleNodeIndex
             ).imports
             if isinstance(node, ast.Import)
             for alias in node.names
+            if alias.name in peers
+            and not DirectModuleImportBindingIdentity(module_name=alias.name).follows_move(
+                alias.asname or alias.name.partition(".")[0]
+            )
+        }
+
+    @cached_property
+    def batch_refusals(self) -> dict[str, str]:
+        return self.refusals(self.batch_candidates, self.recipe_of)
+
+    def refusals(
+        self,
+        candidates: tuple[str, ...],
+        recipe_of: Callable[[tuple[str, ...]], RefactorRecipe],
+    ) -> dict[str, str]:
+        """The candidates of one stage whose own row refuses, each with its
+        preflight's reason. Each row is checked against the state where every
+        file the stage creates already exists (`rewrite_context`), so a refusal
+        is the row's own and never "my destination is not there yet". A refused
+        row leaves the stage and the rest re-form without it, until none
+        refuses: the refused module stays where it is."""
+
+        refused: dict[str, str] = {}
+        while paths := tuple(path for path in candidates if path not in refused):
+            found = self.row_refusals(recipe_of(paths))
+            if not found:
+                return refused
+            refused.update(found)
+        return refused
+
+    def row_refusals(self, recipe: RefactorRecipe) -> dict[str, str]:
+        """Each finding of the table re-reads the same batch, so the state keeps
+        the answer: one projection and one preflight per row, not per finding."""
+
+        return self.context.retained_operation_derivation(
+            (recipe, ClusterLayers.row_refusals),
+            lambda: self._row_refusals(recipe),
         )
 
-    def batch_recipe(self, context: CodemodSelectorContext) -> RefactorRecipe:
+    def _row_refusals(self, recipe: RefactorRecipe) -> dict[str, str]:
+        paths = {
+            operation.operation_key(): operation.target.file_path
+            for operation in recipe.operations
+        }
+        try:
+            projected = recipe.rewrite_context(self.context)
+        except CodemodOperationPreflightError as error:
+            return {paths[error.report.operation]: error.report.message}
+        return {
+            paths[report.operation]: report.message
+            for operation in recipe.operations
+            for report in operation.preflight_reports(projected)
+            if not report.status.is_passed
+        }
+
+    @cached_property
+    def batch_paths(self) -> tuple[str, ...]:
+        """The candidates that relocate together: every one whose own move does
+        not refuse, while two or more remain."""
+
+        paths = tuple(
+            path for path in self.batch_candidates if path not in self.batch_refusals
+        )
+        return paths if len(paths) >= 2 else ()
+
+    def batch_recipe(self) -> RefactorRecipe:
+        return self.recipe_of(self.batch_paths)
+
+    def recipe_of(self, paths: tuple[str, ...]) -> RefactorRecipe:
         moves = {
             path: BatchModuleMove(source_path=path, destination_path=self.destinations[path])
-            for path in self.batch_paths
+            for path in paths
         }
         recipe = RefactorRecipe(
             recipe_id="relocate-batch",
             reason="Relocate every name each flat module of the table declares into "
-            "its package, in one stage." + self.carried_debt(self.batch_paths),
+            "its package, in one stage." + self.carried_debt(paths),
         )
         for path, own in moves.items():
             destination = self.destinations[path]
             recipe = recipe.with_operation(
                 (
                     RelocateSymbolsToModuleOperation
-                    if destination in context.module_nodes_by_file_path
+                    if destination in self.context.module_nodes_by_file_path
                     else RelocateSymbolsToNewModuleOperation
                 )(
                     target=SourceRewriteTarget(file_path=path),
@@ -763,7 +854,7 @@ class ClusterLayers:
             return self.dissolving_paths[0]
         tops = [
             path
-            for path in self.present_paths
+            for path in self.live_paths
             if not self.upper_importers(path) and self.ready(path)
         ]
         return tops[0] if tops else None
@@ -820,6 +911,10 @@ class PackageMoveFindingRecipeSynthesizer(
                 + ", so no move order keeps either importable: declare one "
                 "merging into the other (`a.py` merges into `b.py`)"
             )
+        if source_path in layers.dissolve_refusals:
+            return self.rejected_evaluation(
+                f"stays: its dissolve refused: {layers.dissolve_refusals[source_path]}"
+            )
         if source_path in layers.dissolving_paths[1:]:
             return self.rejected_evaluation(
                 f"dissolves in {layers.dissolving_paths[0]}'s stage"
@@ -827,10 +922,18 @@ class PackageMoveFindingRecipeSynthesizer(
         if source_path in layers.dissolving_paths:
             return self.executable_evaluation(layers.dissolve_recipe())
         batch = layers.batch_paths
+        if batch and source_path in layers.batch_refusals:
+            return self.rejected_evaluation(
+                f"left {batch[0]}'s batch, refused: {layers.batch_refusals[source_path]}"
+            )
+        if batch and source_path in layers.batch_exclusions:
+            return self.rejected_evaluation(
+                f"left {batch[0]}'s batch: {layers.batch_exclusions[source_path]}"
+            )
         if batch:
             if source_path != batch[0]:
                 return self.rejected_evaluation(f"moves in {batch[0]}'s batch")
-            return self.executable_evaluation(layers.batch_recipe(context))
+            return self.executable_evaluation(layers.batch_recipe())
         if layers.next_path is None:
             return self.rejected_evaluation(
                 "every flat module of the table is imported by another one that "

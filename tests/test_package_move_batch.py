@@ -334,3 +334,272 @@ def test_moved_modules_named_beside_others_in_one_import_each_follow(tmp_path: P
     assert "from pkg import kept\n" in app
     assert "events.Response.kind, wires.Response.kind" in app
     assert _runs(root, "VALUE") == "('event', 'wire', 'kept')"
+
+
+def test_a_whole_module_move_carries_the_statements_between_its_declarations(
+    tmp_path: Path,
+) -> None:
+    """An `assert` on the constant above it and a registration call bind nothing,
+    so no declaration names them; a whole module's move carries them after what
+    they follow, and the shell left behind dissolves."""
+
+    _write(
+        tmp_path,
+        {
+            "pkg/__init__.py": "",
+            "pkg/messaging/__init__.py": "",
+            "pkg/seen.py": "NAMES = []\n",
+            "pkg/limits.py": (
+                "import pkg.seen\n\n"
+                "BUDGET = 3\n"
+                "assert BUDGET > 1\n\n\n"
+                "class Policy:\n    budget = BUDGET\n\n\n"
+                "pkg.seen.NAMES.append(Policy.__name__)\n"
+            ),
+            "pkg/app.py": (
+                "from pkg.limits import Policy\n"
+                "from pkg.seen import NAMES\n\n"
+                "VALUE = (Policy.budget, NAMES[0])\n"
+            ),
+        },
+    )
+
+    _stages, root = _moved(tmp_path, "| `messaging` | `limits.py` | |\n")
+    assert not (root / "pkg/limits.py").exists()
+    moved = (root / "pkg/messaging/limits.py").read_text()
+    assert moved.index("BUDGET = 3") < moved.index("assert BUDGET > 1") < moved.index("class Policy")
+    assert moved.index("class Policy") < moved.index("pkg.seen.NAMES.append(Policy.__name__)")
+    assert _runs(root, "VALUE") == "(3, 'Policy')"
+
+
+def test_a_merge_row_carries_the_statements_of_the_module_it_folds(tmp_path: Path) -> None:
+    """`limits.py merges into policy.py` moves every declaration into a module that
+    already exists: the source never becomes that module, but its shell must still
+    empty, so the assert on its constant moves too."""
+
+    _write(
+        tmp_path,
+        {
+            "pkg/__init__.py": "",
+            "pkg/planning/__init__.py": "",
+            "pkg/policy.py": "class Policy:\n    pass\n",
+            "pkg/limits.py": "LIMIT = 2\nassert LIMIT > 1\n",
+            "pkg/app.py": (
+                "from pkg.limits import LIMIT\nfrom pkg.policy import Policy\n\n"
+                "VALUE = (LIMIT, Policy.__name__)\n"
+            ),
+        },
+    )
+
+    _stages, root = _moved(
+        tmp_path, "| `planning` | `policy.py`; `limits.py` merges into `policy.py` | |\n"
+    )
+    assert not (root / "pkg/limits.py").exists()
+    merged = (root / "pkg/planning/policy.py").read_text()
+    assert merged.index("LIMIT = 2") < merged.index("assert LIMIT > 1")
+    assert _runs(root, "VALUE") == "(2, 'Policy')"
+
+
+def test_a_row_whose_own_move_refuses_leaves_the_batch_and_the_rest_move(
+    tmp_path: Path,
+) -> None:
+    """`gamma`'s destination already declares `Gamma`, so its move refuses on its
+    own. Each row is checked where every destination the batch creates exists, so
+    the collision is gamma's alone: it stays put with its reason and `alpha`
+    and `beta` still move in one stage."""
+
+    _write(
+        tmp_path,
+        {
+            "pkg/__init__.py": "",
+            "pkg/messaging/__init__.py": "",
+            "pkg/alpha.py": "class Alpha:\n    kind = 'a'\n",
+            "pkg/beta.py": "from pkg.alpha import Alpha\n\n\nclass Beta(Alpha):\n    kind = 'b'\n",
+            "pkg/gamma.py": "class Gamma:\n    kind = 'flat'\n",
+            "pkg/messaging/gamma.py": "class Gamma:\n    kind = 'nested'\n",
+            "pkg/app.py": (
+                "from pkg.beta import Beta\nfrom pkg.gamma import Gamma\n\n"
+                "VALUE = (Beta.kind, Gamma.kind)\n"
+            ),
+        },
+    )
+
+    report = CodemodRefactorGoalRunner(
+        roots=(tmp_path,),
+        config=DetectorConfig(
+            package_destination_tables=(
+                "| `messaging` | `alpha.py`, `beta.py`, `gamma.py` | |\n",
+            )
+        ),
+        dry_run=True,
+        migration_type=PackageMoveConcept,
+        guard_suite=ArchitectureGuardSuite(),
+    ).run()
+    assert "already binds moved declarations ('Gamma',)" in report.to_markdown()
+    assert len(report.replay_sequence.documents) == 2
+    replay = report.replay_sequence.simulate(
+        CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    )
+    assert replay.is_clean
+    replay.apply()
+    assert not (tmp_path / "pkg/alpha.py").exists()
+    assert not (tmp_path / "pkg/beta.py").exists()
+    assert (tmp_path / "pkg/gamma.py").exists()
+    assert _runs(tmp_path, "VALUE") == "('b', 'flat')"
+
+
+
+def test_a_batch_peer_import_heads_the_new_module_above_the_block_reading_it(
+    tmp_path: Path,
+) -> None:
+    """`Beta(Alpha)` reads its peer's name when the class is built. The import and
+    the block both land on line 1 of the new module, and the batch's edit stream
+    opens with alpha's block, so the import has to lead by what it is (an import),
+    not by which peer's edit came first."""
+
+    _write(
+        tmp_path,
+        {
+            "pkg/__init__.py": "",
+            "pkg/messaging/__init__.py": "",
+            "pkg/alpha.py": "class Alpha:\n    kind = 'a'\n",
+            "pkg/beta.py": "from pkg.alpha import Alpha\n\n\nclass Beta(Alpha):\n    kind = 'b'\n",
+            "pkg/app.py": "from pkg.beta import Beta\n\nVALUE = Beta.kind\n",
+        },
+    )
+
+    _stages, root = _moved(tmp_path, "| `messaging` | `alpha.py`, `beta.py` | |\n")
+    moved = (root / "pkg/messaging/beta.py").read_text()
+    assert moved.index("from pkg.messaging.alpha import Alpha") < moved.index("class Beta")
+    assert _runs(root, "VALUE") == "b"
+
+
+def test_a_module_statement_no_declaration_carries_refuses_its_whole_move(
+    tmp_path: Path,
+) -> None:
+    """`gamma`'s loop fills `NAMES` when gamma loads. Moving `NAMES` would leave the
+    loop in a shell nothing imports, so `NAMES` would arrive empty: gamma's move
+    refuses with the stranded line, it leaves the batch, and the rest still move."""
+
+    _write(
+        tmp_path,
+        {
+            "pkg/__init__.py": "",
+            "pkg/messaging/__init__.py": "",
+            "pkg/alpha.py": "class Alpha:\n    kind = 'a'\n",
+            "pkg/beta.py": "class Beta:\n    kind = 'b'\n",
+            "pkg/gamma.py": "NAMES = []\nfor n in range(2):\n    NAMES.append(n)\n",
+            "pkg/app.py": (
+                "from pkg.alpha import Alpha\nfrom pkg.beta import Beta\n"
+                "from pkg.gamma import NAMES\n\nVALUE = (Alpha.kind, Beta.kind, NAMES)\n"
+            ),
+        },
+    )
+
+    report = CodemodRefactorGoalRunner(
+        roots=(tmp_path,),
+        config=DetectorConfig(
+            package_destination_tables=(
+                "| `messaging` | `alpha.py`, `beta.py`, `gamma.py` | |\n",
+            )
+        ),
+        dry_run=True,
+        migration_type=PackageMoveConcept,
+        guard_suite=ArchitectureGuardSuite(),
+    ).run()
+    assert "would keep 'for n in range(2):' at line 2" in report.to_markdown()
+    replay = report.replay_sequence.simulate(
+        CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    )
+    assert replay.is_clean
+    replay.apply()
+    assert not (tmp_path / "pkg/alpha.py").exists()
+    assert not (tmp_path / "pkg/beta.py").exists()
+    assert (tmp_path / "pkg/gamma.py").read_text().startswith("NAMES = []\n")
+    assert _runs(tmp_path, "VALUE") == "('a', 'b', [0, 1])"
+
+
+def test_a_shell_whose_own_dissolve_refuses_stays_and_the_rest_still_move(
+    tmp_path: Path,
+) -> None:
+    """`held` and `plain` only re-export `Alpha` and dissolve before anything
+    relocates. Neither has a module to dissolve into, so each refuses on its own;
+    that used to refuse the whole dissolve stage and left `alpha` waiting behind
+    `held` forever. Each shell now stays with its reason and `alpha` moves, its
+    re-exports following it."""
+
+    _write(
+        tmp_path,
+        {
+            "pkg/__init__.py": "",
+            "pkg/messaging/__init__.py": "",
+            "pkg/alpha.py": "class Alpha:\n    kind = 'a'\n",
+            "pkg/held.py": "from pkg.alpha import Alpha\n",
+            "pkg/plain.py": "from pkg.alpha import Alpha\n",
+            "pkg/app.py": (
+                "import pkg.held as held\nfrom pkg.plain import Alpha\n\n"
+                "VALUE = (Alpha.kind, held.Alpha.kind)\n"
+            ),
+        },
+    )
+
+    report = CodemodRefactorGoalRunner(
+        roots=(tmp_path,),
+        config=DetectorConfig(
+            package_destination_tables=(
+                "| `messaging` | `alpha.py`, `held.py`, `plain.py` | |\n",
+            )
+        ),
+        dry_run=True,
+        migration_type=PackageMoveConcept,
+        guard_suite=ArchitectureGuardSuite(),
+    ).run()
+    assert report.to_markdown().count("stays: its dissolve refused") == 2
+    replay = report.replay_sequence.simulate(
+        CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    )
+    assert replay.is_clean
+    replay.apply()
+    assert not (tmp_path / "pkg/alpha.py").exists()
+    assert (tmp_path / "pkg/plain.py").read_text().splitlines() == [
+        "from pkg.messaging.alpha import Alpha",
+        "",
+    ]
+    assert _runs(tmp_path, "VALUE") == "('a', 'a')"
+
+
+def test_a_bare_peer_import_holds_back_its_own_module_not_the_batch(
+    tmp_path: Path,
+) -> None:
+    """`messages` reads its peer as `pkg.records.Record`, which the batch cannot
+    rename in moved text. That holds back `messages` alone: `alpha`, `beta` and
+    `records` still relocate in one stage, and `messages` follows on its own with
+    its import rewritten like any consumer's. One such import used to drop a whole
+    table to one module per stage."""
+
+    _write(
+        tmp_path,
+        {
+            "pkg/__init__.py": "",
+            "pkg/messaging/__init__.py": "",
+            "pkg/alpha.py": "class Alpha:\n    kind = 'a'\n",
+            "pkg/beta.py": "class Beta:\n    kind = 'b'\n",
+            "pkg/records.py": "class Record:\n    kind = 'record'\n",
+            "pkg/messages.py": (
+                "import pkg.records\n\n\nclass Message(pkg.records.Record):\n    pass\n"
+            ),
+            "pkg/app.py": (
+                "from pkg.alpha import Alpha\nfrom pkg.beta import Beta\n"
+                "from pkg.messages import Message\n\n"
+                "VALUE = (Alpha.kind, Beta.kind, Message.kind)\n"
+            ),
+        },
+    )
+
+    stages, root = _moved(
+        tmp_path,
+        "| `messaging` | `alpha.py`, `beta.py`, `records.py`, `messages.py` | |\n",
+    )
+    assert stages == 4
+    assert not any((root / f"pkg/{name}.py").exists() for name in ("alpha", "beta", "records", "messages"))
+    assert _runs(root, "VALUE") == "('a', 'b', 'record')"

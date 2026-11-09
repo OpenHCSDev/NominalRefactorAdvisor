@@ -9,6 +9,7 @@ from collections import defaultdict, deque
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from functools import cached_property
+from itertools import takewhile
 from typing import ClassVar, cast
 
 from metaclass_registry import AutoRegisterMeta
@@ -51,7 +52,7 @@ from nominal_refactor_advisor.codemod_imports import (
     RequestedImportStatement as RequestedImportStatement,
 )
 from nominal_refactor_advisor.codemod_source_edits import (
-    DocumentedNodeSpan,
+    ExtendedNodeSpan,
     Include,
     SourceLineSpan,
     SourceNodeSpan,
@@ -344,12 +345,16 @@ class ModuleSymbolTable:
 
     @cached_property
     def declared_names(self) -> frozenset[str]:
-        """The names this module declares itself; an import binds a name another owns."""
+        return self.declared_names_of(self.module)
+
+    @classmethod
+    def declared_names_of(cls, module: ast.Module) -> frozenset[str]:
+        """The names `module` declares itself; an import binds a name another owns."""
         return frozenset(
             name
-            for statement in self.module.body
+            for statement in module.body
             if not isinstance(statement, (ast.Import, ast.ImportFrom))
-            for name in self.bound_names_for_statement(statement)
+            for name in cls.bound_names_for_statement(statement)
         )
 
     def binding_statements(self, name: str) -> tuple[ast.stmt, ...]:
@@ -858,10 +863,10 @@ class DocumentedAssignedSourceTopLevelDeclaration(AssignedSourceTopLevelDeclarat
 
     @cached_property
     def source_span(self) -> SourceNodeSpan:
-        return DocumentedNodeSpan(
+        return ExtendedNodeSpan(
             self.node,
             decorator_policy=Include,
-            docstring=self.docstring,
+            through=self.docstring,
         )
 
     def documented_by(self, following: ast.stmt) -> SourceTopLevelDeclaration:
@@ -870,6 +875,97 @@ class DocumentedAssignedSourceTopLevelDeclaration(AssignedSourceTopLevelDeclarat
     @property
     def statements(self) -> tuple[ast.stmt, ...]:
         return (self.node, self.docstring)
+
+
+@dataclass(frozen=True)
+class CarryingSourceTopLevelDeclaration(SourceTopLevelDeclaration):
+    """A declaration and the statements right after it that bind nothing, which a
+    whole module's move carries with it: an `assert` on the constant above it, a
+    registration call. They run where the declaration does, after it."""
+
+    declaration: SourceTopLevelDeclaration
+    carried: tuple[ast.stmt, ...]
+
+    @classmethod
+    def from_supported_statement(
+        cls,
+        source_path: str,
+        statement: ast.stmt,
+    ) -> SourceTopLevelDeclaration | None:
+        """Carrying spans several statements; `SourceTopLevelDeclarationIndex.carrying`
+        builds it."""
+
+        return None
+
+    @property
+    def name(self) -> str:
+        return self.declaration.name
+
+    def name_span(self, source: str) -> SourceTextSpan:
+        return self.declaration.name_span(source)
+
+    @property
+    def assigned_binding_names(self) -> frozenset[str]:
+        return self.declaration.assigned_binding_names
+
+    @property
+    def destination_boundary(self) -> SourceInsertionBoundary:
+        return self.declaration.destination_boundary
+
+    @cached_property
+    def source_span(self) -> SourceNodeSpan:
+        return ExtendedNodeSpan(self.node, decorator_policy=Include, through=self.carried[-1])
+
+    @property
+    def statements(self) -> tuple[ast.stmt, ...]:
+        return (*self.declaration.statements, *self.carried)
+
+
+def is_script_guard(statement: ast.stmt) -> bool:
+    """`if __name__ == "__main__":`, what running the module as a script does."""
+
+    test = statement.test if isinstance(statement, ast.If) else None
+    return (
+        isinstance(test, ast.Compare)
+        and isinstance(test.left, ast.Name)
+        and test.left.id == "__name__"
+        and len(test.ops) == 1
+        and isinstance(test.ops[0], ast.Eq)
+        and isinstance(test.comparators[0], ast.Constant)
+        and test.comparators[0].value == "__main__"
+    )
+
+
+def stays_in_shell(statement: ast.stmt, *, first: bool) -> bool:
+    """What a module emptied of its declarations may still hold and dissolve: its
+    imports (guarded by a bare `if` included), a script guard, its docstring and
+    `__all__`. Anything else would stop running once nothing imports the shell."""
+
+    if isinstance(statement, (ast.Import, ast.ImportFrom)) or is_script_guard(statement):
+        return True
+    if first and isinstance(statement, ast.Expr) and isinstance(
+        statement.value, ast.Constant
+    ) and isinstance(statement.value.value, str):
+        return True
+    if isinstance(statement, ast.Assign) and all(
+        isinstance(target, ast.Name) and target.id == "__all__"
+        for target in statement.targets
+    ):
+        return True
+    return (
+        isinstance(statement, ast.If)
+        and not statement.orelse
+        and all(isinstance(inner, (ast.Import, ast.ImportFrom)) for inner in statement.body)
+    )
+
+
+def _carried_statement(statement: ast.stmt) -> bool:
+    """What a whole module's move carries with the declaration before it: an `assert`
+    or a bare call (`register(Name)`). A script guard, an import or a binding stays."""
+
+    return isinstance(statement, ast.Assert) or (
+        isinstance(statement, ast.Expr) and isinstance(statement.value, ast.Call)
+    )
 
 
 @dataclass(frozen=True)
@@ -958,6 +1054,22 @@ class SourceTopLevelDeclarationIndex:
             )
         return declaration
 
+    def carrying(self, declaration: SourceTopLevelDeclaration) -> SourceTopLevelDeclaration:
+        """`declaration` with the run of carried statements right after it, if any."""
+
+        body = self.module.body
+        last = declaration.statements[-1]
+        after = next(index for index, statement in enumerate(body) if statement is last) + 1
+        carried = tuple(takewhile(_carried_statement, body[after:]))
+        if not carried:
+            return declaration
+        return CarryingSourceTopLevelDeclaration(
+            source_path=self.source_path,
+            node=declaration.node,
+            declaration=declaration,
+            carried=carried,
+        )
+
     def required_declarations(
         self,
         names: Iterable[str],
@@ -977,6 +1089,9 @@ class SourceTopLevelSymbolMoveSelection:
     source_path: str
     requested_declarations: tuple[SourceTopLevelDeclaration, ...]
     declarations: tuple[SourceTopLevelDeclaration, ...]
+    takes_whole_module: ClassVar[bool] = False
+    """Whether every name the source declares leaves it: the one answer to whether
+    a move takes the whole module (`WholeModuleSymbolMoveSelection`)."""
 
     @property
     def requested_symbol_qualnames(self) -> tuple[str, ...]:
@@ -997,7 +1112,10 @@ class SourceTopLevelSymbolMoveSelection:
             source_path=source_path,
             module=module,
         )
-        declarations = declaration_index.required_declarations(symbol_qualnames)
+        names = tuple(symbol_qualnames)
+        declarations = declaration_index.required_declarations(names)
+        if ModuleSymbolTable.declared_names_of(module) <= set(names):
+            return WholeModuleSymbolMoveSelection.of(declaration_index, declarations)
         return cls(
             source_path=source_path,
             requested_declarations=declarations,
@@ -1117,4 +1235,35 @@ class MovedTopLevelDeclarationSource(SourceTextGeometry):
             file_path=self.declaration.source_path,
             span=SourceLineSpan(deletion_start_line, deletion_end_line),
             rationale=rationale or f"Remove moved declaration {self.name!r}.",
+        )
+
+
+@dataclass(frozen=True)
+class WholeModuleSymbolMoveSelection(SourceTopLevelSymbolMoveSelection):
+    """A selection taking every name its module declares: the module moves whole, so
+    the statements between its declarations that bind nothing move too, each after
+    the declaration it follows (`SourceTopLevelDeclarationIndex.carrying`)."""
+
+    takes_whole_module: ClassVar[bool] = True
+
+    @classmethod
+    def of(
+        cls,
+        index: SourceTopLevelDeclarationIndex,
+        declarations: tuple[SourceTopLevelDeclaration, ...],
+    ) -> WholeModuleSymbolMoveSelection:
+        carrying = tuple(map(index.carrying, declarations))
+        moving = {id(statement) for declaration in carrying for statement in declaration.statements}
+        for position, statement in enumerate(index.module.body):
+            if id(statement) not in moving and not stays_in_shell(statement, first=position == 0):
+                raise ValueError(
+                    f"{index.source_path!r} would keep "
+                    f"{ast.unparse(statement).splitlines()[0]!r} at line {statement.lineno} "
+                    "once every declaration leaves: it neither moves with one nor "
+                    "stays as an import, and nothing would import the module to run it"
+                )
+        return cls(
+            source_path=index.source_path,
+            requested_declarations=carrying,
+            declarations=carrying,
         )
