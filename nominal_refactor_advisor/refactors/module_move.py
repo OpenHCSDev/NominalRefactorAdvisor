@@ -22,7 +22,7 @@ from typing import ClassVar, cast
 
 from ..ast_projection import ExpressionReference
 from ..declared_family import ForeignAdapter
-from ..ast_tools import ModuleAnnotationEvaluationMode, ParsedModule
+from ..ast_tools import ModuleAnnotationEvaluationMode, ParsedModule, ParsedModuleFact
 from ..module_node_index import ModuleNodeIndex
 from ..codemod_import_bindings import FromModuleImportBindingIdentity
 from ..codemod_import_graph import SourceModuleImportGraph
@@ -2093,7 +2093,9 @@ class _ModuleSiblingData(ABC):
         """The module-context names whose meaning this data lets follow the code."""
 
     @abstractmethod
-    def carry(self, operation: RefactorRecipeOperation) -> tuple[TextFileChange, ...]: ...
+    def carry(
+        self, context: CodemodSelectorContext, operation: RefactorRecipeOperation
+    ) -> tuple[TextFileChange, ...]: ...
 
     def detail(self, name: str) -> str:
         """How a module-context name that stays behind reads in the refusal."""
@@ -2157,8 +2159,10 @@ class _NoSiblingCarry(_ModuleSiblingData):
     def following(self) -> frozenset[str]:
         return frozenset()
 
-    def carry(self, operation: RefactorRecipeOperation) -> tuple[TextFileChange, ...]:
-        del operation
+    def carry(
+        self, context: CodemodSelectorContext, operation: RefactorRecipeOperation
+    ) -> tuple[TextFileChange, ...]:
+        del context, operation
         return ()
 
 
@@ -2170,13 +2174,25 @@ class _CarriedSiblingData(_ModuleSiblingData):
     def following(self) -> frozenset[str]:
         return frozenset(("__file__",))
 
-    def carry(self, operation: RefactorRecipeOperation) -> tuple[TextFileChange, ...]:
-        return tuple(
-            change
-            for source, destination, text in self.files
-            for change in TextFileCarryEnd.carry(
-                operation, source_path=source, destination_path=destination, text=text
-            )
+    def carry(
+        self, context: CodemodSelectorContext, operation: RefactorRecipeOperation
+    ) -> tuple[TextFileChange, ...]:
+        """Each file moves, and every data file the indexed code reads that spells
+        a moved file's project path follows it."""
+
+        return (
+            *(
+                change
+                for source, destination, text in self.files
+                for change in TextFileCarryEnd.carry(
+                    operation, source_path=source, destination_path=destination, text=text
+                )
+            ),
+            *_CodeReadDataFiles.path_edits(
+                context,
+                operation,
+                tuple((source, destination) for source, destination, _text in self.files),
+            ),
         )
 
 
@@ -2300,7 +2316,7 @@ class NewModuleSymbolMoveOperationABC(ModuleSymbolMoveOperation, ABC):
 
         if not self.moves_whole_module(context):
             return super().text_file_changes(context)
-        return (*super().text_file_changes(context), *self.sibling_data(context).carry(self))
+        return (*super().text_file_changes(context), *self.sibling_data(context).carry(context, self))
 
     destination_source: str | None = codemod_payload_field(
         OptionalStringPayloadValueCodec(),
@@ -3127,6 +3143,79 @@ class _ProjectManifests:
                     manifests.add(manifest)
                     break
         return tuple(sorted(manifests))
+
+
+@dataclass(frozen=True)
+class DataFilePathLiterals(ParsedModuleFact):
+    """The string constants of one module that spell a data file's path, such as
+    `"stack/native/repository-inputs.json"`. A fact of the parse, read from its
+    `ModuleNodeIndex`, so an unchanged module is read once per plan."""
+
+    literal: ClassVar[re.Pattern[str]] = re.compile(
+        r"(?:[\w.-]+/)+[\w.-]+\.(?:json|toml|ya?ml|cfg|ini|txt)"
+    )
+    paths: frozenset[str]
+
+    @classmethod
+    def derive(cls, parsed_module: ParsedModule) -> DataFilePathLiterals:
+        return cls(
+            frozenset(
+                node.value
+                for node in parsed_module.fact(ModuleNodeIndex).string_constants
+                if isinstance(node.value, str) and cls.literal.fullmatch(node.value)
+            )
+        )
+
+
+class _CodeReadDataFiles:
+    """Data files the indexed code reads by a literal path under its project root,
+    such as `root / "stack/native/repository-inputs.json"`. The program consumes
+    them, so a project path spelled inside one is a declaration that must stay
+    true; prose and records no code reads keep what they said. Each file is read
+    as the plan's state has it, so a later stage's carry edits an earlier stage's
+    rewrite, not the file on disk."""
+
+    @classmethod
+    def path_edits(
+        cls,
+        context: CodemodSelectorContext,
+        operation: RefactorRecipeOperation,
+        moves: tuple[tuple[str, str], ...],
+    ) -> tuple[TextFileEdit, ...]:
+        snapshot = context.execution_snapshot()
+        literals = frozenset().union(
+            *(module.fact(DataFilePathLiterals).paths for module in snapshot.parsed_modules)
+        )
+        edits: list[TextFileEdit] = []
+        for manifest in _ProjectManifests.governing(snapshot.sources_by_file_path):
+            root = manifest.parent
+            renames = tuple(
+                (Path(source).relative_to(root).as_posix(), Path(destination).relative_to(root).as_posix())
+                for source, destination in moves
+                if Path(source).is_relative_to(root) and Path(destination).is_relative_to(root)
+            )
+            for data in sorted({root / literal for literal in literals}):
+                for file_path, text in snapshot.text_file(data).sources(data.as_posix()).items():
+                    replacements = tuple(
+                        SourceTextSpanReplacement.from_offsets(
+                            start_offset=match.start(), end_offset=match.end(), replacement_source=new
+                        )
+                        for old, new in renames
+                        for match in re.finditer(rf"(?<![\w./-]){re.escape(old)}(?![\w./-])", text)
+                    )
+                    if replacements:
+                        edits.append(
+                            TextFileEdit(
+                                operation_type=type(operation),
+                                file_path=file_path,
+                                source=text,
+                                replacements=replacements,
+                                rationale=operation.rationale_text(
+                                    f"{file_path!r} names a carried file by its project path."
+                                ),
+                            )
+                        )
+        return tuple(edits)
 
 
 class _ProjectScripts:

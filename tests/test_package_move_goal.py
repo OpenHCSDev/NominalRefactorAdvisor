@@ -543,6 +543,66 @@ def test_a_module_carries_the_data_it_reads_beside_itself(tmp_path: Path) -> Non
     assert imported.stdout.strip() == "export const fork = 'forked';"
 
 
+def test_a_data_file_the_code_reads_follows_the_carried_path(tmp_path: Path) -> None:
+    """`stack/inputs.json` names the carried file by its project path, and indexed
+    code reads that file by its literal path, so the path in it follows the carry.
+    A record no code reads keeps what it said."""
+
+    _module_with_helper_data(tmp_path)
+    _write(tmp_path, "pyproject.toml", "[project]\nname = 'pkg'\nversion = '0'\n")
+    entry = '{"source": "pkg/_helpers/fork.mjs", "target": "dist/fork.mjs"}\n'
+    _write(tmp_path, "stack/inputs.json", entry)
+    _write(tmp_path, "docs/record.json", entry)
+    _write(
+        tmp_path,
+        "pkg/build.py",
+        "from pathlib import Path\n\nINPUTS = Path('.') / \"stack/inputs.json\"\n",
+    )
+    report = _goal(tmp_path, "| `planning` | `fork.py` | |\n")
+
+    assert report.stop_reason is CodemodWorkflowStopReason.ACHIEVED, report.to_markdown()
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    replay = report.replay_sequence.simulate(snapshot)
+    assert replay.is_clean
+    replay.apply()
+    assert (tmp_path / "stack/inputs.json").read_text() == (
+        '{"source": "pkg/planning/_helpers/fork.mjs", "target": "dist/fork.mjs"}\n'
+    )
+    assert (tmp_path / "docs/record.json").read_text() == entry
+
+
+def test_two_stages_carrying_into_one_data_file_keep_both_rewrites(tmp_path: Path) -> None:
+    """Each stage reads the data file as the plan has it, so the second carry edits
+    the first carry's rewrite instead of the text on disk."""
+
+    _module_with_helper_data(tmp_path)
+    _write(tmp_path, "pkg/_join/join.mjs", "export const join = 'joined';\n")
+    _write(
+        tmp_path,
+        "pkg/join.py",
+        "from pathlib import Path\n\n\nclass Join:\n"
+        "    script = Path(__file__).with_name('_join') / 'join.mjs'\n",
+    )
+    _write(tmp_path, "pyproject.toml", "[project]\nname = 'pkg'\nversion = '0'\n")
+    _write(
+        tmp_path,
+        "stack/inputs.json",
+        '["pkg/_helpers/fork.mjs", "pkg/_join/join.mjs"]\n',
+    )
+    _write(tmp_path, "pkg/build.py", "INPUTS = 'stack/inputs.json'\n")
+    report = _goal(tmp_path, "| `planning` | `fork.py`, `join.py` | |\n")
+
+    assert report.stop_reason is CodemodWorkflowStopReason.ACHIEVED, report.to_markdown()
+    assert len(report.stages) >= 2
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    replay = report.replay_sequence.simulate(snapshot)
+    assert replay.is_clean
+    replay.apply()
+    assert (tmp_path / "stack/inputs.json").read_text() == (
+        '["pkg/planning/_helpers/fork.mjs", "pkg/planning/_join/join.mjs"]\n'
+    )
+
+
 def test_data_another_module_also_reads_stays_and_refuses(tmp_path: Path) -> None:
     _module_with_helper_data(tmp_path)
     _write(
