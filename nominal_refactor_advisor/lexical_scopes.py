@@ -12,7 +12,7 @@ from enum import StrEnum
 from functools import cached_property
 from typing import ClassVar, Self
 
-from .lexical_bindings import (
+from nominal_refactor_advisor.lexical_bindings import (
     LEXICAL_SCOPE_BINDING_AUTHORITY,
     ScopeBindingCollector,
 )

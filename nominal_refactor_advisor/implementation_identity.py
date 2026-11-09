@@ -11,7 +11,7 @@ import sys
 from types import ModuleType
 from typing import Self, get_args
 
-from .scan_cache import ScanCache
+from nominal_refactor_advisor.scan_cache import ScanCache
 
 
 @dataclass(frozen=True)

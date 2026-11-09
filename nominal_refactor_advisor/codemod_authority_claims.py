@@ -5,31 +5,31 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import ClassVar
 
-from .codemod_payload import (
+from nominal_refactor_advisor.codemod_payload import (
     CodemodPayloadRecord,
     RequiredStringPayloadValueCodec,
     StringArrayPayloadValueCodec,
     codemod_payload_field,
 )
-from .codemod_preflight import CodemodOperationPreflightReport
-from .json_reports import DataclassJsonReport
-from .models import (
+from nominal_refactor_advisor.codemod_preflight import CodemodOperationPreflightReport
+from nominal_refactor_advisor.json_reports import DataclassJsonReport
+from nominal_refactor_advisor.models import (
     RefactorFinding,
     SourceLocation,
 )
-from .patterns import PatternId
-from .semantic_descent import (
+from nominal_refactor_advisor.patterns import PatternId
+from nominal_refactor_advisor.semantic_descent import (
     AuthorityClaim,
     AuthorityClaimResolution,
     AuthorityProofEdge,
     AuthorityProofEdgeKind,
     SemanticAuthorityKind,
 )
-from .source_index import (
+from nominal_refactor_advisor.source_index import (
     AstTargetDigest,
     SourceIndex,
 )
-from .taxonomy import (
+from nominal_refactor_advisor.taxonomy import (
     CertificationLevel,
     ConfidenceLevel,
 )

@@ -8,10 +8,10 @@ from collections.abc import Callable, Hashable
 from dataclasses import dataclass
 from typing import ClassVar, Generic, TypeVar
 
-from ..value_expression import CompactValueExpression
-from ..ast_tools import ParsedModule, _walk_nodes
-from ..collection_algebra import sorted_tuple
-from ..semantic_match import (
+from nominal_refactor_advisor.value_expression import CompactValueExpression
+from nominal_refactor_advisor.ast_tools import ParsedModule, _walk_nodes
+from nominal_refactor_advisor.collection_algebra import sorted_tuple
+from nominal_refactor_advisor.semantic_match import (
     Maybe,
     as_ast,
     ast_sequence,
@@ -22,8 +22,10 @@ from ..semantic_match import (
     single_assign_target,
     single_item,
 )
-from ._base import ClassMethodFamilyCandidate
-from ._substrate_support import statements_without_docstring
+from nominal_refactor_advisor.detectors._base import ClassMethodFamilyCandidate
+from nominal_refactor_advisor.detectors._substrate_support import (
+    statements_without_docstring,
+)
 
 
 @dataclass(frozen=True)

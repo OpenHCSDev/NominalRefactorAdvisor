@@ -26,33 +26,36 @@ from functools import cache, cached_property
 from pathlib import Path
 from typing import ClassVar
 
-from .lexical_bindings import LEXICAL_SCOPE_BINDING_AUTHORITY, ImportBoundNameProjection
-from .name_algebra import CLASS_NAME_ALGEBRA
-from .ast_projection import StatementValues
-from .ast_projection import CallKeywords
-from .ast_tools import (
+from nominal_refactor_advisor.lexical_bindings import (
+    LEXICAL_SCOPE_BINDING_AUTHORITY,
+    ImportBoundNameProjection,
+)
+from nominal_refactor_advisor.name_algebra import CLASS_NAME_ALGEBRA
+from nominal_refactor_advisor.ast_projection import StatementValues
+from nominal_refactor_advisor.ast_projection import CallKeywords
+from nominal_refactor_advisor.ast_tools import (
     BuiltinCall,
     ModuleSyntaxIndex,
     ParsedModule,
     ParsedModuleFact,
     Setattr,
 )
-from .class_index import module_import_aliases
-from .installed_source import InstalledModule
-from .annotation_semantics import TypeQualifier
-from .quoted_reference import (
+from nominal_refactor_advisor.class_index import module_import_aliases
+from nominal_refactor_advisor.installed_source import InstalledModule
+from nominal_refactor_advisor.annotation_semantics import TypeQualifier
+from nominal_refactor_advisor.quoted_reference import (
     DeclaredInterpreter,
     ModuleReferenceScope,
     ReferenceRewrite,
     SpelledModules,
 )
-from .models import SourceLocation
-from .observation_families import ShapeFamily
-from .restated_fact_observations import (
+from nominal_refactor_advisor.models import SourceLocation
+from nominal_refactor_advisor.observation_families import ShapeFamily
+from nominal_refactor_advisor.restated_fact_observations import (
     RestatingSiteFamily,
     RestatingSiteModule,
 )
-from .observation_shapes import RestatingSite
+from nominal_refactor_advisor.observation_shapes import RestatingSite
 
 
 @dataclass(frozen=True)

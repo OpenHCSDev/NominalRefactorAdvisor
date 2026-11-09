@@ -13,7 +13,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import ClassVar
 
-from .family import Family
+from nominal_refactor_advisor.audit.family import Family
 
 
 def _operand(term: ast.expr) -> ast.expr:

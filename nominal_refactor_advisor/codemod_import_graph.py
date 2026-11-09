@@ -10,12 +10,14 @@ from dataclasses import (
 )
 from functools import cached_property
 
-from .codemod_paths import (
+from nominal_refactor_advisor.codemod_paths import (
     SourcePathCandidateSet,
     SourcePathResolutionAuthority,
 )
-from .python_module_identity import python_module_name_is_importable
-from .source_index import (
+from nominal_refactor_advisor.python_module_identity import (
+    python_module_name_is_importable,
+)
+from nominal_refactor_advisor.source_index import (
     SourceFileDigest,
     SourceIndex,
 )
@@ -166,14 +168,6 @@ class SourceModuleImportGraph:
             return None
         return self.source_file_by_path.get(resolved_path)
 
-    @cached_property
-    def package_module_names(self) -> frozenset[str]:
-        return frozenset(
-            source_file.module_name
-            for source_file in self.source_index.files
-            if source_file.is_package_init
-        )
-
     def import_source(
         self,
         *,
@@ -209,13 +203,7 @@ class SourceModuleImportGraph:
             return None
         if not python_module_name_is_importable(imported_file.module_name):
             return None
-        return (
-            self.relative_module_reference(
-                importing_file,
-                imported_file,
-            )
-            or imported_file.module_name
-        )
+        return imported_file.module_name
 
     def required_import_source(
         self,
@@ -279,41 +267,6 @@ class SourceModuleImportGraph:
                 f"{imported_file_path!r} into {importing_file_path!r}"
             )
         return module_reference
-
-    def relative_module_reference(
-        self,
-        importing_file: SourceFileDigest,
-        imported_file: SourceFileDigest,
-    ) -> str | None:
-        importing_package = importing_file.module_path_identity.package_parts
-        imported_package = imported_file.module_path_identity.package_parts
-        imported_parts = imported_file.module_name.split(".")
-        if not importing_package:
-            return None
-        common_length = 0
-        for importing_part, imported_part in zip(
-            importing_package,
-            imported_parts,
-            strict=False,
-        ):
-            if importing_part != imported_part:
-                break
-            common_length += 1
-        if common_length == 0:
-            return None
-        if not self.declared_package_chain(importing_package):
-            return None
-        if not self.declared_package_chain(imported_package):
-            return None
-        dots = "." * (len(importing_package) - common_length + 1)
-        remainder = ".".join(imported_parts[common_length:])
-        return f"{dots}{remainder}"
-
-    def declared_package_chain(self, package_parts: tuple[str, ...]) -> bool:
-        return all(
-            ".".join(package_parts[:length]) in self.package_module_names
-            for length in range(1, len(package_parts) + 1)
-        )
 
     def module_reaches(self, start_module: str, target_module: str) -> bool:
         visited: set[str] = set()

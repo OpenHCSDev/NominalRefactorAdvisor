@@ -8,19 +8,21 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import ClassVar
 
-from .detectors._base import IssueDetector
-from .detectors._semantic_descent import SemanticMirrorWithoutDescentDetector
-from .json_reports import (
+from nominal_refactor_advisor.detectors._base import IssueDetector
+from nominal_refactor_advisor.detectors._semantic_descent import (
+    SemanticMirrorWithoutDescentDetector,
+)
+from nominal_refactor_advisor.json_reports import (
     DataclassJsonReport,
     JsonReport,
     SemanticRecord,
     json_report_field,
     json_report_property,
 )
-from .models import RefactorFinding
-from .models import SourceLocation
-from .patterns import PatternId
-from .semantic_descent import (
+from nominal_refactor_advisor.models import RefactorFinding
+from nominal_refactor_advisor.models import SourceLocation
+from nominal_refactor_advisor.patterns import PatternId
+from nominal_refactor_advisor.semantic_descent import (
     AuthorityClaimResolution,
     AuthorityDiscoveryRequired,
     FindingDescentCertificateAuthority,
@@ -30,7 +32,7 @@ from .semantic_descent import (
     SemanticDescentGraph,
     build_finding_backed_semantic_descent_graph,
 )
-from .taxonomy import CertificationLevel, ConfidenceLevel
+from nominal_refactor_advisor.taxonomy import CertificationLevel, ConfidenceLevel
 
 
 UNRESOLVED_AUTHORITY_CLAIM_DETECTOR_ID = "unresolved_authority_claim"

@@ -39,15 +39,19 @@ from functools import cache
 from importlib import metadata
 from pathlib import Path
 
-from .cache_paths import AdvisorCacheLayout
-from .class_creation_store import CreatedClassStore
-from .class_index import CompactModuleClassHeader
-from .declared_root import DeclaredRoot
-from .models import SourceLocation
-from .owner_candidates import OwnerCandidate, OwnerCost, OwnerReceiptKind
-from .python_module_identity import PythonModulePathIdentity
-from .source_identity import PACKAGE_INIT_FILE_NAME
-from .receipts import Receipt
+from nominal_refactor_advisor.cache_paths import AdvisorCacheLayout
+from nominal_refactor_advisor.class_creation_store import CreatedClassStore
+from nominal_refactor_advisor.class_index import CompactModuleClassHeader
+from nominal_refactor_advisor.declared_root import DeclaredRoot
+from nominal_refactor_advisor.models import SourceLocation
+from nominal_refactor_advisor.owner_candidates import (
+    OwnerCandidate,
+    OwnerCost,
+    OwnerReceiptKind,
+)
+from nominal_refactor_advisor.python_module_identity import PythonModulePathIdentity
+from nominal_refactor_advisor.source_identity import PACKAGE_INIT_FILE_NAME
+from nominal_refactor_advisor.receipts import Receipt
 
 
 class RegistrationRole(StrEnum):

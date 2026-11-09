@@ -14,47 +14,47 @@ from typing import (
     cast,
 )
 
-from .finding_recipes import (
+from nominal_refactor_advisor.refactors.finding_recipes import (
     FindingRecipeSynthesizer,
     PrimaryEvidenceActionKeysMixin,
 )
-from ..ast_tools import ParsedModule
-from ..class_index import ModuleNominalBindingAuthority
-from ..codemod import RefactorRecipeOperation
-from ..codemod_foreign_family_source import RewrittenLineFit
-from ..codemod_imports import ModuleImportMutation
-from ..codemod_payload import (
+from nominal_refactor_advisor.ast_tools import ParsedModule
+from nominal_refactor_advisor.class_index import ModuleNominalBindingAuthority
+from nominal_refactor_advisor.codemod import RefactorRecipeOperation
+from nominal_refactor_advisor.codemod_foreign_family_source import RewrittenLineFit
+from nominal_refactor_advisor.codemod_imports import ModuleImportMutation
+from nominal_refactor_advisor.codemod_payload import (
     RequiredIntegerPayloadValueCodec,
     StringArrayPayloadValueCodec,
     codemod_payload_field,
 )
-from ..codemod_reproof import (
+from nominal_refactor_advisor.codemod_reproof import (
     RepositorySourceReprovedOperation,
     SourceReprovedOperation,
 )
-from ..codemod_runtime import (
+from nominal_refactor_advisor.codemod_runtime import (
     CodemodSourceSnapshot,
     FindingRecipeEvaluation,
     RefactorRecipe,
 )
-from ..codemod_selection_context import CodemodSelectorContext
-from ..codemod_selector_models import SourceRewriteTarget
-from ..codemod_source_edits import (
+from nominal_refactor_advisor.codemod_selection_context import CodemodSelectorContext
+from nominal_refactor_advisor.codemod_selector_models import SourceRewriteTarget
+from nominal_refactor_advisor.codemod_source_edits import (
     NominalSourceEdit,
     SourceSpanDeletion,
     SourceTextGeometry,
     SourceTextSpanReplacement,
 )
-from ..codemod_target_selectors import SourceIndexTargetSelector
-from ..declaration_authority_rename import (
+from nominal_refactor_advisor.codemod_target_selectors import SourceIndexTargetSelector
+from nominal_refactor_advisor.declaration_authority_rename import (
     DeclarationAuthorityModuleRedirectProof,
     DeclarationAuthorityModuleRenameProof,
     DeclarationAuthorityRenameProof,
     DeclarationRedirectProof,
 )
-from ..declared_root import DeclaredRoot
-from ..enum_semantics import PythonEnumBaseKind
-from ..false_distinction_observations import (
+from nominal_refactor_advisor.declared_root import DeclaredRoot
+from nominal_refactor_advisor.enum_semantics import PythonEnumBaseKind
+from nominal_refactor_advisor.false_distinction_observations import (
     EmptySubclass,
     EnumClassUse,
     EnumMemberIndex,
@@ -71,9 +71,9 @@ from ..false_distinction_observations import (
     UndistinguishedTypeArms,
     enum_uses,
 )
-from ..models import RefactorFinding
-from ..refactor_concepts import FalseDistinctionErasureConcept
-from ..source_index import AstTargetNodeKind
+from nominal_refactor_advisor.models import RefactorFinding
+from nominal_refactor_advisor.refactor_concepts import FalseDistinctionErasureConcept
+from nominal_refactor_advisor.source_index import AstTargetNodeKind
 
 FoundT = TypeVar("FoundT")
 

@@ -28,14 +28,16 @@ from typing import (
     cast,
 )
 
-from .ast_projection import (
+from nominal_refactor_advisor.ast_projection import (
     NoStatementValue,
     StatementValue,
     StatementValueQuestion,
     SuppliedValue,
 )
-from .annotation_semantics import NOMINAL_ANNOTATION_SOURCE_AUTHORITY
-from .ast_tools import (
+from nominal_refactor_advisor.annotation_semantics import (
+    NOMINAL_ANNOTATION_SOURCE_AUTHORITY,
+)
+from nominal_refactor_advisor.ast_tools import (
     CollectedFamily,
     CompactModuleIdentity,
     EagerFunctionAnnotationVisitor,
@@ -44,7 +46,7 @@ from .ast_tools import (
     VariableAnnotationVisitorABC,
     is_docstring_statement,
 )
-from .call_binding import (
+from nominal_refactor_advisor.call_binding import (
     CallValueT,
     CompactBoundCallArgument as CompactBoundCallArgument,
     CompactCallArgument as CompactCallArgument,
@@ -56,16 +58,16 @@ from .call_binding import (
     ExactCompactCallBinding as ExactCompactCallBinding,
     ViolatedCompactCallBinding as ViolatedCompactCallBinding,
 )
-from .case_root import Case
-from .collection_algebra import UniqueIdentityIndexAuthority
-from .descriptor_algebra import AliasProperty
-from .lexical_bindings import (
+from nominal_refactor_advisor.case_root import Case
+from nominal_refactor_advisor.collection_algebra import UniqueIdentityIndexAuthority
+from nominal_refactor_advisor.descriptor_algebra import AliasProperty
+from nominal_refactor_advisor.lexical_bindings import (
     CompactParameterKind as CompactParameterKind,
     DictionaryEvaluationVisitor,
     ImportBoundNameProjection,
     ImportedNameOrigin,
 )
-from .native_compilation import (
+from nominal_refactor_advisor.native_compilation import (
     CPythonClassConstructionField,
     ExactNativeClassCapture,
     NativeCaptureSite,
@@ -78,9 +80,9 @@ from .native_compilation import (
     NativeReturn,
     OpenNativeClassCapture,
 )
-from .python_module_identity import PythonModulePathIdentity
-from .source_geometry import SourceByteSpan
-from .value_expression import (
+from nominal_refactor_advisor.python_module_identity import PythonModulePathIdentity
+from nominal_refactor_advisor.source_geometry import SourceByteSpan
+from nominal_refactor_advisor.value_expression import (
     CompactValueExpression as CompactValueExpression,
     LexicalValueReference as LexicalValueReference,
     NonLexicalValueShape,
@@ -91,16 +93,16 @@ from .value_expression import (
     ValueExpressionResolverABC as ValueExpressionResolverABC,
     ValueExpressionShapeABC,
 )
-from .value_graph import (
+from nominal_refactor_advisor.value_graph import (
     DataclassGraphNode,
     DataclassGraphValue,
     StoredDataclassState,
 )
 
 if TYPE_CHECKING:
-    from .native_reference import NativeReferenceEnvironment
-    from .product_flow_authority import ProductFlowRepository
-    from .public_exports import CompactPublicNameExposure
+    from nominal_refactor_advisor.native_reference import NativeReferenceEnvironment
+    from nominal_refactor_advisor.product_flow_authority import ProductFlowRepository
+    from nominal_refactor_advisor.public_exports import CompactPublicNameExposure
 
 
 SourcePositionedNode: TypeAlias = (

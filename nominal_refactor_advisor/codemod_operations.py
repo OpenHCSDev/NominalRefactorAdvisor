@@ -16,34 +16,36 @@ from typing import (
 
 from metaclass_registry import AutoRegisterMeta, LazyDiscoveryDict, RegistryConfig
 
-from .codemod_architecture_guards import ArchitectureGuardRule
-from .codemod_imports import ModuleImportMutation
-from .codemod_payload import (
+from nominal_refactor_advisor.codemod_architecture_guards import ArchitectureGuardRule
+from nominal_refactor_advisor.codemod_imports import ModuleImportMutation
+from nominal_refactor_advisor.codemod_payload import (
     DiscriminatedPayloadRecord,
     RequiredStringPayloadValueCodec,
     codemod_payload_field,
 )
-from .codemod_preflight import CodemodOperationPreflightReport
-from .codemod_selection_context import CodemodSelectorContext
-from .codemod_selector_models import SourceRewritePlanItem
-from .codemod_semantics import CodemodSourceDependencyScope
-from .codemod_source_edits import (
+from nominal_refactor_advisor.codemod_preflight import CodemodOperationPreflightReport
+from nominal_refactor_advisor.codemod_selection_context import CodemodSelectorContext
+from nominal_refactor_advisor.codemod_selector_models import SourceRewritePlanItem
+from nominal_refactor_advisor.codemod_semantics import CodemodSourceDependencyScope
+from nominal_refactor_advisor.codemod_source_edits import (
     NominalSourceEdit,
     SourceEditOrigin,
     SourceFileCreation,
     SourceFileDeletion,
     TextFileEdit,
 )
-from .registry_identity import suffix_trimmed_class_name_registry_key
-from .semantic_descent import AuthorityClaim
-from .source_index import (
+from nominal_refactor_advisor.registry_identity import (
+    suffix_trimmed_class_name_registry_key,
+)
+from nominal_refactor_advisor.semantic_descent import AuthorityClaim
+from nominal_refactor_advisor.source_index import (
     AstTargetDigest,
     AstTargetNode,
 )
 
 
 if TYPE_CHECKING:
-    from .codemod_runtime import CodemodPlanDocumentSimulation
+    from nominal_refactor_advisor.codemod_runtime import CodemodPlanDocumentSimulation
 
 
 @dataclass(frozen=True, kw_only=True)

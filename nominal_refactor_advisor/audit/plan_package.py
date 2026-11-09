@@ -9,7 +9,7 @@ from functools import cached_property
 from pathlib import Path
 from typing import ClassVar, Iterator, TypeVar
 
-from .family import Family
+from nominal_refactor_advisor.audit.family import Family
 
 
 def anchor(heading: str) -> str:

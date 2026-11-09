@@ -5,15 +5,21 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import StrEnum
 
-from .ast_tools import ModuleAnnotationEvaluationMode
-from .codemod_import_bindings import (
+from nominal_refactor_advisor.ast_tools import ModuleAnnotationEvaluationMode
+from nominal_refactor_advisor.codemod_import_bindings import (
     ModuleImportBinding as ModuleImportBinding,
     ModuleImportBindingIdentity as ModuleImportBindingIdentity,
 )
-from .codemod_import_graph import SourceModuleImportGraph as SourceModuleImportGraph
-from .codemod_import_scopes import ModuleImportScope as ModuleImportScope
-from .codemod_module_declarations import SourceTopLevelSymbolMoveSelection
-from .json_reports import (
+from nominal_refactor_advisor.codemod_import_graph import (
+    SourceModuleImportGraph as SourceModuleImportGraph,
+)
+from nominal_refactor_advisor.codemod_import_scopes import (
+    ModuleImportScope as ModuleImportScope,
+)
+from nominal_refactor_advisor.codemod_module_declarations import (
+    SourceTopLevelSymbolMoveSelection,
+)
+from nominal_refactor_advisor.json_reports import (
     DataclassJsonReport,
     json_report_field,
     json_report_property,

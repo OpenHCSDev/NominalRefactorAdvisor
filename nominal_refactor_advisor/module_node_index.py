@@ -7,8 +7,12 @@ import unicodedata
 from collections import Counter, deque
 from dataclasses import dataclass, field
 
-from .ast_tools import AstParentIndex, ParsedModule, ParsedModuleFact
-from .lexical_bindings import ImportBoundNameProjection
+from nominal_refactor_advisor.ast_tools import (
+    AstParentIndex,
+    ParsedModule,
+    ParsedModuleFact,
+)
+from nominal_refactor_advisor.lexical_bindings import ImportBoundNameProjection
 
 _FUNCTION_SCOPES = (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)
 _COMPREHENSION_SCOPES = (ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)

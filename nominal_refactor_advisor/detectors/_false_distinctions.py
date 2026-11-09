@@ -8,8 +8,8 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
-from ..class_index import CompactModuleClassProjectionFamily
-from ..refactors.false_distinctions import (
+from nominal_refactor_advisor.class_index import CompactModuleClassProjectionFamily
+from nominal_refactor_advisor.refactors.false_distinctions import (
     CollapseIdenticalArmsOperation,
     EnumFoldFindingRecipeSynthesizer,
     FoldEnumMembersOperation,
@@ -19,7 +19,7 @@ from ..refactors.false_distinctions import (
     MergeTypeTestArmsOperation,
     UndistinguishedTypeTestFindingRecipeSynthesizer,
 )
-from ..false_distinction_observations import (
+from nominal_refactor_advisor.false_distinction_observations import (
     EmptySubclassIndex,
     EnumMemberIndex,
     EnumUseSiteFamily,
@@ -27,10 +27,10 @@ from ..false_distinction_observations import (
     IdenticalArmsSiteFamily,
     UndistinguishedTypeArmsSiteFamily,
 )
-from ..patterns import PatternId
-from ..observation_shapes import RestatingSite
-from ..taxonomy import ObservationTag
-from ._restated_facts import (
+from nominal_refactor_advisor.patterns import PatternId
+from nominal_refactor_advisor.observation_shapes import RestatingSite
+from nominal_refactor_advisor.taxonomy import ObservationTag
+from nominal_refactor_advisor.detectors._restated_facts import (
     JoinedRestatedFactDetector,
     RestatedFact,
     SingleFamilyRestatedFactDetector,

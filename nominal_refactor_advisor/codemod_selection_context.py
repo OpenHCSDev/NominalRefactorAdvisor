@@ -20,32 +20,38 @@ from dataclasses import (
 from functools import cached_property
 from typing import TYPE_CHECKING, Self
 
-from .assignment_projection import AssignmentStatementNameProjection
-from .ast_projection import CallKeyword
-from .ast_tools import (
+from nominal_refactor_advisor.assignment_projection import (
+    AssignmentStatementNameProjection,
+)
+from nominal_refactor_advisor.ast_projection import CallKeyword
+from nominal_refactor_advisor.ast_tools import (
     ParsedModule,
     SourceModule,
 )
-from .class_families.parsed_index import (
+from nominal_refactor_advisor.class_families.parsed_index import (
     ClassFamilyIndex,
     ModuleClassReferenceResolver,
 )
-from .class_identity_observations import (
+from nominal_refactor_advisor.class_identity_observations import (
     DeclaredIdentities,
     DeclaredIdentityFamily,
 )
-from .codemod_declaration_source import DirectClassDeclarationAuthority
-from .codemod_import_graph import SourceModuleImportGraph
-from .codemod_paths import (
+from nominal_refactor_advisor.codemod_declaration_source import (
+    DirectClassDeclarationAuthority,
+)
+from nominal_refactor_advisor.codemod_import_graph import SourceModuleImportGraph
+from nominal_refactor_advisor.codemod_paths import (
     SourcePathCandidateSet,
     SourcePathResolutionAuthority,
 )
-from .codemod_selector_models import SourceRewriteTarget
-from .declaration_dependencies import ModuleLexicalDependencyProjection
-from .lexical_bindings import LEXICAL_SCOPE_BINDING_AUTHORITY
-from .models import SourceLocation
-from .source_geometry import SourceLineSegmentAuthority
-from .source_index import (
+from nominal_refactor_advisor.codemod_selector_models import SourceRewriteTarget
+from nominal_refactor_advisor.declaration_dependencies import (
+    ModuleLexicalDependencyProjection,
+)
+from nominal_refactor_advisor.lexical_bindings import LEXICAL_SCOPE_BINDING_AUTHORITY
+from nominal_refactor_advisor.models import SourceLocation
+from nominal_refactor_advisor.source_geometry import SourceLineSegmentAuthority
+from nominal_refactor_advisor.source_index import (
     AstTargetDigest,
     AstTargetNode,
     AstTargetNodeIndex,
@@ -54,7 +60,7 @@ from .source_index import (
 )
 
 if TYPE_CHECKING:
-    from .codemod_runtime import CodemodSourceSnapshot
+    from nominal_refactor_advisor.codemod_runtime import CodemodSourceSnapshot
 
 
 @dataclass(frozen=True)

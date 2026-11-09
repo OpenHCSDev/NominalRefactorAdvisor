@@ -6,10 +6,14 @@ import ast
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 
-from .codemod_import_graph import SourceModuleImportGraph
-from .codemod_import_scopes import ModuleImportScope
-from .codemod_imports import ImportFromSource, ImportLayout, RequestedImportStatement
-from .json_reports import (
+from nominal_refactor_advisor.codemod_import_graph import SourceModuleImportGraph
+from nominal_refactor_advisor.codemod_import_scopes import ModuleImportScope
+from nominal_refactor_advisor.codemod_imports import (
+    ImportFromSource,
+    ImportLayout,
+    RequestedImportStatement,
+)
+from nominal_refactor_advisor.json_reports import (
     DataclassJsonReport,
     json_report_property,
 )

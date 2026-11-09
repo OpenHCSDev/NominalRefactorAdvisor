@@ -4,28 +4,36 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 
-from ..ast_tools import ParsedModule, ParsedModuleSet
-from ..carrier_collapse import ClosedCarrierCollapseComponent
-from ..carrier_expansion import DeclaredCarrierExpansionBuilder
-from ..class_index import CompactModuleClassProjectionFamily
-from ..refactors.carrier_collapse import (
+from nominal_refactor_advisor.ast_tools import ParsedModule, ParsedModuleSet
+from nominal_refactor_advisor.carrier_collapse import ClosedCarrierCollapseComponent
+from nominal_refactor_advisor.carrier_expansion import DeclaredCarrierExpansionBuilder
+from nominal_refactor_advisor.class_index import CompactModuleClassProjectionFamily
+from nominal_refactor_advisor.refactors.carrier_collapse import (
     CarrierCollapseFindingRecipeSynthesizer,
     CarrierCollapseOperationABC,
     CollapseClosedParameterConveyorOperation,
     CollapseDeclaredCarrierExpansionOperation,
 )
-from ..codemod_selector_models import SourceRewriteTarget
-from ..models import ParameterThreadMetrics, RefactorFinding, SourceLocation
-from ..parameter_conveyor import ClosedParameterConveyorComponentBuilder
-from ..patterns import PatternId
-from ..product_flow import CompactProductFlowModuleProjectionFamily
-from ..product_flow_authority import (
+from nominal_refactor_advisor.codemod_selector_models import SourceRewriteTarget
+from nominal_refactor_advisor.models import (
+    ParameterThreadMetrics,
+    RefactorFinding,
+    SourceLocation,
+)
+from nominal_refactor_advisor.parameter_conveyor import (
+    ClosedParameterConveyorComponentBuilder,
+)
+from nominal_refactor_advisor.patterns import PatternId
+from nominal_refactor_advisor.product_flow import (
+    CompactProductFlowModuleProjectionFamily,
+)
+from nominal_refactor_advisor.product_flow_authority import (
     CompactProductFlowRepository,
     ProductFlowRepository,
     SourceProductFlowRepository,
 )
-from ..taxonomy import CapabilityTag, ObservationTag
-from ._base import (
+from nominal_refactor_advisor.taxonomy import CapabilityTag, ObservationTag
+from nominal_refactor_advisor.detectors._base import (
     CompactMultiProjectionCandidateDetector,
     CompactProjectionGroups,
     DetectorConfig,

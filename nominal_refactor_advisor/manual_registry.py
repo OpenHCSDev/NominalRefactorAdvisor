@@ -13,33 +13,36 @@ from typing import (
     TypeAlias,
 )
 
-from .ast_projection import StatementValue
-from .ast_projection import ExpressionReference
-from .ast_tools import (
+from nominal_refactor_advisor.ast_projection import StatementValue
+from nominal_refactor_advisor.ast_projection import ExpressionReference
+from nominal_refactor_advisor.ast_tools import (
     EagerNameLoadCollector,
     ParsedModule,
     REGISTRATION_CALL_FAMILY,
     REGISTRATION_DECORATOR_FAMILY,
 )
-from .class_index import ModuleNominalBindingAuthority, NominalReferences
-from .collection_algebra import UniqueIdentityIndexAuthority
-from .descriptor_algebra import CollectionAttributeProjection
-from .lexical_bindings import LEXICAL_SCOPE_BINDING_AUTHORITY
-from .name_algebra import CLASS_NAME_ALGEBRA
-from .captured_reference import NamespaceContentsABC
-from .registry_identity import (
+from nominal_refactor_advisor.class_index import (
+    ModuleNominalBindingAuthority,
+    NominalReferences,
+)
+from nominal_refactor_advisor.collection_algebra import UniqueIdentityIndexAuthority
+from nominal_refactor_advisor.descriptor_algebra import CollectionAttributeProjection
+from nominal_refactor_advisor.lexical_bindings import LEXICAL_SCOPE_BINDING_AUTHORITY
+from nominal_refactor_advisor.name_algebra import CLASS_NAME_ALGEBRA
+from nominal_refactor_advisor.captured_reference import NamespaceContentsABC
+from nominal_refactor_advisor.registry_identity import (
     DEFAULT_REGISTRY_KEY_ATTRIBUTE,
     REGISTRY_ATTRIBUTE_NAME,
     AutoRegisterClassAuthority,
     KeyedMetaclassFamily,
 )
-from .value_expression import (
+from nominal_refactor_advisor.value_expression import (
     CompactValueExpression,
     LexicalValueReference,
     LiteralExpressionEffects,
     MappingKeyResolverABC,
 )
-from .enum_semantics import (
+from nominal_refactor_advisor.enum_semantics import (
     PYTHON_ENUM_BASE_AUTHORITY,
     PythonEnumDeclarationAuthority,
 )
@@ -60,8 +63,8 @@ def _assignment_value(statement: RegistryAssignment) -> ast.AST | None:
 
 
 if TYPE_CHECKING:
-    from .native_reference import NativeReferenceEnvironment
-    from .captured_reference import CapturedReferenceResolution
+    from nominal_refactor_advisor.native_reference import NativeReferenceEnvironment
+    from nominal_refactor_advisor.captured_reference import CapturedReferenceResolution
 
 
 @dataclass(frozen=True)

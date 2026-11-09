@@ -9,11 +9,11 @@ from functools import (
 )
 from pathlib import Path
 
-from .source_identity import (
+from nominal_refactor_advisor.source_identity import (
     resolved_source_path_text,
     source_path_text,
 )
-from .source_index import SourceIndex
+from nominal_refactor_advisor.source_index import SourceIndex
 
 
 class ExactSourcePathResolution:

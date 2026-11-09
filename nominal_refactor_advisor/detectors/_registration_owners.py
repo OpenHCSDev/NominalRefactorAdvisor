@@ -5,13 +5,17 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from ..class_index import CompactIndexedClass
-from ..installed_owners import InstalledOwner, RegistrationOwners, RegistrationRole
-from ..owner_candidates import OwnerCandidate, ranked
-from ..models import RefactorFinding, SourceLocation
-from ..patterns import PatternId
-from ..taxonomy import CapabilityTag, ObservationTag
-from ._base import (
+from nominal_refactor_advisor.class_index import CompactIndexedClass
+from nominal_refactor_advisor.installed_owners import (
+    InstalledOwner,
+    RegistrationOwners,
+    RegistrationRole,
+)
+from nominal_refactor_advisor.owner_candidates import OwnerCandidate, ranked
+from nominal_refactor_advisor.models import RefactorFinding, SourceLocation
+from nominal_refactor_advisor.patterns import PatternId
+from nominal_refactor_advisor.taxonomy import CapabilityTag, ObservationTag
+from nominal_refactor_advisor.detectors._base import (
     CompactClassRepositoryCandidateDetector,
     CompactClassRepositoryContext,
     DetectorConfig,

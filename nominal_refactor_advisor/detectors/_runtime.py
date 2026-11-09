@@ -21,11 +21,13 @@ from typing import Generic, TypeAlias, TypeVar, cast
 
 from tree_sitter import Node
 
-from ._regex_bundle import RepeatedLocalRegexBundleDetector
+from nominal_refactor_advisor.detectors._regex_bundle import (
+    RepeatedLocalRegexBundleDetector,
+)
 
-from ..class_syntax_facets import CompactExactTypeGuard
-from ..lexical_bindings import ImportBoundNameProjection
-from ..ast_tools import (
+from nominal_refactor_advisor.class_syntax_facets import CompactExactTypeGuard
+from nominal_refactor_advisor.lexical_bindings import ImportBoundNameProjection
+from nominal_refactor_advisor.ast_tools import (
     BuiltinCall,
     BuiltinCallName,
     Globals,
@@ -37,8 +39,8 @@ from ..ast_tools import (
     collect_family_items,
     walk_function_body_nodes,
 )
-from ..native_syntax import NativePythonSyntaxIndex
-from ..class_index import (
+from nominal_refactor_advisor.native_syntax import NativePythonSyntaxIndex
+from nominal_refactor_advisor.class_index import (
     CompactClassFamilyIndex,
     CompactClassReferenceResolver,
     CompactIndexedClass,
@@ -49,73 +51,92 @@ from ..class_index import (
     LatentRosterObservation,
     build_compact_class_family_index,
 )
-from ..exact_method_authority import (
+from nominal_refactor_advisor.exact_method_authority import (
     ParallelMirroredLeafFamilyComponent,
     ParallelMirroredLeafFamilyComponentBuilder,
 )
-from ..enum_keyed_query import (
+from nominal_refactor_advisor.enum_keyed_query import (
     EnumKeyedDerivedMapFacadeComponent,
     EnumKeyedDerivedMapFacadeModuleProjection,
     EnumKeyedDerivedMapFacadeModuleProjectionFamily,
 )
-from ..codemod_foreign_adapter_source import ForeignAdapterBindChainModuleFamily
-from ..codemod_static_projection_source import StaticProjectionCallModuleFamily
-from ..codemod_foreign_family_recipe import (
+from nominal_refactor_advisor.codemod_foreign_adapter_source import (
+    ForeignAdapterBindChainModuleFamily,
+)
+from nominal_refactor_advisor.codemod_static_projection_source import (
+    StaticProjectionCallModuleFamily,
+)
+from nominal_refactor_advisor.codemod_foreign_family_recipe import (
     ForeignAdapterBindChainFindingRecipeSynthesizer,
     StaticProjectionAdapterFindingRecipeSynthesizer,
     ForeignFamilyRoutableFilterFindingRecipeSynthesizer,
     ForeignFamilySiteFindingRecipeSynthesizer,
 )
-from ..codemod_foreign_family_source import ForeignFamilyFilterModuleFamily
-from ..refactors.finding_recipes import (
+from nominal_refactor_advisor.codemod_foreign_family_source import (
+    ForeignFamilyFilterModuleFamily,
+)
+from nominal_refactor_advisor.refactors.finding_recipes import (
     KeyedMirrorFindingRecipeSynthesizer,
     ParallelMirroredLeafFamilyFindingRecipeSynthesizer,
     SemanticMirrorFindingRecipeEvaluator,
     TypedMirrorFindingRecipeSynthesizer,
 )
-from ..collection_algebra import sorted_tuple
-from ..installed_owners import RegistrationOwners
-from ..owner_candidates import OwnerCandidate, ranked
-from ..models import (
+from nominal_refactor_advisor.collection_algebra import sorted_tuple
+from nominal_refactor_advisor.installed_owners import RegistrationOwners
+from nominal_refactor_advisor.owner_candidates import OwnerCandidate, ranked
+from nominal_refactor_advisor.models import (
     ConstructorOwnedMappingMetrics,
     HierarchyCandidateMetrics,
     RefactorFinding,
     SourceLocation,
 )
-from ..observation_shapes import (
+from nominal_refactor_advisor.observation_shapes import (
     ForeignFamilySiteModule,
     ForeignFamilySiteShape,
 )
-from ..patterns import PatternId
-from ..refactors.autoregister import ManualClassRegistrationFindingRecipeSynthesizer
-from ..refactors.dispatch_polymorphism import NumericLiteralDispatchFindingRecipeSynthesizer
-from ..refactors.repeated_builder import RepeatedBuilderCallFindingRecipeSynthesizer
-from ..registration_facets import CompactManualSubclassRosterRoot
-from ..semantic_identity import (
+from nominal_refactor_advisor.patterns import PatternId
+from nominal_refactor_advisor.refactors.autoregister import (
+    ManualClassRegistrationFindingRecipeSynthesizer,
+)
+from nominal_refactor_advisor.refactors.dispatch_polymorphism import (
+    NumericLiteralDispatchFindingRecipeSynthesizer,
+)
+from nominal_refactor_advisor.refactors.repeated_builder import (
+    RepeatedBuilderCallFindingRecipeSynthesizer,
+)
+from nominal_refactor_advisor.registration_facets import CompactManualSubclassRosterRoot
+from nominal_refactor_advisor.semantic_identity import (
     InheritanceIdentityAttributeProjection,
     SemanticIdentifierTokenProjection,
     SemanticRoleIdentityToken,
 )
-from ..taxonomy import CapabilityTag, ObservationTag
-from ..type_keyed_behavior import (
+from nominal_refactor_advisor.taxonomy import CapabilityTag, ObservationTag
+from nominal_refactor_advisor.type_keyed_behavior import (
     TypeKeyedBehaviorProjectionComponent,
     TypeKeyedBehaviorProjectionComponentBuilder,
 )
 from abc import ABC
 from pathlib import Path
 from typing import ClassVar
-from ..ast_tools import _builder_call_shape, statements_without_docstring
-from ..models import DispatchCountMetrics, MappingMetrics, RegistrationMetrics
-from ..observation_families import (
+from nominal_refactor_advisor.ast_tools import (
+    _builder_call_shape,
+    statements_without_docstring,
+)
+from nominal_refactor_advisor.models import (
+    DispatchCountMetrics,
+    MappingMetrics,
+    RegistrationMetrics,
+)
+from nominal_refactor_advisor.observation_families import (
     NumericLiteralDispatchObservationFamily,
     RegistrationShapeFamily,
 )
-from ..observation_shapes import (
+from nominal_refactor_advisor.observation_shapes import (
     BuilderCallShape,
     LiteralDispatchObservation,
     RegistrationShape,
 )
-from ._base import (
+from nominal_refactor_advisor.detectors._base import (
     ModuleBuilderCallShapes,
     _module_builder_call_shapes,
     CANDIDATE_COLLECTION_AUTHORITY,
@@ -143,12 +164,12 @@ from ._base import (
     SemanticMirrorIssueDetector,
     SsotAuthorityBoundaryDetector,
 )
-from ._helpers import (
+from nominal_refactor_advisor.detectors._helpers import (
     _concrete_config_field_probe_candidates,
     _guarded_wrapper_spec_pairs,
 )
-from ._substrate_support import _constant_string
-from ._base import high_confidence_certified_spec
+from nominal_refactor_advisor.detectors._substrate_support import _constant_string
+from nominal_refactor_advisor.detectors._base import high_confidence_certified_spec
 
 
 def _literal_dispatch_authority_patch(

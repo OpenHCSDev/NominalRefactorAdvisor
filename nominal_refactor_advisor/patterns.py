@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from enum import IntEnum
 
-from .taxonomy import CapabilityTag
+from nominal_refactor_advisor.taxonomy import CapabilityTag
 
 
 def _pattern(

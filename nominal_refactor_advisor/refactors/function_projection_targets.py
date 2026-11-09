@@ -7,12 +7,12 @@ from typing import (
     TypeVar,
 )
 
-from ..ast_tools import walk_function_body_nodes
-from ..codemod_selection_context import CodemodSelectorContext
-from ..codemod_selector_models import SourceRewriteTarget
-from ..codemod_target_selectors import SourceIndexTargetSelector
-from ..models import RefactorFinding
-from ..source_index import AstTargetDigest
+from nominal_refactor_advisor.ast_tools import walk_function_body_nodes
+from nominal_refactor_advisor.codemod_selection_context import CodemodSelectorContext
+from nominal_refactor_advisor.codemod_selector_models import SourceRewriteTarget
+from nominal_refactor_advisor.codemod_target_selectors import SourceIndexTargetSelector
+from nominal_refactor_advisor.models import RefactorFinding
+from nominal_refactor_advisor.source_index import AstTargetDigest
 
 
 @dataclass(frozen=True)

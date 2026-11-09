@@ -3,10 +3,14 @@ from __future__ import annotations
 from abc import ABC
 from typing import ClassVar
 
-from .collection_algebra import UniqueIdentityIndexAuthority
-from .registry_identity import class_name_registry_key
-from .semantic_match import loaded_nominal_descendants
-from .stage_proof import OperationCertifiedStages, RescannedStages, StageProof
+from nominal_refactor_advisor.collection_algebra import UniqueIdentityIndexAuthority
+from nominal_refactor_advisor.registry_identity import class_name_registry_key
+from nominal_refactor_advisor.semantic_match import loaded_nominal_descendants
+from nominal_refactor_advisor.stage_proof import (
+    OperationCertifiedStages,
+    RescannedStages,
+    StageProof,
+)
 
 
 class RefactorConcept(ABC):

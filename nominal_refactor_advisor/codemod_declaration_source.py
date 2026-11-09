@@ -21,14 +21,14 @@ from typing import (
     cast,
 )
 
-from .assignment_projection import NamedAssignmentSelection
-from .ast_projection import CallKeyword
-from .ast_tools import (
+from nominal_refactor_advisor.assignment_projection import NamedAssignmentSelection
+from nominal_refactor_advisor.ast_projection import CallKeyword
+from nominal_refactor_advisor.ast_tools import (
     AstParentIndex,
     FunctionDefinitionNode,
     is_docstring_statement,
 )
-from .codemod_source_edits import (
+from nominal_refactor_advisor.codemod_source_edits import (
     Include,
     NominalSourceEdit,
     PhysicalSourceEditConflictError,
@@ -41,26 +41,28 @@ from .codemod_source_edits import (
     SourceTextSpanReplacement,
     _joined_rationales,
 )
-from .codemod_statement_source import (
+from nominal_refactor_advisor.codemod_statement_source import (
     PythonBlockSource,
     StatementSource,
 )
-from .declaration_dependencies import (
+from nominal_refactor_advisor.declaration_dependencies import (
     FunctionBindingABC,
     FunctionParameterBinding,
 )
-from .descriptor_algebra import AliasProperty
-from .foreign_family import FunctionDefinition
-from .lexical_bindings import LEXICAL_SCOPE_BINDING_AUTHORITY
-from .source_geometry import (
+from nominal_refactor_advisor.descriptor_algebra import AliasProperty
+from nominal_refactor_advisor.foreign_family import FunctionDefinition
+from nominal_refactor_advisor.lexical_bindings import LEXICAL_SCOPE_BINDING_AUTHORITY
+from nominal_refactor_advisor.source_geometry import (
     ClassHeaderSourceSpan,
     SourceLineSegmentAuthority,
 )
-from .value_expression import LexicalValueReference
+from nominal_refactor_advisor.value_expression import LexicalValueReference
 
 if TYPE_CHECKING:
-    from .codemod_selection_context import CodemodSelectorContext
-    from .codemod_source_edits import PhysicalSourceEdit
+    from nominal_refactor_advisor.codemod_selection_context import (
+        CodemodSelectorContext,
+    )
+    from nominal_refactor_advisor.codemod_source_edits import PhysicalSourceEdit
 
 
 @dataclass(frozen=True)

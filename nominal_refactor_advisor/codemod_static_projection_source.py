@@ -8,25 +8,33 @@ from dataclasses import dataclass
 from functools import cached_property
 from typing import Self
 
-from .lexical_bindings import ImportBoundNameProjection
-from .ast_tools import ParsedModule
-from .class_index import (
+from nominal_refactor_advisor.lexical_bindings import ImportBoundNameProjection
+from nominal_refactor_advisor.ast_tools import ParsedModule
+from nominal_refactor_advisor.class_index import (
     ModuleNominalBindingAuthority,
     CompactNominalBinding,
     ModuleNominalBindingSnapshotPolicy,
 )
-from .codemod_foreign_adapter_source import AdapterPropertyBodies
-from .codemod_foreign_family_source import (
+from nominal_refactor_advisor.codemod_foreign_adapter_source import (
+    AdapterPropertyBodies,
+)
+from nominal_refactor_advisor.codemod_foreign_family_source import (
     ForeignFamilyReference,
     SourceRewriteAuthority,
 )
-from .codemod_source_edits import (
+from nominal_refactor_advisor.codemod_source_edits import (
     SourceTextSpan,
     SourceTextSpanReplacement,
 )
-from .declared_family import ForeignAdapter
-from .observation_families import ShapeFamily, TypeArgumentResolver
-from .observation_shapes import ForeignFamilySiteModule, StaticProjectionSiteShape
+from nominal_refactor_advisor.declared_family import ForeignAdapter
+from nominal_refactor_advisor.observation_families import (
+    ShapeFamily,
+    TypeArgumentResolver,
+)
+from nominal_refactor_advisor.observation_shapes import (
+    ForeignFamilySiteModule,
+    StaticProjectionSiteShape,
+)
 
 
 @dataclass(frozen=True)

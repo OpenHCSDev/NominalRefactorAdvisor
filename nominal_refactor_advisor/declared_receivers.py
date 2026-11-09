@@ -36,10 +36,17 @@ from dataclasses import dataclass, field
 from functools import cache, cached_property
 from typing import ClassVar
 
-from .ast_field_decoders import declared_annotations, variadic_parameters
-from .ast_tools import AstParentIndex, ParsedModule, collect_family_items
-from .lexical_bindings import ImportBoundNameProjection
-from .class_index import (
+from nominal_refactor_advisor.ast_field_decoders import (
+    declared_annotations,
+    variadic_parameters,
+)
+from nominal_refactor_advisor.ast_tools import (
+    AstParentIndex,
+    ParsedModule,
+    collect_family_items,
+)
+from nominal_refactor_advisor.lexical_bindings import ImportBoundNameProjection
+from nominal_refactor_advisor.class_index import (
     ClassMemberAnswersABC,
     CompactAnnotatedFunctionReturn,
     CompactAnnotatedMethod,
@@ -53,8 +60,13 @@ from .class_index import (
     native_identity,
     build_compact_class_family_index,
 )
-from .class_syntax_facets import CompactClassMemberDeclaration
-from .typeshed_stubs import AnswerT, StubAnswers, StubRoot, installed_stub_root
+from nominal_refactor_advisor.class_syntax_facets import CompactClassMemberDeclaration
+from nominal_refactor_advisor.typeshed_stubs import (
+    AnswerT,
+    StubAnswers,
+    StubRoot,
+    installed_stub_root,
+)
 
 FunctionNode = ast.FunctionDef | ast.AsyncFunctionDef
 

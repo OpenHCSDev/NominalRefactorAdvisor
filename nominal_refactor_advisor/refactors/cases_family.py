@@ -1,5 +1,5 @@
 from __future__ import annotations
-from ..module_node_index import ModuleNodeIndex
+from nominal_refactor_advisor.module_node_index import ModuleNodeIndex
 
 import ast
 import builtins
@@ -26,34 +26,34 @@ from typing import ClassVar
 
 from metaclass_registry import AutoRegisterMeta
 
-from ..ast_field_decoders import declared_annotations
-from ..ast_projection import (
+from nominal_refactor_advisor.ast_field_decoders import declared_annotations
+from nominal_refactor_advisor.ast_projection import (
     NoStatementValue,
     StatementValue,
     StatementValueQuestion,
     StatementValues,
     SuppliedValue,
 )
-from ..ast_tools import (
+from nominal_refactor_advisor.ast_tools import (
     AstParentIndex,
     BuiltinCallName,
     ParsedModule,
     PythonSourcePathPolicy,
 )
-from ..class_index import (
+from nominal_refactor_advisor.class_index import (
     CLASS_METHOD_DECORATOR,
     ModuleNominalBindingAuthority,
     ModuleNominalBindingSnapshot,
     PROPERTY_DECORATOR,
     STATIC_METHOD_DECORATOR,
 )
-from ..codemod_runtime import CodemodSourceSnapshot
-from ..codemod_source_edits import (
+from nominal_refactor_advisor.codemod_runtime import CodemodSourceSnapshot
+from nominal_refactor_advisor.codemod_source_edits import (
     SourceTextGeometry,
     SourceTextSpanReplacement,
 )
-from ..declared_root import DeclaredRoot
-from ..descent import (
+from nominal_refactor_advisor.declared_root import DeclaredRoot
+from nominal_refactor_advisor.descent import (
     Answers,
     Cases,
     Descent,
@@ -65,12 +65,12 @@ from ..descent import (
     Rewrite,
     TailName,
 )
-from ..lexical_bindings import ImportBoundNameProjection
-from ..semantic_descent import (
+from nominal_refactor_advisor.lexical_bindings import ImportBoundNameProjection
+from nominal_refactor_advisor.semantic_descent import (
     AuthorityClaim,
     SemanticAuthorityKind,
 )
-from ..value_expression import CompactValueExpression
+from nominal_refactor_advisor.value_expression import CompactValueExpression
 
 BOOLEAN_CALLS = frozenset(
     (

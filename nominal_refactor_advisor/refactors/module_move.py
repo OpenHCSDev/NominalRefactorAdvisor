@@ -20,26 +20,35 @@ from itertools import product
 from pathlib import Path, PurePosixPath
 from typing import ClassVar, cast
 
-from ..ast_projection import ExpressionReference
-from ..declared_family import ForeignAdapter
-from ..source_identity import PACKAGE_INIT_FILE_NAME
-from ..ast_tools import ModuleAnnotationEvaluationMode, ParsedModule, ParsedModuleFact
-from ..module_node_index import ModuleNodeIndex
-from ..codemod_import_bindings import FromModuleImportBindingIdentity
-from ..codemod_import_graph import SourceModuleImportGraph
-from ..source_index import SourceFileDigest
-from ..codemod_import_scopes import ModuleImportScope, TypeCheckingGuardProjection
-from ..codemod_imports import (
+from nominal_refactor_advisor.ast_projection import ExpressionReference
+from nominal_refactor_advisor.declared_family import ForeignAdapter
+from nominal_refactor_advisor.source_identity import PACKAGE_INIT_FILE_NAME
+from nominal_refactor_advisor.ast_tools import (
+    ModuleAnnotationEvaluationMode,
+    ParsedModule,
+    ParsedModuleFact,
+)
+from nominal_refactor_advisor.module_node_index import ModuleNodeIndex
+from nominal_refactor_advisor.codemod_import_bindings import (
+    FromModuleImportBindingIdentity,
+)
+from nominal_refactor_advisor.codemod_import_graph import SourceModuleImportGraph
+from nominal_refactor_advisor.source_index import SourceFileDigest
+from nominal_refactor_advisor.codemod_import_scopes import (
+    ModuleImportScope,
+    TypeCheckingGuardProjection,
+)
+from nominal_refactor_advisor.codemod_imports import (
     ImportFromSource,
     ImportLayout,
     ModuleImportMutation,
 )
-from ..codemod_module_declarations import (
+from nominal_refactor_advisor.codemod_module_declarations import (
     ModuleSymbolTable,
     MovedTopLevelDeclarationSource,
     SourceTopLevelSymbolMoveSelection,
 )
-from ..codemod_module_move_reports import (
+from nominal_refactor_advisor.codemod_module_move_reports import (
     ModuleMoveDependencyReport,
     ModuleMoveImportDependency,
     ModuleMoveObstacle,
@@ -47,28 +56,28 @@ from ..codemod_module_move_reports import (
     ModuleMoveSourceLocalDependency,
     ModuleMoveSourceLocalDependencyResolution,
 )
-from ..codemod_operations import RefactorRecipeOperation
-from ..codemod_paths import SourcePathResolutionAuthority
-from ..codemod_payload import (
+from nominal_refactor_advisor.codemod_operations import RefactorRecipeOperation
+from nominal_refactor_advisor.codemod_paths import SourcePathResolutionAuthority
+from nominal_refactor_advisor.codemod_payload import (
     OptionalStringPayloadValueCodec,
     RequiredIntegerPayloadValueCodec,
     RequiredStringPayloadValueCodec,
     StringArrayPayloadValueCodec,
     codemod_payload_field,
 )
-from ..codemod_preflight import (
+from nominal_refactor_advisor.codemod_preflight import (
     CodemodOperationPreflightError,
     CodemodOperationPreflightReport,
 )
-from ..codemod_reproof import RepositorySourceReprovedOperation
-from ..codemod_runtime import CodemodSourceSnapshot
-from ..codemod_selection_context import CodemodSelectorContext
-from ..codemod_selector_models import SourcePathPayloadValueCodec
-from ..codemod_semantics import (
+from nominal_refactor_advisor.codemod_reproof import RepositorySourceReprovedOperation
+from nominal_refactor_advisor.codemod_runtime import CodemodSourceSnapshot
+from nominal_refactor_advisor.codemod_selection_context import CodemodSelectorContext
+from nominal_refactor_advisor.codemod_selector_models import SourcePathPayloadValueCodec
+from nominal_refactor_advisor.codemod_semantics import (
     CodemodPreflightStatus,
     CodemodSourceDependencyScope,
 )
-from ..codemod_source_edits import (
+from nominal_refactor_advisor.codemod_source_edits import (
     NominalSourceEdit,
     SourceFileCreation,
     SourceFileDeletion,
@@ -80,20 +89,22 @@ from ..codemod_source_edits import (
     TextFileChange,
     TextFileEdit,
 )
-from ..codemod_spacing import DestinationInsertionSpacing
-from ..declaration_dependencies import DeclarationDependencyProjection
-from ..json_reports import DataclassJsonReport
-from ..lexical_bindings import (
+from nominal_refactor_advisor.codemod_spacing import DestinationInsertionSpacing
+from nominal_refactor_advisor.declaration_dependencies import (
+    DeclarationDependencyProjection,
+)
+from nominal_refactor_advisor.json_reports import DataclassJsonReport
+from nominal_refactor_advisor.lexical_bindings import (
     LEXICAL_SCOPE_BINDING_AUTHORITY,
     ImportBoundNameProjection,
     ImportFromModuleName,
 )
-from ..public_exports import (
+from nominal_refactor_advisor.public_exports import (
     CompactModulePublicExportContract,
     module_public_export_contract,
 )
-from ..python_module_identity import PythonModulePathIdentity
-from ..value_expression import LexicalValueReference
+from nominal_refactor_advisor.python_module_identity import PythonModulePathIdentity
+from nominal_refactor_advisor.value_expression import LexicalValueReference
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -1994,7 +2005,7 @@ class SourceTopLevelSymbolClosureMovePlan(SourceTopLevelSymbolClosureMoveCarrier
         insertion_line: int,
         context: CodemodSelectorContext,
     ) -> str:
-        rebase = _RelativeImportRebase.between(context, self.source_path, self.destination_path)
+        rebase = _MovedRelativeImports.of(context, self.source_path)
         moved_source = "\n\n\n".join(
             self.name_redirect.moved_text(
                 context.module_import_graph,
@@ -4271,37 +4282,27 @@ _RELATIVE_FROM = re.compile(r"from\s+(\.+)([\w.]*)(?=\s+import\b)")
 
 
 @dataclass(frozen=True)
-class _RelativeImportRebase:
-    """A moved block's relative imports, re-expressed for the destination package.
+class _MovedRelativeImports:
+    """A moved block's relative imports, named absolutely at the destination.
 
     Top-level imports the block needs are re-derived by the move's dependency
     report; a relative import inside the block's body (a function-local
-    ``from .x import Y``) moves with the text, so when the destination sits in
-    another package it is re-resolved against the source package and written
-    relative to the destination's."""
+    ``from .x import Y``) moves with the text. It is resolved against the source
+    package, where it was written, and written with that module's absolute name:
+    text NRA writes names its modules absolutely."""
 
     source_identity: PythonModulePathIdentity
-    destination_package: tuple[str, ...]
 
     @classmethod
-    def between(
+    def of(
         cls,
         context: CodemodSelectorContext,
         source_path: str,
-        destination_path: str,
-    ) -> _RelativeImportRebase:
-        import_graph = context.module_import_graph
-        source_file = import_graph.source_file_for_path(source_path)
-        destination_file = import_graph.source_file_for_path(destination_path)
-        if source_file is None or destination_file is None:
-            raise ValueError("A move needs both modules' identities to rebase relative imports")
-        destination_module = destination_file.module_name
-        package = (
-            destination_module
-            if destination_file.is_package_init
-            else destination_module.rpartition(".")[0]
-        )
-        return cls(source_file.module_path_identity, tuple(filter(None, package.split("."))))
+    ) -> _MovedRelativeImports:
+        source_file = context.module_import_graph.source_file_for_path(source_path)
+        if source_file is None:
+            raise ValueError("A move resolves relative imports in its source module's package")
+        return cls(source_file.module_path_identity)
 
     def applied(self, block: str) -> str:
         tree = ast.parse(block)
@@ -4320,20 +4321,7 @@ class _RelativeImportRebase:
             )
             if absolute is None:
                 raise ValueError(f"Relative import at block line {node.lineno} leaves the package")
-            replacements.append((start, match.end(), f"from {self._relative(absolute)}"))
+            replacements.append((start, match.end(), f"from {absolute}"))
         for start, end, text in sorted(replacements, reverse=True):
             block = block[:start] + text + block[end:]
         return block
-
-    def _relative(self, absolute: str) -> str:
-        target = tuple(absolute.split("."))
-        common = 0
-        while (
-            common < min(len(target), len(self.destination_package))
-            and target[common] == self.destination_package[common]
-        ):
-            common += 1
-        if common == 0:
-            return absolute
-        dots = "." * (len(self.destination_package) - common + 1)
-        return dots + ".".join(target[common:])

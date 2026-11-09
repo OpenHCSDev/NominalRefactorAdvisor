@@ -39,10 +39,14 @@ from dataclasses import dataclass, field, replace
 from itertools import combinations
 from typing import ClassVar, TypeVar
 
-from .class_index import CompactIndexedClass
-from .json_reports import SemanticRecord, json_report_field, json_report_property
-from .receipts import Receipt, ReceiptKind, ScoredByReceipts
-from .models import SourceLocation
+from nominal_refactor_advisor.class_index import CompactIndexedClass
+from nominal_refactor_advisor.json_reports import (
+    SemanticRecord,
+    json_report_field,
+    json_report_property,
+)
+from nominal_refactor_advisor.receipts import Receipt, ReceiptKind, ScoredByReceipts
+from nominal_refactor_advisor.models import SourceLocation
 
 
 class OwnerReceiptKind(ReceiptKind):

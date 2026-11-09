@@ -16,40 +16,55 @@ from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from typing import ClassVar, Generic, TypeVar
 
-from ..refactors.target_deletion import EraseDeadCompatibilityOperation
-from ..codemod import RefactorRecipeOperation
-from ..class_index import (
+from nominal_refactor_advisor.refactors.target_deletion import (
+    EraseDeadCompatibilityOperation,
+)
+from nominal_refactor_advisor.codemod import RefactorRecipeOperation
+from nominal_refactor_advisor.class_index import (
     CompactClassFamilyIndex,
     CompactModuleClassProjectionFamily,
 )
-from ..ast_tools import ParsedModuleSet
-from ..declared_receivers import DeclaredReceiverTyping
-from ..probe_owner import ProbeOwnerContext, ReceiverSpan, ScannedClasses
-from ..refactors.dispatch_polymorphism import (
+from nominal_refactor_advisor.ast_tools import ParsedModuleSet
+from nominal_refactor_advisor.declared_receivers import DeclaredReceiverTyping
+from nominal_refactor_advisor.probe_owner import (
+    ProbeOwnerContext,
+    ReceiverSpan,
+    ScannedClasses,
+)
+from nominal_refactor_advisor.refactors.dispatch_polymorphism import (
     DispatchToPolymorphismOperation,
     LiteralDispatchFindingRecipeSynthesizer,
 )
-from ..type_checker_session import (
+from nominal_refactor_advisor.type_checker_session import (
     SourceFiles,
     SourceTexts,
     TypeCheckerSession,
     TypeCheckerSources,
 )
-from ..codemod_legacy_path_recipe import LegacyPathErasureFindingRecipeSynthesizer
-from ..refactors.optional_ast_field import (
+from nominal_refactor_advisor.codemod_legacy_path_recipe import (
+    LegacyPathErasureFindingRecipeSynthesizer,
+)
+from nominal_refactor_advisor.refactors.optional_ast_field import (
     OptionalAstFieldDecoderFindingRecipeSynthesizer,
     RouteOptionalAstFieldProbesOperation,
 )
-from ..models import (
+from nominal_refactor_advisor.models import (
     DispatchCountMetrics,
     ForwardingFacadeMetrics,
     RefactorFinding,
     SourceLocation,
 )
-from ..observation_families import FieldObservationFamily, TypeTestModuleFamily
-from ..observation_shapes import DeclaredClassScope, FieldObservation, TypeTestShape
-from ..patterns import PatternId
-from ..restated_fact_observations import (
+from nominal_refactor_advisor.observation_families import (
+    FieldObservationFamily,
+    TypeTestModuleFamily,
+)
+from nominal_refactor_advisor.observation_shapes import (
+    DeclaredClassScope,
+    FieldObservation,
+    TypeTestShape,
+)
+from nominal_refactor_advisor.patterns import PatternId
+from nominal_refactor_advisor.restated_fact_observations import (
     DeadModuleSiteFamily,
     ExactKeySetSiteFamily,
     ForwardingFacadeSiteFamily,
@@ -65,9 +80,9 @@ from ..restated_fact_observations import (
     StringDispatchSiteFamily,
     UnreachedModules,
 )
-from ..observation_shapes import RestatingSite
-from ..taxonomy import CapabilityTag, ObservationTag
-from ._base import (
+from nominal_refactor_advisor.observation_shapes import RestatingSite
+from nominal_refactor_advisor.taxonomy import CapabilityTag, ObservationTag
+from nominal_refactor_advisor.detectors._base import (
     CompactModuleProjectionDetectorMixin,
     CompactMultiModuleProjectionDetectorMixin,
     CompactProjectionGroups,

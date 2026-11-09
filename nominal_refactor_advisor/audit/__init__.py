@@ -4,7 +4,16 @@ Importing the package declares every measure of the Measure family, so the censu
 gate always read the whole family. A measured project declares its own facts
 beside its own code, as a Project subclass its gate entry passes to gate.main.
 """
-from . import checkers, dispatch, identity, measures, project_measures, gate, source_measures, typing_measures
+from nominal_refactor_advisor.audit import (
+    checkers,
+    dispatch,
+    identity,
+    measures,
+    project_measures,
+    gate,
+    source_measures,
+    typing_measures,
+)
 
 __all__ = ["checkers", "dispatch", "identity", "measures", "project_measures", "gate",
            "source_measures", "typing_measures"]

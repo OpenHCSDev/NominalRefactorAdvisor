@@ -8,20 +8,20 @@ from dataclasses import dataclass
 from functools import cached_property
 from typing import TYPE_CHECKING
 
-from .codemod_selector_models import SelectionCountExpectation
-from .codemod_source_edits import (
+from nominal_refactor_advisor.codemod_selector_models import SelectionCountExpectation
+from nominal_refactor_advisor.codemod_source_edits import (
     SourceTextGeometry,
     SourceTextSpan,
     SourceTextSpanReplacement,
 )
-from .product_flow import CompactCallArguments
-from .product_flow_authority import CompactResolvedFunctionCall
-from .source_geometry import SourceByteSpan
-from .source_index import AstTargetDigest
-from .value_expression import CompactValueExpression
+from nominal_refactor_advisor.product_flow import CompactCallArguments
+from nominal_refactor_advisor.product_flow_authority import CompactResolvedFunctionCall
+from nominal_refactor_advisor.source_geometry import SourceByteSpan
+from nominal_refactor_advisor.source_index import AstTargetDigest
+from nominal_refactor_advisor.value_expression import CompactValueExpression
 
 if TYPE_CHECKING:
-    from .codemod_runtime import CodemodSourceSnapshot
+    from nominal_refactor_advisor.codemod_runtime import CodemodSourceSnapshot
 
 
 @dataclass(frozen=True)

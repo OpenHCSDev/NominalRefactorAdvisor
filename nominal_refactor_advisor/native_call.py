@@ -16,10 +16,10 @@ from typing import (
     cast,
 )
 
-from .ast_field_decoders import TYPE_PARAMETERS
-from .value_expression import CompactValueExpression
-from .ast_tools import SourceModule
-from .captured_reference import (
+from nominal_refactor_advisor.ast_field_decoders import TYPE_PARAMETERS
+from nominal_refactor_advisor.value_expression import CompactValueExpression
+from nominal_refactor_advisor.ast_tools import SourceModule
+from nominal_refactor_advisor.captured_reference import (
     AdmittedExecutionPrefixABC,
     CapturedReferenceKernel,
     CapturedNativeObject,
@@ -36,21 +36,21 @@ from .captured_reference import (
     CompletedSourceOperation,
     SourceDefinitionApplicationAuthorityABC,
 )
-from .call_binding import (
+from nominal_refactor_advisor.call_binding import (
     CompactCallArgument,
     CompactCallBinding,
     CompactFunctionParameter,
     CompactFunctionSignature,
 )
-from .descriptor_algebra import AliasProperty
-from .lexical_bindings import FunctionParameterSource
-from .native_class_mro import NativeClassMroDeclaration
-from .native_compilation import (
+from nominal_refactor_advisor.descriptor_algebra import AliasProperty
+from nominal_refactor_advisor.lexical_bindings import FunctionParameterSource
+from nominal_refactor_advisor.native_class_mro import NativeClassMroDeclaration
+from nominal_refactor_advisor.native_compilation import (
     CPythonClassConstruction,
     NativeCreationBackend,
     NativePythonCompilation,
 )
-from .native_declarations import (
+from nominal_refactor_advisor.native_declarations import (
     DataclassRuntimeDeclaration,
     NativeConstantContentsABC,
     NativeDeclaration,
@@ -58,8 +58,8 @@ from .native_declarations import (
     NativeParameterDefault,
     NativeDictionaryKey,
 )
-from .native_subscription import NativeArgumentInspection
-from .product_flow import (
+from nominal_refactor_advisor.native_subscription import NativeArgumentInspection
+from nominal_refactor_advisor.product_flow import (
     CompactBranchPredicateResolverABC,
     CompactCallableReferenceUse,
     CompactFlowContext,
@@ -70,11 +70,11 @@ from .product_flow import (
     CompactValueUse,
     SourceFlowOperation,
 )
-from .scan_cache import ScanCache
-from .registry_identity import mro_registry_value
+from nominal_refactor_advisor.scan_cache import ScanCache
+from nominal_refactor_advisor.registry_identity import mro_registry_value
 
 if TYPE_CHECKING:
-    from .native_reference import NativeReferenceEnvironment
+    from nominal_refactor_advisor.native_reference import NativeReferenceEnvironment
 
 
 @dataclass(frozen=True, eq=False)

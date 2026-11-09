@@ -7,38 +7,46 @@ from dataclasses import dataclass
 from functools import cached_property
 from typing import cast
 
-from .class_family_collection import ClassFamilyCollectionFactory
-from ..assignment_projection import SingleAssignmentAndValueNameProjection
-from .semantic_mirror import (
+from nominal_refactor_advisor.refactors.class_family_collection import (
+    ClassFamilyCollectionFactory,
+)
+from nominal_refactor_advisor.assignment_projection import (
+    SingleAssignmentAndValueNameProjection,
+)
+from nominal_refactor_advisor.refactors.semantic_mirror import (
     MappingSemanticMirrorRecipeBuilder,
     SemanticMirrorOperationTargets,
 )
-from .class_base import ClassAuthorityReferenceProof
-from .carrier_fields import ClassDeclarationPromotionClass
-from .authority_extraction import SourceDerivedAuthorityProjectionOperation
-from ..codemod_authority_claims import AstTargetAuthorityClaim
-from ..codemod_declaration_source import ClassBodySourceAuthority
-from ..codemod_runtime import (
+from nominal_refactor_advisor.refactors.class_base import ClassAuthorityReferenceProof
+from nominal_refactor_advisor.refactors.carrier_fields import (
+    ClassDeclarationPromotionClass,
+)
+from nominal_refactor_advisor.refactors.authority_extraction import (
+    SourceDerivedAuthorityProjectionOperation,
+)
+from nominal_refactor_advisor.codemod_authority_claims import AstTargetAuthorityClaim
+from nominal_refactor_advisor.codemod_declaration_source import ClassBodySourceAuthority
+from nominal_refactor_advisor.codemod_runtime import (
     CodemodSourceSnapshot,
     RefactorRecipe,
 )
-from ..codemod_selection_context import (
+from nominal_refactor_advisor.codemod_selection_context import (
     CodemodSelectorContext,
     ResolvedClassTarget,
 )
-from ..codemod_selector_models import SourceRewriteTarget
-from ..codemod_source_edits import (
+from nominal_refactor_advisor.codemod_selector_models import SourceRewriteTarget
+from nominal_refactor_advisor.codemod_source_edits import (
     NominalSourceEdit,
     SourceInsertion,
     SourceLineSpan,
     SourceSpanReplacement,
     SourceTargetEditor,
 )
-from ..lexical_bindings import LEXICAL_SCOPE_BINDING_AUTHORITY
-from ..models import RefactorFinding
-from ..refactor_concepts import DerivedProjectionConcept
-from ..semantic_descent import SemanticAuthorityKind
-from ..source_index import AstTargetDigest
+from nominal_refactor_advisor.lexical_bindings import LEXICAL_SCOPE_BINDING_AUTHORITY
+from nominal_refactor_advisor.models import RefactorFinding
+from nominal_refactor_advisor.refactor_concepts import DerivedProjectionConcept
+from nominal_refactor_advisor.semantic_descent import SemanticAuthorityKind
+from nominal_refactor_advisor.source_index import AstTargetDigest
 
 
 @dataclass(frozen=True)

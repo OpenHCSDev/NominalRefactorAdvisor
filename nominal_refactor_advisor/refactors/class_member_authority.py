@@ -13,41 +13,41 @@ from dataclasses import (
 )
 from functools import cached_property
 
-from ..annotation_semantics import StringizedAnnotationSurface
-from ..ast_tools import (
+from nominal_refactor_advisor.annotation_semantics import StringizedAnnotationSurface
+from nominal_refactor_advisor.ast_tools import (
     EagerNameLoadCollector,
     statements_without_docstring,
 )
-from ..class_families.parsed_index import IndexedClass
-from ..class_member_lookup import (
+from nominal_refactor_advisor.class_families.parsed_index import IndexedClass
+from nominal_refactor_advisor.class_member_lookup import (
     ClassMemberLookupProof,
     ClassNamespaceDelta,
 )
-from ..class_method_facets import (
+from nominal_refactor_advisor.class_method_facets import (
     ClassMethodPromotionSafetyProfile,
     ClassMethodReceiverRequirements,
 )
-from ..class_symbols import ClassSymbolResolutionAuthority
-from ..codemod_authority_claims import AstTargetAuthorityClaim
-from ..codemod_declaration_source import (
+from nominal_refactor_advisor.class_symbols import ClassSymbolResolutionAuthority
+from nominal_refactor_advisor.codemod_authority_claims import AstTargetAuthorityClaim
+from nominal_refactor_advisor.codemod_declaration_source import (
     ClassBodySourceAuthority,
     ClassHeaderSpanSourceAuthority,
 )
-from ..codemod_paths import SourcePathResolutionAuthority
-from ..codemod_payload import (
+from nominal_refactor_advisor.codemod_paths import SourcePathResolutionAuthority
+from nominal_refactor_advisor.codemod_payload import (
     PayloadRecordValueCodec,
     RequiredStringPayloadValueCodec,
     StringArrayPayloadValueCodec,
     codemod_payload_field,
 )
-from ..codemod_reproof import RepositorySourceReprovedOperation
-from ..codemod_runtime import CodemodSourceSnapshot
-from ..codemod_selection_context import (
+from nominal_refactor_advisor.codemod_reproof import RepositorySourceReprovedOperation
+from nominal_refactor_advisor.codemod_runtime import CodemodSourceSnapshot
+from nominal_refactor_advisor.codemod_selection_context import (
     CodemodSelectorContext,
     ResolvedClassTarget,
 )
-from ..codemod_selector_models import SourceRewriteTarget
-from ..codemod_source_edits import (
+from nominal_refactor_advisor.codemod_selector_models import SourceRewriteTarget
+from nominal_refactor_advisor.codemod_source_edits import (
     Include,
     PhysicalSourceEdit,
     SourceInsertion,
@@ -58,30 +58,32 @@ from ..codemod_source_edits import (
     SourceTargetEditor,
     SourceTextGeometry,
 )
-from ..codemod_statement_source import (
+from nominal_refactor_advisor.codemod_statement_source import (
     StatementDeletionSource,
     StatementSource,
 )
-from ..exact_field_authority import ExactDataclassFieldAuthorityComponent
-from ..exact_method_authority import (
+from nominal_refactor_advisor.exact_field_authority import (
+    ExactDataclassFieldAuthorityComponent,
+)
+from nominal_refactor_advisor.exact_method_authority import (
     ExactLeafMethodAncestorPromotionComponent,
     ExactMethodRoleComponent,
     ParallelMirroredLeafFamilyComponent,
 )
-from ..foreign_family import FunctionDefinition
-from ..lexical_bindings import LEXICAL_SCOPE_BINDING_AUTHORITY
-from ..semantic_descent import (
+from nominal_refactor_advisor.foreign_family import FunctionDefinition
+from nominal_refactor_advisor.lexical_bindings import LEXICAL_SCOPE_BINDING_AUTHORITY
+from nominal_refactor_advisor.semantic_descent import (
     AuthorityClaim,
     SemanticAuthorityKind,
 )
-from ..semantic_match import loaded_concrete_nominal_descendants
-from ..source_index import (
+from nominal_refactor_advisor.semantic_match import loaded_concrete_nominal_descendants
+from nominal_refactor_advisor.source_index import (
     AstTargetDigest,
     AstTargetNode,
     AstTargetNodeKind,
     SourceIndex,
 )
-from ..source_native_mro import SourceNativeClassMro
+from nominal_refactor_advisor.source_native_mro import SourceNativeClassMro
 
 
 @dataclass(frozen=True, kw_only=True)

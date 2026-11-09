@@ -17,9 +17,16 @@ from functools import cache, cached_property
 from pathlib import Path
 from typing import ClassVar
 
-from .family import Family
-from .lexical import ModuleScope
-from .measures import Measured, MeasuredRevisions, ParseOutcome, Tally, Unparsed, scoped
+from nominal_refactor_advisor.audit.family import Family
+from nominal_refactor_advisor.audit.lexical import ModuleScope
+from nominal_refactor_advisor.audit.measures import (
+    Measured,
+    MeasuredRevisions,
+    ParseOutcome,
+    Tally,
+    Unparsed,
+    scoped,
+)
 
 
 class GitError(RuntimeError):

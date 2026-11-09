@@ -7,34 +7,34 @@ from dataclasses import dataclass, field
 from functools import cached_property
 from itertools import combinations
 
-from .ast_projection import ExpressionReference
-from .ast_projection import (
+from nominal_refactor_advisor.ast_projection import ExpressionReference
+from nominal_refactor_advisor.ast_projection import (
     CallKeywords,
     NoStatementValue,
     StatementValue,
     StatementValueQuestion,
     SuppliedValue,
 )
-from .ast_tools import (
+from nominal_refactor_advisor.ast_tools import (
     ModuleAnnotationEvaluationMode,
     ParsedModule,
 )
-from .class_families.parsed_index import (
+from nominal_refactor_advisor.class_families.parsed_index import (
     ClassFamilyIndex,
     IndexedClass,
     build_class_family_index,
 )
-from .class_index import (
+from nominal_refactor_advisor.class_index import (
     ClassBodyModuleScope,
     ClassBodyNormalForm,
     CompactDataclassFieldRole,
     ModuleNominalBindingSnapshot,
 )
-from .collection_algebra import sorted_tuple
-from .foreign_family import FunctionDefinition
-from .lexical_bindings import LEXICAL_SCOPE_BINDING_AUTHORITY
-from .native_declarations import DataclassRuntimeDeclaration
-from .source_geometry import (
+from nominal_refactor_advisor.collection_algebra import sorted_tuple
+from nominal_refactor_advisor.foreign_family import FunctionDefinition
+from nominal_refactor_advisor.lexical_bindings import LEXICAL_SCOPE_BINDING_AUTHORITY
+from nominal_refactor_advisor.native_declarations import DataclassRuntimeDeclaration
+from nominal_refactor_advisor.source_geometry import (
     ClassHeaderSourceSpan,
     SourceCommentLineIndex,
     SourceLineSegmentAuthority,

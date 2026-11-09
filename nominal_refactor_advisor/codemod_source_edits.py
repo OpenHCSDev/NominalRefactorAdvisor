@@ -40,9 +40,11 @@ from typing import (
     cast,
 )
 
-from .case_root import Case
-from .codemod_paths import SourceCreationPathAuthority as SourceCreationPathAuthority
-from .codemod_payload import (
+from nominal_refactor_advisor.case_root import Case
+from nominal_refactor_advisor.codemod_paths import (
+    SourceCreationPathAuthority as SourceCreationPathAuthority,
+)
+from nominal_refactor_advisor.codemod_payload import (
     CodemodPayloadRecord,
     DataclassPayloadProjection,
     EmptyDefaultStringPayloadValueCodec,
@@ -52,29 +54,31 @@ from .codemod_payload import (
     RequiredStringPayloadValueCodec,
     codemod_payload_field,
 )
-from .codemod_semantics import RewriteOperation
-from .codemod_spacing import SourceInsertionBoundary
-from .collection_algebra import sorted_tuple
-from .json_reports import (
+from nominal_refactor_advisor.codemod_semantics import RewriteOperation
+from nominal_refactor_advisor.codemod_spacing import SourceInsertionBoundary
+from nominal_refactor_advisor.collection_algebra import sorted_tuple
+from nominal_refactor_advisor.json_reports import (
     DataclassJsonReport,
     json_report_field,
     json_report_property,
 )
-from .source_geometry import (
+from nominal_refactor_advisor.source_geometry import (
     SourceByteSpan,
     SourceLineSegmentAuthority,
     read_source_text,
 )
-from .source_identity import python_source_cache_signature
-from .source_index import (
+from nominal_refactor_advisor.source_identity import python_source_cache_signature
+from nominal_refactor_advisor.source_index import (
     AstTargetDigest,
     SourceIndex,
     SourceTargetSpan,
 )
 
 if TYPE_CHECKING:
-    from .codemod_operations import RefactorRecipeOperation
-    from .codemod_selection_context import CodemodSelectorContext
+    from nominal_refactor_advisor.codemod_operations import RefactorRecipeOperation
+    from nominal_refactor_advisor.codemod_selection_context import (
+        CodemodSelectorContext,
+    )
 
 
 class SourceNodeDecoratorPolicy(Case):

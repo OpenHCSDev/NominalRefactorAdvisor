@@ -13,40 +13,44 @@ from typing import ClassVar, cast
 
 from metaclass_registry import AutoRegisterMeta
 
-from .assignment_projection import (
+from nominal_refactor_advisor.assignment_projection import (
     AssignmentStatementNameProjection,
     SingleAssignmentAndValueNameProjection,
 )
-from .ast_tools import (
+from nominal_refactor_advisor.ast_tools import (
     ParsedModule,
     REGISTERED_TYPE_LINEAGE,
     SharedRegistryRootBase,
     is_docstring_statement,
 )
-from .codemod_declaration_source import NamedDeclarationSourceAuthority
-from .codemod_import_bindings import (
+from nominal_refactor_advisor.codemod_declaration_source import (
+    NamedDeclarationSourceAuthority,
+)
+from nominal_refactor_advisor.codemod_import_bindings import (
     FromModuleImportBindingIdentity as FromModuleImportBindingIdentity,
 )
-from .codemod_import_bindings import (
+from nominal_refactor_advisor.codemod_import_bindings import (
     ModuleImportBinding as ModuleImportBinding,
 )
-from .codemod_import_bindings import (
+from nominal_refactor_advisor.codemod_import_bindings import (
     ModuleImportBindingIdentity as ModuleImportBindingIdentity,
 )
-from .codemod_import_graph import SourceModuleImportGraph as SourceModuleImportGraph
-from .codemod_import_scopes import (
+from nominal_refactor_advisor.codemod_import_graph import (
+    SourceModuleImportGraph as SourceModuleImportGraph,
+)
+from nominal_refactor_advisor.codemod_import_scopes import (
     ModuleImportScope as ModuleImportScope,
 )
-from .codemod_import_scopes import (
+from nominal_refactor_advisor.codemod_import_scopes import (
     TypeCheckingGuardProjection as TypeCheckingGuardProjection,
 )
-from .codemod_imports import (
+from nominal_refactor_advisor.codemod_imports import (
     ModuleImportInsertionPoint as ModuleImportInsertionPoint,
 )
-from .codemod_imports import (
+from nominal_refactor_advisor.codemod_imports import (
     RequestedImportStatement as RequestedImportStatement,
 )
-from .codemod_source_edits import (
+from nominal_refactor_advisor.codemod_source_edits import (
     DocumentedNodeSpan,
     Include,
     SourceLineSpan,
@@ -55,23 +59,23 @@ from .codemod_source_edits import (
     SourceTextGeometry,
     SourceTextSpan,
 )
-from .codemod_spacing import SourceInsertionBoundary
-from .declaration_dependencies import (
+from nominal_refactor_advisor.codemod_spacing import SourceInsertionBoundary
+from nominal_refactor_advisor.declaration_dependencies import (
     DeclarationDependencyProjection,
     ModuleLexicalDependencyProjection,
     MovableDeclaration,
 )
-from .lexical_bindings import (
+from nominal_refactor_advisor.lexical_bindings import (
     ImportAlias as ImportAlias,
     ImportBoundNameProjection,
     LEXICAL_SCOPE_BINDING_AUTHORITY,
 )
-from .public_exports import (
+from nominal_refactor_advisor.public_exports import (
     ModulePublicExportSourceAuthority,
     module_public_export_contract,
 )
-from .semantic_match import single_item
-from .source_index import SourceFileDigest
+from nominal_refactor_advisor.semantic_match import single_item
+from nominal_refactor_advisor.source_index import SourceFileDigest
 
 _PYTHON_RUNTIME_GLOBAL_NAMES = frozenset(
     (

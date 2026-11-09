@@ -6,8 +6,10 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Callable, ClassVar, Iterator
 
-from ..refactors.finding_recipes import SemanticMirrorFindingRecipeEvaluator
-from ._base import (
+from nominal_refactor_advisor.refactors.finding_recipes import (
+    SemanticMirrorFindingRecipeEvaluator,
+)
+from nominal_refactor_advisor.detectors._base import (
     CompactClassIndexMultiProjectionDetector,
     CompactFindingStream,
     CompactProjectionGroups,
@@ -18,18 +20,18 @@ from ._base import (
     high_confidence_spec,
     high_confidence_certified_spec,
 )
-from ..ast_tools import ParsedModule, ParsedModuleSet
-from ..class_index import (
+from nominal_refactor_advisor.ast_tools import ParsedModule, ParsedModuleSet
+from nominal_refactor_advisor.class_index import (
     CompactClassFamilyIndex,
     CompactModuleClassProjectionFamily,
 )
-from ..models import (
+from nominal_refactor_advisor.models import (
     RefactorFinding,
     MappingMetrics,
     SemanticMirrorMetricRelation,
 )
-from ..patterns import PatternId
-from ..semantic_descent import (
+from nominal_refactor_advisor.patterns import PatternId
+from nominal_refactor_advisor.semantic_descent import (
     CompactSemanticDescentRepository,
     CompactSemanticModuleProjectionFamily,
     MirrorEdge,
@@ -43,7 +45,7 @@ from ..semantic_descent import (
     SemanticFact,
     normalized_name_variants,
 )
-from ..taxonomy import CapabilityTag, ObservationTag
+from nominal_refactor_advisor.taxonomy import CapabilityTag, ObservationTag
 
 
 class AliasOverlapClassKeySourceResolver:

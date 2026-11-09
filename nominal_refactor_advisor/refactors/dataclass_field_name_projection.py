@@ -3,8 +3,10 @@ from __future__ import annotations
 import ast
 from dataclasses import dataclass
 
-from .function_projection_targets import ResolvedFunctionProjectionTarget
-from .dataclass_projection import (
+from nominal_refactor_advisor.refactors.function_projection_targets import (
+    ResolvedFunctionProjectionTarget,
+)
+from nominal_refactor_advisor.refactors.dataclass_projection import (
     DataclassAuthorityMappingRecipeBuilder,
     DataclassFieldNameCollectionProjectionTarget,
     DataclassPayloadAuthorityTarget,
@@ -14,19 +16,21 @@ from .dataclass_projection import (
     SourceDerivedDataclassProjectionOperation,
     SourceDerivedDataclassProjectionRecipeParts,
 )
-from .semantic_mirror import SemanticMirrorRecipeSeedLocations
-from ..codemod_selection_context import CodemodSelectorContext
-from ..codemod_selector_models import SourceRewriteTarget
-from ..codemod_source_edits import (
+from nominal_refactor_advisor.refactors.semantic_mirror import (
+    SemanticMirrorRecipeSeedLocations,
+)
+from nominal_refactor_advisor.codemod_selection_context import CodemodSelectorContext
+from nominal_refactor_advisor.codemod_selector_models import SourceRewriteTarget
+from nominal_refactor_advisor.codemod_source_edits import (
     SourceTextGeometry,
     SourceTextReplacement,
     SourceTextSpan,
 )
-from ..models import (
+from nominal_refactor_advisor.models import (
     MappingMetrics,
     RefactorFinding,
 )
-from ..refactor_concepts import DataclassPayloadProjectionConcept
+from nominal_refactor_advisor.refactor_concepts import DataclassPayloadProjectionConcept
 
 
 @dataclass(frozen=True)

@@ -7,18 +7,18 @@ from abc import (
 from dataclasses import dataclass
 from typing import ClassVar
 
-from ..codemod_declaration_source import (
+from nominal_refactor_advisor.codemod_declaration_source import (
     DeclarationDecoratorsSourceAuthority,
     DeclarationRegionSourceAuthority,
 )
-from ..codemod_payload import (
+from nominal_refactor_advisor.codemod_payload import (
     EmptyDefaultStringPayloadValueCodec,
     codemod_payload_field,
 )
-from ..codemod_reproof import SourceReprovedOperation
-from ..codemod_runtime import CodemodSourceSnapshot
-from ..codemod_source_edits import PhysicalSourceEdit
-from ..descriptor_algebra import AliasProperty
+from nominal_refactor_advisor.codemod_reproof import SourceReprovedOperation
+from nominal_refactor_advisor.codemod_runtime import CodemodSourceSnapshot
+from nominal_refactor_advisor.codemod_source_edits import PhysicalSourceEdit
+from nominal_refactor_advisor.descriptor_algebra import AliasProperty
 
 
 @dataclass(frozen=True, kw_only=True)

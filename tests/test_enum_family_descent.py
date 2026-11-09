@@ -575,7 +575,7 @@ def test_cases_family_hands_back_an_enum_imported_inside_a_function(
     )
 
 
-def test_cases_family_spells_the_case_import_as_its_package_does(
+def test_cases_family_names_its_import_absolutely_and_keeps_the_authors(
     tmp_path: Path,
 ) -> None:
     package = tmp_path / "nominal_refactor_advisor"
@@ -602,7 +602,7 @@ def test_cases_family_spells_the_case_import_as_its_package_does(
     family = simulation.simulation.rewritten_sources[(package / "need.py").as_posix()]
     assert family.startswith(
         "from dataclasses import dataclass\n\n"
-        "from .case_root import Case\n"
+        "from nominal_refactor_advisor.case_root import Case\n\n"
         "from .helper import THING\n"
     )
     assert "class Need(Case):\n" in family

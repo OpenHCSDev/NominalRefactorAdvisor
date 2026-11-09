@@ -16,47 +16,49 @@ from typing import (
 )
 
 
-from .refactors.mapping_observation import RequireDictionaryCopyMappingOperation as RequireDictionaryCopyMappingOperation
-from .refactors.declaration_operations import (
+from nominal_refactor_advisor.refactors.mapping_observation import (
+    RequireDictionaryCopyMappingOperation as RequireDictionaryCopyMappingOperation,
+)
+from nominal_refactor_advisor.refactors.declaration_operations import (
     DeclarationDecoratorsPayload as DeclarationDecoratorsPayload,
     DeclarationMutationOperationABC as DeclarationMutationOperationABC,
     ReplaceDeclarationDecoratorsOperation as ReplaceDeclarationDecoratorsOperation,
 )
-from .codemod_statement_source import PythonBlockSource
-from .refactors.class_operations import (
+from nominal_refactor_advisor.codemod_statement_source import PythonBlockSource
+from nominal_refactor_advisor.refactors.class_operations import (
     InsertClassMemberOperation as InsertClassMemberOperation,
     RemoveFieldMetadataKeywordsOperation as RemoveFieldMetadataKeywordsOperation,
     PruneFieldMetadataKeywordsOperation as PruneFieldMetadataKeywordsOperation,
 )
-from .refactors.assignment_operations import (
+from nominal_refactor_advisor.refactors.assignment_operations import (
     AssignmentReplacementOperationABC as AssignmentReplacementOperationABC,
     ReplaceModuleAssignmentOperation as ReplaceModuleAssignmentOperation,
     ReplaceScopeAssignmentOperation as ReplaceScopeAssignmentOperation,
 )
-from .ast_projection import CallKeywords
-from .ast_tools import ROOT_NAME_PROJECTION
-from .cancelable_composition import (
+from nominal_refactor_advisor.ast_projection import CallKeywords
+from nominal_refactor_advisor.ast_tools import ROOT_NAME_PROJECTION
+from nominal_refactor_advisor.cancelable_composition import (
     CancelableCompositionKind as CancelableCompositionKind,
 )
-from .cancelable_composition import (
+from nominal_refactor_advisor.cancelable_composition import (
     CancelableCompositionSignal as CancelableCompositionSignal,
 )
-from .cancelable_composition import (
+from nominal_refactor_advisor.cancelable_composition import (
     CancelableCompositionSignalTargetAuthority as CancelableCompositionSignalTargetAuthority,
 )
-from .cancelable_composition import (
+from nominal_refactor_advisor.cancelable_composition import (
     ProductForwardCallAuthority as ProductForwardCallAuthority,
 )
-from .cancelable_composition import (
+from nominal_refactor_advisor.cancelable_composition import (
     ProductForwardFieldProjection as ProductForwardFieldProjection,
 )
-from .cancelable_composition import (
+from nominal_refactor_advisor.cancelable_composition import (
     ProductForwardIdentity as ProductForwardIdentity,
 )
-from .cancelable_composition import (
+from nominal_refactor_advisor.cancelable_composition import (
     detect_cancelable_composition_signals as detect_cancelable_composition_signals,
 )
-from .refactors.class_member_authority import (
+from nominal_refactor_advisor.refactors.class_member_authority import (
     ClassBaseAdditionReplacementPlan as ClassBaseAdditionReplacementPlan,
     ClassDeclarationPromotionStatement as ClassDeclarationPromotionStatement,
     ClassMemberDeletionReplacementPlan as ClassMemberDeletionReplacementPlan,
@@ -84,7 +86,7 @@ from .refactors.class_member_authority import (
     PromoteExactDataclassFieldsToExistingAuthorityOperation as PromoteExactDataclassFieldsToExistingAuthorityOperation,
     PromoteExactLeafMethodsToAncestorOperation as PromoteExactLeafMethodsToAncestorOperation,
 )
-from .refactors.function_operations import (
+from nominal_refactor_advisor.refactors.function_operations import (
     AliasFunctionOperation as AliasFunctionOperation,
     CallExpressionSourcePayload as CallExpressionSourcePayload,
     DeclaredCallMutationOperationABC as DeclaredCallMutationOperationABC,
@@ -105,21 +107,21 @@ from .refactors.function_operations import (
     ProjectStaticCallsToAdapterOperation as ProjectStaticCallsToAdapterOperation,
     RouteForeignFamilyFilterOperation as RouteForeignFamilyFilterOperation,
 )
-from .codemod_operations import (
+from nominal_refactor_advisor.codemod_operations import (
     RefactorRecipeOperation as RefactorRecipeOperation,
     SourcePayloadOperation as SourcePayloadOperation,
 )
-from .refactors.call_declarations import (
+from nominal_refactor_advisor.refactors.call_declarations import (
     DeleteModuleCallDeclarationsOperation as DeleteModuleCallDeclarationsOperation,
     ModuleCallDeclaration as ModuleCallDeclaration,
     ModuleCallDeclarationSelector as ModuleCallDeclarationSelector,
 )
-from .codemod_reproof import (
+from nominal_refactor_advisor.codemod_reproof import (
     RepositorySourceReprovedOperation as RepositorySourceReprovedOperation,
     SourceReproofValueT as SourceReproofValueT,
     SourceReprovedOperation as SourceReprovedOperation,
 )
-from .codemod_runtime import (
+from nominal_refactor_advisor.codemod_runtime import (
     ARCHITECTURE_GUARDS_PAYLOAD_FIELD as ARCHITECTURE_GUARDS_PAYLOAD_FIELD,
     CodemodAfterSnapshotProjection as CodemodAfterSnapshotProjection,
     CodemodDocumentSimulationCarrier as CodemodDocumentSimulationCarrier,
@@ -183,7 +185,7 @@ from .codemod_runtime import (
     format_codemod_unified_diff as format_codemod_unified_diff,
     simulate_planned_rewrites as simulate_planned_rewrites,
 )
-from .codemod_target_selectors import (
+from nominal_refactor_advisor.codemod_target_selectors import (
     CallSiteSelector as CallSiteSelector,
     CallSiteTargetSelector as CallSiteTargetSelector,
     ClassFamilyTargetSelector as ClassFamilyTargetSelector,
@@ -196,62 +198,62 @@ from .codemod_target_selectors import (
     SourceIndexTargetSelector as SourceIndexTargetSelector,
     TargetSetExpressionSelector as TargetSetExpressionSelector,
 )
-from .class_index import ModuleNominalBindingAuthority
-from .codemod_architecture_guards import (
+from nominal_refactor_advisor.class_index import ModuleNominalBindingAuthority
+from nominal_refactor_advisor.codemod_architecture_guards import (
     ArchitectureGuardConstraint as ArchitectureGuardConstraint,
 )
-from .codemod_architecture_guards import (
+from nominal_refactor_advisor.codemod_architecture_guards import (
     ArchitectureGuardDispatchSiteKind as ArchitectureGuardDispatchSiteKind,
 )
-from .codemod_architecture_guards import (
+from nominal_refactor_advisor.codemod_architecture_guards import (
     ArchitectureGuardDispatchSubject as ArchitectureGuardDispatchSubject,
 )
-from .codemod_architecture_guards import (
+from nominal_refactor_advisor.codemod_architecture_guards import (
     ArchitectureGuardMatch as ArchitectureGuardMatch,
 )
-from .codemod_architecture_guards import (
+from nominal_refactor_advisor.codemod_architecture_guards import (
     ArchitectureGuardReport as ArchitectureGuardReport,
 )
-from .codemod_architecture_guards import (
+from nominal_refactor_advisor.codemod_architecture_guards import (
     ArchitectureGuardRule as ArchitectureGuardRule,
 )
-from .codemod_architecture_guards import (
+from nominal_refactor_advisor.codemod_architecture_guards import (
     ArchitectureGuardRuleResolution as ArchitectureGuardRuleResolution,
 )
-from .codemod_architecture_guards import (
+from nominal_refactor_advisor.codemod_architecture_guards import (
     ArchitectureGuardSuite as ArchitectureGuardSuite,
 )
-from .codemod_architecture_guards import (
+from nominal_refactor_advisor.codemod_architecture_guards import (
     ArchitectureGuardSuitePayloadValueCodec as ArchitectureGuardSuitePayloadValueCodec,
 )
-from .codemod_architecture_guards import (
+from nominal_refactor_advisor.codemod_architecture_guards import (
     ArchitectureGuardTargetScope as ArchitectureGuardTargetScope,
 )
-from .codemod_architecture_guards import (
+from nominal_refactor_advisor.codemod_architecture_guards import (
     ArchitectureGuardViolation as ArchitectureGuardViolation,
 )
-from .codemod_architecture_guards import (
+from nominal_refactor_advisor.codemod_architecture_guards import (
     ArchitectureGuardViolationTarget as ArchitectureGuardViolationTarget,
 )
-from .codemod_architecture_guards import (
+from nominal_refactor_advisor.codemod_architecture_guards import (
     ForbiddenAttributeArchitectureGuardConstraint as ForbiddenAttributeArchitectureGuardConstraint,
 )
-from .codemod_architecture_guards import (
+from nominal_refactor_advisor.codemod_architecture_guards import (
     ForbiddenCallArchitectureGuardConstraint as ForbiddenCallArchitectureGuardConstraint,
 )
-from .codemod_architecture_guards import (
+from nominal_refactor_advisor.codemod_architecture_guards import (
     ForbiddenDispatchArchitectureGuardConstraint as ForbiddenDispatchArchitectureGuardConstraint,
 )
-from .codemod_architecture_guards import (
+from nominal_refactor_advisor.codemod_architecture_guards import (
     ForbiddenNameArchitectureGuardConstraint as ForbiddenNameArchitectureGuardConstraint,
 )
-from .codemod_architecture_guards import (
+from nominal_refactor_advisor.codemod_architecture_guards import (
     ResolvedArchitectureGuardTargetScope as ResolvedArchitectureGuardTargetScope,
 )
-from .codemod_architecture_guards import (
+from nominal_refactor_advisor.codemod_architecture_guards import (
     evaluate_architecture_guards as evaluate_architecture_guards,
 )
-from .codemod_declaration_source import (
+from nominal_refactor_advisor.codemod_declaration_source import (
     ClassBodySourceAuthority as ClassBodySourceAuthority,
     ClassMemberInsertion as ClassMemberInsertion,
     ClassMemberSource as ClassMemberSource,
@@ -265,194 +267,196 @@ from .codemod_declaration_source import (
     FunctionSuiteLayout as FunctionSuiteLayout,
     FunctionSuiteSourceAuthority as FunctionSuiteSourceAuthority,
 )
-from .codemod_declaration_source import (
+from nominal_refactor_advisor.codemod_declaration_source import (
     ClassHeaderSpanSourceAuthority as ClassHeaderSpanSourceAuthority,
 )
-from .codemod_declaration_source import (
+from nominal_refactor_advisor.codemod_declaration_source import (
     ClassSourceAuthority as ClassSourceAuthority,
 )
-from .codemod_declaration_source import (
+from nominal_refactor_advisor.codemod_declaration_source import (
     NamedDeclarationSourceAuthority as NamedDeclarationSourceAuthority,
 )
-from .codemod_declaration_source import (
+from nominal_refactor_advisor.codemod_declaration_source import (
     FunctionBodySourceAuthority as FunctionBodySourceAuthority,
     FunctionBodyPrefixSourceAuthority as FunctionBodyPrefixSourceAuthority,
     FunctionDecoratorsSourceAuthority as FunctionDecoratorsSourceAuthority,
     FunctionSignatureSourceAuthority as FunctionSignatureSourceAuthority,
 )
-from .codemod_declaration_source import (
+from nominal_refactor_advisor.codemod_declaration_source import (
     PythonExpressionSourceFormatter as PythonExpressionSourceFormatter,
 )
-from .codemod_import_bindings import (
+from nominal_refactor_advisor.codemod_import_bindings import (
     DirectModuleImportBindingIdentity as DirectModuleImportBindingIdentity,
 )
-from .codemod_import_bindings import (
+from nominal_refactor_advisor.codemod_import_bindings import (
     FromModuleImportBindingIdentity as FromModuleImportBindingIdentity,
 )
-from .codemod_import_bindings import (
+from nominal_refactor_advisor.codemod_import_bindings import (
     ModuleImportBinding as ModuleImportBinding,
 )
-from .codemod_import_bindings import (
+from nominal_refactor_advisor.codemod_import_bindings import (
     ModuleImportBindingIdentity as ModuleImportBindingIdentity,
 )
-from .codemod_import_graph import SourceModuleImportGraph as SourceModuleImportGraph
-from .codemod_import_scopes import (
+from nominal_refactor_advisor.codemod_import_graph import (
+    SourceModuleImportGraph as SourceModuleImportGraph,
+)
+from nominal_refactor_advisor.codemod_import_scopes import (
     ModuleImportScope as ModuleImportScope,
 )
-from .codemod_import_scopes import (
+from nominal_refactor_advisor.codemod_import_scopes import (
     TypeCheckingGuardProjection as TypeCheckingGuardProjection,
 )
-from .codemod_import_scopes import (
+from nominal_refactor_advisor.codemod_import_scopes import (
     TypeCheckingGuardReference as TypeCheckingGuardReference,
 )
-from .codemod_imports import (
+from nominal_refactor_advisor.codemod_imports import (
     ImportBlockInsertionPointABC as ImportBlockInsertionPointABC,
     ImportSourceGroup as ImportSourceGroup,
 )
-from .codemod_imports import (
+from nominal_refactor_advisor.codemod_imports import (
     ImportBoundNameRemoval as ImportBoundNameRemoval,
 )
-from .codemod_imports import (
+from nominal_refactor_advisor.codemod_imports import (
     AfterPreviousImport as AfterPreviousImport,
     ImportInsertionSlot as ImportInsertionSlot,
     StartOfNextFamily as StartOfNextFamily,
 )
-from .codemod_imports import (
+from nominal_refactor_advisor.codemod_imports import (
     ImportFromSource as ImportFromSource,
 )
-from .codemod_imports import (
+from nominal_refactor_advisor.codemod_imports import (
     ImportNameRemoval as ImportNameRemoval,
 )
-from .codemod_imports import (
+from nominal_refactor_advisor.codemod_imports import (
     ModuleImportInsertionPoint as ModuleImportInsertionPoint,
 )
-from .codemod_imports import (
+from nominal_refactor_advisor.codemod_imports import (
     ModuleImportMutation as ModuleImportMutation,
 )
-from .codemod_imports import (
+from nominal_refactor_advisor.codemod_imports import (
     RequestedImportBlock as RequestedImportBlock,
 )
-from .codemod_imports import (
+from nominal_refactor_advisor.codemod_imports import (
     RequestedImportStatement as RequestedImportStatement,
 )
-from .codemod_imports import (
+from nominal_refactor_advisor.codemod_imports import (
     TypeCheckingGuardImportInsertionPoint as TypeCheckingGuardImportInsertionPoint,
 )
-from .codemod_module_declarations import (
+from nominal_refactor_advisor.codemod_module_declarations import (
     _AVAILABLE_WITHOUT_IMPORT as _AVAILABLE_WITHOUT_IMPORT,
 )
-from .codemod_module_declarations import (
+from nominal_refactor_advisor.codemod_module_declarations import (
     _PYTHON_RUNTIME_GLOBAL_NAMES as _PYTHON_RUNTIME_GLOBAL_NAMES,
 )
-from .codemod_module_declarations import (
+from nominal_refactor_advisor.codemod_module_declarations import (
     AssignedSourceTopLevelDeclaration as AssignedSourceTopLevelDeclaration,
 )
-from .codemod_module_declarations import (
+from nominal_refactor_advisor.codemod_module_declarations import (
     ModuleSymbolTable as ModuleSymbolTable,
 )
-from .codemod_module_declarations import (
+from nominal_refactor_advisor.codemod_module_declarations import (
     MovedTopLevelDeclarationSource as MovedTopLevelDeclarationSource,
 )
-from .codemod_module_declarations import (
+from nominal_refactor_advisor.codemod_module_declarations import (
     NamedSourceTopLevelDeclaration as NamedSourceTopLevelDeclaration,
     TypeAliasSourceTopLevelDeclaration as TypeAliasSourceTopLevelDeclaration,
 )
-from .codemod_module_declarations import (
+from nominal_refactor_advisor.codemod_module_declarations import (
     SourceTopLevelDeclaration as SourceTopLevelDeclaration,
 )
-from .codemod_module_declarations import (
+from nominal_refactor_advisor.codemod_module_declarations import (
     SourceTopLevelDeclarationIndex as SourceTopLevelDeclarationIndex,
 )
-from .codemod_module_declarations import (
+from nominal_refactor_advisor.codemod_module_declarations import (
     SourceTopLevelSymbolMoveSelection as SourceTopLevelSymbolMoveSelection,
 )
-from .codemod_module_move_reports import (
+from nominal_refactor_advisor.codemod_module_move_reports import (
     ModuleMoveDependencyReport as ModuleMoveDependencyReport,
 )
-from .codemod_module_move_reports import (
+from nominal_refactor_advisor.codemod_module_move_reports import (
     ModuleMoveImportDependency as ModuleMoveImportDependency,
 )
-from .codemod_module_move_reports import (
+from nominal_refactor_advisor.codemod_module_move_reports import (
     ModuleMoveObstacle as ModuleMoveObstacle,
 )
-from .codemod_module_move_reports import (
+from nominal_refactor_advisor.codemod_module_move_reports import (
     ModuleMoveObstacleKind as ModuleMoveObstacleKind,
 )
-from .codemod_module_move_reports import (
+from nominal_refactor_advisor.codemod_module_move_reports import (
     ModuleMoveSourceLocalDependency as ModuleMoveSourceLocalDependency,
 )
-from .codemod_module_move_reports import (
+from nominal_refactor_advisor.codemod_module_move_reports import (
     ModuleMoveSourceLocalDependencyResolution as ModuleMoveSourceLocalDependencyResolution,
 )
-from .codemod_paths import (
+from nominal_refactor_advisor.codemod_paths import (
     ExactSourcePathResolution as ExactSourcePathResolution,
 )
-from .codemod_paths import (
+from nominal_refactor_advisor.codemod_paths import (
     NormalizedSourcePathResolution as NormalizedSourcePathResolution,
 )
-from .codemod_paths import (
+from nominal_refactor_advisor.codemod_paths import (
     RelativeSuffixSourcePathResolution as RelativeSuffixSourcePathResolution,
 )
-from .codemod_paths import (
+from nominal_refactor_advisor.codemod_paths import (
     ResolvedSourcePathResolution as ResolvedSourcePathResolution,
 )
-from .codemod_paths import (
+from nominal_refactor_advisor.codemod_paths import (
     SourceCreationPathAuthority as SourceCreationPathAuthority,
 )
-from .codemod_paths import (
+from nominal_refactor_advisor.codemod_paths import (
     SourcePathCandidateAuthority as SourcePathCandidateAuthority,
 )
-from .codemod_paths import (
+from nominal_refactor_advisor.codemod_paths import (
     SourcePathCandidateSet as SourcePathCandidateSet,
 )
-from .codemod_paths import (
+from nominal_refactor_advisor.codemod_paths import (
     SourcePathResolutionAuthority as SourcePathResolutionAuthority,
 )
-from .codemod_paths import (
+from nominal_refactor_advisor.codemod_paths import (
     _source_path_candidate_set as _source_path_candidate_set,
 )
-from .codemod_payload import (
+from nominal_refactor_advisor.codemod_payload import (
     PayloadRecordArrayValueCodec,
     RequiredStringPayloadValueCodec,
     codemod_payload_field,
 )
-from .codemod_preflight import (
+from nominal_refactor_advisor.codemod_preflight import (
     CodemodOperationPreflightError as CodemodOperationPreflightError,
 )
-from .codemod_preflight import (
+from nominal_refactor_advisor.codemod_preflight import (
     CodemodOperationPreflightReport as CodemodOperationPreflightReport,
 )
-from .codemod_preflight import (
+from nominal_refactor_advisor.codemod_preflight import (
     CodemodPlanPreflightReport as CodemodPlanPreflightReport,
 )
-from .codemod_semantics import (
+from nominal_refactor_advisor.codemod_semantics import (
     CodemodBackend as CodemodBackend,
 )
-from .codemod_semantics import (
+from nominal_refactor_advisor.codemod_semantics import (
     CodemodPreflightStatus as CodemodPreflightStatus,
 )
-from .codemod_semantics import (
+from nominal_refactor_advisor.codemod_semantics import (
     CodemodSourceDependencyScope as CodemodSourceDependencyScope,
 )
-from .codemod_semantics import (
+from nominal_refactor_advisor.codemod_semantics import (
     CompleteFindingRecipePlanningHorizon as CompleteFindingRecipePlanningHorizon,
 )
-from .codemod_semantics import (
+from nominal_refactor_advisor.codemod_semantics import (
     CurrentSnapshotFindingRecipePlanningHorizon as CurrentSnapshotFindingRecipePlanningHorizon,
 )
-from .codemod_semantics import (
+from nominal_refactor_advisor.codemod_semantics import (
     FindingRecipePlanningHorizon as FindingRecipePlanningHorizon,
 )
-from .codemod_semantics import (
+from nominal_refactor_advisor.codemod_semantics import (
     FindingRecipeSynthesisDisposition as FindingRecipeSynthesisDisposition,
 )
-from .codemod_semantics import (
+from nominal_refactor_advisor.codemod_semantics import (
     FindingRecipeSynthesisStatus as FindingRecipeSynthesisStatus,
 )
-from .codemod_semantics import (
+from nominal_refactor_advisor.codemod_semantics import (
     RewriteOperation as RewriteOperation,
 )
-from .codemod_source_edits import (
+from nominal_refactor_advisor.codemod_source_edits import (
     CoalescedSourceWindow as CoalescedSourceWindow,
     CodemodSourceRevision as CodemodSourceRevision,
     ExactSourceEditResolution as ExactSourceEditResolution,
@@ -471,89 +475,89 @@ from .codemod_source_edits import (
     SourceRewriteDelta as SourceRewriteDelta,
     SourceTextMutation as SourceTextMutation,
 )
-from .codemod_source_edits import (
+from nominal_refactor_advisor.codemod_source_edits import (
     CodemodSourceRevisionError as CodemodSourceRevisionError,
 )
-from .codemod_source_edits import (
+from nominal_refactor_advisor.codemod_source_edits import (
     NominalSourceEdit as NominalSourceEdit,
 )
-from .codemod_source_edits import (
+from nominal_refactor_advisor.codemod_source_edits import (
     PhysicalSourceEdit as PhysicalSourceEdit,
 )
-from .codemod_source_edits import (
+from nominal_refactor_advisor.codemod_source_edits import (
     PhysicalSourceEditConflictError as PhysicalSourceEditConflictError,
 )
-from .codemod_source_edits import (
+from nominal_refactor_advisor.codemod_source_edits import (
     ReplacementSource as ReplacementSource,
 )
-from .codemod_source_edits import (
+from nominal_refactor_advisor.codemod_source_edits import (
     SourceEditOrigin as SourceEditOrigin,
 )
-from .codemod_source_edits import (
+from nominal_refactor_advisor.codemod_source_edits import (
     SourceFileCreation as SourceFileCreation,
     SourceFileDeletion as SourceFileDeletion,
     TextFileEdit as TextFileEdit,
     TextFileRewrite as TextFileRewrite,
 )
-from .codemod_source_edits import (
+from nominal_refactor_advisor.codemod_source_edits import (
     SourceInsertion as SourceInsertion,
 )
-from .codemod_source_edits import (
+from nominal_refactor_advisor.codemod_source_edits import (
     SourceLineSpan as SourceLineSpan,
 )
-from .codemod_source_edits import (
+from nominal_refactor_advisor.codemod_source_edits import (
     Exclude as Exclude,
     Include as Include,
     SourceNodeDecoratorPolicy as SourceNodeDecoratorPolicy,
 )
-from .codemod_source_edits import (
+from nominal_refactor_advisor.codemod_source_edits import (
     SourceNodeSpan as SourceNodeSpan,
 )
-from .codemod_source_edits import (
+from nominal_refactor_advisor.codemod_source_edits import (
     SourceRewriteContributor as SourceRewriteContributor,
 )
-from .codemod_source_edits import (
+from nominal_refactor_advisor.codemod_source_edits import (
     SourceSpanDeletion as SourceSpanDeletion,
 )
-from .codemod_source_edits import (
+from nominal_refactor_advisor.codemod_source_edits import (
     SourceSpanEdit as SourceSpanEdit,
 )
-from .codemod_source_edits import (
+from nominal_refactor_advisor.codemod_source_edits import (
     SourceSpanReplacement as SourceSpanReplacement,
 )
-from .codemod_source_edits import (
+from nominal_refactor_advisor.codemod_source_edits import (
     SourceTargetEditor as SourceTargetEditor,
 )
-from .codemod_source_edits import (
+from nominal_refactor_advisor.codemod_source_edits import (
     SourceTextGeometry as SourceTextGeometry,
 )
-from .codemod_source_edits import (
+from nominal_refactor_advisor.codemod_source_edits import (
     SourceTextPatch as SourceTextPatch,
 )
-from .codemod_source_edits import (
+from nominal_refactor_advisor.codemod_source_edits import (
     SourceTextReplacement as SourceTextReplacement,
 )
-from .codemod_source_edits import (
+from nominal_refactor_advisor.codemod_source_edits import (
     SourceTextSpan as SourceTextSpan,
 )
-from .codemod_source_edits import (
+from nominal_refactor_advisor.codemod_source_edits import (
     SourceTextSpanReplacement as SourceTextSpanReplacement,
 )
-from .codemod_source_edits import (
+from nominal_refactor_advisor.codemod_source_edits import (
     _joined_rationales as _joined_rationales,
 )
-from .finding_recipe_actions import (
+from nominal_refactor_advisor.finding_recipe_actions import (
     FindingRecipeActionIdentity as FindingRecipeActionIdentity,
 )
-from .finding_recipe_actions import (
+from nominal_refactor_advisor.finding_recipe_actions import (
     FindingRecipeActionKey as FindingRecipeActionKey,
 )
-from .lexical_bindings import (
+from nominal_refactor_advisor.lexical_bindings import (
     ImportAlias as ImportAlias,
     ImportFromModuleName as ImportFromModuleName,
 )
-from .lexical_scopes import FunctionBindingProjection
-from .refactors.module_move import (
+from nominal_refactor_advisor.lexical_scopes import FunctionBindingProjection
+from nominal_refactor_advisor.refactors.module_move import (
     DependencyClosureModuleSymbolSelectionOperationABC as DependencyClosureModuleSymbolSelectionOperationABC,
     ExistingModuleSymbolMoveOperationABC as ExistingModuleSymbolMoveOperationABC,
     ExplicitModuleSymbolSelectionOperationABC as ExplicitModuleSymbolSelectionOperationABC,
@@ -573,25 +577,27 @@ from .refactors.module_move import (
     SourceTopLevelSymbolClosureMovePlan as SourceTopLevelSymbolClosureMovePlan,
     SourceTopLevelSymbolClosureMoveRequest as SourceTopLevelSymbolClosureMoveRequest,
 )
-from .refactors.projection_descent import TypedMirror as TypedMirror
-from .source_index import (
+from nominal_refactor_advisor.refactors.projection_descent import (
+    TypedMirror as TypedMirror,
+)
+from nominal_refactor_advisor.source_index import (
     AstTargetNode,
     CodemodSourceIndexReport as CodemodSourceIndexReport,
     IndexedSourceAuthority as IndexedSourceAuthority,
 )
-from .source_index import (
+from nominal_refactor_advisor.source_index import (
     AstTargetGeometryKey as AstTargetGeometryKey,
 )
-from .source_index import (
+from nominal_refactor_advisor.source_index import (
     SourceTargetIdentity as SourceTargetIdentity,
 )
-from .source_index import (
+from nominal_refactor_advisor.source_index import (
     SourceTargetIdentityValueT as SourceTargetIdentityValueT,
 )
-from .source_index import (
+from nominal_refactor_advisor.source_index import (
     SourceTargetSpan as SourceTargetSpan,
 )
-from .refactor_concepts import (
+from nominal_refactor_advisor.refactor_concepts import (
     AutoRegisterClassRegistryConcept as AutoRegisterClassRegistryConcept,
     AutoRegisterConcept as AutoRegisterConcept,
     AutoRegisterMroOrderingConcept as AutoRegisterMroOrderingConcept,
@@ -613,7 +619,7 @@ from .refactor_concepts import (
     SemanticCarrierConcept as SemanticCarrierConcept,
     TupleDictReturnNominalizationConcept as TupleDictReturnNominalizationConcept,
 )
-from .codemod_selector_models import (
+from nominal_refactor_advisor.codemod_selector_models import (
     CallSiteDigest as CallSiteDigest,
     CodemodTargetSelection as CodemodTargetSelection,
     NodeKindArrayPayloadValueCodec as NodeKindArrayPayloadValueCodec,
@@ -625,7 +631,7 @@ from .codemod_selector_models import (
     SourceRewriteTargetPreflightDetail as SourceRewriteTargetPreflightDetail,
     SourceRewriteTargetReference as SourceRewriteTargetReference,
 )
-from .codemod_authority_claims import (
+from nominal_refactor_advisor.codemod_authority_claims import (
     AstTargetAuthorityClaim as AstTargetAuthorityClaim,
     AuthorityClaimContextPreflightDetail as AuthorityClaimContextPreflightDetail,
     AuthorityClaimDeclarationPreflightDetail as AuthorityClaimDeclarationPreflightDetail,
@@ -636,7 +642,7 @@ from .codemod_authority_claims import (
     CodemodPlanEvidenceLocation as CodemodPlanEvidenceLocation,
     SourceCreationConflictPreflightDetail as SourceCreationConflictPreflightDetail,
 )
-from .codemod_selection_context import (
+from nominal_refactor_advisor.codemod_selection_context import (
     ClassDirectDeclarationIndex as ClassDirectDeclarationIndex,
     CodemodSelectorContext as CodemodSelectorContext,
     ResolvedClassTarget as ResolvedClassTarget,

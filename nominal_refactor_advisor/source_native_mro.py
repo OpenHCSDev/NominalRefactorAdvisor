@@ -11,17 +11,20 @@ from dataclasses import (
 from functools import cached_property
 from graphlib import CycleError, TopologicalSorter
 
-from .binding_proofs import RepositoryModuleBindingProof
-from .class_families.parsed_index import IndexedClass
-from .class_index import CLASS_METHOD_OWNERSHIP_HOOK_NAMES
-from .class_member_lookup import ClassMemberLookupProof, ClassNamespaceDelta
-from .class_mro import DeclarationMroType, NativeMroBase
-from .class_symbols import ClassSymbolResolutionAuthority
-from .collection_algebra import UniqueIdentityIndexAuthority
-from .codemod_selection_context import CodemodSelectorContext
-from .native_class_mro import NativeClassMroDeclaration
-from .native_declarations import QualifiedDeclaration
-from .source_geometry import SourceByteSpan
+from nominal_refactor_advisor.binding_proofs import RepositoryModuleBindingProof
+from nominal_refactor_advisor.class_families.parsed_index import IndexedClass
+from nominal_refactor_advisor.class_index import CLASS_METHOD_OWNERSHIP_HOOK_NAMES
+from nominal_refactor_advisor.class_member_lookup import (
+    ClassMemberLookupProof,
+    ClassNamespaceDelta,
+)
+from nominal_refactor_advisor.class_mro import DeclarationMroType, NativeMroBase
+from nominal_refactor_advisor.class_symbols import ClassSymbolResolutionAuthority
+from nominal_refactor_advisor.collection_algebra import UniqueIdentityIndexAuthority
+from nominal_refactor_advisor.codemod_selection_context import CodemodSelectorContext
+from nominal_refactor_advisor.native_class_mro import NativeClassMroDeclaration
+from nominal_refactor_advisor.native_declarations import QualifiedDeclaration
+from nominal_refactor_advisor.source_geometry import SourceByteSpan
 
 
 @dataclass(frozen=True)

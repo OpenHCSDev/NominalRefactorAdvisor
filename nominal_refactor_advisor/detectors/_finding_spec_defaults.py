@@ -5,9 +5,9 @@ from __future__ import annotations
 import ast
 from dataclasses import dataclass, replace
 
-from ..ast_projection import ExpressionReference
-from ..ast_tools import ParsedModule
-from ._base import (
+from nominal_refactor_advisor.ast_projection import ExpressionReference
+from nominal_refactor_advisor.ast_tools import ParsedModule
+from nominal_refactor_advisor.detectors._base import (
     FindingSpecConstructionCandidate,
     FindingSpecFactory,
     FindingSpecSemanticDefaults,
@@ -16,7 +16,7 @@ from ._base import (
     finding_spec_factory_for_constructor_name,
     finding_spec_factory_for_defaults,
 )
-from ..ast_projection import StatementValues, single_name_targets
+from nominal_refactor_advisor.ast_projection import StatementValues, single_name_targets
 
 
 @dataclass(frozen=True)

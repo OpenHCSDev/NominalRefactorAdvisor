@@ -16,14 +16,14 @@ from pathlib import Path
 from time import perf_counter
 from typing import Generic, TypeVar, cast
 
-from .analysis import analyze_modules
-from .ast_tools import parse_python_modules
-from .collection_algebra import sorted_tuple
-from .detectors._base import DetectorConfig
-from .economics import ScanEconomicsProof
-from .finding_counts import FindingDetectorCount, FindingSummary
-from .planner import build_refactor_plans
-from .json_reports import (
+from nominal_refactor_advisor.analysis import analyze_modules
+from nominal_refactor_advisor.ast_tools import parse_python_modules
+from nominal_refactor_advisor.collection_algebra import sorted_tuple
+from nominal_refactor_advisor.detectors._base import DetectorConfig
+from nominal_refactor_advisor.economics import ScanEconomicsProof
+from nominal_refactor_advisor.finding_counts import FindingDetectorCount, FindingSummary
+from nominal_refactor_advisor.planner import build_refactor_plans
+from nominal_refactor_advisor.json_reports import (
     SemanticRecord,
     DataclassJsonReport,
     json_report_field,

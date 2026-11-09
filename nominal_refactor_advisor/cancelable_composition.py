@@ -16,11 +16,11 @@ from enum import StrEnum
 from functools import reduce
 from typing import ClassVar
 
-from .ast_projection import ExpressionReference
-from .ast_tools import FunctionDefinitionNode
-from .collection_algebra import sorted_tuple
-from .semantic_match import Maybe
-from .source_index import (
+from nominal_refactor_advisor.ast_projection import ExpressionReference
+from nominal_refactor_advisor.ast_tools import FunctionDefinitionNode
+from nominal_refactor_advisor.collection_algebra import sorted_tuple
+from nominal_refactor_advisor.semantic_match import Maybe
+from nominal_refactor_advisor.source_index import (
     AstTargetDigest,
     AstTargetNodeIndex,
     SourceIndex,

@@ -7,40 +7,44 @@ from abc import (
 )
 from dataclasses import dataclass
 
-from ..ast_tools import ParsedModule
-from ..class_authority_collapse import (
+from nominal_refactor_advisor.ast_tools import ParsedModule
+from nominal_refactor_advisor.class_authority_collapse import (
     IntermediateClassAuthorityCollapseProof,
     RedundantClassAuthorityCollapseProof,
 )
-from ..class_families.parsed_index import ModuleClassReferenceResolver
-from ..class_index import declared_nominal_base_count
-from .target_deletion import DeleteTargetOperation
-from ..codemod_authority_claims import AstTargetAuthorityClaim
-from ..codemod_declaration_source import ClassHeaderSpanSourceAuthority
-from ..codemod_imports import ModuleImportMutation
-from ..codemod_module_declarations import ModuleSymbolTable
-from ..codemod_payload import (
+from nominal_refactor_advisor.class_families.parsed_index import (
+    ModuleClassReferenceResolver,
+)
+from nominal_refactor_advisor.class_index import declared_nominal_base_count
+from nominal_refactor_advisor.refactors.target_deletion import DeleteTargetOperation
+from nominal_refactor_advisor.codemod_authority_claims import AstTargetAuthorityClaim
+from nominal_refactor_advisor.codemod_declaration_source import (
+    ClassHeaderSpanSourceAuthority,
+)
+from nominal_refactor_advisor.codemod_imports import ModuleImportMutation
+from nominal_refactor_advisor.codemod_module_declarations import ModuleSymbolTable
+from nominal_refactor_advisor.codemod_payload import (
     PayloadRecordValueCodec,
     RequiredStringPayloadValueCodec,
     codemod_payload_field,
 )
-from ..codemod_reproof import (
+from nominal_refactor_advisor.codemod_reproof import (
     RepositorySourceReprovedOperation,
     SourceReprovedOperation,
 )
-from ..codemod_runtime import CodemodSourceSnapshot
-from ..codemod_selection_context import (
+from nominal_refactor_advisor.codemod_runtime import CodemodSourceSnapshot
+from nominal_refactor_advisor.codemod_selection_context import (
     CodemodSelectorContext,
     ResolvedClassTarget,
 )
-from ..codemod_selector_models import SourceRewriteTarget
-from ..codemod_source_edits import (
+from nominal_refactor_advisor.codemod_selector_models import SourceRewriteTarget
+from nominal_refactor_advisor.codemod_source_edits import (
     NominalSourceEdit,
     PhysicalSourceEdit,
 )
-from ..codemod_target_selectors import ClassFamilyTargetSelector
-from ..native_declarations import NativeDeclaration
-from ..semantic_descent import (
+from nominal_refactor_advisor.codemod_target_selectors import ClassFamilyTargetSelector
+from nominal_refactor_advisor.native_declarations import NativeDeclaration
+from nominal_refactor_advisor.semantic_descent import (
     AuthorityClaim,
     SemanticAuthorityKind,
 )

@@ -17,29 +17,29 @@ from collections.abc import Iterator
 from dataclasses import dataclass
 from typing import cast
 
-from .annotation_semantics import TypeWrapper
-from .ast_field_decoders import variadic_parameters
-from .ast_projection import ExpressionReference
-from .ast_tools import ParsedModule
-from .class_index import (
+from nominal_refactor_advisor.annotation_semantics import TypeWrapper
+from nominal_refactor_advisor.ast_field_decoders import variadic_parameters
+from nominal_refactor_advisor.ast_projection import ExpressionReference
+from nominal_refactor_advisor.ast_tools import ParsedModule
+from nominal_refactor_advisor.class_index import (
     ABSTRACT_METHOD_DECORATOR,
     PROPERTY_DECORATORS,
     ModuleNominalBindingAuthority,
     ModuleNominalBindingSnapshot,
 )
-from .class_symbols import ClassSymbolResolutionAuthority
-from .foreign_family import FunctionDefinition
-from .observation_families import ShapeFamily
-from .probe_owner import (
+from nominal_refactor_advisor.class_symbols import ClassSymbolResolutionAuthority
+from nominal_refactor_advisor.foreign_family import FunctionDefinition
+from nominal_refactor_advisor.observation_families import ShapeFamily
+from nominal_refactor_advisor.probe_owner import (
     ProbeOwner,
     ProbeOwnerResolver,
     UnresolvedProbeOwner,
 )
-from .restated_fact_observations import (
+from nominal_refactor_advisor.restated_fact_observations import (
     RestatingSiteFamily,
     RestatingSiteModule,
 )
-from .observation_shapes import RestatingSite
+from nominal_refactor_advisor.observation_shapes import RestatingSite
 
 def statements_of(scope: ast.AST) -> list[ast.stmt]:
     """The statement list of a module, class or def."""

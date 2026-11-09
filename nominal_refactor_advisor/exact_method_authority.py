@@ -9,8 +9,8 @@ from functools import cached_property
 from itertools import combinations
 from typing import ClassVar, Self
 
-from .ast_tools import ParsedModule
-from .class_index import (
+from nominal_refactor_advisor.ast_tools import ParsedModule
+from nominal_refactor_advisor.class_index import (
     CLASS_METHOD_OWNERSHIP_HOOK_NAMES,
     ClosedLeafMethodAuthorityProof,
     CompactClassFamilyIndex,
@@ -19,18 +19,18 @@ from .class_index import (
     CompactModuleClassProjectionFamily,
     build_compact_class_family_index,
 )
-from .class_method_facets import CompactClassMethod
-from .class_symbols import ClassSymbolResolutionAuthority
-from .collection_algebra import (
+from nominal_refactor_advisor.class_method_facets import CompactClassMethod
+from nominal_refactor_advisor.class_symbols import ClassSymbolResolutionAuthority
+from nominal_refactor_advisor.collection_algebra import (
     IdentityHandleMultiplicityProjection,
     UniqueIdentityIndexAuthority,
     sorted_tuple,
 )
-from .descriptor_algebra import CollectionAttributeProjection
-from .models import SourceLocation
-from .name_algebra import CLASS_NAME_ALGEBRA
-from .semantic_algebra import UndirectedGraph, VertexIndexEdge
-from .semantic_description_length import (
+from nominal_refactor_advisor.descriptor_algebra import CollectionAttributeProjection
+from nominal_refactor_advisor.models import SourceLocation
+from nominal_refactor_advisor.name_algebra import CLASS_NAME_ALGEBRA
+from nominal_refactor_advisor.semantic_algebra import UndirectedGraph, VertexIndexEdge
+from nominal_refactor_advisor.semantic_description_length import (
     CompressionCertificate,
     ExactMethodRoleCompressionProfile,
     ExistingAuthorityMethodPromotionCompressionProfile,

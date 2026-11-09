@@ -8,14 +8,14 @@ from dataclasses import dataclass
 from functools import cached_property
 from typing import cast
 
-from .ast_tools import (
+from nominal_refactor_advisor.ast_tools import (
     ModuleSyntaxIndex,
 )
 
-from .codemod_runtime import CodemodDocumentSimulationCarrier
-from .codemod_selector_models import SourceRewriteTarget
+from nominal_refactor_advisor.codemod_runtime import CodemodDocumentSimulationCarrier
+from nominal_refactor_advisor.codemod_selector_models import SourceRewriteTarget
 
-from .codemod_source_edits import (
+from nominal_refactor_advisor.codemod_source_edits import (
     Include,
     SourceNodeSpan,
     SourceRetainedSpanIndex,
@@ -23,12 +23,12 @@ from .codemod_source_edits import (
     SourceTextGeometry,
     SourceTextSpan,
 )
-from .collection_algebra import UniqueIdentityIndexAuthority
-from .product_flow import (
+from nominal_refactor_advisor.collection_algebra import UniqueIdentityIndexAuthority
+from nominal_refactor_advisor.product_flow import (
     SourceFlowOperation,
     SourceProductFlowProjection,
 )
-from .source_geometry import SourceByteSpan
+from nominal_refactor_advisor.source_geometry import SourceByteSpan
 
 
 @dataclass(frozen=True)

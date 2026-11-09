@@ -304,7 +304,7 @@ def test_scope_refactor_example_moves_consumers_and_preserves_identity(
     )
     assert result.returncode == 0, result.stdout + result.stderr
     assert (
-        "from .lexical_scopes import FunctionBindingProjection"
+        "from nominal_refactor_advisor.lexical_scopes import FunctionBindingProjection"
         in consumer.read_text(encoding="utf-8")
     )
     assert subprocess.check_output([sys.executable, str(probe)]) == before

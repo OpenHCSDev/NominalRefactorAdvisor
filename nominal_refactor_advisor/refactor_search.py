@@ -22,18 +22,25 @@ from dataclasses import dataclass, field, replace
 from difflib import SequenceMatcher
 from pathlib import Path
 
-from .amortization import IntrospectionSource, NoTrace
-from .refactors.finding_recipes import FindingRecipeSynthesizer
-from .codemod_architecture_guards import ArchitectureGuardSuite
-from .codemod_workflow import (
+from nominal_refactor_advisor.amortization import IntrospectionSource, NoTrace
+from nominal_refactor_advisor.refactors.finding_recipes import FindingRecipeSynthesizer
+from nominal_refactor_advisor.codemod_architecture_guards import ArchitectureGuardSuite
+from nominal_refactor_advisor.codemod_workflow import (
     CodemodRefactorGoalRunner,
     CodemodRefactorTrajectoryBudget,
     CodemodWorkflowScan,
 )
-from .detectors._base import DetectorConfig
-from .json_reports import SemanticRecord, json_report_field, json_report_property
-from .member_census import CensusCorpus, MemberAwarenessCensusBuilder
-from .refactor_concepts import RefactorConcept
+from nominal_refactor_advisor.detectors._base import DetectorConfig
+from nominal_refactor_advisor.json_reports import (
+    SemanticRecord,
+    json_report_field,
+    json_report_property,
+)
+from nominal_refactor_advisor.member_census import (
+    CensusCorpus,
+    MemberAwarenessCensusBuilder,
+)
+from nominal_refactor_advisor.refactor_concepts import RefactorConcept
 
 
 @dataclass(frozen=True)

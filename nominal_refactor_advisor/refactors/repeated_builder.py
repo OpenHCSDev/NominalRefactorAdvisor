@@ -24,44 +24,50 @@ from typing import (
     cast,
 )
 
-from ..annotation_semantics import NOMINAL_ANNOTATION_SOURCE_AUTHORITY
-from ..ast_field_decoders import declared_annotations
-from ..ast_projection import (
+from nominal_refactor_advisor.annotation_semantics import (
+    NOMINAL_ANNOTATION_SOURCE_AUTHORITY,
+)
+from nominal_refactor_advisor.ast_field_decoders import declared_annotations
+from nominal_refactor_advisor.ast_projection import (
     CallKeywords,
     ExpressionReference,
 )
-from ..ast_tools import (
+from nominal_refactor_advisor.ast_tools import (
     ROOT_NAME_PROJECTION,
     root_agnostic_expression_fingerprint,
     statements_without_docstring,
     walk_function_body_nodes,
 )
-from ..class_families.parsed_index import IndexedClass
-from ..class_method_facets import ClassMethodReceiverRequirements
-from .finding_recipes import FindingRecipeSynthesizer
-from .function_projection_targets import ResolvedFunctionProjectionTarget
-from .dataclass_projection import (
+from nominal_refactor_advisor.class_families.parsed_index import IndexedClass
+from nominal_refactor_advisor.class_method_facets import ClassMethodReceiverRequirements
+from nominal_refactor_advisor.refactors.finding_recipes import FindingRecipeSynthesizer
+from nominal_refactor_advisor.refactors.function_projection_targets import (
+    ResolvedFunctionProjectionTarget,
+)
+from nominal_refactor_advisor.refactors.dataclass_projection import (
     DataclassAuthorityReferenceProof,
     DataclassPayloadAuthorityTarget,
 )
-from .authority_extraction import SourceDerivedAuthorityProjectionOperation
-from ..codemod import NominalConstructorCall
-from ..codemod_authority_claims import AstTargetAuthorityClaim
-from ..codemod_declaration_source import (
+from nominal_refactor_advisor.refactors.authority_extraction import (
+    SourceDerivedAuthorityProjectionOperation,
+)
+from nominal_refactor_advisor.codemod import NominalConstructorCall
+from nominal_refactor_advisor.codemod_authority_claims import AstTargetAuthorityClaim
+from nominal_refactor_advisor.codemod_declaration_source import (
     ClassBodySourceAuthority,
     PythonExpressionSourceFormatter,
 )
-from ..codemod_paths import SourcePathResolutionAuthority
-from ..codemod_runtime import (
+from nominal_refactor_advisor.codemod_paths import SourcePathResolutionAuthority
+from nominal_refactor_advisor.codemod_runtime import (
     DelegatedRecipeDeclaration,
     CodemodSourceSnapshot,
     ExecutableRecipeEvaluation,
     FindingRecipeEvaluation,
     RefactorRecipe,
 )
-from ..codemod_selection_context import CodemodSelectorContext
-from ..codemod_selector_models import SourceRewriteTarget
-from ..codemod_source_edits import (
+from nominal_refactor_advisor.codemod_selection_context import CodemodSelectorContext
+from nominal_refactor_advisor.codemod_selector_models import SourceRewriteTarget
+from nominal_refactor_advisor.codemod_source_edits import (
     NominalSourceEdit,
     SourceLineSpan,
     SourceSpanReplacement,
@@ -70,38 +76,38 @@ from ..codemod_source_edits import (
     SourceTextSpan,
     SourceTextSpanReplacement,
 )
-from ..codemod_target_selectors import SourceIndexTargetSelector
-from ..finding_recipe_actions import FindingRecipeActionKey
-from ..foreign_family import FunctionDefinition
-from ..json_reports import json_report_field
-from ..models import (
+from nominal_refactor_advisor.codemod_target_selectors import SourceIndexTargetSelector
+from nominal_refactor_advisor.finding_recipe_actions import FindingRecipeActionKey
+from nominal_refactor_advisor.foreign_family import FunctionDefinition
+from nominal_refactor_advisor.json_reports import json_report_field
+from nominal_refactor_advisor.models import (
     MappingMetrics,
     RefactorFinding,
     SourceLocation,
 )
-from ..name_algebra import CLASS_NAME_ALGEBRA
-from ..owner_candidates import (
+from nominal_refactor_advisor.name_algebra import CLASS_NAME_ALGEBRA
+from nominal_refactor_advisor.owner_candidates import (
     OwnerCandidate,
     OwnerCost,
     OwnerReceiptKind,
     ranked,
 )
-from ..receipts import Receipt
-from ..refactor_concepts import (
+from nominal_refactor_advisor.receipts import Receipt
+from nominal_refactor_advisor.refactor_concepts import (
     ConstructorKwargCarrierProjectionConcept,
     ConstructorKwargCollapseConcept,
     RefactorConcept,
 )
-from ..semantic_descent import (
+from nominal_refactor_advisor.semantic_descent import (
     AuthorityClaimCarrier,
     SemanticAuthorityKind,
 )
-from ..semantic_match import (
+from nominal_refactor_advisor.semantic_match import (
     AstNameTemplateMatch,
     Maybe,
     single_item,
 )
-from ..source_index import (
+from nominal_refactor_advisor.source_index import (
     AstTargetDigest,
     AstTargetNodeKind,
 )

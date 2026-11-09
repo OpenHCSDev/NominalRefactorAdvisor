@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from .receipts import ReceiptKind
+from nominal_refactor_advisor.receipts import ReceiptKind
 
 
 class OverlapReceiptKind(ReceiptKind):

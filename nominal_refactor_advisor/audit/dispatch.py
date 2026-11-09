@@ -9,9 +9,14 @@ from collections.abc import Iterator
 
 from metaclass_registry.mro_dispatch import MroDispatch, handles
 
-from .handler_declarations import BuiltinHandlerDeclarations
-from .measures import NodeCount
-from .gate import PerFileModuleMeasure, PerFileOccurrenceMeasure
+from nominal_refactor_advisor.audit.handler_declarations import (
+    BuiltinHandlerDeclarations,
+)
+from nominal_refactor_advisor.audit.measures import NodeCount
+from nominal_refactor_advisor.audit.gate import (
+    PerFileModuleMeasure,
+    PerFileOccurrenceMeasure,
+)
 
 
 class MatchArms:

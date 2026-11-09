@@ -7,17 +7,17 @@ from dataclasses import dataclass
 from functools import cached_property
 from typing import ClassVar
 
-from ..codemod_runtime import CodemodSourceSnapshot
-from ..codemod_selection_context import ResolvedClassTarget
-from ..lexical_bindings import LEXICAL_SCOPE_BINDING_AUTHORITY
-from ..lexical_bindings import ImportBoundNameProjection
-from ..module_node_index import ModuleNodeIndex
-from ..probe_owner import (
+from nominal_refactor_advisor.codemod_runtime import CodemodSourceSnapshot
+from nominal_refactor_advisor.codemod_selection_context import ResolvedClassTarget
+from nominal_refactor_advisor.lexical_bindings import LEXICAL_SCOPE_BINDING_AUTHORITY
+from nominal_refactor_advisor.lexical_bindings import ImportBoundNameProjection
+from nominal_refactor_advisor.module_node_index import ModuleNodeIndex
+from nominal_refactor_advisor.probe_owner import (
     InferredReceiverType,
     ProbeOwnerResolver,
     ReceiverSpan,
 )
-from ..type_checker_session import (
+from nominal_refactor_advisor.type_checker_session import (
     SourceTexts,
     TypeCheckerSession,
 )

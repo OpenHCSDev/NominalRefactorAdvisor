@@ -24,7 +24,7 @@ from time import perf_counter
 from abc import ABC, abstractmethod
 from typing import ClassVar, Generic, TypeVar, cast
 
-from .analysis_cache import (
+from nominal_refactor_advisor.analysis_cache import (
     CachedSourceFileSignature,
     AnalysisCacheFamilyIdentity,
     AnalysisCacheIdentity,
@@ -45,12 +45,15 @@ from .analysis_cache import (
     PerModuleDetectorFindingBundle,
     SourceFileSignatureCache,
 )
-from .collection_algebra import DeferredBatchSequence
-from .python_module_identity import PythonModulePathIdentity
-from .scan_cache import ScanCache
-from .type_checker_session import TypeCheckerTiming, TypeCheckerTimingLedger
-from .source_geometry import read_source_text
-from .ast_tools import (
+from nominal_refactor_advisor.collection_algebra import DeferredBatchSequence
+from nominal_refactor_advisor.python_module_identity import PythonModulePathIdentity
+from nominal_refactor_advisor.scan_cache import ScanCache
+from nominal_refactor_advisor.type_checker_session import (
+    TypeCheckerTiming,
+    TypeCheckerTimingLedger,
+)
+from nominal_refactor_advisor.source_geometry import read_source_text
+from nominal_refactor_advisor.ast_tools import (
     CollectedFamily,
     CollectedFamilyCacheContext,
     CollectedFamilyContentSignatureIndex,
@@ -70,31 +73,46 @@ from .ast_tools import (
     semantic_python_source_hash,
     suspend_cyclic_gc,
 )
-from .cache_paths import (
+from nominal_refactor_advisor.cache_paths import (
     ParseCacheDirectory,
     analysis_cache_sibling,
     default_analysis_cache_dir,
     semantic_descent_cache_sibling,
 )
-from .cache_checkout import (
+from nominal_refactor_advisor.cache_checkout import (
     absolute_checkout_path,
     lexical_absolute_path,
 )
-from .class_index import (
+from nominal_refactor_advisor.class_index import (
     CompactClassFamilyIndex,
     CompactClassProjectionDemand,
     CompactModuleClassProjection,
     CompactModuleClassProjectionFamily,
 )
-from .ast_tools import ParsedModuleSet
-from .detectors._base import (CompactClassRepositoryContext, CompactFindingStream, CompactModuleProjectionDetectorMixin, CompactMultiModuleProjectionDetectorMixin, CompactProjectionContextBuilder, CompactProjectionGroupContextBuilder, CompactProjectionGroups, ContextualGlobalCacheContract, ContextualModuleIssueDetector, DetectorCacheGranularity, DetectorConfig, IssueDetector, SemanticDescentGraphIssueDetector, SourceLocalIssueDetectorMixin)
-from .detectors._surface import default_detectors
-from .deadline import scan_deadline_checkpoint
-from .lean_export import findings_from_lean_export_path
-from .models import RefactorFinding, RefactorPlan
-from .native_syntax import NativePythonSyntaxIndex
-from .planner import build_refactor_plans
-from .semantic_descent import (
+from nominal_refactor_advisor.ast_tools import ParsedModuleSet
+from nominal_refactor_advisor.detectors._base import (
+    CompactClassRepositoryContext,
+    CompactFindingStream,
+    CompactModuleProjectionDetectorMixin,
+    CompactMultiModuleProjectionDetectorMixin,
+    CompactProjectionContextBuilder,
+    CompactProjectionGroupContextBuilder,
+    CompactProjectionGroups,
+    ContextualGlobalCacheContract,
+    ContextualModuleIssueDetector,
+    DetectorCacheGranularity,
+    DetectorConfig,
+    IssueDetector,
+    SemanticDescentGraphIssueDetector,
+    SourceLocalIssueDetectorMixin,
+)
+from nominal_refactor_advisor.detectors._surface import default_detectors
+from nominal_refactor_advisor.deadline import scan_deadline_checkpoint
+from nominal_refactor_advisor.lean_export import findings_from_lean_export_path
+from nominal_refactor_advisor.models import RefactorFinding, RefactorPlan
+from nominal_refactor_advisor.native_syntax import NativePythonSyntaxIndex
+from nominal_refactor_advisor.planner import build_refactor_plans
+from nominal_refactor_advisor.semantic_descent import (
     CompactSemanticModuleProjection,
     CompactSemanticModuleProjectionFamily,
     SemanticDescentGraph,
@@ -104,7 +122,7 @@ from .semantic_descent import (
     build_compact_semantic_descent_graph,
     build_semantic_descent_graph,
 )
-from .source_identity import (
+from nominal_refactor_advisor.source_identity import (
     PACKAGE_INIT_FILE_NAME,
     python_source_cache_signature,
     resolved_source_path_text,

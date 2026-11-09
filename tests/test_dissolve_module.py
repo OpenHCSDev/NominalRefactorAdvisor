@@ -330,7 +330,9 @@ def test_relocation_redirects_a_function_local_import(tmp_path: Path) -> None:
     simulation.apply()
 
     consumer = (tmp_path / "pkg/consumer.py").read_text()
-    assert "    from .moved import Moved\n    from pkg.source import Kept\n" in consumer
+    assert (
+        "    from pkg.moved import Moved\n    from pkg.source import Kept\n" in consumer
+    )
     imported = _run(tmp_path, "from pkg.consumer import read; assert read()[0] == 3")
     assert imported.returncode == 0, imported.stderr
 
@@ -664,7 +666,7 @@ def test_mentions_of_a_module_already_gone_follow_its_successor(tmp_path: Path) 
     )
 
 
-def test_a_moved_bodys_relative_import_is_rebased_for_its_new_package(tmp_path: Path) -> None:
+def test_a_moved_bodys_relative_import_names_its_module_at_the_new_package(tmp_path: Path) -> None:
     _write(tmp_path, "pkg/__init__.py", "")
     _write(tmp_path, "pkg/sub/__init__.py", "")
     _write(tmp_path, "pkg/actions.py", "class Action:\n    value = 5\n")
@@ -689,7 +691,7 @@ def test_a_moved_bodys_relative_import_is_rebased_for_its_new_package(tmp_path: 
     )
     assert simulation.is_clean, simulation.preflight_report
     simulation.apply()
-    assert "from ..actions import Action  # noqa: local" in (tmp_path / "pkg/sub/moved.py").read_text()
+    assert "from pkg.actions import Action  # noqa: local" in (tmp_path / "pkg/sub/moved.py").read_text()
     ran = _run(tmp_path, "from pkg.sub.moved import Moved; assert Moved().act() == 5")
     assert ran.returncode == 0, ran.stderr
 
@@ -919,7 +921,7 @@ def test_a_script_entry_imports_what_another_module_declares_and_refuses_an_unbo
     )
     assert simulation.is_clean
     other = simulation.simulation.rewritten_sources[(tmp_path / "pkg/other.py").as_posix()]
-    assert "from .owner import main\n" in other
+    assert "from pkg.owner import main\n" in other
     assert other.endswith('if __name__ == "__main__":\n    main()\n')
 
     _write(tmp_path, "pkg/hub.py", 'from .owner import main\n\nif __name__ == "__main__":\n    missing(main)\n')

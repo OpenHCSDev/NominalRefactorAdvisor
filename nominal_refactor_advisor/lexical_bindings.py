@@ -20,12 +20,14 @@ from typing import (
     TypeVar,
 )
 
-from .assignment_projection import AssignmentTargetNameProjection
-from .ast_field_decoders import (
+from nominal_refactor_advisor.assignment_projection import (
+    AssignmentTargetNameProjection,
+)
+from nominal_refactor_advisor.ast_field_decoders import (
     capture_names,
     declared_annotations,
 )
-from .python_module_identity import PythonModulePathIdentity
+from nominal_refactor_advisor.python_module_identity import PythonModulePathIdentity
 
 
 class CompactParameterKind(StrEnum):

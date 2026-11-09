@@ -11,24 +11,27 @@ from functools import cached_property
 from pathlib import Path
 from typing import Generic, TypeAlias, TypeVar
 
-from .ast_tools import (
+from nominal_refactor_advisor.ast_tools import (
     ClassFunctionStackNodeVisitor,
     ParsedModule,
     ParsedModuleFact,
     PythonModulePathAuthority,
 )
-from .collection_algebra import UniqueIdentityIndexAuthority, sorted_tuple
-from .json_reports import (
+from nominal_refactor_advisor.collection_algebra import (
+    UniqueIdentityIndexAuthority,
+    sorted_tuple,
+)
+from nominal_refactor_advisor.json_reports import (
     DataclassJsonReport,
     json_report_field,
     json_report_property,
 )
-from .models import (
+from nominal_refactor_advisor.models import (
     RefactorFinding,
     SourceLocation,
     stable_source_location_id,
 )
-from .python_module_identity import PythonModulePathIdentity
+from nominal_refactor_advisor.python_module_identity import PythonModulePathIdentity
 
 SourceTargetIdentityValueT = TypeVar(
     "SourceTargetIdentityValueT",

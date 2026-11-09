@@ -17,19 +17,21 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from functools import cached_property
 
-from ..class_families.parsed_index import ModuleClassReferenceResolver
-from ..codemod_payload import (
+from nominal_refactor_advisor.class_families.parsed_index import (
+    ModuleClassReferenceResolver,
+)
+from nominal_refactor_advisor.codemod_payload import (
     CodemodPayloadRecord,
     PayloadRecordArrayValueCodec,
     PayloadRecordValueCodec,
     RequiredStringPayloadValueCodec,
     codemod_payload_field,
 )
-from ..codemod_reproof import RepositorySourceReprovedOperation
-from ..codemod_runtime import CodemodSourceSnapshot
-from ..codemod_selection_context import ResolvedClassTarget
-from ..codemod_selector_models import SourceRewriteTarget
-from ..codemod_source_edits import (
+from nominal_refactor_advisor.codemod_reproof import RepositorySourceReprovedOperation
+from nominal_refactor_advisor.codemod_runtime import CodemodSourceSnapshot
+from nominal_refactor_advisor.codemod_selection_context import ResolvedClassTarget
+from nominal_refactor_advisor.codemod_selector_models import SourceRewriteTarget
+from nominal_refactor_advisor.codemod_source_edits import (
     NominalSourceEdit,
     PhysicalSourceEdit,
     SourceTextGeometry,

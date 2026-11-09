@@ -14,8 +14,8 @@ from time import monotonic, sleep, time
 from types import TracebackType
 from typing import BinaryIO, Generic, TypeAlias, TypeVar
 
-from .interpreter import PythonVersion
-from .ast_tools import (
+from nominal_refactor_advisor.interpreter import PythonVersion
+from nominal_refactor_advisor.ast_tools import (
     CollectedFamily,
     FileStat,
     ParsedModule,
@@ -24,7 +24,7 @@ from .ast_tools import (
     semantic_python_source_hash,
     structural_ast_hash,
 )
-from .cache_checkout import (
+from nominal_refactor_advisor.cache_checkout import (
     CacheCheckoutPathError,
     CheckoutRelocation,
     checkout_relative_path,
@@ -34,20 +34,26 @@ from .cache_checkout import (
     rebase_checkout_path,
     semantic_root_labels,
 )
-from .case_root import Case
-from .detectors._base import (CompactModuleProjectionDetectorMixin, DetectorConfig, IssueDetector)
-from .finding_counts import FindingSummary
-from .implementation_identity import (
+from nominal_refactor_advisor.case_root import Case
+from nominal_refactor_advisor.detectors._base import (
+    CompactModuleProjectionDetectorMixin,
+    DetectorConfig,
+    IssueDetector,
+)
+from nominal_refactor_advisor.finding_counts import FindingSummary
+from nominal_refactor_advisor.implementation_identity import (
     ImplementationSource,
     declaration_implementation_module_names,
 )
-from .models import RefactorFinding, SourceLocation
-from .planner import RefactorExecutionPlanReport
-from .quoted_reference import DeclaredInterpreter
-from .scan_cache import ScanCache
-from .semantic_descent import SemanticDescentModuleFamilySignature
-from .source_geometry import read_source_text
-from .source_identity import python_source_cache_signature
+from nominal_refactor_advisor.models import RefactorFinding, SourceLocation
+from nominal_refactor_advisor.planner import RefactorExecutionPlanReport
+from nominal_refactor_advisor.quoted_reference import DeclaredInterpreter
+from nominal_refactor_advisor.scan_cache import ScanCache
+from nominal_refactor_advisor.semantic_descent import (
+    SemanticDescentModuleFamilySignature,
+)
+from nominal_refactor_advisor.source_geometry import read_source_text
+from nominal_refactor_advisor.source_identity import python_source_cache_signature
 
 
 @dataclass(frozen=True)

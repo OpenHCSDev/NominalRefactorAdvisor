@@ -6,10 +6,10 @@ import ast
 from collections.abc import Callable
 from dataclasses import dataclass
 
-from .ast_tools import statements_without_docstring
-from .call_binding import CompactFunctionSignature
-from .lexical_bindings import CompactParameterKind
-from .native_declarations import NativeDeclaration
+from nominal_refactor_advisor.ast_tools import statements_without_docstring
+from nominal_refactor_advisor.call_binding import CompactFunctionSignature
+from nominal_refactor_advisor.lexical_bindings import CompactParameterKind
+from nominal_refactor_advisor.native_declarations import NativeDeclaration
 
 
 @dataclass(frozen=True)

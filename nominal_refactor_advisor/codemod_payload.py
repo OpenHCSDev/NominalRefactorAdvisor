@@ -17,7 +17,7 @@ from typing import (
     cast,
 )
 
-from .json_reports import (
+from nominal_refactor_advisor.json_reports import (
     DataclassJsonReport,
     JsonObject,
     JsonValue,
