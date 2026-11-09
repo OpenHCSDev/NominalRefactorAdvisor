@@ -10,6 +10,7 @@ import pytest
 
 from nominal_refactor_advisor.captured_reference import NamespaceMemberInventory
 from nominal_refactor_advisor.native_compilation import (
+    NativeCreationBackend,
     NativeContinuationWindow,
     NativePrimitiveOperation,
 )
@@ -163,8 +164,9 @@ def test_nop_has_no_stack_or_storage_effect_and_jump_entry_still_breaks_tail():
         for instruction in dis.get_instructions(loop)
         if instruction.is_jump_target
     )
-    with pytest.raises(ValueError, match="uninterrupted"):
-        window.observe(target, NativePrimitiveOperation[target.opname])
+    assert not NativeCreationBackend.current().admits(
+        target, NativePrimitiveOperation[target.opname], None
+    )
 
 
 @pytest.mark.native_proof
