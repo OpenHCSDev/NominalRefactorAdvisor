@@ -44,6 +44,7 @@ from nominal_refactor_advisor.finding_counts import FindingSummary
 from nominal_refactor_advisor.implementation_identity import (
     ImplementationSource,
     declaration_implementation_module_names,
+    implementation_signature,
 )
 from nominal_refactor_advisor.models import RefactorFinding, SourceLocation
 from nominal_refactor_advisor.planner import RefactorExecutionPlanReport
@@ -575,28 +576,30 @@ class SourceFileSignatureCachePayload:
 def detector_implementation_module_names(
     detector_type: type[IssueDetector],
 ) -> tuple[str, ...]:
-    """The modules whose code decides one detector's findings: the detector's
-    implementation closure and the projection families it reads."""
+    """The modules whose code decides one detector's findings."""
+
+    return declaration_implementation_module_names(detector_declarations(detector_type))
+
+
+def detector_declarations(detector_type: type[IssueDetector]) -> tuple[type[object], ...]:
+    """The declarations that decide one detector's findings: the detector and the
+    projection families it reads."""
 
     families = (
         detector_type.compact_projection_families()
         if issubclass(detector_type, CompactModuleProjectionDetectorMixin)
         else ()
     )
-    return declaration_implementation_module_names((detector_type, *families))
+    return (detector_type, *families)
 
 
 @ScanCache.cached
 def detector_implementation_hash(detector_type: type[IssueDetector]) -> str:
-    """Hash every module that decides one detector's findings. A finding is keyed
-    on this, so an edit re-keys only the detectors whose code it reaches, not
-    every family in the engine."""
+    """Identify the code that decides one detector's findings: each function and
+    class it reaches, not the modules they live in. A finding is keyed on this,
+    so an edit re-keys only the detectors whose reached code it changes."""
 
-    digest = hashlib.blake2s(digest_size=16)
-    for module_name in sorted(detector_implementation_module_names(detector_type)):
-        source = ImplementationSource.from_module_name(module_name)
-        digest.update(f"{source.path}\0{source.source_signature}\n".encode())
-    return digest.hexdigest()
+    return implementation_signature(detector_declarations(detector_type))
 
 
 def _module_source_signature(module_name: str) -> SourceFileSignature:

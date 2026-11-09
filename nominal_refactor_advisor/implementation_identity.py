@@ -6,9 +6,11 @@ import ast
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field, fields, is_dataclass
 import hashlib
+import inspect
 from pathlib import Path
 import sys
-from types import ModuleType
+import textwrap
+from types import CodeType, ModuleType
 from typing import Self, get_args
 
 from nominal_refactor_advisor.scan_cache import ScanCache
@@ -45,6 +47,25 @@ class ImplementationSource:
         )
 
 
+def implementation_signature(values: Iterable[object]) -> str:
+    """One identity for the code reachable from declared runtime values: each
+    reached function's code and each reached class's declaration, without source
+    positions, so an edit re-keys only the values whose own code it changes. A
+    reached value with no fingerprint of its own (a module object, an instance
+    whose repr is not stable) stands for its whole module, as before."""
+
+    declared_values = tuple(values)
+    traversal = _ImplementationDependencyTraversal.for_values(declared_values)
+    traversal.collect(declared_values)
+    digest = hashlib.blake2s(digest_size=16)
+    for fingerprint in sorted(traversal.fingerprints):
+        digest.update(f"declaration\0{fingerprint}\n".encode())  # a 32-hex digest
+    for module_name in sorted(traversal.whole_module_names):
+        source = ImplementationSource.from_module_name(module_name)
+        digest.update(f"module\0{source.path}\0{source.source_signature}\n".encode())
+    return digest.hexdigest()
+
+
 def implementation_module_names(values: Iterable[object]) -> tuple[str, ...]:
     """Return transitive module owners reachable from declared runtime values."""
 
@@ -75,6 +96,8 @@ class _ImplementationDependencyTraversal:
 
     expansion_roots: frozenset[str]
     _module_names: set[str] = field(default_factory=set, init=False)
+    fingerprints: set[str] = field(default_factory=set, init=False)
+    whole_module_names: set[str] = field(default_factory=set, init=False)
     _seen_value_ids: set[int] = field(default_factory=set, init=False)
 
     @classmethod
@@ -100,6 +123,10 @@ class _ImplementationDependencyTraversal:
             self._seen_value_ids.add(id(value))
             node = graph.node(value)
             self._module_names.update(node.module_names)
+            if node.fingerprint is None:
+                self.whole_module_names.update(node.module_names)
+            else:
+                self.fingerprints.add(node.fingerprint)
             pending.extend(node.dependencies)
         return tuple(sorted(self._module_names))
 
@@ -133,6 +160,7 @@ class _DependencyNode:
     value: object
     module_names: tuple[str, ...]
     dependencies: tuple[object, ...]
+    fingerprint: str | None
 
 
 @dataclass
@@ -167,7 +195,14 @@ class _DependencyGraph:
         if isinstance(value, type) and expands_dependencies:
             for owner in value.__mro__:
                 if AnswerFreeDeclaration.contributes_to(owner):
-                    dependencies.extend(tuple(vars(owner).values()))
+                    if owner is not value:
+                        dependencies.append(owner)
+                    dependencies.extend(
+                        member
+                        for name, member in vars(owner).items()
+                        if name not in _POSITIONAL_CLASS_FACTS
+                        and not isinstance(member, _STABLE_SCALARS)
+                    )
         elif is_dataclass(value) and not isinstance(value, type):
             module_names.append(type(value).__module__)
             dependencies.append(type(value))
@@ -181,7 +216,13 @@ class _DependencyGraph:
         dependencies.extend(_descriptor_dependencies(value))
         if expands_dependencies:
             dependencies.extend(_callable_dependencies(value))
-        return _DependencyNode(value, tuple(module_names), tuple(dependencies))
+        fingerprint = _declaration_fingerprint(value)
+        return _DependencyNode(
+            value,
+            tuple(module_names),
+            tuple(dependencies),
+            None if fingerprint is None else _text_signature(fingerprint),
+        )
 
 
 @ScanCache.cached
@@ -202,12 +243,12 @@ def _callable_dependencies(value: object) -> tuple[object, ...]:
     function = getattr(value, "__func__", value)
     function_code = getattr(function, "__code__", None)
     function_globals = getattr(function, "__globals__", None)
-    if function_code is None or not isinstance(function_globals, dict):
+    if not isinstance(function_code, CodeType) or not isinstance(function_globals, dict):
         return ()
     return (
         *(
             dependency
-            for dependency_name in function_code.co_names
+            for dependency_name in _referenced_names(function_code)
             if (dependency := function_globals.get(dependency_name)) is not None
         ),
         *_annotation_dependencies(function, function_globals),
@@ -251,12 +292,18 @@ def _annotation_reference_names(annotation: str) -> tuple[str, ...]:
 
 
 def _closure_dependencies(function: object) -> tuple[object, ...]:
+    """What a closure's cells declare: the functions, classes and objects they
+    hold. A scalar in a cell is `nonlocal` state the closure reassigns as it
+    runs (a call counter), not code it reaches, so it keys nothing."""
+
     dependencies: list[object] = []
     for cell in getattr(function, "__closure__", ()) or ():
         try:
-            dependencies.append(cell.cell_contents)
+            contents = cell.cell_contents
         except ValueError:
             continue
+        if not isinstance(contents, _STABLE_SCALARS):
+            dependencies.append(contents)
     return tuple(dependencies)
 
 
@@ -285,3 +332,104 @@ def _source_signature(
     except OSError:
         payload = path_text.encode("utf-8")
     return hashlib.blake2s(payload, digest_size=16).hexdigest()
+
+
+def _referenced_names(code: CodeType) -> tuple[str, ...]:
+    """The global names a function's code reads, its nested functions and lambdas
+    included: they share the function's globals."""
+
+    names: list[str] = []
+    pending = [code]
+    while pending:
+        current = pending.pop()
+        names.extend(current.co_names)
+        pending.extend(const for const in current.co_consts if isinstance(const, CodeType))
+    return tuple(dict.fromkeys(names))
+
+
+_STABLE_SCALARS = (bool, int, float, complex, str, bytes, type(None))
+
+_POSITIONAL_CLASS_FACTS = frozenset({"__doc__", "__firstlineno__"})
+"""Class attributes that record where or how a class was written, not what it
+does: a docstring decides no answer (and a dataclass's generated one embeds
+its defaults' reprs, which follow the hash seed), and `__firstlineno__` moves
+whenever code above the class does."""
+
+
+def _declaration_fingerprint(value: object) -> str | None:
+    """A fingerprint of `value`'s own declaration, free of source positions, or
+    None when it has none and its module stands for it."""
+
+    function = getattr(value, "__func__", value)
+    code = getattr(function, "__code__", None)
+    if isinstance(code, CodeType):
+        return (
+            f"code {_module_name(function)} {getattr(function, '__qualname__', '')} "
+            f"{_text_signature(repr(_positionless(code)))}"
+        )
+    if isinstance(value, type):
+        bases = tuple(f"{base.__module__}.{base.__qualname__}" for base in value.__bases__)
+        return (
+            f"type {value.__module__}.{value.__qualname__} {bases} "
+            f"{_declared_class_body(value)}"
+        )
+    if isinstance(value, _STABLE_SCALARS):
+        return f"value {type(value).__qualname__} {value!r}"
+    if isinstance(value, tuple) and all(isinstance(item, _STABLE_SCALARS) for item in value):
+        return f"value tuple {value!r}"
+    if isinstance(value, frozenset | set) and all(
+        isinstance(item, _STABLE_SCALARS) for item in value
+    ):
+        return f"value {type(value).__qualname__} {sorted(map(repr, value))}"
+    return None
+
+
+def _declared_class_body(cls: type) -> str:
+    """The class body as written, without positions, comments or docstrings: a
+    scalar class attribute is fingerprinted by its declaration, so editing
+    `limit = 1` to `limit = 2` re-keys, while a counter the class bumps at
+    runtime (`call_count += 1`) does not. A class with no readable source (a
+    builtin, an extension type) is named by its bases alone."""
+
+    try:
+        tree = ast.parse(textwrap.dedent(inspect.getsource(cls)))
+    except (OSError, TypeError, SyntaxError):
+        return ""
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef):
+            match node.body:
+                case [ast.Expr(value=ast.Constant(value=str())), *rest]:
+                    node.body = rest or [ast.Pass()]
+    return _text_signature(ast.dump(tree, include_attributes=False))
+
+
+def _positionless(code: CodeType) -> tuple[object, ...]:
+    """What a code object computes, without where it was written."""
+
+    return (
+        code.co_qualname,
+        code.co_code,
+        code.co_names,
+        code.co_varnames,
+        code.co_freevars,
+        code.co_cellvars,
+        code.co_argcount,
+        code.co_posonlyargcount,
+        code.co_kwonlyargcount,
+        code.co_flags,
+        code.co_exceptiontable,
+        tuple(_stable_constant(const) for const in code.co_consts),
+    )
+
+
+def _stable_constant(const: object) -> object:
+    """A code constant as a value that is the same in every process: a set
+    literal compiles to a frozenset, whose repr follows the hash seed."""
+
+    if isinstance(const, CodeType):
+        return _positionless(const)
+    if isinstance(const, frozenset):
+        return ("frozenset", tuple(sorted(repr(_stable_constant(item)) for item in const)))
+    if isinstance(const, tuple):
+        return tuple(_stable_constant(item) for item in const)
+    return repr(const)
