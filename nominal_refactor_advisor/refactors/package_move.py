@@ -671,19 +671,39 @@ class ClusterLayers:
         )
 
     @cached_property
-    def dissolving_paths(self) -> tuple[str, ...]:
-        """Every emptied module: they dissolve together in one stage, before
-        anything else relocates, each consumer rewritten to the modules that
-        declare what it imports."""
+    def live_paths(self) -> tuple[str, ...]:
+        """The present modules that still take part: an emptied module whose own
+        dissolve refuses stays where it is and orders nothing."""
 
+        return tuple(path for path in self.present_paths if path not in self.dissolve_refusals)
+
+    @cached_property
+    def dissolve_candidates(self) -> tuple[str, ...]:
         return tuple(path for path in self.present_paths if self.emptied(path))
 
+    @cached_property
+    def dissolve_refusals(self) -> dict[str, str]:
+        return self.refusals(self.dissolve_candidates, self.dissolve_recipe_of)
+
+    @cached_property
+    def dissolving_paths(self) -> tuple[str, ...]:
+        """Every emptied module whose own dissolve does not refuse: they dissolve
+        together in one stage, before anything else relocates, each consumer
+        rewritten to the modules that declare what it imports."""
+
+        return tuple(
+            path for path in self.dissolve_candidates if path not in self.dissolve_refusals
+        )
+
     def dissolve_recipe(self) -> RefactorRecipe:
+        return self.dissolve_recipe_of(self.dissolving_paths)
+
+    def dissolve_recipe_of(self, paths: tuple[str, ...]) -> RefactorRecipe:
         recipe = RefactorRecipe(
             recipe_id="dissolve-emptied",
             reason="Dissolve every emptied flat module into its package module, in one stage.",
         )
-        for path in self.dissolving_paths:
+        for path in paths:
             recipe = recipe.with_operation(
                 DissolveModuleOperation(
                     target=SourceRewriteTarget(file_path=path),
@@ -702,11 +722,11 @@ class ClusterLayers:
         module importing a peer bare (`import pkg.peer`): its readers spell the
         old path."""
 
-        declaring = tuple(path for path in self.present_paths if not self.emptied(path))
+        declaring = tuple(path for path in self.live_paths if not self.emptied(path))
         destinations = [self.destinations[path] for path in declaring]
         if (
             len(declaring) < 2
-            or len(declaring) != len(self.present_paths)
+            or len(declaring) != len(self.live_paths)
             or len(set(destinations)) != len(destinations)
             or self.imports_a_peer_bare(declaring)
         ):
@@ -715,22 +735,27 @@ class ClusterLayers:
 
     @cached_property
     def batch_refusals(self) -> dict[str, str]:
-        """The candidates whose own move refuses, each with its preflight's
-        reason. Each row is checked against the state where every destination
-        the batch creates already exists (`rewrite_context`), so a refusal is
-        the row's own and never "my destination is not there yet". A refused
-        row leaves the batch and its peers re-form without it, until none
-        refuses: the refused module stays where it is for a later stage."""
+        return self.refusals(self.batch_candidates, self.recipe_of)
 
-        refusals: dict[str, str] = {}
-        while True:
-            paths = tuple(path for path in self.batch_candidates if path not in refusals)
-            if len(paths) < 2:
-                return refusals
-            found = self.row_refusals(self.recipe_of(paths))
+    def refusals(
+        self,
+        candidates: tuple[str, ...],
+        recipe_of: Callable[[tuple[str, ...]], RefactorRecipe],
+    ) -> dict[str, str]:
+        """The candidates of one stage whose own row refuses, each with its
+        preflight's reason. Each row is checked against the state where every
+        file the stage creates already exists (`rewrite_context`), so a refusal
+        is the row's own and never "my destination is not there yet". A refused
+        row leaves the stage and the rest re-form without it, until none
+        refuses: the refused module stays where it is."""
+
+        refused: dict[str, str] = {}
+        while paths := tuple(path for path in candidates if path not in refused):
+            found = self.row_refusals(recipe_of(paths))
             if not found:
-                return refusals
-            refusals.update(found)
+                return refused
+            refused.update(found)
+        return refused
 
     def row_refusals(self, recipe: RefactorRecipe) -> dict[str, str]:
         """Each finding of the table re-reads the same batch, so the state keeps
@@ -822,7 +847,7 @@ class ClusterLayers:
             return self.dissolving_paths[0]
         tops = [
             path
-            for path in self.present_paths
+            for path in self.live_paths
             if not self.upper_importers(path) and self.ready(path)
         ]
         return tops[0] if tops else None
@@ -878,6 +903,10 @@ class PackageMoveFindingRecipeSynthesizer(
                 )
                 + ", so no move order keeps either importable: declare one "
                 "merging into the other (`a.py` merges into `b.py`)"
+            )
+        if source_path in layers.dissolve_refusals:
+            return self.rejected_evaluation(
+                f"stays: its dissolve refused: {layers.dissolve_refusals[source_path]}"
             )
         if source_path in layers.dissolving_paths[1:]:
             return self.rejected_evaluation(

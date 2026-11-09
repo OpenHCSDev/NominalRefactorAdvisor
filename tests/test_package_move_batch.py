@@ -517,3 +517,52 @@ def test_a_module_statement_no_declaration_carries_refuses_its_whole_move(
     assert not (tmp_path / "pkg/beta.py").exists()
     assert (tmp_path / "pkg/gamma.py").read_text().startswith("NAMES = []\n")
     assert _runs(tmp_path, "VALUE") == "('a', 'b', [0, 1])"
+
+
+def test_a_shell_whose_own_dissolve_refuses_stays_and_the_rest_still_move(
+    tmp_path: Path,
+) -> None:
+    """`held` and `plain` only re-export `Alpha` and dissolve before anything
+    relocates. Neither has a module to dissolve into, so each refuses on its own;
+    that used to refuse the whole dissolve stage and left `alpha` waiting behind
+    `held` forever. Each shell now stays with its reason and `alpha` moves, its
+    re-exports following it."""
+
+    _write(
+        tmp_path,
+        {
+            "pkg/__init__.py": "",
+            "pkg/messaging/__init__.py": "",
+            "pkg/alpha.py": "class Alpha:\n    kind = 'a'\n",
+            "pkg/held.py": "from pkg.alpha import Alpha\n",
+            "pkg/plain.py": "from pkg.alpha import Alpha\n",
+            "pkg/app.py": (
+                "import pkg.held as held\nfrom pkg.plain import Alpha\n\n"
+                "VALUE = (Alpha.kind, held.Alpha.kind)\n"
+            ),
+        },
+    )
+
+    report = CodemodRefactorGoalRunner(
+        roots=(tmp_path,),
+        config=DetectorConfig(
+            package_destination_tables=(
+                "| `messaging` | `alpha.py`, `held.py`, `plain.py` | |\n",
+            )
+        ),
+        dry_run=True,
+        migration_type=PackageMoveConcept,
+        guard_suite=ArchitectureGuardSuite(),
+    ).run()
+    assert report.to_markdown().count("stays: its dissolve refused") == 2
+    replay = report.replay_sequence.simulate(
+        CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    )
+    assert replay.is_clean
+    replay.apply()
+    assert not (tmp_path / "pkg/alpha.py").exists()
+    assert (tmp_path / "pkg/plain.py").read_text().splitlines() == [
+        "from pkg.messaging.alpha import Alpha",
+        "",
+    ]
+    assert _runs(tmp_path, "VALUE") == "('a', 'a')"
