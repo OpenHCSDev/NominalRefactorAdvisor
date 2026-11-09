@@ -33,6 +33,7 @@ from nominal_refactor_advisor.ast_tools import (
 )
 from nominal_refactor_advisor.class_index import CompactModuleClassHeader
 from nominal_refactor_advisor.detectors._base import DetectorConfig
+from nominal_refactor_advisor.codemod_import_bindings import DirectModuleImportBindingIdentity
 from nominal_refactor_advisor.codemod_import_scopes import ModuleImportScope
 from nominal_refactor_advisor.codemod_module_declarations import ModuleSymbolTable
 from nominal_refactor_advisor.codemod_runtime import (
@@ -50,6 +51,7 @@ from nominal_refactor_advisor.refactors.finding_recipes import (
     PrimaryEvidenceActionKeysMixin,
 )
 from nominal_refactor_advisor.refactors.module_move import (
+    BatchModuleMove,
     DissolveModuleOperation,
     RelocateSymbolsToModuleOperation,
     RelocateSymbolsToNewModuleOperation,
@@ -582,6 +584,18 @@ class ClusterLayers:
             if path in pair and pair not in self.mutual_imports
         )
 
+    def carried_debt(self, paths: tuple[str, ...]) -> str:
+        """What a move of `paths` carries and names instead of making: each guarded
+        or function-local import cycle through one of them."""
+
+        return "".join(
+            f" Debt carried: {left} and {right} import each other through a "
+            "guarded or function-local import; break that cycle at its owner."
+            for left, right in dict.fromkeys(
+                pair for path in paths for pair in self.deferred_cycles(path)
+            )
+        )
+
     def imports_at_any_scope(self, importer: str, imported: str) -> bool:
         module_name = self.context.module_import_graph.module_name_for_file_path(imported)
         return module_name in self.any_scope_module_names(importer)
@@ -613,14 +627,97 @@ class ClusterLayers:
         )
 
     @cached_property
+    def dissolving_paths(self) -> tuple[str, ...]:
+        """Every emptied module: they dissolve together in one stage, before
+        anything else relocates, each consumer rewritten to the modules that
+        declare what it imports."""
+
+        return tuple(path for path in self.present_paths if self.emptied(path))
+
+    def dissolve_recipe(self) -> RefactorRecipe:
+        recipe = RefactorRecipe(
+            recipe_id="dissolve-emptied",
+            reason="Dissolve every emptied flat module into its package module, in one stage.",
+        )
+        for path in self.dissolving_paths:
+            recipe = recipe.with_operation(
+                DissolveModuleOperation(
+                    target=SourceRewriteTarget(file_path=path),
+                    successor_path=self.destinations[path],
+                )
+            )
+        return recipe
+
+    @cached_property
+    def batch_paths(self) -> tuple[str, ...]:
+        """The modules that relocate together in one stage: every present module
+        while each still declares names, keeps a module of its own and moves into
+        a destination of its own. Each move then derives from the same starting
+        state and names its peers' new homes (`BatchModuleMove`). Fewer than two,
+        or a shared destination, moves one module per stage, as does a module
+        importing a peer bare (`import pkg.peer`): its readers spell the old path."""
+
+        declaring = tuple(path for path in self.present_paths if not self.emptied(path))
+        destinations = [self.destinations[path] for path in declaring]
+        if (
+            len(declaring) < 2
+            or len(declaring) != len(self.present_paths)
+            or len(set(destinations)) != len(destinations)
+            or self.imports_a_peer_bare(declaring)
+        ):
+            return ()
+        return declaring
+
+    def imports_a_peer_bare(self, paths: tuple[str, ...]) -> bool:
+        graph = self.context.module_import_graph
+        peers = frozenset(graph.module_name_for_file_path(path) for path in paths)
+        return any(
+            alias.name in peers
+            and not DirectModuleImportBindingIdentity(module_name=alias.name).follows_move(
+                alias.asname or alias.name.partition(".")[0]
+            )
+            for path in paths
+            for node in self.context.parsed_module_for_source_path(path).fact(
+                ModuleNodeIndex
+            ).imports
+            if isinstance(node, ast.Import)
+            for alias in node.names
+        )
+
+    def batch_recipe(self, context: CodemodSelectorContext) -> RefactorRecipe:
+        moves = {
+            path: BatchModuleMove(source_path=path, destination_path=self.destinations[path])
+            for path in self.batch_paths
+        }
+        recipe = RefactorRecipe(
+            recipe_id="relocate-batch",
+            reason="Relocate every name each flat module of the table declares into "
+            "its package, in one stage." + self.carried_debt(self.batch_paths),
+        )
+        for path, own in moves.items():
+            destination = self.destinations[path]
+            recipe = recipe.with_operation(
+                (
+                    RelocateSymbolsToModuleOperation
+                    if destination in context.module_nodes_by_file_path
+                    else RelocateSymbolsToNewModuleOperation
+                )(
+                    target=SourceRewriteTarget(file_path=path),
+                    symbol_qualnames=self.declared_names(path),
+                    destination_path=destination,
+                    batch=tuple(move for move in moves.values() if move is not own),
+                )
+            )
+        return recipe
+
+    @cached_property
     def next_path(self) -> str | None:
         """The one module that moves next: an emptied module dissolves before
         anything else relocates; otherwise the first top-layer module by path
         whose destination it can move into."""
 
-        emptied = [path for path in self.present_paths if self.emptied(path)]
-        if emptied:
-            return emptied[0]
+        if self.dissolving_paths:
+            return self.dissolving_paths[0]
         tops = [
             path
             for path in self.present_paths
@@ -680,6 +777,17 @@ class PackageMoveFindingRecipeSynthesizer(
                 + ", so no move order keeps either importable: declare one "
                 "merging into the other (`a.py` merges into `b.py`)"
             )
+        if source_path in layers.dissolving_paths[1:]:
+            return self.rejected_evaluation(
+                f"dissolves in {layers.dissolving_paths[0]}'s stage"
+            )
+        if source_path in layers.dissolving_paths:
+            return self.executable_evaluation(layers.dissolve_recipe())
+        batch = layers.batch_paths
+        if batch:
+            if source_path != batch[0]:
+                return self.rejected_evaluation(f"moves in {batch[0]}'s batch")
+            return self.executable_evaluation(layers.batch_recipe(context))
         if layers.next_path is None:
             return self.rejected_evaluation(
                 "every flat module of the table is imported by another one that "
@@ -695,27 +803,11 @@ class PackageMoveFindingRecipeSynthesizer(
             return self.rejected_evaluation(reason)
         target = SourceRewriteTarget(file_path=source_path)
         stem = PurePosixPath(source_path).stem
-        if layers.emptied(source_path):
-            return self.executable_evaluation(
-                RefactorRecipe(
-                    recipe_id=f"dissolve-{stem}",
-                    reason="Dissolve the emptied flat module into its package module.",
-                ).with_operation(
-                    DissolveModuleOperation(
-                        target=target,
-                        successor_path=metrics.destination_path,
-                    )
-                )
-            )
         return self.executable_evaluation(
             RefactorRecipe(
                 recipe_id=f"relocate-{stem}",
                 reason="Relocate every name the flat module declares into its package."
-                + "".join(
-                    f" Debt carried: {left} and {right} import each other through a "
-                    "guarded or function-local import; break that cycle at its owner."
-                    for left, right in layers.deferred_cycles(source_path)
-                ),
+                + layers.carried_debt((source_path,)),
             ).with_operation(
                 (
                     RelocateSymbolsToModuleOperation

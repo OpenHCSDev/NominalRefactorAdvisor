@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import ast
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
+from collections.abc import Mapping
+from dataclasses import dataclass, replace
 
 from nominal_refactor_advisor.codemod_import_graph import SourceModuleImportGraph
 from nominal_refactor_advisor.codemod_import_scopes import ModuleImportScope
@@ -118,6 +119,15 @@ class ModuleImportBindingIdentity(DataclassJsonReport, ABC):
 
         raise NotImplementedError
 
+    @abstractmethod
+    def moved(
+        self, moved_modules: Mapping[str, str], bound_name: str
+    ) -> ModuleImportBindingIdentity:
+        """This binding, bound as `bound_name`, once `moved_modules` (old module →
+        new module) are moved."""
+
+        raise NotImplementedError
+
 
 @dataclass(frozen=True)
 class DirectModuleImportBindingIdentity(ModuleImportBindingIdentity):
@@ -126,6 +136,25 @@ class DirectModuleImportBindingIdentity(ModuleImportBindingIdentity):
     @property
     def imported_name(self) -> None:
         return None
+
+    def moved(
+        self, moved_modules: Mapping[str, str], bound_name: str
+    ) -> DirectModuleImportBindingIdentity:
+        if self.module_name not in moved_modules:
+            return self
+        if not self.follows_move(bound_name):
+            raise ValueError(
+                f"Moved code imports {self.module_name!r}, which its stage moves, as a "
+                "module; its readers spell the old dotted path"
+            )
+        return replace(self, module_name=moved_modules[self.module_name])
+
+    def follows_move(self, bound_name: str) -> bool:
+        """Readers of `import a.b as name` spell only `name`, so renaming the module
+        keeps them reading it. Readers of a bare `import a.b` spell the dotted path,
+        which a move does not rewrite in the importing code."""
+
+        return bound_name != self.module_name.partition(".")[0]
 
     def source_for(
         self,
@@ -156,6 +185,14 @@ class FromModuleImportBindingIdentity(ModuleImportBindingIdentity):
     @property
     def imported_name(self) -> str:
         return self.member_name
+
+    def moved(
+        self, moved_modules: Mapping[str, str], bound_name: str
+    ) -> FromModuleImportBindingIdentity:
+        del bound_name
+        return replace(
+            self, module_name=moved_modules.get(self.module_name, self.module_name)
+        )
 
     def is_destination_declaration(
         self,
