@@ -2469,17 +2469,20 @@ class NativeContinuationWindow(NativeOperandObservation):
         original.require_observation(binding)
         return original
 
+    def continues(self, instruction: dis.Instruction) -> bool:
+        """Whether `instruction` follows this window's last instruction before
+        any return, so the suffix stays uninterrupted."""
+
+        return (
+            self.operands.returned is None
+            and instruction.offset > self.last_instruction_offset
+        )
+
     def observe(
         self, instruction: dis.Instruction, operation: NativePrimitiveOperation | None
     ) -> None:
-        if (
-            instruction.is_jump_target
-            or self.operands.returned is not None
-            or instruction.offset <= self.last_instruction_offset
-        ):
-            raise ValueError(
-                "Native continuation is not an uninterrupted primitive suffix"
-            )
+        """Observe an instruction the stream admits and this window `continues`."""
+
         self.last_instruction_offset = instruction.offset
         before = len(self.operands.bindings)
         self.operands.capture_instruction(instruction, operation, self.creation_context)
@@ -2536,13 +2539,25 @@ class NativeStoreStream:
             else self.continuation.receipt(frame, self.receipt_type)
         )
 
+    @cached_property
+    def backend(self) -> NativeCreationBackend:
+        return NativeCreationBackend.current()
+
     def observe(self, instruction: dis.Instruction) -> None:
+        """Continue the open window with `instruction`, or open one on it. An
+        instruction no walk can observe, or one that breaks the open window's
+        suffix, ends the window without opening another."""
+
+        operation = self.operations.get(instruction.opcode)
+        if not self.backend.admits(instruction, operation, self.creation_context) or (
+            self.continuation is not None and not self.continuation.continues(instruction)
+        ):
+            self.continuation = None
+            return
         if self.continuation is None:
             self.continuation = self.new_continuation()
         try:
-            self.continuation.observe(
-                instruction, self.operations.get(instruction.opcode)
-            )
+            self.continuation.observe(instruction, operation)
         except (ValueError, TypeError):
             self.continuation = None
 
@@ -3600,6 +3615,27 @@ class NativeCreationBackend(ABC, metaclass=AutoRegisterMeta):
         """Unsupported runtimes contribute no native primitive transfer proof."""
         return {}
 
+    def admits(
+        self,
+        instruction: dis.Instruction,
+        operation: NativePrimitiveOperation | None,
+        creation_context: NativeCodeObservation | None,
+    ) -> bool:
+        """Whether an operand walk can observe `instruction` at all: it is no jump
+        entry, and it is a primitive operation or a function operand this backend
+        proves. `NativeOperandStack.capture_instruction` refuses the rest."""
+
+        return not instruction.is_jump_target and (
+            operation is not None
+            or (creation_context is not None and self.admits_function_operand(instruction))
+        )
+
+    def admits_function_operand(self, instruction: dis.Instruction) -> bool:
+        """Whether this backend has an operation proving `instruction` as an
+        operand of the function being created."""
+
+        return False
+
     def capture_function_operand(
         self,
         stack: NativeOperandStack,
@@ -4057,6 +4093,9 @@ class ContiguousNativeCreationBackend(NativeCreationBackend):
             for operation in NativePrimitiveOperation
             if operation.name in dis.opmap
         }
+
+    def admits_function_operand(self, instruction: dis.Instruction) -> bool:
+        return instruction.opcode in self.operations
 
     def capture_function_operand(
         self,
