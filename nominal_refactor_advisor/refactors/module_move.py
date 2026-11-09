@@ -4416,6 +4416,14 @@ class _MovedImports:
             )
             if absolute is None:
                 raise ValueError(f"Relative import at block line {node.lineno} leaves the package")
+            peers = [
+                alias for alias in node.names if f"{absolute}.{alias.name}" in self.moved_modules
+            ]
+            if peers:
+                replacements.append(
+                    (*geometry.required_node_offsets(node), self._peer_import(absolute, node))
+                )
+                continue
             named = self.moved_modules.get(absolute, absolute)
             if not node.level and named == node.module:
                 continue
@@ -4427,3 +4435,21 @@ class _MovedImports:
         for start, end, text in sorted(replacements, reverse=True):
             block = block[:start] + text + block[end:]
         return block
+
+    def _peer_import(self, package: str, node: ast.ImportFrom) -> str:
+        """`from pkg import a, b`, every name a module the stage moves into one new
+        package: that package imports them, each still bound under its old name."""
+
+        homes = [self.moved_modules.get(f"{package}.{alias.name}") for alias in node.names]
+        parents = {home.rpartition(".")[0] for home in homes if home is not None}
+        if None in homes or len(parents) != 1:
+            raise ValueError(
+                f"The block imports modules its stage moves beside other names, or into "
+                f"several packages, at line {node.lineno}; split that import first"
+            )
+        names = ", ".join(
+            leaf if leaf == (alias.asname or alias.name) else f"{leaf} as {alias.asname or alias.name}"
+            for alias, home in zip(node.names, homes)
+            for leaf in (home.rpartition(".")[2],)
+        )
+        return f"from {parents.pop()} import {names}"

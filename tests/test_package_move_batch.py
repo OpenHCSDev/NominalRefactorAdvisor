@@ -155,3 +155,38 @@ def test_an_aliased_peer_import_inside_a_function_follows_the_batch(tmp_path: Pa
         root / "pkg/messaging/messages.py"
     ).read_text()
     assert _runs(root, "VALUE") == "record"
+
+
+def test_a_peer_imported_from_its_parent_package_is_imported_from_its_new_one(
+    tmp_path: Path,
+) -> None:
+    """`from pkg import records`, with records a peer the batch moves, imports it
+    from its new package: at module level (re-derived as a dependency) and inside a
+    function (rewritten in the moved text)."""
+
+    _write(
+        tmp_path,
+        {
+            "pkg/__init__.py": "",
+            "pkg/messaging/__init__.py": "",
+            "pkg/records.py": "class Record:\n    kind = 'record'\n",
+            "pkg/messages.py": (
+                "from pkg import records\n\n\n"
+                "class Message(records.Record):\n    pass\n\n\n"
+                "def late_kind() -> str:\n"
+                "    from pkg import records as late\n\n"
+                "    return late.Record.kind\n"
+            ),
+            "pkg/app.py": (
+                "from pkg.messages import Message, late_kind\n\n"
+                "VALUE = (Message.kind, late_kind())\n"
+            ),
+        },
+    )
+
+    stages, root = _moved(tmp_path, "| `messaging` | `messages.py`, `records.py` | |\n")
+    assert stages == 2
+    moved = (root / "pkg/messaging/messages.py").read_text()
+    assert "from pkg.messaging import records\n" in moved
+    assert "from pkg.messaging import records as late" in moved
+    assert _runs(root, "VALUE") == "('record', 'record')"
