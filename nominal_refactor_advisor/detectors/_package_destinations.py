@@ -48,7 +48,10 @@ class FlatModulePackageDestinationDetector(
         self, modules: ParsedModuleSet, config: DetectorConfig
     ) -> list[RefactorFinding]:
         return self._findings_from_compact_projections(
-            type(self).compact_module_projections(modules), config
+            DestinationTable.from_texts(config.package_destination_tables).module_headers(
+                tuple(modules), type(self).compact_module_projections
+            ),
+            config,
         )
 
     def _findings_from_compact_projections(

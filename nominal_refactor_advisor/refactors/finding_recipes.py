@@ -16,6 +16,7 @@ from nominal_refactor_advisor.refactors.class_member_authority import (
 from nominal_refactor_advisor.refactors.semantic_mirror import (
     SemanticMirrorFindingRecipeStrategy,
 )
+from nominal_refactor_advisor.ast_tools import PythonSourcePathPolicy
 from nominal_refactor_advisor.codemod_authority_claims import AstTargetAuthorityClaim
 from nominal_refactor_advisor.codemod_preflight import CodemodOperationPreflightError
 from nominal_refactor_advisor.codemod_runtime import (
@@ -38,7 +39,7 @@ from nominal_refactor_advisor.descent import (
     Descent,
     KeyedMirror,
 )
-from nominal_refactor_advisor.detectors._base import IssueDetector
+from nominal_refactor_advisor.detectors._base import DetectorConfig, IssueDetector
 from nominal_refactor_advisor.finding_recipe_actions import FindingRecipeActionKey
 from nominal_refactor_advisor.json_reports import (
     DataclassJsonReport,
@@ -309,12 +310,52 @@ class FindingRecipeSynthesizer(FindingRecipeEvaluator, ABC):
 
         return frozenset(
             detector_id
-            for detector_type in IssueDetector.registered_detector_types()
+            for detector_type in cls.declarations_for_concept(concept_type)
             for detector_id in (detector_type.effective_detector_id(),)
             if detector_id is not None
-            and issubclass(detector_type, cls)
-            and issubclass(detector_type, concept_type)
         )
+
+    @classmethod
+    def declarations_for_concept(
+        cls,
+        concept_type: type[RefactorConcept],
+    ) -> tuple[type[IssueDetector], ...]:
+        """The registered detectors declaring this synthesizer for the concept."""
+
+        return tuple(
+            detector_type
+            for detector_type in IssueDetector.registered_detector_types()
+            if issubclass(detector_type, cls) and issubclass(detector_type, concept_type)
+        )
+
+    @classmethod
+    def scan_policy(
+        cls,
+        policy: PythonSourcePathPolicy,
+        roots: tuple[Path, ...],
+        config: DetectorConfig,
+    ) -> PythonSourcePathPolicy:
+        """The files a goal of this declaration's concept can read under `roots`:
+        every file `policy` admits, unless the declaration knows its domain."""
+
+        return policy
+
+    @classmethod
+    def scan_policy_for_concept(
+        cls,
+        concept_type: type[RefactorConcept],
+        policy: PythonSourcePathPolicy,
+        roots: tuple[Path, ...],
+        config: DetectorConfig,
+    ) -> PythonSourcePathPolicy:
+        """The concept's scan: its declarations' domain when they agree on one,
+        every file otherwise."""
+
+        policies = {
+            detector_type.scan_policy(policy, roots, config)
+            for detector_type in cls.declarations_for_concept(concept_type)
+        }
+        return policies.pop() if len(policies) == 1 else policy
 
     def executable_evaluation(
         self,
