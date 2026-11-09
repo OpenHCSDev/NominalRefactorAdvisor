@@ -6,13 +6,22 @@ import ast
 import unicodedata
 from collections import Counter, deque
 from dataclasses import dataclass, field
+from functools import cached_property
 
 from nominal_refactor_advisor.ast_tools import (
     AstParentIndex,
     ParsedModule,
     ParsedModuleFact,
 )
+from nominal_refactor_advisor.declaration_dependencies import (
+    ModuleLexicalDependencyProjection,
+    ModuleNameReferenceSurface,
+)
 from nominal_refactor_advisor.lexical_bindings import ImportBoundNameProjection
+from nominal_refactor_advisor.lexical_scopes import (
+    FunctionBindingProjection,
+    ScopeBindingProjection,
+)
 
 _FUNCTION_SCOPES = (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)
 _COMPREHENSION_SCOPES = (ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)
@@ -35,10 +44,11 @@ class ModuleNodeIndex(ParsedModuleFact):
     has its own variable of that name, shadowing the module's for its own uses
     and those of the scopes inside it. `module_scope_names`,
     `module_scope_bindings` and `module_scope_loads` read only the uses that
-    resolve to the module's binding. A class body is not a scope here: its
-    bindings count as the module's, which keeps every check that reads them
-    conservative."""
+    resolve to the module's binding. Class writes have their own frame; reads
+    use the existing ordered lexical resolver, including class fallback and
+    function/comprehension lookup that skips enclosing class locals."""
 
+    module: ast.Module = field(repr=False)
     imports: tuple[ast.Import | ast.ImportFrom, ...]
     string_constants: tuple[ast.Constant, ...]
     calls: tuple[ast.Call, ...]
@@ -48,9 +58,7 @@ class ModuleNodeIndex(ParsedModuleFact):
     attribute_bases: frozenset[str]
     bound_name_counts: Counter[str] = field(repr=False)
     binding_sites: dict[str, tuple[ast.AST, ...]] = field(repr=False)
-    declared_global: dict[int, frozenset[str]] = field(repr=False)
     identifier_text: str = field(repr=False)
-    _local_names: dict[int, frozenset[str]] = field(repr=False, default_factory=dict)
 
     @classmethod
     def derive(cls, parsed_module: ParsedModule) -> ModuleNodeIndex:
@@ -64,7 +72,6 @@ class ModuleNodeIndex(ParsedModuleFact):
         bound: Counter[str] = Counter()
         package_heads: set[str] = set()
         sites: dict[str, list[ast.AST]] = {}
-        declarations: list[ast.Global | ast.Nonlocal] = []
         pending: deque[ast.AST] = deque([parsed_module.module])
         while pending:
             node = pending.popleft()
@@ -98,8 +105,6 @@ class ModuleNodeIndex(ParsedModuleFact):
                     sites.setdefault(name, []).append(node)
                 case ast.ExceptHandler(name=str() as name):
                     sites.setdefault(name, []).append(node)
-                case ast.Global() | ast.Nonlocal():
-                    declarations.append(node)
                 case ast.Constant(value=str()):
                     strings.append(node)
                 case ast.Call():
@@ -114,12 +119,8 @@ class ModuleNodeIndex(ParsedModuleFact):
                 case ast.Attribute(value=ast.Name(id=name)):
                     attribute_bases.add(name)
         bound.update(package_heads)
-        declared_global: dict[int, set[str]] = {}
-        for declaration in declarations:
-            if isinstance(declaration, ast.Global):
-                scope = cls._scope_in(parents, declaration)
-                declared_global.setdefault(id(scope), set()).update(declaration.names)
         return cls(
+            module=parsed_module.module,
             imports=tuple(imports),
             string_constants=tuple(strings),
             calls=tuple(calls),
@@ -129,7 +130,6 @@ class ModuleNodeIndex(ParsedModuleFact):
             attribute_bases=frozenset(attribute_bases),
             bound_name_counts=bound,
             binding_sites={name: tuple(nodes) for name, nodes in sites.items()},
-            declared_global={key: frozenset(names) for key, names in declared_global.items()},
             identifier_text=(
                 parsed_module.source
                 if parsed_module.source.isascii()
@@ -193,48 +193,63 @@ class ModuleNodeIndex(ParsedModuleFact):
         """The scope whose variable a binding of `name` at `site` sets."""
 
         scope = self.scope_of(site)
-        if scope is not None and name in self.declared_global.get(id(scope), frozenset()):
-            return None
-        return scope
-
-    def binder_of(self, node: ast.AST, name: str) -> ast.AST | None:
-        """The scope whose variable `name` at `node` reads or sets."""
-
-        scope = self.scope_of(node)
         while scope is not None:
-            if name in self.declared_global.get(id(scope), frozenset()):
+            declarations = self.scope_declarations[scope]
+            if name in declarations.global_names:
                 return None
-            if name in self.local_names(scope):
+            if name in declarations.nonlocal_names:
+                scope = self.scope_of(scope)
+                while scope is not None:
+                    if not isinstance(scope, ast.ClassDef) and name in self.scope_declarations[scope].local_names:
+                        return scope
+                    scope = self.scope_of(scope)
+                raise ValueError(f"No enclosing function binds nonlocal {name!r}")
+            if name in declarations.local_names:
                 return scope
             scope = self.scope_of(scope)
         return None
 
+    def binder_of(self, node: ast.AST, name: str) -> ast.AST | None:
+        """The scope whose variable `name` at `node` reads or sets."""
+
+        reference = self.name_bindings.get(node)
+        if reference is not None:
+            reference.resolution.require_known(name)
+            return reference.binding_scope
+        return self.binding_scope(node, name)
+
     def local_names(self, scope: ast.AST) -> frozenset[str]:
         """The names `scope` binds itself, minus those it declares `global`."""
 
-        key = id(scope)
-        if key not in self._local_names:
-            for scope_key, names in self._scope_bindings().items():
-                self._local_names[scope_key] = names
-        return self._local_names.get(key, frozenset())
+        return self.scope_declarations[scope].local_names
 
-    def _scope_bindings(self) -> dict[int, frozenset[str]]:
-        found: dict[int, set[str]] = {}
-        for name, sites in self.binding_sites.items():
-            for site in sites:
-                scope = self.scope_of(site)
-                if scope is not None and name not in self.declared_global.get(id(scope), frozenset()):
-                    found.setdefault(id(scope), set()).add(name)
-        for scope_key in {id(scope) for scope in self.parents.values() if self._is_scope(scope)}:
-            found.setdefault(scope_key, set())
-        return {key: frozenset(names) for key, names in found.items()}
+    @cached_property
+    def name_bindings(self) -> dict[ast.AST, ModuleNameReferenceSurface]:
+        """Project existing lexical decisions, never reconstruct class lookup here."""
+        projection = ModuleLexicalDependencyProjection.from_module(self.module)
+        return {
+            surface.reference: surface
+            for surface in projection.name_bindings
+            if surface.use.is_direct_source
+        }
 
-    @staticmethod
-    def _is_scope(node: ast.AST) -> bool:
-        return isinstance(node, (*_FUNCTION_SCOPES, *_COMPREHENSION_SCOPES))
+    @cached_property
+    def scope_declarations(self) -> dict[ast.AST, ScopeBindingProjection]:
+        declarations: dict[ast.AST, ScopeBindingProjection] = {}
+        for scope in self.parents.values():
+            if scope in declarations:
+                continue
+            match scope:
+                case ast.FunctionDef() | ast.AsyncFunctionDef() | ast.Lambda():
+                    declarations[scope] = FunctionBindingProjection.from_function(scope)
+                case ast.ClassDef():
+                    declarations[scope] = ScopeBindingProjection.from_nodes(scope.body, node=scope)
+                case ast.ListComp() | ast.SetComp() | ast.DictComp() | ast.GeneratorExp():
+                    declarations[scope] = FunctionBindingProjection.from_comprehension(scope)
+        return declarations
 
     def scope_of(self, node: ast.AST) -> ast.AST | None:
-        """The innermost function, lambda or comprehension whose variables
+        """The innermost class, function, lambda or comprehension whose variables
         `node` belongs to, or `None` for the module's. A function's decorators,
         defaults and annotations, and a comprehension's first iterable, are
         evaluated in the enclosing scope; its parameters belong to it."""
@@ -249,6 +264,9 @@ class ModuleNodeIndex(ParsedModuleFact):
             if isinstance(current, _FUNCTION_SCOPES):
                 body = current.body if isinstance(current.body, list) else [current.body]
                 if child in body or (isinstance(node, ast.arg) and child is current.args):
+                    return current
+            elif isinstance(current, ast.ClassDef):
+                if child in current.body:
                     return current
             elif isinstance(current, _COMPREHENSION_SCOPES):
                 first = current.generators[0]

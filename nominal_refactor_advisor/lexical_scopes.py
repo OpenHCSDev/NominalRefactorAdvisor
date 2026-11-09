@@ -268,15 +268,22 @@ class LexicalScopeContext:
     scopes: list[LexicalScopeABC] = field(default_factory=list)
 
     def _resolve_name(self, name: str) -> LexicalNameResolution:
+        return self._resolve_name_binding(name)[0]
+
+    def _resolve_name_binding(
+        self, name: str,
+    ) -> tuple[LexicalNameResolution, ast.AST | None]:
+        """Return the decision and its determining frame from the same lookup."""
         class_namespace_visible = True
         for scope in reversed(self.scopes):
             resolution = scope.resolve_name(
                 name, class_namespace_visible=class_namespace_visible
             )
             if resolution is not None:
-                return resolution
+                owner = scope.node if resolution is LexicalNameResolution.INTERNAL else None
+                return resolution, owner
             class_namespace_visible &= not scope.hides_enclosing_class_namespace
-        return LexicalNameResolution.EXTERNAL
+        return LexicalNameResolution.EXTERNAL, None
 
     @property
     def _active_class_scope(self) -> ClassNamespaceScope | None:

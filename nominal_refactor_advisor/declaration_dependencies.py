@@ -177,6 +177,7 @@ class ModuleNameReferenceSurface(ModuleNameReferenceScope):
     use: DeclarationDependencyUse
     binding_phase: ModuleBindingResolutionPhase
     resolution: LexicalNameResolution = LexicalNameResolution.EXTERNAL
+    binding_scope: ast.AST | None = None
 
     @property
     def required_reference(self) -> ast.Name:
@@ -244,6 +245,7 @@ class ModuleLexicalDependencyProjection:
     name_surfaces: tuple[ModuleNameReferenceSurface, ...]
     stringized_annotations: tuple[StringizedAnnotationSurface, ...]
     annotation_count: int
+    name_bindings: tuple[ModuleNameReferenceSurface, ...] = ()
 
     def names_for_use(self, use: DeclarationDependencyUse) -> frozenset[str]:
         return frozenset(
@@ -298,6 +300,7 @@ class ModuleLexicalDependencyProjection:
             name_surfaces=tuple(collector.name_surfaces),
             stringized_annotations=tuple(collector.stringized_annotation_surfaces),
             annotation_count=collector.annotation_count,
+            name_bindings=tuple(collector.name_bindings),
         )
 
     @property
@@ -498,6 +501,7 @@ class _DeclarationDependencyCollector(
         self.binding_phase = ModuleBindingResolutionPhase.SOURCE_POSITION
         self.annotation_count = 0
         self.name_surfaces: list[ModuleNameReferenceSurface] = []
+        self.name_bindings: list[ModuleNameReferenceSurface] = []
         self.stringized_annotation_surfaces: list[StringizedAnnotationSurface] = []
 
     def visit_Module(self, node: ast.Module) -> None:
@@ -511,24 +515,26 @@ class _DeclarationDependencyCollector(
         if isinstance(node.ctx, ast.Del):
             self._record_class_binding((node.id,), LexicalNameResolution.EXTERNAL)
             return
-        resolution = self._resolve_name(node.id)
-        self._record_reference(node, resolution)
+        resolution, binding_scope = self._resolve_name_binding(node.id)
+        self._record_reference(node, resolution, binding_scope)
 
     def _record_reference(
         self,
         node: ast.Name,
         resolution: LexicalNameResolution,
+        binding_scope: ast.AST | None,
     ) -> None:
+        surface = ModuleNameReferenceSurface(
+            owner_classes=self.owner_classes,
+            reference=node,
+            use=self.use,
+            binding_phase=self.binding_phase,
+            resolution=resolution,
+            binding_scope=binding_scope,
+        )
+        self.name_bindings.append(surface)
         if resolution.is_external_candidate:
-            self.name_surfaces.append(
-                ModuleNameReferenceSurface(
-                    owner_classes=self.owner_classes,
-                    reference=node,
-                    use=self.use,
-                    binding_phase=self.binding_phase,
-                    resolution=resolution,
-                )
-            )
+            self.name_surfaces.append(surface)
 
     def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
         self._visit_function(node)
@@ -563,11 +569,11 @@ class _DeclarationDependencyCollector(
 
     def visit_AugAssign(self, node: ast.AugAssign) -> None:
         if isinstance(node.target, ast.Name):
+            resolution, binding_scope = self._resolve_name_binding(node.target.id)
             self._record_reference(
                 node.target,
-                self.scopes[-1].augmented_read_resolution(
-                    self._resolve_name(node.target.id)
-                ),
+                self.scopes[-1].augmented_read_resolution(resolution),
+                binding_scope,
             )
         else:
             self.visit(node.target)
