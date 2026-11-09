@@ -1608,15 +1608,16 @@ class SourceNodeSpan:
 
 
 @dataclass(frozen=True)
-class DocumentedNodeSpan(SourceNodeSpan):
-    """A statement and the attribute docstring right after it: the docstring
-    documents the statement, so the span ends where the docstring does."""
+class ExtendedNodeSpan(SourceNodeSpan):
+    """A statement and the statements right after it that move with it (the attribute
+    docstring documenting it, the statements a whole module's move carries with it):
+    the span ends where the last of them does."""
 
-    docstring: ast.Expr = field(kw_only=True)
+    through: ast.stmt = field(kw_only=True)
 
     @property
     def end_line(self) -> int:
-        return self.docstring.end_lineno or self.docstring.lineno
+        return self.through.end_lineno or self.through.lineno
 
 
 @dataclass(frozen=True)

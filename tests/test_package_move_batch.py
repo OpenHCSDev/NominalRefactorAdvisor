@@ -334,3 +334,39 @@ def test_moved_modules_named_beside_others_in_one_import_each_follow(tmp_path: P
     assert "from pkg import kept\n" in app
     assert "events.Response.kind, wires.Response.kind" in app
     assert _runs(root, "VALUE") == "('event', 'wire', 'kept')"
+
+
+def test_a_whole_module_move_carries_the_statements_between_its_declarations(
+    tmp_path: Path,
+) -> None:
+    """An `assert` on the constant above it and a registration call bind nothing,
+    so no declaration names them; a whole module's move carries them after what
+    they follow, and the shell left behind dissolves."""
+
+    _write(
+        tmp_path,
+        {
+            "pkg/__init__.py": "",
+            "pkg/messaging/__init__.py": "",
+            "pkg/seen.py": "NAMES = []\n",
+            "pkg/limits.py": (
+                "import pkg.seen\n\n"
+                "BUDGET = 3\n"
+                "assert BUDGET > 1\n\n\n"
+                "class Policy:\n    budget = BUDGET\n\n\n"
+                "pkg.seen.NAMES.append(Policy.__name__)\n"
+            ),
+            "pkg/app.py": (
+                "from pkg.limits import Policy\n"
+                "from pkg.seen import NAMES\n\n"
+                "VALUE = (Policy.budget, NAMES[0])\n"
+            ),
+        },
+    )
+
+    _stages, root = _moved(tmp_path, "| `messaging` | `limits.py` | |\n")
+    assert not (root / "pkg/limits.py").exists()
+    moved = (root / "pkg/messaging/limits.py").read_text()
+    assert moved.index("BUDGET = 3") < moved.index("assert BUDGET > 1") < moved.index("class Policy")
+    assert moved.index("class Policy") < moved.index("pkg.seen.NAMES.append(Policy.__name__)")
+    assert _runs(root, "VALUE") == "(3, 'Policy')"
