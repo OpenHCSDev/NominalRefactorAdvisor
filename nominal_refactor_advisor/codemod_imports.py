@@ -31,7 +31,7 @@ from nominal_refactor_advisor.codemod_source_edits import (
     SourceTextGeometry,
     SourceTextSpan,
 )
-from nominal_refactor_advisor.codemod_spacing import DestinationInsertionSpacing
+from nominal_refactor_advisor.codemod_spacing import DestinationInsertionSpacing, SourceInsertionLayer
 from nominal_refactor_advisor.declared_root import DeclaredRoot
 from nominal_refactor_advisor.collection_algebra import sorted_tuple
 from nominal_refactor_advisor.lexical_bindings import (
@@ -1013,6 +1013,7 @@ class ModuleImportMutation(KeyedSourceEditCoalescence):
         return SourceInsertion(
             file_path=self.file_path,
             insertion_line=insertion_line,
+            layer=SourceInsertionLayer.IMPORTS,
             inserted_lines=SourceTextGeometry(source).generated_lines(inserted_source),
             rationale=self.rationale or f"Ensure imports exist in {self.file_path!r}.",
             contributors=self.contributors,
@@ -1061,6 +1062,7 @@ class ModuleImportMutation(KeyedSourceEditCoalescence):
         return SourceInsertion(
             file_path=self.file_path,
             insertion_line=insertion_line,
+            layer=SourceInsertionLayer.IMPORTS,
             inserted_lines=SourceTextGeometry(source).generated_lines(
                 _indent_source(inserted_source, insertion_point.indentation)
             ),
@@ -1130,6 +1132,7 @@ class ModuleImportMutation(KeyedSourceEditCoalescence):
             SourceInsertion(
                 file_path=self.file_path,
                 insertion_line=insertion_line,
+                layer=SourceInsertionLayer.IMPORTS,
                 inserted_lines=SourceTextGeometry(source).generated_lines(
                     inserted_source.rstrip("\n") + spacing.trailing_separator
                 ),

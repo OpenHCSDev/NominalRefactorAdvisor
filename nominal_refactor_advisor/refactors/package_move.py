@@ -36,6 +36,7 @@ from nominal_refactor_advisor.detectors._base import DetectorConfig
 from nominal_refactor_advisor.codemod_import_bindings import DirectModuleImportBindingIdentity
 from nominal_refactor_advisor.codemod_import_scopes import ModuleImportScope
 from nominal_refactor_advisor.codemod_module_declarations import ModuleSymbolTable
+from nominal_refactor_advisor.codemod_preflight import CodemodOperationPreflightError
 from nominal_refactor_advisor.codemod_runtime import (
     FindingRecipeEvaluation,
     RefactorRecipe,
@@ -692,13 +693,14 @@ class ClusterLayers:
         return recipe
 
     @cached_property
-    def batch_paths(self) -> tuple[str, ...]:
-        """The modules that relocate together in one stage: every present module
-        while each still declares names, keeps a module of its own and moves into
-        a destination of its own. Each move then derives from the same starting
-        state and names its peers' new homes (`BatchModuleMove`). Fewer than two,
-        or a shared destination, moves one module per stage, as does a module
-        importing a peer bare (`import pkg.peer`): its readers spell the old path."""
+    def batch_candidates(self) -> tuple[str, ...]:
+        """The modules that could relocate together in one stage: every present
+        module while each still declares names, keeps a module of its own and
+        moves into a destination of its own. Each move then derives from the same
+        starting state and names its peers' new homes (`BatchModuleMove`). Fewer
+        than two, or a shared destination, moves one module per stage, as does a
+        module importing a peer bare (`import pkg.peer`): its readers spell the
+        old path."""
 
         declaring = tuple(path for path in self.present_paths if not self.emptied(path))
         destinations = [self.destinations[path] for path in declaring]
@@ -710,6 +712,60 @@ class ClusterLayers:
         ):
             return ()
         return declaring
+
+    @cached_property
+    def batch_refusals(self) -> dict[str, str]:
+        """The candidates whose own move refuses, each with its preflight's
+        reason. Each row is checked against the state where every destination
+        the batch creates already exists (`rewrite_context`), so a refusal is
+        the row's own and never "my destination is not there yet". A refused
+        row leaves the batch and its peers re-form without it, until none
+        refuses: the refused module stays where it is for a later stage."""
+
+        refusals: dict[str, str] = {}
+        while True:
+            paths = tuple(path for path in self.batch_candidates if path not in refusals)
+            if len(paths) < 2:
+                return refusals
+            found = self.row_refusals(self.recipe_of(paths))
+            if not found:
+                return refusals
+            refusals.update(found)
+
+    def row_refusals(self, recipe: RefactorRecipe) -> dict[str, str]:
+        """Each finding of the table re-reads the same batch, so the state keeps
+        the answer: one projection and one preflight per row, not per finding."""
+
+        return self.context.retained_operation_derivation(
+            (recipe, ClusterLayers.row_refusals),
+            lambda: self._row_refusals(recipe),
+        )
+
+    def _row_refusals(self, recipe: RefactorRecipe) -> dict[str, str]:
+        paths = {
+            operation.operation_key(): operation.target.file_path
+            for operation in recipe.operations
+        }
+        try:
+            projected = recipe.rewrite_context(self.context)
+        except CodemodOperationPreflightError as error:
+            return {paths[error.report.operation]: error.report.message}
+        return {
+            paths[report.operation]: report.message
+            for operation in recipe.operations
+            for report in operation.preflight_reports(projected)
+            if not report.status.is_passed
+        }
+
+    @cached_property
+    def batch_paths(self) -> tuple[str, ...]:
+        """The candidates that relocate together: every one whose own move does
+        not refuse, while two or more remain."""
+
+        paths = tuple(
+            path for path in self.batch_candidates if path not in self.batch_refusals
+        )
+        return paths if len(paths) >= 2 else ()
 
     def imports_a_peer_bare(self, paths: tuple[str, ...]) -> bool:
         graph = self.context.module_import_graph
@@ -727,22 +783,25 @@ class ClusterLayers:
             for alias in node.names
         )
 
-    def batch_recipe(self, context: CodemodSelectorContext) -> RefactorRecipe:
+    def batch_recipe(self) -> RefactorRecipe:
+        return self.recipe_of(self.batch_paths)
+
+    def recipe_of(self, paths: tuple[str, ...]) -> RefactorRecipe:
         moves = {
             path: BatchModuleMove(source_path=path, destination_path=self.destinations[path])
-            for path in self.batch_paths
+            for path in paths
         }
         recipe = RefactorRecipe(
             recipe_id="relocate-batch",
             reason="Relocate every name each flat module of the table declares into "
-            "its package, in one stage." + self.carried_debt(self.batch_paths),
+            "its package, in one stage." + self.carried_debt(paths),
         )
         for path, own in moves.items():
             destination = self.destinations[path]
             recipe = recipe.with_operation(
                 (
                     RelocateSymbolsToModuleOperation
-                    if destination in context.module_nodes_by_file_path
+                    if destination in self.context.module_nodes_by_file_path
                     else RelocateSymbolsToNewModuleOperation
                 )(
                     target=SourceRewriteTarget(file_path=path),
@@ -827,10 +886,14 @@ class PackageMoveFindingRecipeSynthesizer(
         if source_path in layers.dissolving_paths:
             return self.executable_evaluation(layers.dissolve_recipe())
         batch = layers.batch_paths
+        if batch and source_path in layers.batch_refusals:
+            return self.rejected_evaluation(
+                f"left {batch[0]}'s batch, refused: {layers.batch_refusals[source_path]}"
+            )
         if batch:
             if source_path != batch[0]:
                 return self.rejected_evaluation(f"moves in {batch[0]}'s batch")
-            return self.executable_evaluation(layers.batch_recipe(context))
+            return self.executable_evaluation(layers.batch_recipe())
         if layers.next_path is None:
             return self.rejected_evaluation(
                 "every flat module of the table is imported by another one that "

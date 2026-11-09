@@ -398,3 +398,77 @@ def test_a_merge_row_carries_the_statements_of_the_module_it_folds(tmp_path: Pat
     merged = (root / "pkg/planning/policy.py").read_text()
     assert merged.index("LIMIT = 2") < merged.index("assert LIMIT > 1")
     assert _runs(root, "VALUE") == "(2, 'Policy')"
+
+
+def test_a_row_whose_own_move_refuses_leaves_the_batch_and_the_rest_move(
+    tmp_path: Path,
+) -> None:
+    """`gamma`'s destination already declares `Gamma`, so its move refuses on its
+    own. Each row is checked where every destination the batch creates exists, so
+    the collision is gamma's alone: it stays put with its reason and `alpha`
+    and `beta` still move in one stage."""
+
+    _write(
+        tmp_path,
+        {
+            "pkg/__init__.py": "",
+            "pkg/messaging/__init__.py": "",
+            "pkg/alpha.py": "class Alpha:\n    kind = 'a'\n",
+            "pkg/beta.py": "from pkg.alpha import Alpha\n\n\nclass Beta(Alpha):\n    kind = 'b'\n",
+            "pkg/gamma.py": "class Gamma:\n    kind = 'flat'\n",
+            "pkg/messaging/gamma.py": "class Gamma:\n    kind = 'nested'\n",
+            "pkg/app.py": (
+                "from pkg.beta import Beta\nfrom pkg.gamma import Gamma\n\n"
+                "VALUE = (Beta.kind, Gamma.kind)\n"
+            ),
+        },
+    )
+
+    report = CodemodRefactorGoalRunner(
+        roots=(tmp_path,),
+        config=DetectorConfig(
+            package_destination_tables=(
+                "| `messaging` | `alpha.py`, `beta.py`, `gamma.py` | |\n",
+            )
+        ),
+        dry_run=True,
+        migration_type=PackageMoveConcept,
+        guard_suite=ArchitectureGuardSuite(),
+    ).run()
+    assert "already binds moved declarations ('Gamma',)" in report.to_markdown()
+    assert len(report.replay_sequence.documents) == 2
+    replay = report.replay_sequence.simulate(
+        CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    )
+    assert replay.is_clean
+    replay.apply()
+    assert not (tmp_path / "pkg/alpha.py").exists()
+    assert not (tmp_path / "pkg/beta.py").exists()
+    assert (tmp_path / "pkg/gamma.py").exists()
+    assert _runs(tmp_path, "VALUE") == "('b', 'flat')"
+
+
+
+def test_a_batch_peer_import_heads_the_new_module_above_the_block_reading_it(
+    tmp_path: Path,
+) -> None:
+    """`Beta(Alpha)` reads its peer's name when the class is built. The import and
+    the block both land on line 1 of the new module, and the batch's edit stream
+    opens with alpha's block, so the import has to lead by what it is (an import),
+    not by which peer's edit came first."""
+
+    _write(
+        tmp_path,
+        {
+            "pkg/__init__.py": "",
+            "pkg/messaging/__init__.py": "",
+            "pkg/alpha.py": "class Alpha:\n    kind = 'a'\n",
+            "pkg/beta.py": "from pkg.alpha import Alpha\n\n\nclass Beta(Alpha):\n    kind = 'b'\n",
+            "pkg/app.py": "from pkg.beta import Beta\n\nVALUE = Beta.kind\n",
+        },
+    )
+
+    _stages, root = _moved(tmp_path, "| `messaging` | `alpha.py`, `beta.py` | |\n")
+    moved = (root / "pkg/messaging/beta.py").read_text()
+    assert moved.index("from pkg.messaging.alpha import Alpha") < moved.index("class Beta")
+    assert _runs(root, "VALUE") == "b"
