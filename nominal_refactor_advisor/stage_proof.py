@@ -15,10 +15,16 @@ ScanT = TypeVar("ScanT")
 
 
 class TrajectoryScans(ABC, Generic[ScanT]):
-    """What a goal run can rescan: every detector over one source state."""
+    """What a goal run can rescan: every detector over one source state, or some
+    detectors over the files the stages rewrote."""
 
     @abstractmethod
     def exact_scan(self, scan: ScanT) -> ScanT:
+        raise NotImplementedError
+
+    @abstractmethod
+    def settled(self, scan: ScanT) -> ScanT:
+        """`scan` with every finding its coverage still owes paid."""
         raise NotImplementedError
 
 
@@ -74,8 +80,9 @@ class OperationCertifiedStages(StageProof):
     the concept's own detectors over the projected tree, and every per-module
     detector over the files it touched, carrying the rest: a per-module answer
     depends only on its own file, so those detectors stay exact over the whole
-    tree. Detectors that read across files are not rerun; the next full scan
-    measures them."""
+    tree. A rewritten file is re-proved once, when the trajectory settles: no
+    stage plans from a per-module finding. Detectors that read across files are
+    not rerun; the next full scan measures them."""
 
     @classmethod
     def reproof_detector_ids(
@@ -89,7 +96,7 @@ class OperationCertifiedStages(StageProof):
 
     @classmethod
     def certified(cls, scans: TrajectoryScans[ScanT], scan: ScanT) -> ScanT:
-        return scan
+        return scans.settled(scan)
 
 
 __all__ = (

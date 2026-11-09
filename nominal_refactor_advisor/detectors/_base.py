@@ -538,6 +538,19 @@ class IssueDetector(
         detector_registry = cast("dict[str, type[IssueDetector]]", cls.__registry__)
         return cls._ordered_registered_detector_types(tuple(detector_registry.values()))
 
+    @classmethod
+    def registered_detector_types_with_ids(
+        cls, detector_ids: frozenset[str]
+    ) -> tuple[type[IssueDetector], ...]:
+        """The registered detectors whose effective ids are in `detector_ids`, in
+        registry order."""
+
+        return tuple(
+            detector_type
+            for detector_type in cls.registered_detector_types()
+            if detector_type.effective_detector_id() in detector_ids
+        )
+
     @staticmethod
     @lru_cache(maxsize=None)
     def _ordered_registered_detector_types(
