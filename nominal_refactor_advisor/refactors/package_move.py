@@ -631,23 +631,9 @@ class ClusterLayers:
             return ()
         return declaring
 
-    def module_name_at(self, destination_path: str, source_path: str) -> str:
-        """The module a destination path names, beside the source's package."""
-
-        source_module = self.context.module_import_graph.module_name_for_file_path(source_path)
-        if source_module is None:
-            raise ValueError(f"{source_path!r} has no module name")
-        package = source_module.rpartition(".")[0]
-        relative = PurePosixPath(destination_path).relative_to(PurePosixPath(source_path).parent)
-        return ".".join((*filter(None, (package,)), *relative.with_suffix("").parts))
-
     def batch_recipe(self, context: CodemodSelectorContext) -> RefactorRecipe:
-        import_graph = context.module_import_graph
         moves = {
-            path: BatchModuleMove(
-                source_module=import_graph.module_name_for_file_path(path) or "",
-                destination_module=self.module_name_at(self.destinations[path], path),
-            )
+            path: BatchModuleMove(source_path=path, destination_path=self.destinations[path])
             for path in self.batch_paths
         }
         recipe = RefactorRecipe(
