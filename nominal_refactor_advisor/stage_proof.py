@@ -35,6 +35,13 @@ class StageProof(ABC):
 
     @classmethod
     @abstractmethod
+    def carried_detector_ids(cls, per_module: frozenset[str]) -> frozenset[str]:
+        """Per-module detectors whose findings a stage carries forward and
+        recomputes only for the files it touched."""
+        raise NotImplementedError
+
+    @classmethod
+    @abstractmethod
     def certified(cls, scans: TrajectoryScans[ScanT], scan: ScanT) -> ScanT:
         """The scan a terminal state and its report are judged on."""
         raise NotImplementedError
@@ -52,21 +59,33 @@ class RescannedStages(StageProof):
         return own | semantic_mirrors
 
     @classmethod
+    def carried_detector_ids(cls, per_module: frozenset[str]) -> frozenset[str]:
+        return frozenset()
+
+    @classmethod
     def certified(cls, scans: TrajectoryScans[ScanT], scan: ScanT) -> ScanT:
         return scans.exact_scan(scan)
 
 
 class OperationCertifiedStages(StageProof):
-    """A stage's operations keep every body and change only module paths and
-    import lines; their preflights refuse anything else, and the concept's own
-    detector over the projected tree says which targets remain. Nothing outside
-    the stage's files is certified again."""
+    """A stage's operations rewrite spellings of the moved module's name (its
+    imports, import strings, manifest entries and mentions) and the bodies they
+    move; their preflights refuse a spelling they cannot trace. Each stage reruns
+    the concept's own detectors over the projected tree, and every per-module
+    detector over the files it touched, carrying the rest: a per-module answer
+    depends only on its own file, so those detectors stay exact over the whole
+    tree. Detectors that read across files are not rerun; the next full scan
+    measures them."""
 
     @classmethod
     def reproof_detector_ids(
         cls, own: frozenset[str], semantic_mirrors: frozenset[str]
     ) -> frozenset[str]:
         return own
+
+    @classmethod
+    def carried_detector_ids(cls, per_module: frozenset[str]) -> frozenset[str]:
+        return per_module
 
     @classmethod
     def certified(cls, scans: TrajectoryScans[ScanT], scan: ScanT) -> ScanT:

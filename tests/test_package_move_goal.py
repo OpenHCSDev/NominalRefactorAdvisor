@@ -554,3 +554,68 @@ def test_data_another_module_also_reads_stays_and_refuses(tmp_path: Path) -> Non
 
     assert report.stages == ()
     assert "__file__ (" in report.to_markdown() and "also names" in report.to_markdown()
+
+
+def test_a_package_move_keeps_every_per_module_detector_exact_and_says_what_it_counted(
+    tmp_path: Path,
+) -> None:
+    """A stage reruns per-module detectors over the files it touched and carries
+    the rest, so its terminal holds exactly what a fresh run over the terminal's
+    modules finds; the report's final count names the detectors it covers."""
+
+    from nominal_refactor_advisor.analysis import analyze_detector_types
+    from nominal_refactor_advisor.codemod_workflow import NamedDetectorCoverage
+    from nominal_refactor_advisor.detectors._base import (
+        DetectorCacheGranularity,
+        IssueDetector,
+    )
+
+    _layered_package(tmp_path)
+    dispatch = (
+        "\n\ndef {name}(value):\n"
+        "    if value.kind == 'a':\n        return 1\n"
+        "    elif value.kind == 'b':\n        return 2\n"
+        "    elif value.kind == 'c':\n        return 3\n"
+        "    return 0\n"
+    )
+    steps = tmp_path / "pkg/steps.py"
+    steps.write_text(
+        steps.read_text().replace("__all__ = ('Step',)", "__all__ = ('Step', 'kind_of')")
+        + dispatch.format(name="kind_of"),
+        encoding="utf-8",
+    )
+    _write(tmp_path, "pkg/other.py", dispatch.format(name="other_kind").lstrip())
+    runner = CodemodRefactorGoalRunner(
+        roots=(tmp_path,),
+        config=DetectorConfig(package_destination_tables=(TABLE,)),
+        parse_workers=1,
+        dry_run=True,
+        migration_type=PackageMoveConcept,
+        guard_suite=ArchitectureGuardSuite(),
+    )
+    terminal = runner.prove_trajectory(runner.starting_scan()).proved_terminal
+    per_module = DetectorCacheGranularity.PER_MODULE.select_detector_types(
+        IssueDetector.registered_detector_types()
+    )
+    per_module_ids = {detector.effective_detector_id() for detector in per_module}
+    fresh = analyze_detector_types(
+        terminal.state.scan.modules, runner.config, detector_types=per_module
+    )
+
+    found_in = {
+        Path(evidence.file_path).relative_to(tmp_path).as_posix()
+        for finding in fresh
+        for evidence in finding.evidence
+    }
+    # one finding the move recomputed at its new path, one it carried untouched
+    assert {"pkg/planning/steps.py", "pkg/other.py"} <= found_in, found_in
+    assert sorted(
+        finding.stable_id
+        for finding in terminal.state.scan.findings
+        if finding.detector_id in per_module_ids
+    ) == sorted(finding.stable_id for finding in fresh)
+    coverage = terminal.state.scan.coverage
+    assert isinstance(coverage, NamedDetectorCoverage)
+    assert per_module_ids <= set(coverage.detector_ids)
+    report = runner.run()
+    assert "from the stage proof's" in report.to_markdown()
