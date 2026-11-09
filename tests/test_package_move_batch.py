@@ -561,10 +561,7 @@ def test_a_shell_whose_own_dissolve_refuses_stays_and_the_rest_still_move(
     assert replay.is_clean
     replay.apply()
     assert not (tmp_path / "pkg/alpha.py").exists()
-    assert (tmp_path / "pkg/plain.py").read_text().splitlines() == [
-        "from pkg.messaging.alpha import Alpha",
-        "",
-    ]
+    assert (tmp_path / "pkg/plain.py").read_text() == "from pkg.messaging.alpha import Alpha\n"
     assert _runs(tmp_path, "VALUE") == "('a', 'a')"
 
 

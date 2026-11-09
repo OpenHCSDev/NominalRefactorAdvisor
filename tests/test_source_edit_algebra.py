@@ -412,6 +412,35 @@ def test_import_mutation_owns_add_remove_union_without_parsing_insertions(
         )
 
 
+@pytest.mark.parametrize(
+    "source,expected",
+    (
+        ("from pkg.a import X\n", "from pkg.b import X\n"),
+        ("from pkg.a import X\n\nY = X\n", "from pkg.b import X\n\nY = X\n"),
+    ),
+)
+def test_an_import_swapped_for_another_keeps_the_file_its_own_length(
+    tmp_path: Path, source: str, expected: str
+) -> None:
+    """A shell whose only line is an import, rewritten to import from the module's new
+    home, is still one line: an import block pads toward what follows it, and at the
+    end of the file nothing does."""
+
+    module_path, context = _snapshot(tmp_path, source)
+    removal = ModuleImportMutation.remove_names(
+        file_path=module_path.as_posix(), module_name="pkg.a", names=("X",)
+    )
+    addition = ModuleImportMutation.from_source(
+        file_path=module_path.as_posix(), import_source="from pkg.b import X\n"
+    )
+    (mutation,) = NominalSourceEdit.coalesced_by_declaration((removal, addition), context)
+    rewrites = context.execution_snapshot()._planned_rewrites_from_physical_edits(
+        mutation.resolved_edits(context)
+    )
+    simulation = context.simulate_rewrites(rewrites)
+    assert simulation.rewritten_sources[module_path.as_posix()] == expected
+
+
 def test_import_mutation_orders_forms_by_nominal_ast_declaration(
     tmp_path: Path,
 ) -> None:
