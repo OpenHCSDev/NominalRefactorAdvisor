@@ -1674,6 +1674,24 @@ class CodemodWorkflowScan:
 
 
 @dataclass(frozen=True)
+class ProvedWorkflowScan(CodemodWorkflowScan):
+    """The scan of a state whose snapshot a stage already proved. Its parses,
+    text files and indexes are that snapshot's, never built again."""
+
+    proved: CodemodSourceSnapshot = field(kw_only=True, repr=False)
+    modules: ParsedModuleSet = field(init=False)
+    text_files: Mapping[str, FileText] = field(init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "modules", self.proved.module_set)
+        object.__setattr__(self, "text_files", self.proved.text_files)
+
+    @property
+    def source_snapshot(self) -> CodemodSourceSnapshot:
+        return self.proved
+
+
+@dataclass(frozen=True)
 class CodemodSimulationFindingProjection:
     """Analyze advisor findings after applying a simulation in memory."""
 
@@ -1934,10 +1952,13 @@ class CodemodRefactorGoalRunner(TrajectoryScans[CodemodWorkflowScan]):
     def projected_target_scan(
         self,
         scan: CodemodWorkflowScan,
-        simulation: CodemodSimulationReport,
+        stage: CodemodPlanDocumentSimulation,
         target_findings: tuple[RefactorFinding, ...],
     ) -> CodemodWorkflowScan:
-        """Rerun only active goal detector declarations between stages."""
+        """Rerun only active goal detector declarations between stages, over the
+        state the stage's simulation already projected."""
+
+        simulation = stage.simulation
 
         detector_ids = self.migration_type.stage_proof.reproof_detector_ids(
             frozenset(
@@ -1966,12 +1987,8 @@ class CodemodRefactorGoalRunner(TrajectoryScans[CodemodWorkflowScan]):
                 )
             )
         ) - detector_ids
-        projected_modules = ProjectedScanModuleSet(
-            modules=tuple(scan.modules),
-            simulation=simulation,
-            roots=self.roots,
-        ).modules_after_projection()
-        module_set = ParsedModuleSet.of(projected_modules)
+        after = stage.required_after_snapshot
+        module_set = after.module_set
         touched = frozenset(simulation.changed_file_paths)
         present = frozenset(module.file_path for module in module_set)
         carried = [
@@ -1994,8 +2011,8 @@ class CodemodRefactorGoalRunner(TrajectoryScans[CodemodWorkflowScan]):
                 if detector_type.effective_detector_id() in carried_ids
             ),
         )
-        return CodemodWorkflowScan(
-            modules=module_set,
+        return ProvedWorkflowScan(
+            proved=after,
             findings=self.report_scoped_findings(
                 (
                     *analyze_detector_types(
@@ -2008,7 +2025,6 @@ class CodemodRefactorGoalRunner(TrajectoryScans[CodemodWorkflowScan]):
                     *recomputed,
                 )
             ),
-            text_files=TextFileRewrite.carried(scan.text_files, simulation.text_file_rewrites),
             coverage=StageProofCoverage(tuple(sorted(detector_ids | carried_ids))),
         )
 
@@ -2237,7 +2253,7 @@ class CodemodRefactorGoalRunner(TrajectoryScans[CodemodWorkflowScan]):
                 ) as details:
                     projected_scan = self.projected_target_scan(
                         active_scan,
-                        simulation.simulation,
+                        simulation,
                         target_findings,
                     )
                     if not self.target_findings(projected_scan):

@@ -20942,9 +20942,11 @@ def test_goal_runner_analyzes_equivalent_branch_state_once(
     from nominal_refactor_advisor.codemod import FindingRecipeActionKey
     from nominal_refactor_advisor.refactors.finding_recipes import FindingRecipeSynthesizer
     from nominal_refactor_advisor.codemod_workflow import CodemodRefactorGoalRunner
+    from nominal_refactor_advisor.codemod_runtime import CodemodPlanDocumentSimulation
     from nominal_refactor_advisor.codemod_workflow import CodemodWorkflowScan
-    from nominal_refactor_advisor.codemod_workflow import ProjectedScanModuleSet
     from nominal_refactor_advisor.codemod_workflow import CodemodWorkflowStopReason
+    from nominal_refactor_advisor.codemod_workflow import EveryDetectorCoverage
+    from nominal_refactor_advisor.codemod_workflow import ProvedWorkflowScan
 
     detector_ids = (
         "equivalent_trajectory_left_test",
@@ -21006,19 +21008,15 @@ def test_goal_runner_analyzes_equivalent_branch_state_once(
     def projected_target_scan(
         self: CodemodRefactorGoalRunner,
         scan: CodemodWorkflowScan,
-        simulation: CodemodSimulationReport,
+        stage: CodemodPlanDocumentSimulation,
         target_findings: tuple[RefactorFinding, ...],
     ) -> CodemodWorkflowScan:
-        del target_findings
-        projected_analysis_digests.append(simulation.rewritten_source_digest)
-        projected_modules = ProjectedScanModuleSet(
-            modules=tuple(scan.modules),
-            simulation=simulation,
-            roots=self.roots,
-        ).modules_after_projection()
-        return CodemodWorkflowScan(
-            modules=ParsedModuleSet.of(list(projected_modules)),
+        del self, scan, target_findings
+        projected_analysis_digests.append(stage.simulation.rewritten_source_digest)
+        return ProvedWorkflowScan(
+            proved=stage.required_after_snapshot,
             findings=[],
+            coverage=EveryDetectorCoverage(),
         )
 
     previous_synthesizers = {
@@ -21069,9 +21067,10 @@ def test_goal_runner_crosses_local_worsening_move_to_unique_terminal(
     from nominal_refactor_advisor.codemod_workflow import CodemodRefactorGoalRunner
     from nominal_refactor_advisor.codemod_workflow import CodemodWorkflowScan
     from nominal_refactor_advisor.codemod_workflow import CodemodWorkflowStopReason
-    from nominal_refactor_advisor.codemod_workflow import ProjectedScanModuleSet
+    from nominal_refactor_advisor.codemod_runtime import CodemodPlanDocumentSimulation
     from nominal_refactor_advisor.codemod_workflow import (
         EveryDetectorCoverage,
+        ProvedWorkflowScan,
         StageProofCoverage,
     )
 
@@ -21215,18 +21214,13 @@ def test_goal_runner_crosses_local_worsening_move_to_unique_terminal(
     def projected_target_scan(
         self: CodemodRefactorGoalRunner,
         scan: CodemodWorkflowScan,
-        simulation: CodemodSimulationReport,
+        stage: CodemodPlanDocumentSimulation,
         target_findings: tuple[RefactorFinding, ...],
     ) -> CodemodWorkflowScan:
-        del self, target_findings
-        modules = ProjectedScanModuleSet(
-            modules=tuple(scan.modules),
-            simulation=simulation,
-            roots=(tmp_path,),
-        ).modules_after_projection()
-        rewritten_source = simulation.rewritten_sources[module_path.as_posix()]
-        return CodemodWorkflowScan(
-            modules=ParsedModuleSet.of(list(modules)),
+        del self, scan, target_findings
+        rewritten_source = stage.simulation.rewritten_sources[module_path.as_posix()]
+        return ProvedWorkflowScan(
+            proved=stage.required_after_snapshot,
             findings=list(findings_by_source[rewritten_source]),
             coverage=StageProofCoverage(()),
         )
