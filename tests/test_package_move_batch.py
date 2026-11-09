@@ -603,3 +603,54 @@ def test_a_bare_peer_import_holds_back_its_own_module_not_the_batch(
     assert stages == 4
     assert not any((root / f"pkg/{name}.py").exists() for name in ("alpha", "beta", "records", "messages"))
     assert _runs(root, "VALUE") == "('a', 'b', 'record')"
+
+
+def test_a_move_whose_new_package_init_imports_its_importer_refuses(tmp_path: Path) -> None:
+    """`svc/__init__.py` imports `run` from `child`, and `child` imports `unit`. Moving
+    `unit` into `svc/` would have `child` import `pkg.svc.unit`, whose package
+    `__init__` runs first and asks a half-loaded `child` for `run`. The move refuses
+    naming the cycle, and the code stays as it was, still running."""
+
+    _write(
+        tmp_path,
+        {
+            "pkg/__init__.py": "",
+            "pkg/svc/__init__.py": "from pkg.child import run\n",
+            "pkg/child.py": "from pkg.unit import Unit\n\n\ndef run() -> type:\n    return Unit\n",
+            "pkg/unit.py": "class Unit:\n    pass\n",
+            "pkg/app.py": "from pkg.child import run\n\nVALUE = run().__name__\n",
+        },
+    )
+
+    report = CodemodRefactorGoalRunner(
+        roots=(tmp_path,),
+        config=DetectorConfig(package_destination_tables=("| `svc` | `unit.py` | |\n",)),
+        dry_run=True,
+        migration_type=PackageMoveConcept,
+        guard_suite=ArchitectureGuardSuite(),
+    ).run()
+    assert "loading it runs pkg.svc's __init__ first, which imports pkg.child" in report.to_markdown()
+    assert not report.replay_sequence.documents
+    assert _runs(tmp_path, "VALUE") == "Unit"
+
+
+def test_a_package_init_re_exporting_the_module_moving_into_it_still_moves(
+    tmp_path: Path,
+) -> None:
+    """`svc/__init__.py` re-exports `Unit` from `unit`, which moves into `svc/`. A
+    package importing its own submodule is no cycle: Python loads `pkg.svc.unit`
+    while `pkg.svc` is mid-init, so the move goes ahead."""
+
+    _write(
+        tmp_path,
+        {
+            "pkg/__init__.py": "",
+            "pkg/svc/__init__.py": "from pkg.unit import Unit\n",
+            "pkg/unit.py": "class Unit:\n    pass\n",
+            "pkg/app.py": "from pkg.svc import Unit\n\nVALUE = Unit.__name__\n",
+        },
+    )
+
+    _stages, root = _moved(tmp_path, "| `svc` | `unit.py` | |\n")
+    assert (root / "pkg/svc/unit.py").exists()
+    assert _runs(root, "VALUE") == "Unit"
