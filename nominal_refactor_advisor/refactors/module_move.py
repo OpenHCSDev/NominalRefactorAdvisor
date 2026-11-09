@@ -587,6 +587,15 @@ class ModuleNameRedirect:
         del name
         return frozenset()
 
+    def binding_reader_paths(self, name: str) -> frozenset[str]:
+        """The modules that bind `name` once the move lands besides the name's own
+        owner: an import the moved code carries, or a module-context name
+        (`__name__`, `__package__`) that follows the code. These owners create
+        no module, so there is none."""
+
+        del name
+        return frozenset()
+
     def patched_reader_path(self, name: str, file_path: str) -> str:
         """The module a patch of `source.name` must target instead: its one reader."""
 
@@ -668,10 +677,18 @@ class RelocationNameRedirect(ModuleNameRedirect):
     reader of a removed source import, lands in `reader_path`."""
 
     reader_path: str
+    reader_bindings: frozenset[str] = frozenset()
+    """The names `reader_path` binds once the move lands besides the moved
+    declarations: the imports the moved code carries, and the module-context
+    names that follow the code when every name the source declares moves into
+    the module this relocation creates."""
 
     def name_reader_paths(self, name: str) -> frozenset[str]:
         del name
         return frozenset((self.reader_path,))
+
+    def binding_reader_paths(self, name: str) -> frozenset[str]:
+        return frozenset((self.reader_path,)) if name in self.reader_bindings else frozenset()
 
 
 @dataclass(frozen=True)
@@ -828,6 +845,13 @@ class _AliasOwners(ABC):
     def access_owners(self, access: _NamedModuleMemberAccess) -> frozenset[str]:
         raise NotImplementedError
 
+    def attribute_readers(self, name: str) -> frozenset[str]:
+        """Every module `s.name` can be read from once the move lands; a use
+        whose owners name no one module for the alias can still share one of
+        these."""
+
+        return self.attribute_owners(name)
+
 
 @dataclass(frozen=True)
 class _RedirectOwners(_AliasOwners):
@@ -840,6 +864,11 @@ class _RedirectOwners(_AliasOwners):
         if name not in self.redirect.destinations:
             return frozenset()
         return self._modules((self.redirect.destinations[name],))
+
+    def attribute_readers(self, name: str) -> frozenset[str]:
+        """Its owner, and the module a whole moved module's code carries it into."""
+
+        return self.attribute_owners(name) | self._modules(self.redirect.binding_reader_paths(name))
 
     def access_owners(self, access: _NamedModuleMemberAccess) -> frozenset[str]:
         if access.member_name not in self.redirect.destinations:
@@ -922,22 +951,28 @@ class _SourceModuleAliasRetargets:
         scope: ast.AST | None,
         owners: _AliasOwners,
     ) -> tuple[str, ...]:
-        """The one module every use of the alias's variable in `scope` reaches a
-        moved name in, or none."""
+        """The one module every use of the alias's variable in `scope` reaches:
+        the one owner all its names share, else the one module all of them can
+        be read from once the move lands (a whole moved module, whose imports
+        travel with its code), or none."""
 
-        reached: set[str] = set()
+        owned: list[frozenset[str]] = []
+        readable: list[frozenset[str]] = []
         for node in index.uses_of(binding, scope):
             parent = index.parents.get(node)
             if isinstance(parent, ast.Attribute) and parent.value is node:
-                use_owners = owners.attribute_owners(parent.attr)
+                owned.append(owners.attribute_owners(parent.attr))
+                readable.append(owners.attribute_readers(parent.attr))
             elif access := _NamedModuleMemberAccess.of(node, index.parents):
-                use_owners = owners.access_owners(access)
+                owned.append(owners.access_owners(access))
+                readable.append(owners.access_owners(access))
             else:
                 return ()
-            if len(use_owners) != 1:
-                return ()
-            reached |= use_owners
-        return tuple(reached) if len(reached) == 1 else ()
+        for reached in (owned, readable):
+            common = frozenset.intersection(*reached) if reached else frozenset()
+            if len(common) == 1:
+                return tuple(common)
+        return ()
 
     def localized_edits(
         self,
@@ -1340,6 +1375,12 @@ class SourceTopLevelSymbolClosureMovePlan(SourceTopLevelSymbolClosureMoveCarrier
                 **{name: request.destination_path for name in moved_symbol_names},
             },
             reader_path=request.destination_path,
+            reader_bindings=cls._reader_bindings(
+                report,
+                operation.module_context_names_following(
+                    context, source_table, frozenset(moved_symbol_names)
+                ),
+            ),
         )
         consumer_edits = (
             *destination_localizations,
@@ -1372,6 +1413,20 @@ class SourceTopLevelSymbolClosureMovePlan(SourceTopLevelSymbolClosureMoveCarrier
             consumer_edits=consumer_edits,
             rationale=request.rationale,
         )
+
+    @staticmethod
+    def _reader_bindings(
+        report: ModuleMoveDependencyReport,
+        following: frozenset[str],
+    ) -> frozenset[str]:
+        """What the destination binds for a source alias's readers besides the
+        moved declarations. Only a whole module's move makes the destination the
+        module the alias meant, with its context names following and its imports
+        travelling; a partial move leaves those on the source that stays."""
+
+        if not following:
+            return frozenset()
+        return frozenset((*report.imported_dependency_names, *following))
 
     @classmethod
     def _removed_binding_owners(
@@ -2269,13 +2324,14 @@ class NewModuleSymbolMoveOperationABC(ModuleSymbolMoveOperation, ABC):
     ) -> frozenset[str]:
         """When every name the source declares moves into the module this move creates,
         the moved code is that module under its new name, so `__name__` (a logger's, say)
-        names the destination, and `__doc__` (an argparse description) reads the
+        names the destination, `__package__` (a resource lookup's depth) is the package
+        it now sits in, and `__doc__` (an argparse description) reads the
         docstring the destination opens with. `__file__` follows only when every read
         of it is a file beside the module that the move carries along
         (_ModuleSiblingData)."""
         if not source_table.declared_names <= moved_names:
             return frozenset()
-        following = frozenset(("__name__",)) | self.sibling_data(context).following
+        following = frozenset(("__name__", "__package__")) | self.sibling_data(context).following
         if self.carries_source_docstring:
             return following | {"__doc__"}
         return following
