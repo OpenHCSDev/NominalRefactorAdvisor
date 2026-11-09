@@ -866,7 +866,7 @@ class ModuleImportMutation(KeyedSourceEditCoalescence):
                 if id(statement) in preserved_empty_guard_statement_ids
                 else RequestedImportStatement(statement, scope=scope)
                 .with_aliases(aliases)
-                .source
+                .source_in(self.file_path)
             )
             if scope.is_guarded and replacement_source:
                 replacement_source = _indented_source_for_statement(
@@ -1303,6 +1303,21 @@ class RequestedImportStatement:
     def source_in(self, file_path: str) -> str:
         """This import as written into `file_path`, fitted to its line length."""
 
+        return self._rendered(ImportLayout.of(self.statement, file_path))
+
+    @property
+    def one_name_source(self) -> str:
+        """The source of an import of exactly one name, which every layout
+        writes on one line, so no file's line length decides it."""
+
+        if len(self.statement.names) != 1:
+            raise ValueError(
+                f"An import of {len(self.statement.names)} names needs its file's layout: "
+                f"{ast.unparse(self.statement)!r}"
+            )
+        return self._rendered(OneLineImportLayout())
+
+    def _rendered(self, layout: ImportLayout) -> str:
         if isinstance(self.statement, ast.Import):
             return "".join(
                 f"import {ImportFromSource.alias_source(alias)}\n"
@@ -1311,7 +1326,7 @@ class RequestedImportStatement:
         return ImportFromSource(
             module_name=ImportFromModuleName.from_node(self.statement).source,
             aliases=tuple(self.statement.names),
-            layout=ImportLayout.of(self.statement, file_path),
+            layout=layout,
         ).source
 
     def with_aliases(
