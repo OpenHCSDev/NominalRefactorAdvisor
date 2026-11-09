@@ -1629,6 +1629,25 @@ class CodemodWorkflowScan:
             self.text_files
         )
 
+    @classmethod
+    def of_snapshot(
+        cls,
+        snapshot: CodemodSourceSnapshot,
+        findings: list[RefactorFinding],
+        coverage: FindingCoverage,
+    ) -> CodemodWorkflowScan:
+        """The scan of a state whose snapshot a stage already proved: its parses,
+        its text files and its indexes are that snapshot's, never built again."""
+
+        scan = cls(
+            modules=snapshot.module_set,
+            findings=findings,
+            text_files=snapshot.text_files,
+            coverage=coverage,
+        )
+        scan.__dict__["source_snapshot"] = snapshot
+        return scan
+
     @cached_property
     def _findings_by_concept(
         self,
@@ -1934,10 +1953,13 @@ class CodemodRefactorGoalRunner(TrajectoryScans[CodemodWorkflowScan]):
     def projected_target_scan(
         self,
         scan: CodemodWorkflowScan,
-        simulation: CodemodSimulationReport,
+        stage: CodemodPlanDocumentSimulation,
         target_findings: tuple[RefactorFinding, ...],
     ) -> CodemodWorkflowScan:
-        """Rerun only active goal detector declarations between stages."""
+        """Rerun only active goal detector declarations between stages, over the
+        state the stage's simulation already projected."""
+
+        simulation = stage.simulation
 
         detector_ids = self.migration_type.stage_proof.reproof_detector_ids(
             frozenset(
@@ -1966,12 +1988,8 @@ class CodemodRefactorGoalRunner(TrajectoryScans[CodemodWorkflowScan]):
                 )
             )
         ) - detector_ids
-        projected_modules = ProjectedScanModuleSet(
-            modules=tuple(scan.modules),
-            simulation=simulation,
-            roots=self.roots,
-        ).modules_after_projection()
-        module_set = ParsedModuleSet.of(projected_modules)
+        after = stage.required_after_snapshot
+        module_set = after.module_set
         touched = frozenset(simulation.changed_file_paths)
         present = frozenset(module.file_path for module in module_set)
         carried = [
@@ -1994,9 +2012,9 @@ class CodemodRefactorGoalRunner(TrajectoryScans[CodemodWorkflowScan]):
                 if detector_type.effective_detector_id() in carried_ids
             ),
         )
-        return CodemodWorkflowScan(
-            modules=module_set,
-            findings=self.report_scoped_findings(
+        return CodemodWorkflowScan.of_snapshot(
+            after,
+            self.report_scoped_findings(
                 (
                     *analyze_detector_types(
                         module_set,
@@ -2008,8 +2026,7 @@ class CodemodRefactorGoalRunner(TrajectoryScans[CodemodWorkflowScan]):
                     *recomputed,
                 )
             ),
-            text_files=TextFileRewrite.carried(scan.text_files, simulation.text_file_rewrites),
-            coverage=StageProofCoverage(tuple(sorted(detector_ids | carried_ids))),
+            StageProofCoverage(tuple(sorted(detector_ids | carried_ids))),
         )
 
     def exact_scan(self, scan: CodemodWorkflowScan) -> CodemodWorkflowScan:
@@ -2237,7 +2254,7 @@ class CodemodRefactorGoalRunner(TrajectoryScans[CodemodWorkflowScan]):
                 ) as details:
                     projected_scan = self.projected_target_scan(
                         active_scan,
-                        simulation.simulation,
+                        simulation,
                         target_findings,
                     )
                     if not self.target_findings(projected_scan):

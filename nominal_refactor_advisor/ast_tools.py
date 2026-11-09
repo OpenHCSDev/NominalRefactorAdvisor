@@ -1018,6 +1018,14 @@ class ParsedModuleSet(Sequence[ParsedModule]):
             facts[kind] = kind.derive(self)
         return cast(ParsedModuleSetFactT, facts[kind])
 
+    def with_fact(self, fact: ParsedModuleSetFact) -> None:
+        """Hold a fact already proved for exactly these parses, as its kind's
+        answer; a set whose fact is already held refuses a second one."""
+
+        if type(fact) in self._facts:
+            raise ValueError(f"this set already holds its {type(fact).__name__}")
+        self._facts[type(fact)] = fact
+
     @cached_property
     def observation_graph(self) -> ObservationGraph:
         return ObservationGraph(

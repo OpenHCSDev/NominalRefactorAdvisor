@@ -559,8 +559,12 @@ class CodemodSourceSnapshot(CodemodSelectorContext):
     @cached_property
     def module_set(self) -> ParsedModuleSet:
         """This state's parses as one set, so its set facts are derived once
-        for every operation and proof over this state."""
-        return ParsedModuleSet(self.parsed_modules)
+        for every operation and proof over this state. Its class-family index is
+        the one this snapshot was proved with, so a state projected from its
+        parent hands its projected index on rather than deriving it again."""
+        modules = ParsedModuleSet(self.parsed_modules)
+        modules.with_fact(self.required_class_family_index)
+        return modules
 
     def simulate_rewrites(
         self,
