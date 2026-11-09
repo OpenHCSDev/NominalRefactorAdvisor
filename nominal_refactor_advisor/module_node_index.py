@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import unicodedata
 from collections import Counter, deque
 from dataclasses import dataclass, field
 
@@ -43,6 +44,7 @@ class ModuleNodeIndex(ParsedModuleFact):
     bound_name_counts: Counter[str] = field(repr=False)
     binding_sites: dict[str, tuple[ast.AST, ...]] = field(repr=False)
     declared_global: dict[int, frozenset[str]] = field(repr=False)
+    identifier_text: str = field(repr=False)
     _local_names: dict[int, frozenset[str]] = field(repr=False, default_factory=dict)
 
     @classmethod
@@ -121,6 +123,11 @@ class ModuleNodeIndex(ParsedModuleFact):
             bound_name_counts=bound,
             binding_sites={name: tuple(nodes) for name, nodes in sites.items()},
             declared_global={key: frozenset(names) for key, names in declared_global.items()},
+            identifier_text=(
+                parsed_module.source
+                if parsed_module.source.isascii()
+                else unicodedata.normalize("NFKC", parsed_module.source)
+            ),
         )
 
     def import_froms(self) -> tuple[ast.ImportFrom, ...]:
@@ -128,6 +135,18 @@ class ModuleNodeIndex(ParsedModuleFact):
 
     def names(self, name: str) -> tuple[ast.Name, ...]:
         return self.names_by_id.get(name, ())
+
+    def spells(self, identifier: str) -> bool:
+        """Whether the module's text can name `identifier`: every identifier,
+        import, comment or one-piece string naming it spells it in the text the
+        compiler resolves identifiers against (NFKC, for a non-ASCII source). A
+        string the parser assembles from pieces or escapes can hold it without
+        spelling it; read `string_constants` for those."""
+        return identifier in self.identifier_text
+
+    @property
+    def star_imports(self) -> bool:
+        return any(alias.name == "*" for node in self.imports for alias in node.names)
 
     def module_scope_names(self, name: str) -> tuple[ast.Name, ...]:
         """The `name` nodes, loads and stores, that use the module's binding."""

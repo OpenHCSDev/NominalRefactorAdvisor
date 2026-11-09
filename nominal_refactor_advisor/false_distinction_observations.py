@@ -30,6 +30,8 @@ from .ast_tools import (
     BuiltinCallName,
     CollectedFamily,
     ParsedModule,
+    ParsedModuleSet,
+    ParsedModuleSetFact,
     PythonModuleRootParser,
     PythonSourcePathDiscovery,
     PythonSourcePathPolicy,
@@ -750,7 +752,7 @@ class NameUse:
 
 
 @dataclass(frozen=True)
-class SiblingTestModules:
+class SiblingTestModules(ParsedModuleSetFact):
     """The test modules of the repositories that scanned modules import from.
 
     They are consumer evidence: a test that catches a class or names a member
@@ -790,6 +792,11 @@ class SiblingTestModules:
                 identity.declared_import_root.resolve()
             )
         )
+
+    @classmethod
+    def derive(cls, modules: ParsedModuleSet) -> SiblingTestModules:
+        """The tests beside one module set, read once for every proof over it."""
+        return cls.beside(modules)
 
     @classmethod
     def beside(cls, parsed_modules: Iterable[ParsedModule]) -> SiblingTestModules:

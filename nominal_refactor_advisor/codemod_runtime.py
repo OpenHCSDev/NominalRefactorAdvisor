@@ -471,6 +471,12 @@ class CodemodSourceSnapshot(CodemodSelectorContext):
             for source_file in self.source_index.files
         )
 
+    @cached_property
+    def module_set(self) -> ParsedModuleSet:
+        """This state's parses as one set, so its set facts are derived once
+        for every operation and proof over this state."""
+        return ParsedModuleSet(self.parsed_modules)
+
     def simulate_rewrites(
         self,
         rewrites: Iterable[PlannedSourceRewrite],
