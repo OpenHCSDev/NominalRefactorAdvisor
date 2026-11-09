@@ -199,7 +199,7 @@ ast_cache_payload_unavailable = AstCachePayloadUnavailable()
 class CollectedFamilyCacheSchema:
     """Schema identity for persisted collected-family item projections."""
 
-    version: int = 35
+    version: int = 36
     max_payload_bytes: int = 100_000
 
 
@@ -2385,13 +2385,6 @@ def _collected_family_cache_path(
     return cache_dir / f"{identity.cache_token}.pickle"
 
 
-def _collected_family_content_signature_path(
-    cache_dir: Path,
-    identity: CollectedFamilyCacheIdentity,
-) -> Path:
-    return cache_dir / f"{identity.cache_token}.signature"
-
-
 def collected_family_items_content_signature(
     items: tuple[object, ...],
     relocation: CheckoutRelocation | None = None,
@@ -2508,22 +2501,6 @@ def _replace_atomically(path: Path, data: bytes) -> None:
         raise
 
 
-def _store_collected_family_content_signature(
-    cache_dir: Path,
-    identity: CollectedFamilyCacheIdentity,
-    stable: StableCacheValue,
-) -> str | None:
-    try:
-        signature = stable.signature
-        _replace_atomically(
-            _collected_family_content_signature_path(cache_dir, identity),
-            signature.encode("ascii"),
-        )
-        return signature
-    except (OSError, pickle.PickleError, TypeError, AttributeError):
-        return None
-
-
 def collected_family_demand_cache_signature(demand: object) -> str:
     """Hash one immutable demand once for reuse across every source shard."""
 
@@ -2587,22 +2564,44 @@ class CollectedFamilyCacheContext:
     def items_content_signature(self, items: tuple[object, ...]) -> str:
         return collected_family_items_content_signature(items, self.relocation)
 
-    def payload_bytes(self, payload: CollectedFamilyCachePayload[ShapeItemT]) -> bytes:
-        """The one encoding of a family entry: relocated when portable, else
-        bound to this checkout. `read_payload` is its only reader."""
+    SIGNATURE_BYTES: ClassVar[int] = 32
+    """An entry opens with its items' content signature, so the signature is
+    read without unpickling the items and needs no file of its own."""
 
+    def payload_bytes(
+        self, payload: CollectedFamilyCachePayload[ShapeItemT], signature: str
+    ) -> bytes:
+        """The one encoding of a family entry: its content signature, then the
+        payload, relocated when portable, else bound to this checkout.
+        `read_signature` and `read_payload` are its only readers."""
+
+        prefix = signature.encode("ascii")
+        if len(prefix) != self.SIGNATURE_BYTES:
+            raise ValueError(f"content signature {signature!r} is not 32 characters")
         if self.relocation is None:
-            return pickle.dumps(payload, protocol=pickle.HIGHEST_PROTOCOL)
+            return prefix + pickle.dumps(payload, protocol=pickle.HIGHEST_PROTOCOL)
         data, portable = self.relocation.portable_dumps(payload)
         if portable:
-            return data
-        return pickle.dumps(
+            return prefix + data
+        return prefix + pickle.dumps(
             replace(payload, checkout_root=self.relocation.root_texts[0]),
             protocol=pickle.HIGHEST_PROTOCOL,
         )
 
+    def read_signature(self, path: Path) -> str | None:
+        with path.open("rb") as handle:
+            prefix = handle.read(self.SIGNATURE_BYTES)
+        if len(prefix) != self.SIGNATURE_BYTES:
+            return None
+        try:
+            return prefix.decode("ascii")
+        except UnicodeDecodeError:
+            return None
+
     def read_payload(self, path: Path) -> object:
         with path.open("rb") as handle:
+            if len(handle.read(self.SIGNATURE_BYTES)) != self.SIGNATURE_BYTES:
+                raise EOFError(f"{path} ends inside its content signature")
             if self.relocation is None:
                 return pickle.load(handle)
             return self.relocation.load(handle)
@@ -2654,8 +2653,12 @@ class CollectedFamilyCacheContext:
         )
         try:
             # Opening a cache path for ``wb`` creates it before serialization or
-            # storage can fail. A zero-byte remnant is a failed write.
-            return cache_path.is_file() and cache_path.stat().st_size > 0
+            # storage can fail. A remnant no longer than its signature is a
+            # failed write.
+            return (
+                cache_path.is_file()
+                and cache_path.stat().st_size > self.SIGNATURE_BYTES
+            )
         except OSError:
             return False
 
@@ -2697,16 +2700,6 @@ class CollectedFamilyCacheContext:
             return None
         if not all(isinstance(item, family.item_type) for item in payload.items):
             return None
-        signature_path = _collected_family_content_signature_path(
-            self.family_cache_dir,
-            identity,
-        )
-        if not signature_path.is_file():
-            _store_collected_family_content_signature(
-                self.family_cache_dir,
-                identity,
-                StableCacheValue.of(payload.items, self.relocation),
-            )
         if payload.ast_free is not True:
             return None
         return cast(tuple[ShapeItemT, ...], payload.items)
@@ -2719,13 +2712,13 @@ class CollectedFamilyCacheContext:
         if self.family_cache_dir is None:
             return None
         try:
-            signature = _collected_family_content_signature_path(
-                self.family_cache_dir,
-                self.identity(family, demand_signature),
-            ).read_text(encoding="ascii")
+            return self.read_signature(
+                _collected_family_cache_path(
+                    self.family_cache_dir, self.identity(family, demand_signature)
+                )
+            )
         except OSError:
             return None
-        return signature if len(signature) == 32 else None
 
     def store_items(
         self,
@@ -2745,7 +2738,7 @@ class CollectedFamilyCacheContext:
             ast_free=True,
         )
         try:
-            payload_bytes = self.payload_bytes(payload)
+            payload_bytes = self.payload_bytes(payload, stable.signature)
             payload_max_bytes = (
                 family.cache_payload_max_bytes
                 if family.cache_payload_max_bytes is not None
@@ -2758,10 +2751,8 @@ class CollectedFamilyCacheContext:
                 _collected_family_cache_path(self.family_cache_dir, identity),
                 payload_bytes,
             )
-            return _store_collected_family_content_signature(
-                self.family_cache_dir, identity, stable
-            )
-        except (OSError, pickle.PickleError, TypeError, AttributeError):
+            return stable.signature
+        except (OSError, pickle.PickleError, TypeError, AttributeError, ValueError):
             return None
 
     def bundle_is_complete(

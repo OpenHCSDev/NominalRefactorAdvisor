@@ -2071,7 +2071,8 @@ def test_uncertified_family_cache_payload_is_invalidated(
                 identity=payload.identity,
                 items=payload.items,
                 ast_free=False,
-            )
+            ),
+            entries.read_signature(payload_path),
         )
     )
 
@@ -2112,8 +2113,8 @@ def test_collected_family_can_opt_into_a_larger_bounded_cache_payload(
     measured_sizes = []
     encode = ast_tools_module.CollectedFamilyCacheContext.payload_bytes
 
-    def measure_payload(context, payload):
-        serialized = encode(context, payload)
+    def measure_payload(context, payload, signature):
+        serialized = encode(context, payload, signature)
         measured_sizes.append(len(serialized))
         return serialized
 
