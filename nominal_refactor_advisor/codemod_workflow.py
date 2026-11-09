@@ -2023,11 +2023,7 @@ class CodemodRefactorGoalRunner(TrajectoryScans[CodemodWorkflowScan]):
             IssueDetector.semantic_mirror_detector_ids(),
         )
         registered = IssueDetector.registered_detector_types()
-        detector_types = tuple(
-            detector_type
-            for detector_type in registered
-            if detector_type.effective_detector_id() in detector_ids
-        )
+        detector_types = IssueDetector.registered_detector_types_with_ids(detector_ids)
         if len(detector_types) != len(detector_ids):
             return self.projected_scan(scan, simulation)
         carried_ids = self.migration_type.stage_proof.carried_detector_ids(
@@ -2092,10 +2088,8 @@ class CodemodRefactorGoalRunner(TrajectoryScans[CodemodWorkflowScan]):
                             module for module in scan.modules if module.file_path in file_paths
                         ),
                         self.config,
-                        detector_types=tuple(
-                            detector_type
-                            for detector_type in IssueDetector.registered_detector_types()
-                            if detector_type.effective_detector_id() in detector_ids
+                        detector_types=IssueDetector.registered_detector_types_with_ids(
+                            detector_ids
                         ),
                     ),
                 )
