@@ -503,7 +503,7 @@ class ClusterLayers:
         source state: every finding's layers ask it for every other module."""
 
         return self.context.retained_operation_derivation(
-            ("package_move_declared_names", path), lambda: self._declared_names(path)
+            (ClusterLayers.declared_names, path), lambda: self._declared_names(path)
         )
 
     def _declared_names(self, path: str) -> tuple[str, ...]:
@@ -542,7 +542,7 @@ class ClusterLayers:
 
         return {
             path: self.context.retained_operation_derivation(
-                ("package_move_runtime_imports", path),
+                (ClusterLayers.imported_module_names, path),
                 lambda path=path: self._edges(
                     path,
                     lambda parsed: ModuleImportScope.RUNTIME.import_statements(parsed.module),
@@ -557,7 +557,7 @@ class ClusterLayers:
 
         return {
             path: self.context.retained_operation_derivation(
-                ("package_move_any_scope_imports", path),
+                (ClusterLayers.any_scope_module_names, path),
                 lambda path=path: self._edges(
                     path, lambda parsed: parsed.fact(ModuleNodeIndex).imports
                 ),
@@ -632,10 +632,6 @@ class ClusterLayers:
                 pair for path in paths for pair in self.deferred_cycles(path)
             )
         )
-
-    def imports_at_any_scope(self, importer: str, imported: str) -> bool:
-        module_name = self.context.module_import_graph.module_name_for_file_path(imported)
-        return module_name in self.any_scope_module_names(importer)
 
     def _mutual_pairs(
         self, edges: dict[str, frozenset[str]]
