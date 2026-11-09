@@ -785,8 +785,17 @@ class CodemodRefactorGoalStage(DataclassJsonReport):
             applied=True,
         )
 
+class StopCause(ABC):
+    """A record that explains why a run stopped short of a proof."""
+
+    @property
+    @abstractmethod
+    def causes(self) -> tuple[str, ...]:
+        """What a reader of the stop needs to act on."""
+
+
 @dataclass(frozen=True)
-class CodemodRefactorTrajectoryObstacle(DataclassJsonReport, ABC):
+class CodemodRefactorTrajectoryObstacle(DataclassJsonReport, StopCause, ABC):
     """Nominal proof obstacle for one unexhausted exact source state."""
 
     kind: ClassVar[CodemodRefactorTrajectoryObstacleKind]
@@ -801,6 +810,12 @@ class CodemodRefactorTrajectoryObstacle(DataclassJsonReport, ABC):
     @json_report_property(field_name="kind")
     def report_kind(self) -> CodemodRefactorTrajectoryObstacleKind:
         return self.kind
+
+    @property
+    def causes(self) -> tuple[str, ...]:
+        """What a reader of the stop needs to act on: the obstacle's own reason."""
+
+        return (self.reason,)
 
     def markdown_lines(self) -> tuple[str, ...]:
         return (
@@ -819,6 +834,14 @@ class CodemodRefactorRecipeFrontierObstacle(CodemodRefactorTrajectoryObstacle):
     @property
     def reason(self) -> str:
         return "the current-state recipe frontier is incomplete"
+
+    @property
+    def causes(self) -> tuple[str, ...]:
+        """"Incomplete" names no cause: the refused recipes' reasons do."""
+
+        return tuple(dict.fromkeys(obstacle.reason for obstacle in self.recipe_obstacles)) or (
+            self.reason,
+        )
 
     def markdown_lines(self) -> tuple[str, ...]:
         return (
@@ -1111,7 +1134,7 @@ class CodemodRefactorReachingStage(DataclassJsonReport):
 
 
 @dataclass(frozen=True)
-class CodemodRefactorTrajectoryDeadEnd(DataclassJsonReport):
+class CodemodRefactorTrajectoryDeadEnd(DataclassJsonReport, StopCause):
     """One fully explored non-goal state with no executable transition."""
 
     state: CodemodRefactorTrajectoryState = json_report_field(
@@ -1132,6 +1155,17 @@ class CodemodRefactorTrajectoryDeadEnd(DataclassJsonReport):
 
         return CodemodRefactorRemainingTargets.of_records(
             self.class_plan_report.finding_plan.report.records
+        )
+
+    @property
+    def causes(self) -> tuple[str, ...]:
+        return tuple(
+            dict.fromkeys(
+                (
+                    *((self.partial_rejection,) if self.partial_rejection else ()),
+                    *(group.reason for group in self.target_outcomes),
+                )
+            )
         )
 
     def markdown_lines(self) -> tuple[str, ...]:
@@ -1294,11 +1328,23 @@ class CodemodRefactorGoalReport(DataclassJsonReport):
     def migration(self) -> str:
         return self.migration_type.concept_key()
 
+    @json_report_property()
+    def stop_causes(self) -> tuple[str, ...]:
+        """Why the run stopped without a proof, named in the stop itself: each
+        dead end's and obstacle's causes, once. A proved run has none."""
+
+        proof = self.trajectory_proof
+        if proof.status.proved:
+            return ()
+        stops: tuple[StopCause, ...] = (*proof.dead_ends, *proof.obstacles)
+        return tuple(dict.fromkeys(cause for stop in stops for cause in stop.causes))
+
     def to_markdown(self) -> str:
         lines = [
             "Codemod refactor goal report:",
             f"   - Migration: {self.migration_type.concept_key()}",
-            f"   - Stop reason: {self.stop_reason.value}",
+            "   - Stop reason: "
+            + "; ".join((self.stop_reason.value, *self.stop_causes)),
             f"   - Stages: {self.stage_count}",
             f"   - Rewrites: {self.total_rewrite_count}",
             "   - Final findings: "
