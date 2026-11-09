@@ -81,7 +81,11 @@ from ..codemod_source_edits import (
 from ..codemod_spacing import DestinationInsertionSpacing
 from ..declaration_dependencies import DeclarationDependencyProjection
 from ..json_reports import DataclassJsonReport
-from ..lexical_bindings import LEXICAL_SCOPE_BINDING_AUTHORITY, ImportFromModuleName
+from ..lexical_bindings import (
+    LEXICAL_SCOPE_BINDING_AUTHORITY,
+    ImportBoundNameProjection,
+    ImportFromModuleName,
+)
 from ..public_exports import (
     CompactModulePublicExportContract,
     module_public_export_contract,
@@ -1177,7 +1181,10 @@ class _SourceModuleObjectReads:
                 for alias in node.names:
                     alias_parts = (*(package or "").split("."), alias.name)
                     if package and source_parts[: len(alias_parts)] == alias_parts:
-                        yield (alias.asname or alias.name, *source_parts[len(alias_parts) :])
+                        yield (
+                            ImportBoundNameProjection(node).alias_bound_name(alias),
+                            *source_parts[len(alias_parts) :],
+                        )
 
     @staticmethod
     def _read_chain(
@@ -2690,7 +2697,7 @@ class _DissolvedModuleBindings:
             for statement in scope.import_statements(module):
                 if isinstance(statement, ast.Import):
                     for alias in statement.names:
-                        yield alias.asname or alias.name.split(".")[0], None
+                        yield ImportBoundNameProjection(statement).alias_bound_name(alias), None
                     continue
                 if statement.module == "__future__":
                     continue
@@ -3709,7 +3716,7 @@ class DissolveModuleOperation(RetainedCallOperation):
                     == package
                 ):
                     bound = tuple(
-                        alias.asname or alias.name
+                        ImportBoundNameProjection(statement).alias_bound_name(alias)
                         for alias in statement.names
                         if alias.name == leaf
                     )
