@@ -852,12 +852,54 @@ class ClusterLayers:
 
         if self.dissolving_paths:
             return self.dissolving_paths[0]
-        tops = [
+        return next(
+            (path for path in self.tops if path not in self.top_refusals), None
+        )
+
+    @cached_property
+    def tops(self) -> tuple[str, ...]:
+        """The modules that could move next on their own: nothing still declaring
+        names imports them, and their destination is there to move into."""
+
+        return tuple(
             path
             for path in self.live_paths
             if not self.upper_importers(path) and self.ready(path)
-        ]
-        return tops[0] if tops else None
+        )
+
+    @cached_property
+    def top_refusals(self) -> dict[str, str]:
+        """The top modules, in order, whose own move refuses, each with its reason,
+        up to the first that does not: it moves next, and a refusal ahead of it no
+        longer holds back the modules behind."""
+
+        refused: dict[str, str] = {}
+        for path in self.tops:
+            found = self.row_refusals(self.single_recipe(path))
+            if not found:
+                break
+            refused.update(found)
+        return refused
+
+    def single_recipe(self, path: str) -> RefactorRecipe:
+        """The one-module stage: every name `path` declares into its destination."""
+
+        destination = self.destinations[path]
+        return RefactorRecipe(
+            recipe_id=f"relocate-{PurePosixPath(path).stem}",
+            reason="Relocate every name the flat module declares into its package."
+            + self.carried_debt((path,)),
+        ).with_operation(
+            (
+                RelocateSymbolsToModuleOperation
+                if destination in self.context.module_nodes_by_file_path
+                else RelocateSymbolsToNewModuleOperation
+            )(
+                target=SourceRewriteTarget(file_path=path),
+                symbol_qualnames=self.declared_names(path),
+                destination_path=destination,
+            )
+        )
 
 
 class PackageMoveFindingRecipeSynthesizer(
@@ -934,6 +976,8 @@ class PackageMoveFindingRecipeSynthesizer(
             if source_path != batch[0]:
                 return self.rejected_evaluation(f"moves in {batch[0]}'s batch")
             return self.executable_evaluation(layers.batch_recipe())
+        if source_path in layers.top_refusals:
+            return self.rejected_evaluation(f"refused: {layers.top_refusals[source_path]}")
         if layers.next_path is None:
             return self.rejected_evaluation(
                 "every flat module of the table is imported by another one that "
@@ -947,22 +991,4 @@ class PackageMoveFindingRecipeSynthesizer(
                 else f"waits its turn behind {layers.next_path}"
             )
             return self.rejected_evaluation(reason)
-        target = SourceRewriteTarget(file_path=source_path)
-        stem = PurePosixPath(source_path).stem
-        return self.executable_evaluation(
-            RefactorRecipe(
-                recipe_id=f"relocate-{stem}",
-                reason="Relocate every name the flat module declares into its package."
-                + layers.carried_debt((source_path,)),
-            ).with_operation(
-                (
-                    RelocateSymbolsToModuleOperation
-                    if metrics.destination_path in context.module_nodes_by_file_path
-                    else RelocateSymbolsToNewModuleOperation
-                )(
-                    target=target,
-                    symbol_qualnames=layers.declared_names(source_path),
-                    destination_path=metrics.destination_path,
-                )
-            )
-        )
+        return self.executable_evaluation(layers.single_recipe(source_path))

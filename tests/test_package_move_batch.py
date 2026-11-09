@@ -659,3 +659,48 @@ def test_a_re_bound_name_imported_inside_a_moved_function_reads_its_declaring_mo
 
     _stages, root = _moved(tmp_path, "| `team` | `records.py`, `heartbeat.py` | |\n")
     assert _runs(root, "VALUE") == "('hud', 'record')"
+
+
+def test_a_refusing_module_first_in_line_no_longer_holds_back_the_rest(
+    tmp_path: Path,
+) -> None:
+    """`astamp` reads its own location (`Path(__file__)`), so its move refuses, and
+    it is first in line once the table moves one module per stage. `zeta` moves
+    anyway: a module whose own move refuses steps aside with its reason, and
+    nothing waits behind it."""
+
+    _write(
+        tmp_path,
+        {
+            "pkg/__init__.py": "",
+            "pkg/messaging/__init__.py": "",
+            "pkg/astamp.py": (
+                "from pathlib import Path\n\nROOT = Path(__file__).resolve().parents[0].name\n"
+            ),
+            "pkg/zeta.py": "class Zeta:\n    kind = 'z'\n",
+            "pkg/app.py": (
+                "from pkg.astamp import ROOT\nfrom pkg.zeta import Zeta\n\n"
+                "VALUE = (ROOT, Zeta.kind)\n"
+            ),
+        },
+    )
+
+    report = CodemodRefactorGoalRunner(
+        roots=(tmp_path,),
+        config=DetectorConfig(
+            package_destination_tables=("| `messaging` | `astamp.py`, `zeta.py` | |\n",)
+        ),
+        dry_run=True,
+        migration_type=PackageMoveConcept,
+        guard_suite=ArchitectureGuardSuite(),
+    ).run()
+    markdown = report.to_markdown()
+    assert "waits its turn behind" not in markdown
+    replay = report.replay_sequence.simulate(
+        CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    )
+    assert replay.is_clean
+    replay.apply()
+    assert (tmp_path / "pkg/astamp.py").exists()
+    assert (tmp_path / "pkg/messaging/zeta.py").exists()
+    assert _runs(tmp_path, "VALUE") == "('pkg', 'z')"
