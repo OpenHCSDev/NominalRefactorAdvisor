@@ -37,8 +37,8 @@ from .ast_projection import ExpressionReference
 from .class_families.parsed_index import (
     ClassFamilyIndex,
     IndexedClass,
+    ClassFamilyIndexBuilder,
     ModuleClassReferenceResolver,
-    overlay_class_family_index,
 )
 from .class_symbols import iter_class_definitions
 from .foreign_family import FunctionDefinition
@@ -2892,12 +2892,16 @@ class SemanticDescentGraph(SemanticDescentGraphSpace):
 
     def overlay_modules(
         self,
+        modules: tuple[ParsedModule, ...],
         changed_modules: tuple[ParsedModule, ...],
     ) -> SemanticDescentGraph:
+        """This graph over `modules`, of which `changed_modules` changed."""
+
         if not changed_modules or self.class_index is None:
             return self
         return SemanticDescentGraphModuleOverlay(
             base_graph=self,
+            modules=modules,
             changed_modules=changed_modules,
         ).graph()
 
@@ -2907,6 +2911,7 @@ class SemanticDescentGraphModuleOverlay:
     """Refresh changed modules inside a cached repository semantic graph."""
 
     base_graph: SemanticDescentGraph
+    modules: tuple[ParsedModule, ...]
     changed_modules: tuple[ParsedModule, ...]
 
     def graph(self) -> SemanticDescentGraph:
@@ -2942,10 +2947,9 @@ class SemanticDescentGraphModuleOverlay:
     def merged_class_index(self) -> ClassFamilyIndex:
         if self.base_graph.class_index is None:
             raise ValueError("semantic graph overlay requires a cached class index")
-        return overlay_class_family_index(
-            self.base_graph.class_index,
-            self.changed_modules,
-        )
+        return ClassFamilyIndexBuilder(
+            self.modules, previous=self.base_graph.class_index
+        ).build()
 
     def merged_projections(
         self,

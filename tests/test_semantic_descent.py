@@ -644,10 +644,8 @@ def test_semantic_graph_overlay_remaps_line_shifted_projection_identity(
     )
 
     module_path.write_text(f"\n{source}", encoding="utf-8", newline="")
-    overlay = SemanticDescentGraphModuleOverlay(
-        base_graph,
-        parse_python_modules(tmp_path),
-    )
+    modules = tuple(parse_python_modules(tmp_path))
+    overlay = SemanticDescentGraphModuleOverlay(base_graph, modules, modules)
     updated_graph = overlay.graph()
     updated_projection = next(
         projection
@@ -687,9 +685,8 @@ def test_semantic_graph_overlay_recomputes_positive_proof_locations(
     )
 
     module_path.write_text(f"\n{source}", encoding="utf-8", newline="")
-    updated_graph = base_graph.overlay_modules(
-        parse_python_modules(tmp_path, use_parse_cache=False)
-    )
+    modules = tuple(parse_python_modules(tmp_path, use_parse_cache=False))
+    updated_graph = base_graph.overlay_modules(modules, modules)
     updated_proof = next(
         certificate.proof_edges[0]
         for certificate in updated_graph.certificates

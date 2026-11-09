@@ -389,12 +389,17 @@ class ClassDeclaration(QualifiedDeclaration):
         self,
         resolved_base_symbols: tuple[str, ...],
     ) -> Self:
+        if resolved_base_symbols == self.resolved_base_symbols:
+            return self
         return replace(self, resolved_base_symbols=resolved_base_symbols)
 
     def with_registering_metaclass(
         self, authority: RegisteringMetaclassAuthority[Any]
     ) -> Self:
-        return replace(self, declares_autoregister_meta=authority.registers_remembered(self))
+        registers = authority.registers_remembered(self)
+        if registers == self.declares_autoregister_meta:
+            return self
+        return replace(self, declares_autoregister_meta=registers)
 
 
 @dataclass(frozen=True)
