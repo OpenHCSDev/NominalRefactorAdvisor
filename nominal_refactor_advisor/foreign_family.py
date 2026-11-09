@@ -7,8 +7,8 @@ from abc import ABCMeta, abstractmethod
 from collections.abc import Iterable, Iterator
 from typing import ClassVar, Self
 
-from .ast_projection import ExpressionReference
-from .declared_family import DeclaredFamily, ForeignAdapter
+from nominal_refactor_advisor.ast_projection import ExpressionReference
+from nominal_refactor_advisor.declared_family import DeclaredFamily, ForeignAdapter
 
 
 class ForeignFamilyMeta(ABCMeta):

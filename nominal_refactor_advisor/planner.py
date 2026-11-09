@@ -17,9 +17,12 @@ from operator import attrgetter
 from pathlib import Path
 from typing import Callable, Sequence, TypeVar
 
-from .collection_algebra import UniqueIdentityIndexAuthority, sorted_tuple
-from .deadline import scan_deadline_checkpoint
-from .models import (
+from nominal_refactor_advisor.collection_algebra import (
+    UniqueIdentityIndexAuthority,
+    sorted_tuple,
+)
+from nominal_refactor_advisor.deadline import scan_deadline_checkpoint
+from nominal_refactor_advisor.models import (
     CERTIFIED,
     ImpactDelta,
     STRONG_HEURISTIC,
@@ -30,12 +33,12 @@ from .models import (
     RefactorPlan,
     SourceLocation,
 )
-from .patterns import PatternId
-from .taxonomy import (
+from nominal_refactor_advisor.patterns import PatternId
+from nominal_refactor_advisor.taxonomy import (
     CapabilityTag,
     CertificationLevel,
 )
-from .json_reports import SemanticRecord
+from nominal_refactor_advisor.json_reports import SemanticRecord
 
 
 @dataclass(frozen=True)

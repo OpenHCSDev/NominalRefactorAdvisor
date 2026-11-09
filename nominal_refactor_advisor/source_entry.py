@@ -23,7 +23,7 @@ from importlib.machinery import SourceFileLoader
 from importlib.util import module_from_spec, spec_from_file_location
 from types import MappingProxyType
 
-from .captured_reference import (
+from nominal_refactor_advisor.captured_reference import (
     AdmittedExecutionPrefixABC,
     CapturedNativeObject,
     CapturedReferenceResolution,
@@ -39,14 +39,14 @@ from .captured_reference import (
     CapturedReferenceKernel,
     SourceActivationAuthorityABC,
 )
-from .collection_algebra import UniqueIdentityIndexAuthority
-from .descriptor_algebra import AliasProperty
-from .native_declarations import (
+from nominal_refactor_advisor.collection_algebra import UniqueIdentityIndexAuthority
+from nominal_refactor_advisor.descriptor_algebra import AliasProperty
+from nominal_refactor_advisor.native_declarations import (
     NativeDeclarationFamily,
     NativeLanguageFeature,
     NativeDictionaryKey,
 )
-from .product_flow import (
+from nominal_refactor_advisor.product_flow import (
     CompactFlowContext,
     CompactFlowPosition,
     SourceFlowOperation,

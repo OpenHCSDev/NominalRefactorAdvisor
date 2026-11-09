@@ -15,10 +15,13 @@ from typing import Generic, TypeAlias, TypeVar
 
 from metaclass_registry import AutoRegisterMeta
 
-from .collection_algebra import sorted_tuple
-from .json_reports import SemanticRecord
-from .registry_identity import DEFAULT_REGISTRY_KEY_ATTRIBUTE, class_name_registry_key
-from .semantic_algebra import (
+from nominal_refactor_advisor.collection_algebra import sorted_tuple
+from nominal_refactor_advisor.json_reports import SemanticRecord
+from nominal_refactor_advisor.registry_identity import (
+    DEFAULT_REGISTRY_KEY_ATTRIBUTE,
+    class_name_registry_key,
+)
+from nominal_refactor_advisor.semantic_algebra import (
     GroupedProjectionPartition,
     ObjectFamilyShape,
     ceil_log2_cardinality,

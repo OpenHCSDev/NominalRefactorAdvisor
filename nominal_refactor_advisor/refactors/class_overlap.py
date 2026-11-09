@@ -20,32 +20,32 @@ from functools import cached_property
 from importlib import import_module
 from typing import Self
 
-from .class_member_authority import (
+from nominal_refactor_advisor.refactors.class_member_authority import (
     ClassMemberMoveProofContext,
     ClassMemberPromotionStatement,
     ModuleDeclarationRelocation,
 )
-from .finding_recipes import (
+from nominal_refactor_advisor.refactors.finding_recipes import (
     FindingEvidenceActionKeysMixin,
     FindingRecipeSynthesizer,
 )
-from ..ast_projection import CallKeywords
-from ..ast_tools import (
+from nominal_refactor_advisor.ast_projection import CallKeywords
+from nominal_refactor_advisor.ast_tools import (
     ParsedModule,
     is_docstring_statement,
 )
-from ..class_body import ProvedClassBodyDeclaration
-from ..class_index import (
+from nominal_refactor_advisor.class_body import ProvedClassBodyDeclaration
+from nominal_refactor_advisor.class_index import (
     CLASS_METHOD_OWNERSHIP_HOOK_NAMES,
     CompactIndexedClass,
     NATIVE_METACLASS_BASES,
     module_import_aliases,
 )
-from ..class_mro import (
+from nominal_refactor_advisor.class_mro import (
     ClassMroAuthority,
     NativeMroBase,
 )
-from ..class_overlap import (
+from nominal_refactor_advisor.class_overlap import (
     ClassOverlapCandidate,
     ClassOverlapMetrics,
     ClassOverlapMove,
@@ -54,57 +54,57 @@ from ..class_overlap import (
     ExtractMixin,
     PromoteToSharedBase,
 )
-from ..class_references import ClassReferenceRole
-from ..codemod import RefactorRecipe
-from ..codemod_authority_claims import AstTargetAuthorityClaim
-from ..codemod_declaration_source import (
+from nominal_refactor_advisor.class_references import ClassReferenceRole
+from nominal_refactor_advisor.codemod import RefactorRecipe
+from nominal_refactor_advisor.codemod_authority_claims import AstTargetAuthorityClaim
+from nominal_refactor_advisor.codemod_declaration_source import (
     ClassBodySourceAuthority,
     ClassHeaderSpanSourceAuthority,
 )
-from ..codemod_imports import ModuleImportMutation
-from ..codemod_payload import (
+from nominal_refactor_advisor.codemod_imports import ModuleImportMutation
+from nominal_refactor_advisor.codemod_payload import (
     PayloadRecordArrayValueCodec,
     PayloadRecordValueCodec,
     RequiredStringPayloadValueCodec,
     StringArrayPayloadValueCodec,
     codemod_payload_field,
 )
-from ..codemod_preflight import CodemodOperationPreflightError
-from ..codemod_reproof import RepositorySourceReprovedOperation
-from ..codemod_runtime import (
+from nominal_refactor_advisor.codemod_preflight import CodemodOperationPreflightError
+from nominal_refactor_advisor.codemod_reproof import RepositorySourceReprovedOperation
+from nominal_refactor_advisor.codemod_runtime import (
     CodemodSourceSnapshot,
     FindingRecipeEvaluation,
 )
-from ..codemod_selection_context import (
+from nominal_refactor_advisor.codemod_selection_context import (
     CodemodSelectorContext,
     ResolvedClassTarget,
 )
-from ..codemod_selector_models import SourceRewriteTarget
-from ..codemod_source_edits import (
+from nominal_refactor_advisor.codemod_selector_models import SourceRewriteTarget
+from nominal_refactor_advisor.codemod_source_edits import (
     NominalSourceEdit,
     SourceInsertion,
     SourceTextGeometry,
     SourceTextSpanReplacement,
 )
-from ..codemod_statement_source import (
+from nominal_refactor_advisor.codemod_statement_source import (
     StatementDeletionSource,
     StatementSource,
 )
-from ..lexical_bindings import (
+from nominal_refactor_advisor.lexical_bindings import (
     ImportBoundNameProjection,
     LEXICAL_SCOPE_BINDING_AUTHORITY,
 )
-from ..models import RefactorFinding
-from ..native_class_mro import NativeClassMroDeclaration
-from ..owner_candidates import (
+from nominal_refactor_advisor.models import RefactorFinding
+from nominal_refactor_advisor.native_class_mro import NativeClassMroDeclaration
+from nominal_refactor_advisor.owner_candidates import (
     ComposeExistingOwner,
     ExistingClassOwner,
     NewMixinOwner,
     OwnerCandidate,
     SharedBaseOwner,
 )
-from ..refactor_concepts import ClassBodyCompositionConcept
-from ..semantic_descent import (
+from nominal_refactor_advisor.refactor_concepts import ClassBodyCompositionConcept
+from nominal_refactor_advisor.semantic_descent import (
     AuthorityClaim,
     SemanticAuthorityKind,
 )

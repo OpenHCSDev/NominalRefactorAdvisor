@@ -8,7 +8,7 @@ from collections.abc import Mapping
 from enum import StrEnum
 from typing import NamedTuple
 
-from .ast_projection import ExpressionReference
+from nominal_refactor_advisor.ast_projection import ExpressionReference
 
 
 class ClassReferenceRole(StrEnum):

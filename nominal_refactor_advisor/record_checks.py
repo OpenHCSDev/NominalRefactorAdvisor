@@ -5,16 +5,18 @@ from __future__ import annotations
 import ast
 from dataclasses import dataclass
 
-from .annotation_semantics import NOMINAL_ANNOTATION_SOURCE_AUTHORITY
-from .ast_field_decoders import declared_annotations
-from .ast_tools import (
+from nominal_refactor_advisor.annotation_semantics import (
+    NOMINAL_ANNOTATION_SOURCE_AUTHORITY,
+)
+from nominal_refactor_advisor.ast_field_decoders import declared_annotations
+from nominal_refactor_advisor.ast_tools import (
     BuiltinCall,
     BuiltinCallName,
     ClassFunctionStackNodeVisitor,
     ParsedModule,
     TypeQuery,
 )
-from .class_index import (
+from nominal_refactor_advisor.class_index import (
     CompactClassFamilyIndex,
     CompactClassReferenceResolver,
     CompactIndexedClass,
@@ -22,9 +24,9 @@ from .class_index import (
     ModuleNominalBindingAuthority,
     ModuleNominalBindingSnapshot,
 )
-from .class_syntax_facets import CompactClassMemberDeclaration
-from .lexical_bindings import LEXICAL_SCOPE_BINDING_AUTHORITY
-from .models import SourceLocation
+from nominal_refactor_advisor.class_syntax_facets import CompactClassMemberDeclaration
+from nominal_refactor_advisor.lexical_bindings import LEXICAL_SCOPE_BINDING_AUTHORITY
+from nominal_refactor_advisor.models import SourceLocation
 
 
 @dataclass(frozen=True)

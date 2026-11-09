@@ -9,7 +9,7 @@ from enum import StrEnum
 from functools import cached_property
 from typing import Callable, ClassVar, Self, TypeAlias
 
-from .carrier_collapse import (
+from nominal_refactor_advisor.carrier_collapse import (
     CarrierCollapseAuthorityProof,
     CarrierCollapseBuilder,
     CarrierCollapseCallEdge,
@@ -17,13 +17,13 @@ from .carrier_collapse import (
     CarrierCollapseParticipant,
     ClosedCarrierCollapseComponent,
 )
-from .class_index import CompactProductAuthority
-from .product_flow import CompactFlowPosition
-from .product_flow_authority import (
+from nominal_refactor_advisor.class_index import CompactProductAuthority
+from nominal_refactor_advisor.product_flow import CompactFlowPosition
+from nominal_refactor_advisor.product_flow_authority import (
     CompactFunctionCallIdentity,
     CompactResolvedFunctionCall,
 )
-from .value_expression import LexicalValueReference
+from nominal_refactor_advisor.value_expression import LexicalValueReference
 
 @dataclass(frozen=True, kw_only=True)
 class ResolvedFieldBindingCall:

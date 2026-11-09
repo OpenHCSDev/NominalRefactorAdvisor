@@ -5,30 +5,30 @@ from abc import ABC
 from dataclasses import dataclass
 from functools import cached_property
 
-from ..codemod import RecipeCallReplacement
-from ..codemod_imports import ModuleImportInsertionPoint
-from ..codemod_payload import (
+from nominal_refactor_advisor.codemod import RecipeCallReplacement
+from nominal_refactor_advisor.codemod_imports import ModuleImportInsertionPoint
+from nominal_refactor_advisor.codemod_payload import (
     PayloadRecordArrayValueCodec,
     PayloadRecordValueCodec,
     RequiredStrEnumPayloadValueCodec,
     RequiredStringPayloadValueCodec,
     codemod_payload_field,
 )
-from ..codemod_reproof import (
+from nominal_refactor_advisor.codemod_reproof import (
     RepositorySourceReprovedOperation,
     SourceReprovedOperation,
 )
-from ..codemod_runtime import CodemodSourceSnapshot
-from ..codemod_selection_context import CodemodSelectorContext
-from ..codemod_selector_models import SourceRewriteTarget
-from ..codemod_source_edits import (
+from nominal_refactor_advisor.codemod_runtime import CodemodSourceSnapshot
+from nominal_refactor_advisor.codemod_selection_context import CodemodSelectorContext
+from nominal_refactor_advisor.codemod_selector_models import SourceRewriteTarget
+from nominal_refactor_advisor.codemod_source_edits import (
     PhysicalSourceEdit,
     SourceInsertion,
     SourceSpanDeletion,
     SourceTargetEditor,
 )
-from ..lexical_bindings import LEXICAL_SCOPE_BINDING_AUTHORITY
-from ..semantic_descent import (
+from nominal_refactor_advisor.lexical_bindings import LEXICAL_SCOPE_BINDING_AUTHORITY
+from nominal_refactor_advisor.semantic_descent import (
     AuthorityClaim,
     SemanticAuthorityKind,
 )

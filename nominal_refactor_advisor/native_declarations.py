@@ -30,7 +30,7 @@ from typing import (
     get_args,
 )
 
-from .semantic_match import loaded_concrete_nominal_descendants
+from nominal_refactor_advisor.semantic_match import loaded_concrete_nominal_descendants
 
 
 class DataclassRuntimeDeclaration(StrEnum):
@@ -107,7 +107,7 @@ class DataclassRuntimeDeclaration(StrEnum):
 
 
 if TYPE_CHECKING:
-    from .captured_reference import CapturedReferenceResolution
+    from nominal_refactor_advisor.captured_reference import CapturedReferenceResolution
 
 
 NativeScalar: TypeAlias = str | int | bool | None

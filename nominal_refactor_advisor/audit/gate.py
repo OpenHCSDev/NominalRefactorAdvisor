@@ -29,12 +29,22 @@ from pathlib import Path
 
 from metaclass_registry.mro_dispatch import MroDispatch, handles
 
-from ..json_reports import DataclassJsonReport, JsonText, json_report_object, json_report_property
-from .family import Family
-from .lexical import DecoratorBinding, ModuleScope, NominalProof, UnprovedIdentity
-from .measures import Measure, WholeModule, parsed, scoped
-from .project import Project
-from .repository import ChangedPaths, ChangedSource
+from nominal_refactor_advisor.json_reports import (
+    DataclassJsonReport,
+    JsonText,
+    json_report_object,
+    json_report_property,
+)
+from nominal_refactor_advisor.audit.family import Family
+from nominal_refactor_advisor.audit.lexical import (
+    DecoratorBinding,
+    ModuleScope,
+    NominalProof,
+    UnprovedIdentity,
+)
+from nominal_refactor_advisor.audit.measures import Measure, WholeModule, parsed, scoped
+from nominal_refactor_advisor.audit.project import Project
+from nominal_refactor_advisor.audit.repository import ChangedPaths, ChangedSource
 
 
 class Side(Family, ABC, root=True, affix="Side"):

@@ -7,19 +7,19 @@ from abc import (
 from dataclasses import dataclass
 from functools import cached_property
 
-from ..codemod_operations import SourcePayloadOperation
-from ..codemod_payload import (
+from nominal_refactor_advisor.codemod_operations import SourcePayloadOperation
+from nominal_refactor_advisor.codemod_payload import (
     RequiredStringPayloadValueCodec,
     codemod_payload_field,
 )
-from ..codemod_reproof import SourceReprovedOperation
-from ..codemod_runtime import CodemodSourceSnapshot
-from ..codemod_source_edits import PhysicalSourceEdit
-from ..codemod_statement_source import (
+from nominal_refactor_advisor.codemod_reproof import SourceReprovedOperation
+from nominal_refactor_advisor.codemod_runtime import CodemodSourceSnapshot
+from nominal_refactor_advisor.codemod_source_edits import PhysicalSourceEdit
+from nominal_refactor_advisor.codemod_statement_source import (
     AssignmentReplacementSource,
     AssignmentSource,
 )
-from ..descriptor_algebra import AliasProperty
+from nominal_refactor_advisor.descriptor_algebra import AliasProperty
 
 
 @dataclass(frozen=True, kw_only=True)

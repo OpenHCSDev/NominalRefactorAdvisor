@@ -7,38 +7,42 @@ from enum import StrEnum
 from functools import cached_property
 from typing import cast
 
-from ..assignment_projection import SingleAssignmentAndValueNameProjection
-from ..ast_tools import BuiltinCallName
-from ..class_families.parsed_index import (
+from nominal_refactor_advisor.assignment_projection import (
+    SingleAssignmentAndValueNameProjection,
+)
+from nominal_refactor_advisor.ast_tools import BuiltinCallName
+from nominal_refactor_advisor.class_families.parsed_index import (
     ClassFamilyIndex,
     IndexedClass,
     ModuleClassReferenceResolver,
 )
-from .semantic_mirror import (
+from nominal_refactor_advisor.refactors.semantic_mirror import (
     RegistrationSemanticMirrorRecipeBuilder,
     SemanticMirrorOperationTargets,
 )
-from .class_base import ClassAuthorityReferenceProof
-from .authority_extraction import SourceDerivedAuthorityProjectionOperation
-from ..codemod_authority_claims import AstTargetAuthorityClaim
-from ..codemod_runtime import (
+from nominal_refactor_advisor.refactors.class_base import ClassAuthorityReferenceProof
+from nominal_refactor_advisor.refactors.authority_extraction import (
+    SourceDerivedAuthorityProjectionOperation,
+)
+from nominal_refactor_advisor.codemod_authority_claims import AstTargetAuthorityClaim
+from nominal_refactor_advisor.codemod_runtime import (
     CodemodSourceSnapshot,
     RefactorRecipe,
 )
-from ..codemod_selection_context import (
+from nominal_refactor_advisor.codemod_selection_context import (
     CodemodSelectorContext,
     ResolvedClassTarget,
 )
-from ..codemod_selector_models import SourceRewriteTarget
-from ..codemod_source_edits import (
+from nominal_refactor_advisor.codemod_selector_models import SourceRewriteTarget
+from nominal_refactor_advisor.codemod_source_edits import (
     NominalSourceEdit,
     SourceLineSpan,
     SourceSpanReplacement,
     SourceTargetEditor,
 )
-from ..refactor_concepts import ClassFamilyAuthorityConcept
-from ..semantic_descent import SemanticAuthorityKind
-from ..semantic_match import single_item
+from nominal_refactor_advisor.refactor_concepts import ClassFamilyAuthorityConcept
+from nominal_refactor_advisor.semantic_descent import SemanticAuthorityKind
+from nominal_refactor_advisor.semantic_match import single_item
 
 
 class ClassFamilyCollectionFactory(StrEnum):

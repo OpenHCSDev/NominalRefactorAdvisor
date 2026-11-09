@@ -10,21 +10,30 @@ from dataclasses import dataclass
 from functools import cached_property
 from typing import Callable, ClassVar, Generic, TypeVar
 
-from .ast_projection import ExpressionReference
-from .class_index import (
+from nominal_refactor_advisor.ast_projection import ExpressionReference
+from nominal_refactor_advisor.class_index import (
     ModuleNominalBindingAuthority,
     NominalReferences,
     ModuleNominalBindingSnapshot,
     module_import_names,
 )
-from .foreign_family import FunctionDefinition
-from .lexical_bindings import LEXICAL_SCOPE_BINDING_AUTHORITY, ImportBoundNameProjection
-from .python_module_identity import PythonModulePathIdentity
-from .export_tools import PublicExportPolicy, derive_public_exports
-from .registry_identity import DEFAULT_REGISTRY_KEY_ATTRIBUTE, class_name_registry_key
-from .native_syntax import NativePythonSyntaxIndex
+from nominal_refactor_advisor.foreign_family import FunctionDefinition
+from nominal_refactor_advisor.lexical_bindings import (
+    LEXICAL_SCOPE_BINDING_AUTHORITY,
+    ImportBoundNameProjection,
+)
+from nominal_refactor_advisor.python_module_identity import PythonModulePathIdentity
+from nominal_refactor_advisor.export_tools import (
+    PublicExportPolicy,
+    derive_public_exports,
+)
+from nominal_refactor_advisor.registry_identity import (
+    DEFAULT_REGISTRY_KEY_ATTRIBUTE,
+    class_name_registry_key,
+)
+from nominal_refactor_advisor.native_syntax import NativePythonSyntaxIndex
 
-from .observation_shapes import (
+from nominal_refactor_advisor.observation_shapes import (
     BuilderCallShape,
     DynamicMethodInjectionObservation,
     FieldObservation,
@@ -40,7 +49,7 @@ from .observation_shapes import (
     SentinelTypeObservation,
 )
 
-from .ast_tools import (
+from nominal_refactor_advisor.ast_tools import (
     BuiltinCallName,
     AstNameFamily,
     AssignObservationSpec,

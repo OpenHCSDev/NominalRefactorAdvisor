@@ -19,7 +19,7 @@ from functools import cached_property
 from itertools import combinations
 from typing import NamedTuple
 
-from .class_index import (
+from nominal_refactor_advisor.class_index import (
     ClassBodyDeclarationDigest,
     ClassBodyDeclarationKind,
     CompactIndexedClass,

@@ -14,14 +14,14 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterable
 
-from .ast_tools import ParsedModuleSet
-from .analysis import analyze_modules
-from .ast_tools import parse_python_modules
-from .collection_algebra import sorted_tuple
-from .detectors._base import DetectorConfig
-from .models import ImpactDelta, RefactorFinding, RefactorPlan
-from .planner import build_refactor_plans
-from .json_reports import (
+from nominal_refactor_advisor.ast_tools import ParsedModuleSet
+from nominal_refactor_advisor.analysis import analyze_modules
+from nominal_refactor_advisor.ast_tools import parse_python_modules
+from nominal_refactor_advisor.collection_algebra import sorted_tuple
+from nominal_refactor_advisor.detectors._base import DetectorConfig
+from nominal_refactor_advisor.models import ImpactDelta, RefactorFinding, RefactorPlan
+from nominal_refactor_advisor.planner import build_refactor_plans
+from nominal_refactor_advisor.json_reports import (
     DataclassJsonReport,
     json_report_property,
 )

@@ -2,13 +2,19 @@
 
 from __future__ import annotations
 
-from ..class_index import CompactClassFamilyIndex
-from ..models import ProbeCountMetrics, RefactorFinding
-from ..patterns import PatternId
-from ..record_checks import DeclaredAttributeContractResolver
-from ..semantic_descent import CompactSemanticDescentRepository
-from ._base import CompactProjectionGroups, DetectorConfig, high_confidence_spec
-from ._semantic_descent import SemanticProjectionDetector
+from nominal_refactor_advisor.class_index import CompactClassFamilyIndex
+from nominal_refactor_advisor.models import ProbeCountMetrics, RefactorFinding
+from nominal_refactor_advisor.patterns import PatternId
+from nominal_refactor_advisor.record_checks import DeclaredAttributeContractResolver
+from nominal_refactor_advisor.semantic_descent import CompactSemanticDescentRepository
+from nominal_refactor_advisor.detectors._base import (
+    CompactProjectionGroups,
+    DetectorConfig,
+    high_confidence_spec,
+)
+from nominal_refactor_advisor.detectors._semantic_descent import (
+    SemanticProjectionDetector,
+)
 
 
 class RedundantTypeCheckDetector(SemanticProjectionDetector):

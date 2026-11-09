@@ -19,16 +19,31 @@ from typing import ClassVar
 
 from metaclass_registry.mro_dispatch import MroDispatch, handles
 
-from ..ast_tools import ParsedModule
-from .findings import Package, RawShape
-from .identity import TypePositions
-from .lexical import DecoratorBinding, ModuleScope, Scope
-from .measures import (ForeignAbsenceSyntax, ForeignAttributeProbe, Headline, Measure,
-                       MechanismOwners, NodeCount, PatternMeasure)
-from .project import Project
-from .gate import (CleanChangedLines, LocatedSource, NamePosition, OccurrenceMeasure,
-                      PerFileMeasure, PerFileModuleMeasure, PerFileOccurrenceMeasure, RosterPosition)
-from .repository import ChangedSource
+from nominal_refactor_advisor.ast_tools import ParsedModule
+from nominal_refactor_advisor.audit.findings import Package, RawShape
+from nominal_refactor_advisor.audit.identity import TypePositions
+from nominal_refactor_advisor.audit.lexical import DecoratorBinding, ModuleScope, Scope
+from nominal_refactor_advisor.audit.measures import (
+    ForeignAbsenceSyntax,
+    ForeignAttributeProbe,
+    Headline,
+    Measure,
+    MechanismOwners,
+    NodeCount,
+    PatternMeasure,
+)
+from nominal_refactor_advisor.audit.project import Project
+from nominal_refactor_advisor.audit.gate import (
+    CleanChangedLines,
+    LocatedSource,
+    NamePosition,
+    OccurrenceMeasure,
+    PerFileMeasure,
+    PerFileModuleMeasure,
+    PerFileOccurrenceMeasure,
+    RosterPosition,
+)
+from nominal_refactor_advisor.audit.repository import ChangedSource
 
 
 class MetadataKeys(ast.NodeVisitor):

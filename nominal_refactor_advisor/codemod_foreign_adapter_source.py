@@ -11,22 +11,31 @@ from dataclasses import dataclass
 from functools import cache, cached_property
 from typing import Self
 
-from .ast_tools import BuiltinCallName, ParsedModule
-from .refactors.cases_family import body_without_docstring
-from .codemod_foreign_family_source import (
+from nominal_refactor_advisor.ast_tools import BuiltinCallName, ParsedModule
+from nominal_refactor_advisor.refactors.cases_family import body_without_docstring
+from nominal_refactor_advisor.codemod_foreign_family_source import (
     FunctionNode,
     FunctionRewriteAuthority,
     ForeignFamilyReference,
 )
-from .codemod_source_edits import (
+from nominal_refactor_advisor.codemod_source_edits import (
     SourceTextSpan,
     SourceTextSpanReplacement,
 )
-from .declared_family import ForeignAdapter
-from .foreign_family import AssignmentStatement, FunctionDefinition
-from .lexical_bindings import LEXICAL_SCOPE_BINDING_AUTHORITY
-from .observation_families import ShapeFamily, TypeArgumentResolver
-from .observation_shapes import ForeignFamilySiteModule, ForeignFamilySiteShape
+from nominal_refactor_advisor.declared_family import ForeignAdapter
+from nominal_refactor_advisor.foreign_family import (
+    AssignmentStatement,
+    FunctionDefinition,
+)
+from nominal_refactor_advisor.lexical_bindings import LEXICAL_SCOPE_BINDING_AUTHORITY
+from nominal_refactor_advisor.observation_families import (
+    ShapeFamily,
+    TypeArgumentResolver,
+)
+from nominal_refactor_advisor.observation_shapes import (
+    ForeignFamilySiteModule,
+    ForeignFamilySiteShape,
+)
 
 
 def qualified_name(foreign: type) -> str:

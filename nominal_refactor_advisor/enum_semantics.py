@@ -10,8 +10,8 @@ from enum import Enum, Flag, IntEnum, IntFlag, StrEnum
 from functools import cached_property
 from typing import Callable, Self
 
-from .ast_projection import StatementValues
-from .value_expression import LiteralExpressionEffects
+from nominal_refactor_advisor.ast_projection import StatementValues
+from nominal_refactor_advisor.value_expression import LiteralExpressionEffects
 
 QualifiedReferenceResolver = Callable[[ast.expr, frozenset[str]], str | None]
 

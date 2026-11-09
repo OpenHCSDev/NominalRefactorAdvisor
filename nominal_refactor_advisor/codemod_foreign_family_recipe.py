@@ -5,39 +5,45 @@ from __future__ import annotations
 from abc import ABC
 from typing import ClassVar
 
-from .refactors.finding_recipes import (
+from nominal_refactor_advisor.refactors.finding_recipes import (
     FindingEvidenceActionKeysMixin,
     FindingRecipeSynthesizer,
 )
-from .codemod import (
+from nominal_refactor_advisor.codemod import (
     ForeignAdapterBindChainConcept,
     ForeignFamilyRoutingConcept,
     StaticProjectionAdapterConcept,
 )
-from .codemod_foreign_adapter_source import ForeignAdapterBindChainModuleFamily
-from .codemod_foreign_family_source import ForeignFamilyFilterModuleFamily
-from .codemod_static_projection_source import StaticProjectionCallModuleFamily
-from .refactors.function_operations import (
+from nominal_refactor_advisor.codemod_foreign_adapter_source import (
+    ForeignAdapterBindChainModuleFamily,
+)
+from nominal_refactor_advisor.codemod_foreign_family_source import (
+    ForeignFamilyFilterModuleFamily,
+)
+from nominal_refactor_advisor.codemod_static_projection_source import (
+    StaticProjectionCallModuleFamily,
+)
+from nominal_refactor_advisor.refactors.function_operations import (
     FoldAdapterBindChainOperation,
     ProjectStaticCallsToAdapterOperation,
     RouteForeignFamilyFilterOperation,
 )
-from .codemod_reproof import SourceReprovedOperation
-from .codemod_runtime import (
+from nominal_refactor_advisor.codemod_reproof import SourceReprovedOperation
+from nominal_refactor_advisor.codemod_runtime import (
     FindingRecipeEvaluation,
     RefactorRecipe,
 )
-from .codemod_selection_context import CodemodSelectorContext
-from .codemod_selector_models import SourceRewriteTarget
-from .observation_families import ShapeFamily
-from .observation_shapes import (
+from nominal_refactor_advisor.codemod_selection_context import CodemodSelectorContext
+from nominal_refactor_advisor.codemod_selector_models import SourceRewriteTarget
+from nominal_refactor_advisor.observation_families import ShapeFamily
+from nominal_refactor_advisor.observation_shapes import (
     ForeignFamilySiteModule,
     ForeignFamilySiteShape,
     StaticProjectionSiteShape,
 )
-from .codemod_target_selectors import SourceIndexTargetSelector
-from .models import RefactorFinding
-from .source_index import AstTargetNodeKind
+from nominal_refactor_advisor.codemod_target_selectors import SourceIndexTargetSelector
+from nominal_refactor_advisor.models import RefactorFinding
+from nominal_refactor_advisor.source_index import AstTargetNodeKind
 
 
 class ForeignFamilySiteFindingRecipeSynthesizer(

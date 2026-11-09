@@ -9,10 +9,14 @@ from typing import Annotated
 
 from metaclass_registry.mro_dispatch import MroDispatch, handles
 
-from .measures import Headline, WholeModule
-from .project import Project
-from .gate import LocatedSource, OccurrenceMeasure, PerFileMeasure
-from .typing_names import TypingImports, TypingReference
+from nominal_refactor_advisor.audit.measures import Headline, WholeModule
+from nominal_refactor_advisor.audit.project import Project
+from nominal_refactor_advisor.audit.gate import (
+    LocatedSource,
+    OccurrenceMeasure,
+    PerFileMeasure,
+)
+from nominal_refactor_advisor.audit.typing_names import TypingImports, TypingReference
 
 type Enclosing = tuple[ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef, ...]
 

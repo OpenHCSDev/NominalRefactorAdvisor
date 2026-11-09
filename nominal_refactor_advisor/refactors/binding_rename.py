@@ -7,17 +7,19 @@ from abc import (
 )
 from dataclasses import dataclass
 
-from ..codemod_payload import (
+from nominal_refactor_advisor.codemod_payload import (
     RequiredStringPayloadValueCodec,
     codemod_payload_field,
 )
-from ..codemod_reproof import RepositorySourceReprovedOperation
-from ..codemod_runtime import CodemodSourceSnapshot
-from ..codemod_source_edits import (
+from nominal_refactor_advisor.codemod_reproof import RepositorySourceReprovedOperation
+from nominal_refactor_advisor.codemod_runtime import CodemodSourceSnapshot
+from nominal_refactor_advisor.codemod_source_edits import (
     PhysicalSourceEdit,
     SourceTextGeometry,
 )
-from ..declaration_authority_rename import DeclarationAuthorityRenameProof
+from nominal_refactor_advisor.declaration_authority_rename import (
+    DeclarationAuthorityRenameProof,
+)
 
 
 @dataclass(frozen=True, kw_only=True)

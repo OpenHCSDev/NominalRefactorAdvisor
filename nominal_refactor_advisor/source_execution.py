@@ -18,15 +18,15 @@ from types import (
 )
 from typing import ClassVar, Generic, TypeVar, cast
 
-from .ast_projection import AstClassProjection
+from nominal_refactor_advisor.ast_projection import AstClassProjection
 
-from .ast_tools import ParsedModule
-from .call_binding import (
+from nominal_refactor_advisor.ast_tools import ParsedModule
+from nominal_refactor_advisor.call_binding import (
     CompactCallArgument,
     CompactCallBinding,
     CompactFunctionSignature,
 )
-from .captured_reference import (
+from nominal_refactor_advisor.captured_reference import (
     AdmittedExecutionPrefixABC,
     CapturedFlowPrefix,
     CapturedEntryContents,
@@ -60,10 +60,10 @@ from .captured_reference import (
     SourceDefinitionApplicationAuthorityABC,
     ValueQuery,
 )
-from .class_namespace import SourceExecutionEffectEvidence
-from .class_mro import DeclarationMroType
-from .descriptor_algebra import AliasProperty
-from .lexical_bindings import (
+from nominal_refactor_advisor.class_namespace import SourceExecutionEffectEvidence
+from nominal_refactor_advisor.class_mro import DeclarationMroType
+from nominal_refactor_advisor.descriptor_algebra import AliasProperty
+from nominal_refactor_advisor.lexical_bindings import (
     DefaultedParameterSource,
     FunctionParameterSource,
     ParameterDefaultQuestion,
@@ -71,8 +71,8 @@ from .lexical_bindings import (
     ImportedNameOrigin,
     ImportOriginResolverABC,
 )
-from .native_class_mro import NativeClassMroDeclaration
-from .native_compilation import (
+from nominal_refactor_advisor.native_class_mro import NativeClassMroDeclaration
+from nominal_refactor_advisor.native_compilation import (
     CPythonClassConstructionField,
     ExactNativeClassCapture,
     ExactNativeClassPrologue,
@@ -117,14 +117,14 @@ from .native_compilation import (
     OpenNativeFrameOrigin,
     SourceNativeFrameOrigin,
 )
-from .native_declarations import (
+from nominal_refactor_advisor.native_declarations import (
     NativeDeclaration,
     NativeDeclarationFamily,
     NativeDictionaryKey,
     QualifiedDeclaration,
 )
-from .native_reference import NativeReferenceEnvironment
-from .native_call import (
+from nominal_refactor_advisor.native_reference import NativeReferenceEnvironment
+from nominal_refactor_advisor.native_call import (
     CallAuthority,
     DefaultObjectConstruction,
     NativeDefinitionApplicationAuthorityABC,
@@ -133,7 +133,7 @@ from .native_call import (
     NativePythonFunctionSource,
     SignatureCallAuthorityABC,
 )
-from .product_flow import (
+from nominal_refactor_advisor.product_flow import (
     CompactAttributeTarget,
     CompactBranchPredicateResolverABC,
     CompactBindingValueResolverABC,
@@ -176,14 +176,14 @@ from .product_flow import (
     SubscriptionResultValue,
     source_product_flow_projection,
 )
-from .registry_identity import AutoRegisterClassAuthority
-from .source_entry import (
+from nominal_refactor_advisor.registry_identity import AutoRegisterClassAuthority
+from nominal_refactor_advisor.source_entry import (
     ImportedSourceModuleEntryPremise,
     SourceExecutionEntryABC,
     SourceModuleEntryPremise,
 )
-from .source_geometry import SourceByteSpan
-from .value_expression import (
+from nominal_refactor_advisor.source_geometry import SourceByteSpan
+from nominal_refactor_advisor.value_expression import (
     FunctionExpression,
     LexicalValueReference,
     LiteralExpressionEffects,

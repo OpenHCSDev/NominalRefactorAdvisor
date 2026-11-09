@@ -32,43 +32,46 @@ from typing import Callable, ClassVar, Generic, Self, TypeAlias, TypeVar, cast
 
 from metaclass_registry import AutoRegisterMeta
 
-from .ast_field_decoders import (
+from nominal_refactor_advisor.ast_field_decoders import (
     ParameterAnnotations,
     declared_annotations,
 )
-from .foreign_family import FunctionDefinition
-from .interpreter import PythonVersion
-from .ast_projection import CallKeywords, StatementValue
-from .ast_projection import (
+from nominal_refactor_advisor.foreign_family import FunctionDefinition
+from nominal_refactor_advisor.interpreter import PythonVersion
+from nominal_refactor_advisor.ast_projection import CallKeywords, StatementValue
+from nominal_refactor_advisor.ast_projection import (
     AstNameFamily,
     ExpressionReference,
 )
-from .cache_checkout import CheckoutRelocation
-from .cache_paths import ParseCacheDirectory, default_parse_cache_dir
-from .case_root import Case
-from .collection_algebra import (
+from nominal_refactor_advisor.cache_checkout import CheckoutRelocation
+from nominal_refactor_advisor.cache_paths import (
+    ParseCacheDirectory,
+    default_parse_cache_dir,
+)
+from nominal_refactor_advisor.case_root import Case
+from nominal_refactor_advisor.collection_algebra import (
     UniqueIdentityIndexAuthority,
     sorted_tuple,
 )
-from .deadline import scan_deadline_checkpoint
-from .implementation_identity import (
+from nominal_refactor_advisor.deadline import scan_deadline_checkpoint
+from nominal_refactor_advisor.implementation_identity import (
     ImplementationSource,
     declaration_implementation_module_names,
 )
-from .lexical_bindings import (
+from nominal_refactor_advisor.lexical_bindings import (
     FunctionAnnotationVisitor,
     ImportBoundNameProjection as ImportBoundNameProjection,
     ImportedNameOrigin as ImportedNameOrigin,
     LEXICAL_SCOPE_BINDING_AUTHORITY as LEXICAL_SCOPE_BINDING_AUTHORITY,
     LexicalScopeBindingAuthority as LexicalScopeBindingAuthority,
 )
-from .native_compilation import (
+from nominal_refactor_advisor.native_compilation import (
     NativeCreationBackend,
     NativePythonCompilation,
 )
-from .native_declarations import NativeLanguageFeature
-from .native_syntax import NativePythonSyntaxIndex
-from .observation_graph import (
+from nominal_refactor_advisor.native_declarations import NativeLanguageFeature
+from nominal_refactor_advisor.native_syntax import NativePythonSyntaxIndex
+from nominal_refactor_advisor.observation_graph import (
     NominalWitnessGroup,
     ObservationCohort,
     ObservationFiber,
@@ -79,7 +82,7 @@ from .observation_graph import (
     StructuralObservationCarrier,
     collect_structural_observations,
 )
-from .observation_shapes import (
+from nominal_refactor_advisor.observation_shapes import (
     BuilderCallShape,
     DynamicMethodInjectionObservation,
     FieldObservation,
@@ -89,20 +92,26 @@ from .observation_shapes import (
     RegistrationShape,
     SentinelTypeObservation,
 )
-from .python_module_identity import (
+from nominal_refactor_advisor.python_module_identity import (
     PythonModulePathIdentity as PythonModulePathIdentity,
     python_module_name_is_importable as python_module_name_is_importable,
 )
-from .registry_identity import DEFAULT_REGISTRY_KEY_ATTRIBUTE, class_name_registry_key
-from .scan_cache import ScanCache
-from .source_geometry import SourceLineSegmentAuthority, read_source_text
-from .source_identity import (
+from nominal_refactor_advisor.registry_identity import (
+    DEFAULT_REGISTRY_KEY_ATTRIBUTE,
+    class_name_registry_key,
+)
+from nominal_refactor_advisor.scan_cache import ScanCache
+from nominal_refactor_advisor.source_geometry import (
+    SourceLineSegmentAuthority,
+    read_source_text,
+)
+from nominal_refactor_advisor.source_identity import (
     PACKAGE_INIT_FILE_NAME,
     SourceFileIdentity,
     python_source_cache_signature as python_source_cache_signature,
     resolved_source_path_text,
 )
-from .semantic_match import (
+from nominal_refactor_advisor.semantic_match import (
     GuardedEffectStep,
     Maybe,
     SingleCompareEffectStep,
@@ -113,7 +122,10 @@ from .semantic_match import (
     single_item,
     single_return_call,
 )
-from .value_graph import CachedDataclassRepresentation, StoredDataclassState
+from nominal_refactor_advisor.value_graph import (
+    CachedDataclassRepresentation,
+    StoredDataclassState,
+)
 
 FunctionDefinitionNode: TypeAlias = ast.FunctionDef | ast.AsyncFunctionDef
 

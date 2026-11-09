@@ -6,8 +6,8 @@ from collections import Counter
 from collections.abc import Iterable
 from dataclasses import dataclass
 
-from .json_reports import SemanticRecord
-from .models import RefactorFinding
+from nominal_refactor_advisor.json_reports import SemanticRecord
+from nominal_refactor_advisor.models import RefactorFinding
 
 
 @dataclass(frozen=True)

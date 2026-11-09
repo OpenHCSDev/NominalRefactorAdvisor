@@ -8,8 +8,11 @@ from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from typing import Generic, Self, TypeVar, cast
 
-from .declared_family import ForeignAdapter
-from .value_expression import CompactValueExpression, UnassignedValueExpression
+from nominal_refactor_advisor.declared_family import ForeignAdapter
+from nominal_refactor_advisor.value_expression import (
+    CompactValueExpression,
+    UnassignedValueExpression,
+)
 
 
 

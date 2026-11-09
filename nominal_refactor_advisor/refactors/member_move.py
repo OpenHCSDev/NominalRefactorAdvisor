@@ -28,7 +28,7 @@ from dataclasses import dataclass
 from functools import cached_property
 from typing import ClassVar
 
-from .answered_method import (
+from nominal_refactor_advisor.refactors.answered_method import (
     AnsweredMethod as AnsweredMethod,
     ClassBinding as ClassBinding,
     DeclaredClass as DeclaredClass,
@@ -44,24 +44,27 @@ from .answered_method import (
     OutsideScan as OutsideScan,
     ReceiverBinding as ReceiverBinding,
 )
-from ..codemod_imports import ModuleImportMutation
-from ..codemod_payload import (
+from nominal_refactor_advisor.codemod_imports import ModuleImportMutation
+from nominal_refactor_advisor.codemod_payload import (
     OptionalStringPayloadValueCodec,
     PayloadRecordValueCodec,
     codemod_payload_field,
 )
-from ..codemod_reproof import RepositorySourceReprovedOperation
-from ..codemod_runtime import CodemodSourceSnapshot
-from ..codemod_selection_context import ResolvedClassTarget
-from ..codemod_selector_models import SourceRewriteTarget
-from ..codemod_source_edits import (
+from nominal_refactor_advisor.codemod_reproof import RepositorySourceReprovedOperation
+from nominal_refactor_advisor.codemod_runtime import CodemodSourceSnapshot
+from nominal_refactor_advisor.codemod_selection_context import ResolvedClassTarget
+from nominal_refactor_advisor.codemod_selector_models import SourceRewriteTarget
+from nominal_refactor_advisor.codemod_source_edits import (
     NominalSourceEdit,
     SourceTextGeometry,
     SourceTextSpanReplacement,
 )
-from ..lexical_bindings import LEXICAL_SCOPE_BINDING_AUTHORITY
-from ..lexical_bindings import ImportBoundNameProjection
-from .function_operations import imports_only_read_by, method_deletion_offsets
+from nominal_refactor_advisor.lexical_bindings import LEXICAL_SCOPE_BINDING_AUTHORITY
+from nominal_refactor_advisor.lexical_bindings import ImportBoundNameProjection
+from nominal_refactor_advisor.refactors.function_operations import (
+    imports_only_read_by,
+    method_deletion_offsets,
+)
 
 
 @dataclass(frozen=True)

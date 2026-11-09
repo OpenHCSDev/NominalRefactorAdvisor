@@ -24,9 +24,9 @@ from concurrent.futures import Executor
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from ..json_reports import DataclassJsonReport
-from .measures import MechanismOwners
-from .repository import Repository
+from nominal_refactor_advisor.json_reports import DataclassJsonReport
+from nominal_refactor_advisor.audit.measures import MechanismOwners
+from nominal_refactor_advisor.audit.repository import Repository
 
 AUDIT_PACKAGE = Path(__file__).resolve().parent
 

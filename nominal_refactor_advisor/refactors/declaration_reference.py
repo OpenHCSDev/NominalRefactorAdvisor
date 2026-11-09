@@ -9,8 +9,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import ClassVar
 
-from .finding_recipes import FindingRecipeSynthesizer
-from ..class_identity_observations import (
+from nominal_refactor_advisor.refactors.finding_recipes import FindingRecipeSynthesizer
+from nominal_refactor_advisor.class_identity_observations import (
     ClassNameSpelling,
     DeclaredIdentities,
     EnumValueSpelling,
@@ -20,32 +20,32 @@ from ..class_identity_observations import (
     NameImport,
     TypeSpelling,
 )
-from ..ast_tools import ParsedModule
-from ..codemod_reproof import SourceReprovedOperation
-from ..codemod_runtime import (
+from nominal_refactor_advisor.ast_tools import ParsedModule
+from nominal_refactor_advisor.codemod_reproof import SourceReprovedOperation
+from nominal_refactor_advisor.codemod_runtime import (
     CodemodSourceSnapshot,
     FindingRecipeEvaluation,
     RefactorRecipe,
 )
-from ..codemod_selection_context import CodemodSelectorContext
-from ..codemod_selector_models import SourceRewriteTarget
-from ..codemod_source_edits import (
+from nominal_refactor_advisor.codemod_selection_context import CodemodSelectorContext
+from nominal_refactor_advisor.codemod_selector_models import SourceRewriteTarget
+from nominal_refactor_advisor.codemod_source_edits import (
     NominalSourceEdit,
     SourceTextGeometry,
     SourceTextSpanReplacement,
 )
-from ..finding_recipe_actions import FindingRecipeActionKey
-from ..models import (
+from nominal_refactor_advisor.finding_recipe_actions import FindingRecipeActionKey
+from nominal_refactor_advisor.models import (
     DeclarationReferenceMetrics,
     RefactorFinding,
 )
-from ..quoted_reference import (
+from nominal_refactor_advisor.quoted_reference import (
     DeclaredInterpreter,
     ModuleReferenceScope,
     QuotedTypeName,
     SpelledModules,
 )
-from ..refactor_concepts import DeclarationReferenceConcept
+from nominal_refactor_advisor.refactor_concepts import DeclarationReferenceConcept
 
 
 @dataclass(frozen=True)

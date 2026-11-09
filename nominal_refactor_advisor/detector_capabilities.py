@@ -9,18 +9,26 @@ from enum import StrEnum
 from functools import cache
 import inspect
 
-from .refactors.finding_recipes import FindingRecipeSynthesizer
-from .codemod_runtime import FindingRecipeEvaluator
-from .detectors._base import (IssueDetector, SemanticMirrorIssueDetector, SsotAuthorityBoundaryDetector)
-from .json_reports import (
+from nominal_refactor_advisor.refactors.finding_recipes import FindingRecipeSynthesizer
+from nominal_refactor_advisor.codemod_runtime import FindingRecipeEvaluator
+from nominal_refactor_advisor.detectors._base import (
+    IssueDetector,
+    SemanticMirrorIssueDetector,
+    SsotAuthorityBoundaryDetector,
+)
+from nominal_refactor_advisor.json_reports import (
     DataclassJsonReport,
     json_report_cached_property,
     json_report_field,
     json_report_property,
 )
-from .models import NominalDeclarationIdentity, RequiredRelationIdentity, SourceLocation
-from .patterns import PatternId
-from .refactor_concepts import RefactorConcept
+from nominal_refactor_advisor.models import (
+    NominalDeclarationIdentity,
+    RequiredRelationIdentity,
+    SourceLocation,
+)
+from nominal_refactor_advisor.patterns import PatternId
+from nominal_refactor_advisor.refactor_concepts import RefactorConcept
 
 
 class DetectorContributionRole(StrEnum):

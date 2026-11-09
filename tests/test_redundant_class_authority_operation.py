@@ -117,7 +117,7 @@ def test_collapses_historical_semantic_record_authority_as_one_reproved_batch(
     assert "class_names" not in payload
     assert "method_names" not in payload
     assert "SourceIndexRecord" not in rewritten
-    assert "from .records import SemanticRecord" in rewritten
+    assert "from pkg.records import SemanticRecord" in rewritten
     assert "class SourceFileDigest(SemanticRecord):" in rewritten
     assert "class AstTargetDigest(SemanticRecord):" in rewritten
     assert "from abc import ABC" not in rewritten

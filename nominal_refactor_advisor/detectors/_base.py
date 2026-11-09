@@ -40,33 +40,40 @@ from typing import (
 
 from metaclass_registry import AutoRegisterMeta, LazyDiscoveryDict, RegistryConfig
 
-from ..ast_field_decoders import ParameterAnnotations
-from ..implementation_identity import AnswerDeclaration
-from ..ast_projection import ExpressionReference
-from ..class_families.parsed_index import (
+from nominal_refactor_advisor.ast_field_decoders import ParameterAnnotations
+from nominal_refactor_advisor.implementation_identity import AnswerDeclaration
+from nominal_refactor_advisor.ast_projection import ExpressionReference
+from nominal_refactor_advisor.class_families.parsed_index import (
     ClassFamilyIndex,
     IndexedClass,
     build_class_family_index,
 )
-from ..class_method_facets import CompactMethodSemanticCoordinateKind
-from ..class_symbols import ClassSymbolResolutionAuthority
-from ..class_syntax_facets import annotation_type_names
-from ..constructor_algebra import (
+from nominal_refactor_advisor.class_method_facets import (
+    CompactMethodSemanticCoordinateKind,
+)
+from nominal_refactor_advisor.class_symbols import ClassSymbolResolutionAuthority
+from nominal_refactor_advisor.class_syntax_facets import annotation_type_names
+from nominal_refactor_advisor.constructor_algebra import (
     ConstructorConstant,
     ConstructorDerivedField,
     ConstructorVariantCatalog,
     ConstructorVariantSpec,
 )
-from ..descriptor_algebra import (
+from nominal_refactor_advisor.descriptor_algebra import (
     AliasProperty,
     ClassAliasProperty,
     CollectionAttributeProjection,
     ConstantProperty,
 )
-from ..enum_semantics import PYTHON_ENUM_BASE_AUTHORITY
-from ..registration_facets import CompactManualSubclassRegistrationSite
-from ..registry_identity import DEFAULT_REGISTRY_KEY_ATTRIBUTE, class_name_registry_key
-from ..semantic_match import (
+from nominal_refactor_advisor.enum_semantics import PYTHON_ENUM_BASE_AUTHORITY
+from nominal_refactor_advisor.registration_facets import (
+    CompactManualSubclassRegistrationSite,
+)
+from nominal_refactor_advisor.registry_identity import (
+    DEFAULT_REGISTRY_KEY_ATTRIBUTE,
+    class_name_registry_key,
+)
+from nominal_refactor_advisor.semantic_match import (
     AstPredicateRule,
     Maybe,
     NamedCallAssignment,
@@ -94,18 +101,18 @@ from ..semantic_match import (
     single_return_call,
     single_return_value,
 )
-from ..semantic_description_length import CompressionCertificate
-from ..semantic_algebra import DispatchAxisExpression
-from ..factorization import ResidueHookNamesCarrier
-from ..semantic_shape_algebra import (
+from nominal_refactor_advisor.semantic_description_length import CompressionCertificate
+from nominal_refactor_advisor.semantic_algebra import DispatchAxisExpression
+from nominal_refactor_advisor.factorization import ResidueHookNamesCarrier
+from nominal_refactor_advisor.semantic_shape_algebra import (
     InjectiveTypeRegistryProof,
 )
 
 if TYPE_CHECKING:
-    from ..semantic_descent import SemanticDescentGraph
+    from nominal_refactor_advisor.semantic_descent import SemanticDescentGraph
 
-from ..ast_projection import CallKeywords
-from ..ast_tools import (
+from nominal_refactor_advisor.ast_projection import CallKeywords
+from nominal_refactor_advisor.ast_tools import (
     ParsedModuleFact,
     BuiltinCallName,
     BuilderCallShape,
@@ -126,7 +133,7 @@ from ..ast_tools import (
     _walk_nodes,
     _builder_call_shape,
 )
-from ..observation_families import (
+from nominal_refactor_advisor.observation_families import (
     BuilderCallShapeFamily,
     FieldObservationFamily,
     DynamicMethodInjectionObservationFamily,
@@ -134,9 +141,9 @@ from ..observation_families import (
     SentinelTypeObservationFamily,
     NumericLiteralDispatchObservationFamily,
 )
-from ..native_syntax import NativePythonSyntaxIndex
-from ..positional_forwarding import PositionalForwardingCall
-from ..class_index import (
+from nominal_refactor_advisor.native_syntax import NativePythonSyntaxIndex
+from nominal_refactor_advisor.positional_forwarding import PositionalForwardingCall
+from nominal_refactor_advisor.class_index import (
     ClsRegistryMembership,
     CompactClassFamilyIndex,
     CompactIndexedClass,
@@ -153,9 +160,12 @@ from ..class_index import (
     build_compact_class_family_index,
     repository_settled_projections,
 )
-from ..ast_tools import ParsedModuleSet
-from ..collection_algebra import UniqueIdentityIndexAuthority, sorted_tuple
-from ..models import (
+from nominal_refactor_advisor.ast_tools import ParsedModuleSet
+from nominal_refactor_advisor.collection_algebra import (
+    UniqueIdentityIndexAuthority,
+    sorted_tuple,
+)
+from nominal_refactor_advisor.models import (
     CERTIFIED,
     STRONG_HEURISTIC,
     BranchCountMetrics,
@@ -188,15 +198,15 @@ from ..models import (
     SourceLocationZipDescriptorShape,
     WitnessCarrierMetrics,
 )
-from ..observation_graph import (
+from nominal_refactor_advisor.observation_graph import (
     ObservationGraph,
     ObservationKind,
     StructuralExecutionLevel,
     StructuralObservation,
     StructuralObservationCarrier,
 )
-from ..patterns import PatternId
-from ..taxonomy import (
+from nominal_refactor_advisor.patterns import PatternId
+from nominal_refactor_advisor.taxonomy import (
     HIGH_CONFIDENCE,
     MEDIUM_CONFIDENCE,
     CapabilityTag,
@@ -205,9 +215,9 @@ from ..taxonomy import (
     ObservationTag,
     SPECULATIVE,
 )
-from ..ast_tools import statements_without_docstring
-from ..name_algebra import CLASS_NAME_ALGEBRA
-from ._substrate_support import (
+from nominal_refactor_advisor.ast_tools import statements_without_docstring
+from nominal_refactor_advisor.name_algebra import CLASS_NAME_ALGEBRA
+from nominal_refactor_advisor.detectors._substrate_support import (
     _constant_string,
     _IGNORED_ANCESTOR_NAMES,
     _is_abstract_method,

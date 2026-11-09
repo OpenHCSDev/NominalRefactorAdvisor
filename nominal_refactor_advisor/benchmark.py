@@ -14,7 +14,10 @@ from pathlib import Path
 from time import monotonic, sleep
 from typing import Any
 
-from .json_reports import DataclassJsonReport, json_report_object
+from nominal_refactor_advisor.json_reports import (
+    DataclassJsonReport,
+    json_report_object,
+)
 
 
 @dataclass(frozen=True)

@@ -17,16 +17,16 @@ from typing import (
     TypeAlias,
 )
 
-from .ast_tools import ParsedModule
-from .class_namespace import NATIVE_METHOD_DECORATORS
-from .class_symbols import (
+from nominal_refactor_advisor.ast_tools import ParsedModule
+from nominal_refactor_advisor.class_namespace import NATIVE_METHOD_DECORATORS
+from nominal_refactor_advisor.class_symbols import (
     ClassSymbolResolutionAuthority,
     _terminal_reference_name,
 )
-from .class_syntax_facets import _trim_leading_docstring
-from .declaration_dependencies import ClassScopeDependency
-from .foreign_family import FunctionDefinition
-from .lexical_bindings import LEXICAL_SCOPE_BINDING_AUTHORITY
+from nominal_refactor_advisor.class_syntax_facets import _trim_leading_docstring
+from nominal_refactor_advisor.declaration_dependencies import ClassScopeDependency
+from nominal_refactor_advisor.foreign_family import FunctionDefinition
+from nominal_refactor_advisor.lexical_bindings import LEXICAL_SCOPE_BINDING_AUTHORITY
 
 
 class MethodFamilyResidueRole(StrEnum):

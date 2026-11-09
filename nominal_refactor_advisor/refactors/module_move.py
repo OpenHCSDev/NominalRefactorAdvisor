@@ -20,26 +20,35 @@ from itertools import product
 from pathlib import Path, PurePosixPath
 from typing import ClassVar, cast
 
-from ..ast_projection import ExpressionReference
-from ..declared_family import ForeignAdapter
-from ..source_identity import PACKAGE_INIT_FILE_NAME
-from ..ast_tools import ModuleAnnotationEvaluationMode, ParsedModule, ParsedModuleFact
-from ..module_node_index import ModuleNodeIndex
-from ..codemod_import_bindings import FromModuleImportBindingIdentity
-from ..codemod_import_graph import SourceModuleImportGraph
-from ..source_index import SourceFileDigest
-from ..codemod_import_scopes import ModuleImportScope, TypeCheckingGuardProjection
-from ..codemod_imports import (
+from nominal_refactor_advisor.ast_projection import ExpressionReference
+from nominal_refactor_advisor.declared_family import ForeignAdapter
+from nominal_refactor_advisor.source_identity import PACKAGE_INIT_FILE_NAME
+from nominal_refactor_advisor.ast_tools import (
+    ModuleAnnotationEvaluationMode,
+    ParsedModule,
+    ParsedModuleFact,
+)
+from nominal_refactor_advisor.module_node_index import ModuleNodeIndex
+from nominal_refactor_advisor.codemod_import_bindings import (
+    FromModuleImportBindingIdentity,
+)
+from nominal_refactor_advisor.codemod_import_graph import SourceModuleImportGraph
+from nominal_refactor_advisor.source_index import SourceFileDigest
+from nominal_refactor_advisor.codemod_import_scopes import (
+    ModuleImportScope,
+    TypeCheckingGuardProjection,
+)
+from nominal_refactor_advisor.codemod_imports import (
     ImportFromSource,
     ImportLayout,
     ModuleImportMutation,
 )
-from ..codemod_module_declarations import (
+from nominal_refactor_advisor.codemod_module_declarations import (
     ModuleSymbolTable,
     MovedTopLevelDeclarationSource,
     SourceTopLevelSymbolMoveSelection,
 )
-from ..codemod_module_move_reports import (
+from nominal_refactor_advisor.codemod_module_move_reports import (
     ModuleMoveDependencyReport,
     ModuleMoveImportDependency,
     ModuleMoveObstacle,
@@ -47,28 +56,28 @@ from ..codemod_module_move_reports import (
     ModuleMoveSourceLocalDependency,
     ModuleMoveSourceLocalDependencyResolution,
 )
-from ..codemod_operations import RefactorRecipeOperation
-from ..codemod_paths import SourcePathResolutionAuthority
-from ..codemod_payload import (
+from nominal_refactor_advisor.codemod_operations import RefactorRecipeOperation
+from nominal_refactor_advisor.codemod_paths import SourcePathResolutionAuthority
+from nominal_refactor_advisor.codemod_payload import (
     OptionalStringPayloadValueCodec,
     RequiredIntegerPayloadValueCodec,
     RequiredStringPayloadValueCodec,
     StringArrayPayloadValueCodec,
     codemod_payload_field,
 )
-from ..codemod_preflight import (
+from nominal_refactor_advisor.codemod_preflight import (
     CodemodOperationPreflightError,
     CodemodOperationPreflightReport,
 )
-from ..codemod_reproof import RepositorySourceReprovedOperation
-from ..codemod_runtime import CodemodSourceSnapshot
-from ..codemod_selection_context import CodemodSelectorContext
-from ..codemod_selector_models import SourcePathPayloadValueCodec
-from ..codemod_semantics import (
+from nominal_refactor_advisor.codemod_reproof import RepositorySourceReprovedOperation
+from nominal_refactor_advisor.codemod_runtime import CodemodSourceSnapshot
+from nominal_refactor_advisor.codemod_selection_context import CodemodSelectorContext
+from nominal_refactor_advisor.codemod_selector_models import SourcePathPayloadValueCodec
+from nominal_refactor_advisor.codemod_semantics import (
     CodemodPreflightStatus,
     CodemodSourceDependencyScope,
 )
-from ..codemod_source_edits import (
+from nominal_refactor_advisor.codemod_source_edits import (
     NominalSourceEdit,
     SourceFileCreation,
     SourceFileDeletion,
@@ -80,20 +89,22 @@ from ..codemod_source_edits import (
     TextFileChange,
     TextFileEdit,
 )
-from ..codemod_spacing import DestinationInsertionSpacing
-from ..declaration_dependencies import DeclarationDependencyProjection
-from ..json_reports import DataclassJsonReport
-from ..lexical_bindings import (
+from nominal_refactor_advisor.codemod_spacing import DestinationInsertionSpacing
+from nominal_refactor_advisor.declaration_dependencies import (
+    DeclarationDependencyProjection,
+)
+from nominal_refactor_advisor.json_reports import DataclassJsonReport
+from nominal_refactor_advisor.lexical_bindings import (
     LEXICAL_SCOPE_BINDING_AUTHORITY,
     ImportBoundNameProjection,
     ImportFromModuleName,
 )
-from ..public_exports import (
+from nominal_refactor_advisor.public_exports import (
     CompactModulePublicExportContract,
     module_public_export_contract,
 )
-from ..python_module_identity import PythonModulePathIdentity
-from ..value_expression import LexicalValueReference
+from nominal_refactor_advisor.python_module_identity import PythonModulePathIdentity
+from nominal_refactor_advisor.value_expression import LexicalValueReference
 
 
 @dataclass(frozen=True, kw_only=True)

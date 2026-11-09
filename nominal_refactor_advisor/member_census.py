@@ -21,32 +21,38 @@ from itertools import chain
 from pathlib import Path
 from typing import Self
 
-from .amortization import (
+from nominal_refactor_advisor.amortization import (
     InheritanceAmortization,
     IntrospectionAmortization,
     IntrospectionSource,
     NoTrace,
     inheritance_amortization,
 )
-from .ast_projection import ExpressionReference
-from .ast_tools import ParsedModule, parse_python_modules
-from .class_index import (
+from nominal_refactor_advisor.ast_projection import ExpressionReference
+from nominal_refactor_advisor.ast_tools import ParsedModule, parse_python_modules
+from nominal_refactor_advisor.class_index import (
     CompactClassFamilyIndex,
     CompactIndexedClass,
     CompactModuleClassProjectionFamily,
 )
-from .detectors._base import DetectorConfig
-from .detectors._base import CompactClassRepositoryContext
-from .detectors._systemic import (
+from nominal_refactor_advisor.detectors._base import DetectorConfig
+from nominal_refactor_advisor.detectors._base import CompactClassRepositoryContext
+from nominal_refactor_advisor.detectors._systemic import (
     declared_cases,
     recovered_enum_sites,
     unique_direct_enum_classes,
 )
-from .declared_family import ForeignAdapter
-from .foreign_family import ForeignFamily
-from .json_reports import SemanticRecord, json_report_property
-from .observation_families import TypeArgumentResolver, type_test_shapes
-from .type_checker_session import SourceTexts, TypeCheckerSession
+from nominal_refactor_advisor.declared_family import ForeignAdapter
+from nominal_refactor_advisor.foreign_family import ForeignFamily
+from nominal_refactor_advisor.json_reports import SemanticRecord, json_report_property
+from nominal_refactor_advisor.observation_families import (
+    TypeArgumentResolver,
+    type_test_shapes,
+)
+from nominal_refactor_advisor.type_checker_session import (
+    SourceTexts,
+    TypeCheckerSession,
+)
 
 
 class CensusFamilyKind(StrEnum):

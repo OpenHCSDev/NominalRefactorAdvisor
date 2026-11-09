@@ -4,10 +4,21 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import ClassVar, Iterable
 
-from ..json_reports import JsonObject, JsonReport
-from .measures import (Headline, Measure, MeasuredRevisions, MechanismOwners, Measured, NodeCount,
-                       NodeTable, ParseOutcome, Tally, Unparsed, interpreter)
-from .repository import Repository
+from nominal_refactor_advisor.json_reports import JsonObject, JsonReport
+from nominal_refactor_advisor.audit.measures import (
+    Headline,
+    Measure,
+    MeasuredRevisions,
+    MechanismOwners,
+    Measured,
+    NodeCount,
+    NodeTable,
+    ParseOutcome,
+    Tally,
+    Unparsed,
+    interpreter,
+)
+from nominal_refactor_advisor.audit.repository import Repository
 
 
 class Undeclared(MechanismOwners):

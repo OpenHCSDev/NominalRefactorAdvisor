@@ -14,27 +14,27 @@ from typing import (
     cast,
 )
 
-from .ast_projection import (
+from nominal_refactor_advisor.ast_projection import (
     NoStatementValue,
     StatementValue,
     StatementValueQuestion,
     SuppliedValue,
 )
-from .ast_tools import ModuleAnnotationEvaluationMode
-from .captured_reference import SingleFlowPrefix
-from .declaration_dependencies import (
+from nominal_refactor_advisor.ast_tools import ModuleAnnotationEvaluationMode
+from nominal_refactor_advisor.captured_reference import SingleFlowPrefix
+from nominal_refactor_advisor.declaration_dependencies import (
     DeclarationDependencyUse,
     ModuleBindingResolutionPhase,
     _DeclarationDependencyCollector,
 )
-from .lexical_scopes import (
+from nominal_refactor_advisor.lexical_scopes import (
     LexicalNameResolution,
     LexicalScopeABC,
 )
-from .native_compilation import NativeCreationBackend
-from .native_declarations import NativeDeclaration
-from .native_call import NativeDescriptorCall
-from .product_flow import (
+from nominal_refactor_advisor.native_compilation import NativeCreationBackend
+from nominal_refactor_advisor.native_declarations import NativeDeclaration
+from nominal_refactor_advisor.native_call import NativeDescriptorCall
+from nominal_refactor_advisor.product_flow import (
     CompactCallableReferenceUse,
     CompactDefinitionTarget,
     CompactEvaluatedResult,
@@ -48,12 +48,14 @@ from .product_flow import (
     SourceFlowOperation,
     SourceProductFlowProjection,
 )
-from .native_reference import NativeReferenceEnvironment
-from .value_expression import LiteralExpressionEffects as LiteralExpressionEffects
+from nominal_refactor_advisor.native_reference import NativeReferenceEnvironment
+from nominal_refactor_advisor.value_expression import (
+    LiteralExpressionEffects as LiteralExpressionEffects,
+)
 
 if TYPE_CHECKING:
-    from .ast_tools import ParsedModule
-    from .class_index import ModuleNominalBindingView
+    from nominal_refactor_advisor.ast_tools import ParsedModule
+    from nominal_refactor_advisor.class_index import ModuleNominalBindingView
 
 
 # Native descriptor decorators receive the function just declared. Explicit

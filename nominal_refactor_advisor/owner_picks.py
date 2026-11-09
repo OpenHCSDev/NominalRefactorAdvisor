@@ -29,10 +29,14 @@ from collections.abc import Iterable
 from dataclasses import dataclass, replace
 from pathlib import Path
 
-from .class_overlap import ClassOverlapMetrics, ExtractMixin
-from .json_reports import SemanticRecord
-from .models import RefactorFinding
-from .owner_candidates import OwnerPick, OwnerPickOutcome, PickedOwner
+from nominal_refactor_advisor.class_overlap import ClassOverlapMetrics, ExtractMixin
+from nominal_refactor_advisor.json_reports import SemanticRecord
+from nominal_refactor_advisor.models import RefactorFinding
+from nominal_refactor_advisor.owner_candidates import (
+    OwnerPick,
+    OwnerPickOutcome,
+    PickedOwner,
+)
 
 
 @dataclass(frozen=True)

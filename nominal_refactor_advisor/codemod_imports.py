@@ -16,12 +16,12 @@ from functools import cached_property
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from .codemod_import_scopes import (
+from nominal_refactor_advisor.codemod_import_scopes import (
     ImportStatement,
     ModuleImportScope,
     TypeCheckingGuardProjection,
 )
-from .codemod_source_edits import (
+from nominal_refactor_advisor.codemod_source_edits import (
     KeyedSourceEditCoalescence,
     PhysicalSourceEdit,
     SourceInsertion,
@@ -31,10 +31,10 @@ from .codemod_source_edits import (
     SourceTextGeometry,
     SourceTextSpan,
 )
-from .codemod_spacing import DestinationInsertionSpacing
-from .declared_root import DeclaredRoot
-from .collection_algebra import sorted_tuple
-from .lexical_bindings import (
+from nominal_refactor_advisor.codemod_spacing import DestinationInsertionSpacing
+from nominal_refactor_advisor.declared_root import DeclaredRoot
+from nominal_refactor_advisor.collection_algebra import sorted_tuple
+from nominal_refactor_advisor.lexical_bindings import (
     ImportAlias as ImportAlias,
     ImportBoundNameProjection,
     ImportDeclarationABC,
@@ -42,7 +42,9 @@ from .lexical_bindings import (
 )
 
 if TYPE_CHECKING:
-    from .codemod_selection_context import CodemodSelectorContext
+    from nominal_refactor_advisor.codemod_selection_context import (
+        CodemodSelectorContext,
+    )
 
 
 class ImportBlockInsertionPointABC(ABC):

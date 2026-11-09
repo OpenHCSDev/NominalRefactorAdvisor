@@ -11,32 +11,41 @@ from dataclasses import dataclass, replace
 from functools import cached_property
 from typing import ClassVar, Self
 
-from .binding_proofs import RepositoryModuleBindingProof
-from .lexical_bindings import ImportAlias, ImportBoundNameProjection
-from .module_node_index import ModuleNodeIndex
-from .annotation_semantics import StringizedAnnotationSurface
-from .ast_tools import ModuleAnnotationEvaluationMode, ParsedModule
-from .class_index import (
+from nominal_refactor_advisor.binding_proofs import RepositoryModuleBindingProof
+from nominal_refactor_advisor.lexical_bindings import (
+    ImportAlias,
+    ImportBoundNameProjection,
+)
+from nominal_refactor_advisor.module_node_index import ModuleNodeIndex
+from nominal_refactor_advisor.annotation_semantics import StringizedAnnotationSurface
+from nominal_refactor_advisor.ast_tools import (
+    ModuleAnnotationEvaluationMode,
+    ParsedModule,
+)
+from nominal_refactor_advisor.class_index import (
     ModuleNominalBindingAuthority,
     module_star_import_origins,
     nominal_reference_root,
 )
-from .codemod_module_declarations import (
+from nominal_refactor_advisor.codemod_module_declarations import (
     SourceTopLevelDeclaration,
     SourceTopLevelDeclarationIndex,
 )
-from .codemod_source_edits import SourceTextGeometry, SourceTextSpanReplacement
-from .declaration_dependencies import (
+from nominal_refactor_advisor.codemod_source_edits import (
+    SourceTextGeometry,
+    SourceTextSpanReplacement,
+)
+from nominal_refactor_advisor.declaration_dependencies import (
     ModuleLexicalDependencyProjection,
     ModuleNameReferenceSurface,
     MovableDeclaration,
 )
-from .public_exports import (
+from nominal_refactor_advisor.public_exports import (
     ModulePublicExportSourceAuthority,
     PublicExportNameReference,
     module_public_export_contract,
 )
-from .source_index import AstTargetDigest
+from nominal_refactor_advisor.source_index import AstTargetDigest
 
 
 @dataclass(frozen=True)

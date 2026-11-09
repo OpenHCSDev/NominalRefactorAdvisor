@@ -17,16 +17,16 @@ from functools import cached_property
 from operator import attrgetter
 from typing import Generic, TypeVar
 
-from ..class_index import (
+from nominal_refactor_advisor.class_index import (
     NATIVE_METACLASS_BASES,
     CompactClassFamilyIndex,
     CompactModuleClassProjectionFamily,
 )
 
-from ..declared_receivers import DeclaredReceiverTyping
-from ..models import RefactorFinding, SourceLocation
-from ..patterns import PatternId
-from ..relocation_observations import (
+from nominal_refactor_advisor.declared_receivers import DeclaredReceiverTyping
+from nominal_refactor_advisor.models import RefactorFinding, SourceLocation
+from nominal_refactor_advisor.patterns import PatternId
+from nominal_refactor_advisor.relocation_observations import (
     BranchRead,
     ClassShape,
     ClassShapeFamily,
@@ -39,10 +39,10 @@ from ..relocation_observations import (
     ThreadedAbsenceSiteFamily,
     ZeroOneTupleSiteFamily,
 )
-from ..observation_shapes import RestatingSite
-from ..taxonomy import CapabilityTag, ObservationTag
-from ._base import CompactProjectionGroups
-from ._restated_facts import (
+from nominal_refactor_advisor.observation_shapes import RestatingSite
+from nominal_refactor_advisor.taxonomy import CapabilityTag, ObservationTag
+from nominal_refactor_advisor.detectors._base import CompactProjectionGroups
+from nominal_refactor_advisor.detectors._restated_facts import (
     EVIDENCED_CONSUMERS,
     JoinedRestatedFactDetector,
     RestatedFact,

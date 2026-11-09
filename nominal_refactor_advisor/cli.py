@@ -23,12 +23,12 @@ from typing import ClassVar, Self, TypeAlias, cast
 
 from metaclass_registry import AutoRegisterMeta
 
-from .type_checker_session import TypeCheckerTimingLedger
-from .ast_tools import ParsedModuleSet
-from .scan_cache import ScanCache
+from nominal_refactor_advisor.type_checker_session import TypeCheckerTimingLedger
+from nominal_refactor_advisor.ast_tools import ParsedModuleSet
+from nominal_refactor_advisor.scan_cache import ScanCache
 
-from .source_geometry import read_source_text
-from .analysis import (
+from nominal_refactor_advisor.source_geometry import read_source_text
+from nominal_refactor_advisor.analysis import (
     AnalysisPathScope,
     AnalysisResultQuestion,
     CachedGraphDemand,
@@ -64,7 +64,7 @@ from .analysis import (
     plan_path,  # noqa: F401 - re-exported by nominal_refactor_advisor.__init__
     plan_paths,  # noqa: F401 - re-exported by nominal_refactor_advisor.__init__
 )
-from .analysis_cache import (
+from nominal_refactor_advisor.analysis_cache import (
     AnalysisCacheIdentity,
     AnalysisCacheStatus,
     AnalysisExecutionPlanCacheIdentity,
@@ -73,44 +73,44 @@ from .analysis_cache import (
     AnalysisFindingSummaryCachePayload,
     Hit,
 )
-from .ast_tools import (
+from nominal_refactor_advisor.ast_tools import (
     ParsedModule,
     PythonModulePathAuthority,
     PythonSourcePathPolicy,
     parse_python_module_roots,
     python_source_paths_for_roots,
 )
-from .installed_source import InstalledModule
-from .cache_paths import (
+from nominal_refactor_advisor.installed_source import InstalledModule
+from nominal_refactor_advisor.cache_paths import (
     ParseCacheDirectory,
     ParseCachePolicy,
     default_parse_cache_dir,
     maintain_default_cache,
 )
-from .calibration import (
+from nominal_refactor_advisor.calibration import (
     CalibrationReport,
     format_calibration_markdown,
     run_calibration_manifest,
 )
-from .refactors.finding_recipes import (
+from nominal_refactor_advisor.refactors.finding_recipes import (
     FindingRecipeClassPlanReport,
     codemod_class_plan_from_findings,
 )
-from .codemod_architecture_guards import (
+from nominal_refactor_advisor.codemod_architecture_guards import (
     ArchitectureGuardReport,
     ArchitectureGuardRule,
     evaluate_architecture_guards,
 )
-from .codemod_paths import (
+from nominal_refactor_advisor.codemod_paths import (
     SourcePathCandidateAuthority,
     SourcePathCandidateSet,
 )
-from .codemod_preflight import (
+from nominal_refactor_advisor.codemod_preflight import (
     CodemodOperationPreflightError,
     CodemodOperationPreflightReport,
     CodemodPlanPreflightReport,
 )
-from .codemod_runtime import (
+from nominal_refactor_advisor.codemod_runtime import (
     CodemodPlanDocument,
     CodemodPlanRoot,
     CodemodPlanSequence,
@@ -122,14 +122,14 @@ from .codemod_runtime import (
     FindingRecipePlanPreflight,
     FindingRecipePlanSimulation,
 )
-from .codemod_source_cache import (
+from nominal_refactor_advisor.codemod_source_cache import (
     CodemodSourceContext,
     CodemodSourceContextCache,
     CodemodSourceContextCacheLookup,
 )
-from .codemod_target_selectors import CodemodTargetSelector
-from .owner_picks import OwnerPicks
-from .codemod_workflow import (
+from nominal_refactor_advisor.codemod_target_selectors import CodemodTargetSelector
+from nominal_refactor_advisor.owner_picks import OwnerPicks
+from nominal_refactor_advisor.codemod_workflow import (
     CodemodProjectedFindingReport,
     CodemodRefactorGoalReport,
     CodemodRefactorGoalRunner,
@@ -137,10 +137,19 @@ from .codemod_workflow import (
     CodemodSimulationFindingProjection,
     CodemodWorkflowScan,
 )
-from .deadline import ScanDeadline, ScanDeadlineExceeded, enforce_scan_deadline
-from .detector_capabilities import DetectorRefactorCapabilityReport
-from .detectors._base import (DetectorCacheGranularity, DetectorConfig)
-from .economics import (
+from nominal_refactor_advisor.deadline import (
+    ScanDeadline,
+    ScanDeadlineExceeded,
+    enforce_scan_deadline,
+)
+from nominal_refactor_advisor.detector_capabilities import (
+    DetectorRefactorCapabilityReport,
+)
+from nominal_refactor_advisor.detectors._base import (
+    DetectorCacheGranularity,
+    DetectorConfig,
+)
+from nominal_refactor_advisor.economics import (
     EconomicsProofReport,
     LineChangeBudget,
     RefactorEvidenceEconomics,
@@ -148,8 +157,12 @@ from .economics import (
     ScanEconomicsProof,
     build_economics_proof_report,
 )
-from .finding_counts import FindingDetectorCount, FindingPatternCount, FindingSummary
-from .json_reports import (
+from nominal_refactor_advisor.finding_counts import (
+    FindingDetectorCount,
+    FindingPatternCount,
+    FindingSummary,
+)
+from nominal_refactor_advisor.json_reports import (
     DataclassJsonReport,
     JsonObject,
     JsonReport,
@@ -158,38 +171,46 @@ from .json_reports import (
     json_report_object,
     json_report_property,
 )
-from .lean_export import LeanExportError
-from .models import RefactorFinding, RefactorPlan
-from .patterns import PatternId
-from .planner import (
+from nominal_refactor_advisor.lean_export import LeanExportError
+from nominal_refactor_advisor.models import RefactorFinding, RefactorPlan
+from nominal_refactor_advisor.patterns import PatternId
+from nominal_refactor_advisor.planner import (
     RefactorExecutionPlanReport,
     build_refactor_execution_plan,
     build_refactor_plans,
 )
-from .scan_prediction import (
+from nominal_refactor_advisor.scan_prediction import (
     ScanPredictionReport,
     ScanTiming,
     build_scan_prediction_report,
 )
-from .semantic_descent import (
+from nominal_refactor_advisor.semantic_descent import (
     SemanticDescentGraph,
     SemanticDescentGraphPayloadReport,
     build_finding_backed_semantic_descent_graph,
 )
-from .semantic_refactor_gate import (
+from nominal_refactor_advisor.semantic_refactor_gate import (
     SemanticRefactorGateReport,
     ssot_authority_findings,
 )
-from .source_index import build_source_index
-from .structural_overlap import (
+from nominal_refactor_advisor.source_index import build_source_index
+from nominal_refactor_advisor.structural_overlap import (
     StructuralOverlapReport,
     StructuralOverlapReportLimits,
     build_structural_overlap_report,
 )
-from .amortization import IntrospectionSource
-from .member_census import MemberAwarenessCensus, build_member_awareness_census
-from .refactor_search import ScoredMove, SearchBudget, SearchTurn, build_refactor_search
-from .refactor_concepts import RefactorConcept
+from nominal_refactor_advisor.amortization import IntrospectionSource
+from nominal_refactor_advisor.member_census import (
+    MemberAwarenessCensus,
+    build_member_awareness_census,
+)
+from nominal_refactor_advisor.refactor_search import (
+    ScoredMove,
+    SearchBudget,
+    SearchTurn,
+    build_refactor_search,
+)
+from nominal_refactor_advisor.refactor_concepts import RefactorConcept
 
 MEMBER_AWARENESS_LISTING_LIMIT = 20
 MEMBER_AWARENESS_BYPASS_LIMIT = 3

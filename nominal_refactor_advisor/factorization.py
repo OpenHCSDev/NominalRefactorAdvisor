@@ -13,10 +13,14 @@ from dataclasses import dataclass
 from itertools import combinations
 from typing import Generic, Hashable, TypeAlias, TypeVar
 
-from .collection_algebra import sorted_tuple
-from .descriptor_algebra import AliasProperty
-from .semantic_algebra import FiniteAxisSystem, ObjectFamilyShape, structural_key
-from .semantic_description_length import CompressionCertificate
+from nominal_refactor_advisor.collection_algebra import sorted_tuple
+from nominal_refactor_advisor.descriptor_algebra import AliasProperty
+from nominal_refactor_advisor.semantic_algebra import (
+    FiniteAxisSystem,
+    ObjectFamilyShape,
+    structural_key,
+)
+from nominal_refactor_advisor.semantic_description_length import CompressionCertificate
 
 AxisName: TypeAlias = str
 AxisValue: TypeAlias = Hashable

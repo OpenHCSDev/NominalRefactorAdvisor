@@ -14,8 +14,8 @@ from typing import (
     cast,
 )
 
-from .codemod_paths import SourcePathResolutionAuthority
-from .codemod_payload import (
+from nominal_refactor_advisor.codemod_paths import SourcePathResolutionAuthority
+from nominal_refactor_advisor.codemod_payload import (
     CodemodPayloadRecord,
     EmptyDefaultStringPayloadValueCodec,
     FlattenedPayloadRecordValueCodec,
@@ -27,12 +27,12 @@ from .codemod_payload import (
     RequiredStringPayloadValueCodec,
     codemod_payload_field,
 )
-from .json_reports import (
+from nominal_refactor_advisor.json_reports import (
     JsonValue,
     json_report_object,
 )
-from .models import SourceLocation
-from .source_index import (
+from nominal_refactor_advisor.models import SourceLocation
+from nominal_refactor_advisor.source_index import (
     AstTargetDigest,
     AstTargetNodeKind,
     SourceIndex,

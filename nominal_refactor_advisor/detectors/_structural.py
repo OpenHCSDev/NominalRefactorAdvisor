@@ -9,30 +9,34 @@ from __future__ import annotations
 import ast
 from collections.abc import Sequence
 
-from ..semantic_algebra import ObjectFamilyShape
-from ..semantic_description_length import CompressionCertificate
-from ..class_index import (
+from nominal_refactor_advisor.semantic_algebra import ObjectFamilyShape
+from nominal_refactor_advisor.semantic_description_length import CompressionCertificate
+from nominal_refactor_advisor.class_index import (
     CompactModuleClassProjection,
     CompactModuleClassProjectionFamily,
 )
-from ..refactors.finding_recipes import (
+from nominal_refactor_advisor.refactors.finding_recipes import (
     ExactLeafMethodAncestorPromotionFindingRecipeSynthesizer,
     ExactMethodRoleFindingRecipeSynthesizer,
 )
-from ..exact_method_authority import (
+from nominal_refactor_advisor.exact_method_authority import (
     ExactLeafMethodAncestorPromotionComponent,
     ExactMethodRoleComponent,
 )
-from ..semantic_match import (
+from nominal_refactor_advisor.semantic_match import (
     Maybe,
     attribute_call_match,
 )
-from ..taxonomy import CapabilityTag, ObservationTag
+from nominal_refactor_advisor.taxonomy import CapabilityTag, ObservationTag
 from dataclasses import dataclass
 from typing import Generic, TypeVar
-from ..ast_tools import _walk_nodes, ParsedModule, statements_without_docstring
-from ..collection_algebra import sorted_tuple
-from ..models import (
+from nominal_refactor_advisor.ast_tools import (
+    _walk_nodes,
+    ParsedModule,
+    statements_without_docstring,
+)
+from nominal_refactor_advisor.collection_algebra import sorted_tuple
+from nominal_refactor_advisor.models import (
     MappingMetrics,
     RefactorFinding,
     RegistrationMetrics,
@@ -40,9 +44,9 @@ from ..models import (
     SentinelSimulationMetrics,
     SourceLocation,
 )
-from ..patterns import PatternId
-from ..semantic_match import as_ast, ast_sequence, name_id
-from ._base import (
+from nominal_refactor_advisor.patterns import PatternId
+from nominal_refactor_advisor.semantic_match import as_ast, ast_sequence, name_id
+from nominal_refactor_advisor.detectors._base import (
     ClassLineNumbersGroup,
     CompactClassRepositoryContext,
     CompactContextCandidateDetector,
@@ -63,7 +67,7 @@ from ._base import (
     SemanticOverlapMethodFamilyCandidate,
     StringBackedReflectiveNominalLookupCandidate,
 )
-from ._helpers import (
+from nominal_refactor_advisor.detectors._helpers import (
     _concrete_type_union_contract_candidates,
     _dynamic_self_field_selection_candidates,
     _reflective_self_attribute_candidates,
@@ -72,13 +76,13 @@ from ._helpers import (
     _string_backed_reflective_nominal_lookup_candidates,
     CompactMethodFamilyContext,
 )
-from ._structural_step_regex_extractor import (
+from nominal_refactor_advisor.detectors._structural_step_regex_extractor import (
     _accumulator_fold_family_candidates,
     _regex_group_extractor_family_candidates,
     AccumulatorFoldFamilyCandidate,
     RegexGroupExtractorFamilyCandidate,
 )
-from ._helpers import _property_alias_hook_groups
+from nominal_refactor_advisor.detectors._helpers import _property_alias_hook_groups
 
 _REFLECTIVE_ATTRIBUTE_CONTRACT_REPLACEMENT_SHAPE = ObjectFamilyShape(
     shared_objects=("nominal_attribute_contract",)

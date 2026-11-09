@@ -33,8 +33,8 @@ from typing import (
     cast,
 )
 
-from .case_root import CaseMeta
-from .descriptor_algebra import AliasProperty
+from nominal_refactor_advisor.case_root import CaseMeta
+from nominal_refactor_advisor.descriptor_algebra import AliasProperty
 
 JsonScalar: TypeAlias = str | int | float | bool | None
 

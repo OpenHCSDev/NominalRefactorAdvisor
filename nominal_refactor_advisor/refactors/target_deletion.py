@@ -8,38 +8,40 @@ from abc import (
 from dataclasses import dataclass
 from typing import ClassVar
 
-from ..class_index import CompactClassFamilyIndex
-from ..codemod_architecture_guards import (
+from nominal_refactor_advisor.class_index import CompactClassFamilyIndex
+from nominal_refactor_advisor.codemod_architecture_guards import (
     ArchitectureGuardRule,
     ForbiddenAttributeArchitectureGuardConstraint,
     ForbiddenCallArchitectureGuardConstraint,
 )
-from ..codemod_operations import RefactorRecipeOperation
-from ..codemod_payload import (
+from nominal_refactor_advisor.codemod_operations import RefactorRecipeOperation
+from nominal_refactor_advisor.codemod_payload import (
     PayloadRecordValueCodec,
     StringArrayPayloadValueCodec,
     codemod_payload_field,
 )
-from ..codemod_reproof import (
+from nominal_refactor_advisor.codemod_reproof import (
     RepositorySourceReprovedOperation,
     SourceReprovedOperation,
 )
-from ..codemod_runtime import CodemodSourceSnapshot
-from ..codemod_selection_context import CodemodSelectorContext
-from ..codemod_selector_models import (
+from nominal_refactor_advisor.codemod_runtime import CodemodSourceSnapshot
+from nominal_refactor_advisor.codemod_selection_context import CodemodSelectorContext
+from nominal_refactor_advisor.codemod_selector_models import (
     SelectionCountExpectation,
     SelectionCountPayloadValueCodec,
     SourceRewriteTarget,
 )
-from ..codemod_semantics import CodemodSourceDependencyScope
-from ..codemod_source_edits import (
+from nominal_refactor_advisor.codemod_semantics import CodemodSourceDependencyScope
+from nominal_refactor_advisor.codemod_source_edits import (
     PhysicalSourceEdit,
     SourceSpanDeletion,
 )
-from ..codemod_statement_source import AssignmentDeletionSource
-from ..codemod_target_selectors import CodemodTargetSelector
-from ..registry_identity import INHERITABLE_AUTOREGISTER_CONFIGURATION_ATTRIBUTE_NAMES
-from ..source_index import AstTargetNodeKind
+from nominal_refactor_advisor.codemod_statement_source import AssignmentDeletionSource
+from nominal_refactor_advisor.codemod_target_selectors import CodemodTargetSelector
+from nominal_refactor_advisor.registry_identity import (
+    INHERITABLE_AUTOREGISTER_CONFIGURATION_ATTRIBUTE_NAMES,
+)
+from nominal_refactor_advisor.source_index import AstTargetNodeKind
 
 
 @dataclass(frozen=True, kw_only=True)

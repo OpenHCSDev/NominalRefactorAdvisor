@@ -22,7 +22,7 @@ from dataclasses import dataclass
 from functools import cache
 from pathlib import Path
 
-from .declared_root import DeclaredRoot
+from nominal_refactor_advisor.declared_root import DeclaredRoot
 
 
 @dataclass(frozen=True)

@@ -17,8 +17,8 @@ from enum import StrEnum
 from pathlib import PurePosixPath
 from typing import ClassVar, Self, TypeVar
 
-from .case_root import Case
-from .json_reports import (
+from nominal_refactor_advisor.case_root import Case
+from nominal_refactor_advisor.json_reports import (
     SemanticRecord,
     json_report_object,
     json_report_property,

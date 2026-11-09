@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Generic, Hashable, TypeVar
 
-from .collection_algebra import sorted_tuple
+from nominal_refactor_advisor.collection_algebra import sorted_tuple
 
 KeyT = TypeVar("KeyT", bound=Hashable)
 RowT = TypeVar("RowT")

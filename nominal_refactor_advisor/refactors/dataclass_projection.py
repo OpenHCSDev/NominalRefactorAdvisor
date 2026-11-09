@@ -14,7 +14,7 @@ from typing import (
     cast,
 )
 
-from .function_projection_targets import (
+from nominal_refactor_advisor.refactors.function_projection_targets import (
     ProjectionTargetT,
     ResolvedFunctionProjectionTarget,
     ReturnCollectionProjectionTarget,
@@ -22,14 +22,18 @@ from .function_projection_targets import (
     ReturnFieldValue,
     ReturnKeyValueSequenceProjectionTarget,
 )
-from ..assignment_projection import SingleAssignmentAndValueNameProjection
-from ..ast_projection import ExpressionReference
-from ..ast_tools import (
+from nominal_refactor_advisor.assignment_projection import (
+    SingleAssignmentAndValueNameProjection,
+)
+from nominal_refactor_advisor.ast_projection import ExpressionReference
+from nominal_refactor_advisor.ast_tools import (
     ROOT_NAME_PROJECTION,
     walk_function_body_nodes,
 )
-from ..class_families.parsed_index import ModuleClassReferenceResolver
-from .semantic_mirror import (
+from nominal_refactor_advisor.class_families.parsed_index import (
+    ModuleClassReferenceResolver,
+)
+from nominal_refactor_advisor.refactors.semantic_mirror import (
     FindingRecipeParts,
     MappingSemanticMirrorRecipeStrategy,
     PartsBackedMappingRecipeBuilder,
@@ -37,36 +41,38 @@ from .semantic_mirror import (
     SemanticMirrorImportBoundary,
     SemanticMirrorRecipeSeedLocations,
 )
-from .class_base import ClassAuthorityReferenceProof
-from .authority_extraction import SourceDerivedAuthorityProjectionOperation
-from ..codemod import PatchTargetOperation
-from ..codemod_authority_claims import AstTargetAuthorityClaim
-from ..codemod_module_declarations import ModuleSymbolTable
-from ..codemod_runtime import (
+from nominal_refactor_advisor.refactors.class_base import ClassAuthorityReferenceProof
+from nominal_refactor_advisor.refactors.authority_extraction import (
+    SourceDerivedAuthorityProjectionOperation,
+)
+from nominal_refactor_advisor.codemod import PatchTargetOperation
+from nominal_refactor_advisor.codemod_authority_claims import AstTargetAuthorityClaim
+from nominal_refactor_advisor.codemod_module_declarations import ModuleSymbolTable
+from nominal_refactor_advisor.codemod_runtime import (
     CodemodSourceSnapshot,
     RefactorRecipe,
 )
-from ..codemod_selection_context import (
+from nominal_refactor_advisor.codemod_selection_context import (
     CodemodSelectorContext,
     ResolvedClassTarget,
 )
-from ..codemod_selector_models import SourceRewriteTarget
-from ..codemod_source_edits import (
+from nominal_refactor_advisor.codemod_selector_models import SourceRewriteTarget
+from nominal_refactor_advisor.codemod_source_edits import (
     NominalSourceEdit,
     SourceTextGeometry,
     SourceTextReplacement,
     SourceTextSpan,
 )
-from ..codemod_target_selectors import SourceIndexTargetSelector
-from ..lexical_bindings import ImportBoundNameProjection
-from ..lexical_scopes import FunctionBindingProjection
-from ..models import (
+from nominal_refactor_advisor.codemod_target_selectors import SourceIndexTargetSelector
+from nominal_refactor_advisor.lexical_bindings import ImportBoundNameProjection
+from nominal_refactor_advisor.lexical_scopes import FunctionBindingProjection
+from nominal_refactor_advisor.models import (
     MappingMetrics,
     RefactorFinding,
 )
-from ..semantic_descent import SemanticAuthorityKind
-from ..semantic_match import Maybe
-from ..source_index import AstTargetNodeKind
+from nominal_refactor_advisor.semantic_descent import SemanticAuthorityKind
+from nominal_refactor_advisor.semantic_match import Maybe
+from nominal_refactor_advisor.source_index import AstTargetNodeKind
 
 
 @dataclass(frozen=True)

@@ -47,20 +47,24 @@ from typing import (
 
 from metaclass_registry import AutoRegisterMeta
 
-from .interpreter import CompilerIdentity, InterpreterBuild, PythonVersion
-from .call_binding import CompactKeywordArgument
-from .collection_algebra import (
+from nominal_refactor_advisor.interpreter import (
+    CompilerIdentity,
+    InterpreterBuild,
+    PythonVersion,
+)
+from nominal_refactor_advisor.call_binding import CompactKeywordArgument
+from nominal_refactor_advisor.collection_algebra import (
     IdentityHandleMultiplicityProjection,
     UniqueIdentityIndexAuthority,
 )
-from .descriptor_algebra import AliasProperty
-from .lexical_bindings import (
+from nominal_refactor_advisor.descriptor_algebra import AliasProperty
+from nominal_refactor_advisor.lexical_bindings import (
     CompactParameterKind,
     FunctionAnnotationVisitor,
     FunctionArgumentSource,
 )
-from .native_class_mro import NativeClassMroDeclaration
-from .native_declarations import (
+from nominal_refactor_advisor.native_class_mro import NativeClassMroDeclaration
+from nominal_refactor_advisor.native_declarations import (
     NativeDeclaration,
     NativeDictionaryKey,
     NativeScalar,
@@ -68,21 +72,25 @@ from .native_declarations import (
     NativeScalarValueABC,
     NativeTypeDeclaration,
 )
-from .scan_cache import ScanCache
-from .source_geometry import (
+from nominal_refactor_advisor.scan_cache import ScanCache
+from nominal_refactor_advisor.source_geometry import (
     SourceByteSpan,
     SourceLineSegmentAuthority,
 )
-from .source_identity import (
+from nominal_refactor_advisor.source_identity import (
     python_source_cache_signature,
     source_path_text,
 )
-from .value_expression import LiteralExpressionEffects
-from .value_graph import DataclassGraphNode, DataclassGraphValue, StoredDataclassState
+from nominal_refactor_advisor.value_expression import LiteralExpressionEffects
+from nominal_refactor_advisor.value_graph import (
+    DataclassGraphNode,
+    DataclassGraphValue,
+    StoredDataclassState,
+)
 
 if TYPE_CHECKING:
-    from .native_subscription import InertNativeArgumentWitness
-    from .captured_reference import (
+    from nominal_refactor_advisor.native_subscription import InertNativeArgumentWitness
+    from nominal_refactor_advisor.captured_reference import (
         CapturedReferenceResolution,
         NamespaceCreationEvidenceABC,
     )

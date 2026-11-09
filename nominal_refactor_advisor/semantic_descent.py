@@ -32,26 +32,28 @@ from typing import ClassVar, Generic, TypeAlias, TypeVar
 
 from metaclass_registry import AutoRegisterMeta
 
-from .ast_field_decoders import variadic_parameters
-from .ast_projection import ExpressionReference
-from .class_families.parsed_index import (
+from nominal_refactor_advisor.ast_field_decoders import variadic_parameters
+from nominal_refactor_advisor.ast_projection import ExpressionReference
+from nominal_refactor_advisor.class_families.parsed_index import (
     ClassFamilyIndex,
     IndexedClass,
     ClassFamilyIndexBuilder,
     ModuleClassReferenceResolver,
 )
-from .class_symbols import iter_class_definitions
-from .foreign_family import FunctionDefinition
-from .interpreter import PythonVersion
-from .assignment_projection import SingleAssignmentAndValueNameProjection
-from .ast_projection import (
+from nominal_refactor_advisor.class_symbols import iter_class_definitions
+from nominal_refactor_advisor.foreign_family import FunctionDefinition
+from nominal_refactor_advisor.interpreter import PythonVersion
+from nominal_refactor_advisor.assignment_projection import (
+    SingleAssignmentAndValueNameProjection,
+)
+from nominal_refactor_advisor.ast_projection import (
     CallKeywords,
     NoStatementValue,
     StatementValue,
     StatementValueQuestion,
     SuppliedValue,
 )
-from .ast_tools import (
+from nominal_refactor_advisor.ast_tools import (
     ClassFunctionStackNodeVisitor,
     CollectedFamily,
     CompactModuleIdentity,
@@ -60,16 +62,16 @@ from .ast_tools import (
     PythonSourcePathPolicy,
     python_module_path_identities_for_roots,
 )
-from .cache_checkout import (
+from nominal_refactor_advisor.cache_checkout import (
     CacheCheckoutPathError,
     checkout_relative_path,
     inferred_checkout_roots,
     presentation_root_texts,
     rebase_checkout_path,
 )
-from .cache_paths import default_semantic_descent_cache_dir
-from .case_root import Case
-from .class_index import (
+from nominal_refactor_advisor.cache_paths import default_semantic_descent_cache_dir
+from nominal_refactor_advisor.case_root import Case
+from nominal_refactor_advisor.class_index import (
     NotStandardDataclass,
     ClassDeclaration,
     CompactClassFamilyIndex,
@@ -79,26 +81,32 @@ from .class_index import (
     CompactModuleClassProjectionFamily,
     build_compact_class_family_index,
 )
-from .codemod_payload import (
+from nominal_refactor_advisor.codemod_payload import (
     CodemodPayloadRecord,
     EmptyDefaultStringPayloadValueCodec,
     OptionalStrEnumPayloadValueCodec,
     RequiredStringPayloadValueCodec,
     codemod_payload_field,
 )
-from .collection_algebra import UniqueIdentityIndexAuthority, sorted_tuple
-from .deadline import scan_deadline_checkpoint
-from .enum_semantics import PYTHON_ENUM_BASE_AUTHORITY
-from .export_tools import PYTHON_PUBLIC_EXPORT_ASSIGNMENT
-from .implementation_identity import ImplementationSource, implementation_module_names
-from .scan_cache import ScanCache
-from .lexical_bindings import LEXICAL_SCOPE_BINDING_AUTHORITY
-from .json_reports import (
+from nominal_refactor_advisor.collection_algebra import (
+    UniqueIdentityIndexAuthority,
+    sorted_tuple,
+)
+from nominal_refactor_advisor.deadline import scan_deadline_checkpoint
+from nominal_refactor_advisor.enum_semantics import PYTHON_ENUM_BASE_AUTHORITY
+from nominal_refactor_advisor.export_tools import PYTHON_PUBLIC_EXPORT_ASSIGNMENT
+from nominal_refactor_advisor.implementation_identity import (
+    ImplementationSource,
+    implementation_module_names,
+)
+from nominal_refactor_advisor.scan_cache import ScanCache
+from nominal_refactor_advisor.lexical_bindings import LEXICAL_SCOPE_BINDING_AUTHORITY
+from nominal_refactor_advisor.json_reports import (
     DataclassJsonReport,
     SemanticRecord,
     json_report_property,
 )
-from .models import (
+from nominal_refactor_advisor.models import (
     FindingMetrics,
     MappingMetrics,
     RefactorFinding,
@@ -106,15 +114,18 @@ from .models import (
     SemanticMirrorMetricRelation,
     SourceLocation,
 )
-from .name_algebra import CLASS_NAME_ALGEBRA
-from .python_module_identity import PythonModulePathIdentity
-from .record_checks import DeclaredTypeCheckModule
-from .registry_identity import AutoRegisterClassAuthority, class_name_registry_key
-from .semantic_identity import (
+from nominal_refactor_advisor.name_algebra import CLASS_NAME_ALGEBRA
+from nominal_refactor_advisor.python_module_identity import PythonModulePathIdentity
+from nominal_refactor_advisor.record_checks import DeclaredTypeCheckModule
+from nominal_refactor_advisor.registry_identity import (
+    AutoRegisterClassAuthority,
+    class_name_registry_key,
+)
+from nominal_refactor_advisor.semantic_identity import (
     SemanticIdentifierTokenProjection,
     SemanticRoleIdentityToken,
 )
-from .source_identity import resolved_source_path_text
+from nominal_refactor_advisor.source_identity import resolved_source_path_text
 
 _SEMANTIC_STRING_LITERAL_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_.:-]*$")
 _CLASS_SUFFIXES = (

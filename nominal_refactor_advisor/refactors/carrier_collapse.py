@@ -19,49 +19,51 @@ from typing import (
     cast,
 )
 
-from ..ast_field_decoders import variadic_parameters
-from ..ast_tools import walk_function_body_nodes
-from ..carrier_collapse import (
+from nominal_refactor_advisor.ast_field_decoders import variadic_parameters
+from nominal_refactor_advisor.ast_tools import walk_function_body_nodes
+from nominal_refactor_advisor.carrier_collapse import (
     CarrierCollapseCallEdge,
     CarrierCollapseParticipant,
     ClosedCarrierCollapseComponent,
 )
-from ..carrier_expansion import DeclaredCarrierExpansionBuilder
-from .finding_recipes import (
+from nominal_refactor_advisor.carrier_expansion import DeclaredCarrierExpansionBuilder
+from nominal_refactor_advisor.refactors.finding_recipes import (
     FindingEvidenceActionKeysMixin,
     FindingRecipeSynthesizer,
 )
-from .class_base import ClassAuthorityReferenceProof
-from ..codemod_authority_claims import AstTargetAuthorityClaim
-from ..codemod_imports import ModuleImportMutation
-from ..codemod_reproof import RepositorySourceReprovedOperation
-from ..codemod_runtime import (
+from nominal_refactor_advisor.refactors.class_base import ClassAuthorityReferenceProof
+from nominal_refactor_advisor.codemod_authority_claims import AstTargetAuthorityClaim
+from nominal_refactor_advisor.codemod_imports import ModuleImportMutation
+from nominal_refactor_advisor.codemod_reproof import RepositorySourceReprovedOperation
+from nominal_refactor_advisor.codemod_runtime import (
     CodemodSourceSnapshot,
     FindingRecipeEvaluation,
     RefactorRecipe,
 )
-from ..codemod_selection_context import (
+from nominal_refactor_advisor.codemod_selection_context import (
     CodemodSelectorContext,
     ResolvedClassTarget,
 )
-from ..codemod_selector_models import SourceRewriteTarget
-from ..codemod_source_edits import (
+from nominal_refactor_advisor.codemod_selector_models import SourceRewriteTarget
+from nominal_refactor_advisor.codemod_source_edits import (
     NominalSourceEdit,
     SourceTextGeometry,
     SourceTextSpan,
     SourceTextSpanReplacement,
 )
-from ..models import RefactorFinding
-from ..name_algebra import CLASS_NAME_ALGEBRA
-from ..parameter_conveyor import ClosedParameterConveyorComponentBuilder
-from ..quoted_reference import (
+from nominal_refactor_advisor.models import RefactorFinding
+from nominal_refactor_advisor.name_algebra import CLASS_NAME_ALGEBRA
+from nominal_refactor_advisor.parameter_conveyor import (
+    ClosedParameterConveyorComponentBuilder,
+)
+from nominal_refactor_advisor.quoted_reference import (
     DeclaredInterpreter,
     ModuleReferenceScope,
 )
-from ..refactor_concepts import SemanticCarrierConcept
-from ..semantic_descent import SemanticAuthorityKind
-from ..source_geometry import SourceByteSpan
-from ..source_index import AstTargetDigest
+from nominal_refactor_advisor.refactor_concepts import SemanticCarrierConcept
+from nominal_refactor_advisor.semantic_descent import SemanticAuthorityKind
+from nominal_refactor_advisor.source_geometry import SourceByteSpan
+from nominal_refactor_advisor.source_index import AstTargetDigest
 
 
 class _CarrierCollapseNameLoadTransformer(ast.NodeTransformer):

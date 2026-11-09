@@ -13,36 +13,36 @@ from typing import (
     TypeVar,
 )
 
-from .captured_reference import (
+from nominal_refactor_advisor.captured_reference import (
     CapturedReferenceRejection,
     CapturedReferenceViolation,
 )
 
-from .codemod_architecture_guards import ArchitectureGuardRule
-from .codemod_operations import RefactorRecipeOperation
-from .codemod_payload import (
+from nominal_refactor_advisor.codemod_architecture_guards import ArchitectureGuardRule
+from nominal_refactor_advisor.codemod_operations import RefactorRecipeOperation
+from nominal_refactor_advisor.codemod_payload import (
     CodemodPayloadRecord,
     OptionalStrEnumPayloadValueCodec,
     PayloadRecordArrayValueCodec,
     RequiredStringPayloadValueCodec,
     codemod_payload_field,
 )
-from .codemod_preflight import (
+from nominal_refactor_advisor.codemod_preflight import (
     CodemodOperationPreflightError,
     CodemodOperationPreflightReport,
 )
-from .codemod_runtime import CodemodSourceSnapshot
-from .codemod_selection_context import CodemodSelectorContext
-from .codemod_selector_models import (
+from nominal_refactor_advisor.codemod_runtime import CodemodSourceSnapshot
+from nominal_refactor_advisor.codemod_selection_context import CodemodSelectorContext
+from nominal_refactor_advisor.codemod_selector_models import (
     SourceRewriteTarget,
     SourceRewriteTargetPreflightDetail,
 )
-from .codemod_semantics import (
+from nominal_refactor_advisor.codemod_semantics import (
     CodemodPreflightStatus,
     CodemodSourceDependencyScope,
 )
-from .codemod_source_edits import NominalSourceEdit
-from .semantic_descent import AuthorityClaim
+from nominal_refactor_advisor.codemod_source_edits import NominalSourceEdit
+from nominal_refactor_advisor.semantic_descent import AuthorityClaim
 
 SourceReproofValueT = TypeVar("SourceReproofValueT")
 

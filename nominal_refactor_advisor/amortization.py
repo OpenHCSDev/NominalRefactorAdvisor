@@ -21,11 +21,11 @@ from pathlib import Path
 
 from nra_introspection_trace import IntrospectionTrace
 
-from .ast_tools import ParsedModule
-from .class_index import CompactClassFamilyIndex
-from .json_reports import SemanticRecord, json_report_property
-from .probe_owner import ReceiverSpan, ScannedClasses
-from .type_checker_session import TypeCheckerSession
+from nominal_refactor_advisor.ast_tools import ParsedModule
+from nominal_refactor_advisor.class_index import CompactClassFamilyIndex
+from nominal_refactor_advisor.json_reports import SemanticRecord, json_report_property
+from nominal_refactor_advisor.probe_owner import ReceiverSpan, ScannedClasses
+from nominal_refactor_advisor.type_checker_session import TypeCheckerSession
 
 
 @dataclass(frozen=True)

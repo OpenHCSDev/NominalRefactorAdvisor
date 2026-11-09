@@ -17,8 +17,8 @@ from dataclasses import dataclass, field
 from functools import lru_cache
 from typing import ClassVar
 
-from .family import Family
-from .lexical import ModuleScope
+from nominal_refactor_advisor.audit.family import Family
+from nominal_refactor_advisor.audit.lexical import ModuleScope
 
 
 class MechanismOwners(ABC):

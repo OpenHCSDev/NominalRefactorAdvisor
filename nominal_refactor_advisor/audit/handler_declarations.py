@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import ast
 
-from .measures import MechanismOwners
+from nominal_refactor_advisor.audit.measures import MechanismOwners
 
 
 class BuiltinHandlerDeclarations:

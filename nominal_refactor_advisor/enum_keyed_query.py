@@ -5,29 +5,29 @@ from __future__ import annotations
 import ast
 from dataclasses import dataclass
 
-from .ast_tools import (
+from nominal_refactor_advisor.ast_tools import (
     CompactModuleIdentity,
     CollectedFamily,
     ParsedModule,
     statements_without_docstring,
 )
-from .binding_proofs import RepositoryModuleBindingProof
-from .class_families.parsed_index import (
+from nominal_refactor_advisor.binding_proofs import RepositoryModuleBindingProof
+from nominal_refactor_advisor.class_families.parsed_index import (
     ClassFamilyIndex,
     IndexedClass,
     ModuleClassReferenceResolver,
     build_class_family_index,
 )
-from .class_index import (
+from nominal_refactor_advisor.class_index import (
     ModuleNominalBindingWitness,
     ModuleNominalBindingView,
     NamedImportModuleBindingProjection,
 )
-from .collection_algebra import sorted_tuple
-from .enum_semantics import PYTHON_ENUM_BASE_AUTHORITY
-from .foreign_family import FunctionDefinition
-from .lexical_bindings import LEXICAL_SCOPE_BINDING_AUTHORITY
-from .models import SourceLocation
+from nominal_refactor_advisor.collection_algebra import sorted_tuple
+from nominal_refactor_advisor.enum_semantics import PYTHON_ENUM_BASE_AUTHORITY
+from nominal_refactor_advisor.foreign_family import FunctionDefinition
+from nominal_refactor_advisor.lexical_bindings import LEXICAL_SCOPE_BINDING_AUTHORITY
+from nominal_refactor_advisor.models import SourceLocation
 
 
 @dataclass(frozen=True)

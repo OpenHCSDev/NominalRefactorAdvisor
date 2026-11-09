@@ -15,14 +15,14 @@ from typing import (
     cast,
 )
 
-from .ast_projection import (
+from nominal_refactor_advisor.ast_projection import (
     StatementValues,
     single_name_targets,
 )
-from .ast_tools import ParsedModule
-from .collection_algebra import sorted_tuple
-from .export_tools import PYTHON_PUBLIC_EXPORT_ASSIGNMENT
-from .lexical_bindings import LEXICAL_SCOPE_BINDING_AUTHORITY
+from nominal_refactor_advisor.ast_tools import ParsedModule
+from nominal_refactor_advisor.collection_algebra import sorted_tuple
+from nominal_refactor_advisor.export_tools import PYTHON_PUBLIC_EXPORT_ASSIGNMENT
+from nominal_refactor_advisor.lexical_bindings import LEXICAL_SCOPE_BINDING_AUTHORITY
 
 
 class CompactPublicNameExposure(StrEnum):

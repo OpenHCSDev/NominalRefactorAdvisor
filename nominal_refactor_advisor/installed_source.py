@@ -11,14 +11,17 @@ from importlib.machinery import PathFinder
 from pathlib import Path
 from typing import ClassVar, TypeVar
 
-from .ast_tools import (
+from nominal_refactor_advisor.ast_tools import (
     CollectedFamily,
     CollectedFamilyCacheContext,
     ParsedModule,
     SourceModule,
 )
-from .python_module_identity import PythonModulePathIdentity
-from .source_identity import PACKAGE_INIT_FILE_NAME, source_path_is_package_init
+from nominal_refactor_advisor.python_module_identity import PythonModulePathIdentity
+from nominal_refactor_advisor.source_identity import (
+    PACKAGE_INIT_FILE_NAME,
+    source_path_is_package_init,
+)
 
 
 ItemT = TypeVar("ItemT")

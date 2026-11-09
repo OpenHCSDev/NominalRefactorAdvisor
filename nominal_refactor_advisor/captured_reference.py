@@ -35,27 +35,27 @@ from typing import (
     cast,
 )
 
-from .class_mro import NativeMroBase
-from .descriptor_algebra import AliasProperty
+from nominal_refactor_advisor.class_mro import NativeMroBase
+from nominal_refactor_advisor.descriptor_algebra import AliasProperty
 
-from .lexical_bindings import (
+from nominal_refactor_advisor.lexical_bindings import (
     ImportedNameOrigin,
     ImportOriginResolverABC,
     ImportFromModuleName,
 )
-from .native_compilation import (
+from nominal_refactor_advisor.native_compilation import (
     CPythonClassConstructionField,
     ExactNativeFunctionExecution,
     NativeBindingTransfer,
     NativeCreationBackend,
 )
-from .native_declarations import (
+from nominal_refactor_advisor.native_declarations import (
     NativeDeclaration,
     NativeDictionaryKey,
     NativeScalar,
     NativeScalarValueABC,
 )
-from .product_flow import (
+from nominal_refactor_advisor.product_flow import (
     CallResultValue,
     CompactAttributeTarget,
     CompactBindingResolverABC,
@@ -87,13 +87,19 @@ from .product_flow import (
     SourceFlowOperation,
     SourceProductFlowProjection,
 )
-from .value_expression import LexicalValueReference, TargetResolutionT
+from nominal_refactor_advisor.value_expression import (
+    LexicalValueReference,
+    TargetResolutionT,
+)
 
 if TYPE_CHECKING:
-    from .native_call import CallAuthority, NativeDefinitionApplicationAuthorityABC
-    from .native_reference import NativeReferenceEnvironment
-    from .source_entry import SourceModuleEntryPremise
-    from .source_execution import (
+    from nominal_refactor_advisor.native_call import (
+        CallAuthority,
+        NativeDefinitionApplicationAuthorityABC,
+    )
+    from nominal_refactor_advisor.native_reference import NativeReferenceEnvironment
+    from nominal_refactor_advisor.source_entry import SourceModuleEntryPremise
+    from nominal_refactor_advisor.source_execution import (
         SourceDefinitionDecoratorApplicationABC,
         SourceFunctionActivationABC,
     )

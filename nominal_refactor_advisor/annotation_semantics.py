@@ -9,8 +9,8 @@ from dataclasses import dataclass
 from enum import Enum
 from functools import cached_property
 
-from .ast_tools import BuiltinCallName
-from .lexical_bindings import LEXICAL_SCOPE_BINDING_AUTHORITY
+from nominal_refactor_advisor.ast_tools import BuiltinCallName
+from nominal_refactor_advisor.lexical_bindings import LEXICAL_SCOPE_BINDING_AUTHORITY
 
 
 class TypeWrapper(Enum):

@@ -10,7 +10,7 @@ from functools import cached_property
 from pathlib import Path, PurePath, PurePosixPath
 from typing import BinaryIO
 
-from .scan_cache import ScanCache
+from nominal_refactor_advisor.scan_cache import ScanCache
 
 
 @dataclass(frozen=True)

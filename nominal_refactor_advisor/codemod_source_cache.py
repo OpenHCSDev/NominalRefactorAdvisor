@@ -9,7 +9,7 @@ from collections.abc import (
 from dataclasses import dataclass
 from pathlib import Path
 
-from .analysis_cache import (
+from nominal_refactor_advisor.analysis_cache import (
     AnalysisCacheIdentity,
     AnalysisCacheStatus,
     AnalysisCacheStorage,
@@ -17,16 +17,16 @@ from .analysis_cache import (
     Hit,
     Miss,
 )
-from .ast_tools import (
+from nominal_refactor_advisor.ast_tools import (
     ParsedModule,
     SourceModuleBatchParser,
 )
-from .class_families.parsed_index import ClassFamilyIndex
-from .ast_tools import ParsedModuleSet
-from .codemod_import_graph import SourceModuleImportGraph
-from .codemod_runtime import CodemodSourceSnapshot
-from .models import RefactorFinding
-from .source_index import (
+from nominal_refactor_advisor.class_families.parsed_index import ClassFamilyIndex
+from nominal_refactor_advisor.ast_tools import ParsedModuleSet
+from nominal_refactor_advisor.codemod_import_graph import SourceModuleImportGraph
+from nominal_refactor_advisor.codemod_runtime import CodemodSourceSnapshot
+from nominal_refactor_advisor.models import RefactorFinding
+from nominal_refactor_advisor.source_index import (
     AstTargetNodeIndex,
     IndexedSourceAuthority,
     build_source_index_artifacts,

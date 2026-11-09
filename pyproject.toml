@@ -55,6 +55,9 @@ include = ["nominal_refactor_advisor*"]
 nominal_refactor_advisor = ["py.typed"]
 "nominal_refactor_advisor.audit" = ["patterns/*.md"]
 
+[tool.ruff.lint.flake8-tidy-imports]
+ban-relative-imports = "all"
+
 [tool.black]
 line-length = 88
 target-version = ["py312"]

@@ -25,8 +25,8 @@ from pathlib import Path
 from types import EllipsisType
 from typing import Any, cast
 
-from .ast_projection import ExpressionReference
-from .ast_tools import (
+from nominal_refactor_advisor.ast_projection import ExpressionReference
+from nominal_refactor_advisor.ast_tools import (
     BuiltinCallName,
     CollectedFamily,
     ParsedModule,
@@ -37,25 +37,28 @@ from .ast_tools import (
     PythonSourcePathPolicy,
     walk_function_body_nodes,
 )
-from .codemod_source_edits import (
+from nominal_refactor_advisor.codemod_source_edits import (
     SourceTextGeometry,
     SourceTextSpan,
     SourceTextSpanReplacement,
 )
-from .class_index import (
+from nominal_refactor_advisor.class_index import (
     BoundNominalReference,
     CompactClassFamilyIndex,
     CompactNominalBinding,
     CompactNominalBindingKind,
 )
-from .codemod_foreign_family_source import RewrittenLineFit
-from .enum_semantics import PythonEnumBaseKind, PythonEnumDeclarationAuthority
-from .observation_families import ShapeFamily
-from .restated_fact_observations import (
+from nominal_refactor_advisor.codemod_foreign_family_source import RewrittenLineFit
+from nominal_refactor_advisor.enum_semantics import (
+    PythonEnumBaseKind,
+    PythonEnumDeclarationAuthority,
+)
+from nominal_refactor_advisor.observation_families import ShapeFamily
+from nominal_refactor_advisor.restated_fact_observations import (
     RestatingSiteFamily,
     RestatingSiteModule,
 )
-from .observation_shapes import RestatingSite
+from nominal_refactor_advisor.observation_shapes import RestatingSite
 
 StatementList = Sequence[ast.stmt]
 ScopeNode = ast.Module | ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef

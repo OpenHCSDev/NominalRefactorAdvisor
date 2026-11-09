@@ -15,20 +15,23 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Iterable, Sequence
 
-from .ast_tools import ParsedModuleSet
-from .lexical_bindings import ImportBoundNameProjection
-from .analysis import analyze_modules
-from .ast_projection import CallKeyword, StatementValue
-from .ast_tools import ParsedModule, parse_python_module_roots
-from .detectors._base import DetectorConfig
-from .export_tools import PublicExportPolicy, derive_public_exports
-from .models import (
+from nominal_refactor_advisor.ast_tools import ParsedModuleSet
+from nominal_refactor_advisor.lexical_bindings import ImportBoundNameProjection
+from nominal_refactor_advisor.analysis import analyze_modules
+from nominal_refactor_advisor.ast_projection import CallKeyword, StatementValue
+from nominal_refactor_advisor.ast_tools import ParsedModule, parse_python_module_roots
+from nominal_refactor_advisor.detectors._base import DetectorConfig
+from nominal_refactor_advisor.export_tools import (
+    PublicExportPolicy,
+    derive_public_exports,
+)
+from nominal_refactor_advisor.models import (
     RefactorFinding,
     SourceLineReference,
     stable_source_location_id,
 )
-from .native_declarations import DataclassRuntimeDeclaration
-from .source_index import (
+from nominal_refactor_advisor.native_declarations import DataclassRuntimeDeclaration
+from nominal_refactor_advisor.source_index import (
     STABLE_ID_AUTHORITY,
     AstTargetDigest,
     AstTargetNodeKind,
@@ -37,8 +40,8 @@ from .source_index import (
     StableIdPart,
     build_source_index,
 )
-from .source_identity import source_path_is_package_init
-from .json_reports import (
+from nominal_refactor_advisor.source_identity import source_path_is_package_init
+from nominal_refactor_advisor.json_reports import (
     DataclassJsonReport,
     json_report_property,
 )

@@ -8,17 +8,17 @@ from pathlib import Path
 from time import perf_counter
 from typing import Iterable
 
-from .ast_tools import ParsedModuleSet
-from .analysis import analyze_modules
-from .analysis_cache import AnalysisCacheStatus
-from .ast_tools import ParsedModule, parse_python_modules
-from .detectors._base import DetectorConfig
-from .collection_algebra import sorted_tuple
-from .economics import TimedScan
-from .models import RefactorFinding
-from .source_index import build_source_index
-from .type_checker_session import TypeCheckerTiming
-from .json_reports import (
+from nominal_refactor_advisor.ast_tools import ParsedModuleSet
+from nominal_refactor_advisor.analysis import analyze_modules
+from nominal_refactor_advisor.analysis_cache import AnalysisCacheStatus
+from nominal_refactor_advisor.ast_tools import ParsedModule, parse_python_modules
+from nominal_refactor_advisor.detectors._base import DetectorConfig
+from nominal_refactor_advisor.collection_algebra import sorted_tuple
+from nominal_refactor_advisor.economics import TimedScan
+from nominal_refactor_advisor.models import RefactorFinding
+from nominal_refactor_advisor.source_index import build_source_index
+from nominal_refactor_advisor.type_checker_session import TypeCheckerTiming
+from nominal_refactor_advisor.json_reports import (
     SemanticRecord,
     DataclassJsonReport,
     json_report_property,

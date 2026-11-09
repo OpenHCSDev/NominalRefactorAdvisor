@@ -22,33 +22,33 @@ from typing import (
     cast,
 )
 
-from .annotation_semantics import (
+from nominal_refactor_advisor.annotation_semantics import (
     CLASSVAR_ANNOTATION_AUTHORITY,
     NOMINAL_ANNOTATION_SOURCE_AUTHORITY,
     TypeWrapper,
 )
-from .ast_projection import (
+from nominal_refactor_advisor.ast_projection import (
     CallKeywords,
     ExpressionReference,
     StatementValue,
     StatementValues,
     single_name_targets,
 )
-from .ast_tools import (
+from nominal_refactor_advisor.ast_tools import (
     ParsedModule,
     ParsedModuleFact,
     PythonSourcePathPolicy,
 )
-from .class_symbols import (
+from nominal_refactor_advisor.class_symbols import (
     ClassSymbolResolutionAuthority,
     _referenced_bases,
     _terminal_reference_name,
     iter_class_definitions,
 )
-from .collection_algebra import sorted_tuple
-from .foreign_family import AssignmentStatement
-from .lexical_bindings import LEXICAL_SCOPE_BINDING_AUTHORITY
-from .value_expression import CompactValueExpression
+from nominal_refactor_advisor.collection_algebra import sorted_tuple
+from nominal_refactor_advisor.foreign_family import AssignmentStatement
+from nominal_refactor_advisor.lexical_bindings import LEXICAL_SCOPE_BINDING_AUTHORITY
+from nominal_refactor_advisor.value_expression import CompactValueExpression
 
 
 class CompactClassMemberDeclaration(NamedTuple):

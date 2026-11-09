@@ -21,32 +21,35 @@ from typing import (
     cast,
 )
 
-from .binding_proofs import (
+from nominal_refactor_advisor.binding_proofs import (
     FunctionNominalParameterBindingAuthority,
     RepositoryModuleBindingProof,
 )
-from .class_syntax_facets import CompactClassMemberDeclaration
-from .public_exports import CompactPublicNameExposure
-from .value_expression import CompactValueExpression
-from .annotation_semantics import NOMINAL_ANNOTATION_SOURCE_AUTHORITY, TypeWrapper
-from .ast_tools import (
+from nominal_refactor_advisor.class_syntax_facets import CompactClassMemberDeclaration
+from nominal_refactor_advisor.public_exports import CompactPublicNameExposure
+from nominal_refactor_advisor.value_expression import CompactValueExpression
+from nominal_refactor_advisor.annotation_semantics import (
+    NOMINAL_ANNOTATION_SOURCE_AUTHORITY,
+    TypeWrapper,
+)
+from nominal_refactor_advisor.ast_tools import (
     BuiltinCallName,
     CollectedFamily,
     ParsedModule,
     ParsedModuleSourceProjection,
 )
-from .call_binding import (
+from nominal_refactor_advisor.call_binding import (
     CallValueT,
     CompactCallBinding,
     CompactFunctionSignature,
 )
-from .captured_reference import (
+from nominal_refactor_advisor.captured_reference import (
     CapturedReferenceResolution,
     CapturedReferenceViolation,
     OpenCapturedReference,
 )
-from .closed_world import ClosedWorldPremise
-from .class_index import (
+from nominal_refactor_advisor.closed_world import ClosedWorldPremise
+from nominal_refactor_advisor.class_index import (
     ClassMemberAnswersABC,
     CompactAnnotatedMethod,
     CompactAnnotatedProperty,
@@ -63,16 +66,16 @@ from .class_index import (
     ModuleNominalBindingAuthority,
     build_compact_class_family_index,
 )
-from .collection_algebra import (
+from nominal_refactor_advisor.collection_algebra import (
     IdentityHandleMultiplicityProjection,
     UniqueIdentityIndexAuthority,
 )
-from .descriptor_algebra import AliasProperty
-from .lexical_bindings import LEXICAL_SCOPE_BINDING_AUTHORITY
-from .native_declarations import NativeDeclaration
-from .native_compilation import NativePythonCompilation
-from .source_identity import source_path_text
-from .product_flow import (
+from nominal_refactor_advisor.descriptor_algebra import AliasProperty
+from nominal_refactor_advisor.lexical_bindings import LEXICAL_SCOPE_BINDING_AUTHORITY
+from nominal_refactor_advisor.native_declarations import NativeDeclaration
+from nominal_refactor_advisor.native_compilation import NativePythonCompilation
+from nominal_refactor_advisor.source_identity import source_path_text
+from nominal_refactor_advisor.product_flow import (
     CompactFunctionBindingKind,
     ReceiverAttributeCallTargetReference,
     BareCallTargetReference,
@@ -102,9 +105,9 @@ from .product_flow import (
     CurrentClassMemberMethodReference,
     SourceProductFlowProjection,
 )
-from .source_geometry import SourceByteSpan
-from .scan_cache import ScanCache
-from .value_expression import LexicalValueReference
+from nominal_refactor_advisor.source_geometry import SourceByteSpan
+from nominal_refactor_advisor.scan_cache import ScanCache
+from nominal_refactor_advisor.value_expression import LexicalValueReference
 
 # Hooks through which a class or module answers any attribute name.
 DYNAMIC_ATTRIBUTE_HOOKS = frozenset(("__getattr__", "__getattribute__"))

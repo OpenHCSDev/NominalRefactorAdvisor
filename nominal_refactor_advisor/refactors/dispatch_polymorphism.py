@@ -21,57 +21,59 @@ from typing import (
 
 from metaclass_registry import AutoRegisterMeta
 
-from ..ast_tools import (
+from nominal_refactor_advisor.ast_tools import (
     statements_without_docstring,
     walk_function_body_nodes,
 )
-from .finding_recipes import FindingRecipeSynthesizer
-from .source_insertion import EnsureImportOperation
-from ..codemod_architecture_guards import (
+from nominal_refactor_advisor.refactors.finding_recipes import FindingRecipeSynthesizer
+from nominal_refactor_advisor.refactors.source_insertion import EnsureImportOperation
+from nominal_refactor_advisor.codemod_architecture_guards import (
     ArchitectureGuardRule,
     ArchitectureGuardTargetScope,
     ForbiddenDispatchArchitectureGuardConstraint,
 )
-from ..codemod_declaration_source import NamedDeclarationSourceAuthority
-from ..codemod_imports import ModuleImportMutation
-from ..codemod_reproof import SourceReprovedOperation
-from ..codemod_runtime import (
+from nominal_refactor_advisor.codemod_declaration_source import (
+    NamedDeclarationSourceAuthority,
+)
+from nominal_refactor_advisor.codemod_imports import ModuleImportMutation
+from nominal_refactor_advisor.codemod_reproof import SourceReprovedOperation
+from nominal_refactor_advisor.codemod_runtime import (
     CodemodSourceSnapshot,
     FindingRecipeEvaluation,
     RefactorRecipe,
 )
-from ..codemod_selection_context import CodemodSelectorContext
-from ..codemod_selector_models import SourceRewriteTarget
-from ..codemod_source_edits import (
+from nominal_refactor_advisor.codemod_selection_context import CodemodSelectorContext
+from nominal_refactor_advisor.codemod_selector_models import SourceRewriteTarget
+from nominal_refactor_advisor.codemod_source_edits import (
     NominalSourceEdit,
     SourceInsertion,
     SourceLineSpan,
     SourceSpanReplacement,
     SourceTargetEditor,
 )
-from ..codemod_target_selectors import (
+from nominal_refactor_advisor.codemod_target_selectors import (
     FindingEvidenceTargetSelector,
     SourceIndexTargetSelector,
     TargetSetExpressionSelector,
 )
-from ..collection_algebra import sorted_tuple
-from ..finding_recipe_actions import FindingRecipeActionKey
-from ..lexical_bindings import (
+from nominal_refactor_advisor.collection_algebra import sorted_tuple
+from nominal_refactor_advisor.finding_recipe_actions import FindingRecipeActionKey
+from nominal_refactor_advisor.lexical_bindings import (
     ImportBoundNameProjection,
     LEXICAL_SCOPE_BINDING_AUTHORITY,
 )
-from ..models import RefactorFinding
-from ..name_algebra import CLASS_NAME_ALGEBRA
-from ..quoted_reference import (
+from nominal_refactor_advisor.models import RefactorFinding
+from nominal_refactor_advisor.name_algebra import CLASS_NAME_ALGEBRA
+from nominal_refactor_advisor.quoted_reference import (
     DeclaredInterpreter,
     ModuleReferenceScope,
 )
-from ..refactor_concepts import AutoRegisterStrategyFamilyConcept
-from ..semantic_descent import (
+from nominal_refactor_advisor.refactor_concepts import AutoRegisterStrategyFamilyConcept
+from nominal_refactor_advisor.semantic_descent import (
     AuthorityClaim,
     SemanticAuthorityKind,
 )
-from ..source_index import (
+from nominal_refactor_advisor.source_index import (
     AstTargetDigest,
     AstTargetNode,
     AstTargetNodeKind,
