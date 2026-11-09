@@ -3080,6 +3080,19 @@ class PythonSourcePathPolicy:
 
 
 @dataclass(frozen=True)
+class DomainSourcePathPolicy(PythonSourcePathPolicy):
+    """The files under a scan's roots that one change can read: the same roots
+    and the same discovery, admitting fewer files. The analysis cache keys a scan
+    by the files its discovery yields, so a domain scan and a full scan never
+    share an entry, while each file's own entries are shared."""
+
+    admitted: frozenset[Path] = frozenset()
+
+    def allows_file_path(self, path: Path) -> bool:
+        return super().allows_file_path(path) and path.resolve() in self.admitted
+
+
+@dataclass(frozen=True)
 class PythonSourcePathDiscovery:
     """Discover deterministic Python source paths for one advisor scan root."""
 

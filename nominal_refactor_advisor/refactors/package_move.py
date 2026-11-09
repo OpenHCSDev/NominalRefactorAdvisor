@@ -22,10 +22,16 @@ import re
 from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass
 from functools import cached_property
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 
-from nominal_refactor_advisor.ast_tools import ParsedModule
+from nominal_refactor_advisor.ast_tools import (
+    DomainSourcePathPolicy,
+    ParsedModule,
+    PythonSourcePathDiscovery,
+    PythonSourcePathPolicy,
+)
 from nominal_refactor_advisor.class_index import CompactModuleClassHeader
+from nominal_refactor_advisor.detectors._base import DetectorConfig
 from nominal_refactor_advisor.codemod_import_scopes import ModuleImportScope
 from nominal_refactor_advisor.codemod_module_declarations import ModuleSymbolTable
 from nominal_refactor_advisor.codemod_runtime import (
@@ -36,6 +42,7 @@ from nominal_refactor_advisor.codemod_selection_context import CodemodSelectorCo
 from nominal_refactor_advisor.codemod_selector_models import SourceRewriteTarget
 from nominal_refactor_advisor.models import PackageDestinationMetrics, RefactorFinding
 from nominal_refactor_advisor.module_node_index import ModuleNodeIndex
+from nominal_refactor_advisor.python_module_identity import PythonModulePathIdentity
 from nominal_refactor_advisor.refactor_concepts import PackageMoveConcept
 from nominal_refactor_advisor.refactors.finding_recipes import (
     FindingRecipeSynthesizer,
@@ -104,6 +111,17 @@ class DestinationTable:
                 if (match := _ROW.match(line)) is not None
             )
         )
+
+    def scan_domain(
+        self, policy: PythonSourcePathPolicy, roots: tuple[Path, ...]
+    ) -> PythonSourcePathPolicy:
+        """The files a move by this table can read, found from raw text before
+        anything parses: `TableDomain`. A table with no rows moves nothing, and its
+        scan keeps every file."""
+
+        if not self.rows:
+            return policy
+        return TableDomain(self, policy, roots).policy()
 
     def destinations(
         self, modules: Iterable[CompactModuleClassHeader]
@@ -221,6 +239,157 @@ class DestinationTable:
                 cluster_merge_source_paths=cluster_merge_sources,
             )
             for source_path in cluster
+        )
+
+
+@dataclass(frozen=True)
+class TableDomain:
+    """The files a move by one destination table reads, from raw text alone.
+
+    - Seeds: every file a row names by stem, as a renamed module or a merge, and
+      every file whose text declares a row's capitalised word as a top-level
+      class (a module a row names by its class has to spell `class Word`).
+    - Spellers: every file whose text holds a seed's stem. A file that imports,
+      binds, reads or names a moved module spells its leaf (`FilesReachingModule`).
+    - The seeds' import closure, transitively: a moved name's declaring module,
+      through any chain of re-exports, which spells no moved leaf.
+    - Each seed's package `__init__.py` files and every file in a row's package.
+
+    The seeds are a superset of the modules the table moves, and each part is a
+    superset of what its readers need, so a move over the domain writes the tree a
+    move over every file writes."""
+
+    table: DestinationTable
+    policy_base: PythonSourcePathPolicy
+    roots: tuple[Path, ...]
+
+    @cached_property
+    def discovered(self) -> tuple[tuple[Path, Path], ...]:
+        """(file, its scan root's analysis root), discovered once."""
+
+        return tuple(
+            (path.resolve(), PythonModulePathIdentity.analysis_root_for_scan_root(root))
+            for root in self.roots
+            for path in PythonSourcePathDiscovery(root, self.policy_base).paths()
+        )
+
+    @cached_property
+    def candidates(self) -> dict[Path, bytes]:
+        return {path: path.read_bytes() for path, _root in self.discovered}
+
+    @cached_property
+    def names(self) -> dict[Path, str]:
+        """Each candidate's module name, from its package `__init__.py` chain,
+        walked once per directory."""
+
+        import_roots: dict[tuple[Path, Path], Path] = {}
+        names: dict[Path, str] = {}
+        for path, analysis_root in self.discovered:
+            key = (path.parent, analysis_root)
+            if key not in import_roots:
+                import_roots[key] = PythonModulePathIdentity.import_root(path, analysis_root)
+            names[path] = PythonModulePathIdentity.from_import_root(
+                path, import_roots[key]
+            ).import_name
+        return names
+
+    @cached_property
+    def identities(self) -> dict[str, Path]:
+        return {name: path for path, name in self.names.items()}
+
+    @cached_property
+    def seeds(self) -> frozenset[Path]:
+        stems = {
+            name
+            for row in self.table.rows
+            for named in (row.module_destinations(), row.module_merges())
+            for pair in named
+            for name in (pair[0], PurePosixPath(pair[1]).name)
+        }
+        declared = [
+            re.compile(rb"^class\s+" + re.escape(word.encode()) + rb"\b", re.MULTILINE)
+            for row in self.table.rows
+            for word in sorted(row.owner_words())
+            if word[:1].isupper()
+        ]
+        return frozenset(
+            path
+            for path, text in self.candidates.items()
+            if path.stem in stems or any(pattern.search(text) for pattern in declared)
+        )
+
+    @cached_property
+    def import_closure(self) -> frozenset[Path]:
+        closure: set[Path] = set()
+        pending = list(self.seeds)
+        while pending:
+            path = pending.pop()
+            if path in closure:
+                continue
+            closure.add(path)
+            identity = PythonModulePathIdentity(path=path, import_name=self.names[path])
+            for node in self.statements(ast.parse(self.candidates[path]).body):
+                for imported in self.imported_module_names(identity, node):
+                    owner = self.identities.get(imported)
+                    if owner is not None and owner not in closure:
+                        pending.append(owner)
+        return frozenset(closure)
+
+    @classmethod
+    def statements(cls, body: list[ast.stmt]) -> Iterator[ast.stmt]:
+        """Every statement at any depth: imports are statements, so the walk
+        follows statement bodies and never enters an expression."""
+
+        for statement in body:
+            yield statement
+            for field in ("body", "orelse", "finalbody"):
+                yield from cls.statements(getattr(statement, field, ()))
+            for handler in getattr(statement, "handlers", ()):
+                yield from cls.statements(handler.body)
+            for case in getattr(statement, "cases", ()):
+                yield from cls.statements(case.body)
+
+    @staticmethod
+    def imported_module_names(
+        identity: PythonModulePathIdentity, node: ast.AST
+    ) -> tuple[str, ...]:
+        match node:
+            case ast.Import(names=aliases):
+                return tuple(
+                    ".".join(alias.name.split(".")[:end])
+                    for alias in aliases
+                    for end in range(1, alias.name.count(".") + 2)
+                )
+            case ast.ImportFrom(module=module, level=level, names=aliases):
+                resolved = identity.resolve_import_from_module(
+                    imported_module=module, level=level
+                )
+                if resolved is None:
+                    return ()
+                return (resolved, *(f"{resolved}.{alias.name}" for alias in aliases))
+        return ()
+
+    @cached_property
+    def packages(self) -> frozenset[Path]:
+        row_packages = tuple(row.package for row in self.table.rows)
+        return frozenset(
+            path
+            for path in self.candidates
+            if path.parent.as_posix().endswith(row_packages)
+            or (
+                path.name == "__init__.py"
+                and any(seed.is_relative_to(path.parent) for seed in self.seeds)
+            )
+        )
+
+    def policy(self) -> DomainSourcePathPolicy:
+        stems = tuple(seed.stem.encode() for seed in self.seeds)
+        spellers = frozenset(
+            path for path, text in self.candidates.items() if any(stem in text for stem in stems)
+        )
+        return DomainSourcePathPolicy(
+            include_tests=self.policy_base.include_tests,
+            admitted=spellers | self.import_closure | self.packages,
         )
 
 
@@ -402,6 +571,17 @@ class PackageMoveFindingRecipeSynthesizer(
     PackageMoveConcept,
 ):
     """Relocate a flat module's names into its declared package, then dissolve it."""
+
+    @classmethod
+    def scan_policy(
+        cls,
+        policy: PythonSourcePathPolicy,
+        roots: tuple[Path, ...],
+        config: DetectorConfig,
+    ) -> PythonSourcePathPolicy:
+        return DestinationTable.from_texts(config.package_destination_tables).scan_domain(
+            policy, roots
+        )
 
     def evaluate_recipe_for_finding(
         self,

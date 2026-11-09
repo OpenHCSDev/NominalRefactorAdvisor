@@ -94,6 +94,7 @@ from nominal_refactor_advisor.calibration import (
 )
 from nominal_refactor_advisor.refactors.finding_recipes import (
     FindingRecipeClassPlanReport,
+    FindingRecipeSynthesizer,
     codemod_class_plan_from_findings,
 )
 from nominal_refactor_advisor.codemod_architecture_guards import (
@@ -4515,6 +4516,10 @@ def _scan_main(
         args.use_parse_cache,
     )
     source_policy = PythonSourcePathPolicy(include_tests=args.include_tests)
+    if args.codemod_refactor_goal is not None:
+        source_policy = FindingRecipeSynthesizer.scan_policy_for_concept(
+            codemod_refactor_concept_from_args(args), source_policy, roots, config
+        )
     semantic_descent_cache_context = SemanticDescentGraphCacheContext.from_parse_cache(
         roots,
         parse_cache_dir,
