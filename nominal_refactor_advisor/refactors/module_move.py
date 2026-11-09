@@ -22,6 +22,7 @@ from typing import ClassVar, cast
 
 from nominal_refactor_advisor.ast_projection import ExpressionReference
 from nominal_refactor_advisor.declared_family import ForeignAdapter
+from nominal_refactor_advisor.scan_cache import ScanCache
 from nominal_refactor_advisor.source_identity import PACKAGE_INIT_FILE_NAME
 from nominal_refactor_advisor.ast_tools import (
     ModuleAnnotationEvaluationMode,
@@ -754,6 +755,21 @@ class RelocationNameRedirect(ModuleNameRedirect):
         return (run_only.edit(source, source_module_name, (source_module_name, reader)),)
 
 
+@ScanCache.cached
+def _reads_dotted_path(module: ast.Module, module_name: str) -> bool:
+    """Whether `module` reads through the dotted path `module_name` (`pkg.mod.x`).
+    One walk per module and name in a scan: every stage of a move asks it of the
+    same unchanged modules."""
+
+    parts = tuple(module_name.split("."))
+    return any(
+        (reference := LexicalValueReference.from_expression(node)) is not None
+        and reference.parts == parts
+        for node in ast.walk(module)
+        if isinstance(node, ast.Attribute)
+    )
+
+
 @dataclass(frozen=True)
 class _RunOnlyImports:
     """The bare `import pkg.module` statements of one file taken only to run the
@@ -765,27 +781,15 @@ class _RunOnlyImports:
 
     @classmethod
     def of(cls, parsed: ParsedModule, file_path: str, module_name: str) -> _RunOnlyImports:
-        if cls.reads_path(parsed.module, module_name):
+        statements = tuple(
+            statement
+            for statement in parsed.fact(ModuleNodeIndex).imports
+            if isinstance(statement, ast.Import)
+            and any(alias.asname is None and alias.name == module_name for alias in statement.names)
+        )
+        if not statements or _reads_dotted_path(parsed.module, module_name):
             return cls(file_path, ())
-        return cls(
-            file_path,
-            tuple(
-                statement
-                for statement in parsed.fact(ModuleNodeIndex).imports
-                if isinstance(statement, ast.Import)
-                and any(alias.asname is None and alias.name == module_name for alias in statement.names)
-            ),
-        )
-
-    @staticmethod
-    def reads_path(module: ast.Module, module_name: str) -> bool:
-        parts = tuple(module_name.split("."))
-        return any(
-            (reference := LexicalValueReference.from_expression(node)) is not None
-            and reference.parts == parts
-            for node in ast.walk(module)
-            if isinstance(node, ast.Attribute)
-        )
+        return cls(file_path, statements)
 
     def edit(self, source: str, module_name: str, runs: tuple[str, ...]) -> NominalSourceEdit:
         """Each statement imports `runs`, in order, where it imported `module_name`."""
@@ -4039,7 +4043,7 @@ class DissolveModuleOperation(RetainedCallOperation):
         context: CodemodSelectorContext,
     ) -> tuple[CodemodOperationPreflightReport, ...]:
         try:
-            self.required_reproof(lambda: self.source_edits_from_snapshot(context))
+            self.source_edits(context)
             source_path = self.required_source_path(context, self.operation_key())
             bindings = _DissolvedModuleBindings.of(context, source_path)
         except CodemodOperationPreflightError as error:
@@ -4163,7 +4167,7 @@ class DissolveModuleOperation(RetainedCallOperation):
                 for scope in ModuleImportScope
                 for statement in scope.import_statements(parsed.module)
             }
-            reads_path = _RunOnlyImports.reads_path(parsed.module, source_module_name)
+            reads_path = _reads_dotted_path(parsed.module, source_module_name)
             for statement in parsed.fact(ModuleNodeIndex).imports:
                 if isinstance(statement, ast.Import):
                     for alias in statement.names:
