@@ -1181,27 +1181,14 @@ def _rebase_findings(
             checkout_relative_path(file_path, source_roots)
         return findings
 
-    rebased_findings: list[RefactorFinding] = []
-    for finding in findings:
-
-        def rebase_evidence(location: SourceLocation) -> SourceLocation:
-            if not location.file_path:
-                return location
-            if not source_roots or not target_roots:
-                raise CacheCheckoutPathError(
-                    "cached finding has source evidence but no admitted roots"
-                )
-            rebased_file_path = rebase_checkout_path(
-                location.file_path,
-                source_roots,
-                target_roots,
+    def rebase_path(file_path: str) -> str:
+        if not source_roots or not target_roots:
+            raise CacheCheckoutPathError(
+                "cached finding has source evidence but no admitted roots"
             )
-            if rebased_file_path == location.file_path:
-                return location
-            return replace(location, file_path=rebased_file_path)
+        return rebase_checkout_path(file_path, source_roots, target_roots)
 
-        rebased_findings.append(finding.map_evidence(rebase_evidence))
-    return tuple(rebased_findings)
+    return tuple(finding.with_checkout_paths(rebase_path) for finding in findings)
 
 
 @dataclass(frozen=True)
