@@ -271,10 +271,10 @@ class ModuleNameRedirect:
     source_path: str
     destinations: Mapping[str, str]
 
-    def whole_module_home(self, import_graph: SourceModuleImportGraph) -> str | None:
+    @property
+    def whole_module_home(self) -> str | None:
         """The module the source becomes, whole, when this redirect's move takes all
         of it; a dissolve or a partial move leaves none."""
-        del import_graph
         return None
 
     def consumer_edits(
@@ -335,7 +335,7 @@ class ModuleNameRedirect:
                 owners=_RedirectOwners(self, import_graph),
             )
             if retargets.aliases:
-                edits.append(retargets.rewrite(consumer_path, context.sources_by_file_path[consumer_path]))
+                edits.extend(retargets.rewrite(consumer_path, context.sources_by_file_path[consumer_path]))
             module_reads = _SourceModuleObjectReads.of(
                 parsed,
                 identity,
@@ -806,15 +806,13 @@ class RelocationNameRedirect(ModuleNameRedirect):
     declarations: the imports the moved code carries, and the module-context
     names that follow the code when every name the source declares moves into
     the module this relocation creates."""
-    whole_module: bool = False
-    """Whether every name the source declares moves (`moves_whole_module`): the
-    source module then exists whole at `reader_path`, so a binding of the module
-    object can name it there."""
+    home: str | None = None
+    """The module the source becomes, whole, as the operation answers it
+    (`ModuleSymbolMoveOperation.whole_module_home`)."""
 
-    def whole_module_home(self, import_graph: SourceModuleImportGraph) -> str | None:
-        if not self.whole_module:
-            return None
-        return import_graph.module_name_for_file_path(self.reader_path)
+    @property
+    def whole_module_home(self) -> str | None:
+        return self.home
 
     def name_reader_paths(self, name: str) -> frozenset[str]:
         del name
@@ -1091,7 +1089,7 @@ class _RedirectOwners(_AliasOwners):
 
     @property
     def whole_module_home(self) -> str | None:
-        return self.redirect.whole_module_home(self.import_graph)
+        return self.redirect.whole_module_home
 
     def attribute_readers(self, name: str) -> frozenset[str]:
         """Its owner, and the module a whole moved module's code carries it into."""
@@ -1145,9 +1143,18 @@ class _ModuleObjectBinding(ABC):
         del owner, owners
         return True
 
-    @abstractmethod
-    def retargeted(self, geometry: SourceTextGeometry, owner: str) -> SourceTextSpanReplacement:
-        raise NotImplementedError
+    def replacements(
+        self, geometry: SourceTextGeometry, owner: str
+    ) -> tuple[SourceTextSpanReplacement, ...]:
+        """The text rewritten where the binding stands, naming `owner`."""
+        del geometry, owner
+        return ()
+
+    def mutations(self, file_path: str, owner: str) -> tuple[NominalSourceEdit, ...]:
+        """The import edits that rebind it to `owner` when its text cannot be
+        rewritten alone."""
+        del file_path, owner
+        return ()
 
 
 @dataclass(frozen=True)
@@ -1158,10 +1165,14 @@ class _ImportedModuleAlias(_ModuleObjectBinding):
     def binding(self) -> str:
         return self.alias.asname or ""
 
-    def retargeted(self, geometry: SourceTextGeometry, owner: str) -> SourceTextSpanReplacement:
+    def replacements(
+        self, geometry: SourceTextGeometry, owner: str
+    ) -> tuple[SourceTextSpanReplacement, ...]:
         start, end = geometry.required_node_offsets(self.alias)
-        return SourceTextSpanReplacement.from_offsets(
-            start_offset=start, end_offset=end, replacement_source=f"{owner} as {self.binding}"
+        return (
+            SourceTextSpanReplacement.from_offsets(
+                start_offset=start, end_offset=end, replacement_source=f"{owner} as {self.binding}"
+            ),
         )
 
 
@@ -1181,13 +1192,75 @@ class _FromImportedModule(_ModuleObjectBinding):
         source that stays reads better as that name's import."""
         return owner == owners.whole_module_home
 
-    def retargeted(self, geometry: SourceTextGeometry, owner: str) -> SourceTextSpanReplacement:
-        package, _, leaf = owner.rpartition(".")
+    def replacements(
+        self, geometry: SourceTextGeometry, owner: str
+    ) -> tuple[SourceTextSpanReplacement, ...]:
         start, end = geometry.required_node_offsets(self.statement)
-        named = leaf if leaf == self.binding else f"{leaf} as {self.binding}"
-        return SourceTextSpanReplacement.from_offsets(
-            start_offset=start, end_offset=end, replacement_source=f"from {package} import {named}"
+        return (
+            SourceTextSpanReplacement.from_offsets(
+                start_offset=start, end_offset=end, replacement_source=_from_import(owner, self.binding)
+            ),
         )
+
+
+@dataclass(frozen=True)
+class _FromImportedModuleAmong(_FromImportedModule):
+    """`from package import source, other`, at module level or under `TYPE_CHECKING`:
+    the source's name leaves the statement, the other names stay, and the module is
+    imported from its new package in the same scope. Several moved modules named
+    in one statement each leave it this way, in the same file's import edits."""
+
+    scope: ModuleImportScope
+
+    def replacements(
+        self, geometry: SourceTextGeometry, owner: str
+    ) -> tuple[SourceTextSpanReplacement, ...]:
+        del geometry, owner
+        return ()
+
+    def mutations(self, file_path: str, owner: str) -> tuple[NominalSourceEdit, ...]:
+        return (
+            ModuleImportMutation.remove_names(
+                file_path=file_path,
+                module_name=self.statement.module or "",
+                names=(self.alias.name,),
+                scope=self.scope,
+                rationale="The module it names moved.",
+            ),
+            ModuleImportMutation.from_source(
+                file_path=file_path,
+                import_source=_from_import(owner, self.binding) + "\n",
+                scope=self.scope,
+                rationale="The module moved here whole.",
+            ),
+        )
+
+
+def _from_import(owner: str, binding: str) -> str:
+    """`from <owner's package> import <owner's leaf>`, bound as `binding`."""
+
+    package, _, leaf = owner.rpartition(".")
+    return f"from {package} import {leaf if leaf == binding else f'{leaf} as {binding}'}"
+
+
+def _module_import_scope(
+    index: ModuleNodeIndex, statement: ast.ImportFrom
+) -> ModuleImportScope | None:
+    """The scope a module-level or `TYPE_CHECKING` import sits in; none inside a body."""
+
+    root: ast.AST = statement
+    while (parent := index.parents.get(root)) is not None:
+        root = parent
+    if not isinstance(root, ast.Module):
+        return None
+    return next(
+        (
+            scope
+            for scope in ModuleImportScope
+            if any(own is statement for own in scope.import_statements(root))
+        ),
+        None,
+    )
 
 
 @dataclass(frozen=True)
@@ -1236,6 +1309,18 @@ class _SourceModuleAliasRetargets:
                 and node.module == package
                 and len(node.names) == 1
                 and node.names[0].name == leaf
+            ),
+            *(
+                _FromImportedModuleAmong(alias, node, scope)
+                for node in index.imports
+                if isinstance(node, ast.ImportFrom)
+                and package
+                and not node.level
+                and node.module == package
+                and len(node.names) > 1
+                and (scope := _module_import_scope(index, node)) is not None
+                for alias in node.names
+                if alias.name == leaf
             ),
         )
         if not candidates:
@@ -1332,13 +1417,20 @@ class _SourceModuleAliasRetargets:
             ),
         )
 
-    def rewrite(self, file_path: str, source: str) -> NominalSourceEdit:
+    def rewrite(self, file_path: str, source: str) -> tuple[NominalSourceEdit, ...]:
         geometry = SourceTextGeometry(source)
-        return geometry.nominal_edit(
-            file_path=file_path,
-            replacements=tuple(
-                binding.retargeted(geometry, owner) for binding, owner in self.aliases
+        replacements = tuple(
+            replacement
+            for binding, owner in self.aliases
+            for replacement in binding.replacements(geometry, owner)
+        )
+        return (
+            *(
+                (geometry.nominal_edit(file_path=file_path, replacements=replacements),)
+                if replacements
+                else ()
             ),
+            *(edit for binding, owner in self.aliases for edit in binding.mutations(file_path, owner)),
         )
 
 
@@ -1692,7 +1784,7 @@ class SourceTopLevelSymbolClosureMovePlan(SourceTopLevelSymbolClosureMoveCarrier
             },
             reader_path=request.destination_path,
             reader_bindings=reader_bindings,
-            whole_module=operation.moves_whole_module(context),
+            home=operation.whole_module_home(context),
         )
         consumer_edits = (
             *destination_localizations,
@@ -2310,6 +2402,12 @@ class ModuleSymbolMoveOperation(RepositorySourceReprovedOperation, ABC):
         del context
         return False
 
+    def whole_module_home(self, context: CodemodSelectorContext) -> str | None:
+        """The module the source becomes under its new name, when it moves whole: a
+        binding of the module object names it there."""
+        del context
+        return None
+
     def reader_bindings(
         self,
         context: CodemodSelectorContext,
@@ -2835,6 +2933,11 @@ class NewModuleSymbolMoveOperationABC(ModuleSymbolMoveOperation, ABC):
             for declaration in self.move_selection(context, source_path).declarations
         )
         return source_table.declared_names <= moved_names
+
+    def whole_module_home(self, context: CodemodSelectorContext) -> str | None:
+        if not self.moves_whole_module(context):
+            return None
+        return context.module_import_graph.module_name_for_file_path(self.destination_path)
 
     def module_context_detail(self, context: CodemodSelectorContext, name: str) -> str:
         if not self.moves_whole_module(context):

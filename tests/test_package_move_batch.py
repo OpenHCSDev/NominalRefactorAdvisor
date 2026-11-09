@@ -306,3 +306,31 @@ def test_a_name_the_moved_module_only_rebinds_is_read_from_its_declaring_module(
     assert "from pkg.sources import Grant" in app
     assert not (root / "pkg/policy.py").exists()
     assert _runs(root, "VALUE") == "grant"
+
+
+def test_moved_modules_named_beside_others_in_one_import_each_follow(tmp_path: Path) -> None:
+    """`from pkg import events, kept, wires` names two modules the batch moves and
+    one that stays: each moved one leaves the statement for its new package, the
+    reads stay as written, and `kept` keeps its import."""
+
+    _write(
+        tmp_path,
+        {
+            "pkg/__init__.py": "",
+            "pkg/messaging/__init__.py": "",
+            "pkg/events.py": "class Response:\n    kind = 'event'\n",
+            "pkg/wires.py": "class Response:\n    kind = 'wire'\n",
+            "pkg/kept.py": "class Response:\n    kind = 'kept'\n",
+            "pkg/app.py": (
+                "from pkg import events, kept, wires\n\n"
+                "VALUE = (events.Response.kind, wires.Response.kind, kept.Response.kind)\n"
+            ),
+        },
+    )
+
+    stages, root = _moved(tmp_path, "| `messaging` | `events.py`, `wires.py` | |\n")
+    assert stages == 2
+    app = (root / "pkg/app.py").read_text()
+    assert "from pkg import kept\n" in app
+    assert "events.Response.kind, wires.Response.kind" in app
+    assert _runs(root, "VALUE") == "('event', 'wire', 'kept')"
