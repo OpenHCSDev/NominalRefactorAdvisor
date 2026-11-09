@@ -1,4 +1,5 @@
 from __future__ import annotations
+from ..module_node_index import ModuleNodeIndex
 
 import ast
 import builtins
@@ -1838,7 +1839,7 @@ class CasesFamily(Cases, Descent):
     ) -> None:
         """Member references, annotations and iteration; the root keeps the enum's name."""
 
-        parents = AstParentIndex(module.module).parent_by_node
+        parents = module.fact(ModuleNodeIndex).parents
         annotations = {
             id(node): annotation
             for annotated in ast.walk(module.module)
@@ -1956,7 +1957,7 @@ class CasesFamily(Cases, Descent):
                         f"{node.name} also declares one of {sorted(model.called)}",
                     )
         for module in snapshot.parsed_modules:
-            parents = AstParentIndex(module.module).parent_by_node
+            parents = module.fact(ModuleNodeIndex).parents
             for node in ast.walk(module.module):
                 if (
                     isinstance(node, ast.Attribute)
