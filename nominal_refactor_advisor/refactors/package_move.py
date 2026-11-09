@@ -92,7 +92,13 @@ class DestinationRow:
             yield match["name"], match["target"]
 
     def owner_words(self) -> frozenset[str]:
-        return frozenset(_WORD.findall(self.owners))
+        """The words that can name a class: the row's text without the spans
+        naming modules (`name.py`, a rename, a merge), whose stems name files."""
+
+        prose = self.owners
+        for pattern in (_RENAMED_MODULE, _MERGED_MODULE, _MODULE_FILE):
+            prose = pattern.sub(" ", prose)
+        return frozenset(_WORD.findall(prose))
 
 
 @dataclass(frozen=True)
@@ -336,18 +342,39 @@ class TableDomain:
         return frozenset(closure)
 
     @classmethod
-    def statements(cls, body: list[ast.stmt]) -> Iterator[ast.stmt]:
+    def statements(cls, body: Iterable[ast.stmt]) -> Iterator[ast.stmt]:
         """Every statement at any depth: imports are statements, so the walk
         follows statement bodies and never enters an expression."""
 
         for statement in body:
             yield statement
-            for field in ("body", "orelse", "finalbody"):
-                yield from cls.statements(getattr(statement, field, ()))
-            for handler in getattr(statement, "handlers", ()):
-                yield from cls.statements(handler.body)
-            for case in getattr(statement, "cases", ()):
-                yield from cls.statements(case.body)
+            yield from cls.statements(cls.nested(statement))
+
+    @staticmethod
+    def nested(statement: ast.stmt) -> tuple[ast.stmt, ...]:
+        """The statements one statement holds, by the statement kinds that hold any."""
+
+        match statement:
+            case ast.FunctionDef(body=body) | ast.AsyncFunctionDef(body=body) | ast.ClassDef(
+                body=body
+            ) | ast.With(body=body) | ast.AsyncWith(body=body):
+                return tuple(body)
+            case ast.If(body=body, orelse=orelse) | ast.For(
+                body=body, orelse=orelse
+            ) | ast.AsyncFor(body=body, orelse=orelse) | ast.While(body=body, orelse=orelse):
+                return (*body, *orelse)
+            case ast.Try(body=body, handlers=handlers, orelse=orelse, finalbody=finalbody) | (
+                ast.TryStar(body=body, handlers=handlers, orelse=orelse, finalbody=finalbody)
+            ):
+                return (
+                    *body,
+                    *(statement for handler in handlers for statement in handler.body),
+                    *orelse,
+                    *finalbody,
+                )
+            case ast.Match(cases=cases):
+                return tuple(statement for case in cases for statement in case.body)
+        return ()
 
     @staticmethod
     def imported_module_names(
@@ -371,11 +398,11 @@ class TableDomain:
 
     @cached_property
     def packages(self) -> frozenset[Path]:
-        row_packages = tuple(row.package for row in self.table.rows)
+        row_packages = tuple(tuple(row.package.split("/")) for row in self.table.rows)
         return frozenset(
             path
             for path in self.candidates
-            if path.parent.as_posix().endswith(row_packages)
+            if any(path.parent.parts[-len(package) :] == package for package in row_packages)
             or (
                 path.name == "__init__.py"
                 and any(seed.is_relative_to(path.parent) for seed in self.seeds)

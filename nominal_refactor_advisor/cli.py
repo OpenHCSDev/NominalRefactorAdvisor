@@ -2490,6 +2490,18 @@ class CliCommand(CliArguments, ABC, metaclass=AutoRegisterMeta):
         return False
 
     @classmethod
+    def scan_policy(
+        cls,
+        args: argparse.Namespace,
+        policy: PythonSourcePathPolicy,
+        roots: tuple[Path, ...],
+        config: DetectorConfig,
+    ) -> PythonSourcePathPolicy:
+        """The files under `roots` this command reads: every file `policy` admits."""
+
+        return policy
+
+    @classmethod
     def requires_source_snapshot(cls) -> bool:
         return False
 
@@ -3896,6 +3908,20 @@ class CodemodRefactorGoalCliCommand(
     def requires_parsed_modules(cls) -> bool:
         return True
 
+    @classmethod
+    def scan_policy(
+        cls,
+        args: argparse.Namespace,
+        policy: PythonSourcePathPolicy,
+        roots: tuple[Path, ...],
+        config: DetectorConfig,
+    ) -> PythonSourcePathPolicy:
+        """The goal concept's domain: what its declarations can read."""
+
+        return FindingRecipeSynthesizer.scan_policy_for_concept(
+            codemod_refactor_concept_from_args(args), policy, roots, config
+        )
+
     def run(self) -> int:
         if self.execution_request.sequence.has_recipes:
             self.parser.error(
@@ -4516,10 +4542,8 @@ def _scan_main(
         args.use_parse_cache,
     )
     source_policy = PythonSourcePathPolicy(include_tests=args.include_tests)
-    if args.codemod_refactor_goal is not None:
-        source_policy = FindingRecipeSynthesizer.scan_policy_for_concept(
-            codemod_refactor_concept_from_args(args), source_policy, roots, config
-        )
+    if selected_command_type is not None:
+        source_policy = selected_command_type.scan_policy(args, source_policy, roots, config)
     semantic_descent_cache_context = SemanticDescentGraphCacheContext.from_parse_cache(
         roots,
         parse_cache_dir,

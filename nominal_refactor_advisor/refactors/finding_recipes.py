@@ -310,11 +310,22 @@ class FindingRecipeSynthesizer(FindingRecipeEvaluator, ABC):
 
         return frozenset(
             detector_id
-            for detector_type in IssueDetector.registered_detector_types()
+            for detector_type in cls.declarations_for_concept(concept_type)
             for detector_id in (detector_type.effective_detector_id(),)
             if detector_id is not None
-            and issubclass(detector_type, cls)
-            and issubclass(detector_type, concept_type)
+        )
+
+    @classmethod
+    def declarations_for_concept(
+        cls,
+        concept_type: type[RefactorConcept],
+    ) -> tuple[type[IssueDetector], ...]:
+        """The registered detectors declaring this synthesizer for the concept."""
+
+        return tuple(
+            detector_type
+            for detector_type in IssueDetector.registered_detector_types()
+            if issubclass(detector_type, cls) and issubclass(detector_type, concept_type)
         )
 
     @classmethod
@@ -342,8 +353,7 @@ class FindingRecipeSynthesizer(FindingRecipeEvaluator, ABC):
 
         policies = {
             detector_type.scan_policy(policy, roots, config)
-            for detector_type in IssueDetector.registered_detector_types()
-            if issubclass(detector_type, cls) and issubclass(detector_type, concept_type)
+            for detector_type in cls.declarations_for_concept(concept_type)
         }
         return policies.pop() if len(policies) == 1 else policy
 
