@@ -17,11 +17,12 @@ from collections.abc import (
 )
 from dataclasses import dataclass
 from itertools import product
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import ClassVar, cast
 
 from ..ast_projection import ExpressionReference
 from ..declared_family import ForeignAdapter
+from ..source_identity import PACKAGE_INIT_FILE_NAME
 from ..ast_tools import ModuleAnnotationEvaluationMode, ParsedModule, ParsedModuleFact
 from ..module_node_index import ModuleNodeIndex
 from ..codemod_import_bindings import FromModuleImportBindingIdentity
@@ -2612,6 +2613,17 @@ class NewModuleSymbolMoveOperationABC(ModuleSymbolMoveOperation, ABC):
                     source_index=context.source_index,
                     source=self.initial_destination_source(context),
                 ),
+                *(
+                    SourceFileCreation.from_operation(
+                        self,
+                        requested_path=init_path,
+                        source_index=context.source_index,
+                        source="",
+                    )
+                    for init_path in _UndeclaredPackages.init_paths(
+                        context, self.destination_path
+                    )
+                ),
             )
         )
 
@@ -3531,6 +3543,28 @@ class _CodeReadDataFiles:
                             )
                         )
         return tuple(edits)
+
+
+class _UndeclaredPackages:
+    """The directories a new module's path creates inside a declared package. A
+    module written under `pkg/` (which has its `__init__.py`) into `pkg/sub/`
+    makes `sub` a package too, so it is declared the way its parent is, not left
+    a namespace package that relative imports cannot reach. Under no declared
+    package (a top-level or namespace layout), nothing is declared."""
+
+    @staticmethod
+    def init_paths(context: CodemodSelectorContext, destination_path: str) -> tuple[str, ...]:
+        sources = context.sources_by_file_path
+        missing: list[str] = []
+        directory = PurePosixPath(destination_path).parent
+        while directory != directory.parent:
+            init_path = (directory / PACKAGE_INIT_FILE_NAME).as_posix()
+            if init_path in sources:
+                return tuple(reversed(missing))
+            if init_path != destination_path:
+                missing.append(init_path)
+            directory = directory.parent
+        return ()
 
 
 class _ProjectScripts:

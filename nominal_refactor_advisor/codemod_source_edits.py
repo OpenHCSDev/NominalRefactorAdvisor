@@ -979,11 +979,13 @@ class SourceFileCreation(NominalSourceEdit):
         for peer in peers:
             creation = cast(SourceFileCreation, peer)
             creations_by_path[creation.file_path].append(creation)
+        # Creations of one path with one text are one creation: two moves into one
+        # new package both declare it with the same empty `__init__.py`.
         duplicate_paths = tuple(
             sorted(
                 file_path
                 for file_path, creations in creations_by_path.items()
-                if len(creations) > 1
+                if len({creation.source for creation in creations}) > 1
             )
         )
         if duplicate_paths:
