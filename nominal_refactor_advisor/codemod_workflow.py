@@ -1530,7 +1530,10 @@ class CodemodClassPlanProjectedDeltaReport(DataclassJsonReport):
         )
 
 class FindingCoverage(DataclassJsonReport, ABC):
-    """Which detectors' findings a scan holds over the whole tree."""
+    """Which detectors' findings a scan holds over the whole tree, and so the
+    completeness contract it was made under."""
+
+    mode: ClassVar[CodemodProjectedScanMode]
 
     @abstractmethod
     def covers(self, finding: RefactorFinding) -> bool:
@@ -1546,6 +1549,8 @@ class FindingCoverage(DataclassJsonReport, ABC):
 class EveryDetectorCoverage(FindingCoverage):
     """Every registered detector ran over the whole tree."""
 
+    mode = CodemodProjectedScanMode.EXACT
+
     def covers(self, finding: RefactorFinding) -> bool:
         return True
 
@@ -1554,19 +1559,36 @@ class EveryDetectorCoverage(FindingCoverage):
 
 
 @dataclass(frozen=True)
-class NamedDetectorCoverage(FindingCoverage):
+class NamedDetectorCoverage(FindingCoverage, ABC):
     """Only these detectors' findings are current over the whole tree."""
 
     detector_ids: tuple[str, ...]
+    source: ClassVar[str]
 
     def covers(self, finding: RefactorFinding) -> bool:
         return finding.detector_id in self.detector_ids
 
     def counted(self, count: int) -> str:
         return (
-            f"{count} from the stage proof's {len(self.detector_ids)} detectors; "
+            f"{count} from {self.source}'s {len(self.detector_ids)} detectors; "
             "every other detector's findings are the next full scan's"
         )
+
+
+@dataclass(frozen=True)
+class StageProofCoverage(NamedDetectorCoverage):
+    """The detectors a concept's stage proof reran or carried exactly."""
+
+    mode = CodemodProjectedScanMode.TARGET_DETECTOR_PARTIAL
+    source = "the stage proof"
+
+
+@dataclass(frozen=True)
+class EvidenceLocalCoverage(NamedDetectorCoverage):
+    """The detectors an evidence-local rerun recomputed over the changed files."""
+
+    mode = CodemodProjectedScanMode.EVIDENCE_LOCAL_PARTIAL
+    source = "an evidence-local rerun"
 
 
 @dataclass(frozen=True)
@@ -1577,10 +1599,14 @@ class CodemodWorkflowScan:
 
     modules: ParsedModuleSet
     findings: list[RefactorFinding]
-    scan_mode: CodemodProjectedScanMode = CodemodProjectedScanMode.EXACT
     text_files: Mapping[str, FileText] = field(default_factory=dict, repr=False)
     """The files outside the Python index the stages so far have rewritten."""
     coverage: FindingCoverage = EveryDetectorCoverage()
+    """What this scan's findings are current for; a scan of every detector by default."""
+
+    @property
+    def scan_mode(self) -> CodemodProjectedScanMode:
+        return self.coverage.mode
 
     def covered_findings(
         self, findings: Iterable[RefactorFinding]
@@ -1688,7 +1714,6 @@ class CodemodSimulationFindingProjection:
             findings=analyze_modules(
                 module_set, self.config, analysis_workers=self.analysis_workers
             ),
-            scan_mode=CodemodProjectedScanMode.EXACT,
             text_files=self.text_files_after,
         )
 
@@ -1701,7 +1726,7 @@ class CodemodSimulationFindingProjection:
             return CodemodWorkflowScan(
                 modules=ParsedModuleSet.of(projected_modules),
                 findings=list(self.findings),
-                scan_mode=CodemodProjectedScanMode.EVIDENCE_LOCAL_PARTIAL,
+                coverage=EvidenceLocalCoverage(()),
                 text_files=self.text_files_after,
             )
         detector_types = default_detector_types_for_analysis()
@@ -1736,7 +1761,14 @@ class CodemodSimulationFindingProjection:
         return CodemodWorkflowScan(
             modules=ParsedModuleSet.of(projected_modules),
             findings=findings,
-            scan_mode=CodemodProjectedScanMode.EVIDENCE_LOCAL_PARTIAL,
+            coverage=EvidenceLocalCoverage(
+                tuple(
+                    sorted(
+                        detector_type.effective_detector_id()
+                        for detector_type in rerun_detector_types
+                    )
+                )
+            ),
             text_files=self.text_files_after,
         )
 
@@ -1980,9 +2012,8 @@ class CodemodRefactorGoalRunner(TrajectoryScans[CodemodWorkflowScan]):
                     *recomputed,
                 )
             ),
-            scan_mode=CodemodProjectedScanMode.TARGET_DETECTOR_PARTIAL,
             text_files=TextFileRewrite.carried(scan.text_files, simulation.text_file_rewrites),
-            coverage=NamedDetectorCoverage(tuple(sorted(detector_ids | carried_ids))),
+            coverage=StageProofCoverage(tuple(sorted(detector_ids | carried_ids))),
         )
 
     def exact_scan(self, scan: CodemodWorkflowScan) -> CodemodWorkflowScan:
@@ -1997,7 +2028,7 @@ class CodemodRefactorGoalRunner(TrajectoryScans[CodemodWorkflowScan]):
                     scan.modules, self.config, analysis_workers=self.analysis_workers
                 )
             ),
-            scan_mode=CodemodProjectedScanMode.EXACT,
+            coverage=EveryDetectorCoverage(),
         )
 
     def certified(self, scan: CodemodWorkflowScan) -> CodemodWorkflowScan:
