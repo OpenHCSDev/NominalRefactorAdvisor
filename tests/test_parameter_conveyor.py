@@ -359,7 +359,7 @@ def test_proven_finding_compiles_to_an_authority_keyed_atomic_rewrite() -> None:
     )
 
 
-def test_document_simulation_reuses_one_current_source_reproof(
+def test_planning_and_simulation_share_one_current_source_reproof(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     module = _module("pkg.complete", _base_source())
@@ -368,7 +368,6 @@ def test_document_simulation_reuses_one_current_source_reproof(
         DetectorConfig(),
     )
     snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of((module,)), findings)
-    plan = codemod_plan_from_findings(findings, selector_context=snapshot)
     original_reproof = CollapseClosedParameterConveyorOperation.source_edits_from_snapshot
     reproof_count = 0
 
@@ -386,10 +385,11 @@ def test_document_simulation_reuses_one_current_source_reproof(
         counted_reproof,
     )
 
+    plan = codemod_plan_from_findings(findings, selector_context=snapshot)
     simulation = plan.document.simulate(snapshot)
 
     assert simulation.is_clean
-    assert reproof_count == 1
+    assert reproof_count == 1, "planning and simulating one state derive its edits once"
 
 
 def test_parameter_conveyor_goal_runner_proves_one_terminal_replay(
