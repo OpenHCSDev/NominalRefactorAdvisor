@@ -18,6 +18,7 @@ import io
 import gc
 import os
 import pickle
+import subprocess
 import sys
 import tokenize
 from abc import ABC, abstractmethod
@@ -3106,6 +3107,10 @@ class PythonSourcePathDiscovery:
             if self.source_policy.allows_file_path(self.root):
                 return (self.root,)
             return ()
+        return SourceListing.of(self.root).paths(self)
+
+    def walked_paths(self) -> tuple[Path, ...]:
+        """The tree's Python files by walking it, pruning what is not source by name."""
 
         paths: list[Path] = []
         for directory, dirnames, filenames in os.walk(self.root):
@@ -3122,6 +3127,57 @@ class PythonSourcePathDiscovery:
                 if self.source_policy.allows_file_path(path):
                     paths.append(path)
         return tuple(paths)
+
+
+class SourceListing(ABC):
+    """Which files under a scan root are the repository's source. A git worktree
+    says so itself: every tracked file and every new one it does not ignore, in a
+    hidden directory or not. A root that is no worktree, or that its worktree
+    ignores (a virtualenv's site-packages), is walked."""
+
+    @staticmethod
+    def of(root: Path) -> SourceListing:
+        ignored = subprocess.run(
+            ["git", "-C", str(root), "check-ignore", "-q", "."],
+            capture_output=True,
+            check=False,
+        )
+        if ignored.returncode == 0:
+            return WalkedSourceListing()
+        listed = subprocess.run(
+            ["git", "-C", str(root), "ls-files", "-z", "--cached", "--others",
+             "--exclude-standard", "--", "*.py"],
+            capture_output=True,
+            check=False,
+        )
+        if listed.returncode != 0:
+            return WalkedSourceListing()
+        return GitSourceListing(tuple(sorted(set(listed.stdout.decode().split("\0")) - {""})))
+
+    @abstractmethod
+    def paths(self, discovery: PythonSourcePathDiscovery) -> tuple[Path, ...]: ...
+
+
+@dataclass(frozen=True)
+class WalkedSourceListing(SourceListing):
+    def paths(self, discovery: PythonSourcePathDiscovery) -> tuple[Path, ...]:
+        return discovery.walked_paths()
+
+
+@dataclass(frozen=True)
+class GitSourceListing(SourceListing):
+    relative_paths: tuple[str, ...]
+
+    def paths(self, discovery: PythonSourcePathDiscovery) -> tuple[Path, ...]:
+        """The listed files that still exist (a tracked file can be deleted from the
+        tree before the index forgets it) and that the scan's policy admits."""
+
+        return tuple(
+            path
+            for relative in self.relative_paths
+            if (path := discovery.root / relative).is_file()
+            if discovery.source_policy.allows_file_path(path)
+        )
 
 
 def python_source_paths_for_roots(
