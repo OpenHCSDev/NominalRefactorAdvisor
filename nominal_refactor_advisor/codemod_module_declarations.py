@@ -345,12 +345,16 @@ class ModuleSymbolTable:
 
     @cached_property
     def declared_names(self) -> frozenset[str]:
-        """The names this module declares itself; an import binds a name another owns."""
+        return self.declared_names_of(self.module)
+
+    @classmethod
+    def declared_names_of(cls, module: ast.Module) -> frozenset[str]:
+        """The names `module` declares itself; an import binds a name another owns."""
         return frozenset(
             name
-            for statement in self.module.body
+            for statement in module.body
             if not isinstance(statement, (ast.Import, ast.ImportFrom))
-            for name in self.bound_names_for_statement(statement)
+            for name in cls.bound_names_for_statement(statement)
         )
 
     def binding_statements(self, name: str) -> tuple[ast.stmt, ...]:
@@ -1047,6 +1051,9 @@ class SourceTopLevelSymbolMoveSelection:
     source_path: str
     requested_declarations: tuple[SourceTopLevelDeclaration, ...]
     declarations: tuple[SourceTopLevelDeclaration, ...]
+    takes_whole_module: ClassVar[bool] = False
+    """Whether every name the source declares leaves it: the one answer to whether
+    a move takes the whole module (`WholeModuleSymbolMoveSelection`)."""
 
     @property
     def requested_symbol_qualnames(self) -> tuple[str, ...]:
@@ -1069,10 +1076,8 @@ class SourceTopLevelSymbolMoveSelection:
         )
         names = tuple(symbol_qualnames)
         declarations = declaration_index.required_declarations(names)
-        if {declaration.name for declaration in declaration_index.declarations} <= set(names):
-            # Every declaration moves, so the module moves whole: the statements
-            # between them that bind nothing move too, after what they follow.
-            declarations = tuple(map(declaration_index.carrying, declarations))
+        if ModuleSymbolTable.declared_names_of(module) <= set(names):
+            return WholeModuleSymbolMoveSelection.of(declaration_index, declarations)
         return cls(
             source_path=source_path,
             requested_declarations=declarations,
@@ -1192,4 +1197,26 @@ class MovedTopLevelDeclarationSource(SourceTextGeometry):
             file_path=self.declaration.source_path,
             span=SourceLineSpan(deletion_start_line, deletion_end_line),
             rationale=rationale or f"Remove moved declaration {self.name!r}.",
+        )
+
+
+@dataclass(frozen=True)
+class WholeModuleSymbolMoveSelection(SourceTopLevelSymbolMoveSelection):
+    """A selection taking every name its module declares: the module moves whole, so
+    the statements between its declarations that bind nothing move too, each after
+    the declaration it follows (`SourceTopLevelDeclarationIndex.carrying`)."""
+
+    takes_whole_module: ClassVar[bool] = True
+
+    @classmethod
+    def of(
+        cls,
+        index: SourceTopLevelDeclarationIndex,
+        declarations: tuple[SourceTopLevelDeclaration, ...],
+    ) -> WholeModuleSymbolMoveSelection:
+        carrying = tuple(map(index.carrying, declarations))
+        return cls(
+            source_path=index.source_path,
+            requested_declarations=carrying,
+            declarations=carrying,
         )

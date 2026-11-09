@@ -2908,7 +2908,8 @@ class NewModuleSymbolMoveOperationABC(ModuleSymbolMoveOperation, ABC):
         names the destination and `__doc__` (an argparse description) reads the
         docstring the destination opens with. `__file__` and `__package__` follow only
         while every read of them keeps its value at the destination (_ModuleSiblingData)."""
-        if not source_table.declared_names <= moved_names:
+        del moved_names
+        if not self.moves_whole_module(context):
             return frozenset()
         following = frozenset(("__name__",)) | self.sibling_data(context).following
         if self.carries_source_docstring:
@@ -2923,16 +2924,7 @@ class NewModuleSymbolMoveOperationABC(ModuleSymbolMoveOperation, ABC):
 
     def moves_whole_module(self, context: CodemodSelectorContext) -> bool:
         source_path = self.required_source_path(context, self.operation_key())
-        source_table = ModuleSymbolTable(
-            file_path=source_path,
-            source=context.sources_by_file_path[source_path],
-            module=context.module_nodes_by_file_path[source_path],
-        )
-        moved_names = frozenset(
-            declaration.name
-            for declaration in self.move_selection(context, source_path).declarations
-        )
-        return source_table.declared_names <= moved_names
+        return self.move_selection(context, source_path).takes_whole_module
 
     def whole_module_home(self, context: CodemodSelectorContext) -> str | None:
         if not self.moves_whole_module(context):
