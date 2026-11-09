@@ -9,6 +9,7 @@ from collections import defaultdict
 from collections.abc import Callable, Iterable
 from dataclasses import (
     dataclass,
+    field,
     replace,
 )
 from enum import StrEnum
@@ -1350,23 +1351,62 @@ class RequestedImportBlock:
         return "".join(source_parts)
 
 
+class ImportLayout(ABC):
+    """How a from-import lays out its names. A rewrite keeps the layout of the
+    statement it replaces, so a one-line import stays one line unless the new
+    line no longer fits."""
+
+    @abstractmethod
+    def render(self, head: str, alias_sources: tuple[str, ...]) -> str:
+        """`head` is `from M import `; the result ends with a newline."""
+
+    @classmethod
+    def of(cls, statement: ast.ImportFrom, line_length: int) -> ImportLayout:
+        """The layout `statement` is written in, at its own indentation."""
+
+        if statement.lineno == statement.end_lineno:
+            return OneLineImport(line_length - statement.col_offset)
+        return ParenthesizedImport()
+
+
+@dataclass(frozen=True)
+class ParenthesizedImport(ImportLayout):
+    """One name per line inside parentheses; a single name stays on one line."""
+
+    def render(self, head: str, alias_sources: tuple[str, ...]) -> str:
+        if len(alias_sources) == 1:
+            return f"{head}{alias_sources[0]}\n"
+        alias_lines = "".join(f"    {alias_source},\n" for alias_source in alias_sources)
+        return f"{head}(\n{alias_lines})\n"
+
+
+@dataclass(frozen=True)
+class OneLineImport(ImportLayout):
+    """Every name on the statement's line while it fits in `width` columns; past
+    that, parenthesized."""
+
+    width: float
+
+    def render(self, head: str, alias_sources: tuple[str, ...]) -> str:
+        line = f"{head}{', '.join(alias_sources)}"
+        if len(line) <= self.width:
+            return line + "\n"
+        return ParenthesizedImport().render(head, alias_sources)
+
+
 @dataclass(frozen=True)
 class ImportFromSource:
-    """Rendered from-import source for remaining aliases."""
+    """Rendered from-import source for remaining aliases, in `layout`."""
 
     module_name: str
     aliases: tuple[ast.alias, ...]
+    layout: ImportLayout = field(default_factory=ParenthesizedImport)
 
     @property
     def source(self) -> str:
         if not self.aliases:
             return ""
-        if len(self.aliases) == 1:
-            return f"from {self.module_name} import {self.alias_sources[0]}\n"
-        alias_lines = "".join(
-            f"    {alias_source},\n" for alias_source in self.alias_sources
-        )
-        return f"from {self.module_name} import (\n{alias_lines})\n"
+        return self.layout.render(f"from {self.module_name} import ", self.alias_sources)
 
     @property
     def alias_sources(self) -> tuple[str, ...]:
