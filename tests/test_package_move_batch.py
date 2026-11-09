@@ -190,3 +190,147 @@ def test_a_peer_imported_from_its_parent_package_is_imported_from_its_new_one(
     assert "from pkg.messaging import records\n" in moved
     assert "from pkg.messaging import records as late" in moved
     assert _runs(root, "VALUE") == "('record', 'record')"
+
+
+def test_a_module_bound_from_its_package_follows_as_a_module(tmp_path: Path) -> None:
+    """`from pkg import commands as cmds` reads `cmds.ClearQueue` beside another
+    `ClearQueue` it binds directly: the import line names the module's new home and
+    the reads stay, where redirecting them to a name import would collide."""
+
+    _write(
+        tmp_path,
+        {
+            "pkg/__init__.py": "",
+            "pkg/messaging/__init__.py": "",
+            "pkg/commands.py": "class ClearQueue:\n    kind = 'command'\n",
+            "pkg/inbox.py": "class ClearQueue:\n    kind = 'inbox'\n",
+            "pkg/app.py": (
+                "from pkg import commands as cmds\n"
+                "from pkg.inbox import ClearQueue\n\n"
+                "VALUE = (cmds.ClearQueue.kind, ClearQueue.kind)\n"
+            ),
+        },
+    )
+
+    _stages, root = _moved(tmp_path, "| `messaging` | `commands.py` | |\n")
+    app = (root / "pkg/app.py").read_text()
+    assert "from pkg.messaging import commands as cmds\n" in app
+    assert "cmds.ClearQueue.kind" in app
+    assert _runs(root, "VALUE") == "('command', 'inbox')"
+
+
+def test_a_guarded_module_binding_stays_guarded(tmp_path: Path) -> None:
+    """`if TYPE_CHECKING: from pkg import events as ev`, read only in annotations,
+    keeps its import under the guard: a runtime import would close the cycle the
+    guard exists to break (events imports app at load time)."""
+
+    _write(
+        tmp_path,
+        {
+            "pkg/__init__.py": "",
+            "pkg/messaging/__init__.py": "",
+            "pkg/events.py": (
+                "from pkg.app import Failure\n\n\n"
+                "class Response:\n    failure = Failure\n"
+            ),
+            "pkg/app.py": (
+                "from __future__ import annotations\n\n"
+                "from typing import TYPE_CHECKING\n\n"
+                "if TYPE_CHECKING:\n    from pkg import events as ev\n\n\n"
+                "class Failure:\n    pass\n\n\n"
+                "def answer(response: ev.Response) -> ev.Response:\n    return response\n\n\n"
+                "VALUE = answer.__name__\n"
+            ),
+        },
+    )
+
+    _stages, root = _moved(tmp_path, "| `messaging` | `events.py` | |\n")
+    app = (root / "pkg/app.py").read_text()
+    assert "if TYPE_CHECKING:\n    from pkg.messaging import events as ev\n" in app
+    assert "def answer(response: ev.Response) -> ev.Response:" in app
+    assert _runs(root, "VALUE") == "answer"
+
+
+def test_a_module_bound_only_to_run_it_follows_the_move(tmp_path: Path) -> None:
+    """`import pkg.registry as registry` and `from pkg import registry as reg`, read
+    nowhere, import the module for what it runs: they name its new home."""
+
+    _write(
+        tmp_path,
+        {
+            "pkg/__init__.py": "",
+            "pkg/messaging/__init__.py": "",
+            "pkg/registry.py": "import pkg.seen\n\nENTRY = pkg.seen.NAMES.append('registered')\n",
+            "pkg/seen.py": "NAMES = []\n",
+            "pkg/app.py": (
+                "import pkg.registry as registry\n"
+                "from pkg import registry as reg\n"
+                "from pkg.seen import NAMES\n\n"
+                "VALUE = NAMES[0]\n"
+            ),
+        },
+    )
+
+    _stages, root = _moved(tmp_path, "| `messaging` | `registry.py` | |\n")
+    app = (root / "pkg/app.py").read_text()
+    assert "import pkg.messaging.registry as registry\n" in app
+    assert "from pkg.messaging import registry as reg\n" in app
+    assert _runs(root, "VALUE") == "registered"
+
+
+def test_a_name_the_moved_module_only_rebinds_is_read_from_its_declaring_module(
+    tmp_path: Path,
+) -> None:
+    """`policy` re-binds `Grant` from `sources` and reads it nowhere; a consumer's
+    function-local `from pkg.policy import Grant` reads it from `sources` once
+    the move lands, so the re-export dies with the shell."""
+
+    _write(
+        tmp_path,
+        {
+            "pkg/__init__.py": "",
+            "pkg/messaging/__init__.py": "",
+            "pkg/sources.py": "class Grant:\n    kind = 'grant'\n",
+            "pkg/policy.py": "from pkg.sources import Grant\n\n\nclass Policy:\n    pass\n",
+            "pkg/app.py": (
+                "def kind() -> str:\n"
+                "    from pkg.policy import Grant\n\n"
+                "    return Grant.kind\n\n\n"
+                "VALUE = kind()\n"
+            ),
+        },
+    )
+
+    _stages, root = _moved(tmp_path, "| `messaging` | `policy.py` | |\n")
+    app = (root / "pkg/app.py").read_text()
+    assert "from pkg.sources import Grant" in app
+    assert not (root / "pkg/policy.py").exists()
+    assert _runs(root, "VALUE") == "grant"
+
+
+def test_moved_modules_named_beside_others_in_one_import_each_follow(tmp_path: Path) -> None:
+    """`from pkg import events, kept, wires` names two modules the batch moves and
+    one that stays: each moved one leaves the statement for its new package, the
+    reads stay as written, and `kept` keeps its import."""
+
+    _write(
+        tmp_path,
+        {
+            "pkg/__init__.py": "",
+            "pkg/messaging/__init__.py": "",
+            "pkg/events.py": "class Response:\n    kind = 'event'\n",
+            "pkg/wires.py": "class Response:\n    kind = 'wire'\n",
+            "pkg/kept.py": "class Response:\n    kind = 'kept'\n",
+            "pkg/app.py": (
+                "from pkg import events, kept, wires\n\n"
+                "VALUE = (events.Response.kind, wires.Response.kind, kept.Response.kind)\n"
+            ),
+        },
+    )
+
+    stages, root = _moved(tmp_path, "| `messaging` | `events.py`, `wires.py` | |\n")
+    assert stages == 2
+    app = (root / "pkg/app.py").read_text()
+    assert "from pkg import kept\n" in app
+    assert "events.Response.kind, wires.Response.kind" in app
+    assert _runs(root, "VALUE") == "('event', 'wire', 'kept')"
