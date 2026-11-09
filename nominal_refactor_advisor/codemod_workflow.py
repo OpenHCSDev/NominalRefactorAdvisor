@@ -1659,7 +1659,6 @@ class CodemodWorkflowScan:
         *,
         cache_dir: Path | None,
         use_parse_cache: bool,
-        parse_workers: int,
         analysis_workers: int = 1,
     ) -> CodemodWorkflowScan:
         """Parse ``roots`` and run every detector over them."""
@@ -1667,7 +1666,6 @@ class CodemodWorkflowScan:
             roots,
             cache_dir=cache_dir,
             use_parse_cache=use_parse_cache,
-            parse_workers=parse_workers,
         )
         return cls(
             modules=modules,
@@ -1883,7 +1881,6 @@ class CodemodRefactorGoalRunner(TrajectoryScans[CodemodWorkflowScan]):
     roots: tuple[Path, ...]
     report_roots: tuple[Path, ...] = ()
     config: DetectorConfig
-    parse_workers: int
     analysis_workers: int = 1
     """Detector-analysis workers for every scan the goal runs, as the CLI resolved
     them for its first scan (0 chooses automatically)."""
@@ -1914,7 +1911,6 @@ class CodemodRefactorGoalRunner(TrajectoryScans[CodemodWorkflowScan]):
             self.config,
             cache_dir=self.resolved_dir,
             use_parse_cache=self.enabled,
-            parse_workers=self.parse_workers,
             analysis_workers=self.analysis_workers,
         )
         return replace(scan, findings=self.report_scoped_findings(scan.findings))

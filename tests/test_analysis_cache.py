@@ -6639,7 +6639,6 @@ def test_incremental_cache_reruns_global_detectors_for_repo_context(
     initial_findings = analyze_path(
         package_root,
         cache_dir=cache_dir,
-        parse_workers=0,
         analysis_workers=0,
     )
     assert not any(
@@ -6663,7 +6662,6 @@ def test_incremental_cache_reruns_global_detectors_for_repo_context(
     updated_findings = analyze_path(
         package_root,
         cache_dir=cache_dir,
-        parse_workers=0,
         analysis_workers=0,
     )
 
@@ -6700,7 +6698,6 @@ def test_partial_cache_omits_changed_compact_global_semantic_findings(
     initial_findings = analyze_path(
         package_root,
         cache_dir=cache_dir,
-        parse_workers=0,
         analysis_workers=0,
     )
     assert not any(
@@ -6727,7 +6724,6 @@ def test_partial_cache_omits_changed_compact_global_semantic_findings(
             config=DetectorConfig(),
             parse_cache_dir=cache_dir,
             use_parse_cache=True,
-            parse_workers=0,
             analysis_workers=0,
             source_policy=None,
             reuse_policy=FastCacheReusePolicy.EVIDENCE_LOCAL_PARTIAL,
@@ -6747,7 +6743,6 @@ def test_partial_cache_omits_changed_compact_global_semantic_findings(
     exact_findings = analyze_path(
         package_root,
         cache_dir=cache_dir,
-        parse_workers=0,
         analysis_workers=0,
     )
     assert any(
@@ -6787,7 +6782,6 @@ def test_compact_semantic_detector_does_not_materialize_legacy_graph_cache(
     initial_findings = analyze_path(
         package_root,
         cache_dir=cache_dir,
-        parse_workers=0,
         analysis_workers=0,
     )
     assert not any(
@@ -6822,7 +6816,6 @@ def test_compact_semantic_detector_does_not_materialize_legacy_graph_cache(
             config=DetectorConfig(),
             parse_cache_dir=cache_dir,
             use_parse_cache=True,
-            parse_workers=0,
             analysis_workers=0,
             source_policy=None,
             reuse_policy=FastCacheReusePolicy.EVIDENCE_LOCAL_PARTIAL,
@@ -6864,7 +6857,6 @@ def test_partial_cache_omits_changed_compact_semantic_projection(
     initial_findings = analyze_path(
         package_root,
         cache_dir=cache_dir,
-        parse_workers=0,
         analysis_workers=0,
     )
     assert not any(
@@ -6887,7 +6879,6 @@ def test_partial_cache_omits_changed_compact_semantic_projection(
             config=DetectorConfig(),
             parse_cache_dir=cache_dir,
             use_parse_cache=True,
-            parse_workers=0,
             analysis_workers=0,
             source_policy=None,
             reuse_policy=FastCacheReusePolicy.EVIDENCE_LOCAL_PARTIAL,
@@ -6907,7 +6898,6 @@ def test_partial_cache_omits_changed_compact_semantic_projection(
     exact_findings = analyze_path(
         package_root,
         cache_dir=cache_dir,
-        parse_workers=0,
         analysis_workers=0,
     )
     assert any(

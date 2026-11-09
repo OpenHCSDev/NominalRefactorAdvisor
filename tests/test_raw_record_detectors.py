@@ -18,7 +18,7 @@ from nominal_refactor_advisor.semantic_descent import (
 def modules(tmp_path: Path, source: str):
     path = tmp_path / "example.py"
     path.write_text(source)
-    return parse_python_modules(path, use_parse_cache=False, parse_workers=1)
+    return parse_python_modules(path, use_parse_cache=False)
 
 
 def test_mapping_reads_match_schema_but_only_actual_decode_descends(tmp_path):
@@ -219,7 +219,7 @@ def typed(row: ImportedRecord):
 def decode(row):
     return ImportedRecord(alpha=row['alpha'], beta=row['beta'], gamma=row['gamma'])
 """)
-    parsed = parse_python_modules(tmp_path, use_parse_cache=False, parse_workers=1)
+    parsed = parse_python_modules(tmp_path, use_parse_cache=False)
     assert not UnmodeledRecordShapeDetector().detect(parsed, DetectorConfig())
     mirrors = SemanticMirrorWithoutDescentDetector().detect(parsed, DetectorConfig())
     assert len(mirrors) == 1 and mirrors[0].authority_evidence.symbol == "Record"

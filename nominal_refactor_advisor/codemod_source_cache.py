@@ -77,12 +77,9 @@ class CodemodSourceContext(IndexedSourceAuthority):
     def snapshot_for_findings(
         self,
         findings: Iterable[RefactorFinding],
-        *,
-        parse_workers: int = 1,
     ) -> CodemodSourceSnapshot:
         module_tuple = self.parsed_modules_for_findings(
             tuple(findings),
-            parse_workers=parse_workers,
         )
         return CodemodSourceSnapshot(
             source_index=self.source_index,
@@ -103,8 +100,6 @@ class CodemodSourceContext(IndexedSourceAuthority):
     def parsed_modules_for_findings(
         self,
         findings: tuple[RefactorFinding, ...],
-        *,
-        parse_workers: int = 1,
     ) -> tuple[ParsedModule, ...]:
         return SourceModuleBatchParser(
             source_modules=tuple(
@@ -114,7 +109,6 @@ class CodemodSourceContext(IndexedSourceAuthority):
                 )
                 for file_path in self.source_paths_for_findings(findings)
             ),
-            parse_workers=parse_workers,
         ).parsed_modules()
 
     def source_paths_for_findings(

@@ -211,7 +211,6 @@ def test_a_goal_run_executes_the_picked_owner_and_reports_the_pick(tmp_path: Pat
     unpicked = CodemodRefactorGoalRunner(
         roots=(tmp_path,),
         config=DetectorConfig(),
-        parse_workers=1,
         dry_run=True,
         guard_suite=ArchitectureGuardSuite(),
         initial_scan=CodemodWorkflowScan(modules=modules, findings=findings),
@@ -224,7 +223,6 @@ def test_a_goal_run_executes_the_picked_owner_and_reports_the_pick(tmp_path: Pat
     report = CodemodRefactorGoalRunner(
         roots=(tmp_path,),
         config=DetectorConfig(),
-        parse_workers=1,
         dry_run=False,
         guard_suite=ArchitectureGuardSuite(),
         initial_scan=CodemodWorkflowScan(modules=modules, findings=findings),
@@ -351,7 +349,6 @@ def _goal_with_pick(root: Path, name: str) -> object:
     return CodemodRefactorGoalRunner(
         roots=(root,),
         config=DetectorConfig(),
-        parse_workers=1,
         dry_run=False,
         guard_suite=ArchitectureGuardSuite(),
         initial_scan=CodemodWorkflowScan(modules=modules, findings=findings),
@@ -445,7 +442,6 @@ def test_a_picks_file_makes_the_picked_findings_the_only_targets(tmp_path: Path)
     unpicked = CodemodRefactorGoalRunner(
         roots=(tmp_path,),
         config=DetectorConfig(),
-        parse_workers=1,
         dry_run=True,
         guard_suite=ArchitectureGuardSuite(),
         initial_scan=CodemodWorkflowScan(

@@ -139,7 +139,6 @@ def test_registry_factoring_no_longer_acquires_a_fictitious_rent_obligation(
     report = CodemodRefactorGoalRunner(
         roots=(tmp_path,),
         config=DetectorConfig(),
-        parse_workers=1,
         dry_run=True,
         migration_type=AutoRegisterClassRegistryConcept,
         guard_suite=ArchitectureGuardSuite(),

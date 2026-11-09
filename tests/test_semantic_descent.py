@@ -1590,7 +1590,7 @@ def test_codemod_source_context_hydrates_selected_finding_files_only(
         "import beta\n\nclass Alpha:\n    pass\n", encoding="utf-8", newline=""
     )
     beta_path.write_text("class Beta:\n    pass\n", encoding="utf-8", newline="")
-    modules = parse_python_modules(tmp_path, use_parse_cache=False, parse_workers=1)
+    modules = parse_python_modules(tmp_path, use_parse_cache=False)
     alpha_finding = RefactorFinding(
         detector_id="semantic_mirror_without_descent",
         pattern_id=PatternId.NOMINAL_BOUNDARY,
@@ -1611,10 +1611,9 @@ def test_codemod_source_context_hydrates_selected_finding_files_only(
         modules,
         (alpha_finding, beta_finding),
     )
-    snapshot = context.snapshot_for_findings((alpha_finding,), parse_workers=4)
+    snapshot = context.snapshot_for_findings((alpha_finding,))
     parallel_snapshot = context.snapshot_for_findings(
         (beta_finding, alpha_finding),
-        parse_workers=4,
     )
 
     assert tuple(snapshot.module_node_cache or {}) == (alpha_path.as_posix(),)

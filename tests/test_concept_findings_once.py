@@ -20,7 +20,7 @@ def test_a_scan_selects_concept_findings_once(tmp_path: Path, monkeypatch) -> No
         "    return 0\n"
     )
     scan = CodemodWorkflowScan.parsed(
-        (tmp_path,), DetectorConfig(), cache_dir=None, use_parse_cache=False, parse_workers=1
+        (tmp_path,), DetectorConfig(), cache_dir=None, use_parse_cache=False
     )
     passes: list[int] = []
     original = FindingRecipeSynthesizer.findings_for_concept.__func__

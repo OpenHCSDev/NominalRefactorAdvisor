@@ -401,7 +401,6 @@ def run_calibration_target(
     config: DetectorConfig | None = None,
     cache_dir: Path | None = None,
     use_parse_cache: bool = True,
-    parse_workers: int = 1,
 ) -> CalibrationTargetResult:
     """Run one calibration target and return its proof result."""
 
@@ -416,7 +415,6 @@ def run_calibration_target(
         path,
         cache_dir=cache_dir,
         use_parse_cache=use_parse_cache,
-        parse_workers=parse_workers,
     )
     findings = analyze_modules(modules, config)
     plans = build_refactor_plans(findings, path)
@@ -442,7 +440,6 @@ def run_calibration_manifest(
     config: DetectorConfig | None = None,
     cache_dir: Path | None = None,
     use_parse_cache: bool = True,
-    parse_workers: int = 1,
 ) -> CalibrationReport:
     """Run all targets from a JSON calibration manifest."""
 
@@ -457,7 +454,6 @@ def run_calibration_manifest(
                     config=detector_config,
                     cache_dir=cache_dir,
                     use_parse_cache=use_parse_cache,
-                    parse_workers=parse_workers,
                 )
                 for target in manifest.targets
             )

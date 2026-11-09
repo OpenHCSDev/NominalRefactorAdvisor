@@ -293,7 +293,6 @@ class RefactorSearch:
         report = CodemodRefactorGoalRunner(
             roots=self.roots,
             config=self.config,
-            parse_workers=1,
             dry_run=True,
             guard_suite=ArchitectureGuardSuite(),
             initial_scan=scan,
@@ -319,7 +318,6 @@ def build_refactor_search(
     config: DetectorConfig,
     cache_dir: Path | None = None,
     use_parse_cache: bool = True,
-    parse_workers: int = 1,
     budget: SearchBudget = SearchBudget(),
     introspection: IntrospectionSource = NoTrace(),
 ) -> SearchTurn:
@@ -331,6 +329,5 @@ def build_refactor_search(
         config,
         cache_dir=cache_dir,
         use_parse_cache=use_parse_cache,
-        parse_workers=parse_workers,
     )
     return search.turn(scan, search.score(scan), budget.depth)
