@@ -847,6 +847,46 @@ class TypeAliasSourceTopLevelDeclaration(SourceTopLevelDeclaration):
 
 
 @dataclass(frozen=True)
+class AnnotatedSourceTopLevelDeclaration(SourceTopLevelDeclaration):
+    """``name: Type`` with no value. It binds nothing until code assigns the name (a
+    ``global`` rebinding in an initializer, say), but it is the module's
+    declaration of the name and its type, and moves with the code that assigns it."""
+
+    node: ast.AnnAssign
+
+    @classmethod
+    def from_supported_statement(
+        cls,
+        source_path: str,
+        statement: ast.stmt,
+    ) -> SourceTopLevelDeclaration | None:
+        if not (
+            isinstance(statement, ast.AnnAssign)
+            and statement.value is None
+            and isinstance(statement.target, ast.Name)
+        ):
+            return None
+        return cls(source_path=source_path, node=statement)
+
+    @property
+    def name(self) -> str:
+        return cast(ast.Name, self.node.target).id
+
+    def name_span(self, source: str) -> SourceTextSpan:
+        return SourceTextSpan.from_offsets(
+            SourceTextGeometry(source).required_node_offsets(self.node.target)
+        )
+
+    @property
+    def assigned_binding_names(self) -> frozenset[str]:
+        return frozenset((self.name,))
+
+    @property
+    def destination_boundary(self) -> SourceInsertionBoundary:
+        return SourceInsertionBoundary.ONE_BLANK_LINE
+
+
+@dataclass(frozen=True)
 class DocumentedAssignedSourceTopLevelDeclaration(AssignedSourceTopLevelDeclaration):
     """An assignment and the attribute docstring under it, which moves with it."""
 
