@@ -965,12 +965,18 @@ class RefactorRecipe(SourceRewriteReferences):
         self,
         context: CodemodSelectorContext,
     ) -> tuple[CodemodOperationPreflightReport, ...]:
-        return (
-            *self.authority_claim_preflight_reports(context),
-            *(
-                report
-                for operation in self.operations
-                for report in operation.preflight_reports(context)
+        """This recipe's preflight over one state. Synthesis and the document's
+        preflight both ask it of the same projected state, so the state keeps
+        the answer."""
+        return context.retained_operation_derivation(
+            (self, RefactorRecipe.preflight_reports),
+            lambda: (
+                *self.authority_claim_preflight_reports(context),
+                *(
+                    report
+                    for operation in self.operations
+                    for report in operation.preflight_reports(context)
+                ),
             ),
         )
 
