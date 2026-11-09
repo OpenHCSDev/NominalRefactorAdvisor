@@ -156,6 +156,8 @@ class DestinationInsertionSpacing:
             self.boundary.required_blank_line_count - self.following_blank_line_count,
         )
         if self.inserted_source_is_import_block:
+            if not self.has_following_content:
+                return ""
             required = 2 if self.following_content_is_definition else 1
             return "\n" * max(0, required - self.following_blank_line_count)
         if not self.has_following_content:
