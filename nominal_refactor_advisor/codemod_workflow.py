@@ -51,6 +51,7 @@ from .codemod_runtime import (
     FindingRecipePlan,
     FindingRecipeSynthesisRecord,
     FindingRecipeTrajectoryObstacle,
+    apply_codemod_simulation,
 )
 from .detectors._base import (DetectorConfig, IssueDetector, SemanticDescentGraphIssueDetector)
 from .owner_picks import OwnerPickReport, OwnerPicks
@@ -83,7 +84,6 @@ class CodemodWorkflowStopReason(StrEnum):
     PARTIALLY_ACHIEVED = ("partially_achieved", True)
     PROVED_PREFIX = ("proved_prefix", True)
     ARCHITECTURE_GUARD_FAILED = ("architecture_guard_failed", False)
-    APPLICATION_VERIFICATION_FAILED = ("application_verification_failed", False)
     UNPROVED_TRAJECTORY = ("unproved_trajectory", False)
     NO_PROVED_TRAJECTORY = ("no_proved_trajectory", False)
 
@@ -905,11 +905,6 @@ class CodemodRefactorTrajectoryTerminal(CodemodRefactorGuardEvaluatedTerminal):
         if not self.guard_report.is_clean:
             raise ValueError("proved trajectory terminal requires clean guard evidence")
 
-    def verifies(self, committed_target_findings: Iterable[RefactorFinding]) -> bool:
-        """The commit reached the goal: no target finding is left."""
-
-        return not tuple(committed_target_findings)
-
     def markdown_lines(self) -> tuple[str, ...]:
         return ()
 
@@ -936,13 +931,6 @@ class CodemodRefactorBudgetPrefix(CodemodRefactorGuardEvaluatedTerminal):
     @json_report_property()
     def remaining_target_count(self) -> int:
         return len(self.remaining_target_ids)
-
-    def verifies(self, committed_target_findings: Iterable[RefactorFinding]) -> bool:
-        """The commit left exactly the targets the prefix proved it leaves."""
-
-        return sorted(finding.stable_id for finding in committed_target_findings) == (
-            sorted(self.remaining_target_ids)
-        )
 
     def markdown_lines(self) -> tuple[str, ...]:
         return (
@@ -1061,14 +1049,6 @@ class CodemodRefactorPartialTerminal(CodemodRefactorGuardEvaluatedTerminal):
                 f"     - {group.finding_count} {group.status.value}: {group.reason}"
                 for group in self.remaining_targets
             ),
-        )
-
-    def verifies(self, committed_target_findings: Iterable[RefactorFinding]) -> bool:
-        """The commit left exactly the targets this terminal said it would."""
-
-        return (
-            frozenset(finding.stable_id for finding in committed_target_findings)
-            == self.remaining_target_ids
         )
 
 
@@ -1289,6 +1269,18 @@ class CodemodRefactorGoalReport(DataclassJsonReport):
                 for stage in self.stages
                 if stage.simulation.document.has_recipes
             )
+        )
+
+    @property
+    def proved_simulation(self) -> CodemodSimulationReport:
+        """The plan's whole write set, composed from the stages' own proved
+        simulations; the composition refuses a stage whose base revisions are
+        not the previous stage's result."""
+
+        return CodemodSimulationReport.from_sequential_reports(
+            stage.simulation.simulation
+            for stage in self.stages
+            if stage.simulation.document.has_recipes
         )
 
     @json_report_property()
@@ -1966,7 +1958,6 @@ class CodemodRefactorGoalRunner:
             )
         return self.achieved_report(
             terminal=terminal,
-            starting_snapshot=starting_scan.source_snapshot,
             trajectory_proof=trajectory_proof,
         )
 
@@ -2275,7 +2266,6 @@ class CodemodRefactorGoalRunner:
             | CodemodRefactorPartialTerminal
             | CodemodRefactorBudgetPrefix
         ),
-        starting_snapshot: CodemodSourceSnapshot,
         trajectory_proof: CodemodRefactorTrajectoryProof,
     ) -> CodemodRefactorGoalReport:
         """Commit a proved migration sequence once, or return its dry run."""
@@ -2292,16 +2282,16 @@ class CodemodRefactorGoalRunner:
         )
         if self.dry_run:
             return projected_report
-        sequence_simulation = projected_report.replay_sequence.simulate(
-            starting_snapshot
-        )
-        if not sequence_simulation.is_clean:
+        committed_scan = terminal.state.scan
+        final_snapshot = committed_scan.source_snapshot
+        if not final_snapshot.evaluate_guard_suite(
+            projected_report.replay_sequence.guard_suite
+        ).is_clean:
             return replace(
                 projected_report,
                 stop_reason=CodemodWorkflowStopReason.ARCHITECTURE_GUARD_FAILED,
             )
-        sequence_simulation.apply()
-        committed_scan = self.fresh_scan()
+        apply_codemod_simulation(projected_report.proved_simulation)
         committed_target_findings = self.target_findings(committed_scan)
         applied_stages = (
             *(replace(stage, applied=True) for stage in guarded_stages[:-1]),
@@ -2310,11 +2300,7 @@ class CodemodRefactorGoalRunner:
         return self.report(
             applied_stages,
             committed_scan,
-            (
-                terminal.stop_reason
-                if terminal.verifies(committed_target_findings)
-                else CodemodWorkflowStopReason.APPLICATION_VERIFICATION_FAILED
-            ),
+            terminal.stop_reason,
             trajectory_proof,
         )
 
