@@ -96,8 +96,10 @@ class SourceReprovedOperation(RefactorRecipeOperation, ABC):
         self,
         context: CodemodSelectorContext,
     ) -> tuple[NominalSourceEdit, ...]:
-        return self.required_reproof(
-            lambda: self.source_edits_from_snapshot(context.execution_snapshot())
+        snapshot = context.execution_snapshot()
+        return snapshot.retained_operation_derivation(
+            (self, SourceReprovedOperation.source_edits),
+            lambda: self.required_reproof(lambda: self.source_edits_from_snapshot(snapshot)),
         )
 
     def required_reproof(
