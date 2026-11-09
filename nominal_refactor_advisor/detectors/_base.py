@@ -2048,8 +2048,8 @@ CompactCandidateContextT = TypeVar("CompactCandidateContextT")
 
 
 class CompactProjectionCandidateDetector(
-    CrossModuleCandidateDetector[CandidateItemT],
     CompactModuleProjectionDetectorMixin[CompactProjectionItemT],
+    CrossModuleCandidateDetector[CandidateItemT],
     Generic[CompactProjectionItemT, CandidateItemT],
     ABC,
 ):
@@ -2085,8 +2085,8 @@ class CompactProjectionCandidateDetector(
 
 
 class CompactMultiProjectionCandidateDetector(
-    CrossModuleCandidateDetector[CandidateItemT],
     CompactMultiModuleProjectionDetectorMixin,
+    CrossModuleCandidateDetector[CandidateItemT],
     Generic[CandidateItemT],
     ABC,
 ):
