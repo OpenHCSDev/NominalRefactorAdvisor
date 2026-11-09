@@ -41,7 +41,7 @@ def test_import_declaration_owns_future_placement(
     (request,) = RequestedImportStatement.from_statement(statement)
     assert declaration.is_future_import is (group is ImportSourceGroup.FUTURE)
     assert request.is_future_import is declaration.is_future_import
-    assert request.source_group is group
+    assert request.source_group_in("future_placement.py") is group
 
 
 @pytest.mark.parametrize(
@@ -78,7 +78,7 @@ def test_module_reference_projection_retains_nominal_import_kind(
         tuple(reference.source for reference in declaration.module_references)
         == references
     )
-    assert ImportSourceGroup.from_declaration(declaration) == groups
+    assert ImportSourceGroup.from_declaration(declaration, frozenset()) == groups
 
 
 @pytest.mark.parametrize("newline", ("\n", "\r\n"))

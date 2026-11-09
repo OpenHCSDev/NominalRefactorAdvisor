@@ -47,10 +47,12 @@ def test_ruff_src_names_the_first_party_modules(tmp_path: Path) -> None:
     assert "app" in DeclaredRoot.first_party_for(path)
     statement = ast.parse("from app import core").body[0]
     assert isinstance(statement, ast.ImportFrom)
-    assert RequestedImportStatement(statement).in_file(str(path)).source_group is (
+    assert RequestedImportStatement(statement).source_group_in(str(path)) is (
         ImportSourceGroup.FIRST_PARTY
     )
-    assert RequestedImportStatement(statement).source_group is ImportSourceGroup.THIRD_PARTY
+    assert RequestedImportStatement(statement).source_group_in(
+        str(tmp_path.parent / "elsewhere.py")
+    ) is ImportSourceGroup.THIRD_PARTY
 
 
 @pytest.mark.parametrize(
