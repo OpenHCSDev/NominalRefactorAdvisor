@@ -38,6 +38,7 @@ from typing import ClassVar
 
 from .ast_field_decoders import declared_annotations, variadic_parameters
 from .ast_tools import ParsedModule, collect_family_items
+from .lexical_bindings import ImportBoundNameProjection
 from .class_index import (
     ClassMemberAnswersABC,
     CompactAnnotatedFunctionReturn,
@@ -2070,9 +2071,9 @@ class ReceiverPathBuilder:
                 yield unresolved(f"`{name}` is bound by a `with` statement")
             case ast.ExceptHandler(name=str() as bound) if bound == name:
                 yield unresolved(f"`{name}` is bound by an `except` clause")
-            case ast.Import(names=aliases) | ast.ImportFrom(names=aliases) if any(
-                (alias.asname or alias.name).partition(".")[0] == name for alias in aliases
-            ):
+            case ast.Import() | ast.ImportFrom() if name in ImportBoundNameProjection(
+                node
+            ).names():
                 yield unresolved(f"`{name}` is bound by an import")
             case ast.FunctionDef(name=bound) | ast.AsyncFunctionDef(
                 name=bound
@@ -2213,8 +2214,8 @@ def _bound_names(function: FunctionNode) -> frozenset[str]:
                 names.add(name)
             case ast.ExceptHandler(name=str() as name):
                 names.add(name)
-            case ast.Import(names=aliases) | ast.ImportFrom(names=aliases):
-                names.update((alias.asname or alias.name).partition(".")[0] for alias in aliases)
+            case ast.Import() | ast.ImportFrom():
+                names.update(ImportBoundNameProjection(node).names())
             case ast.FunctionDef(name=name) | ast.AsyncFunctionDef(name=name) | ast.ClassDef(
                 name=name
             ):

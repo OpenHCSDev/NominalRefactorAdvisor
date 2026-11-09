@@ -8,6 +8,7 @@ from collections import Counter, deque
 from dataclasses import dataclass, field
 
 from .ast_tools import ParsedModule, ParsedModuleFact
+from .lexical_bindings import ImportBoundNameProjection
 
 _FUNCTION_SCOPES = (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)
 _COMPREHENSION_SCOPES = (ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)
@@ -74,13 +75,16 @@ class ModuleNodeIndex(ParsedModuleFact):
                             package_heads.add(alias.name.split(".")[0])
                         else:
                             bound[alias.asname] += 1
-                        sites.setdefault(alias.asname or alias.name.split(".")[0], []).append(node)
+                        sites.setdefault(
+                            ImportBoundNameProjection(node).alias_bound_name(alias), []
+                        ).append(node)
                 case ast.ImportFrom(names=aliases):
                     imports.append(node)
                     for alias in aliases:
                         if alias.name != "*":
-                            bound[alias.asname or alias.name] += 1
-                            sites.setdefault(alias.asname or alias.name, []).append(node)
+                            bound_name = ImportBoundNameProjection(node).alias_bound_name(alias)
+                            bound[bound_name] += 1
+                            sites.setdefault(bound_name, []).append(node)
                 case ast.arg(arg=name):
                     bound[name] += 1
                     sites.setdefault(name, []).append(node)

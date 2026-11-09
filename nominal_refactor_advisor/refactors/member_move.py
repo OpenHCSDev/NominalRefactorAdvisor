@@ -60,6 +60,7 @@ from ..codemod_source_edits import (
     SourceTextSpanReplacement,
 )
 from ..lexical_bindings import LEXICAL_SCOPE_BINDING_AUTHORITY
+from ..lexical_bindings import ImportBoundNameProjection
 from .function_operations import imports_only_read_by, method_deletion_offsets
 
 
@@ -236,9 +237,9 @@ class MovedMethod(AnsweredMethod):
 
         lines: set[int] = set()
         for node in ast.walk(self.method):
-            if isinstance(node, ast.ImportFrom) and all(
-                (alias.asname or alias.name) == self.destination.name for alias in node.names
-            ):
+            if isinstance(node, ast.ImportFrom) and set(
+                ImportBoundNameProjection(node).names()
+            ) == {self.destination.name}:
                 if node.lineno != (node.end_lineno or node.lineno):
                     raise ValueError(f"{self.name!r}'s import of the destination spans lines")
                 lines.add(node.lineno)
@@ -280,12 +281,15 @@ class MovedMethod(AnsweredMethod):
                 (
                     statement for statement in source_module.body
                     if isinstance(statement, ast.ImportFrom)
-                    and any((alias.asname or alias.name) == name for alias in statement.names)
+                    and name in ImportBoundNameProjection(statement).names()
                 ),
                 None,
             )
             if statement is not None and not statement.level:
-                alias = next(alias for alias in statement.names if (alias.asname or alias.name) == name)
+                alias = next(
+                    alias for alias in statement.names
+                    if ImportBoundNameProjection(statement).alias_bound_name(alias) == name
+                )
                 spelled = alias.name if alias.asname is None else f"{alias.name} as {alias.asname}"
                 import_source = f"from {statement.module} import {spelled}\n"
             else:
@@ -789,7 +793,7 @@ def _binding(snapshot: CodemodSourceSnapshot, file_path: str, name: str) -> tupl
     for statement in snapshot.module_nodes_by_file_path[file_path].body:
         if isinstance(statement, ast.ImportFrom):
             for alias in statement.names:
-                if (alias.asname or alias.name) == name:
+                if ImportBoundNameProjection(statement).alias_bound_name(alias) == name:
                     module = identity.resolve_import_from_module(
                         imported_module=statement.module, level=statement.level,
                     )

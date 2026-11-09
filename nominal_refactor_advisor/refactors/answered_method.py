@@ -10,6 +10,7 @@ from typing import ClassVar
 from ..codemod_runtime import CodemodSourceSnapshot
 from ..codemod_selection_context import ResolvedClassTarget
 from ..lexical_bindings import LEXICAL_SCOPE_BINDING_AUTHORITY
+from ..lexical_bindings import ImportBoundNameProjection
 from ..module_node_index import ModuleNodeIndex
 from ..probe_owner import (
     InferredReceiverType,
@@ -332,11 +333,11 @@ class _ScopeBindings:
         for node in self.nodes():
             if isinstance(node, ast.ImportFrom):
                 for alias in node.names:
-                    if (alias.asname or alias.name) == name:
+                    if ImportBoundNameProjection(node).alias_bound_name(alias) == name:
                         last = ImportedName(node, alias)
             elif isinstance(node, ast.Import):
                 for alias in node.names:
-                    if (alias.asname or alias.name.partition(".")[0]) == name:
+                    if ImportBoundNameProjection(node).alias_bound_name(alias) == name:
                         last = ImportedModule(alias)
             elif isinstance(node, ast.ClassDef) and node.name == name:
                 last = DeclaredClass(node)
