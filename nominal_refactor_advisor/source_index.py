@@ -14,6 +14,7 @@ from typing import Generic, TypeAlias, TypeVar
 from .ast_tools import (
     ClassFunctionStackNodeVisitor,
     ParsedModule,
+    ParsedModuleFact,
     PythonModulePathAuthority,
 )
 from .collection_algebra import UniqueIdentityIndexAuthority, sorted_tuple
@@ -647,12 +648,8 @@ class AstTargetNodeIndex:
         node_index = UniqueIdentityIndexAuthority[
             str, AstTargetDigest, AstTargetNode
         ]()
-        target_authority = AstTargetDigestsAuthority()
         for module in modules:
-            artifacts = target_authority.artifacts(
-                module,
-                SourceFileDigest.from_module(module),
-            )
+            artifacts = module.fact(ModuleAstTargetArtifacts).artifacts
             projected_targets_by_id = UniqueIdentityIndexAuthority.declarations_by_handle(
                 artifacts.targets,
                 lambda target: target.target_id,
@@ -744,7 +741,6 @@ class SourceIndexBuildArtifacts:
             self.source_index.files,
             lambda source_file: source_file.file_path,
         )
-        target_authority = AstTargetDigestsAuthority()
         projected_files: list[SourceFileDigest] = []
         projected_targets: list[AstTargetDigest] = []
         projected_nodes: AstTargetNodeMap = {}
@@ -752,7 +748,7 @@ class SourceIndexBuildArtifacts:
             file_path = module.file_path
             if file_path in changed_modules_by_path:
                 file_digest = SourceFileDigest.from_module(module)
-                target_artifacts = target_authority.artifacts(module, file_digest)
+                target_artifacts = module.fact(ModuleAstTargetArtifacts).artifacts
             else:
                 file_digest = files_by_path.get(file_path)
                 if file_digest is None:
@@ -763,34 +759,11 @@ class SourceIndexBuildArtifacts:
                     raise ValueError(
                         "Unchanged projected modules must preserve module identity"
                     )
-                module_targets = self.source_index.targets_by_file[file_path]
-                required_node_ids = tuple(
-                    target.target_id
-                    for target in module_targets
-                    if not target.is_module
-                )
-                if all(
-                    target_id in self.node_index.nodes_by_target_id
-                    for target_id in required_node_ids
-                ):
-                    target_artifacts = AstTargetBuildArtifacts(
-                        targets=module_targets,
-                        node_index=AstTargetNodeIndex(
-                            {
-                                target_id: self.node_index.nodes_by_target_id[target_id]
-                                for target_id in required_node_ids
-                            }
-                        ),
+                target_artifacts = module.fact(ModuleAstTargetArtifacts).artifacts
+                if target_artifacts.targets != self.source_index.targets_by_file[file_path]:
+                    raise ValueError(
+                        "Unchanged source produced different target identities"
                     )
-                else:
-                    target_artifacts = target_authority.artifacts(
-                        module,
-                        file_digest,
-                    )
-                    if target_artifacts.targets != module_targets:
-                        raise ValueError(
-                            "Unchanged source produced different target identities"
-                        )
             projected_files.append(file_digest)
             projected_targets.extend(target_artifacts.targets)
             projected_nodes.update(target_artifacts.node_index.nodes_by_target_id)
@@ -985,6 +958,23 @@ class AstTargetDigestsAuthority:
 
 
 @dataclass(frozen=True)
+class ModuleAstTargetArtifacts(ParsedModuleFact):
+    """One module's target rows and their parsed nodes. A fact of the parse,
+    so a plan's states, which hand unchanged parses from stage to stage, walk
+    each unchanged module's syntax tree once."""
+
+    artifacts: AstTargetBuildArtifacts
+
+    @classmethod
+    def derive(cls, parsed_module: ParsedModule) -> ModuleAstTargetArtifacts:
+        return cls(
+            AstTargetDigestsAuthority().artifacts(
+                parsed_module, SourceFileDigest.from_module(parsed_module)
+            )
+        )
+
+
+@dataclass(frozen=True)
 class EvidenceTargetResolver:
     """Resolve finding evidence coordinates to source-index target ids."""
 
@@ -1056,7 +1046,7 @@ class SourceIndexBuildAuthority:
 
     def build_artifacts(self) -> SourceIndexBuildArtifacts:
         files = self._file_digests()
-        target_artifacts = self._target_artifacts(files)
+        target_artifacts = self._target_artifacts()
         targets_by_file = TargetsByFileIndex.from_targets(target_artifacts.targets)
         findings_by_id = UniqueIdentityIndexAuthority.declarations_by_handle(
             self.findings,
@@ -1079,17 +1069,15 @@ class SourceIndexBuildAuthority:
     def _file_digests(self) -> tuple[SourceFileDigest, ...]:
         return tuple(SourceFileDigest.from_module(module) for module in self.modules)
 
-    def _target_artifacts(
-        self,
-        files: tuple[SourceFileDigest, ...],
-    ) -> AstTargetBuildArtifacts:
-        authority = AstTargetDigestsAuthority()
+    def _target_artifacts(self) -> AstTargetBuildArtifacts:
+        """Every module's target rows, each read from its parse's fact."""
+
         targets: list[AstTargetDigest] = []
         target_node_index = UniqueIdentityIndexAuthority[
             str, AstTargetDigest, AstTargetNode
         ]()
-        for module, file_digest in zip(self.modules, files, strict=True):
-            artifacts = authority.artifacts(module, file_digest)
+        for module in self.modules:
+            artifacts = module.fact(ModuleAstTargetArtifacts).artifacts
             targets.extend(artifacts.targets)
             targets_by_id = UniqueIdentityIndexAuthority.declarations_by_handle(
                 artifacts.targets,
