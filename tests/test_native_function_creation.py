@@ -206,4 +206,4 @@ def test_compact_creation_pickle_retains_sharing_without_executable_objects(
             pending.extend(value.values())
         elif isinstance(value, (tuple, list, set, frozenset)):
             pending.extend(value)
-    assert restored._execution_outcome == compilation._execution_outcome
+    assert restored.execution_outcome == compilation.execution_outcome

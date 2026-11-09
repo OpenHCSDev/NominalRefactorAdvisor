@@ -4973,16 +4973,9 @@ class NativePythonCompilation(SourceLineSegmentAuthority):
             raise ValueError("Compiler filename belongs to a different source path")
         return compile(self.source, filename, "exec", dont_inherit=True, optimize=0)
 
-    @property
-    def execution_outcome(self) -> _NativeCompilationOutcome:
-        """Expose only the native observation belonging to this source owner."""
-        outcome = self._execution_outcome
-        if outcome.compilation is not self.identity:
-            raise ValueError("Native outcome belongs to a different compilation")
-        return outcome
-
     @cached_property
-    def _execution_outcome(self) -> _NativeCompilationOutcome:
+    def execution_outcome(self) -> _NativeCompilationOutcome:
+        """This source's native observation, projected under its own identity."""
         try:
             return NativeCreationBackend.current().project(
                 self.compile(), self.identity

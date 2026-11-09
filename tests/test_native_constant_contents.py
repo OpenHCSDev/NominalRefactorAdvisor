@@ -143,7 +143,7 @@ def test_warm_native_constants_keep_original_receipts_without_recompilation(
     monkeypatch,
 ):
     original = NativePythonCompilation("payload = ('run', (1, None))\n", "constant.py")
-    stores = original._execution_outcome.value_stores
+    stores = original.execution_outcome.value_stores
     restored = pickle.loads(pickle.dumps(original))
 
     def unexpected_compile(self):

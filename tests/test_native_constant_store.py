@@ -106,7 +106,7 @@ def test_constant_receipt_cache_pickles_without_executable_code(monkeypatch):
 @pytest.mark.parametrize("duplicate", ("same_receipt", "distinct_receipt"))
 def test_lookup_index_rejects_duplicate_rows_without_reusing_old_projection(duplicate):
     compilation = NativePythonCompilation('"documentation"\n', "duplicate.py")
-    index = compilation._execution_outcome
+    index = compilation.execution_outcome
     (original,) = index.constant_stores
     span, name = original.source_span, original.binding.name
     assert index.constant_store_for(span, name) is original
@@ -122,7 +122,7 @@ def test_lookup_index_rejects_duplicate_rows_without_reusing_old_projection(dupl
 @pytest.mark.native_proof
 def test_lookup_index_keeps_binding_name_and_range_validity_in_the_join():
     compilation = NativePythonCompilation('"documentation"\n', "lookup.py")
-    index = compilation._execution_outcome
+    index = compilation.execution_outcome
     (original,) = index.constant_stores
     other = replace(original, binding=replace(original.binding, name="other"))
     changed = replace(

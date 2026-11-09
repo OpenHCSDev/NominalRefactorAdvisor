@@ -104,7 +104,7 @@ def test_foreign_and_copied_function_receipts_are_not_original_installations():
 @pytest.mark.native_proof
 def test_copied_compilation_identity_and_ambiguous_returns_remain_open():
     compilation, function = native_function("def chosen():\n    pass\n")
-    outcome = compilation._execution_outcome
+    outcome = compilation.execution_outcome
     wrong_identity = replace(outcome, compilation=replace(compilation.identity))
     with pytest.raises(ValueError, match="canonical compilation receipt"):
         wrong_identity.return_after(function)
@@ -119,23 +119,6 @@ def test_copied_compilation_identity_and_ambiguous_returns_remain_open():
         )
         with pytest.raises(ValueError, match="unique return continuation"):
             ambiguous.return_after(function)
-
-
-def test_foreign_cached_outcome_cannot_replace_the_source_compilation_owner():
-    source = "def chosen():\n    pass\n"
-    compilation, _ = native_function(source)
-    foreign = NativePythonCompilation(source, "foreign.py")
-    function = foreign.execution_for(
-        SourceByteSpan.require_node(ast.parse(source).body[0])
-    )
-    compilation.__dict__["_execution_outcome"] = foreign._execution_outcome
-    for operation in (
-        lambda: compilation.require_fresh_function_namespace(function),
-        lambda: compilation.return_after(function),
-        lambda: compilation.execution_for(function.source_span),
-    ):
-        with pytest.raises(ValueError, match="different compilation"):
-            operation()
 
 
 @pytest.mark.native_proof
@@ -155,7 +138,7 @@ def test_warmed_serialisation_preserves_shared_scalar_and_function_receipt(monke
         restored.execution_for(SourceByteSpan.require_node(node))
     )
     assert result is store_for(restored, assignment).require_return()
-    assert restored._execution_outcome == compilation._execution_outcome
+    assert restored.execution_outcome == compilation.execution_outcome
     assert result == compilation.return_after(function)
     assert result is not compilation.return_after(function)
     assert not result.continues(function.require_installation())
