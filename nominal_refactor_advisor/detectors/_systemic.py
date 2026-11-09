@@ -14,55 +14,57 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Generic, TypeVar
 
-from ..ast_projection import ExpressionReference
-from ..class_syntax_facets import (
+from nominal_refactor_advisor.ast_projection import ExpressionReference
+from nominal_refactor_advisor.class_syntax_facets import (
     CompactClosedAxisBranchFunction,
     CompactNamedProjectionSurface,
     CompactSortedKeyCall,
 )
-from ..refactors.autoregister import (
+from nominal_refactor_advisor.refactors.autoregister import (
     AutoRegisterExplicitPriorityOrderingFindingRecipeSynthesizer,
     InheritedAutoRegisterConfigBoilerplateFindingRecipeSynthesizer,
 )
-from ..semantic_algebra import ObjectFamilyShape
-from ..semantic_description_length import CompressionCertificate
-from ..ast_tools import (
+from nominal_refactor_advisor.semantic_algebra import ObjectFamilyShape
+from nominal_refactor_advisor.semantic_description_length import CompressionCertificate
+from nominal_refactor_advisor.ast_tools import (
     BuiltinCallName,
     CompactModuleIdentity,
     PythonSourcePathPolicy,
     SourceModule,
 )
-from ..class_index import (
+from nominal_refactor_advisor.class_index import (
     CompactClassFamilyIndex,
     CompactClassMappingKeyAuthority,
     CompactIndexedClass,
 )
-from ..refactors.candidate_collector import (
+from nominal_refactor_advisor.refactors.candidate_collector import (
     CandidateCollectorBoilerplateFindingRecipeSynthesizer,
     DeclarativeDetectorClassFindingRecipeSynthesizer,
     DirectBuildFindingRendererFindingRecipeSynthesizer,
 )
-from ..refactors.finding_recipes import CasesFindingRecipeSynthesizer
-from ..native_syntax import NativePythonSyntaxIndex
-from ..registry_identity import (
+from nominal_refactor_advisor.refactors.finding_recipes import (
+    CasesFindingRecipeSynthesizer,
+)
+from nominal_refactor_advisor.native_syntax import NativePythonSyntaxIndex
+from nominal_refactor_advisor.registry_identity import (
     INHERITABLE_AUTOREGISTER_CONFIGURATION_ATTRIBUTE_NAMES,
 )
-from ..taxonomy import CapabilityTag, ObservationTag
+from nominal_refactor_advisor.taxonomy import CapabilityTag, ObservationTag
 
 from typing import cast
-from ..ast_tools import (
+from nominal_refactor_advisor.ast_tools import (
     _walk_nodes,
     CollectedFamily,
     ParsedModule,
     statements_without_docstring,
 )
-from ..class_index import (
+from nominal_refactor_advisor.class_index import (
     build_compact_class_family_index,
     CompactModuleClassProjection,
     CompactModuleClassProjectionFamily,
 )
-from ..collection_algebra import sorted_tuple
-from ..models import (
+from nominal_refactor_advisor.collection_algebra import sorted_tuple
+from nominal_refactor_advisor.models import (
     DispatchCountMetrics,
     HierarchyCandidateMetrics,
     MappingMetrics,
@@ -73,11 +75,11 @@ from ..models import (
     SourceLocation,
     WitnessCarrierMetrics,
 )
-from ..name_algebra import CLASS_NAME_ALGEBRA
-from ..patterns import PatternId
-from ..semantic_match import as_ast, Maybe, name_id
-from ..semantic_shape_algebra import InjectiveTypeRegistryProof
-from ._base import (
+from nominal_refactor_advisor.name_algebra import CLASS_NAME_ALGEBRA
+from nominal_refactor_advisor.patterns import PatternId
+from nominal_refactor_advisor.semantic_match import as_ast, Maybe, name_id
+from nominal_refactor_advisor.semantic_shape_algebra import InjectiveTypeRegistryProof
+from nominal_refactor_advisor.detectors._base import (
     _attribute_family_subject_expression,
     _compact_keyed_family_axis_specs_from_index,
     _compact_keyed_table_axis_specs,
@@ -156,7 +158,7 @@ from ._base import (
     TypedCandidateCastBoilerplateCandidate,
     WitnessCarrierFamilyCandidate,
 )
-from ._helpers import (
+from nominal_refactor_advisor.detectors._helpers import (
     _cli_argument_spec_fields,
     _dataclass_config_field_names,
     _enum_metadata_table_candidates,
@@ -168,8 +170,14 @@ from ._helpers import (
     _typed_candidate_cast_boilerplate_candidates,
     TupleIndexSemanticOpacityCandidateCollector,
 )
-from ._substrate_support import _camel_case, _is_abstract_method, CLASS_NODE_AUTHORITY
-from ._finding_spec_defaults import FindingSpecConstructionCandidateCollector
+from nominal_refactor_advisor.detectors._substrate_support import (
+    _camel_case,
+    _is_abstract_method,
+    CLASS_NODE_AUTHORITY,
+)
+from nominal_refactor_advisor.detectors._finding_spec_defaults import (
+    FindingSpecConstructionCandidateCollector,
+)
 
 
 @dataclass(frozen=True)

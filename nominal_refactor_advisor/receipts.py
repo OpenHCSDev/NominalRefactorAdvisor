@@ -13,8 +13,8 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Self
 
-from .json_reports import SemanticRecord, json_report_property
-from .models import SourceLocation
+from nominal_refactor_advisor.json_reports import SemanticRecord, json_report_property
+from nominal_refactor_advisor.models import SourceLocation
 
 
 class ReceiptKind(StrEnum):

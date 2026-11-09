@@ -10,7 +10,7 @@ from functools import cached_property
 from collections.abc import Mapping
 from typing import Callable, Self, TypeAlias
 
-from .carrier_collapse import (
+from nominal_refactor_advisor.carrier_collapse import (
     CarrierCollapseAuthorityProof,
     CarrierCollapseBuilder,
     CarrierCollapseCallEdge,
@@ -18,22 +18,22 @@ from .carrier_collapse import (
     CarrierCollapseParticipant,
     ClosedCarrierCollapseComponent,
 )
-from .carrier_expansion import ResolvedFieldBindingCall
-from .product_flow import (
+from nominal_refactor_advisor.carrier_expansion import ResolvedFieldBindingCall
+from nominal_refactor_advisor.product_flow import (
     CompactFlowPosition,
     CompactFunctionCall,
     CompactMutationKind,
     CompactFlowContext,
     CompactValueUse,
 )
-from .product_flow_authority import (
+from nominal_refactor_advisor.product_flow_authority import (
     CompactFunctionCallIdentity,
     CompactFunctionCallResolution,
     CompactProductAuthority,
     CompactResolvedFunctionCall,
     CompactResolvedProductConstruction,
 )
-from .value_expression import LexicalValueReference
+from nominal_refactor_advisor.value_expression import LexicalValueReference
 
 class ParameterConveyorCallEdge(CarrierCollapseCallEdge, ABC):
     """Carrier-collapse edge descending from an explicit product construction."""

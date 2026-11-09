@@ -10,19 +10,26 @@ from functools import cached_property
 from importlib import import_module
 from typing import ClassVar, Self
 
-from .ast_tools import BuiltinCallName, ParsedModule
-from .refactors.cases_family import handback
-from .codemod_declaration_source import PythonExpressionSourceFormatter
-from .codemod_runtime import CodemodSourceSnapshot
-from .codemod_source_edits import (
+from nominal_refactor_advisor.ast_tools import BuiltinCallName, ParsedModule
+from nominal_refactor_advisor.refactors.cases_family import handback
+from nominal_refactor_advisor.codemod_declaration_source import (
+    PythonExpressionSourceFormatter,
+)
+from nominal_refactor_advisor.codemod_source_edits import (
     SourceLineSpan,
     SourceTextGeometry,
     SourceTextSpan,
     SourceTextSpanReplacement,
 )
-from .foreign_family import ForeignFamily, FunctionDefinition
-from .observation_families import ShapeFamily, TypeArgumentResolver
-from .observation_shapes import ForeignFamilySiteModule, ForeignFamilySiteShape
+from nominal_refactor_advisor.foreign_family import ForeignFamily, FunctionDefinition
+from nominal_refactor_advisor.observation_families import (
+    ShapeFamily,
+    TypeArgumentResolver,
+)
+from nominal_refactor_advisor.observation_shapes import (
+    ForeignFamilySiteModule,
+    ForeignFamilySiteShape,
+)
 
 FunctionNode = ast.FunctionDef | ast.AsyncFunctionDef
 
@@ -41,28 +48,9 @@ class ImportedClassReference:
     def class_name(self) -> str:
         return self.import_path.rpartition(".")[2]
 
-    def import_source_for(
-        self, snapshot: CodemodSourceSnapshot, parsed_module: ParsedModule
-    ) -> str:
-        """Import in the importing module's own style: relative when it is."""
-
-        family_file = snapshot.module_import_graph.unique_source_file_for_module_name(
-            self.module_name
-        )
-        uses_relative_imports = any(
-            statement.level
-            for _, statement in parsed_module.syntax_index.indexed_nodes_of_type(ast.ImportFrom)
-        )
-        reference = (
-            snapshot.module_import_graph.import_module_reference(
-                importing_file_path=parsed_module.file_path,
-                imported_file_path=family_file.file_path,
-                imported_name=self.class_name,
-            )
-            if family_file is not None and uses_relative_imports
-            else None
-        )
-        return f"from {reference or self.module_name} import {self.class_name}"
+    @cached_property
+    def import_source(self) -> str:
+        return f"from {self.module_name} import {self.class_name}"
 
 
 @dataclass(frozen=True)

@@ -13,8 +13,8 @@ from collections import defaultdict
 from dataclasses import dataclass
 from typing import Generic, TypeVar
 
-from ..ast_projection import ExpressionReference
-from ..ast_tools import (
+from nominal_refactor_advisor.ast_projection import ExpressionReference
+from nominal_refactor_advisor.ast_tools import (
     BuiltinCall,
     TypeQuery,
     ParsedModule,
@@ -22,13 +22,13 @@ from ..ast_tools import (
     statements_without_docstring,
     _walk_nodes,
 )
-from ..class_families.parsed_index import (
+from nominal_refactor_advisor.class_families.parsed_index import (
     ClassFamilyIndex,
     IndexedClass,
 )
-from ..collection_algebra import sorted_tuple
-from ..foreign_family import FunctionDefinition
-from ..name_algebra import CLASS_NAME_ALGEBRA, ClassNameAlgebra
+from nominal_refactor_advisor.collection_algebra import sorted_tuple
+from nominal_refactor_advisor.foreign_family import FunctionDefinition
+from nominal_refactor_advisor.name_algebra import CLASS_NAME_ALGEBRA, ClassNameAlgebra
 
 ProjectionT = TypeVar("ProjectionT")
 

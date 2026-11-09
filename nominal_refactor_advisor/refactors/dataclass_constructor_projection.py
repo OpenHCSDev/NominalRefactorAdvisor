@@ -5,12 +5,12 @@ import copy
 from dataclasses import dataclass
 from typing import cast
 
-from .function_projection_targets import (
+from nominal_refactor_advisor.refactors.function_projection_targets import (
     FunctionReturnProjectionTarget,
     ProductFieldValue,
     ResolvedFunctionProjectionTarget,
 )
-from .dataclass_projection import (
+from nominal_refactor_advisor.refactors.dataclass_projection import (
     DataclassAuthorityMappingRecipeBuilder,
     DataclassPayloadAuthorityTarget,
     DataclassProjectionBoundary,
@@ -18,30 +18,36 @@ from .dataclass_projection import (
     SourceDerivedDataclassProjectionOperation,
     SourceDerivedDataclassProjectionRecipeParts,
 )
-from .semantic_mirror import SemanticMirrorRecipeSeedLocations
-from ..ast_field_decoders import variadic_parameters
-from ..ast_projection import (
+from nominal_refactor_advisor.refactors.semantic_mirror import (
+    SemanticMirrorRecipeSeedLocations,
+)
+from nominal_refactor_advisor.ast_field_decoders import variadic_parameters
+from nominal_refactor_advisor.ast_projection import (
     CallKeywords,
     StatementValue,
 )
-from ..ast_tools import (
+from nominal_refactor_advisor.ast_tools import (
     statements_without_docstring,
     walk_function_body_nodes,
 )
-from ..codemod import NominalConstructorCall
-from ..codemod_declaration_source import PythonExpressionSourceFormatter
-from ..codemod_selection_context import CodemodSelectorContext
-from ..codemod_selector_models import SourceRewriteTarget
-from ..codemod_source_edits import (
+from nominal_refactor_advisor.codemod import NominalConstructorCall
+from nominal_refactor_advisor.codemod_declaration_source import (
+    PythonExpressionSourceFormatter,
+)
+from nominal_refactor_advisor.codemod_selection_context import CodemodSelectorContext
+from nominal_refactor_advisor.codemod_selector_models import SourceRewriteTarget
+from nominal_refactor_advisor.codemod_source_edits import (
     SourceTextGeometry,
     SourceTextReplacement,
     SourceTextSpan,
 )
-from ..models import (
+from nominal_refactor_advisor.models import (
     MappingMetrics,
     RefactorFinding,
 )
-from ..refactor_concepts import ConstructorKwargCarrierProjectionConcept
+from nominal_refactor_advisor.refactor_concepts import (
+    ConstructorKwargCarrierProjectionConcept,
+)
 
 
 @dataclass(frozen=True)

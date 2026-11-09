@@ -16,8 +16,8 @@ from functools import cached_property
 from itertools import combinations
 from typing import ClassVar, Generic, Self, TypeAlias, TypeVar
 
-from .collection_algebra import sorted_tuple
-from .descriptor_algebra import AliasProperty
+from nominal_refactor_advisor.collection_algebra import sorted_tuple
+from nominal_refactor_advisor.descriptor_algebra import AliasProperty
 
 ObjectT = TypeVar("ObjectT")
 ValueT = TypeVar("ValueT", bound=Hashable)

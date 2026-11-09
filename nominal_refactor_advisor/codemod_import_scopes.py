@@ -7,11 +7,11 @@ from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import TYPE_CHECKING, TypeAlias
-from .lexical_bindings import ImportBoundNameProjection
+from nominal_refactor_advisor.lexical_bindings import ImportBoundNameProjection
 
 
 if TYPE_CHECKING:
-    from .codemod_import_graph import SourceModuleImportGraph
+    from nominal_refactor_advisor.codemod_import_graph import SourceModuleImportGraph
 
 
 ImportStatement: TypeAlias = ast.Import | ast.ImportFrom

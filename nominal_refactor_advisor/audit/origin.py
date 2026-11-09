@@ -7,9 +7,9 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import ClassVar
 
-from .family import Family
-from .measures import Measured, Tally, interpreter
-from .repository import Repository
+from nominal_refactor_advisor.audit.family import Family
+from nominal_refactor_advisor.audit.measures import Measured, Tally, interpreter
+from nominal_refactor_advisor.audit.repository import Repository
 
 
 class ChangeKind(Family, ABC, root=True, affix="Change"):

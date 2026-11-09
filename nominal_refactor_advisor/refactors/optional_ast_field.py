@@ -32,34 +32,36 @@ from metaclass_registry import (
     extract_key_from_class_name,
 )
 
-from .cases_family import handback
-from .finding_recipes import (
+from nominal_refactor_advisor.refactors.cases_family import handback
+from nominal_refactor_advisor.refactors.finding_recipes import (
     FindingEvidenceActionKeysMixin,
     FindingRecipeSynthesizer,
 )
-from .. import (
+from nominal_refactor_advisor import (
     ast_field_decoders,
     ast_projection,
 )
-from ..ast_tools import AstParentIndex, ParsedModule
-from ..codemod_declaration_source import PythonExpressionSourceFormatter
-from ..codemod_foreign_family_source import (
+from nominal_refactor_advisor.ast_tools import AstParentIndex, ParsedModule
+from nominal_refactor_advisor.codemod_declaration_source import (
+    PythonExpressionSourceFormatter,
+)
+from nominal_refactor_advisor.codemod_foreign_family_source import (
     FunctionRewriteAuthority,
     ImportedClassReference,
 )
-from ..codemod_payload import (
+from nominal_refactor_advisor.codemod_payload import (
     RequiredStringPayloadValueCodec,
     codemod_payload_field,
 )
-from ..codemod_reproof import SourceReprovedOperation
-from ..codemod_runtime import (
+from nominal_refactor_advisor.codemod_reproof import SourceReprovedOperation
+from nominal_refactor_advisor.codemod_runtime import (
     CodemodSourceSnapshot,
     FindingRecipeEvaluation,
     RefactorRecipe,
 )
-from ..codemod_selection_context import CodemodSelectorContext
-from ..codemod_selector_models import SourceRewriteTarget
-from ..codemod_source_edits import (
+from nominal_refactor_advisor.codemod_selection_context import CodemodSelectorContext
+from nominal_refactor_advisor.codemod_selector_models import SourceRewriteTarget
+from nominal_refactor_advisor.codemod_source_edits import (
     NominalSourceEdit,
     SourceFileCreation,
     SourceLineSpan,
@@ -67,12 +69,12 @@ from ..codemod_source_edits import (
     SourceTextSpan,
     SourceTextSpanReplacement,
 )
-from ..codemod_target_selectors import SourceIndexTargetSelector
-from ..declared_root import DeclaredRoot
-from ..models import RefactorFinding
-from ..native_declarations import NativeDeclaration
-from ..refactor_concepts import OptionalAstFieldDecoderConcept
-from ..registry_identity import DEFAULT_REGISTRY_KEY_ATTRIBUTE
+from nominal_refactor_advisor.codemod_target_selectors import SourceIndexTargetSelector
+from nominal_refactor_advisor.declared_root import DeclaredRoot
+from nominal_refactor_advisor.models import RefactorFinding
+from nominal_refactor_advisor.native_declarations import NativeDeclaration
+from nominal_refactor_advisor.refactor_concepts import OptionalAstFieldDecoderConcept
+from nominal_refactor_advisor.registry_identity import DEFAULT_REGISTRY_KEY_ATTRIBUTE
 
 FunctionNode = ast.FunctionDef | ast.AsyncFunctionDef
 
@@ -1390,9 +1392,7 @@ class ProjectDecoderOwners:
                 )
             if module != parsed_module.module_name:
                 sources.append(
-                    ImportedClassReference(f"{module}.{name}").import_source_for(
-                        self.snapshot, parsed_module
-                    )
+                    ImportedClassReference(f"{module}.{name}").import_source
                 )
         return tuple(sources)
 

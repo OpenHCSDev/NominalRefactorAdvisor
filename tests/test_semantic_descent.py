@@ -3545,7 +3545,7 @@ def test_semantic_mirror_cross_file_return_dict_synthesizes_dataclass_payload_re
     assert tuple(operation.operation_key() for operation in recipe.operations) == (
         "derive_dataclass_payload_projection",
     )
-    assert "from .model import RefactorAction" in rewritten_report
+    assert "from pkg.model import RefactorAction" in rewritten_report
     assert "import dataclasses" in rewritten_report
     assert "for field in dataclasses.fields(" in rewritten_report
     assert "getattr(\n                    self.action," in rewritten_report
@@ -3558,7 +3558,7 @@ def test_semantic_mirror_cross_file_return_dict_synthesizes_dataclass_payload_re
     report_path.write_text(
         report_path.read_text(encoding="utf-8").replace(
             "from dataclasses import dataclass\n",
-            "from dataclasses import dataclass\nfrom .model import RefactorAction\n",
+            "from dataclasses import dataclass\nfrom pkg.model import RefactorAction\n",
         ),
         encoding="utf-8",
         newline="",
@@ -3589,13 +3589,13 @@ def test_semantic_mirror_cross_file_return_dict_synthesizes_dataclass_payload_re
     imported_rewritten_report = imported_simulation.simulation.rewritten_sources[
         report_path.as_posix()
     ]
-    assert imported_rewritten_report.count("from .model import RefactorAction") == 1
+    assert imported_rewritten_report.count("from pkg.model import RefactorAction") == 1
     assert "import dataclasses" in imported_rewritten_report
 
     report_path.write_text(
         report_path.read_text(encoding="utf-8").replace(
-            "from .model import RefactorAction\n",
-            "from .model import RefactorAction\nRefactorAction = object\n",
+            "from pkg.model import RefactorAction\n",
+            "from pkg.model import RefactorAction\nRefactorAction = object\n",
         ),
         encoding="utf-8",
         newline="",

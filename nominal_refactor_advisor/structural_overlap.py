@@ -8,13 +8,13 @@ from enum import StrEnum
 from functools import cached_property
 from typing import TypeAlias
 
-from .collection_algebra import UniqueIdentityIndexAuthority
-from .models import (
+from nominal_refactor_advisor.collection_algebra import UniqueIdentityIndexAuthority
+from nominal_refactor_advisor.models import (
     FindingMetrics,
     RefactorFinding,
 )
-from .source_index import SourceIndex
-from .json_reports import (
+from nominal_refactor_advisor.source_index import SourceIndex
+from nominal_refactor_advisor.json_reports import (
     SemanticRecord,
     DataclassJsonReport,
     json_report_property,

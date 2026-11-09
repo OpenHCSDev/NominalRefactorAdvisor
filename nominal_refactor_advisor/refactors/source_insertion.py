@@ -6,34 +6,36 @@ from abc import (
 )
 from dataclasses import dataclass
 
-from ..codemod_declaration_source import NamedDeclarationSourceAuthority
-from ..codemod_imports import (
+from nominal_refactor_advisor.codemod_declaration_source import (
+    NamedDeclarationSourceAuthority,
+)
+from nominal_refactor_advisor.codemod_imports import (
     ModuleImportInsertionPoint,
     ModuleImportMutation,
 )
-from ..codemod_import_scopes import ModuleImportScope
-from ..codemod_module_declarations import ModuleSymbolTable
-from ..codemod_operations import (
+from nominal_refactor_advisor.codemod_import_scopes import ModuleImportScope
+from nominal_refactor_advisor.codemod_module_declarations import ModuleSymbolTable
+from nominal_refactor_advisor.codemod_operations import (
     RefactorRecipeOperation,
     SourcePayloadOperation,
 )
-from ..codemod_payload import (
+from nominal_refactor_advisor.codemod_payload import (
     EmptyDefaultStringPayloadValueCodec,
     RequiredStringPayloadValueCodec,
     StringArrayPayloadValueCodec,
     codemod_payload_field,
 )
-from ..codemod_reproof import SourceReprovedOperation
-from ..codemod_runtime import CodemodSourceSnapshot
-from ..codemod_selection_context import CodemodSelectorContext
-from ..codemod_source_edits import (
+from nominal_refactor_advisor.codemod_reproof import SourceReprovedOperation
+from nominal_refactor_advisor.codemod_runtime import CodemodSourceSnapshot
+from nominal_refactor_advisor.codemod_selection_context import CodemodSelectorContext
+from nominal_refactor_advisor.codemod_source_edits import (
     PhysicalSourceEdit,
     SourceFileCreation,
     SourceInsertion,
     SourceLineSpan,
     SourceTargetEditor,
 )
-from ..codemod_spacing import (
+from nominal_refactor_advisor.codemod_spacing import (
     DestinationInsertionSpacing,
     SourceInsertionBoundary,
 )

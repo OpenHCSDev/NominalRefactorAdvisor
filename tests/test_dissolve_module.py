@@ -330,7 +330,7 @@ def test_relocation_redirects_a_function_local_import(tmp_path: Path) -> None:
     simulation.apply()
 
     consumer = (tmp_path / "pkg/consumer.py").read_text()
-    assert "    from .moved import Moved\n    from pkg.source import Kept\n" in consumer
+    assert "    from pkg.moved import Moved\n    from pkg.source import Kept\n" in consumer
     imported = _run(tmp_path, "from pkg.consumer import read; assert read()[0] == 3")
     assert imported.returncode == 0, imported.stderr
 
@@ -911,7 +911,7 @@ def test_a_script_entry_imports_what_another_module_declares_and_refuses_an_unbo
     _write(tmp_path, "pkg/__init__.py", "")
     _write(tmp_path, "pkg/owner.py", "def main() -> int:\n    return 0\n")
     _write(tmp_path, "pkg/other.py", "def unrelated() -> int:\n    return 1\n")
-    _write(tmp_path, "pkg/hub.py", 'from .owner import main\n\nif __name__ == "__main__":\n    main()\n')
+    _write(tmp_path, "pkg/hub.py", 'from pkg.owner import main\n\nif __name__ == "__main__":\n    main()\n')
     simulation = (
         RefactorRecipe("dissolve-hub")
         .with_operation(_dissolve(tmp_path, "pkg/hub.py", "pkg/other.py"))
@@ -919,10 +919,10 @@ def test_a_script_entry_imports_what_another_module_declares_and_refuses_an_unbo
     )
     assert simulation.is_clean
     other = simulation.simulation.rewritten_sources[(tmp_path / "pkg/other.py").as_posix()]
-    assert "from .owner import main\n" in other
+    assert "from pkg.owner import main\n" in other
     assert other.endswith('if __name__ == "__main__":\n    main()\n')
 
-    _write(tmp_path, "pkg/hub.py", 'from .owner import main\n\nif __name__ == "__main__":\n    missing(main)\n')
+    _write(tmp_path, "pkg/hub.py", 'from pkg.owner import main\n\nif __name__ == "__main__":\n    missing(main)\n')
     with pytest.raises(ValueError, match=r"runs \['missing'\] as a script, which the source"):
         RefactorRecipe("dissolve-hub").with_operation(
             _dissolve(tmp_path, "pkg/hub.py", "pkg/other.py")

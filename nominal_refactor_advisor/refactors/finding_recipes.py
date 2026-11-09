@@ -8,15 +8,17 @@ from functools import cached_property
 from pathlib import Path
 from typing import ClassVar
 
-from .cases_family import CasesFamily
-from .class_member_authority import (
+from nominal_refactor_advisor.refactors.cases_family import CasesFamily
+from nominal_refactor_advisor.refactors.class_member_authority import (
     FactorParallelMirroredLeafFamilyOperation,
     PromoteExactLeafMethodsToAncestorOperation,
 )
-from .semantic_mirror import SemanticMirrorFindingRecipeStrategy
-from ..codemod_authority_claims import AstTargetAuthorityClaim
-from ..codemod_preflight import CodemodOperationPreflightError
-from ..codemod_runtime import (
+from nominal_refactor_advisor.refactors.semantic_mirror import (
+    SemanticMirrorFindingRecipeStrategy,
+)
+from nominal_refactor_advisor.codemod_authority_claims import AstTargetAuthorityClaim
+from nominal_refactor_advisor.codemod_preflight import CodemodOperationPreflightError
+from nominal_refactor_advisor.codemod_runtime import (
     DelegatedRecipeDeclaration,
     CodemodPlanDocument,
     CodemodSourceSnapshot,
@@ -28,39 +30,39 @@ from ..codemod_runtime import (
     RefactorRecipe,
     codemod_plan_from_findings,
 )
-from ..codemod_selection_context import CodemodSelectorContext
-from ..codemod_selector_models import SourceRewriteTarget
-from ..collection_algebra import UniqueIdentityIndexAuthority
-from ..descent import (
+from nominal_refactor_advisor.codemod_selection_context import CodemodSelectorContext
+from nominal_refactor_advisor.codemod_selector_models import SourceRewriteTarget
+from nominal_refactor_advisor.collection_algebra import UniqueIdentityIndexAuthority
+from nominal_refactor_advisor.descent import (
     CasesFold,
     Descent,
     KeyedMirror,
 )
-from ..detectors._base import IssueDetector
-from ..finding_recipe_actions import FindingRecipeActionKey
-from ..json_reports import (
+from nominal_refactor_advisor.detectors._base import IssueDetector
+from nominal_refactor_advisor.finding_recipe_actions import FindingRecipeActionKey
+from nominal_refactor_advisor.json_reports import (
     DataclassJsonReport,
     json_report_cached_property,
     json_report_field,
     json_report_property,
 )
-from ..models import (
+from nominal_refactor_advisor.models import (
     EnvironmentBooleanDriftMetrics,
     RefactorFinding,
     SourceLocation,
 )
-from ..planner import (
+from nominal_refactor_advisor.planner import (
     RefactorExecutionClass,
     RefactorExecutionPlanReport,
     build_refactor_execution_plan,
     build_refactor_execution_plan_from_groups,
 )
-from .projection_descent import TypedMirror
-from ..refactor_concepts import (
+from nominal_refactor_advisor.refactors.projection_descent import TypedMirror
+from nominal_refactor_advisor.refactor_concepts import (
     ClassFamilyAuthorityConcept,
     RefactorConcept,
 )
-from ..semantic_descent import (
+from nominal_refactor_advisor.semantic_descent import (
     FindingDescentCertificateAuthority,
     build_finding_backed_semantic_descent_graph,
 )

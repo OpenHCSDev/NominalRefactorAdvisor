@@ -5,17 +5,19 @@ from __future__ import annotations
 from abc import ABC
 from typing import ClassVar
 
-from ..refactors.class_overlap import ClassOverlapFindingRecipeSynthesizer
-from ..class_overlap import (
+from nominal_refactor_advisor.refactors.class_overlap import (
+    ClassOverlapFindingRecipeSynthesizer,
+)
+from nominal_refactor_advisor.class_overlap import (
     ClassOverlapCandidate,
     ClassOverlapMetrics,
     ClassOverlapShape,
     ClassOverlapVerdicts,
 )
-from ..models import RefactorFinding
-from ..patterns import PatternId
-from ..taxonomy import CapabilityTag, ObservationTag
-from ._base import (
+from nominal_refactor_advisor.models import RefactorFinding
+from nominal_refactor_advisor.patterns import PatternId
+from nominal_refactor_advisor.taxonomy import CapabilityTag, ObservationTag
+from nominal_refactor_advisor.detectors._base import (
     CompactClassRepositoryCandidateDetector,
     CompactClassRepositoryContext,
     DetectorConfig,

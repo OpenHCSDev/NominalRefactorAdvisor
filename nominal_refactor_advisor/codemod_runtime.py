@@ -34,29 +34,29 @@ from typing import (
     cast,
 )
 
-from .implementation_identity import AnswerFreeDeclaration
-from .ast_tools import (
+from nominal_refactor_advisor.implementation_identity import AnswerFreeDeclaration
+from nominal_refactor_advisor.ast_tools import (
     ParsedModule,
     ParsedModuleSourceProjection,
     PythonModulePathAuthority,
 )
-from .binding_proofs import RepositoryModuleBindingProof
-from .class_families.parsed_index import ClassFamilyIndex
-from .class_index import (
+from nominal_refactor_advisor.binding_proofs import RepositoryModuleBindingProof
+from nominal_refactor_advisor.class_families.parsed_index import ClassFamilyIndex
+from nominal_refactor_advisor.class_index import (
     CompactClassFamilyIndex,
     CompactModuleClassProjection,
     CompactModuleClassProjectionFamily,
     build_compact_class_family_index,
 )
-from .ast_tools import ParsedModuleSet
-from .class_overlap import ClassOverlapVerdicts
-from .codemod_architecture_guards import (
+from nominal_refactor_advisor.ast_tools import ParsedModuleSet
+from nominal_refactor_advisor.class_overlap import ClassOverlapVerdicts
+from nominal_refactor_advisor.codemod_architecture_guards import (
     ArchitectureGuardReport,
     ArchitectureGuardRule,
     ArchitectureGuardSuite,
     ArchitectureGuardSuitePayloadValueCodec,
 )
-from .codemod_authority_claims import (
+from nominal_refactor_advisor.codemod_authority_claims import (
     AuthorityClaimContextPreflightDetail,
     AuthorityClaimDeclarationPreflightDetail,
     AuthorityClaimPayload,
@@ -65,29 +65,29 @@ from .codemod_authority_claims import (
     AuthorityClaimSourceIndexResolver,
     SourceCreationConflictPreflightDetail,
 )
-from .codemod_import_graph import SourceModuleImportGraph
-from .codemod_operations import RefactorRecipeOperation
-from .codemod_payload import (
+from nominal_refactor_advisor.codemod_import_graph import SourceModuleImportGraph
+from nominal_refactor_advisor.codemod_operations import RefactorRecipeOperation
+from nominal_refactor_advisor.codemod_payload import (
     EmptyDefaultStringPayloadValueCodec,
     PayloadRecordArrayValueCodec,
     RequiredStringPayloadValueCodec,
     codemod_payload_field,
 )
-from .codemod_preflight import (
+from nominal_refactor_advisor.codemod_preflight import (
     CodemodOperationPreflightError,
     CodemodOperationPreflightReport,
     CodemodPlanPreflightReport,
 )
-from .codemod_selection_context import CodemodSelectorContext
-from .codemod_selector_models import SourceRewriteReferences
-from .codemod_semantics import (
+from nominal_refactor_advisor.codemod_selection_context import CodemodSelectorContext
+from nominal_refactor_advisor.codemod_selector_models import SourceRewriteReferences
+from nominal_refactor_advisor.codemod_semantics import (
     CodemodBackend,
     CodemodPreflightStatus,
     CodemodSourceDependencyScope,
     FindingRecipePlanningHorizon,
     FindingRecipeSynthesisStatus,
 )
-from .codemod_source_edits import (
+from nominal_refactor_advisor.codemod_source_edits import (
     CodemodSourceRevision,
     NominalSourceEdit,
     PhysicalSourceEdit,
@@ -110,27 +110,29 @@ from .codemod_source_edits import (
     SourceTargetEditor,
     _joined_rationales,
 )
-from .codemod_target_selectors import (
+from nominal_refactor_advisor.codemod_target_selectors import (
     CodemodSelectorResolutionReport,
     CodemodTargetSelector,
     CodemodTargetSourceReport,
     FindingEvidenceTargetSelector,
 )
-from .collection_algebra import sorted_tuple
-from .descriptor_algebra import (
+from nominal_refactor_advisor.collection_algebra import sorted_tuple
+from nominal_refactor_advisor.descriptor_algebra import (
     AliasProperty,
     ConstantProperty,
 )
-from .declared_receivers import DeclaredReceiverTyping
-from .detectors._base import IssueDetector
-from .exact_field_authority import ExactDataclassFieldAuthorityComponentBuilder
-from .exact_method_authority import (
+from nominal_refactor_advisor.declared_receivers import DeclaredReceiverTyping
+from nominal_refactor_advisor.detectors._base import IssueDetector
+from nominal_refactor_advisor.exact_field_authority import (
+    ExactDataclassFieldAuthorityComponentBuilder,
+)
+from nominal_refactor_advisor.exact_method_authority import (
     ExactLeafMethodAncestorPromotionComponentBuilder,
     ExactMethodRoleComponentBuilder,
     ParallelMirroredLeafFamilyComponentBuilder,
 )
-from .finding_recipe_actions import FindingRecipeActionKey
-from .json_reports import (
+from nominal_refactor_advisor.finding_recipe_actions import FindingRecipeActionKey
+from nominal_refactor_advisor.json_reports import (
     DataclassJsonReport,
     JsonObject,
     JsonReport,
@@ -139,15 +141,15 @@ from .json_reports import (
     json_report_object,
     json_report_property,
 )
-from .models import RefactorFinding
-from .refactor_concepts import RefactorConcept
-from .semantic_algebra import (
+from nominal_refactor_advisor.models import RefactorFinding
+from nominal_refactor_advisor.refactor_concepts import RefactorConcept
+from nominal_refactor_advisor.semantic_algebra import (
     ConfusabilityGraph,
     VertexIndexEdge,
 )
-from .semantic_descent import AuthorityClaim
-from .source_identity import canonical_source_mapping
-from .source_index import (
+from nominal_refactor_advisor.semantic_descent import AuthorityClaim
+from nominal_refactor_advisor.source_identity import canonical_source_mapping
+from nominal_refactor_advisor.source_index import (
     AstTargetDigest,
     AstTargetNode,
     AstTargetNodeIndex,
@@ -158,7 +160,7 @@ from .source_index import (
     build_source_index_artifacts,
 )
 
-from .product_flow_authority import (
+from nominal_refactor_advisor.product_flow_authority import (
     SourceProductFlowRepository,
 )
 

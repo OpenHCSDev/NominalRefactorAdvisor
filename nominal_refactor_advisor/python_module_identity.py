@@ -8,7 +8,7 @@ from importlib.util import resolve_name
 from functools import cached_property
 from pathlib import Path, PurePath
 
-from .source_identity import (
+from nominal_refactor_advisor.source_identity import (
     PACKAGE_INIT_FILE_NAME,
     SourceFileIdentity,
     source_path_is_package_init,

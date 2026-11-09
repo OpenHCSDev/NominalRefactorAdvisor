@@ -22,33 +22,36 @@ from typing import (
     cast,
 )
 
-from ..ast_field_decoders import (
+from nominal_refactor_advisor.ast_field_decoders import (
     ParameterAnnotations,
     variadic_parameters,
 )
-from ..class_families.parsed_index import (
+from nominal_refactor_advisor.class_families.parsed_index import (
     ClassFamilyIndex,
     IndexedClass,
 )
-from ..class_method_facets import (
+from nominal_refactor_advisor.class_method_facets import (
     CompactClassMethod,
     CompactClassMethodSemanticProfile,
     CompactMethodSemanticCoordinate,
     CompactMethodSemanticCoordinateKind,
     MethodFamilyResidueRole,
 )
-from ..class_symbols import ClassSymbolResolutionAuthority
-from ..class_syntax_facets import annotation_type_names
-from ..value_expression import CompactValueExpression
-from ..annotation_semantics import CLASSVAR_ANNOTATION_AUTHORITY, TypeWrapper
-from ..ast_projection import ExpressionReference
-from ..ast_projection import (
+from nominal_refactor_advisor.class_symbols import ClassSymbolResolutionAuthority
+from nominal_refactor_advisor.class_syntax_facets import annotation_type_names
+from nominal_refactor_advisor.value_expression import CompactValueExpression
+from nominal_refactor_advisor.annotation_semantics import (
+    CLASSVAR_ANNOTATION_AUTHORITY,
+    TypeWrapper,
+)
+from nominal_refactor_advisor.ast_projection import ExpressionReference
+from nominal_refactor_advisor.ast_projection import (
     CallKeywords,
     StatementValue,
     StatementValues,
     single_name_targets,
 )
-from ..ast_tools import (
+from nominal_refactor_advisor.ast_tools import (
     AttributeAccessCall,
     AttributeLookup,
     BuiltinCall,
@@ -58,45 +61,53 @@ from ..ast_tools import (
     SourceModule,
     walk_function_body_nodes,
 )
-from ..class_index import (
+from nominal_refactor_advisor.class_index import (
     CompactClassFamilyIndex,
     CompactIndexedClass,
     CompactModuleClassProjection,
     build_compact_class_family_index,
 )
-from ..exact_method_authority import (
+from nominal_refactor_advisor.exact_method_authority import (
     ExactLeafMethodAncestorPromotionComponent,
     ExactLeafMethodAncestorPromotionComponentBuilder,
     ExactMethodRoleComponent,
     ExactMethodRoleComponentBuilder,
 )
-from ..factorization import (
+from nominal_refactor_advisor.factorization import (
     FactorizationRow,
     ResidueHookNamesCarrier,
     factorization_axis_catalog_certificate,
 )
-from ..native_syntax import NativePythonSyntaxIndex
-from ..semantic_algebra import FiniteAxisSystem, ObjectFamilyShape
-from ..semantic_description_length import (
+from nominal_refactor_advisor.native_syntax import NativePythonSyntaxIndex
+from nominal_refactor_advisor.semantic_algebra import (
+    FiniteAxisSystem,
+    ObjectFamilyShape,
+)
+from nominal_refactor_advisor.semantic_description_length import (
     ClassFamilyCompressionProfile,
     CompressionCertificate,
 )
-from ..semantic_identity import InheritanceIdentityAttributeProjection
+from nominal_refactor_advisor.semantic_identity import (
+    InheritanceIdentityAttributeProjection,
+)
 import ast
 from collections import Counter
 from typing import Iterable
-from ..ast_tools import (
+from nominal_refactor_advisor.ast_tools import (
     _walk_nodes,
     is_docstring_statement,
     ParsedModule,
     ScopedAstObservation,
     statements_without_docstring,
 )
-from ..collection_algebra import sorted_tuple
-from ..models import SourceLocation
-from ..name_algebra import CLASS_NAME_ALGEBRA
-from ..observation_shapes import BuilderCallShape, RegistrationShape
-from ..semantic_match import (
+from nominal_refactor_advisor.collection_algebra import sorted_tuple
+from nominal_refactor_advisor.models import SourceLocation
+from nominal_refactor_advisor.name_algebra import CLASS_NAME_ALGEBRA
+from nominal_refactor_advisor.observation_shapes import (
+    BuilderCallShape,
+    RegistrationShape,
+)
+from nominal_refactor_advisor.semantic_match import (
     as_ast,
     attribute_call_match,
     constant_value,
@@ -112,7 +123,7 @@ from ..semantic_match import (
     single_return_call,
     single_return_value,
 )
-from ._base import (
+from nominal_refactor_advisor.detectors._base import (
     _is_classmethod,
     _module_builder_call_shapes,
     _PIPELINE_ASSIGN_STAGE,
@@ -159,7 +170,7 @@ from ._base import (
     TupleIndexSemanticOpacityCandidate,
     TypedCandidateCastBoilerplateCandidate,
 )
-from ._substrate_support import (
+from nominal_refactor_advisor.detectors._substrate_support import (
     _constant_string,
     _IGNORED_ANCESTOR_NAMES,
     _IGNORED_BASE_NAMES,
@@ -170,7 +181,9 @@ from ._substrate_support import (
     CLASS_INDEX_PROJECTION,
     CLASS_NODE_AUTHORITY,
 )
-from ._substrate_support import _class_ancestor_name_map
+from nominal_refactor_advisor.detectors._substrate_support import (
+    _class_ancestor_name_map,
+)
 
 BaseBundleClassGroups: TypeAlias = dict[tuple[str, ...], list[ast.ClassDef]]
 NamedStringSequenceSpec: TypeAlias = tuple[str, int, tuple[str, ...]]

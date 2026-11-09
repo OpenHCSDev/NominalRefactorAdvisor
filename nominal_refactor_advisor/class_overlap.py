@@ -45,35 +45,35 @@ from dataclasses import dataclass
 from enum import StrEnum
 from functools import cached_property
 
-from .ast_projection import ExpressionReference
-from .case_root import Case
-from .class_body import (
+from nominal_refactor_advisor.ast_projection import ExpressionReference
+from nominal_refactor_advisor.case_root import Case
+from nominal_refactor_advisor.class_body import (
     ClassBodyDeclaration,
     ResolvedClassBodyDeclaration,
     SharedClassBodyDeclaration,
     ClassBodyIndex,
     ClassBodyOverlap,
 )
-from .class_index import (
+from nominal_refactor_advisor.class_index import (
     ClassBodyDeclarationKind,
     CompactClassFamilyIndex,
     CompactClassReferenceResolver,
     CompactIndexedClass,
     CompactModuleClassProjection,
 )
-from .class_references import (
+from nominal_refactor_advisor.class_references import (
     ClassReferenceRole,
     CompactClassReference,
 )
-from .overlap_receipts import OverlapReceiptKind
-from .receipts import Receipt, ScoredByReceipts
-from .owner_candidates import (
+from nominal_refactor_advisor.overlap_receipts import OverlapReceiptKind
+from nominal_refactor_advisor.receipts import Receipt, ScoredByReceipts
+from nominal_refactor_advisor.owner_candidates import (
     BlockOwnerQuestion,
     ModuleImportGraph,
     OwnerCandidate,
     PickedOwner,
 )
-from .models import FindingMetrics, ImpactDelta, SourceLocation
+from nominal_refactor_advisor.models import FindingMetrics, ImpactDelta, SourceLocation
 
 
 class ClassOverlapShape(StrEnum):

@@ -21,9 +21,12 @@ from functools import cached_property
 from itertools import pairwise
 from pathlib import Path
 
-from .lexical_bindings import ImportAlias, ImportBoundNameProjection
-from .scan_cache import ScanCache
-from .declared_root import DeclaredRoot
+from nominal_refactor_advisor.lexical_bindings import (
+    ImportAlias,
+    ImportBoundNameProjection,
+)
+from nominal_refactor_advisor.scan_cache import ScanCache
+from nominal_refactor_advisor.declared_root import DeclaredRoot
 
 
 @dataclass(frozen=True)

@@ -3,10 +3,13 @@
 from dataclasses import dataclass
 from functools import cached_property
 
-from .class_mro import DeclarationMroType
-from .collection_algebra import UniqueIdentityIndexAuthority
-from .native_declarations import ClassNamespaceDeclaration, QualifiedDeclaration
-from .native_class_mro import NativeClassMroDeclaration
+from nominal_refactor_advisor.class_mro import DeclarationMroType
+from nominal_refactor_advisor.collection_algebra import UniqueIdentityIndexAuthority
+from nominal_refactor_advisor.native_declarations import (
+    ClassNamespaceDeclaration,
+    QualifiedDeclaration,
+)
+from nominal_refactor_advisor.native_class_mro import NativeClassMroDeclaration
 
 
 @dataclass(frozen=True)

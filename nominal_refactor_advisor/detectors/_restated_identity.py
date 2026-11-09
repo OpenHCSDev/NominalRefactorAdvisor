@@ -5,30 +5,34 @@ from __future__ import annotations
 from collections.abc import Iterable, Sequence
 
 
-from ..class_identity_observations import (
+from nominal_refactor_advisor.class_identity_observations import (
     DeclaredIdentities,
     DeclaredIdentityFamily,
     IdentitySpelling,
     IdentitySpellingFamily,
 )
-from ..refactors.declaration_reference import (
+from nominal_refactor_advisor.refactors.declaration_reference import (
     DeclarationReferenceFindingRecipeSynthesizer,
     ReferenceClassNameOperation,
     ReferenceEnumMemberOperation,
     ReferenceImportedModuleOperation,
     UnquoteResolvedTypeNamesOperation,
 )
-from ..models import (
+from nominal_refactor_advisor.models import (
     CarriedReferenceRewrites,
     CoveredReferenceRewrites,
     RefactorFinding,
     SourceLocation,
 )
-from ..patterns import PatternId
-from ..observation_shapes import RestatingSite
-from ..taxonomy import CapabilityTag, ObservationTag
-from ._base import CompactProjectionGroups
-from ._restated_facts import JoinedRestatedFactDetector, RestatedFact, _listed
+from nominal_refactor_advisor.patterns import PatternId
+from nominal_refactor_advisor.observation_shapes import RestatingSite
+from nominal_refactor_advisor.taxonomy import CapabilityTag, ObservationTag
+from nominal_refactor_advisor.detectors._base import CompactProjectionGroups
+from nominal_refactor_advisor.detectors._restated_facts import (
+    JoinedRestatedFactDetector,
+    RestatedFact,
+    _listed,
+)
 
 
 def _declared_identities(

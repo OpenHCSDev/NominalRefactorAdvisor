@@ -84,7 +84,7 @@ def test_replaces_complete_direct_child_cohort_from_two_class_targets(
     assert payload["replacement_base"]["target_qualname"] == "SemanticRecord"
     assert "class_names" not in payload
     assert "import_source" not in payload
-    assert "from .records import SemanticRecord" in rewritten
+    assert "from pkg.records import SemanticRecord" in rewritten
     assert "class Alpha(SemanticRecord):" in rewritten
     assert "class Beta(SemanticRecord, LocalRole):" in rewritten
     assert "StoredRecord" not in "\n".join(

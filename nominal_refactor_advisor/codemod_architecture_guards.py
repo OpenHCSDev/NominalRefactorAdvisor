@@ -25,11 +25,14 @@ from typing import (
 
 from metaclass_registry import AutoRegisterMeta
 
-from .value_expression import CompactValueExpression
-from .ast_projection import ExpressionReference
-from .ast_tools import BuiltinCallName
-from .codemod_paths import SourcePathCandidateSet, SourcePathResolutionAuthority
-from .codemod_payload import (
+from nominal_refactor_advisor.value_expression import CompactValueExpression
+from nominal_refactor_advisor.ast_projection import ExpressionReference
+from nominal_refactor_advisor.ast_tools import BuiltinCallName
+from nominal_refactor_advisor.codemod_paths import (
+    SourcePathCandidateSet,
+    SourcePathResolutionAuthority,
+)
+from nominal_refactor_advisor.codemod_payload import (
     CodemodPayloadRecord,
     DiscriminatedPayloadRecord,
     EmptyDefaultStringPayloadValueCodec,
@@ -40,16 +43,16 @@ from .codemod_payload import (
     StringArrayPayloadValueCodec,
     codemod_payload_field,
 )
-from .collection_algebra import sorted_tuple
-from .json_reports import (
+from nominal_refactor_advisor.collection_algebra import sorted_tuple
+from nominal_refactor_advisor.json_reports import (
     JSON_REPORT_VALUE_PROJECTION,
     DataclassJsonReport,
     JsonValue,
     json_report_field,
     json_report_property,
 )
-from .models import SourceLocation
-from .source_index import (
+from nominal_refactor_advisor.models import SourceLocation
+from nominal_refactor_advisor.source_index import (
     AstTargetDigest,
     SourceIndex,
 )

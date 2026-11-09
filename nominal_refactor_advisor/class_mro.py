@@ -12,10 +12,10 @@ from typing import (
     TypeVar,
 )
 
-from .native_declarations import QualifiedDeclaration
+from nominal_refactor_advisor.native_declarations import QualifiedDeclaration
 
 if TYPE_CHECKING:
-    from .class_index import CompactIndexedClass
+    from nominal_refactor_advisor.class_index import CompactIndexedClass
 
 
 class NativeMroBase(StrEnum):

@@ -15,22 +15,22 @@ from enum import StrEnum
 from functools import cached_property
 from typing import Callable, TypeAlias
 
-from .ast_field_decoders import TYPE_PARAMETERS
-from .ast_projection import (
+from nominal_refactor_advisor.ast_field_decoders import TYPE_PARAMETERS
+from nominal_refactor_advisor.ast_projection import (
     NoStatementValue,
     StatementValue,
     StatementValueQuestion,
     SuppliedValue,
 )
-from .annotation_semantics import (
+from nominal_refactor_advisor.annotation_semantics import (
     ModuleNameReferenceScope,
     StringizedAnnotationSurface,
 )
-from .assignment_projection import (
+from nominal_refactor_advisor.assignment_projection import (
     NamedAssignmentSelection,
     SingleAssignmentAndValueNameProjection,
 )
-from .lexical_scopes import (
+from nominal_refactor_advisor.lexical_scopes import (
     ClassNamespaceScope,
     FunctionBindingProjection as FunctionBindingProjection,
     LexicalNameResolution,
@@ -38,7 +38,7 @@ from .lexical_scopes import (
     ModuleNamespaceScope,
     TypeParameterScope,
 )
-from .lexical_bindings import (
+from nominal_refactor_advisor.lexical_bindings import (
     DictionaryEvaluationVisitor,
     FunctionAnnotationVisitor,
     ImportBoundNameProjection,
@@ -46,7 +46,7 @@ from .lexical_bindings import (
     ScopeBindingCollector,
     _store_names,
 )
-from .source_geometry import SourceByteSpan
+from nominal_refactor_advisor.source_geometry import SourceByteSpan
 
 MovableDeclaration: TypeAlias = (
     ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef | ast.Assign | ast.AnnAssign

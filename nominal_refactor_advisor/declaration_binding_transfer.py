@@ -6,16 +6,21 @@ import ast
 from dataclasses import dataclass, replace
 from functools import cached_property
 
-from .ast_tools import ModuleAnnotationEvaluationMode, ParsedModule
-from .class_index import (
+from nominal_refactor_advisor.ast_tools import (
+    ModuleAnnotationEvaluationMode,
+    ParsedModule,
+)
+from nominal_refactor_advisor.class_index import (
     CompactNominalReference,
     ModuleNominalBindingAuthority,
     ModuleNominalBindingSnapshot,
 )
-from .codemod_module_declarations import SourceTopLevelDeclarationIndex
-from .codemod_module_move_reports import ModuleMoveObstacle
-from .source_geometry import SourceByteSpan
-from .declaration_dependencies import (
+from nominal_refactor_advisor.codemod_module_declarations import (
+    SourceTopLevelDeclarationIndex,
+)
+from nominal_refactor_advisor.codemod_module_move_reports import ModuleMoveObstacle
+from nominal_refactor_advisor.source_geometry import SourceByteSpan
+from nominal_refactor_advisor.declaration_dependencies import (
     ModuleBindingResolutionPhase,
     ModuleLexicalDependencyProjection,
     ModuleNameReferenceSurface,

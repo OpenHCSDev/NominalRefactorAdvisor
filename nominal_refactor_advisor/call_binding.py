@@ -16,19 +16,19 @@ from typing import (
     TypeVar,
 )
 
-from .lexical_bindings import (
+from nominal_refactor_advisor.lexical_bindings import (
     CompactParameterKind as CompactParameterKind,
     DefaultedParameterSource,
     FunctionParameterSource,
     ParameterDefaultQuestion,
     UndefaultedParameterSource,
 )
-from .value_expression import (
+from nominal_refactor_advisor.value_expression import (
     CompactValueExpression as CompactValueExpression,
     LexicalValueReference as LexicalValueReference,
     OpaqueValueExpression as OpaqueValueExpression,
 )
-from .value_graph import DataclassGraphValue
+from nominal_refactor_advisor.value_graph import DataclassGraphValue
 
 CallValueT = TypeVar("CallValueT")
 

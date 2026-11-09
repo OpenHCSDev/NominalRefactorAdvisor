@@ -18,10 +18,10 @@ from typing import Annotated
 
 from metaclass_registry.mro_dispatch import MroDispatch, handles
 
-from .dispatch import TypeTests
-from .project import Project
-from .gate import Counts, InventoryMeasure, PerFileMeasure
-from .repository import ChangedPaths
+from nominal_refactor_advisor.audit.dispatch import TypeTests
+from nominal_refactor_advisor.audit.project import Project
+from nominal_refactor_advisor.audit.gate import Counts, InventoryMeasure, PerFileMeasure
+from nominal_refactor_advisor.audit.repository import ChangedPaths
 
 
 class IdentityReading:

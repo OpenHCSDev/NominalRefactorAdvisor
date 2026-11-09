@@ -14,8 +14,8 @@ import sys
 import time
 from typing import ClassVar, Generic, Self, TextIO, TypeVar
 
-from .ast_tools import ParsedModuleSet
-from .analysis import (
+from nominal_refactor_advisor.ast_tools import ParsedModuleSet
+from nominal_refactor_advisor.analysis import (
     AnalysisPathScope,
     EvidenceLocalFindingReuseAuthority,
     EvidenceLocalPartialDetectorSelection,
@@ -25,23 +25,23 @@ from .analysis import (
     analyze_modules,
     default_detector_types_for_analysis,
 )
-from .ast_tools import (
+from nominal_refactor_advisor.ast_tools import (
     ParsedModule,
     ParsedModuleSourceProjection,
     parse_python_module_roots,
 )
-from .refactors.finding_recipes import (
+from nominal_refactor_advisor.refactors.finding_recipes import (
     FindingRecipeClassPlan,
     FindingRecipeClassPlanReport,
     FindingRecipeSynthesizer,
 )
-from .codemod_architecture_guards import (
+from nominal_refactor_advisor.codemod_architecture_guards import (
     ArchitectureGuardReport,
     ArchitectureGuardSuite,
 )
-from .codemod_semantics import FindingRecipeSynthesisStatus
-from .codemod_source_edits import FileText, TextFileRewrite
-from .codemod_runtime import (
+from nominal_refactor_advisor.codemod_semantics import FindingRecipeSynthesisStatus
+from nominal_refactor_advisor.codemod_source_edits import FileText, TextFileRewrite
+from nominal_refactor_advisor.codemod_runtime import (
     CodemodPlanDocumentSimulation,
     CodemodPlanSequence,
     CodemodPlanSequenceContinuationReport,
@@ -53,9 +53,14 @@ from .codemod_runtime import (
     FindingRecipeTrajectoryObstacle,
     apply_codemod_simulation,
 )
-from .detectors._base import (DetectorCacheGranularity, DetectorConfig, IssueDetector, SemanticDescentGraphIssueDetector)
-from .owner_picks import OwnerPickReport, OwnerPicks
-from .json_reports import (
+from nominal_refactor_advisor.detectors._base import (
+    DetectorCacheGranularity,
+    DetectorConfig,
+    IssueDetector,
+    SemanticDescentGraphIssueDetector,
+)
+from nominal_refactor_advisor.owner_picks import OwnerPickReport, OwnerPicks
+from nominal_refactor_advisor.json_reports import (
     DataclassJsonReport,
     JsonReportAliasProperty,
     json_report_alias,
@@ -63,10 +68,10 @@ from .json_reports import (
     json_report_field,
     json_report_property,
 )
-from .models import FindingObligationClass, RefactorFinding
-from .source_index import SourceIndex
-from .refactor_concepts import RefactorConcept
-from .stage_proof import TrajectoryScans
+from nominal_refactor_advisor.models import FindingObligationClass, RefactorFinding
+from nominal_refactor_advisor.source_index import SourceIndex
+from nominal_refactor_advisor.refactor_concepts import RefactorConcept
+from nominal_refactor_advisor.stage_proof import TrajectoryScans
 
 
 IdentityT = TypeVar("IdentityT", bound=Hashable)

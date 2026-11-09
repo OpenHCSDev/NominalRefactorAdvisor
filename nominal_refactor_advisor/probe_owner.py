@@ -17,9 +17,12 @@ from abc import ABC, abstractmethod
 from collections.abc import Mapping
 from dataclasses import dataclass
 
-from .ast_tools import ParsedModule
-from .class_index import CompactIndexedClass, module_import_aliases
-from .declared_receivers import (
+from nominal_refactor_advisor.ast_tools import ParsedModule
+from nominal_refactor_advisor.class_index import (
+    CompactIndexedClass,
+    module_import_aliases,
+)
+from nominal_refactor_advisor.declared_receivers import (
     DeclaredReceiverTyping,
     ReceiverPath,
     ReceiverPathBuilder,

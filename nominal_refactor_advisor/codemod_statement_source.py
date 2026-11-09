@@ -9,19 +9,19 @@ from functools import cached_property
 from itertools import groupby
 from typing import cast
 
-from .assignment_projection import (
+from nominal_refactor_advisor.assignment_projection import (
     NamedAssignmentSelection,
     AssignmentStatementNameProjection,
 )
-from .ast_tools import is_docstring_statement
-from .codemod_source_edits import (
+from nominal_refactor_advisor.ast_tools import is_docstring_statement
+from nominal_refactor_advisor.codemod_source_edits import (
     SourceNodeSpan,
     Include,
     SourceTextGeometry,
     SourceTextSpan,
     SourceTextSpanReplacement,
 )
-from .source_geometry import SourceByteSpan
+from nominal_refactor_advisor.source_geometry import SourceByteSpan
 
 
 @dataclass(frozen=True)

@@ -18,10 +18,12 @@ from typing import (
 
 from metaclass_registry import AutoRegisterMeta, DuplicateRegistryKeyError
 
-from .assignment_projection import SingleAssignmentAndValueNameProjection
-from .ast_projection import AstClassProjection
-from .native_declarations import NativeDeclaration
-from .value_expression import LiteralExpressionEffects
+from nominal_refactor_advisor.assignment_projection import (
+    SingleAssignmentAndValueNameProjection,
+)
+from nominal_refactor_advisor.ast_projection import AstClassProjection
+from nominal_refactor_advisor.native_declarations import NativeDeclaration
+from nominal_refactor_advisor.value_expression import LiteralExpressionEffects
 
 RegisteredDeclarationT = TypeVar("RegisteredDeclarationT")
 RegisteredValueT = TypeVar("RegisteredValueT")
@@ -74,7 +76,7 @@ def suffix_trimmed_class_name_registry_key(name: str, cls: type[object]) -> str:
 
 
 if TYPE_CHECKING:
-    from .native_reference import NativeReferenceEnvironment
+    from nominal_refactor_advisor.native_reference import NativeReferenceEnvironment
 
 
 @dataclass(frozen=True)

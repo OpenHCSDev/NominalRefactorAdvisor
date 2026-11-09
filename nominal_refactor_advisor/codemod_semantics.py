@@ -7,7 +7,7 @@ from collections.abc import (
 from enum import StrEnum
 from typing import ClassVar
 
-from .native_compilation import NativePythonCompilation
+from nominal_refactor_advisor.native_compilation import NativePythonCompilation
 
 
 class RewriteOperation(StrEnum):

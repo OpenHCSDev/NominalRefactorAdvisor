@@ -3,14 +3,14 @@ from __future__ import annotations
 import ast
 from dataclasses import dataclass
 
-from .function_projection_targets import (
+from nominal_refactor_advisor.refactors.function_projection_targets import (
     FunctionReturnProjectionTarget,
     ResolvedFunctionProjectionTarget,
     ReturnDictFieldValueExtractor,
     ReturnDictProjectionTarget,
     ReturnDictProjectionTargetAuthority,
 )
-from .dataclass_projection import (
+from nominal_refactor_advisor.refactors.dataclass_projection import (
     DataclassAuthorityMappingRecipeBuilder,
     DataclassInstanceFieldRunProjection,
     DataclassPayloadAuthorityTarget,
@@ -20,22 +20,22 @@ from .dataclass_projection import (
     SourceDerivedDataclassProjectionOperation,
     SourceDerivedDataclassProjectionRecipeParts,
 )
-from .semantic_mirror import (
+from nominal_refactor_advisor.refactors.semantic_mirror import (
     SemanticMirrorImportBoundary,
     SemanticMirrorRecipeSeedLocations,
 )
-from ..ast_tools import walk_function_body_nodes
-from ..codemod_selection_context import CodemodSelectorContext
-from ..codemod_selector_models import SourceRewriteTarget
-from ..codemod_source_edits import (
+from nominal_refactor_advisor.ast_tools import walk_function_body_nodes
+from nominal_refactor_advisor.codemod_selection_context import CodemodSelectorContext
+from nominal_refactor_advisor.codemod_selector_models import SourceRewriteTarget
+from nominal_refactor_advisor.codemod_source_edits import (
     SourceTextGeometry,
     SourceTextReplacement,
 )
-from ..models import (
+from nominal_refactor_advisor.models import (
     MappingMetrics,
     RefactorFinding,
 )
-from ..refactor_concepts import DataclassPayloadProjectionConcept
+from nominal_refactor_advisor.refactor_concepts import DataclassPayloadProjectionConcept
 
 
 @dataclass(frozen=True)

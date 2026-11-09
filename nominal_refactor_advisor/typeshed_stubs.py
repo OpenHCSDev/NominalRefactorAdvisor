@@ -25,7 +25,7 @@ from functools import cache, cached_property
 from pathlib import Path
 from typing import Generic, TypeVar
 
-from .ast_tools import ParsedModule
+from nominal_refactor_advisor.ast_tools import ParsedModule
 
 STUB_SUFFIX = ".pyi"
 PACKAGE_STUB = "__init__"

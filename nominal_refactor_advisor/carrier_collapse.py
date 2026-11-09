@@ -10,14 +10,17 @@ from collections.abc import (
 from dataclasses import dataclass
 from typing import Generic, Self, TypeVar
 
-from .ast_tools import ParsedModule
-from .class_index import CompactModuleClassProjection, CompactProductAuthority
-from .product_flow import (
+from nominal_refactor_advisor.ast_tools import ParsedModule
+from nominal_refactor_advisor.class_index import (
+    CompactModuleClassProjection,
+    CompactProductAuthority,
+)
+from nominal_refactor_advisor.product_flow import (
     CompactFunctionDeclaration,
     CompactFlowContext,
     CompactProductFlowModuleProjection,
 )
-from .product_flow_authority import (
+from nominal_refactor_advisor.product_flow_authority import (
     CompactCallableComponentAuthorityProof,
     CompactFunctionCallIdentity,
     CompactProductFlowRepository,
@@ -25,7 +28,7 @@ from .product_flow_authority import (
     ProductFlowRepository,
     SourceProductFlowRepository,
 )
-from .value_expression import LexicalValueReference
+from nominal_refactor_advisor.value_expression import LexicalValueReference
 
 
 @dataclass(frozen=True)

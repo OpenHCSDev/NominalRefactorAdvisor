@@ -18,13 +18,15 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from functools import cached_property
 
-from .class_member_authority import (
+from nominal_refactor_advisor.refactors.class_member_authority import (
     ClassMemberMoveProofContext,
     ClassMemberPromotionStatement,
 )
-from ..codemod_declaration_source import ClassHeaderSpanSourceAuthority
-from ..codemod_imports import ModuleImportMutation
-from ..codemod_payload import (
+from nominal_refactor_advisor.codemod_declaration_source import (
+    ClassHeaderSpanSourceAuthority,
+)
+from nominal_refactor_advisor.codemod_imports import ModuleImportMutation
+from nominal_refactor_advisor.codemod_payload import (
     CodemodPayloadRecord,
     PayloadRecordArrayValueCodec,
     PayloadRecordValueCodec,
@@ -32,17 +34,17 @@ from ..codemod_payload import (
     StringArrayPayloadValueCodec,
     codemod_payload_field,
 )
-from ..codemod_reproof import RepositorySourceReprovedOperation
-from ..codemod_runtime import CodemodSourceSnapshot
-from ..codemod_selection_context import ResolvedClassTarget
-from ..codemod_selector_models import SourceRewriteTarget
-from ..codemod_source_edits import (
+from nominal_refactor_advisor.codemod_reproof import RepositorySourceReprovedOperation
+from nominal_refactor_advisor.codemod_runtime import CodemodSourceSnapshot
+from nominal_refactor_advisor.codemod_selection_context import ResolvedClassTarget
+from nominal_refactor_advisor.codemod_selector_models import SourceRewriteTarget
+from nominal_refactor_advisor.codemod_source_edits import (
     NominalSourceEdit,
     SourceTextSpanReplacement,
 )
-from ..codemod_statement_source import StatementDeletionSource
-from ..lexical_bindings import LEXICAL_SCOPE_BINDING_AUTHORITY
-from ..semantic_algebra import DirectedGraph
+from nominal_refactor_advisor.codemod_statement_source import StatementDeletionSource
+from nominal_refactor_advisor.lexical_bindings import LEXICAL_SCOPE_BINDING_AUTHORITY
+from nominal_refactor_advisor.semantic_algebra import DirectedGraph
 
 
 @dataclass(frozen=True, kw_only=True)

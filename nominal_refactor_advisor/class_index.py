@@ -44,14 +44,16 @@ from typing import (
     cast,
 )
 
-from .annotation_semantics import NOMINAL_ANNOTATION_SOURCE_AUTHORITY
-from .ast_field_decoders import (
+from nominal_refactor_advisor.annotation_semantics import (
+    NOMINAL_ANNOTATION_SOURCE_AUTHORITY,
+)
+from nominal_refactor_advisor.ast_field_decoders import (
     TYPE_PARAMETERS,
     declared_annotations,
     variadic_parameters,
 )
-from .ast_projection import ExpressionReference
-from .ast_projection import (
+from nominal_refactor_advisor.ast_projection import ExpressionReference
+from nominal_refactor_advisor.ast_projection import (
     CallKeywords,
     KeyT,
     NoStatementValue,
@@ -61,7 +63,7 @@ from .ast_projection import (
     SuppliedValue,
     single_name_targets,
 )
-from .ast_tools import (
+from nominal_refactor_advisor.ast_tools import (
     CompactModuleIdentity,
     CollectedFamily,
     LexicalSyntaxScope,
@@ -72,16 +74,16 @@ from .ast_tools import (
     collect_family_items,
     statements_without_docstring,
 )
-from .class_method_facets import (
+from nominal_refactor_advisor.class_method_facets import (
     CompactClassMethod,
     _compact_class_methods,
     _is_classmethod,
 )
-from .class_references import (
+from nominal_refactor_advisor.class_references import (
     ClassReferenceRole,
     CompactClassReference,
 )
-from .class_symbols import (
+from nominal_refactor_advisor.class_symbols import (
     ClassSymbolResolutionAuthority,
     _UniqueKnownSymbolSuffixIndex,
     _referenced_bases,
@@ -89,7 +91,7 @@ from .class_symbols import (
     _unique_known_symbol_by_suffix,
     iter_class_definitions,
 )
-from .class_syntax_facets import (
+from nominal_refactor_advisor.class_syntax_facets import (
     CompactClassMemberDeclaration,
     CompactClassSyntaxFacets,
     CompactKeyedTableAxis,
@@ -108,28 +110,32 @@ from .class_syntax_facets import (
     _compact_sorted_key_calls,
     _trim_leading_docstring,
 )
-from .collection_algebra import (
+from nominal_refactor_advisor.collection_algebra import (
     IdentityHandleMultiplicityProjection,
     SequenceViews,
     UniqueIdentityIndexAuthority,
     sorted_tuple,
 )
-from .class_mro import ClassMroAuthority, DeclarationMroType, DeclaredBases
-from .overlap_receipts import OverlapReceiptKind
-from .foreign_family import FunctionDefinition
-from .product_declarations import (
+from nominal_refactor_advisor.class_mro import (
+    ClassMroAuthority,
+    DeclarationMroType,
+    DeclaredBases,
+)
+from nominal_refactor_advisor.overlap_receipts import OverlapReceiptKind
+from nominal_refactor_advisor.foreign_family import FunctionDefinition
+from nominal_refactor_advisor.product_declarations import (
     CompactProductAuthorityFailure,
     CompactProductAuthorityViolation,
     CompactProductDeclarationFailure,
     ProductDeclarationSite,
     _dataclass_decorator_failures,
 )
-from .public_exports import (
+from nominal_refactor_advisor.public_exports import (
     CompactModulePublicExportContract,
     CompactPublicNameExposure,
     module_public_export_contract,
 )
-from .registration_facets import (
+from nominal_refactor_advisor.registration_facets import (
     CompactManualSelectorAxis,
     CompactManualSubclassRosterRoot,
     _autoregister_registry_key_attr_name,
@@ -140,40 +146,44 @@ from .registration_facets import (
     _is_registration_authority,
     _string_constant,
 )
-from .scan_cache import ScanCache
-from .source_entry import ImportedSourceModuleEntryPremise
-from .value_expression import (
+from nominal_refactor_advisor.scan_cache import ScanCache
+from nominal_refactor_advisor.source_entry import ImportedSourceModuleEntryPremise
+from nominal_refactor_advisor.value_expression import (
     LexicalValueReference,
     MappingKeyResolverABC,
 )
-from .declaration_dependencies import ModuleLexicalDependencyProjection
-from .descriptor_algebra import AliasProperty
-from .enum_semantics import (
+from nominal_refactor_advisor.declaration_dependencies import (
+    ModuleLexicalDependencyProjection,
+)
+from nominal_refactor_advisor.descriptor_algebra import AliasProperty
+from nominal_refactor_advisor.enum_semantics import (
     PYTHON_ENUM_BASE_AUTHORITY,
     NoEnumDeclaration,
     PythonEnumDeclarationFacet,
 )
-from .export_tools import PYTHON_PUBLIC_EXPORT_ASSIGNMENT
-from .lexical_bindings import (
+from nominal_refactor_advisor.export_tools import PYTHON_PUBLIC_EXPORT_ASSIGNMENT
+from nominal_refactor_advisor.lexical_bindings import (
     ImportBoundNameProjection,
     LEXICAL_SCOPE_BINDING_AUTHORITY,
 )
-from .native_declarations import (
+from nominal_refactor_advisor.native_declarations import (
     DataclassRuntimeDeclaration as DataclassRuntimeDeclaration,
     NativeDeclaration,
     QualifiedDeclaration,
 )
-from .native_syntax import NativePythonSyntaxIndex
-from .native_reference import NativeReferenceEnvironment
-from .product_flow import (
+from nominal_refactor_advisor.native_syntax import NativePythonSyntaxIndex
+from nominal_refactor_advisor.native_reference import NativeReferenceEnvironment
+from nominal_refactor_advisor.product_flow import (
     SourceProductFlowProjection,
     source_product_flow_projection,
 )
-from .class_creation_store import CreatedClassStore
-from .installed_source import InstalledModule
-from .source_execution import SourceModuleExecution
-from .semantic_algebra import DirectedGraph
-from .source_geometry import ClassHeaderSourceSpan as ClassHeaderSourceSpan
+from nominal_refactor_advisor.class_creation_store import CreatedClassStore
+from nominal_refactor_advisor.installed_source import InstalledModule
+from nominal_refactor_advisor.source_execution import SourceModuleExecution
+from nominal_refactor_advisor.semantic_algebra import DirectedGraph
+from nominal_refactor_advisor.source_geometry import (
+    ClassHeaderSourceSpan as ClassHeaderSourceSpan,
+)
 
 
 class ClassRegistryFacts(NamedTuple):

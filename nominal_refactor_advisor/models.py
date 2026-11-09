@@ -27,23 +27,26 @@ from typing import (
 
 from metaclass_registry import AutoRegisterMeta
 
-from .class_composition import CompositeClassSpec
-from .descriptor_algebra import AliasProperty, ConstantProperty
-from .json_reports import (
+from nominal_refactor_advisor.class_composition import CompositeClassSpec
+from nominal_refactor_advisor.descriptor_algebra import AliasProperty, ConstantProperty
+from nominal_refactor_advisor.json_reports import (
     SemanticRecord as SemanticRecord,
 )
-from .json_reports import (
+from nominal_refactor_advisor.json_reports import (
     json_report_cached_property,
     json_report_property,
 )
-from .patterns import PatternId
-from .semantic_description_length import CompressionCertificate
-from .cache_checkout import checkout_identity_text
-from .source_identity import source_path_text
+from nominal_refactor_advisor.patterns import PatternId
+from nominal_refactor_advisor.semantic_description_length import CompressionCertificate
+from nominal_refactor_advisor.cache_checkout import checkout_identity_text
+from nominal_refactor_advisor.source_identity import source_path_text
 
 if TYPE_CHECKING:
-    from .codemod_runtime import FindingRecipeEvaluation, FindingRecipeEvaluator
-from .taxonomy import (
+    from nominal_refactor_advisor.codemod_runtime import (
+        FindingRecipeEvaluation,
+        FindingRecipeEvaluator,
+    )
+from nominal_refactor_advisor.taxonomy import (
     CERTIFIED,
     HIGH_CONFIDENCE,
     MEDIUM_CONFIDENCE,

@@ -4,28 +4,30 @@ import ast
 from collections.abc import Mapping
 from dataclasses import dataclass
 
-from ..ast_projection import CallKeywords
-from ..ast_tools import AstParentIndex
-from ..binding_proofs import FunctionNominalParameterBindingAuthority
-from ..class_index import ModuleNominalBindingAuthority
-from .class_member_authority import (
+from nominal_refactor_advisor.ast_projection import CallKeywords
+from nominal_refactor_advisor.ast_tools import AstParentIndex
+from nominal_refactor_advisor.binding_proofs import (
+    FunctionNominalParameterBindingAuthority,
+)
+from nominal_refactor_advisor.class_index import ModuleNominalBindingAuthority
+from nominal_refactor_advisor.refactors.class_member_authority import (
     ClassDeclarationPromotionStatement,
     _class_base_source_names,
 )
-from ..codemod import NominalConstructorCall
-from ..codemod_payload import (
+from nominal_refactor_advisor.codemod import NominalConstructorCall
+from nominal_refactor_advisor.codemod_payload import (
     CodemodPayloadRecord,
     PayloadRecordArrayValueCodec,
     RequiredStringPayloadValueCodec,
     codemod_payload_field,
 )
-from ..codemod_reproof import SourceReprovedOperation
-from ..codemod_runtime import CodemodSourceSnapshot
-from ..codemod_selection_context import (
+from nominal_refactor_advisor.codemod_reproof import SourceReprovedOperation
+from nominal_refactor_advisor.codemod_runtime import CodemodSourceSnapshot
+from nominal_refactor_advisor.codemod_selection_context import (
     CodemodSelectorContext,
     ResolvedClassTarget,
 )
-from ..codemod_source_edits import (
+from nominal_refactor_advisor.codemod_source_edits import (
     PhysicalSourceEdit,
     SourceLineSpan,
     SourceNodeSpan,
@@ -33,8 +35,8 @@ from ..codemod_source_edits import (
     SourceTextGeometry,
     SourceTextSpanReplacement,
 )
-from ..collection_algebra import UniqueIdentityIndexAuthority
-from ..enum_semantics import PYTHON_ENUM_BASE_AUTHORITY
+from nominal_refactor_advisor.collection_algebra import UniqueIdentityIndexAuthority
+from nominal_refactor_advisor.enum_semantics import PYTHON_ENUM_BASE_AUTHORITY
 
 
 @dataclass(frozen=True)

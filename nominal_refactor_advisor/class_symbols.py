@@ -9,8 +9,8 @@ from dataclasses import dataclass
 from functools import lru_cache
 from typing import ClassVar
 
-from .ast_projection import ExpressionReference
-from .ast_tools import ParsedModule
+from nominal_refactor_advisor.ast_projection import ExpressionReference
+from nominal_refactor_advisor.ast_tools import ParsedModule
 
 
 def iter_class_definitions(

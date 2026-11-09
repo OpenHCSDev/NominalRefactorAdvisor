@@ -18,10 +18,23 @@ from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
 
-from .project import Project
-from .gate import (Advisory, BaseSide, Compared, Counts, FileCount, HeadSide, InventoryMeasure,
-                      MeasureCount, MemberCount, P, Side, Site, processors)
-from .repository import ChangedPaths
+from nominal_refactor_advisor.audit.project import Project
+from nominal_refactor_advisor.audit.gate import (
+    Advisory,
+    BaseSide,
+    Compared,
+    Counts,
+    FileCount,
+    HeadSide,
+    InventoryMeasure,
+    MeasureCount,
+    MemberCount,
+    P,
+    Side,
+    Site,
+    processors,
+)
+from nominal_refactor_advisor.audit.repository import ChangedPaths
 
 
 @dataclass(frozen=True)

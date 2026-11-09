@@ -15,42 +15,44 @@ from dataclasses import dataclass
 from functools import cached_property
 from typing import cast
 
-from ..ast_tools import (
+from nominal_refactor_advisor.ast_tools import (
     BuiltinCallName,
     ParsedModule,
     statements_without_docstring,
 )
-from ..class_families.parsed_index import (
+from nominal_refactor_advisor.class_families.parsed_index import (
     ClassFamilyIndex,
     IndexedClass,
     ModuleClassReferenceResolver,
 )
-from ..class_index import (
+from nominal_refactor_advisor.class_index import (
     CompactModuleClassProjectionFamily,
     ModuleNominalBindingAuthority,
     build_compact_class_family_index,
 )
-from ..class_method_facets import ClassMethodPromotionSafetyProfile
-from ..codemod_declaration_source import ClassBodySourceAuthority
-from ..codemod_imports import ImportFromSource, ImportLayout
-from ..codemod_native_requirements import (
+from nominal_refactor_advisor.class_method_facets import (
+    ClassMethodPromotionSafetyProfile,
+)
+from nominal_refactor_advisor.codemod_declaration_source import ClassBodySourceAuthority
+from nominal_refactor_advisor.codemod_imports import ImportFromSource, ImportLayout
+from nominal_refactor_advisor.codemod_native_requirements import (
     DeclaredNativeUseInvariants,
     NativeDefinitionUseRequirement,
     NativeInvocationUseRequirement,
     NativeUseRequirement,
     NativeUseResolution,
 )
-from ..codemod_payload import (
+from nominal_refactor_advisor.codemod_payload import (
     PayloadRecordValueCodec,
     codemod_payload_field,
 )
-from ..codemod_preflight import (
+from nominal_refactor_advisor.codemod_preflight import (
     CodemodOperationPreflightError,
     CodemodOperationPreflightReport,
 )
-from ..codemod_runtime import CodemodSourceSnapshot
-from ..codemod_selection_context import CodemodSelectorContext
-from ..codemod_source_edits import (
+from nominal_refactor_advisor.codemod_runtime import CodemodSourceSnapshot
+from nominal_refactor_advisor.codemod_selection_context import CodemodSelectorContext
+from nominal_refactor_advisor.codemod_source_edits import (
     Include,
     NominalSourceEdit,
     SourceNodeSpan,
@@ -58,33 +60,33 @@ from ..codemod_source_edits import (
     SourceTextSpan,
     SourceTextSpanReplacement,
 )
-from ..collection_algebra import sorted_tuple
-from ..declaration_binding_transfer import (
+from nominal_refactor_advisor.collection_algebra import sorted_tuple
+from nominal_refactor_advisor.declaration_binding_transfer import (
     DeclarationModuleBindingEnvironment,
     DeclarationModuleBindingTransfer,
 )
-from ..descent import (
+from nominal_refactor_advisor.descent import (
     Descent,
     FamilyRoot,
     Mirror,
 )
-from ..descriptor_algebra import AliasProperty
-from ..foreign_family import FunctionDefinition
-from ..lexical_bindings import (
+from nominal_refactor_advisor.descriptor_algebra import AliasProperty
+from nominal_refactor_advisor.foreign_family import FunctionDefinition
+from nominal_refactor_advisor.lexical_bindings import (
     ImportBoundNameProjection,
     ImportFromModuleName,
     LEXICAL_SCOPE_BINDING_AUTHORITY,
 )
-from ..native_declarations import NativeDeclaration
-from ..registry_identity import (
+from nominal_refactor_advisor.native_declarations import NativeDeclaration
+from nominal_refactor_advisor.registry_identity import (
     REGISTRY_ATTRIBUTE_NAME,
     mro_registry_value,
 )
-from ..type_keyed_behavior import (
+from nominal_refactor_advisor.type_keyed_behavior import (
     TypeKeyedBehaviorProjectionComponent,
     TypeKeyedBehaviorProjectionComponentBuilder,
 )
-from ..value_expression import CompactValueExpression
+from nominal_refactor_advisor.value_expression import CompactValueExpression
 
 
 class _TypeKeyedBehaviorSubjectRenamer(ast.NodeTransformer):

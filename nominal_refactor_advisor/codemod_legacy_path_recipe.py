@@ -4,18 +4,23 @@ from __future__ import annotations
 
 from abc import ABC
 
-from .refactors.finding_recipes import (
+from nominal_refactor_advisor.refactors.finding_recipes import (
     FindingRecipeSynthesizer,
     PrimaryEvidenceActionKeysMixin,
 )
-from .refactors.target_deletion import EraseDeadCompatibilityOperation
-from .codemod_runtime import FindingRecipeEvaluation, RefactorRecipe
-from .codemod_selection_context import CodemodSelectorContext
-from .codemod_selector_models import SourceRewriteTarget
-from .codemod_target_selectors import SourceIndexTargetSelector
-from .models import RefactorFinding
-from .refactor_concepts import LegacyPathErasureConcept
-from .source_index import AstTargetNodeKind
+from nominal_refactor_advisor.refactors.target_deletion import (
+    EraseDeadCompatibilityOperation,
+)
+from nominal_refactor_advisor.codemod_runtime import (
+    FindingRecipeEvaluation,
+    RefactorRecipe,
+)
+from nominal_refactor_advisor.codemod_selection_context import CodemodSelectorContext
+from nominal_refactor_advisor.codemod_selector_models import SourceRewriteTarget
+from nominal_refactor_advisor.codemod_target_selectors import SourceIndexTargetSelector
+from nominal_refactor_advisor.models import RefactorFinding
+from nominal_refactor_advisor.refactor_concepts import LegacyPathErasureConcept
+from nominal_refactor_advisor.source_index import AstTargetNodeKind
 
 
 class LegacyPathErasureFindingRecipeSynthesizer(

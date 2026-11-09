@@ -8,13 +8,13 @@ from dataclasses import dataclass
 from functools import cached_property
 from typing import Iterable
 
-from ..ast_tools import (
+from nominal_refactor_advisor.ast_tools import (
     ParsedModule,
     ParsedModuleFact,
     ParsedModuleSet,
     ParsedModuleSetFact,
 )
-from ..class_index import (
+from nominal_refactor_advisor.class_index import (
     ModuleClassHeaderCore,
     ClassDeclaration,
     ClassDeclarationIndex,
@@ -32,19 +32,19 @@ from ..class_index import (
     _single_assignment_target_name,
     module_import_aliases,
 )
-from ..class_namespace import ClassNamespaceExecutionEvidence
-from ..class_symbols import (
+from nominal_refactor_advisor.class_namespace import ClassNamespaceExecutionEvidence
+from nominal_refactor_advisor.class_symbols import (
     ClassSymbolResolutionAuthority,
     _unique_known_symbol_by_suffix,
     _UniqueKnownSymbolSuffixIndex,
     iter_class_definitions,
 )
-from ..collection_algebra import (
+from nominal_refactor_advisor.collection_algebra import (
     UniqueIdentityIndexAuthority,
     sorted_tuple,
 )
-from ..descriptor_algebra import AliasProperty
-from ..native_declarations import ClassNamespaceDeclaration
+from nominal_refactor_advisor.descriptor_algebra import AliasProperty
+from nominal_refactor_advisor.native_declarations import ClassNamespaceDeclaration
 
 
 @dataclass(frozen=True)

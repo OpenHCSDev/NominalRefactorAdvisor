@@ -13,19 +13,21 @@ from typing import ClassVar
 
 from metaclass_registry import AutoRegisterMeta
 
-from ..value_expression import CompactValueExpression
-from ..lexical_bindings import ImportBoundNameProjection
-from ..ast_projection import ExpressionReference
-from ..ast_projection import CallKeywords, StatementValues
-from ..ast_tools import (
+from nominal_refactor_advisor.value_expression import CompactValueExpression
+from nominal_refactor_advisor.lexical_bindings import ImportBoundNameProjection
+from nominal_refactor_advisor.ast_projection import ExpressionReference
+from nominal_refactor_advisor.ast_projection import CallKeywords, StatementValues
+from nominal_refactor_advisor.ast_tools import (
     BuiltinCallName,
     CollectedFamily,
     ParsedModule,
     SourceModule,
     walk_function_body_nodes,
 )
-from ..refactors.finding_recipes import EnvironmentBooleanAuthorityDriftFindingRecipeEvaluator
-from ..models import (
+from nominal_refactor_advisor.refactors.finding_recipes import (
+    EnvironmentBooleanAuthorityDriftFindingRecipeEvaluator,
+)
+from nominal_refactor_advisor.models import (
     EnvironmentBooleanDriftMetrics,
     EnvironmentReadKind,
     FixedKeyEnvironmentAuthorityWrapperMetrics,
@@ -33,12 +35,12 @@ from ..models import (
     RefactorFinding,
     SourceLocation,
 )
-from ..name_algebra import CLASS_NAME_ALGEBRA
-from ..native_syntax import NativePythonSyntaxIndex
-from ..patterns import PatternId
-from ..semantic_match import single_item
-from ..taxonomy import CapabilityTag, ObservationTag
-from ._base import (
+from nominal_refactor_advisor.name_algebra import CLASS_NAME_ALGEBRA
+from nominal_refactor_advisor.native_syntax import NativePythonSyntaxIndex
+from nominal_refactor_advisor.patterns import PatternId
+from nominal_refactor_advisor.semantic_match import single_item
+from nominal_refactor_advisor.taxonomy import CapabilityTag, ObservationTag
+from nominal_refactor_advisor.detectors._base import (
     CompactModuleProjectionDetectorMixin,
     DetectorConfig,
     SemanticMirrorIssueDetector,

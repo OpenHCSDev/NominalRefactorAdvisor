@@ -9,52 +9,56 @@ from dataclasses import (
 )
 from typing import ClassVar
 
-from ..assignment_projection import (
+from nominal_refactor_advisor.assignment_projection import (
     AssignmentStatementNameProjection,
     SingleAssignmentAndValueNameProjection,
 )
-from ..ast_projection import ExpressionReference
-from .class_member_authority import (
+from nominal_refactor_advisor.ast_projection import ExpressionReference
+from nominal_refactor_advisor.refactors.class_member_authority import (
     ClassDeclarationPromotionStatement,
     ClassMemberPromotionTargets,
 )
-from .finding_recipes import (
+from nominal_refactor_advisor.refactors.finding_recipes import (
     FindingEvidenceActionKeysMixin,
     FindingRecipeSynthesizer,
     SingleSourcePathFindingMixin,
 )
-from .function_projection_targets import ResolvedFunctionProjectionTarget
-from .semantic_mirror import (
+from nominal_refactor_advisor.refactors.function_projection_targets import (
+    ResolvedFunctionProjectionTarget,
+)
+from nominal_refactor_advisor.refactors.semantic_mirror import (
     RegistrationSemanticMirrorRecipeBuilder,
     SemanticMirrorFindingRecipeStrategy,
     SemanticMirrorRecipeSeedLocations,
 )
-from .source_insertion import InsertAfterTargetOperation
-from .target_deletion import (
+from nominal_refactor_advisor.refactors.source_insertion import (
+    InsertAfterTargetOperation,
+)
+from nominal_refactor_advisor.refactors.target_deletion import (
     DeleteClassAssignmentsOperation,
     DeleteInheritedAutoRegisterConfigurationOperation,
 )
-from ..codemod import PatchTargetOperation
-from ..codemod_authority_claims import AstTargetAuthorityClaim
-from ..codemod_declaration_source import (
+from nominal_refactor_advisor.codemod import PatchTargetOperation
+from nominal_refactor_advisor.codemod_authority_claims import AstTargetAuthorityClaim
+from nominal_refactor_advisor.codemod_declaration_source import (
     ClassBodyTailSourceAuthority,
     ClassHeaderSpanSourceAuthority,
 )
-from ..codemod_native_requirements import (
+from nominal_refactor_advisor.codemod_native_requirements import (
     DeclaredNativeUseInvariants,
     NativeDefinitionUseRequirement,
     NativeUseRequirement,
 )
-from ..codemod_payload import (
+from nominal_refactor_advisor.codemod_payload import (
     PayloadRecordValueCodec,
     codemod_payload_field,
 )
-from ..codemod_preflight import CodemodOperationPreflightReport
-from ..codemod_reproof import (
+from nominal_refactor_advisor.codemod_preflight import CodemodOperationPreflightReport
+from nominal_refactor_advisor.codemod_reproof import (
     RepositorySourceReprovedOperation,
     SourceReprovedOperation,
 )
-from ..codemod_runtime import (
+from nominal_refactor_advisor.codemod_runtime import (
     CodemodPlanDocumentSimulation,
     CodemodSourceSnapshot,
     FindingRecipeEvaluation,
@@ -62,12 +66,12 @@ from ..codemod_runtime import (
     RefactorRecipe,
     RejectedRecipeEvaluation,
 )
-from ..codemod_selection_context import (
+from nominal_refactor_advisor.codemod_selection_context import (
     CodemodSelectorContext,
     ResolvedClassTarget,
 )
-from ..codemod_selector_models import SourceRewriteTarget
-from ..codemod_source_edits import (
+from nominal_refactor_advisor.codemod_selector_models import SourceRewriteTarget
+from nominal_refactor_advisor.codemod_source_edits import (
     NominalSourceEdit,
     PhysicalSourceEdit,
     SourceInsertion,
@@ -79,29 +83,29 @@ from ..codemod_source_edits import (
     SourceTextMutation,
     SourceTextReplacement,
 )
-from ..codemod_target_selectors import SourceIndexTargetSelector
-from ..collection_algebra import sorted_tuple
-from ..enum_semantics import PYTHON_ENUM_BASE_AUTHORITY
-from ..finding_recipe_actions import FindingRecipeActionKey
-from ..foreign_family import FunctionDefinition
-from ..lexical_bindings import LEXICAL_SCOPE_BINDING_AUTHORITY
-from ..manual_registry import (
+from nominal_refactor_advisor.codemod_target_selectors import SourceIndexTargetSelector
+from nominal_refactor_advisor.collection_algebra import sorted_tuple
+from nominal_refactor_advisor.enum_semantics import PYTHON_ENUM_BASE_AUTHORITY
+from nominal_refactor_advisor.finding_recipe_actions import FindingRecipeActionKey
+from nominal_refactor_advisor.foreign_family import FunctionDefinition
+from nominal_refactor_advisor.lexical_bindings import LEXICAL_SCOPE_BINDING_AUTHORITY
+from nominal_refactor_advisor.manual_registry import (
     AutoRegisterInstanceViewComponent,
     DirectManualRegistryComponent,
     RegistryAssignment,
     SourceClassKeyEntry,
 )
-from ..models import (
+from nominal_refactor_advisor.models import (
     MappingMetrics,
     RefactorFinding,
     RegistrationMetrics,
 )
-from ..refactor_concepts import (
+from nominal_refactor_advisor.refactor_concepts import (
     AutoRegisterClassRegistryConcept,
     AutoRegisterConcept,
     AutoRegisterMroOrderingConcept,
 )
-from ..registry_identity import (
+from nominal_refactor_advisor.registry_identity import (
     AUTOREGISTER_CONFIGURATION_ATTRIBUTE_NAMES,
     AUTOREGISTER_META_NAME,
     AutoRegisterClassAuthority,
@@ -109,16 +113,16 @@ from ..registry_identity import (
     REGISTRY_ATTRIBUTE_NAME,
     REGISTRY_KEY_ATTRIBUTE_NAME,
 )
-from ..semantic_descent import (
+from nominal_refactor_advisor.semantic_descent import (
     AuthorityClaim,
     SemanticAuthorityKind,
 )
-from ..source_index import (
+from nominal_refactor_advisor.source_index import (
     AstTargetDigest,
     AstTargetNode,
     AstTargetNodeKind,
 )
-from ..value_expression import CompactValueExpression
+from nominal_refactor_advisor.value_expression import CompactValueExpression
 
 
 class RegistryKeyDeclarationRewriteMixin:

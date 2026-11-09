@@ -13,22 +13,30 @@ from inspect import Signature, signature
 from itertools import combinations
 import re
 
-from ..ast_projection import ExpressionReference
-from ..ast_projection import CallKeywords
-from ..ast_tools import ParsedModule, ParsedModuleFact, walk_function_body_nodes
-from ..class_index import (
+from nominal_refactor_advisor.ast_projection import ExpressionReference
+from nominal_refactor_advisor.ast_projection import CallKeywords
+from nominal_refactor_advisor.ast_tools import (
+    ParsedModule,
+    ParsedModuleFact,
+    walk_function_body_nodes,
+)
+from nominal_refactor_advisor.class_index import (
     ModuleNominalBindingAuthority,
     ModuleNominalBindingSnapshot,
     nominal_reference_root,
 )
-from ..codemod_module_declarations import SourceTopLevelDeclarationIndex
-from ..collection_algebra import sorted_tuple
-from ..declaration_dependencies import ModuleLexicalDependencyProjection
-from ..lexical_scopes import LexicalNameResolution
-from ..models import MappingMetrics, RefactorFinding
-from ..patterns import PatternId
-from ..taxonomy import CapabilityTag, ObservationTag
-from ._base import (
+from nominal_refactor_advisor.codemod_module_declarations import (
+    SourceTopLevelDeclarationIndex,
+)
+from nominal_refactor_advisor.collection_algebra import sorted_tuple
+from nominal_refactor_advisor.declaration_dependencies import (
+    ModuleLexicalDependencyProjection,
+)
+from nominal_refactor_advisor.lexical_scopes import LexicalNameResolution
+from nominal_refactor_advisor.models import MappingMetrics, RefactorFinding
+from nominal_refactor_advisor.patterns import PatternId
+from nominal_refactor_advisor.taxonomy import CapabilityTag, ObservationTag
+from nominal_refactor_advisor.detectors._base import (
     ConfiguredModuleCollectorCandidateDetector,
     DetectorConfig,
     FunctionEvidenceLocationsCandidate,

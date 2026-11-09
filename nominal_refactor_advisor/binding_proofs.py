@@ -5,9 +5,9 @@ from collections import defaultdict
 from dataclasses import dataclass
 from functools import cached_property
 
-from .ast_field_decoders import ParameterAnnotations
-from .ast_tools import ParsedModule
-from .class_index import (
+from nominal_refactor_advisor.ast_field_decoders import ParameterAnnotations
+from nominal_refactor_advisor.ast_tools import ParsedModule
+from nominal_refactor_advisor.class_index import (
     CompactModuleStarImportOrigin,
     ModuleNominalBindingAuthority,
     ModuleNominalBindingSnapshotPolicy,
@@ -17,10 +17,10 @@ from .class_index import (
     module_star_import_origins,
     nominal_reference_root_name,
 )
-from .class_namespace import ClassNamespaceExecutionEvidence
-from .lexical_bindings import LEXICAL_SCOPE_BINDING_AUTHORITY
-from .lexical_scopes import FunctionBindingProjection
-from .public_exports import (
+from nominal_refactor_advisor.class_namespace import ClassNamespaceExecutionEvidence
+from nominal_refactor_advisor.lexical_bindings import LEXICAL_SCOPE_BINDING_AUTHORITY
+from nominal_refactor_advisor.lexical_scopes import FunctionBindingProjection
+from nominal_refactor_advisor.public_exports import (
     CompactModulePublicExportContract,
     CompactPublicNameExposure,
     module_public_export_contract,

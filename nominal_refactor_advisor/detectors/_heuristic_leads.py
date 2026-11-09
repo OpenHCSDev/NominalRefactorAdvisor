@@ -10,22 +10,22 @@ from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Self, TypeVar
 
-from ..ast_tools import ParsedModuleSet
-from ..ast_tools import ParsedModule
-from ..collection_algebra import sorted_tuple
-from ..models import RefactorFinding, SourceLocation
-from ..observation_families import (
+from nominal_refactor_advisor.ast_tools import ParsedModuleSet
+from nominal_refactor_advisor.ast_tools import ParsedModule
+from nominal_refactor_advisor.collection_algebra import sorted_tuple
+from nominal_refactor_advisor.models import RefactorFinding, SourceLocation
+from nominal_refactor_advisor.observation_families import (
     TypeTestModuleFamily,
     ModuleExpressionShapeFamily,
 )
-from ..observation_shapes import (
+from nominal_refactor_advisor.observation_shapes import (
     TypeTestModule,
     TypeTestShape,
     ModuleExpressionShape,
 )
-from ..patterns import PatternId
-from ..taxonomy import CapabilityTag, ObservationTag
-from ._base import (
+from nominal_refactor_advisor.patterns import PatternId
+from nominal_refactor_advisor.taxonomy import CapabilityTag, ObservationTag
+from nominal_refactor_advisor.detectors._base import (
     CANDIDATE_COLLECTION_AUTHORITY,
     CompactGroupedShapeIssueDetector,
     DetectorConfig,

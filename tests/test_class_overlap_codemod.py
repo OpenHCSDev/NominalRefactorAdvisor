@@ -221,11 +221,11 @@ def test_a_block_every_child_restates_folds_into_their_base(tmp_path: Path) -> N
 
     base = rewritten[(tmp_path / "pkg/base.py").as_posix()]
     assert "@dataclass(frozen=True, kw_only=True)\nclass Proof(ABC):\n" in base
-    assert "from .shapes import Edge" in base
+    assert "from pkg.shapes import Edge" in base
     for child in ("expansion", "conveyor"):
         source = rewritten[(tmp_path / f"pkg/{child}.py").as_posix()]
         assert "def reason" not in source and "delta: int" not in source
-        assert "from .shapes import Edge" not in source
+        assert "from pkg.shapes import Edge" not in source
     assert before == after
 
 

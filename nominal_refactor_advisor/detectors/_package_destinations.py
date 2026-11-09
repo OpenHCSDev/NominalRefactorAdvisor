@@ -4,19 +4,19 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
-from ..ast_tools import ParsedModuleSet
-from ..class_index import (
+from nominal_refactor_advisor.ast_tools import ParsedModuleSet
+from nominal_refactor_advisor.class_index import (
     CompactModuleClassProjection,
     CompactModuleClassProjectionFamily,
 )
-from ..models import RefactorFinding, SourceLocation
-from ..patterns import PatternId
-from ..refactors.package_move import (
+from nominal_refactor_advisor.models import RefactorFinding, SourceLocation
+from nominal_refactor_advisor.patterns import PatternId
+from nominal_refactor_advisor.refactors.package_move import (
     DestinationTable,
     PackageMoveFindingRecipeSynthesizer,
 )
-from ..taxonomy import CapabilityTag, ObservationTag
-from ._base import (
+from nominal_refactor_advisor.taxonomy import CapabilityTag, ObservationTag
+from nominal_refactor_advisor.detectors._base import (
     CompactModuleProjectionDetectorMixin,
     DetectorConfig,
     IssueDetector,

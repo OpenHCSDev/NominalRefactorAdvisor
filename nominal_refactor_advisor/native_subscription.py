@@ -16,25 +16,25 @@ from typing import (
     TYPE_CHECKING,
 )
 
-from .captured_reference import (
+from nominal_refactor_advisor.captured_reference import (
     CapturedReferenceResolution,
     CapturedReferenceViolation,
     NativeTypeCapture,
     OpaqueCapturedObjectOperations,
     CompletedSourceOperation,
 )
-from .descriptor_algebra import AliasProperty
-from .native_compilation import (
+from nominal_refactor_advisor.descriptor_algebra import AliasProperty
+from nominal_refactor_advisor.native_compilation import (
     CPythonContainerConstruction,
     CPythonTypingConstruction,
     NativeCreationBackend,
 )
 
-from .native_declarations import (
+from nominal_refactor_advisor.native_declarations import (
     NativeDeclaration,
     NativeDeclarationFamily,
 )
-from .product_flow import (
+from nominal_refactor_advisor.product_flow import (
     CompactFlowContext,
     CompactFlowValue,
     CompactSubscription,
@@ -48,7 +48,7 @@ NATIVE_BUILTIN_DECLARATIONS = tuple(
 
 
 if TYPE_CHECKING:
-    from .native_reference import NativeReferenceEnvironment
+    from nominal_refactor_advisor.native_reference import NativeReferenceEnvironment
 
 
 @dataclass(frozen=True, eq=False)

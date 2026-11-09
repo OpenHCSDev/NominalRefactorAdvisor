@@ -18,15 +18,23 @@ from enum import StrEnum
 from pathlib import Path
 from typing import TypeVar
 
-from .ast_field_decoders import ParameterAnnotations
-from .lexical_bindings import ImportAlias, ImportBoundNameProjection
-from .ast_projection import CallKeywords, StatementValues
-from .ast_tools import AttributeAccessCall, BuiltinCall, BuiltinCallName, ParsedModule
-from .declared_root import DeclaredRoot
-from .observation_families import ShapeFamily
-from .observation_shapes import RestatingSite
-from .probe_owner import ProbeOwner, ProbeOwnerResolver
-from .python_module_identity import PythonModulePathIdentity
+from nominal_refactor_advisor.ast_field_decoders import ParameterAnnotations
+from nominal_refactor_advisor.lexical_bindings import (
+    ImportAlias,
+    ImportBoundNameProjection,
+)
+from nominal_refactor_advisor.ast_projection import CallKeywords, StatementValues
+from nominal_refactor_advisor.ast_tools import (
+    AttributeAccessCall,
+    BuiltinCall,
+    BuiltinCallName,
+    ParsedModule,
+)
+from nominal_refactor_advisor.declared_root import DeclaredRoot
+from nominal_refactor_advisor.observation_families import ShapeFamily
+from nominal_refactor_advisor.observation_shapes import RestatingSite
+from nominal_refactor_advisor.probe_owner import ProbeOwner, ProbeOwnerResolver
+from nominal_refactor_advisor.python_module_identity import PythonModulePathIdentity
 
 # A subject needs this many distinct string arms before it is a family spelled out.
 STRING_DISPATCH_MIN_ARMS = 3

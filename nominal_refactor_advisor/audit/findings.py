@@ -15,14 +15,18 @@ from functools import cached_property
 from pathlib import Path
 from typing import ClassVar, Iterator, Self
 
-from ..ast_tools import ParsedModule
-from ..python_module_identity import PythonModulePathIdentity
-from .chain_terms import ChainProfile
-from .checkers import GodClassExcess
-from .dispatch import DispatchMeasure, StringDispatch as LiteralDispatch, TypeSwitch
-from .family import Family
-from .measures import AttributeByName, LongFunction
-from .repository import Repository
+from nominal_refactor_advisor.ast_tools import ParsedModule
+from nominal_refactor_advisor.python_module_identity import PythonModulePathIdentity
+from nominal_refactor_advisor.audit.chain_terms import ChainProfile
+from nominal_refactor_advisor.audit.checkers import GodClassExcess
+from nominal_refactor_advisor.audit.dispatch import (
+    DispatchMeasure,
+    StringDispatch as LiteralDispatch,
+    TypeSwitch,
+)
+from nominal_refactor_advisor.audit.family import Family
+from nominal_refactor_advisor.audit.measures import AttributeByName, LongFunction
+from nominal_refactor_advisor.audit.repository import Repository
 
 
 # ---------------------------------------------------------------- parsed package

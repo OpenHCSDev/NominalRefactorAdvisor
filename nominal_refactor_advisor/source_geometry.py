@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import ClassVar
 from weakref import WeakValueDictionary
 
-from .codemod_payload import (
+from nominal_refactor_advisor.codemod_payload import (
     CodemodPayloadRecord,
     RequiredIntegerPayloadValueCodec,
     codemod_payload_field,

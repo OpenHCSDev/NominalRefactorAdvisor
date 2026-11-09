@@ -14,11 +14,11 @@ from typing import ClassVar, Mapping
 
 from metaclass_registry import AutoRegisterMeta
 
-from .detectors._base import high_confidence_spec
-from .models import FindingSpec, RefactorFinding, SourceLocation
-from .patterns import PatternId
-from .taxonomy import CapabilityTag, ObservationTag
-from .json_reports import JsonObject
+from nominal_refactor_advisor.detectors._base import high_confidence_spec
+from nominal_refactor_advisor.models import FindingSpec, RefactorFinding, SourceLocation
+from nominal_refactor_advisor.patterns import PatternId
+from nominal_refactor_advisor.taxonomy import CapabilityTag, ObservationTag
+from nominal_refactor_advisor.json_reports import JsonObject
 
 
 LEAN_EXPORT_SCHEMA = "nominal_refactor_advisor.lean_export.v1"

@@ -14,25 +14,28 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import TYPE_CHECKING, Any, ClassVar, cast
 
-from .class_composition import CompositeClassSpec
-from .constructor_algebra import (
+from nominal_refactor_advisor.class_composition import CompositeClassSpec
+from nominal_refactor_advisor.constructor_algebra import (
     ConstructorDerivedField,
     ConstructorVariantCatalog,
     ConstructorVariantSpec,
 )
-from .descriptor_algebra import AliasProperty
-from .export_tools import PublicExportPolicy, derive_public_exports
-from .models import SourceLocation
-from .observation_graph import (
+from nominal_refactor_advisor.descriptor_algebra import AliasProperty
+from nominal_refactor_advisor.export_tools import (
+    PublicExportPolicy,
+    derive_public_exports,
+)
+from nominal_refactor_advisor.models import SourceLocation
+from nominal_refactor_advisor.observation_graph import (
     ObservationKind,
     StructuralExecutionLevel,
     StructuralObservation,
     StructuralObservationCarrier,
 )
-from .semantic_algebra import DispatchAxisExpression
+from nominal_refactor_advisor.semantic_algebra import DispatchAxisExpression
 
 if TYPE_CHECKING:
-    from .ast_tools import ParsedModule
+    from nominal_refactor_advisor.ast_tools import ParsedModule
 
 
 class LiteralKind(StrEnum):

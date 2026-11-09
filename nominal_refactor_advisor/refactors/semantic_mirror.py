@@ -16,8 +16,8 @@ from typing import (
 
 from metaclass_registry import AutoRegisterMeta
 
-from ..codemod_paths import SourcePathResolutionAuthority
-from ..codemod_runtime import (
+from nominal_refactor_advisor.codemod_paths import SourcePathResolutionAuthority
+from nominal_refactor_advisor.codemod_runtime import (
     CodemodSourceSnapshot,
     ExecutableRecipeEvaluation,
     FindingRecipeEvaluation,
@@ -25,22 +25,22 @@ from ..codemod_runtime import (
     RefactorRecipe,
     RejectedRecipeEvaluation,
 )
-from ..codemod_selection_context import (
+from nominal_refactor_advisor.codemod_selection_context import (
     CodemodSelectorContext,
     ResolvedClassTarget,
 )
-from ..codemod_selector_models import SourceRewriteTarget
-from ..codemod_target_selectors import SourceIndexTargetSelector
-from ..finding_recipe_actions import FindingRecipeActionKey
-from ..models import (
+from nominal_refactor_advisor.codemod_selector_models import SourceRewriteTarget
+from nominal_refactor_advisor.codemod_target_selectors import SourceIndexTargetSelector
+from nominal_refactor_advisor.finding_recipe_actions import FindingRecipeActionKey
+from nominal_refactor_advisor.models import (
     FindingMetrics,
     MappingMetrics,
     RefactorFinding,
     SourceLocation,
 )
-from ..registry_identity import mro_registry_value
-from ..semantic_match import loaded_concrete_nominal_descendants
-from ..source_index import (
+from nominal_refactor_advisor.registry_identity import mro_registry_value
+from nominal_refactor_advisor.semantic_match import loaded_concrete_nominal_descendants
+from nominal_refactor_advisor.source_index import (
     AstTargetDigest,
     AstTargetNodeKind,
 )

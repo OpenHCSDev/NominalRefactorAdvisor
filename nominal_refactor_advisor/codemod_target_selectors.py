@@ -14,35 +14,35 @@ from typing import (
     cast,
 )
 
-from .class_families.parsed_index import ClassFamilyIndex
-from .codemod_payload import (
+from nominal_refactor_advisor.class_families.parsed_index import ClassFamilyIndex
+from nominal_refactor_advisor.codemod_payload import (
     BooleanPayloadValueCodec,
     DiscriminatedPayloadRecord,
     OptionalStringArrayPayloadValueCodec,
     PayloadRecordArrayValueCodec,
     codemod_payload_field,
 )
-from .codemod_selection_context import CodemodSelectorContext
-from .codemod_selector_models import (
+from nominal_refactor_advisor.codemod_selection_context import CodemodSelectorContext
+from nominal_refactor_advisor.codemod_selector_models import (
     CallSiteDigest,
     CodemodTargetSelection,
     NodeKindArrayPayloadValueCodec,
     RegexPatternSet,
     SourceRewriteTarget,
 )
-from .codemod_source_edits import SourceTargetEditor
-from .collection_algebra import sorted_tuple
-from .json_reports import (
+from nominal_refactor_advisor.codemod_source_edits import SourceTargetEditor
+from nominal_refactor_advisor.collection_algebra import sorted_tuple
+from nominal_refactor_advisor.json_reports import (
     DataclassJsonReport,
     json_report_field,
     json_report_property,
 )
-from .models import RefactorFinding
-from .registry_identity import (
+from nominal_refactor_advisor.models import RefactorFinding
+from nominal_refactor_advisor.registry_identity import (
     DEFAULT_REGISTRY_KEY_ATTRIBUTE,
     suffix_trimmed_class_name_registry_key,
 )
-from .source_index import (
+from nominal_refactor_advisor.source_index import (
     AstTargetDigest,
     AstTargetNodeKind,
     SourceIndex,

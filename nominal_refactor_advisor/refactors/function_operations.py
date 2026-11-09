@@ -12,19 +12,19 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import ClassVar
 
-from .answered_method import AnsweredMethod
-from .declaration_operations import (
+from nominal_refactor_advisor.refactors.answered_method import AnsweredMethod
+from nominal_refactor_advisor.refactors.declaration_operations import (
     DeclarationDecoratorsPayload,
     DeclarationMutationOperationABC,
 )
-from ..ast_tools import ParsedModule
-from ..codemod_call_source import (
+from nominal_refactor_advisor.ast_tools import ParsedModule
+from nominal_refactor_advisor.codemod_call_source import (
     DeclaredCallArgumentsRewrite,
     DeclaredCallExpressionRewrite,
     DeclaredCallRewriteABC,
     DeclaredCallTargetRewrite,
 )
-from ..codemod_declaration_source import (
+from nominal_refactor_advisor.codemod_declaration_source import (
     FunctionAliasSourceAuthority,
     FunctionBindingProjectionSourceAuthority,
     FunctionBodyPrefixSourceAuthority,
@@ -33,14 +33,16 @@ from ..codemod_declaration_source import (
     FunctionRegionSourceAuthority,
     FunctionSignatureSourceAuthority,
 )
-from ..codemod_foreign_adapter_source import AdapterBindChainAuthority
-from ..codemod_foreign_family_source import (
+from nominal_refactor_advisor.codemod_foreign_adapter_source import (
+    AdapterBindChainAuthority,
+)
+from nominal_refactor_advisor.codemod_foreign_family_source import (
     ForeignFamilyFilterAuthority,
     ForeignFamilyReference,
 )
-from ..codemod_import_scopes import ModuleImportScope
-from ..codemod_imports import ModuleImportMutation
-from ..codemod_payload import (
+from nominal_refactor_advisor.codemod_import_scopes import ModuleImportScope
+from nominal_refactor_advisor.codemod_imports import ModuleImportMutation
+from nominal_refactor_advisor.codemod_payload import (
     BooleanPayloadValueCodec,
     EmptyDefaultStringPayloadValueCodec,
     OptionalStringArrayPayloadValueCodec,
@@ -48,46 +50,49 @@ from ..codemod_payload import (
     RequiredStringPayloadValueCodec,
     codemod_payload_field,
 )
-from ..codemod_preflight import (
+from nominal_refactor_advisor.codemod_preflight import (
     CodemodOperationPreflightError,
     CodemodOperationPreflightReport,
 )
-from ..codemod_reproof import (
+from nominal_refactor_advisor.codemod_reproof import (
     RepositorySourceReprovedOperation,
     SourceReproofDiagnostic,
     SourceReprovedOperation,
 )
-from ..codemod_runtime import CodemodSourceSnapshot
-from ..codemod_import_graph import SourceModuleImportGraph
-from ..codemod_module_declarations import ModuleSymbolTable
-from ..codemod_selection_context import CodemodSelectorContext, ResolvedClassTarget
-from ..codemod_selector_models import (
+from nominal_refactor_advisor.codemod_runtime import CodemodSourceSnapshot
+from nominal_refactor_advisor.codemod_import_graph import SourceModuleImportGraph
+from nominal_refactor_advisor.codemod_module_declarations import ModuleSymbolTable
+from nominal_refactor_advisor.codemod_selection_context import (
+    CodemodSelectorContext,
+    ResolvedClassTarget,
+)
+from nominal_refactor_advisor.codemod_selector_models import (
     DeclaredCallSelection,
     SourceRewriteTarget,
 )
-from ..codemod_semantics import CodemodPreflightStatus
-from ..codemod_source_edits import (
+from nominal_refactor_advisor.codemod_semantics import CodemodPreflightStatus
+from nominal_refactor_advisor.codemod_source_edits import (
     NominalSourceEdit,
     PhysicalSourceEdit,
     SourceTextGeometry,
     SourceTextSpanReplacement,
 )
-from ..codemod_static_projection_source import (
+from nominal_refactor_advisor.codemod_static_projection_source import (
     StaticProjection,
     StaticProjectionAuthority,
 )
-from ..declaration_dependencies import (
+from nominal_refactor_advisor.declaration_dependencies import (
     FunctionBindingABC,
     FunctionLocalBinding,
     FunctionParameterBinding,
 )
-from ..declared_root import DeclaredRoot
-from ..lexical_bindings import LEXICAL_SCOPE_BINDING_AUTHORITY
-from ..module_node_index import ModuleNodeIndex
-from ..descriptor_algebra import AliasProperty
-from ..product_flow import BareCallTargetReference
-from ..source_index import AstTargetNodeKind
-from ..value_expression import LexicalValueReference
+from nominal_refactor_advisor.declared_root import DeclaredRoot
+from nominal_refactor_advisor.lexical_bindings import LEXICAL_SCOPE_BINDING_AUTHORITY
+from nominal_refactor_advisor.module_node_index import ModuleNodeIndex
+from nominal_refactor_advisor.descriptor_algebra import AliasProperty
+from nominal_refactor_advisor.product_flow import BareCallTargetReference
+from nominal_refactor_advisor.source_index import AstTargetNodeKind
+from nominal_refactor_advisor.value_expression import LexicalValueReference
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -372,7 +377,7 @@ class RouteForeignFamilyFilterOperation(SourceReprovedOperation):
             ),
             *self.required_import_mutations(
                 target.file_path,
-                import_source=reference.import_source_for(snapshot, parsed_module),
+                import_source=reference.import_source,
                 default_rationale=f"Import {reference.class_name}.",
             ),
         )
@@ -415,7 +420,7 @@ class FoldAdapterBindChainOperation(SourceReprovedOperation):
             ),
             *self.required_import_mutations(
                 target.file_path,
-                import_source=reference.import_source_for(snapshot, parsed_module),
+                import_source=reference.import_source,
                 default_rationale=f"Import {reference.class_name}.",
             ),
         )
@@ -475,7 +480,7 @@ class ProjectStaticCallsToAdapterOperation(SourceReprovedOperation):
             if not replacements or parsed_module.module_name == reference.module_name
             else self.required_import_mutations(
                 target.file_path,
-                import_source=reference.import_source_for(snapshot, parsed_module),
+                import_source=reference.import_source,
                 default_rationale=f"Import {reference.class_name}.",
             )
         )

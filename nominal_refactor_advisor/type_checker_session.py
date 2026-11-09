@@ -22,15 +22,20 @@ from dataclasses import dataclass
 from time import perf_counter
 from typing import TYPE_CHECKING, ClassVar
 
-from .json_reports import DataclassJsonReport
-from .probe_owner import FailedReceiverType, InferredReceiverType, ReceiverSpan, ReceiverType
+from nominal_refactor_advisor.json_reports import DataclassJsonReport
+from nominal_refactor_advisor.probe_owner import (
+    FailedReceiverType,
+    InferredReceiverType,
+    ReceiverSpan,
+    ReceiverType,
+)
 
 if TYPE_CHECKING:
     from mypy.build import BuildResult
     from mypy.modulefinder import BuildSource
     from mypy.options import Options
 
-    from .ast_tools import ParsedModule
+    from nominal_refactor_advisor.ast_tools import ParsedModule
     from mypy.types import Type
 
 TYPES_EXTRA = "pip install 'nominal-refactor-advisor[types]'"

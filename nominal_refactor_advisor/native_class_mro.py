@@ -16,8 +16,11 @@ from typing import (
     cast,
 )
 
-from .class_mro import DeclarationMroType, NativeMroBase
-from .native_declarations import ClassNamespaceDeclaration, NativeDeclaration
+from nominal_refactor_advisor.class_mro import DeclarationMroType, NativeMroBase
+from nominal_refactor_advisor.native_declarations import (
+    ClassNamespaceDeclaration,
+    NativeDeclaration,
+)
 
 
 @dataclass(frozen=True, eq=False)

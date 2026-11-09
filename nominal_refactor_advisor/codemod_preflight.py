@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from .codemod_semantics import CodemodPreflightStatus
-from .json_reports import (
+from nominal_refactor_advisor.codemod_semantics import CodemodPreflightStatus
+from nominal_refactor_advisor.json_reports import (
     DataclassJsonReport,
     JsonReport,
     json_report_field,

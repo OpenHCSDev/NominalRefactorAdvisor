@@ -7,16 +7,16 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from functools import cached_property
 
-from .annotation_semantics import CLASSVAR_ANNOTATION_AUTHORITY
-from .ast_projection import ExpressionReference
-from .class_index import (
+from nominal_refactor_advisor.annotation_semantics import CLASSVAR_ANNOTATION_AUTHORITY
+from nominal_refactor_advisor.ast_projection import ExpressionReference
+from nominal_refactor_advisor.class_index import (
     CompactClassFamilyIndex,
     CompactClassReferenceResolver,
     CompactIndexedClass,
     CompactModuleClassProjection,
 )
-from .collection_algebra import sorted_tuple
-from .models import SourceLocation
+from nominal_refactor_advisor.collection_algebra import sorted_tuple
+from nominal_refactor_advisor.models import SourceLocation
 
 
 @dataclass(frozen=True)

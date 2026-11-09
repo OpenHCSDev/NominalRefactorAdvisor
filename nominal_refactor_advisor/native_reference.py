@@ -8,15 +8,18 @@ from collections.abc import Callable
 from functools import cached_property
 from typing import cast
 
-from .captured_reference import CapturedReferenceKernel, CapturedReferenceResolution
-from .descriptor_algebra import AliasProperty
-from .native_call import (
+from nominal_refactor_advisor.captured_reference import (
+    CapturedReferenceKernel,
+    CapturedReferenceResolution,
+)
+from nominal_refactor_advisor.descriptor_algebra import AliasProperty
+from nominal_refactor_advisor.native_call import (
     CallAuthority,
     NativeCallAuthority,
 )
-from .native_declarations import NativeDeclaration
-from .native_subscription import NativeSubscriptionAuthority
-from .product_flow import (
+from nominal_refactor_advisor.native_declarations import NativeDeclaration
+from nominal_refactor_advisor.native_subscription import NativeSubscriptionAuthority
+from nominal_refactor_advisor.product_flow import (
     CompactDefinitionTarget,
     CompactFlowContext,
     CompactFlowOwner,

@@ -7430,7 +7430,7 @@ def test_refactor_recipe_moves_decorated_symbol_with_dependency_proof(
         )
     assert simulation.is_clean is True
     assert simulation.simulation.applied_rewrite_count == 2
-    assert "+from .destination import Helper as Helper" in diff
+    assert "+from pkg.destination import Helper as Helper" in diff
     assert "-class Helper:" in diff
     assert "+class Helper:" in diff
     assert set(simulation.apply()) == {
@@ -7440,7 +7440,7 @@ def test_refactor_recipe_moves_decorated_symbol_with_dependency_proof(
 
     rewritten_source = source_path.read_text()
     rewritten_destination = destination_path.read_text()
-    assert "from .destination import Helper as Helper" in rewritten_source
+    assert "from pkg.destination import Helper as Helper" in rewritten_source
     assert "from dataclasses import dataclass" not in rewritten_source
     assert "class Helper" not in rewritten_source
     assert "@dataclass\nclass Helper" in rewritten_destination
@@ -7524,7 +7524,7 @@ def test_relocation_extracts_a_declaration_its_source_still_reads(tmp_path: Path
 
     assert simulation.is_clean
     source = simulation.simulation.rewritten_sources[(tmp_path / "pkg/source.py").as_posix()]
-    assert "from .destination import Moved\n" in source
+    assert "from pkg.destination import Moved\n" in source
     assert "Moved as Moved" not in source
     simulation.apply()
     imported = subprocess.run(
@@ -7920,11 +7920,11 @@ def test_relocation_points_a_patch_of_a_removed_import_at_its_new_reader(
     (
         (
             "from pkg.source import First, Second\n",
-            "from .destination import First, Second\n",
+            "from pkg.destination import First, Second\n",
         ),
         (
             "from pkg.source import (\n    First,\n    Second,\n)\n",
-            "from .destination import (\n    First,\n    Second,\n)\n",
+            "from pkg.destination import (\n    First,\n    Second,\n)\n",
         ),
     ),
     ids=("one-line-stays-one-line", "parenthesized-stays-parenthesized"),
@@ -7998,7 +7998,7 @@ def test_relocation_rewrites_a_source_import_where_it_stands(tmp_path: Path) -> 
     assert simulation.simulation.rewritten_sources[(tmp_path / "pkg/reader.py").as_posix()] == (
         "from __future__ import annotations\n\n\n"
         "class Early:\n    pass\n\n\n"
-        "from .destination import Moved\nfrom pkg.source import Kept\n\nvalue = Moved.value\n"
+        "from pkg.destination import Moved\nfrom pkg.source import Kept\n\nvalue = Moved.value\n"
     )
 
 
@@ -8215,15 +8215,15 @@ def test_refactor_recipe_relocates_symbol_and_rewrites_consumers(
         in simulation.simulation.rewritten_sources[destination_path.as_posix()]
     )
     assert (
-        "from .source import Kept"
+        "from pkg.source import Kept"
         in simulation.simulation.rewritten_sources[destination_path.as_posix()]
     )
     assert (
-        "from .destination import Moved"
+        "from pkg.destination import Moved"
         in simulation.simulation.rewritten_sources[consumer_path.as_posix()]
     )
     assert (
-        "from .source import Moved"
+        "from pkg.source import Moved"
         not in simulation.simulation.rewritten_sources[consumer_path.as_posix()]
     )
     simulation.apply()
@@ -8270,7 +8270,7 @@ def test_a_new_module_move_opens_the_destination_with_its_docstring(
     assert RefactorRecipeOperation.from_json_value(json_report_object(operation)) == operation
     assert simulation.is_clean
     assert simulation.simulation.rewritten_sources[destination_path.as_posix()] == (
-        '"""The moved class."""\n\nfrom .source import Kept\n\n\n'
+        '"""The moved class."""\n\nfrom pkg.source import Kept\n\n\n'
         "class Moved(Kept):\n    value = 3\n"
     )
 
@@ -8318,10 +8318,10 @@ def test_refactor_recipe_relocates_symbol_into_new_module(
     )
     assert (
         simulation.simulation.rewritten_sources[destination_path.as_posix()]
-        == "from .source import Kept\n\n\nclass Moved(Kept):\n    value = 3\n"
+        == "from pkg.source import Kept\n\n\nclass Moved(Kept):\n    value = 3\n"
     )
     assert (
-        "from .relocated import Moved"
+        "from pkg.relocated import Moved"
         in simulation.simulation.rewritten_sources[consumer_path.as_posix()]
     )
     simulation.apply()
@@ -8454,7 +8454,7 @@ def test_symbol_move_preserves_explicit_source_reexport_dependency(
     )
     assert report.source_import_removal_names == ()
     assert simulation.simulation.rewritten_sources[source_path.as_posix()] == (
-        "from .destination import Helper as Helper\n"
+        "from pkg.destination import Helper as Helper\n\n"
         "from .shared import Shared as Shared\n"
     )
     simulation.apply()
@@ -8842,7 +8842,7 @@ def test_symbol_move_preserves_dependencies_shadowed_in_nested_scope(
     )
 
     assert report.imported_dependency_names == ("Base", "External")
-    assert "from .dependencies import Base, External\n" in (
+    assert "from pkg.dependencies import Base, External\n" in (
         simulation.simulation.rewritten_sources[destination_path.as_posix()]
     )
     simulation.apply()
@@ -8969,7 +8969,7 @@ def test_symbol_move_preserves_type_checking_import_scope(tmp_path: Path) -> Non
         "from typing import TYPE_CHECKING\n\n"
         "if TYPE_CHECKING:"
     ) in (rewritten_destination)
-    assert "    from .dependencies import External" in rewritten_destination
+    assert "    from pkg.dependencies import External" in rewritten_destination
     assert rewritten_destination.index("if TYPE_CHECKING:") < (
         rewritten_destination.index("class Helper:")
     )
@@ -9042,7 +9042,7 @@ def test_symbol_move_preserves_runtime_import_for_forward_annotation(
     assert dependency.scope is ModuleImportScope.RUNTIME
     rewritten_source = simulation.simulation.rewritten_sources[source_path.as_posix()]
     assert "from .dependencies import External" in rewritten_source
-    assert "from .dependencies import External" in rewritten_destination
+    assert "from pkg.dependencies import External" in rewritten_destination
     assert "if TYPE_CHECKING:" not in rewritten_destination
     simulation.apply()
     imported = subprocess.run(
@@ -9160,7 +9160,7 @@ def test_symbol_move_preserves_function_local_annotation_imports(
     assert "from typing import Any" in rewritten_destination
 
 
-def test_symbol_move_renders_relative_dependency_from_destination_identity(
+def test_symbol_move_renders_a_dependency_by_its_module_name(
     tmp_path: Path,
 ) -> None:
     source_path = tmp_path / "pkg/source.py"
@@ -9191,8 +9191,7 @@ def test_symbol_move_renders_relative_dependency_from_destination_identity(
         destination_path.as_posix()
     ]
 
-    assert "from ..dependencies import VALUE" in rewritten_destination
-    assert "from .dependencies import VALUE" not in rewritten_destination
+    assert "from pkg.dependencies import VALUE" in rewritten_destination
     simulation.apply()
     imported = subprocess.run(
         [
@@ -9243,8 +9242,8 @@ def test_symbol_move_rewrites_type_checking_consumer_import(tmp_path: Path) -> N
         consumer_path.as_posix()
     ]
 
-    assert "from .source import Helper" not in rewritten_consumer
-    assert "if TYPE_CHECKING:\n    from .destination import Helper" in (
+    assert "from pkg.source import Helper" not in rewritten_consumer
+    assert "if TYPE_CHECKING:\n    from pkg.destination import Helper" in (
         rewritten_consumer
     )
     simulation.apply()
@@ -9304,7 +9303,7 @@ def test_symbol_move_extends_aliased_type_checking_guard(tmp_path: Path) -> None
 
     assert rewritten_destination.count("if t.TYPE_CHECKING:") == 1
     assert "from typing import TYPE_CHECKING" not in rewritten_destination
-    assert "    from .dependencies import External" in rewritten_destination
+    assert "    from pkg.dependencies import External" in rewritten_destination
     assert "    from pathlib import Path" in rewritten_destination
     assert rewritten_destination.index("if t.TYPE_CHECKING:") < (
         rewritten_destination.index("class Helper:")
@@ -9491,7 +9490,7 @@ def test_module_extraction_composes_import_and_assignment_at_one_anchor(
     )
 
     assert simulation.simulation.rewritten_sources[destination_path.as_posix()] == (
-        "from .support import TOKEN\n\n" "VALUE = TOKEN\n"
+        "from pkg.support import TOKEN\n\n" "VALUE = TOKEN\n"
     )
 
 
@@ -9558,7 +9557,7 @@ def test_new_module_closure_extraction_derives_transitive_local_dependencies(
     assert rewritten_destination.startswith("from __future__ import annotations\n")
     assert "class Root" in rewritten_destination
     assert simulation.simulation.rewritten_sources[consumer_path.as_posix()].startswith(
-        "from .extracted import Root\n" "from .source import Unrelated\n"
+        "from pkg.extracted import Root\n" "from .source import Unrelated\n"
     )
     simulation.apply()
     imported = subprocess.run(
@@ -10377,7 +10376,7 @@ def test_symbol_move_rewrites_repository_consumer_imports(
     ]
 
     assert rewritten_consumer.startswith(
-        "from .destination import Helper as ImportedHelper\n"
+        "from pkg.destination import Helper as ImportedHelper\n"
         "from .source import Unmoved\n"
     )
     assert set(simulation.apply()) == {
@@ -18284,7 +18283,7 @@ def test_codemod_plan_sequence_chains_hand_patch_into_semantic_extraction(
     assert second_stage_source_file == first_stage_source_file
     assert "class LegacyContext:" in rewritten_source
     assert "class Helper:" not in rewritten_source
-    assert "from .context import SharedContext" in rewritten_destination
+    assert "from pkg.context import SharedContext" in rewritten_destination
     assert "SharedContext) -> SharedContext" in rewritten_destination
     simulation.apply()
     imported = subprocess.run(

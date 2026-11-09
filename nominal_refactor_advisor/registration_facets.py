@@ -6,23 +6,23 @@ import ast
 from dataclasses import dataclass
 from enum import StrEnum
 
-from .ast_tools import ParsedModule
-from .class_symbols import (
+from nominal_refactor_advisor.ast_tools import ParsedModule
+from nominal_refactor_advisor.class_symbols import (
     _terminal_reference_name,
     iter_class_definitions,
 )
-from .class_syntax_facets import (
+from nominal_refactor_advisor.class_syntax_facets import (
     CompactSourceLocation,
     _trim_leading_docstring,
 )
-from .collection_algebra import sorted_tuple
-from .enum_semantics import PYTHON_ENUM_BASE_AUTHORITY
-from .foreign_family import FunctionDefinition
-from .registry_identity import (
+from nominal_refactor_advisor.collection_algebra import sorted_tuple
+from nominal_refactor_advisor.enum_semantics import PYTHON_ENUM_BASE_AUTHORITY
+from nominal_refactor_advisor.foreign_family import FunctionDefinition
+from nominal_refactor_advisor.registry_identity import (
     REGISTRY_ATTRIBUTE_NAME,
     REGISTRY_KEY_ATTRIBUTE_NAME,
 )
-from .value_expression import CompactValueExpression
+from nominal_refactor_advisor.value_expression import CompactValueExpression
 
 
 @dataclass(frozen=True)

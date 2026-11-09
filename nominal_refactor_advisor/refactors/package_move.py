@@ -24,21 +24,24 @@ from dataclasses import dataclass
 from functools import cached_property
 from pathlib import PurePosixPath
 
-from ..ast_tools import ParsedModule
-from ..class_index import CompactModuleClassHeader
-from ..codemod_import_scopes import ModuleImportScope
-from ..codemod_module_declarations import ModuleSymbolTable
-from ..codemod_runtime import FindingRecipeEvaluation, RefactorRecipe
-from ..codemod_selection_context import CodemodSelectorContext
-from ..codemod_selector_models import SourceRewriteTarget
-from ..models import PackageDestinationMetrics, RefactorFinding
-from ..module_node_index import ModuleNodeIndex
-from ..refactor_concepts import PackageMoveConcept
-from .finding_recipes import (
+from nominal_refactor_advisor.ast_tools import ParsedModule
+from nominal_refactor_advisor.class_index import CompactModuleClassHeader
+from nominal_refactor_advisor.codemod_import_scopes import ModuleImportScope
+from nominal_refactor_advisor.codemod_module_declarations import ModuleSymbolTable
+from nominal_refactor_advisor.codemod_runtime import (
+    FindingRecipeEvaluation,
+    RefactorRecipe,
+)
+from nominal_refactor_advisor.codemod_selection_context import CodemodSelectorContext
+from nominal_refactor_advisor.codemod_selector_models import SourceRewriteTarget
+from nominal_refactor_advisor.models import PackageDestinationMetrics, RefactorFinding
+from nominal_refactor_advisor.module_node_index import ModuleNodeIndex
+from nominal_refactor_advisor.refactor_concepts import PackageMoveConcept
+from nominal_refactor_advisor.refactors.finding_recipes import (
     FindingRecipeSynthesizer,
     PrimaryEvidenceActionKeysMixin,
 )
-from .module_move import (
+from nominal_refactor_advisor.refactors.module_move import (
     DissolveModuleOperation,
     RelocateSymbolsToModuleOperation,
     RelocateSymbolsToNewModuleOperation,

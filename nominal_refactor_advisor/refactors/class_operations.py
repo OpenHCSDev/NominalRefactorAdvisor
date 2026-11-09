@@ -1,30 +1,30 @@
 from dataclasses import dataclass
 from typing import ClassVar
 
-from ..codemod_declaration_source import (
+from nominal_refactor_advisor.codemod_declaration_source import (
     ClassBodySourceAuthority,
     ClassMemberInsertion,
     ClassMemberSource,
 )
-from ..codemod_field_metadata_source import (
+from nominal_refactor_advisor.codemod_field_metadata_source import (
     FieldMetadataKeywordRemoval,
     PrunedFieldMetadataKeywordRemoval,
 )
-from ..codemod_operations import SourcePayloadOperation
-from ..codemod_payload import (
+from nominal_refactor_advisor.codemod_operations import SourcePayloadOperation
+from nominal_refactor_advisor.codemod_payload import (
     RequiredStringPayloadValueCodec,
     StringArrayPayloadValueCodec,
     codemod_payload_field,
 )
-from ..codemod_reproof import (
+from nominal_refactor_advisor.codemod_reproof import (
     RepositorySourceReprovedOperation,
     SourceReprovedOperation,
 )
-from ..codemod_runtime import CodemodSourceSnapshot
-from ..codemod_selection_context import ResolvedClassTarget
-from ..codemod_selector_models import DeclaredCallSelection
-from ..codemod_source_edits import PhysicalSourceEdit
-from ..source_index import AstTargetNodeKind
+from nominal_refactor_advisor.codemod_runtime import CodemodSourceSnapshot
+from nominal_refactor_advisor.codemod_selection_context import ResolvedClassTarget
+from nominal_refactor_advisor.codemod_selector_models import DeclaredCallSelection
+from nominal_refactor_advisor.codemod_source_edits import PhysicalSourceEdit
+from nominal_refactor_advisor.source_index import AstTargetNodeKind
 
 
 @dataclass(frozen=True, kw_only=True)

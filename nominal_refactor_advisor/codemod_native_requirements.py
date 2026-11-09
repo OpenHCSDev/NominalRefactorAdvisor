@@ -12,10 +12,10 @@ from enum import StrEnum
 from functools import cached_property
 from typing import TYPE_CHECKING
 
-from .ast_tools import ParsedModule
-from .captured_reference import OpenCapturedReference
-from .codemod_operations import RefactorRecipeOperation
-from .codemod_payload import (
+from nominal_refactor_advisor.ast_tools import ParsedModule
+from nominal_refactor_advisor.captured_reference import OpenCapturedReference
+from nominal_refactor_advisor.codemod_operations import RefactorRecipeOperation
+from nominal_refactor_advisor.codemod_payload import (
     CodemodPayloadRecord,
     EmptyDefaultStringPayloadValueCodec,
     PayloadRecordArrayValueCodec,
@@ -24,19 +24,26 @@ from .codemod_payload import (
     StringArrayPayloadValueCodec,
     codemod_payload_field,
 )
-from .codemod_preflight import CodemodOperationPreflightReport
-from .codemod_semantics import CodemodPreflightStatus
-from .codemod_source_correspondence import SourceReadCorrespondence
-from .codemod_source_edits import CodemodSourceRevision
-from .descriptor_algebra import AliasProperty
-from .json_reports import DataclassJsonReport
-from .native_declarations import NativeDeclaration
-from .native_reference import NativeReferenceEnvironment
-from .product_flow import CompactDefinitionTarget, CompactMutation
-from .source_geometry import SourceByteSpan
+from nominal_refactor_advisor.codemod_preflight import CodemodOperationPreflightReport
+from nominal_refactor_advisor.codemod_semantics import CodemodPreflightStatus
+from nominal_refactor_advisor.codemod_source_correspondence import (
+    SourceReadCorrespondence,
+)
+from nominal_refactor_advisor.codemod_source_edits import CodemodSourceRevision
+from nominal_refactor_advisor.descriptor_algebra import AliasProperty
+from nominal_refactor_advisor.json_reports import DataclassJsonReport
+from nominal_refactor_advisor.native_declarations import NativeDeclaration
+from nominal_refactor_advisor.native_reference import NativeReferenceEnvironment
+from nominal_refactor_advisor.product_flow import (
+    CompactDefinitionTarget,
+    CompactMutation,
+)
+from nominal_refactor_advisor.source_geometry import SourceByteSpan
 
 if TYPE_CHECKING:
-    from .product_flow_authority import SourceProductFlowRepository
+    from nominal_refactor_advisor.product_flow_authority import (
+        SourceProductFlowRepository,
+    )
 
 
 @dataclass(frozen=True)

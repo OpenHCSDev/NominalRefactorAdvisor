@@ -11,7 +11,7 @@ refusal lists each one at its file:line.
 """
 
 from __future__ import annotations
-from .module_node_index import ModuleNodeIndex
+from nominal_refactor_advisor.module_node_index import ModuleNodeIndex
 
 import ast
 import re
@@ -22,47 +22,53 @@ from collections.abc import Iterable, Iterator
 from dataclasses import dataclass, field
 from functools import cached_property
 
-from .ast_field_decoders import declared_annotations
-from .ast_projection import StatementValue
-from .value_expression import CompactValueExpression
-from .ast_tools import (
+from nominal_refactor_advisor.ast_field_decoders import declared_annotations
+from nominal_refactor_advisor.ast_projection import StatementValue
+from nominal_refactor_advisor.value_expression import CompactValueExpression
+from nominal_refactor_advisor.ast_tools import (
     BuiltinCallName,
     ParsedModule,
     PythonSourcePathPolicy,
 )
-from .class_index import (
+from nominal_refactor_advisor.class_index import (
     PROPERTY_DECORATOR,
     CompactModuleClassProjectionFamily,
     ModuleNominalBindingAuthority,
 )
-from .codemod_architecture_guards import (
+from nominal_refactor_advisor.codemod_architecture_guards import (
     ArchitectureGuardRule,
     ArchitectureGuardTargetScope,
     ForbiddenAttributeArchitectureGuardConstraint,
 )
-from .codemod_imports import ImportFromSource, ImportLayout
-from .codemod_payload import OptionalStringArrayPayloadValueCodec, codemod_payload_field
-from .codemod_reproof import RepositorySourceReprovedOperation
-from .codemod_runtime import CodemodSourceSnapshot
-from .codemod_selection_context import CodemodSelectorContext
-from .codemod_source_edits import (
+from nominal_refactor_advisor.codemod_imports import ImportFromSource, ImportLayout
+from nominal_refactor_advisor.codemod_payload import (
+    OptionalStringArrayPayloadValueCodec,
+    codemod_payload_field,
+)
+from nominal_refactor_advisor.codemod_reproof import RepositorySourceReprovedOperation
+from nominal_refactor_advisor.codemod_runtime import CodemodSourceSnapshot
+from nominal_refactor_advisor.codemod_selection_context import CodemodSelectorContext
+from nominal_refactor_advisor.codemod_source_edits import (
     Include,
     NominalSourceEdit,
     SourceNodeSpan,
     SourceTextGeometry,
     SourceTextSpanReplacement,
 )
-from .enum_keyed_query import (
+from nominal_refactor_advisor.enum_keyed_query import (
     EnumKeyedDerivedMapFacadeComponent,
     EnumKeyedDerivedMapFacadeComponentBuilder,
 )
-from .foreign_family import FunctionDefinition
-from .lexical_bindings import (
+from nominal_refactor_advisor.foreign_family import FunctionDefinition
+from nominal_refactor_advisor.lexical_bindings import (
     LEXICAL_SCOPE_BINDING_AUTHORITY,
     ImportBoundNameProjection,
     ImportFromModuleName,
 )
-from .semantic_descent import AuthorityClaim, SemanticAuthorityKind
+from nominal_refactor_advisor.semantic_descent import (
+    AuthorityClaim,
+    SemanticAuthorityKind,
+)
 
 
 class Question(ABC):

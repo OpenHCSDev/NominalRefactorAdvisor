@@ -8,8 +8,14 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from functools import partial
 
-from .project import Project, StoredFormat
-from .gate import ChangeMeasure, Compared, Counts, MeasureCount, PhaseSiteCount
+from nominal_refactor_advisor.audit.project import Project, StoredFormat
+from nominal_refactor_advisor.audit.gate import (
+    ChangeMeasure,
+    Compared,
+    Counts,
+    MeasureCount,
+    PhaseSiteCount,
+)
 
 
 @dataclass(frozen=True)

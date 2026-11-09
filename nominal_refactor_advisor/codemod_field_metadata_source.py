@@ -7,20 +7,25 @@ from dataclasses import dataclass
 from functools import cached_property
 from typing import Annotated, cast
 
-from .ast_projection import CallKeywords
-from .class_index import ModuleNominalBindingAuthority, nominal_reference_root_name
-from .codemod_declaration_source import DirectClassDeclarationAuthority
-from .codemod_runtime import CodemodSourceSnapshot
-from .codemod_selection_context import ResolvedClassTarget
-from .codemod_selector_models import SelectionCountExpectation
-from .codemod_source_edits import (
+from nominal_refactor_advisor.ast_projection import CallKeywords
+from nominal_refactor_advisor.class_index import (
+    ModuleNominalBindingAuthority,
+    nominal_reference_root_name,
+)
+from nominal_refactor_advisor.codemod_declaration_source import (
+    DirectClassDeclarationAuthority,
+)
+from nominal_refactor_advisor.codemod_runtime import CodemodSourceSnapshot
+from nominal_refactor_advisor.codemod_selection_context import ResolvedClassTarget
+from nominal_refactor_advisor.codemod_selector_models import SelectionCountExpectation
+from nominal_refactor_advisor.codemod_source_edits import (
     SourceTextGeometry,
     SourceTextSpan,
     SourceTextSpanReplacement,
 )
-from .lexical_bindings import LEXICAL_SCOPE_BINDING_AUTHORITY
-from .source_index import AstTargetDigest
-from .value_expression import LiteralExpressionEffects
+from nominal_refactor_advisor.lexical_bindings import LEXICAL_SCOPE_BINDING_AUTHORITY
+from nominal_refactor_advisor.source_index import AstTargetDigest
+from nominal_refactor_advisor.value_expression import LiteralExpressionEffects
 
 
 @dataclass(frozen=True)

@@ -15,36 +15,38 @@ from typing import (
     cast,
 )
 
-from ..ast_tools import ParsedModule
-from ..binding_proofs import RepositoryModuleBindingProof
-from ..class_index import ModuleNominalBindingAuthority
-from .class_member_authority import ClassDeclarationPromotionStatement
-from .finding_recipes import (
+from nominal_refactor_advisor.ast_tools import ParsedModule
+from nominal_refactor_advisor.binding_proofs import RepositoryModuleBindingProof
+from nominal_refactor_advisor.class_index import ModuleNominalBindingAuthority
+from nominal_refactor_advisor.refactors.class_member_authority import (
+    ClassDeclarationPromotionStatement,
+)
+from nominal_refactor_advisor.refactors.finding_recipes import (
     FindingRecipeSynthesizer,
     PrimaryEvidenceActionKeysMixin,
 )
-from .class_base import ClassAuthorityReferenceProof
-from .source_insertion import EnsureImportOperation
-from ..codemod import PatchTargetOperation
-from ..codemod_declaration_source import (
+from nominal_refactor_advisor.refactors.class_base import ClassAuthorityReferenceProof
+from nominal_refactor_advisor.refactors.source_insertion import EnsureImportOperation
+from nominal_refactor_advisor.codemod import PatchTargetOperation
+from nominal_refactor_advisor.codemod_declaration_source import (
     ClassBodySourceAuthority,
     ClassHeaderSpanSourceAuthority,
     NamedDeclarationSourceAuthority,
 )
-from ..codemod_paths import SourcePathResolutionAuthority
-from ..codemod_preflight import CodemodOperationPreflightError
-from ..codemod_reproof import RepositorySourceReprovedOperation
-from ..codemod_runtime import (
+from nominal_refactor_advisor.codemod_paths import SourcePathResolutionAuthority
+from nominal_refactor_advisor.codemod_preflight import CodemodOperationPreflightError
+from nominal_refactor_advisor.codemod_reproof import RepositorySourceReprovedOperation
+from nominal_refactor_advisor.codemod_runtime import (
     CodemodSourceSnapshot,
     FindingRecipeEvaluation,
     RefactorRecipe,
 )
-from ..codemod_selection_context import (
+from nominal_refactor_advisor.codemod_selection_context import (
     CodemodSelectorContext,
     ResolvedClassTarget,
 )
-from ..codemod_selector_models import SourceRewriteTarget
-from ..codemod_source_edits import (
+from nominal_refactor_advisor.codemod_selector_models import SourceRewriteTarget
+from nominal_refactor_advisor.codemod_source_edits import (
     NominalSourceEdit,
     PhysicalSourceEdit,
     SourceInsertion,
@@ -54,10 +56,14 @@ from ..codemod_source_edits import (
     SourceTextReplacement,
     SourceTextSpan,
 )
-from ..codemod_target_selectors import SourceIndexTargetSelector
-from ..declaration_binding_transfer import ClassBodyReferenceCapture
-from ..declaration_dependencies import ModuleLexicalDependencyProjection
-from ..detectors._base import (
+from nominal_refactor_advisor.codemod_target_selectors import SourceIndexTargetSelector
+from nominal_refactor_advisor.declaration_binding_transfer import (
+    ClassBodyReferenceCapture,
+)
+from nominal_refactor_advisor.declaration_dependencies import (
+    ModuleLexicalDependencyProjection,
+)
+from nominal_refactor_advisor.detectors._base import (
     CallableCandidateFindingRenderer,
     CandidateCollectorBaseReference,
     CandidateCollectorBoilerplateCandidate,
@@ -70,14 +76,14 @@ from ..detectors._base import (
     ModuleCollectedLineWitnessCandidate,
     declare_module_detector,
 )
-from ..models import RefactorFinding
-from ..native_class_mro import NativeClassMroDeclaration
-from ..refactor_concepts import ClassFamilyAuthorityConcept
-from ..source_index import (
+from nominal_refactor_advisor.models import RefactorFinding
+from nominal_refactor_advisor.native_class_mro import NativeClassMroDeclaration
+from nominal_refactor_advisor.refactor_concepts import ClassFamilyAuthorityConcept
+from nominal_refactor_advisor.source_index import (
     AstTargetDigest,
     AstTargetNodeKind,
 )
-from ..source_native_mro import (
+from nominal_refactor_advisor.source_native_mro import (
     NativeClassBaseSubstitution,
     SourceNativeClassMro,
 )
