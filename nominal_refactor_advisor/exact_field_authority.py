@@ -27,7 +27,6 @@ from nominal_refactor_advisor.class_families.parsed_index import (
 from nominal_refactor_advisor.class_index import (
     ClassBodyModuleScope,
     ClassBodyNormalForm,
-    CompactDataclassFieldRole,
     ModuleNominalBindingSnapshot,
 )
 from nominal_refactor_advisor.collection_algebra import sorted_tuple
@@ -390,7 +389,7 @@ class ExactDataclassFieldAuthorityComponentBuilder:
         ):
             raise ValueError("Dataclass methods depend on the current MRO")
         if not declaration.fields or any(
-            field.role is not CompactDataclassFieldRole.STORED_INIT
+            not field.role.contributes_stored_init_field
             for field in declaration.fields
         ):
             raise ValueError("Dataclass fields do not form a stored-init product")
