@@ -91,14 +91,26 @@ class PythonModulePathIdentity(SourceFileIdentity):
 
     @staticmethod
     def import_root(path: Path, analysis_root: Path) -> Path:
-        """Use the outer edge of the source package as import-name authority."""
+        """Use the outer edge of the source package as import-name authority. A file
+        in no package is named from the scan root, unless a directory on the way
+        is no valid name part (`.github`): no dotted name passes it, so the root
+        is the deepest such directory."""
 
         package_directory = path.parent
         import_root: Path | None = None
         while (package_directory / PACKAGE_INIT_FILE_NAME).is_file():
             import_root = package_directory.parent
             package_directory = package_directory.parent
-        return analysis_root if import_root is None else import_root
+        if import_root is not None:
+            return import_root
+        try:
+            parts = path.parent.resolve().relative_to(analysis_root.resolve()).parts
+        except ValueError:
+            return analysis_root
+        unnameable = [
+            index for index, part in enumerate(parts) if not python_module_name_is_importable(part)
+        ]
+        return analysis_root.joinpath(*parts[: unnameable[-1] + 1]) if unnameable else analysis_root
 
     @property
     def declared_source_relative_path(self) -> Path:
