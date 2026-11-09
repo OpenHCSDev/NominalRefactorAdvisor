@@ -8,6 +8,7 @@ import pytest
 from nominal_refactor_advisor.ast_tools import ParsedModule, parse_python_modules
 from nominal_refactor_advisor.class_families.parsed_index import (
     ClassFamilyIndexBuilder,
+    ClassFamilyIndexPredecessor,
     build_class_family_index,
 )
 from nominal_refactor_advisor.class_index import ModuleNominalBindingAuthority
@@ -76,7 +77,9 @@ def test_projection_rebinds_changed_declarations_and_reuses_unchanged_ancestors(
     after = ClassFamilyIndexBuilder(
         tuple(module for module in declaration_modules if module.path != consumer_path)
         + changed,
-        previous=before,
+        previous=ClassFamilyIndexPredecessor(
+            before, {module.file_path: module for module in declaration_modules}
+        ),
     ).build()
 
     assert before.ancestor_symbols("consumer.Early") == ("parents.First",)

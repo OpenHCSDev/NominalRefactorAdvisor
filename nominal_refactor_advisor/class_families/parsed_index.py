@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import ast
 from collections.abc import Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from functools import cached_property
 from typing import Iterable
 
@@ -123,21 +123,6 @@ class IndexedClass(ClassDeclaration, ClassNamespaceDeclaration):
 
 @dataclass(frozen=True)
 class ClassFamilyIndex(ClassDeclarationIndex[IndexedClass], ParsedModuleSetFact):
-    resolved_by_record: dict[int, tuple[IndexedClass, IndexedClass]] = field(
-        default_factory=dict, repr=False, compare=False
-    )
-    """Each module class record this build resolved, by identity, with what it
-    resolved to; the record is held, so no other object takes its id. Identities
-    mean nothing in another process, so a pickled index carries none."""
-
-    def __getstate__(self) -> dict[str, object]:
-        state = dict(self.__dict__)
-        state["resolved_by_record"] = {}
-        return state
-
-    def __setstate__(self, state: dict[str, object]) -> None:
-        self.__dict__.update(state)
-
     @classmethod
     def derive(cls, modules: ParsedModuleSet) -> ClassFamilyIndex:
         return ClassFamilyIndexBuilder(modules.modules).build()
@@ -170,7 +155,10 @@ class ClassFamilyIndex(ClassDeclarationIndex[IndexedClass], ParsedModuleSetFact)
             for old, new in replaced
         ):
             return self
-        return ClassFamilyIndexBuilder(projected_modules, previous=self).build()
+        return ClassFamilyIndexBuilder(
+            projected_modules,
+            previous=ClassFamilyIndexPredecessor(self, previous),
+        ).build()
 
 
 @dataclass(frozen=True)
@@ -297,9 +285,30 @@ def build_class_family_index(modules: Sequence[ParsedModule]) -> ClassFamilyInde
 
 
 @dataclass(frozen=True)
+class ClassFamilyIndexPredecessor:
+    """The index a projection starts from and the parses it was built over,
+    by path. A module that is the same parse in both states has the same class
+    records, and its records' symbols were resolved from exactly those records:
+    a symbol another module also declared would have been ambiguous in both."""
+
+    index: ClassFamilyIndex
+    modules_by_file_path: dict[str, ParsedModule]
+
+    def resolution_of(
+        self, record: IndexedClass, module: ParsedModule
+    ) -> IndexedClass | None:
+        """What the predecessor resolved this record to, when its module is the
+        same parse there."""
+
+        if self.modules_by_file_path.get(record.file_path) is not module:
+            return None
+        return self.index.classes_by_symbol.get(record.symbol)
+
+
+@dataclass(frozen=True)
 class ClassFamilyIndexBuilder:
     modules: tuple[ParsedModule, ...]
-    previous: ClassFamilyIndex | None = None
+    previous: ClassFamilyIndexPredecessor | None = None
 
     def build(self) -> ClassFamilyIndex:
         class_records = tuple(
@@ -311,7 +320,6 @@ class ClassFamilyIndexBuilder:
         known_symbols = frozenset(record.symbol for record in class_records)
         unique_symbols_by_suffix = _unique_known_symbol_by_suffix(known_symbols)
         moved_terminal_names = self.moved_terminal_names(known_symbols)
-        resolved_by_record: dict[int, tuple[IndexedClass, IndexedClass]] = {}
         classes_by_symbol: dict[str, IndexedClass] = {}
         for record in class_records:
             resolved = self.reused_record(record, moved_terminal_names)
@@ -319,7 +327,6 @@ class ClassFamilyIndexBuilder:
                 resolved = self.resolved_record(
                     record, known_symbols, unique_symbols_by_suffix
                 )
-            resolved_by_record[id(record)] = (record, resolved)
             classes_by_symbol[record.symbol] = resolved
         authority = RegisteringMetaclassAuthority(
             classes_by_symbol,
@@ -330,10 +337,7 @@ class ClassFamilyIndexBuilder:
         for symbol, record in classes_by_symbol.items():
             if record.registry_facts.metaclass_references:
                 classes_by_symbol[symbol] = record.with_registering_metaclass(authority)
-        return ClassFamilyIndex(
-            classes_by_symbol=classes_by_symbol,
-            resolved_by_record=resolved_by_record,
-        )
+        return ClassFamilyIndex(classes_by_symbol=classes_by_symbol)
 
     def moved_terminal_names(self, known_symbols: frozenset[str]) -> frozenset[str]:
         """The terminal names of symbols this build knows and the previous did
@@ -345,7 +349,7 @@ class ClassFamilyIndexBuilder:
             return frozenset()
         return frozenset(
             symbol.rsplit(".", 1)[-1]
-            for symbol in known_symbols ^ self.previous.known_symbols
+            for symbol in known_symbols ^ self.previous.index.known_symbols
         )
 
     def reused_record(
@@ -356,7 +360,9 @@ class ClassFamilyIndexBuilder:
 
         if self.previous is None:
             return None
-        previous = self.previous.resolved_by_record.get(id(record))
+        previous = self.previous.resolution_of(
+            record, self.module_by_file_path[record.file_path]
+        )
         if previous is None:
             return None
         if any(
@@ -364,7 +370,11 @@ class ClassFamilyIndexBuilder:
             for reference in record.registry_facts.base_references
         ):
             return None
-        return previous[1]
+        return previous
+
+    @cached_property
+    def module_by_file_path(self) -> dict[str, ParsedModule]:
+        return {module.file_path: module for module in self.modules}
 
     def module_class_records(self) -> tuple[IndexedClass, ...]:
         return tuple(
