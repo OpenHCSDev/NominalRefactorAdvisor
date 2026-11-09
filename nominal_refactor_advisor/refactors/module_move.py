@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import ast
 import builtins
-import math
 import os
 import re
 import tomllib
@@ -23,7 +22,6 @@ from typing import ClassVar, cast
 
 from ..ast_projection import ExpressionReference
 from ..declared_family import ForeignAdapter
-from ..declared_root import DeclaredRoot
 from ..ast_tools import ModuleAnnotationEvaluationMode, ParsedModule, ParsedModuleFact
 from ..module_node_index import ModuleNodeIndex
 from ..codemod_import_bindings import FromModuleImportBindingIdentity
@@ -33,7 +31,6 @@ from ..codemod_import_scopes import ModuleImportScope, TypeCheckingGuardProjecti
 from ..codemod_imports import (
     ImportFromSource,
     ImportLayout,
-    OneLineImport,
     ModuleImportMutation,
 )
 from ..codemod_module_declarations import (
@@ -412,7 +409,6 @@ class ModuleNameRedirect:
             for scope in ModuleImportScope
             for statement in scope.import_statements(parsed.module)
         }
-        line_length = DeclaredRoot.line_length_for(Path(consumer_path))
         replacements: list[tuple[ast.ImportFrom, str]] = []
         for statement in parsed.fact(ModuleNodeIndex).import_froms():
             if (
@@ -430,7 +426,6 @@ class ModuleNameRedirect:
                 raise ValueError(f"{consumer_path!r}:{statement.lineno} star-imports locally")
             kept = tuple(alias for alias in statement.names if alias.name not in self.destinations)
             scope = scope_by_statement.get(id(statement), ModuleImportScope.RUNTIME)
-            layout = ImportLayout.of(statement, line_length)
             lines = [
                 ImportFromSource(
                     module_name=scope.required_module_reference(
@@ -440,7 +435,7 @@ class ModuleNameRedirect:
                         imported_name=owned[0].name,
                     ),
                     aliases=owned,
-                    layout=layout,
+                    layout=ImportLayout.of(statement, consumer_path),
                 ).source.strip()
                 for destination_path in sorted({self.destinations[alias.name] for alias in moved})
                 for owned in (
@@ -452,7 +447,7 @@ class ModuleNameRedirect:
                     ImportFromSource(
                         module_name=ImportFromModuleName.from_node(statement).source,
                         aliases=kept,
-                        layout=layout,
+                        layout=ImportLayout.of(statement, consumer_path),
                     ).source.strip()
                 )
             replacements.append(
@@ -497,14 +492,16 @@ class ModuleNameRedirect:
                     aliases=tuple(
                         alias for alias in moved if self.destinations[alias.name] == destination_path
                     ),
-                    layout=OneLineImport(math.inf),
+                    layout=ImportLayout.as_written(statement),
                 ).source.strip()
                 for destination_path in sorted({self.destinations[alias.name] for alias in moved})
             ]
             if kept:
                 lines.append(
                     ImportFromSource(
-                        module_name=source_module_name, aliases=kept, layout=OneLineImport(math.inf)
+                        module_name=source_module_name,
+                        aliases=kept,
+                        layout=ImportLayout.as_written(statement),
                     ).source.strip()
                 )
             start, end = geometry.required_node_offsets(node)
@@ -700,7 +697,7 @@ class ModuleNameRedirect:
                         imported_name=owned[0].name,
                     ),
                     aliases=owned,
-                    layout=OneLineImport(DeclaredRoot.line_length_for(Path(consumer_path))),
+                    layout=ImportLayout.fitted(consumer_path),
                 ).source,
                 scope=scope,
             )

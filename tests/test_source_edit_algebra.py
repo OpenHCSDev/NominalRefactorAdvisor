@@ -572,13 +572,8 @@ def test_import_mutation_canonically_merges_existing_from_import_aliases(
     physical = mutation.resolved_edits(context)
 
     assert len(physical) == 1
-    assert physical[0].replacement_lines == (
-        "from .types import (\n",
-        "    Alpha,\n",
-        "    Middle,\n",
-        "    Zebra,\n",
-        ")\n",
-    )
+    # The existing import is one line, so the merged one stays one line.
+    assert physical[0].replacement_lines == ("from .types import Alpha, Middle, Zebra\n",)
 
 
 def test_import_mutation_refuses_to_erase_import_comments(tmp_path: Path) -> None:

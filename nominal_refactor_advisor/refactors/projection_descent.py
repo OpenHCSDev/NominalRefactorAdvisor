@@ -32,7 +32,7 @@ from ..class_index import (
 )
 from ..class_method_facets import ClassMethodPromotionSafetyProfile
 from ..codemod_declaration_source import ClassBodySourceAuthority
-from ..codemod_imports import ImportFromSource
+from ..codemod_imports import ImportFromSource, ImportLayout
 from ..codemod_native_requirements import (
     DeclaredNativeUseInvariants,
     NativeDefinitionUseRequirement,
@@ -1154,6 +1154,7 @@ class _TypeKeyedBehaviorSourceDerivation:
                 replacement_source = ImportFromSource(
                     module_name,
                     remaining_aliases,
+                    ImportLayout.of(statement, module.file_path),
                 ).source
                 replacements_by_path[module.file_path].append(
                     SourceTextSpanReplacement.from_offsets(

@@ -40,7 +40,7 @@ from .codemod_architecture_guards import (
     ArchitectureGuardTargetScope,
     ForbiddenAttributeArchitectureGuardConstraint,
 )
-from .codemod_imports import ImportFromSource
+from .codemod_imports import ImportFromSource, ImportLayout
 from .codemod_payload import OptionalStringArrayPayloadValueCodec, codemod_payload_field
 from .codemod_reproof import RepositorySourceReprovedOperation
 from .codemod_runtime import CodemodSourceSnapshot
@@ -662,7 +662,9 @@ class Rewrite:
         later = [statement for statement in from_imports if statement not in earlier]
         geometry = self.geometry(module)
         rendered = ImportFromSource(
-            source, tuple(ast.alias(name) for name in missing)
+            source,
+            tuple(ast.alias(name) for name in missing),
+            ImportLayout.fitted(module.file_path),
         ).source
         sections = {
             id(statement): self.import_order(
@@ -808,7 +810,9 @@ class Rewrite:
                 SourceNodeSpan(statement)
             )
             source = ImportFromSource(
-                ImportFromModuleName.from_node(statement).source, tuple(aliases)
+                ImportFromModuleName.from_node(statement).source,
+                tuple(aliases),
+                ImportLayout.of(statement, module.file_path),
             ).source
             self.span(module, start, end, source)
 

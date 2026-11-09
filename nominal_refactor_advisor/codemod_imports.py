@@ -9,11 +9,11 @@ from collections import defaultdict
 from collections.abc import Callable, Iterable
 from dataclasses import (
     dataclass,
-    field,
     replace,
 )
 from enum import StrEnum
 from functools import cached_property
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from .codemod_import_scopes import (
@@ -32,6 +32,7 @@ from .codemod_source_edits import (
     SourceTextSpan,
 )
 from .codemod_spacing import DestinationInsertionSpacing
+from .declared_root import DeclaredRoot
 from .collection_algebra import sorted_tuple
 from .lexical_bindings import (
     ImportAlias as ImportAlias,
@@ -1300,6 +1301,7 @@ class RequestedImportStatement:
         return ImportFromSource(
             module_name=ImportFromModuleName.from_node(self.statement).source,
             aliases=tuple(self.statement.names),
+            layout=ImportLayout.as_written(self.statement),
         ).source
 
     def with_aliases(
@@ -1309,16 +1311,21 @@ class RequestedImportStatement:
         alias_nodes = [
             alias.ast_alias for alias in aliases
         ]
+        # The merged statement takes the original's location, so its layout is
+        # the one the original was written in.
         if isinstance(self.statement, ast.Import):
             return RequestedImportStatement(
-                ast.Import(names=alias_nodes),
+                ast.copy_location(ast.Import(names=alias_nodes), self.statement),
                 scope=self.scope,
             )
         return RequestedImportStatement(
-            ast.ImportFrom(
-                module=self.statement.module,
-                names=alias_nodes,
-                level=self.statement.level,
+            ast.copy_location(
+                ast.ImportFrom(
+                    module=self.statement.module,
+                    names=alias_nodes,
+                    level=self.statement.level,
+                ),
+                self.statement,
             ),
             scope=self.scope,
         )
@@ -1352,55 +1359,78 @@ class RequestedImportBlock:
 
 
 class ImportLayout(ABC):
-    """How a from-import lays out its names. A rewrite keeps the layout of the
-    statement it replaces, so a one-line import stays one line unless the new
-    line no longer fits."""
+    """How a rendered from-import is laid out. A rewrite keeps the layout of the
+    import it rewrites, so a move changes names, not shapes."""
 
     @abstractmethod
     def render(self, head: str, alias_sources: tuple[str, ...]) -> str:
-        """`head` is `from M import `; the result ends with a newline."""
+        """The import `head` (``from x import ``) of these aliases."""
 
-    @classmethod
-    def of(cls, statement: ast.ImportFrom, line_length: int) -> ImportLayout:
-        """The layout `statement` is written in, at its own indentation."""
+    @staticmethod
+    def one_line(head: str, alias_sources: tuple[str, ...]) -> str:
+        return f"{head}{', '.join(alias_sources)}\n"
 
-        if statement.lineno == statement.end_lineno:
-            return OneLineImport(line_length - statement.col_offset)
-        return ParenthesizedImport()
-
-
-@dataclass(frozen=True)
-class ParenthesizedImport(ImportLayout):
-    """One name per line inside parentheses; a single name stays on one line."""
-
-    def render(self, head: str, alias_sources: tuple[str, ...]) -> str:
-        if len(alias_sources) == 1:
-            return f"{head}{alias_sources[0]}\n"
+    @staticmethod
+    def column(head: str, alias_sources: tuple[str, ...]) -> str:
         alias_lines = "".join(f"    {alias_source},\n" for alias_source in alias_sources)
         return f"{head}(\n{alias_lines})\n"
 
+    @classmethod
+    def of(cls, statement: ast.ImportFrom, file_path: str) -> ImportLayout:
+        """The layout of `statement` as written in `file_path`: a parenthesised
+        import stays a column, a one-line import stays one line while it fits."""
+
+        if statement.end_lineno != statement.lineno:
+            return ColumnImportLayout()
+        return FittedImportLayout(
+            DeclaredRoot.line_length_for(Path(file_path)) - statement.col_offset
+        )
+
+    @classmethod
+    def fitted(cls, file_path: str) -> ImportLayout:
+        """A new import in `file_path`: one line while it fits the file's limit."""
+
+        return FittedImportLayout(DeclaredRoot.line_length_for(Path(file_path)))
+
+    @classmethod
+    def as_written(cls, statement: ast.ImportFrom) -> ImportLayout:
+        """An import rendered again from the statement its requester wrote."""
+
+        if statement.end_lineno != statement.lineno:
+            return ColumnImportLayout()
+        return OneLineImportLayout()
+
+
+class OneLineImportLayout(ImportLayout):
+    def render(self, head: str, alias_sources: tuple[str, ...]) -> str:
+        return self.one_line(head, alias_sources)
+
 
 @dataclass(frozen=True)
-class OneLineImport(ImportLayout):
-    """Every name on the statement's line while it fits in `width` columns; past
-    that, parenthesized."""
-
-    width: float
+class FittedImportLayout(ImportLayout):
+    line_length: int
 
     def render(self, head: str, alias_sources: tuple[str, ...]) -> str:
-        line = f"{head}{', '.join(alias_sources)}"
-        if len(line) <= self.width:
-            return line + "\n"
-        return ParenthesizedImport().render(head, alias_sources)
+        line = self.one_line(head, alias_sources)
+        if len(alias_sources) == 1 or len(line) - 1 <= self.line_length:
+            return line
+        return self.column(head, alias_sources)
+
+
+class ColumnImportLayout(ImportLayout):
+    def render(self, head: str, alias_sources: tuple[str, ...]) -> str:
+        if len(alias_sources) == 1:
+            return self.one_line(head, alias_sources)
+        return self.column(head, alias_sources)
 
 
 @dataclass(frozen=True)
 class ImportFromSource:
-    """Rendered from-import source for remaining aliases, in `layout`."""
+    """Rendered from-import source for remaining aliases."""
 
     module_name: str
     aliases: tuple[ast.alias, ...]
-    layout: ImportLayout = field(default_factory=ParenthesizedImport)
+    layout: ImportLayout
 
     @property
     def source(self) -> str:

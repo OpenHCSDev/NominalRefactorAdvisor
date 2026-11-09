@@ -7966,9 +7966,10 @@ def test_relocation_keeps_the_layout_of_the_import_it_rewrites(
     ].startswith(rewritten)
 
 
-def test_a_one_line_import_past_its_width_is_parenthesized() -> None:
+def test_a_one_line_import_past_its_width_is_parenthesized(tmp_path: Path) -> None:
+    (tmp_path / "pyproject.toml").write_text("[tool.ruff]\nline-length = 30\n")
     statement = ast.parse("def f():\n    from .a import First, Second\n").body[0].body[0]
-    narrow = ImportLayout.of(statement, line_length=30)
+    narrow = ImportLayout.of(statement, (tmp_path / "m.py").as_posix())
     assert ImportFromSource("pkg.destination", statement.names, narrow).source == (
         "from pkg.destination import (\n    First,\n    Second,\n)\n"
     )
