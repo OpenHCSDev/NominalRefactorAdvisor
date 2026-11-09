@@ -23,6 +23,7 @@ import tomllib
 from abc import ABC, abstractmethod
 from collections.abc import Callable
 from dataclasses import dataclass
+from functools import cache
 from pathlib import Path
 
 TABLE = "[tool.nominal-refactor-advisor.family-root]"
@@ -111,6 +112,17 @@ class DeclaredRoot:
         if pyproject is None:
             return BLACK_DEFAULT_LINE_LENGTH
         return cls.line_length_of(tomllib.loads(pyproject.read_text()))
+
+    @classmethod
+    def first_party_for(cls, path: Path) -> frozenset[str]:
+        """The top-level modules ruff's import sort counts as first party for
+        ``path``'s repository: everything directly under each ``[tool.ruff] src``
+        directory (ruff's default is the project root), plus ``known-first-party``."""
+
+        pyproject = cls.nearest_pyproject(path)
+        if pyproject is None:
+            return frozenset()
+        return _first_party_of(pyproject)
 
     @staticmethod
     def line_length_of(declared: dict[str, object]) -> int:
@@ -223,3 +235,23 @@ class DeclaredRoot:
                 f"{pyproject}: {TABLE} expects module:qualname, got {reference!r}"
             )
         return module, qualname
+
+
+@cache
+def _first_party_of(pyproject: Path) -> frozenset[str]:
+    declared = tomllib.loads(pyproject.read_text())
+    ruff = declared.get("tool", {}).get("ruff", {})
+    isort = {**ruff.get("isort", {}), **ruff.get("lint", {}).get("isort", {})}
+    names = set(isort.get("known-first-party", ()))
+    for source_dir in ruff.get("src", ["."]):
+        directory = pyproject.parent / source_dir
+        if not directory.is_dir():
+            continue
+        for entry in directory.iterdir():
+            if entry.name.startswith("."):
+                continue
+            if entry.is_dir() and entry.name.isidentifier():
+                names.add(entry.name)
+            elif entry.suffix == ".py" and entry.stem.isidentifier():
+                names.add(entry.stem)
+    return frozenset(names)

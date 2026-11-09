@@ -93,8 +93,8 @@ class ImportBlockInsertionPointABC(ABC):
                 if RequestedImportStatement(
                     statement,
                     scope=self.scope,
-                ).canonical_family_key
-                > addition.canonical_family_key
+                ).in_file(self.file_path).canonical_family_key
+                > addition.in_file(self.file_path).canonical_family_key
             ),
             len(self.leading_import_statements),
         )
@@ -121,8 +121,10 @@ class ImportBlockInsertionPointABC(ABC):
         )
         if (
             slot.index < len(existing_imports)
-            and additions[-1].source_group
-            is not RequestedImportStatement(existing_imports[slot.index]).source_group
+            and additions[-1].in_file(self.file_path).source_group
+            is not RequestedImportStatement(existing_imports[slot.index])
+            .in_file(self.file_path)
+            .source_group
         ):
             spacing = DestinationInsertionSpacing.from_source(
                 source,
@@ -177,8 +179,10 @@ class ImportInsertionSlot(ABC):
         imports = point.leading_import_statements
         if (
             index < len(imports)
-            and RequestedImportStatement(imports[index], scope=point.scope).source_group
-            is addition.source_group
+            and RequestedImportStatement(imports[index], scope=point.scope)
+            .in_file(point.file_path)
+            .source_group
+            is addition.in_file(point.file_path).source_group
         ):
             return StartOfNextFamily(index)
         return AfterPreviousImport(index)
@@ -630,7 +634,11 @@ class ModuleImportMutation(KeyedSourceEditCoalescence):
         module = context.module_nodes_by_file_path.get(self.file_path)
         if module is None:
             module = ast.parse(source, filename=self.file_path)
-        additions = list(self._coalesced_additions(self.additions))
+        additions = list(
+            self._coalesced_additions(
+                addition.in_file(self.file_path) for addition in self.additions
+            )
+        )
         guard_projection = TypeCheckingGuardProjection.from_module(module)
         if (
             any(addition.scope.is_guarded for addition in additions)
@@ -640,8 +648,11 @@ class ModuleImportMutation(KeyedSourceEditCoalescence):
                 self._coalesced_additions(
                     (
                         *additions,
-                        *RequestedImportStatement.from_source(
-                            "from typing import TYPE_CHECKING\n"
+                        *(
+                            addition.in_file(self.file_path)
+                            for addition in RequestedImportStatement.from_source(
+                                "from typing import TYPE_CHECKING\n"
+                            )
                         ),
                     )
                 )
@@ -1116,26 +1127,34 @@ class ModuleImportMutation(KeyedSourceEditCoalescence):
 class ImportSourceGroup(StrEnum):
     """Canonical Python import group derived from an import declaration."""
 
-    FUTURE = ("future", 0, lambda reference: False)
+    FUTURE = ("future", 0, lambda reference, first_party: False)
     STANDARD_LIBRARY = (
         "standard_library",
         1,
-        lambda reference: not reference.is_relative
-        and reference.root_module_name in sys.stdlib_module_names,
+        lambda reference, first_party: not reference.is_relative
+        and reference.root_module_name in sys.stdlib_module_names
+        and reference.root_module_name not in first_party,
     )
     THIRD_PARTY = (
         "third_party",
         2,
-        lambda reference: not reference.is_relative
-        and reference.root_module_name not in sys.stdlib_module_names,
+        lambda reference, first_party: not reference.is_relative
+        and reference.root_module_name not in sys.stdlib_module_names
+        and reference.root_module_name not in first_party,
     )
-    RELATIVE = ("relative", 3, lambda reference: reference.is_relative)
+    FIRST_PARTY = (
+        "first_party",
+        3,
+        lambda reference, first_party: not reference.is_relative
+        and reference.root_module_name in first_party,
+    )
+    RELATIVE = ("relative", 4, lambda reference, first_party: reference.is_relative)
 
     def __new__(
         cls,
         value: str,
         canonical_rank: int,
-        reference_matcher: Callable[[ImportFromModuleName], bool],
+        reference_matcher: Callable[[ImportFromModuleName, frozenset[str]], bool],
     ) -> ImportSourceGroup:
         member = str.__new__(cls, value)
         member._value_ = value
@@ -1151,23 +1170,27 @@ class ImportSourceGroup(StrEnum):
 
     @classmethod
     def from_declaration(
-        cls, declaration: ImportDeclarationABC
+        cls, declaration: ImportDeclarationABC, first_party: frozenset[str] = frozenset()
     ) -> tuple[ImportSourceGroup, ...]:
+        """`first_party` is the importing repository's own top-level modules
+        (`DeclaredRoot.first_party_for`): they sort after third-party imports."""
         if declaration.is_future_import:
             return (cls.FUTURE,)
         return tuple(
             dict.fromkeys(
-                cls.from_module_reference(reference)
+                cls.from_module_reference(reference, first_party)
                 for reference in declaration.module_references
             )
         )
 
     @classmethod
     def from_module_reference(
-        cls, reference: ImportFromModuleName
+        cls, reference: ImportFromModuleName, first_party: frozenset[str] = frozenset()
     ) -> ImportSourceGroup:
         """Require one declaration-owned match, independent of source-order rank."""
-        matches = tuple(group for group in cls if group._reference_matcher(reference))
+        matches = tuple(
+            group for group in cls if group._reference_matcher(reference, first_party)
+        )
         if len(matches) != 1:
             raise ValueError(
                 f"Import reference has no unique canonical source group: {reference.source!r}"
@@ -1181,6 +1204,14 @@ class RequestedImportStatement:
 
     statement: ast.Import | ast.ImportFrom
     scope: ModuleImportScope = ModuleImportScope.RUNTIME
+    first_party: frozenset[str] = frozenset()
+    """The importing repository's own top-level modules, once the statement is
+    placed in a file (`in_file`); they decide its first-party group."""
+
+    def in_file(self, file_path: str) -> RequestedImportStatement:
+        return replace(
+            self, first_party=DeclaredRoot.first_party_for(Path(file_path))
+        )
 
     @cached_property
     def declaration(self) -> ImportDeclarationABC:
@@ -1285,7 +1316,7 @@ class RequestedImportStatement:
     @property
     def source_groups(self) -> tuple[ImportSourceGroup, ...]:
         """Return groups derived from this statement's actual declaration."""
-        return ImportSourceGroup.from_declaration(self.declaration)
+        return ImportSourceGroup.from_declaration(self.declaration, self.first_party)
 
     @property
     def source_group(self) -> ImportSourceGroup:
@@ -1344,6 +1375,7 @@ class RequestedImportStatement:
             return RequestedImportStatement(
                 ast.copy_location(ast.Import(names=alias_nodes), self.statement),
                 scope=self.scope,
+                first_party=self.first_party,
             )
         return RequestedImportStatement(
             ast.copy_location(
@@ -1355,6 +1387,7 @@ class RequestedImportStatement:
                 self.statement,
             ),
             scope=self.scope,
+            first_party=self.first_party,
         )
 
 
@@ -1370,12 +1403,12 @@ class RequestedImportBlock:
         previous_statement: ast.Import | ast.ImportFrom | None,
     ) -> str:
         previous = (
-            RequestedImportStatement(previous_statement)
+            RequestedImportStatement(previous_statement).in_file(self.file_path)
             if previous_statement is not None
             else None
         )
         source_parts: list[str] = []
-        for statement in self.statements:
+        for statement in (statement.in_file(self.file_path) for statement in self.statements):
             if (
                 previous is not None
                 and previous.source_group is not statement.source_group
