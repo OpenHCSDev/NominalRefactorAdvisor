@@ -19,12 +19,13 @@ from __future__ import annotations
 
 import ast
 import re
-from collections.abc import Callable, Iterable, Iterator
+from collections.abc import Callable, Iterable, Iterator, Sequence
 from dataclasses import dataclass
 from functools import cached_property
 from pathlib import Path, PurePosixPath
 
 from nominal_refactor_advisor.ast_tools import (
+    CompactModuleIdentity,
     DomainSourcePathPolicy,
     ParsedModule,
     PythonSourcePathDiscovery,
@@ -118,6 +119,43 @@ class DestinationTable:
             )
         )
 
+    @property
+    def reads_classes(self) -> bool:
+        """Whether a row can name a module by a class it declares: only then does
+        resolving the table read any module's class headers."""
+
+        return any(row.owner_words() for row in self.rows)
+
+    def module_headers(
+        self,
+        modules: Sequence[ParsedModule],
+        class_headers: Callable[
+            [Sequence[ParsedModule]], Sequence[CompactModuleClassHeader]
+        ],
+    ) -> Sequence[CompactModuleIdentity]:
+        """What resolving the table reads of each module: its class headers when a
+        row names classes, else its name and path, which no cached payload holds."""
+
+        if self.reads_classes:
+            return class_headers(modules)
+        return tuple(
+            CompactModuleIdentity(module.module_name, module.file_path) for module in modules
+        )
+
+    @staticmethod
+    def class_declarations(
+        modules: Iterable[CompactModuleClassHeader],
+    ) -> dict[str, list[tuple[str, CompactModuleClassHeader]]]:
+        """Each top-level class name, with the package and module declaring it."""
+
+        declaring: dict[str, list[tuple[str, CompactModuleClassHeader]]] = {}
+        for module in modules:
+            package = ".".join(module.module_name.split(".")[1:-1])
+            for declared in module.classes:
+                if "." not in declared.qualname:
+                    declaring.setdefault(declared.qualname, []).append((package, module))
+        return declaring
+
     def scan_domain(
         self, policy: PythonSourcePathPolicy, roots: tuple[Path, ...]
     ) -> PythonSourcePathPolicy:
@@ -130,7 +168,7 @@ class DestinationTable:
         return TableDomain(self, policy, roots).policy()
 
     def destinations(
-        self, modules: Iterable[CompactModuleClassHeader]
+        self, modules: Iterable[CompactModuleIdentity]
     ) -> tuple[FlatModuleDestination, ...]:
         """Each flat module the table sends somewhere. A table describes the one root
         package holding the most of its row packages; every other root (a consumer
@@ -188,12 +226,11 @@ class DestinationTable:
         by_stem = {
             PurePosixPath(module.file_path).stem: module for module in flat_modules
         }
-        declaring: dict[str, list[tuple[str, CompactModuleClassHeader]]] = {}
-        for module in (*flat_modules, *package_modules):
-            package = ".".join(module.module_name.split(".")[1:-1])
-            for declared in module.classes:
-                if "." not in declared.qualname:
-                    declaring.setdefault(declared.qualname, []).append((package, module))
+        declaring = (
+            self.class_declarations((*flat_modules, *package_modules))
+            if self.reads_classes
+            else {}
+        )
         chosen: dict[str, str] = {}
         for row in self.rows:
             for name, destination in row.module_destinations():
