@@ -316,9 +316,8 @@ class CodemodSourceSnapshot(CodemodSelectorContext):
                         for file_path in sorted(self.sources_by_file_path)
                     ),
                     *(
-                        f"text\0{file_path}\0{len(texts)}\0{''.join(texts.values())}"
+                        f"text\0{file_path}\0{self.text_files[file_path].identity}"
                         for file_path in sorted(self.text_files)
-                        for texts in (self.text_files[file_path].sources(file_path),)
                     ),
                 )
             ).encode("utf-8"),

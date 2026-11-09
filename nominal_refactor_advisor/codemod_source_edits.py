@@ -1195,6 +1195,12 @@ class FileText(ABC):
     def required_text(self, path: Path) -> str:
         """The text of a file a reader found; a file that is gone refuses."""
 
+    @property
+    @abstractmethod
+    def identity(self) -> str:
+        """What this end contributes to a plan state's identity: which member it
+        is, and for a present file its text."""
+
 
 @dataclass(frozen=True)
 class PresentFileText(FileText):
@@ -1206,6 +1212,10 @@ class PresentFileText(FileText):
     def required_text(self, path: Path) -> str:
         return self.text
 
+    @property
+    def identity(self) -> str:
+        return f"present\0{self.text}"
+
 
 @dataclass(frozen=True)
 class AbsentFileText(FileText):
@@ -1214,6 +1224,10 @@ class AbsentFileText(FileText):
 
     def required_text(self, path: Path) -> str:
         raise ValueError(f"{path.as_posix()!r} is gone in this state of the plan")
+
+    @property
+    def identity(self) -> str:
+        return "absent"
 
 
 @dataclass(frozen=True, kw_only=True)
