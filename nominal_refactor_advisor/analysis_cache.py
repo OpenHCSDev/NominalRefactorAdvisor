@@ -54,7 +54,7 @@ from .source_identity import python_source_cache_signature
 class AnalysisCacheSchema:
     """Nominal schema identity for persisted detector-output cache entries."""
 
-    version: int = 18
+    version: int = 19
 
 
 analysis_cache_schema = AnalysisCacheSchema()
@@ -500,44 +500,12 @@ class AnalysisEngineSignature:
 
     @staticmethod
     def module_names() -> tuple[str, ...]:
-        return tuple(
-            dict.fromkeys(
-                (
-                    "nominal_refactor_advisor.analysis",
-                    "nominal_refactor_advisor.analysis_cache",
-                    *DetectorSemanticEngineSignature.module_names(),
-                )
-            )
-        )
+        """Orchestration and persistence. Each detector's own code is keyed on its
+        signature in the detector registry (`detector_implementation_hash`)."""
 
-
-@dataclass(frozen=True)
-class DetectorSemanticEngineSignature(AnalysisEngineSignature):
-    """Shared finding semantics independent of orchestration and persistence."""
-
-    @staticmethod
-    def projection_families() -> tuple[type[CollectedFamily], ...]:
-        """Return only projection families declared by registered detectors."""
-
-        return tuple(
-            dict.fromkeys(
-                family
-                for detector_type in IssueDetector.registered_detector_types()
-                if issubclass(
-                    detector_type,
-                    CompactModuleProjectionDetectorMixin,
-                )
-                for family in detector_type.compact_projection_families()
-            )
-        )
-
-    @classmethod
-    def module_names(cls) -> tuple[str, ...]:
-        return declaration_implementation_module_names(
-            (
-                *IssueDetector.registered_detector_types(),
-                *cls.projection_families(),
-            )
+        return (
+            "nominal_refactor_advisor.analysis",
+            "nominal_refactor_advisor.analysis_cache",
         )
 
 
@@ -598,12 +566,31 @@ class SourceFileSignatureCachePayload:
         return {entry.path: entry for entry in self.entries}
 
 
-def detector_module_source_hash(detector_type: type[IssueDetector]) -> str:
-    """Hash the module file that owns one detector implementation."""
+def detector_implementation_module_names(
+    detector_type: type[IssueDetector],
+) -> tuple[str, ...]:
+    """The modules whose code decides one detector's findings: the detector's
+    implementation closure and the projection families it reads."""
 
-    return ImplementationSource.from_module_name(
-        detector_type.__module__
-    ).source_signature
+    families = (
+        detector_type.compact_projection_families()
+        if issubclass(detector_type, CompactModuleProjectionDetectorMixin)
+        else ()
+    )
+    return declaration_implementation_module_names((detector_type, *families))
+
+
+@ScanCache.cached
+def detector_implementation_hash(detector_type: type[IssueDetector]) -> str:
+    """Hash every module that decides one detector's findings. A finding is keyed
+    on this, so an edit re-keys only the detectors whose code it reaches, not
+    every family in the engine."""
+
+    digest = hashlib.blake2s(digest_size=16)
+    for module_name in sorted(detector_implementation_module_names(detector_type)):
+        source = ImplementationSource.from_module_name(module_name)
+        digest.update(f"{source.path}\0{source.source_signature}\n".encode())
+    return digest.hexdigest()
 
 
 def _module_source_signature(module_name: str) -> SourceFileSignature:
@@ -762,7 +749,7 @@ class DetectorRegistrySignature:
             implementation_import_path=detector_type.__module__,
             qualname=detector_type.__qualname__,
             first_lineno=first_lineno,
-            implementation_source_hash=detector_module_source_hash(detector_type),
+            implementation_source_hash=detector_implementation_hash(detector_type),
         )
 
 
@@ -778,14 +765,20 @@ class AnalysisCacheEntryContext:
         compare=False,
         repr=False,
     )
-    engine: AnalysisEngineSignature = field(
-        default_factory=AnalysisEngineSignature.current
-    )
     schema: AnalysisCacheSchema = analysis_cache_schema
 
 
 @dataclass(frozen=True, kw_only=True)
-class AnalysisCacheIdentity(AnalysisCacheEntryContext):
+class AnalysisOrchestrationContext(AnalysisCacheEntryContext):
+    """An entry over a whole run, which orchestration and persistence assemble too."""
+
+    engine: AnalysisEngineSignature = field(
+        default_factory=AnalysisEngineSignature.current
+    )
+
+
+@dataclass(frozen=True, kw_only=True)
+class AnalysisCacheIdentity(AnalysisOrchestrationContext):
     """Complete invalidation identity for one detector-output cache entry."""
 
     roots: tuple[str, ...]
@@ -905,7 +898,7 @@ class AnalysisCacheIdentity(AnalysisCacheEntryContext):
 
 
 @dataclass(frozen=True, kw_only=True)
-class AnalysisCacheFamilyIdentity(AnalysisCacheEntryContext):
+class AnalysisCacheFamilyIdentity(AnalysisOrchestrationContext):
     """Stable cache family for source-set comparisons across partial misses."""
 
     roots: tuple[str, ...]
@@ -994,9 +987,6 @@ class PerModuleAnalysisCacheFamilyIdentity(ReprCacheTokenMixin):
         compare=False,
         repr=False,
     )
-    engine: DetectorSemanticEngineSignature = field(
-        default_factory=DetectorSemanticEngineSignature.current
-    )
     schema: AnalysisCacheSchema = analysis_cache_schema
 
     @classmethod
@@ -1055,9 +1045,6 @@ class ContextualModuleAnalysisCacheIdentity(
 
     source_file: ModuleSourceSignature
     context_signature: str
-    engine: DetectorSemanticEngineSignature = field(
-        default_factory=DetectorSemanticEngineSignature.current
-    )
 
     @classmethod
     def from_module_context(
@@ -1093,9 +1080,6 @@ class GlobalDetectorAnalysisCacheIdentity(
     """Invalidation identity for one global detector keyed by semantic context."""
 
     context_signature: str
-    engine: DetectorSemanticEngineSignature = field(
-        default_factory=DetectorSemanticEngineSignature.current
-    )
 
     @classmethod
     def from_global_context(
@@ -1124,9 +1108,6 @@ class GlobalDetectorFamilyAnalysisCacheIdentity(
     """Report-independent output identity for one exact global detector family."""
 
     context_signature: str
-    engine: DetectorSemanticEngineSignature = field(
-        default_factory=DetectorSemanticEngineSignature.current
-    )
 
     @classmethod
     def from_global_context(

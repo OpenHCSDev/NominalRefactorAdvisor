@@ -96,7 +96,6 @@ from nominal_refactor_advisor.analysis_cache import (
     AnalysisCacheIdentity,
     AnalysisExecutionPlanCacheIdentity,
     AnalysisFindingCache,
-    DetectorSemanticEngineSignature,
     Hit,
     Miss,
     Partial,
@@ -13212,21 +13211,6 @@ def test_analysis_cache_identity_survives_content_preserving_touch(
     second_identity = AnalysisCacheIdentity.from_roots((tmp_path / "pkg",), config)
 
     assert second_identity == first_identity
-
-
-def test_analysis_cache_identity_derives_detector_semantic_engine(
-    tmp_path: Path,
-) -> None:
-    _write_module(tmp_path, "pkg/mod.py", "\nclass Cached:\n    pass\n")
-
-    identity = AnalysisCacheIdentity.from_roots(
-        (tmp_path / "pkg",),
-        DetectorConfig(),
-    )
-
-    assert frozenset(DetectorSemanticEngineSignature.current().source_files) <= (
-        frozenset(identity.engine.source_files)
-    )
 
 
 def test_analysis_cache_stores_count_summary_sidecar(tmp_path: Path) -> None:
