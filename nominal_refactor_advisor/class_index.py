@@ -114,7 +114,7 @@ from .collection_algebra import (
     UniqueIdentityIndexAuthority,
     sorted_tuple,
 )
-from .class_mro import ClassMroAuthority, DeclaredBases
+from .class_mro import ClassMroAuthority, DeclarationMroType, DeclaredBases
 from .overlap_receipts import OverlapReceiptKind
 from .foreign_family import FunctionDefinition
 from .product_declarations import (
@@ -739,14 +739,15 @@ class CompactAnnotatedFunctionReturn:
 class CompactDataclassFieldRole(StrEnum):
     """Dataclass field kinds with declaration-owned product admissibility."""
 
-    STORED_INIT = "stored_init", True, True, None, ()
-    CLASS_VARIABLE = "class_variable", False, False, None, ("typing.ClassVar",)
+    STORED_INIT = "stored_init", True, True, None, (), True
+    CLASS_VARIABLE = "class_variable", False, False, None, ("typing.ClassVar",), False
     KEYWORD_ONLY_SENTINEL = (
         "keyword_only_sentinel",
         False,
         False,
         None,
         ("dataclasses.KW_ONLY",),
+        False,
     )
     STORED_NON_INIT = (
         "stored_non_init",
@@ -754,6 +755,7 @@ class CompactDataclassFieldRole(StrEnum):
         True,
         CompactProductAuthorityViolation.NON_INIT_FIELD,
         (),
+        False,
     )
     INIT_ONLY = (
         "init_only",
@@ -761,6 +763,7 @@ class CompactDataclassFieldRole(StrEnum):
         True,
         CompactProductAuthorityViolation.INIT_ONLY_FIELD,
         ("dataclasses.InitVar",),
+        True,
     )
     UNRESOLVED = (
         "unresolved",
@@ -783,6 +786,9 @@ class CompactDataclassFieldRole(StrEnum):
     contributes_semantic_field: bool
     authority_violation: CompactProductAuthorityViolation | None
     annotation_qualified_names: tuple[str, ...]
+    init_parameter: bool | None
+    """Whether the generated `__init__` takes the field as a parameter; None
+    while the role is unresolved."""
 
     def __new__(
         cls,
@@ -791,6 +797,7 @@ class CompactDataclassFieldRole(StrEnum):
         contributes_semantic_field: bool,
         authority_violation: CompactProductAuthorityViolation | None,
         annotation_qualified_names: tuple[str, ...],
+        init_parameter: bool | None = None,
     ) -> Self:
         member = str.__new__(cls, value)
         member._value_ = value
@@ -798,6 +805,7 @@ class CompactDataclassFieldRole(StrEnum):
         member.contributes_semantic_field = contributes_semantic_field
         member.authority_violation = authority_violation
         member.annotation_qualified_names = annotation_qualified_names
+        member.init_parameter = init_parameter
         return member
 
     @classmethod
@@ -896,6 +904,18 @@ class CompactDataclassFieldDeclaration(NamedTuple):
     binding: DataclassInitBinding
     declaration_call: CompactFieldDeclarationCall | None = None
 
+    def binds_by_position(self, class_symbol: str) -> bool:
+        """Whether a positional call to `class_symbol`'s generated `__init__`
+        binds this field. Raises when its role or keyword-only-ness is unknown."""
+
+        if self.role.init_parameter is None:
+            raise ValueError(f"`{class_symbol}`'s field `{self.name}` has an unresolved role")
+        if self.binding is DataclassInitBinding.UNKNOWN:
+            raise ValueError(
+                f"`{class_symbol}`'s field `{self.name}` is keyword-only by a non-literal"
+            )
+        return self.role.init_parameter and self.binding is DataclassInitBinding.POSITIONAL
+
     def settled(self, index: FieldDeclarationIndex) -> CompactDataclassFieldDeclaration:
         """The member once the repository says whether its call declares a field."""
 
@@ -935,27 +955,6 @@ class CompactProductAuthority(ProductDeclarationSite):
     @property
     def field_names(self) -> tuple[str, ...]:
         return tuple(field.name for field in self.fields)
-
-    def positional_parameter_names(self) -> tuple[str, ...]:
-        """The generated `__init__`'s positional parameters, in order: every
-        field not keyword-only, in field order. Raises when a field's binding
-        is unknown."""
-
-        unknown = tuple(
-            field.name
-            for field in self.fields
-            if field.binding is DataclassInitBinding.UNKNOWN
-        )
-        if unknown:
-            raise ValueError(
-                f"`{self.class_symbol}` has field(s) {list(unknown)} whose "
-                "keyword-only-ness is not a literal"
-            )
-        return tuple(
-            field.name
-            for field in self.fields
-            if field.binding is DataclassInitBinding.POSITIONAL
-        )
 
 
 @dataclass(frozen=True)
@@ -2675,6 +2674,84 @@ class CompactClassFamilyIndex(ClassDeclarationIndex[CompactIndexedClass]):
             )
             for class_symbol, indexed_class in self.classes_by_symbol.items()
         }
+
+    def construction_parameters(self, symbol: str) -> tuple[str, ...]:
+        """The positional parameters a call `symbol(...)` binds, in order: those
+        of the `__init__` the first dataclass along its MRO generates.
+
+        Only `__init__`, `__new__` and `__init_subclass__` change which
+        parameters a call binds: an `__init__` met first replaces the generated
+        one, a `__new__` anywhere along the MRO sees the arguments as passed,
+        and a creation hook leaves the MRO open. Every other hook
+        (`__post_init__`, `__setattr__`, `__slots__`, ...) runs after the
+        parameters are bound, and any number of parents is fine once Python
+        orders them. Raises, naming the reason, when the parameters are unknown.
+        """
+
+        mro = self.mro_authority.resolve(symbol).mro_type
+        if mro is None:
+            raise ValueError(f"`{symbol}` has no closed runtime MRO")
+        for declaration in mro.declarations:
+            if "__new__" in declaration.bound_member_names:
+                raise ValueError(
+                    f"`{declaration.symbol}` defines `__new__`, which sees the arguments as passed"
+                )
+        for entry in mro.__mro__:
+            if not isinstance(entry, DeclarationMroType):
+                continue
+            if "__init__" in entry.declaration.bound_member_names:
+                raise ValueError(
+                    f"`{entry.declaration.symbol}` defines the `__init__` `{symbol}` runs"
+                )
+            facet = entry.declaration.dataclass_declaration
+            if facet.generates_construction and not any(
+                failure.violation is CompactProductAuthorityViolation.GENERATED_INIT_DISABLED
+                for failure in facet.failures
+            ):
+                return tuple(
+                    field.name
+                    for field in self.dataclass_fields(entry).values()
+                    if field.binds_by_position(symbol)
+                )
+        return ()
+
+    def dataclass_fields(
+        self, mro: DeclarationMroType[CompactIndexedClass]
+    ) -> dict[str, CompactDataclassFieldDeclaration]:
+        """The `__dataclass_fields__` a class with this MRO reads, as `dataclasses`
+        builds it: a dataclass merges every MRO entry's `__dataclass_fields__`
+        from the root down, then its own, so a redeclared name keeps its first
+        position and takes the latest value; any other class inherits the
+        first dataclass's along its MRO. A `KW_ONLY` marker stays in, binding
+        nothing. Raises when a dataclass's fields cannot be read from its
+        source."""
+
+        owner = next(
+            (
+                entry
+                for entry in mro.__mro__
+                if isinstance(entry, DeclarationMroType)
+                and entry.declaration.dataclass_declaration.generates_construction
+            ),
+            None,
+        )
+        if owner is None:
+            return {}
+        declaration = owner.declaration.dataclass_declaration.require_standard(
+            f"`{owner.declaration.symbol}` is no standard dataclass"
+        )
+        for failure in declaration.failures:
+            if failure.violation.hides_fields:
+                raise ValueError(
+                    f"`{owner.declaration.symbol}`'s fields are not in its source: "
+                    f"{failure.violation.explanation}"
+                )
+        fields: dict[str, CompactDataclassFieldDeclaration] = {}
+        for base in reversed(owner.__mro__[1:]):
+            if isinstance(base, DeclarationMroType):
+                fields.update(self.dataclass_fields(base))
+        fields.update((field.name, field) for field in declaration.fields)
+        return fields
 
 
 ClosedLeafMethodAuthorityPredicate: TypeAlias = Callable[

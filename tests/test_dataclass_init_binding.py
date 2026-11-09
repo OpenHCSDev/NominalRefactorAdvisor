@@ -1,6 +1,9 @@
 """The class index records how each dataclass field binds in `__init__` (#86)."""
 
+import inspect
 from pathlib import Path
+
+import pytest
 
 from nominal_refactor_advisor.ast_tools import SourceModule
 from nominal_refactor_advisor.class_index import (
@@ -56,17 +59,96 @@ def test_each_field_records_its_init_binding_from_field_sentinel_and_decorator()
             "e": DataclassInitBinding.KEYWORD_ONLY,
             "f": DataclassInitBinding.POSITIONAL,
         }
-        assert child.positional_parameter_names() == ("a", "c", "d", "f")
-        assert authority(index, "records.AllKeyword").positional_parameter_names() == (
-            "h",
-        )
+        assert index.construction_parameters("records.Child") == ("a", "c", "d", "f")
+        assert index.construction_parameters("records.AllKeyword") == ("h",)
         dynamic = authority(index, "records.Dynamic")
         assert [field.binding for field in dynamic.fields] == [
             DataclassInitBinding.UNKNOWN
         ]
-        try:
-            dynamic.positional_parameter_names()
-        except ValueError as error:
-            assert "not a literal" in str(error)
-        else:
-            raise AssertionError("an unknown binding must refuse")
+        with pytest.raises(ValueError, match="non-literal"):
+            index.construction_parameters("records.Dynamic")
+
+
+CONSTRUCTION_SOURCE = """\
+from dataclasses import InitVar, dataclass, field
+
+class Named:
+    def label(self) -> str:
+        return type(self).__name__
+
+@dataclass
+class Root:
+    a: int
+    b: int = 0
+
+@dataclass
+class Left(Root):
+    c: int = 0
+
+@dataclass
+class Right(Root):
+    a: int = 5
+    d: int = 0
+
+@dataclass
+class Joined(Left, Right):
+    e: int = 0
+
+@dataclass
+class Labelled(Named, Root):
+    seed: InitVar[int] = 0
+    cached: int = field(init=False, default=0)
+
+    def __post_init__(self, seed: int) -> None:
+        self.cached = seed
+
+class Plain(Joined):
+    pass
+"""
+
+
+def test_construction_parameters_follow_the_generated_init_along_the_mro():
+    """Two dataclass parents, a mixin, `__post_init__`, an `InitVar` and a plain
+    subclass all bind exactly what Python's own `__init__` takes."""
+
+    namespace: dict[str, object] = {}
+    exec(CONSTRUCTION_SOURCE, namespace)
+    modules = (SourceModule(Path("shapes.py"), "shapes", CONSTRUCTION_SOURCE).parse(),)
+    with ScanCache.scope():
+        index = CompactClassFamilyIndex.from_modules(modules)
+        for name in ("Root", "Left", "Right", "Joined", "Labelled", "Plain"):
+            parameters = inspect.signature(namespace[name]).parameters.values()
+            assert index.construction_parameters(f"shapes.{name}") == tuple(
+                parameter.name
+                for parameter in parameters
+                if parameter.kind is inspect.Parameter.POSITIONAL_OR_KEYWORD
+            ), name
+
+
+@pytest.mark.parametrize(
+    ("body", "refusal"),
+    (
+        ("    def __init__(self, a: int) -> None:\n        self.a = a\n", "defines the `__init__`"),
+        ("    def __new__(cls, *args, **kwargs):\n        return super().__new__(cls)\n", "`__new__`"),
+        ("    def __init_subclass__(cls) -> None:\n        pass\n", "no closed runtime MRO"),
+    ),
+)
+def test_construction_parameters_refuse_what_rebinds_the_call(body, refusal):
+    source = f"from dataclasses import dataclass\n\n@dataclass\nclass Built:\n    a: int\n{body}"
+    modules = (SourceModule(Path("built.py"), "built", source).parse(),)
+    with ScanCache.scope():
+        index = CompactClassFamilyIndex.from_modules(modules)
+        with pytest.raises(ValueError, match=refusal):
+            index.construction_parameters("built.Built")
+
+
+def test_construction_parameters_refuse_an_outside_base_with_its_own_construction():
+    """`Exception` brings its own `__new__` and `__init__`; the runtime MRO
+    admits no outside base but `object` and `ABC`, so the class stays open."""
+
+    source = "from dataclasses import dataclass\n\n@dataclass\nclass Failed(Exception):\n    a: int\n"
+    modules = (SourceModule(Path("failed.py"), "failed", source).parse(),)
+    with ScanCache.scope():
+        index = CompactClassFamilyIndex.from_modules(modules)
+        with pytest.raises(ValueError, match="no closed runtime MRO"):
+            index.construction_parameters("failed.Failed")
