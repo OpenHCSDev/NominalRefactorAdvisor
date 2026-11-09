@@ -1622,7 +1622,7 @@ class CodemodSimulationReport(DataclassJsonReport):
             self.rewritten_sources
         )
         if rewritten_deletions:
-            raise ValueError(
+            raise PhysicalSourceEditConflictError(
                 "A deleted source cannot also be rewritten: "
                 f"{tuple(sorted(rewritten_deletions))!r}"
             )
