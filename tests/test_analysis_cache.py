@@ -6475,6 +6475,36 @@ def test_parse_cache_persists_semantic_source_hash(
     assert hash_calls == 1
 
 
+def test_parse_cache_serves_semantic_hash_to_a_second_checkout_of_the_same_text(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The semantic hash is a function of the source text: a fresh worktree of the
+    same commit, as every package move gets, reads every file's hash back
+    instead of re-tokenizing it."""
+
+    cache_dir = tmp_path / ".nra-cache" / "ast"
+    for checkout in ("first", "second"):
+        package_root = tmp_path / checkout / "pkg"
+        package_root.mkdir(parents=True)
+        (package_root / "mod.py").write_text("VALUE = 1\n", encoding="utf-8", newline="")
+    original_hash = ast_tools_module.semantic_python_source_hash
+    hash_calls = 0
+
+    def counted_hash(source: str) -> str:
+        nonlocal hash_calls
+        hash_calls += 1
+        return original_hash(source)
+
+    monkeypatch.setattr(ast_tools_module, "semantic_python_source_hash", counted_hash)
+
+    first = parse_python_modules(tmp_path / "first" / "pkg", cache_dir=cache_dir)[0]
+    second = parse_python_modules(tmp_path / "second" / "pkg", cache_dir=cache_dir)[0]
+
+    assert first.semantic_hash == second.semantic_hash
+    assert hash_calls == 1
+
+
 def test_single_source_parser_rejects_stale_semantic_hash_identity(
     tmp_path: Path,
 ) -> None:

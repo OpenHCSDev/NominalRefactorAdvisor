@@ -159,7 +159,7 @@ _DEFAULT_PARSE_WORKERS = 1
 class SemanticHashCacheSchema:
     """Nominal schema identity for persisted source semantic-hash entries."""
 
-    version: int = 3
+    version: int = 4
 
 
 class SemanticHashCachePayloadUnavailable:
@@ -176,8 +176,10 @@ class FileStat:
 
 
 @dataclass(frozen=True, kw_only=True)
-class SemanticHashCachePayload(FileStat):
-    """Persisted semantic hash for one source file signature.
+class SemanticHashCachePayload:
+    """Persisted semantic hash of one exact source text, keyed by that text's
+    signature: the hash is a function of the source alone, so every checkout
+    holding the same text reads the same entry.
 
     The AST is not stored: unpickling it costs as much as ``ast.parse``.
     """
@@ -187,18 +189,10 @@ class SemanticHashCachePayload(FileStat):
     python_version: PythonVersion
     semantic_hash: str
 
-    def matches(
-        self,
-        path: Path,
-        path_stat: os.stat_result,
-        source_signature: str,
-    ) -> bool:
+    def matches(self, source_signature: str) -> bool:
         return (
             self.version == semantic_hash_cache_schema.version
-            and self.path == str(path.resolve())
             and self.source_signature == source_signature
-            and self.mtime_ns == path_stat.st_mtime_ns
-            and self.size == path_stat.st_size
             and self.python_version == PythonVersion.running()
         )
 
@@ -653,26 +647,18 @@ def structural_ast_hash(
     return digest.hexdigest()
 
 
-def _cache_entry_path(cache_dir: Path, path: Path) -> Path:
-    token = hashlib.blake2s(
-        str(path.resolve()).encode("utf-8"), digest_size=16
-    ).hexdigest()
-    return cache_dir / f"{token}.pickle"
+def _cache_entry_path(cache_dir: Path, source_signature: str) -> Path:
+    return cache_dir / f"semantic-{source_signature}.pickle"
 
 
 def _load_cached_semantic_hash(
-    path: Path,
     source_signature: str,
     *,
     cache_dir: Path | None = None,
 ) -> SemanticHashCachePayload | None:
     if cache_dir is None:
         return None
-    try:
-        path_stat = path.stat()
-    except OSError:
-        return None
-    cache_path = _cache_entry_path(cache_dir, path)
+    cache_path = _cache_entry_path(cache_dir, source_signature)
     try:
         with cache_path.open("rb") as handle:
             payload = pickle.load(handle)
@@ -689,13 +675,12 @@ def _load_cached_semantic_hash(
         payload = semantic_hash_payload_unavailable
     if not isinstance(payload, SemanticHashCachePayload):
         return None
-    if not payload.matches(path, path_stat, source_signature):
+    if not payload.matches(source_signature):
         return None
     return payload
 
 
 def _write_cached_semantic_hash(
-    path: Path,
     source_signature: str,
     semantic_hash: str,
     *,
@@ -703,16 +688,9 @@ def _write_cached_semantic_hash(
 ) -> None:
     if cache_dir is None:
         return
-    try:
-        path_stat = path.stat()
-    except OSError:
-        return
-    cache_entry = _cache_entry_path(cache_dir, path)
+    cache_entry = _cache_entry_path(cache_dir, source_signature)
     payload = SemanticHashCachePayload(
         version=semantic_hash_cache_schema.version,
-        path=str(path.resolve()),
-        mtime_ns=path_stat.st_mtime_ns,
-        size=path_stat.st_size,
         source_signature=source_signature,
         python_version=PythonVersion.running(),
         semantic_hash=semantic_hash,
@@ -740,7 +718,7 @@ def _parse_source_module(
     )
     if semantic_hash is None and context.use_parse_cache:
         cached_payload = _load_cached_semantic_hash(
-            path, source_signature, cache_dir=context.parse_cache_dir
+            source_signature, cache_dir=context.parse_cache_dir
         )
         if cached_payload is not None:
             semantic_hash = cached_payload.semantic_hash
@@ -750,7 +728,6 @@ def _parse_source_module(
         semantic_hash = semantic_python_source_hash(source)
         if context.use_parse_cache:
             _write_cached_semantic_hash(
-                path,
                 source_signature,
                 semantic_hash,
                 cache_dir=context.parse_cache_dir,
