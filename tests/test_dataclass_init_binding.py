@@ -140,3 +140,15 @@ def test_construction_parameters_refuse_what_rebinds_the_call(body, refusal):
         index = CompactClassFamilyIndex.from_modules(modules)
         with pytest.raises(ValueError, match=refusal):
             index.construction_parameters("built.Built")
+
+
+def test_construction_parameters_refuse_an_outside_base_with_its_own_construction():
+    """`Exception` brings its own `__new__` and `__init__`; the runtime MRO
+    admits no outside base but `object` and `ABC`, so the class stays open."""
+
+    source = "from dataclasses import dataclass\n\n@dataclass\nclass Failed(Exception):\n    a: int\n"
+    modules = (SourceModule(Path("failed.py"), "failed", source).parse(),)
+    with ScanCache.scope():
+        index = CompactClassFamilyIndex.from_modules(modules)
+        with pytest.raises(ValueError, match="no closed runtime MRO"):
+            index.construction_parameters("failed.Failed")
