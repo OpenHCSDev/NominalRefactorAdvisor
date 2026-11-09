@@ -242,9 +242,9 @@ def test_module_dependency_consumer_enters_the_same_actual_module_scope(monkeypa
     scopes = []
     original = _DeclarationDependencyCollector._record_reference
 
-    def record(self, node, resolution):
+    def record(self, node, resolution, binding_scope):
         scopes.append(tuple(self.scopes))
-        return original(self, node, resolution)
+        return original(self, node, resolution, binding_scope)
 
     monkeypatch.setattr(_DeclarationDependencyCollector, "_record_reference", record)
     dependencies = ModuleLexicalDependencyProjection.from_module(root)
