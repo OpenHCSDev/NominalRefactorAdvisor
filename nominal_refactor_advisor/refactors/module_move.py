@@ -1991,7 +1991,7 @@ class SourceTopLevelSymbolClosureMovePlan(SourceTopLevelSymbolClosureMoveCarrier
         declarations = selection.declarations
         moved_names = frozenset(declaration.name for declaration in declarations)
         moved_dependencies = DeclarationDependencyProjection.from_declarations(
-            tuple(declaration.node for declaration in declarations)
+            tuple(statement for declaration in declarations for statement in declaration.statements)
         )
         source_annotation_mode = ModuleAnnotationEvaluationMode.from_module(
             source_table.module

@@ -9,6 +9,7 @@ from collections import defaultdict, deque
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from functools import cached_property
+from itertools import takewhile
 from typing import ClassVar, cast
 
 from metaclass_registry import AutoRegisterMeta
@@ -51,7 +52,7 @@ from nominal_refactor_advisor.codemod_imports import (
     RequestedImportStatement as RequestedImportStatement,
 )
 from nominal_refactor_advisor.codemod_source_edits import (
-    DocumentedNodeSpan,
+    ExtendedNodeSpan,
     Include,
     SourceLineSpan,
     SourceNodeSpan,
@@ -858,10 +859,10 @@ class DocumentedAssignedSourceTopLevelDeclaration(AssignedSourceTopLevelDeclarat
 
     @cached_property
     def source_span(self) -> SourceNodeSpan:
-        return DocumentedNodeSpan(
+        return ExtendedNodeSpan(
             self.node,
             decorator_policy=Include,
-            docstring=self.docstring,
+            through=self.docstring,
         )
 
     def documented_by(self, following: ast.stmt) -> SourceTopLevelDeclaration:
@@ -870,6 +871,59 @@ class DocumentedAssignedSourceTopLevelDeclaration(AssignedSourceTopLevelDeclarat
     @property
     def statements(self) -> tuple[ast.stmt, ...]:
         return (self.node, self.docstring)
+
+
+@dataclass(frozen=True)
+class CarryingSourceTopLevelDeclaration(SourceTopLevelDeclaration):
+    """A declaration and the statements right after it that bind nothing, which a
+    whole module's move carries with it: an `assert` on the constant above it, a
+    registration call. They run where the declaration does, after it."""
+
+    declaration: SourceTopLevelDeclaration
+    carried: tuple[ast.stmt, ...]
+
+    @classmethod
+    def from_supported_statement(
+        cls,
+        source_path: str,
+        statement: ast.stmt,
+    ) -> SourceTopLevelDeclaration | None:
+        """Carrying spans several statements; `SourceTopLevelDeclarationIndex.carrying`
+        builds it."""
+
+        return None
+
+    @property
+    def name(self) -> str:
+        return self.declaration.name
+
+    def name_span(self, source: str) -> SourceTextSpan:
+        return self.declaration.name_span(source)
+
+    @property
+    def assigned_binding_names(self) -> frozenset[str]:
+        return self.declaration.assigned_binding_names
+
+    @property
+    def destination_boundary(self) -> SourceInsertionBoundary:
+        return self.declaration.destination_boundary
+
+    @cached_property
+    def source_span(self) -> SourceNodeSpan:
+        return ExtendedNodeSpan(self.node, decorator_policy=Include, through=self.carried[-1])
+
+    @property
+    def statements(self) -> tuple[ast.stmt, ...]:
+        return (*self.declaration.statements, *self.carried)
+
+
+def _carried_statement(statement: ast.stmt) -> bool:
+    """What a whole module's move carries with the declaration before it: an `assert`
+    or a bare call (`register(Name)`). A script guard, an import or a binding stays."""
+
+    return isinstance(statement, ast.Assert) or (
+        isinstance(statement, ast.Expr) and isinstance(statement.value, ast.Call)
+    )
 
 
 @dataclass(frozen=True)
@@ -958,6 +1012,22 @@ class SourceTopLevelDeclarationIndex:
             )
         return declaration
 
+    def carrying(self, declaration: SourceTopLevelDeclaration) -> SourceTopLevelDeclaration:
+        """`declaration` with the run of carried statements right after it, if any."""
+
+        body = self.module.body
+        last = declaration.statements[-1]
+        after = next(index for index, statement in enumerate(body) if statement is last) + 1
+        carried = tuple(takewhile(_carried_statement, body[after:]))
+        if not carried:
+            return declaration
+        return CarryingSourceTopLevelDeclaration(
+            source_path=self.source_path,
+            node=declaration.node,
+            declaration=declaration,
+            carried=carried,
+        )
+
     def required_declarations(
         self,
         names: Iterable[str],
@@ -997,7 +1067,12 @@ class SourceTopLevelSymbolMoveSelection:
             source_path=source_path,
             module=module,
         )
-        declarations = declaration_index.required_declarations(symbol_qualnames)
+        names = tuple(symbol_qualnames)
+        declarations = declaration_index.required_declarations(names)
+        if {declaration.name for declaration in declaration_index.declarations} <= set(names):
+            # Every declaration moves, so the module moves whole: the statements
+            # between them that bind nothing move too, after what they follow.
+            declarations = tuple(map(declaration_index.carrying, declarations))
         return cls(
             source_path=source_path,
             requested_declarations=declarations,
