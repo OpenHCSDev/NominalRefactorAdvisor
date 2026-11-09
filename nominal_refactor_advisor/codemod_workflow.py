@@ -1543,7 +1543,7 @@ class CodemodWorkflowScan:
     modules: ParsedModuleSet
     findings: list[RefactorFinding]
     scan_mode: CodemodProjectedScanMode = CodemodProjectedScanMode.EXACT
-    text_files: Mapping[str, FileText] = field(default_factory=dict, repr=False, compare=False)
+    text_files: Mapping[str, FileText] = field(default_factory=dict, repr=False)
     """The files outside the Python index the stages so far have rewritten."""
 
     @property

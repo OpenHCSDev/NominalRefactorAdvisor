@@ -5717,6 +5717,40 @@ def test_codemod_snapshot_reparsing_preserves_indexed_module_identity() -> None:
     assert snapshot.source_state_id != other_identity_snapshot.source_state_id
 
 
+def test_a_plan_state_is_also_the_text_files_its_stages_rewrote() -> None:
+    """Two states with the same Python sources and a different pyproject.toml are
+    different states: a later stage reads the manifest, so the search must not
+    merge them; the same carried text is the same state."""
+
+    from nominal_refactor_advisor.codemod_source_edits import AbsentFileText, PresentFileText
+
+    source = "VALUE = 1\n"
+    snapshot = CodemodSourceSnapshot.from_modules(
+        ParsedModuleSet.of((
+            ParsedModule(
+                path=Path("/workspace/pkg/source.py"),
+                module_name="pkg.source",
+                module=ast.parse(source),
+                source=source,
+            ),
+        ))
+    )
+    manifest = "/workspace/pyproject.toml"
+    old = snapshot.with_text_files({manifest: PresentFileText('x = "pkg.source:main"\n')})
+    new = snapshot.with_text_files({manifest: PresentFileText('x = "pkg.tool:main"\n')})
+    gone = snapshot.with_text_files({manifest: AbsentFileText()})
+    empty = snapshot.with_text_files({manifest: PresentFileText("")})
+
+    identities = {s.source_state_id for s in (snapshot, old, new, gone, empty)}
+    assert len(identities) == 5
+    assert old == snapshot.with_text_files({manifest: PresentFileText('x = "pkg.source:main"\n')})
+    assert old != new
+    assert (
+        old.source_state_id
+        == snapshot.with_text_files({manifest: PresentFileText('x = "pkg.source:main"\n')}).source_state_id
+    )
+
+
 def test_virtual_source_overlay_reuses_unchanged_ast_and_class_records(
     tmp_path: Path,
 ) -> None:

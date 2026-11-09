@@ -184,7 +184,7 @@ def _parsed_modules_from_source_mapping(
 class CodemodSourceSnapshot(CodemodSelectorContext):
     """Source-index, source text, and semantic indexes for codemod execution."""
 
-    text_files: Mapping[str, FileText] = field(default_factory=dict, repr=False, compare=False)
+    text_files: Mapping[str, FileText] = field(default_factory=dict, repr=False)
     """Files outside the Python index that earlier stages of the plan rewrote, as
     this state has them; every other one is as it is on disk."""
 
@@ -298,7 +298,9 @@ class CodemodSourceSnapshot(CodemodSelectorContext):
 
     @cached_property
     def source_state_id(self) -> str:
-        """Return the exact identity of this complete source state."""
+        """Return the exact identity of this complete source state: its Python
+        sources and the files outside the index the plan has rewritten, which a
+        later stage reads as much as it reads the sources."""
 
         source_files_by_path = {
             source_file.file_path: source_file
@@ -307,11 +309,17 @@ class CodemodSourceSnapshot(CodemodSelectorContext):
         return hashlib.blake2s(
             "\0".join(
                 (
-                    f"{file_path}\0{source_files_by_path[file_path].module_name}\0"
-                    f"{int(source_files_by_path[file_path].is_package_init)}\0"
-                    f"{self.sources_by_file_path[file_path]}"
+                    *(
+                        f"{file_path}\0{source_files_by_path[file_path].module_name}\0"
+                        f"{int(source_files_by_path[file_path].is_package_init)}\0"
+                        f"{self.sources_by_file_path[file_path]}"
+                        for file_path in sorted(self.sources_by_file_path)
+                    ),
+                    *(
+                        f"text\0{file_path}\0{self.text_files[file_path].identity}"
+                        for file_path in sorted(self.text_files)
+                    ),
                 )
-                for file_path in sorted(self.sources_by_file_path)
             ).encode("utf-8"),
             digest_size=16,
         ).hexdigest()
