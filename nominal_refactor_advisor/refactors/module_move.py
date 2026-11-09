@@ -30,6 +30,7 @@ from ..source_index import SourceFileDigest
 from ..codemod_import_scopes import ModuleImportScope, TypeCheckingGuardProjection
 from ..codemod_imports import (
     ImportFromSource,
+    ImportLayout,
     ModuleImportMutation,
 )
 from ..codemod_module_declarations import (
@@ -434,6 +435,7 @@ class ModuleNameRedirect:
                         imported_name=owned[0].name,
                     ),
                     aliases=owned,
+                    layout=ImportLayout.of(statement, consumer_path),
                 ).source.strip()
                 for destination_path in sorted({self.destinations[alias.name] for alias in moved})
                 for owned in (
@@ -445,6 +447,7 @@ class ModuleNameRedirect:
                     ImportFromSource(
                         module_name=ImportFromModuleName.from_node(statement).source,
                         aliases=kept,
+                        layout=ImportLayout.of(statement, consumer_path),
                     ).source.strip()
                 )
             replacements.append(
@@ -489,11 +492,18 @@ class ModuleNameRedirect:
                     aliases=tuple(
                         alias for alias in moved if self.destinations[alias.name] == destination_path
                     ),
+                    layout=ImportLayout.as_written(statement),
                 ).source.strip()
                 for destination_path in sorted({self.destinations[alias.name] for alias in moved})
             ]
             if kept:
-                lines.append(ImportFromSource(module_name=source_module_name, aliases=kept).source.strip())
+                lines.append(
+                    ImportFromSource(
+                        module_name=source_module_name,
+                        aliases=kept,
+                        layout=ImportLayout.as_written(statement),
+                    ).source.strip()
+                )
             start, end = geometry.required_node_offsets(node)
             quote = source[start]
             text = "\n".join(lines)
@@ -687,6 +697,7 @@ class ModuleNameRedirect:
                         imported_name=owned[0].name,
                     ),
                     aliases=owned,
+                    layout=ImportLayout.fitted(consumer_path),
                 ).source,
                 scope=scope,
             )

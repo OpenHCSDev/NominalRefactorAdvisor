@@ -8,7 +8,7 @@ from dataclasses import dataclass
 
 from .codemod_import_graph import SourceModuleImportGraph
 from .codemod_import_scopes import ModuleImportScope
-from .codemod_imports import ImportFromSource, RequestedImportStatement
+from .codemod_imports import ImportFromSource, ImportLayout, RequestedImportStatement
 from .json_reports import (
     DataclassJsonReport,
     json_report_property,
@@ -194,4 +194,5 @@ class FromModuleImportBindingIdentity(ModuleImportBindingIdentity):
                     bound_name,
                 ),
             ),
+            layout=ImportLayout.fitted(importing_file_path),
         ).source
