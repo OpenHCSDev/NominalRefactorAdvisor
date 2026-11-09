@@ -12,6 +12,7 @@ from abc import ABC, abstractmethod
 from dataclasses import (
     dataclass,
     field,
+    fields,
     replace,
 )
 from enum import StrEnum
@@ -23,6 +24,7 @@ from typing import (
     Self,
     TypedDict,
     Unpack,
+    cast,
 )
 
 from metaclass_registry import AutoRegisterMeta
@@ -333,6 +335,24 @@ class OutcomeEstimate(ImpactDelta):
     pass
 
 
+class CheckoutPathField(ABC):
+    """Metadata a metrics field declares when its value names source paths of the
+    scanned checkout, so a cached finding moved to another checkout moves them."""
+
+    @abstractmethod
+    def moved(self, value: object, rebase: Callable[[str], str]) -> object: ...
+
+
+class OneCheckoutPath(CheckoutPathField):
+    def moved(self, value: object, rebase: Callable[[str], str]) -> object:
+        return rebase(str(value))
+
+
+class CheckoutPaths(CheckoutPathField):
+    def moved(self, value: object, rebase: Callable[[str], str]) -> object:
+        return tuple(rebase(path) for path in cast(tuple[str, ...], value))
+
+
 class FindingMetrics(SemanticRecord, ABC):
     """Base class for typed metric bags attached to findings."""
 
@@ -365,9 +385,17 @@ class FindingMetrics(SemanticRecord, ABC):
 
     def with_checkout_paths(self, rebase: Callable[[str], str]) -> Self:
         """These metrics with every source path they name moved by `rebase`, as
-        a cached finding moves to another checkout. Most metrics name none."""
+        a cached finding moves to another checkout: each field whose metadata
+        declares a CheckoutPathField moves by it."""
 
-        return self
+        moved = {
+            metric.name: metric.metadata[CheckoutPathField].moved(
+                getattr(self, metric.name), rebase
+            )
+            for metric in fields(self)
+            if CheckoutPathField in metric.metadata
+        }
+        return replace(self, **moved) if moved else self
 
     def semantic_fact_names(self) -> tuple[str, ...]:
         """Return declaration-owned fact names for descent graphs."""
@@ -489,20 +517,15 @@ class PackageDestinationMetrics(FindingMetrics):
     the same table sends anywhere in its root package: the cluster whose
     import graph orders the moves."""
 
-    destination_path: str
-    cluster_paths: tuple[str, ...]
-    cluster_destination_paths: tuple[str, ...]
-    cluster_merge_source_paths: tuple[str, ...] = ()
+    destination_path: str = field(metadata={CheckoutPathField: OneCheckoutPath()})
+    cluster_paths: tuple[str, ...] = field(metadata={CheckoutPathField: CheckoutPaths()})
+    cluster_destination_paths: tuple[str, ...] = field(
+        metadata={CheckoutPathField: CheckoutPaths()}
+    )
+    cluster_merge_source_paths: tuple[str, ...] = field(
+        default=(), metadata={CheckoutPathField: CheckoutPaths()}
+    )
     """The cluster's modules a row declares merging into another."""
-
-    def with_checkout_paths(self, rebase: Callable[[str], str]) -> Self:
-        return replace(
-            self,
-            destination_path=rebase(self.destination_path),
-            cluster_paths=tuple(map(rebase, self.cluster_paths)),
-            cluster_destination_paths=tuple(map(rebase, self.cluster_destination_paths)),
-            cluster_merge_source_paths=tuple(map(rebase, self.cluster_merge_source_paths)),
-        )
 
 
 @dataclass(frozen=True)
