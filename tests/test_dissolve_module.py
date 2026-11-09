@@ -259,6 +259,52 @@ def test_dissolution_refuses_a_consumer_with_no_owner_to_follow(
     assert message in reports[0].message
 
 
+def test_an_import_that_only_runs_the_dissolved_module_runs_every_module_it_imported(
+    tmp_path: Path,
+) -> None:
+    """The hub registers two tables by importing them, and `successor_path` names
+    only one. A consumer that imports the hub only to run it runs both of the hub's
+    imports instead, in the hub's order, so neither registration is lost."""
+
+    _write(tmp_path, "pkg/__init__.py", "")
+    _write(
+        tmp_path,
+        "pkg/registry.py",
+        "class Table:\n"
+        "    members: list[str] = []\n\n"
+        "    def __init_subclass__(cls) -> None:\n"
+        "        Table.members.append(cls.__name__)\n",
+    )
+    for name in ("a", "b"):
+        _write(
+            tmp_path,
+            f"pkg/{name}.py",
+            f"from pkg.registry import Table\n\n\nclass {name.upper()}(Table):\n    pass\n",
+        )
+    _write(tmp_path, "pkg/hub.py", "from .a import A\nfrom .b import B\n")
+    _write(
+        tmp_path,
+        "pkg/schema.py",
+        "from pkg.registry import Table\n\n\n"
+        "def tables() -> list[str]:\n"
+        "    import pkg.hub  # noqa: F401\n\n"
+        "    return Table.members\n",
+    )
+    simulation = (
+        RefactorRecipe("dissolve-hub")
+        .with_operation(_dissolve(tmp_path, "pkg/hub.py", successor="pkg/a.py"))
+        .simulate(_snapshot(tmp_path))
+    )
+
+    assert simulation.is_clean
+    schema = simulation.simulation.rewritten_sources[(tmp_path / "pkg/schema.py").as_posix()]
+    assert "    import pkg.a, pkg.b  # noqa: F401\n" in schema
+    simulation.apply()
+    imported = _run(tmp_path, "from pkg.schema import tables; print(tables())")
+    assert imported.returncode == 0, imported.stderr
+    assert imported.stdout.strip() == "['A', 'B']"
+
+
 def test_relocation_redirects_a_function_local_import(tmp_path: Path) -> None:
     _write(tmp_path, "pkg/__init__.py", "")
     _write(tmp_path, "pkg/source.py", "class Kept:\n    pass\n\n\nclass Moved:\n    value = 3\n")
