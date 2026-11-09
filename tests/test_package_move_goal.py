@@ -643,6 +643,8 @@ def test_entry_points_naming_two_moved_modules_follow_both_moves(tmp_path: Path)
         '[project]\nname = "pkg"\n\n[project.scripts]\n'
         'pkg-a = "pkg.planning.a:main"\npkg-b = "pkg.planning.b:main"\n'
     )
+
+
 def test_a_package_move_keeps_every_per_module_detector_exact_and_says_what_it_counted(
     tmp_path: Path,
 ) -> None:
@@ -706,3 +708,79 @@ def test_a_package_move_keeps_every_per_module_detector_exact_and_says_what_it_c
     assert per_module_ids <= set(coverage.detector_ids)
     report = runner.run()
     assert "from the stage proof's" in report.to_markdown()
+
+
+def test_an_alias_that_patches_and_reads_the_name_of_a_whole_module_follows_it(
+    tmp_path: Path,
+) -> None:
+    """agent-comms tests/test_native_package.py: its `native_package` alias reads
+    moved names, patches one, reads the module's own context name, and reads
+    `pin`, which the module only imports. When the whole module moves into a
+    module the move creates, its name follows the code, its imports travel with it,
+    and its top package's directory reads the same from the subpackage, so the
+    destination binds every name the alias reads and the alias is retargeted where
+    it stands."""
+
+    _write(tmp_path, "pkg/__init__.py", "")
+    _write(tmp_path, "pkg/installer/__init__.py", "")
+    _write(tmp_path, "pkg/pins.py", "def pin(text: str) -> str:\n    return text.upper()\n")
+    _write(
+        tmp_path,
+        "pkg/tool.py",
+        "from pathlib import Path\n\nfrom pkg.pins import pin\n\n"
+        "ROOT = Path(__file__).resolve().parents[(__package__ or '').count('.')]\n"
+        "MANIFEST = 'pinned'\n\n\n"
+        "def manifest() -> str:\n    return pin(MANIFEST)\n",
+    )
+    _write(
+        tmp_path,
+        "pkg/check.py",
+        "import pkg.tool as tool\n\n\n"
+        "def patched() -> str:\n"
+        "    setattr(tool, 'MANIFEST', 'patched')\n"
+        "    return tool.manifest()\n\n\n"
+        "NAME = f'{tool.__name__}.fixture'\n"
+        "PIN = tool.pin('x')\n",
+    )
+    report = _goal(tmp_path, "| `installer` | `tool.py` | |\n")
+
+    assert report.stop_reason is CodemodWorkflowStopReason.ACHIEVED, report.to_markdown()
+    replay = report.replay_sequence.simulate(
+        CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    )
+    assert replay.is_clean
+    replay.apply()
+    assert "import pkg.installer.tool as tool\n" in (tmp_path / "pkg/check.py").read_text()
+    imported = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "from pkg.check import patched, NAME, PIN; from pkg.installer.tool import ROOT; "
+            "print(patched(), NAME, ROOT.name, PIN)",
+        ],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert imported.returncode == 0, imported.stderr
+    assert imported.stdout.strip() == "PATCHED pkg.installer.tool.fixture pkg X"
+
+
+def test_a_package_read_as_a_value_stays_and_refuses(tmp_path: Path) -> None:
+    """agent_comms/team/package.py reads `files(__package__) / "rules"`: moved into a
+    subpackage, `__package__` names the subpackage, where `rules` does not exist,
+    so the move refuses rather than plan a lookup that now resolves elsewhere."""
+
+    _write(tmp_path, "pkg/__init__.py", "")
+    _write(tmp_path, "pkg/team/__init__.py", "")
+    _write(
+        tmp_path,
+        "pkg/package.py",
+        "from importlib.resources import files\n\n\n"
+        "def rules() -> object:\n    return files(__package__) / 'rules'\n",
+    )
+    report = _goal(tmp_path, "| `team` | `package.py` | |\n")
+
+    assert report.stages == ()
+    assert "__package__ (it reads `__package__`" in report.to_markdown()

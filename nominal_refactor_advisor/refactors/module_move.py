@@ -587,6 +587,15 @@ class ModuleNameRedirect:
         del name
         return frozenset()
 
+    def binding_reader_paths(self, name: str) -> frozenset[str]:
+        """The modules that bind `name` once the move lands besides the name's own
+        owner: an import the moved code carries, or a module-context name
+        (`__name__`, say) that follows the code. These owners create
+        no module, so there is none."""
+
+        del name
+        return frozenset()
+
     def patched_reader_path(self, name: str, file_path: str) -> str:
         """The module a patch of `source.name` must target instead: its one reader."""
 
@@ -668,10 +677,18 @@ class RelocationNameRedirect(ModuleNameRedirect):
     reader of a removed source import, lands in `reader_path`."""
 
     reader_path: str
+    reader_bindings: frozenset[str] = frozenset()
+    """The names `reader_path` binds once the move lands besides the moved
+    declarations: the imports the moved code carries, and the module-context
+    names that follow the code when every name the source declares moves into
+    the module this relocation creates."""
 
     def name_reader_paths(self, name: str) -> frozenset[str]:
         del name
         return frozenset((self.reader_path,))
+
+    def binding_reader_paths(self, name: str) -> frozenset[str]:
+        return frozenset((self.reader_path,)) if name in self.reader_bindings else frozenset()
 
 
 @dataclass(frozen=True)
@@ -828,6 +845,13 @@ class _AliasOwners(ABC):
     def access_owners(self, access: _NamedModuleMemberAccess) -> frozenset[str]:
         raise NotImplementedError
 
+    def attribute_readers(self, name: str) -> frozenset[str]:
+        """Every module `s.name` can be read from once the move lands; a use
+        whose owners name no one module for the alias can still share one of
+        these."""
+
+        return self.attribute_owners(name)
+
 
 @dataclass(frozen=True)
 class _RedirectOwners(_AliasOwners):
@@ -840,6 +864,11 @@ class _RedirectOwners(_AliasOwners):
         if name not in self.redirect.destinations:
             return frozenset()
         return self._modules((self.redirect.destinations[name],))
+
+    def attribute_readers(self, name: str) -> frozenset[str]:
+        """Its owner, and the module a whole moved module's code carries it into."""
+
+        return self.attribute_owners(name) | self._modules(self.redirect.binding_reader_paths(name))
 
     def access_owners(self, access: _NamedModuleMemberAccess) -> frozenset[str]:
         if access.member_name not in self.redirect.destinations:
@@ -922,22 +951,28 @@ class _SourceModuleAliasRetargets:
         scope: ast.AST | None,
         owners: _AliasOwners,
     ) -> tuple[str, ...]:
-        """The one module every use of the alias's variable in `scope` reaches a
-        moved name in, or none."""
+        """The one module every use of the alias's variable in `scope` reaches:
+        the one owner all its names share, else the one module all of them can
+        be read from once the move lands (a whole moved module, whose imports
+        travel with its code), or none."""
 
-        reached: set[str] = set()
+        owned: list[frozenset[str]] = []
+        readable: list[frozenset[str]] = []
         for node in index.uses_of(binding, scope):
             parent = index.parents.get(node)
             if isinstance(parent, ast.Attribute) and parent.value is node:
-                use_owners = owners.attribute_owners(parent.attr)
+                owned.append(owners.attribute_owners(parent.attr))
+                readable.append(owners.attribute_readers(parent.attr))
             elif access := _NamedModuleMemberAccess.of(node, index.parents):
-                use_owners = owners.access_owners(access)
+                owned.append(owners.access_owners(access))
+                readable.append(owners.access_owners(access))
             else:
                 return ()
-            if len(use_owners) != 1:
-                return ()
-            reached |= use_owners
-        return tuple(reached) if len(reached) == 1 else ()
+        for reached in (owned, readable):
+            common = frozenset.intersection(*reached) if reached else frozenset()
+            if len(common) == 1:
+                return tuple(common)
+        return ()
 
     def localized_edits(
         self,
@@ -1340,6 +1375,9 @@ class SourceTopLevelSymbolClosureMovePlan(SourceTopLevelSymbolClosureMoveCarrier
                 **{name: request.destination_path for name in moved_symbol_names},
             },
             reader_path=request.destination_path,
+            reader_bindings=operation.reader_bindings(
+                context, report, source_table, frozenset(moved_symbol_names)
+            ),
         )
         consumer_edits = (
             *destination_localizations,
@@ -1891,6 +1929,32 @@ class ModuleSymbolMoveOperation(RepositorySourceReprovedOperation, ABC):
         del context
         return frozenset()
 
+    def moves_whole_module(self, context: CodemodSelectorContext) -> bool:
+        """Whether the destination becomes the source module under a new name. A module
+        that already exists stays another module, so a move into one never does."""
+        del context
+        return False
+
+    def reader_bindings(
+        self,
+        context: CodemodSelectorContext,
+        report: ModuleMoveDependencyReport,
+        source_table: ModuleSymbolTable,
+        moved_names: frozenset[str],
+    ) -> frozenset[str]:
+        """What the destination binds for a source alias's readers besides the moved
+        declarations. Only a whole module's move makes the destination the module the
+        alias meant, with its imports travelling and its following context names read
+        there; any other move leaves those on the source that stays."""
+        if not self.moves_whole_module(context):
+            return frozenset()
+        return frozenset(
+            (
+                *report.imported_dependency_names,
+                *self.module_context_names_following(context, source_table, moved_names),
+            )
+        )
+
     def module_context_detail(self, context: CodemodSelectorContext, name: str) -> str:
         """How a module-context name the move leaves behind reads in its refusal."""
         del context
@@ -2082,15 +2146,22 @@ class ExistingModuleSymbolMoveOperationABC(ModuleSymbolMoveOperation, ABC):
         return self.move_source_edits(context)
 
 
+@dataclass(frozen=True)
 class _ModuleSiblingData(ABC):
-    """What a module reads beside itself through `__file__`. A move that takes the
-    whole module either carries those files with it, so `__file__` keeps naming the
-    module's own directory, or leaves `__file__` behind and refuses."""
+    """What a module reads about where it sits: files beside it through `__file__`, its
+    top package's directory, and `__package__` as a value. A move that takes the whole
+    module keeps a name following the code only while every read of it keeps its value
+    there: a file beside the module is carried along, the top package's directory is
+    the same from any module inside it, and `__package__` is unchanged only beside the
+    source. Every other name stays behind, with why, and the move refuses."""
+
+    stays: Mapping[str, str]
+    """Each location name whose reads change at the destination, with why."""
 
     @property
-    @abstractmethod
     def following(self) -> frozenset[str]:
         """The module-context names whose meaning this data lets follow the code."""
+        return frozenset(("__file__", "__package__")) - self.stays.keys()
 
     @abstractmethod
     def carry(
@@ -2099,37 +2170,60 @@ class _ModuleSiblingData(ABC):
 
     def detail(self, name: str) -> str:
         """How a module-context name that stays behind reads in the refusal."""
+        if name in self.stays:
+            return f"{name} ({self.stays[name]})"
         return name
 
     @classmethod
     def of(
         cls, context: CodemodSelectorContext, source_path: str, destination_path: str
     ) -> _ModuleSiblingData:
-        """Carried only when every `__file__` read is `Path(__file__).with_name(NAME)` or
-        `Path(__file__).parent / NAME` for a literal NAME, each NAME exists beside the
-        source, no other indexed module beside it spells that NAME, and nothing of that
-        name stands beside the destination yet."""
+        """Files are carried only when every `__file__` read is `Path(__file__).with_name(NAME)`,
+        `Path(__file__).parent / NAME` for a literal NAME, or the top package's directory
+        `Path(__file__).resolve().parents[(__package__ or "").count(".")]`; each NAME exists
+        beside the source, no other indexed module beside it spells that NAME, and
+        nothing of that name stands beside the destination yet."""
 
         source_dir = Path(source_path).parent
         destination_dir = Path(destination_path).parent
+        module = context.module_nodes_by_file_path[source_path]
+        stays: dict[str, str] = {}
         try:
-            names = _SiblingFileReads.names(context.module_nodes_by_file_path[source_path])
+            reads = _SiblingFileReads.reads(module)
         except _UnrecognizedFileRead as read:
-            return _NoSiblingCarry(f"it reads `__file__` as {read}, not as a file beside the module")
+            reads = ()
+            stays["__file__"] = f"it reads `__file__` as {read}, not as a file beside the module"
+        located = frozenset(node for read in reads for node in read.package_reads)
+        if located and not _TopPackageRead.keeps_value(
+            context.module_import_graph, source_path, destination_path
+        ):
+            stays["__file__"] = stays["__package__"] = (
+                "it reads its top package's directory, and the destination is in another top package"
+            )
+        if source_dir != destination_dir and any(
+            isinstance(node, ast.Name) and node.id == "__package__" and node not in located
+            for node in ast.walk(module)
+        ):
+            stays["__package__"] = "it reads `__package__`, which names another package at the destination"
+        names = frozenset(name for read in reads for name in read.sibling_names)
         if not names:
-            return _NoSiblingCarry("it reads `__file__` without naming a file beside the module")
+            if not located:
+                stays.setdefault("__file__", "it reads `__file__` without naming a file beside the module")
+            return _NoSiblingCarry(stays)
         # A neighbour reaches the file only by spelling its name.
         for other_path, other_module in context.module_nodes_by_file_path.items():
             if other_path != source_path and Path(other_path).parent == source_dir:
                 if shared := sorted(names & _SiblingFileReads.spelled(other_module)):
-                    return _NoSiblingCarry(f"{other_path!r} also names {shared!r}")
+                    return _NoSiblingCarry({**stays, "__file__": f"{other_path!r} also names {shared!r}"})
         files: list[tuple[Path, Path]] = []
         for name in sorted(names):
             sibling = source_dir / name
             if not sibling.exists():
-                return _NoSiblingCarry(f"{sibling.as_posix()!r} does not exist")
+                return _NoSiblingCarry({**stays, "__file__": f"{sibling.as_posix()!r} does not exist"})
             if (destination_dir / name).exists():
-                return _NoSiblingCarry(f"{(destination_dir / name).as_posix()!r} already exists")
+                return _NoSiblingCarry(
+                    {**stays, "__file__": f"{(destination_dir / name).as_posix()!r} already exists"}
+                )
             members = (
                 sorted(path for path in sibling.rglob("*") if path.is_file() and "__pycache__" not in path.parts)
                 if sibling.is_dir()
@@ -2142,22 +2236,13 @@ class _ModuleSiblingData(ABC):
                 for source, destination in files
             )
         except UnicodeDecodeError as error:
-            return _NoSiblingCarry(f"a file it reads is not UTF-8 text ({error.reason})")
-        return _CarriedSiblingData(texts)
+            return _NoSiblingCarry({**stays, "__file__": f"a file it reads is not UTF-8 text ({error.reason})"})
+        return _CarriedSiblingData(stays, texts)
 
 
 @dataclass(frozen=True)
 class _NoSiblingCarry(_ModuleSiblingData):
-    """`__file__` stays behind, for `reason`."""
-
-    reason: str
-
-    def detail(self, name: str) -> str:
-        return f"{name} ({self.reason})" if name == "__file__" else name
-
-    @property
-    def following(self) -> frozenset[str]:
-        return frozenset()
+    """No file beside the module moves with it."""
 
     def carry(
         self, context: CodemodSelectorContext, operation: RefactorRecipeOperation
@@ -2169,10 +2254,6 @@ class _NoSiblingCarry(_ModuleSiblingData):
 @dataclass(frozen=True)
 class _CarriedSiblingData(_ModuleSiblingData):
     files: tuple[tuple[str, str, str], ...]
-
-    @property
-    def following(self) -> frozenset[str]:
-        return frozenset(("__file__",))
 
     def carry(
         self, context: CodemodSelectorContext, operation: RefactorRecipeOperation
@@ -2196,22 +2277,78 @@ class _CarriedSiblingData(_ModuleSiblingData):
         )
 
 
+class _LocationRead(ABC):
+    """One read of where a module sits through `__file__`."""
+
+    @property
+    def sibling_names(self) -> frozenset[str]:
+        """The files beside the module this read names."""
+        return frozenset()
+
+    @property
+    def package_reads(self) -> frozenset[ast.Name]:
+        """The `__package__` reads this read accounts for."""
+        return frozenset()
+
+
+@dataclass(frozen=True)
+class _SiblingRead(_LocationRead):
+    """`Path(__file__).with_name(NAME)` or `Path(__file__).parent / NAME`."""
+
+    name: str
+
+    @property
+    def sibling_names(self) -> frozenset[str]:
+        return frozenset((self.name,))
+
+
+@dataclass(frozen=True)
+class _TopPackageRead(_LocationRead):
+    """`Path(__file__).resolve().parents[(__package__ or "").count(".")]`: the directory of
+    the module's top package, the same from every module inside it."""
+
+    package: ast.Name
+
+    @property
+    def package_reads(self) -> frozenset[ast.Name]:
+        return frozenset((self.package,))
+
+    @staticmethod
+    def keeps_value(
+        import_graph: SourceModuleImportGraph, source_path: str, destination_path: str
+    ) -> bool:
+        """Whether the read names the same directory from the destination, whose
+        package is where it sits under the import root the source sits under."""
+        name = import_graph.module_name_for_file_path(source_path)
+        if name is None:
+            raise ValueError(f"Source module identity is unavailable for {source_path!r}")
+        source = Path(source_path)
+        root = source.parents[name.count(".") + (source.name == "__init__.py")]
+        destination = Path(destination_path)
+        if not destination.is_relative_to(root):
+            return False
+
+        def directory(path: Path) -> Path:
+            return path.parents[max(len(path.relative_to(root).parent.parts) - 1, 0)]
+
+        return directory(source) == directory(destination)
+
+
 class _UnrecognizedFileRead(ValueError):
     """A read of `__file__` other than naming a file beside the module."""
 
 
 class _SiblingFileReads:
-    """The literal names a module reads beside itself through `__file__`."""
+    """How a module reads where it sits through `__file__`."""
 
     @staticmethod
-    def names(module: ast.Module) -> frozenset[str]:
-        parents = {child: node for node in ast.walk(module) for child in ast.iter_child_nodes(node)}
-        names: set[str] = set()
-        for node in ast.walk(module):
-            if not (isinstance(node, ast.Name) and node.id == "__file__"):
-                continue
-            names.add(_SiblingFileReads._read(node, parents))
-        return frozenset(names)
+    def reads(module: ast.Module) -> tuple[_LocationRead, ...]:
+        parents: dict[ast.AST | None, ast.AST] = {child: node for node in ast.walk(module) for child in ast.iter_child_nodes(node)}
+        return tuple(
+            _SiblingFileReads._read(node, parents)
+            for node in ast.walk(module)
+            if isinstance(node, ast.Name) and node.id == "__file__"
+        )
 
     @staticmethod
     def spelled(module: ast.Module) -> frozenset[str]:
@@ -2223,7 +2360,7 @@ class _SiblingFileReads:
         )
 
     @staticmethod
-    def _read(node: ast.Name, parents: Mapping[ast.AST, ast.AST]) -> str:
+    def _read(node: ast.Name, parents: Mapping[ast.AST | None, ast.AST]) -> _LocationRead:
         call = parents.get(node)
         if not (
             isinstance(call, ast.Call)
@@ -2243,7 +2380,7 @@ class _SiblingFileReads:
                 and isinstance(named.args[0], ast.Constant)
                 and isinstance(named.args[0].value, str)
             ):
-                return named.args[0].value
+                return _SiblingRead(named.args[0].value)
         if isinstance(step, ast.Attribute) and step.attr == "parent":
             joined = parents.get(step)
             if (
@@ -2253,7 +2390,29 @@ class _SiblingFileReads:
                 and isinstance(joined.right, ast.Constant)
                 and isinstance(joined.right.value, str)
             ):
-                return joined.right.value
+                return _SiblingRead(joined.right.value)
+        if isinstance(step, ast.Attribute) and step.attr == "resolve":
+            resolved = parents.get(step)
+            ancestors = parents.get(resolved)
+            match resolved, ancestors, parents.get(ancestors):
+                case (
+                    ast.Call(args=[], keywords=[]) as resolution,
+                    ast.Attribute(attr="parents") as directories,
+                    ast.Subscript(
+                        slice=ast.Call(
+                            func=ast.Attribute(
+                                value=ast.BoolOp(
+                                    op=ast.Or(),
+                                    values=[ast.Name(id="__package__") as package, ast.Constant(value="")],
+                                ),
+                                attr="count",
+                            ),
+                            args=[ast.Constant(value=".")],
+                            keywords=[],
+                        )
+                    ) as indexed,
+                ) if resolution.func is step and indexed.value is directories:
+                    return _TopPackageRead(package)
         raise _UnrecognizedFileRead(ast.unparse(step or call))
 
 
@@ -2269,10 +2428,9 @@ class NewModuleSymbolMoveOperationABC(ModuleSymbolMoveOperation, ABC):
     ) -> frozenset[str]:
         """When every name the source declares moves into the module this move creates,
         the moved code is that module under its new name, so `__name__` (a logger's, say)
-        names the destination, and `__doc__` (an argparse description) reads the
-        docstring the destination opens with. `__file__` follows only when every read
-        of it is a file beside the module that the move carries along
-        (_ModuleSiblingData)."""
+        names the destination and `__doc__` (an argparse description) reads the
+        docstring the destination opens with. `__file__` and `__package__` follow only
+        while every read of them keeps its value at the destination (_ModuleSiblingData)."""
         if not source_table.declared_names <= moved_names:
             return frozenset()
         following = frozenset(("__name__",)) | self.sibling_data(context).following
