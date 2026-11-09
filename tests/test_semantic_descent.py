@@ -4605,11 +4605,7 @@ def test_semantic_mirror_class_collection_synthesizes_authority_query_recipe(
         "MODE_ENUMS: tuple[ModeEnum, ...] = tuple(LabeledMode.__subclasses__())"
     ) in rewritten
     assert (
-        "from .taxonomy import (\n"
-        "    CapabilityMode,\n"
-        "    LabeledMode,\n"
-        "    ObservationMode,\n"
-        ")\n"
+        "from .taxonomy import CapabilityMode, LabeledMode, ObservationMode\n"
     ) in rewritten
 
 
@@ -4672,11 +4668,7 @@ def test_semantic_mirror_class_name_collection_synthesizes_authority_query_recip
         "LabeledMode.__subclasses__())"
     ) in rewritten
     assert (
-        "from .taxonomy import (\n"
-        "    CapabilityMode,\n"
-        "    LabeledMode,\n"
-        "    ObservationMode,\n"
-        ")\n"
+        "from .taxonomy import CapabilityMode, LabeledMode, ObservationMode\n"
     ) in rewritten
 
 

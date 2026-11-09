@@ -492,7 +492,7 @@ class ModuleNameRedirect:
                     aliases=tuple(
                         alias for alias in moved if self.destinations[alias.name] == destination_path
                     ),
-                    layout=ImportLayout.as_written(statement),
+                    layout=ImportLayout.in_string(),
                 ).source.strip()
                 for destination_path in sorted({self.destinations[alias.name] for alias in moved})
             ]
@@ -501,7 +501,7 @@ class ModuleNameRedirect:
                     ImportFromSource(
                         module_name=source_module_name,
                         aliases=kept,
-                        layout=ImportLayout.as_written(statement),
+                        layout=ImportLayout.in_string(),
                     ).source.strip()
                 )
             start, end = geometry.required_node_offsets(node)

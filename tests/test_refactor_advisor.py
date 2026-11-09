@@ -6713,9 +6713,7 @@ def test_refactor_recipe_converts_literal_dispatch_to_polymorphism(
 
     assert simulation.is_clean is True
     assert simulation.simulation.applied_rewrite_count == 1
-    assert "+from abc import (" in diff
-    assert "+    ABC," in diff
-    assert "+    abstractmethod," in diff
+    assert "+from abc import ABC, abstractmethod\n" in diff
     assert "+class RenderDispatchCase(ABC, metaclass=AutoRegisterMeta):" in diff
     assert (
         '+    __registry__: ClassVar[dict[object, type["RenderDispatchCase"]]] = {}'
@@ -8593,7 +8591,7 @@ def test_refactor_recipe_moves_symbol_dependency_closure_between_modules(
 
     rewritten_source = source_path.read_text()
     rewritten_destination = destination_path.read_text()
-    assert "from pkg.destination import (" in rewritten_source
+    assert "from pkg.destination import Helper as Helper, LocalBase as LocalBase\n" in rewritten_source
     assert "    Helper as Helper," in rewritten_source
     assert "    LocalBase as LocalBase," in rewritten_source
     assert "from dataclasses import field" in rewritten_source
@@ -8846,7 +8844,7 @@ def test_symbol_move_preserves_dependencies_shadowed_in_nested_scope(
     )
 
     assert report.imported_dependency_names == ("Base", "External")
-    assert "from .dependencies import (\n    Base,\n    External,\n)" in (
+    assert "from .dependencies import Base, External\n" in (
         simulation.simulation.rewritten_sources[destination_path.as_posix()]
     )
     simulation.apply()
@@ -18863,7 +18861,7 @@ def test_module_cli_simulates_relative_multi_symbol_move_plan_from_stdin(
     assert payload["parse_validation"]["parse_valid"] is True
     assert "pkg/source.py" in payload["unified_diff"]
     assert "pkg/destination.py" in payload["unified_diff"]
-    assert "+from pkg.destination import (" in payload["unified_diff"]
+    assert "+from pkg.destination import Helper as Helper, LocalBase as LocalBase" in payload["unified_diff"]
     assert "+    Helper as Helper," in payload["unified_diff"]
     assert "+    LocalBase as LocalBase," in payload["unified_diff"]
     assert "+from dataclasses import dataclass" in payload["unified_diff"]
@@ -19047,7 +19045,7 @@ def test_module_cli_creates_destination_and_moves_symbols_from_stdin(
     assert apply_result.returncode == 0, apply_result.stderr
     assert "Codemod apply complete" in apply_result.stdout
     rewritten_source = source_path.read_text()
-    assert "from pkg.destination import (" in rewritten_source
+    assert "from pkg.destination import Helper as Helper, LocalBase as LocalBase\n" in rewritten_source
     assert "    Helper as Helper," in rewritten_source
     assert "    LocalBase as LocalBase," in rewritten_source
     assert "class Helper" not in source_path.read_text()

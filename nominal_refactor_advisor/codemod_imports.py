@@ -48,6 +48,8 @@ if TYPE_CHECKING:
 class ImportBlockInsertionPointABC(ABC):
     """Shared insertion geometry for one contiguous Python import block."""
 
+    file_path: str
+
     @property
     @abstractmethod
     def scope(self) -> ModuleImportScope:
@@ -112,7 +114,7 @@ class ImportBlockInsertionPointABC(ABC):
         """Render additions with any required following group boundary."""
 
         existing_imports = self.leading_import_statements
-        inserted_source = RequestedImportBlock(additions).source_after(
+        inserted_source = RequestedImportBlock(additions, self.file_path).source_after(
             slot.previous_statement(self)
         )
         if (
@@ -293,6 +295,7 @@ class TypeCheckingGuardImportInsertionPoint(ImportBlockInsertionPointABC):
 
     source: str
     guard: ast.If
+    file_path: str
 
     @property
     def scope(self) -> ModuleImportScope:
@@ -992,7 +995,9 @@ class ModuleImportMutation(KeyedSourceEditCoalescence):
         guard: ast.If,
         additions: tuple[RequestedImportStatement, ...],
     ) -> tuple[SourceInsertion, ...]:
-        insertion_point = TypeCheckingGuardImportInsertionPoint(source, guard)
+        insertion_point = TypeCheckingGuardImportInsertionPoint(
+            source, guard, self.file_path
+        )
         existing_imports = insertion_point.leading_import_statements
         return tuple(
             self._guarded_import_group_insertion(
@@ -1063,10 +1068,14 @@ class ModuleImportMutation(KeyedSourceEditCoalescence):
             for addition in runtime_additions
             if insertion_point.insertion_index_for(addition) != import_boundary_index
         )
-        runtime_source = RequestedImportBlock(boundary_runtime_additions).source_after(
+        runtime_source = RequestedImportBlock(
+            boundary_runtime_additions, self.file_path
+        ).source_after(
             insertion_point.previous_import_statement
         )
-        guarded_source = RequestedImportBlock(guarded_additions).source_after(None)
+        guarded_source = RequestedImportBlock(guarded_additions, self.file_path).source_after(
+            None
+        )
         separator_before_guard = (
             "\n"
             if runtime_source or insertion_point.previous_import_statement is not None
@@ -1291,8 +1300,9 @@ class RequestedImportStatement:
     def bound_names(self) -> tuple[str, ...]:
         return self.declaration.names()
 
-    @property
-    def source(self) -> str:
+    def source_in(self, file_path: str) -> str:
+        """This import as written into `file_path`, fitted to its line length."""
+
         if isinstance(self.statement, ast.Import):
             return "".join(
                 f"import {ImportFromSource.alias_source(alias)}\n"
@@ -1301,7 +1311,7 @@ class RequestedImportStatement:
         return ImportFromSource(
             module_name=ImportFromModuleName.from_node(self.statement).source,
             aliases=tuple(self.statement.names),
-            layout=ImportLayout.as_written(self.statement),
+            layout=ImportLayout.of(self.statement, file_path),
         ).source
 
     def with_aliases(
@@ -1336,6 +1346,7 @@ class RequestedImportBlock:
     """Canonical source for a group of requested import statements."""
 
     statements: tuple[RequestedImportStatement, ...]
+    file_path: str
 
     def source_after(
         self,
@@ -1353,7 +1364,7 @@ class RequestedImportBlock:
                 and previous.source_group is not statement.source_group
             ):
                 source_parts.append("\n")
-            source_parts.append(statement.source)
+            source_parts.append(statement.source_in(self.file_path))
             previous = statement
         return "".join(source_parts)
 
@@ -1393,11 +1404,9 @@ class ImportLayout(ABC):
         return FittedImportLayout(DeclaredRoot.line_length_for(Path(file_path)))
 
     @classmethod
-    def as_written(cls, statement: ast.ImportFrom) -> ImportLayout:
-        """An import rendered again from the statement its requester wrote."""
+    def in_string(cls) -> ImportLayout:
+        """An import written inside a string literal, which keeps it on one line."""
 
-        if statement.end_lineno != statement.lineno:
-            return ColumnImportLayout()
         return OneLineImportLayout()
 
 
