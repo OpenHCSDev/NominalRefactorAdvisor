@@ -755,3 +755,32 @@ def test_a_package_init_re_exporting_the_module_moving_into_it_still_moves(
     _stages, root = _moved(tmp_path, "| `svc` | `unit.py` | |\n")
     assert (root / "pkg/svc/unit.py").exists()
     assert _runs(root, "VALUE") == "Unit"
+
+
+def test_an_annotation_only_global_moves_with_the_code_that_assigns_it(
+    tmp_path: Path,
+) -> None:
+    """`_remote: object` declares the name and its type without a value; an
+    initializer binds it through `global`. A whole-module move takes the
+    annotation with the functions instead of refusing it as no declaration."""
+
+    _write(
+        tmp_path,
+        {
+            "pkg/__init__.py": "",
+            "pkg/messaging/__init__.py": "",
+            "pkg/remote.py": (
+                "_remote: object\n\n\n"
+                "def initialize(value: object) -> None:\n    global _remote\n    _remote = value\n\n\n"
+                "def current() -> object:\n    return _remote\n"
+            ),
+            "pkg/app.py": (
+                "from pkg.remote import current, initialize\n\ninitialize('r')\nVALUE = current()\n"
+            ),
+        },
+    )
+
+    _stages, root = _moved(tmp_path, "| `messaging` | `remote.py` | |\n")
+    moved = (root / "pkg/messaging/remote.py").read_text()
+    assert moved.index("_remote: object") < moved.index("def initialize")
+    assert _runs(root, "VALUE") == "r"
