@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import StrEnum
 
@@ -55,8 +56,12 @@ class ModuleMoveImportDependency(DataclassJsonReport):
         self,
         import_graph: SourceModuleImportGraph,
         destination_path: str,
+        moved_modules: Mapping[str, str],
     ) -> str:
-        return self.identity.source_for(
+        """The import at the destination, naming each module its stage moves at
+        that module's new home."""
+
+        return self.identity.moved(moved_modules).source_for(
             import_graph,
             importing_file_path=destination_path,
             scope=self.scope,
