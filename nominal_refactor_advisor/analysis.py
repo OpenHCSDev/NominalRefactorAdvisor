@@ -878,7 +878,6 @@ def accumulate_compact_global_projections_for_roots(
             root,
             cache_dir=cache_dir,
             use_parse_cache=use_parse_cache,
-            parse_workers=1,
             source_policy=active_source_policy,
         )
         for path in PythonSourcePathDiscovery(root, active_source_policy).paths():
@@ -944,7 +943,6 @@ class CompactProjectionCacheSource(CollectedFamilyCacheContext):
             self.scan_root,
             cache_dir=self.cache_dir,
             use_parse_cache=self.use_parse_cache,
-            parse_workers=1,
             source_policy=self.source_policy,
         )
         module = parser.parsed_source_path(
@@ -2172,7 +2170,6 @@ def analyze_compact_roots_with_cache(
                 root,
                 cache_dir=cache_dir,
                 use_parse_cache=use_parse_cache,
-                parse_workers=1,
                 source_policy=active_source_policy,
             )
             target_paths = tuple(
@@ -2313,7 +2310,6 @@ def analyze_compact_roots_with_cache(
             root,
             cache_dir=cache_dir,
             use_parse_cache=use_parse_cache,
-            parse_workers=parse_workers,
             source_policy=active_source_policy,
         )
         for path in PythonSourcePathDiscovery(root, active_source_policy).paths():
@@ -4158,7 +4154,6 @@ class CachedPathAnalysisRequest(ParseCacheDirectory):
 
     roots: tuple[Path, ...]
     config: DetectorConfig
-    parse_workers: int
     analysis_workers: int
     source_policy: PythonSourcePathPolicy | None
     report_roots: tuple[Path, ...] = ()
@@ -4311,7 +4306,6 @@ class FastCachedPathAnalysisAuthority:
                 root,
                 cache_dir=self._request.parse_cache_dir,
                 use_parse_cache=self._request.use_parse_cache,
-                parse_workers=self._request.parse_workers,
                 source_policy=self._request.source_policy,
             )
             for module in parser.parsed_source_paths(paths):
@@ -4389,7 +4383,6 @@ class SingleRootFindings(PathRequestFindings):
             request.roots[0],
             cache_dir=request.parse_cache_dir,
             use_parse_cache=request.use_parse_cache,
-            parse_workers=request.parse_workers,
             source_policy=request.source_policy,
         )
 
@@ -4403,7 +4396,6 @@ class MultiRootFindings(PathRequestFindings):
             request.roots,
             cache_dir=request.parse_cache_dir,
             use_parse_cache=request.use_parse_cache,
-            parse_workers=request.parse_workers,
             source_policy=request.source_policy,
         )
 
@@ -4415,7 +4407,6 @@ def analyze_path(
     *,
     cache_dir: Path | None = None,
     use_parse_cache: bool = True,
-    parse_workers: int = 1,
     analysis_workers: int = 1,
     source_policy: PythonSourcePathPolicy | None = None,
 ) -> list[RefactorFinding]:
@@ -4432,7 +4423,6 @@ def analyze_path(
         config=config,
         parse_cache_dir=cache_dir,
         use_parse_cache=use_parse_cache,
-        parse_workers=parse_workers,
         analysis_workers=analysis_workers,
         source_policy=source_policy,
         semantic_descent_source=semantic_descent_source,
@@ -4451,7 +4441,6 @@ def analyze_paths(
     *,
     cache_dir: Path | None = None,
     use_parse_cache: bool = True,
-    parse_workers: int = 1,
     analysis_workers: int = 1,
     source_policy: PythonSourcePathPolicy | None = None,
 ) -> list[RefactorFinding]:
@@ -4468,7 +4457,6 @@ def analyze_paths(
         config=config,
         parse_cache_dir=cache_dir,
         use_parse_cache=use_parse_cache,
-        parse_workers=parse_workers,
         analysis_workers=analysis_workers,
         source_policy=source_policy,
         semantic_descent_source=semantic_descent_source,
@@ -4491,7 +4479,6 @@ def plan_path(
     *,
     cache_dir: Path | None = None,
     use_parse_cache: bool = True,
-    parse_workers: int = 1,
 ) -> list[RefactorPlan]:
     """Analyze a path and synthesize subsystem-level refactor plans."""
     return build_refactor_plans(
@@ -4500,7 +4487,6 @@ def plan_path(
             config,
             cache_dir=cache_dir,
             use_parse_cache=use_parse_cache,
-            parse_workers=parse_workers,
         ),
         root,
     )
@@ -4512,7 +4498,6 @@ def plan_paths(
     *,
     cache_dir: Path | None = None,
     use_parse_cache: bool = True,
-    parse_workers: int = 1,
 ) -> list[RefactorPlan]:
     """Analyze multiple paths and synthesize subsystem-level refactor plans."""
     return build_refactor_plans(
@@ -4521,7 +4506,6 @@ def plan_paths(
             config,
             cache_dir=cache_dir,
             use_parse_cache=use_parse_cache,
-            parse_workers=parse_workers,
         ),
         roots[0],
     )

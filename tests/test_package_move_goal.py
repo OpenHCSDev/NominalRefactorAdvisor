@@ -67,7 +67,6 @@ def test_package_move_plans_top_layer_first_from_live_sources(tmp_path: Path) ->
     report = CodemodRefactorGoalRunner(
         roots=(tmp_path,),
         config=DetectorConfig(package_destination_tables=(TABLE,)),
-        parse_workers=1,
         dry_run=True,
         migration_type=PackageMoveConcept,
         guard_suite=ArchitectureGuardSuite(),
@@ -113,7 +112,6 @@ def test_no_table_no_findings(tmp_path: Path) -> None:
     report = CodemodRefactorGoalRunner(
         roots=(tmp_path,),
         config=DetectorConfig(),
-        parse_workers=1,
         dry_run=True,
         migration_type=PackageMoveConcept,
         guard_suite=ArchitectureGuardSuite(),
@@ -144,7 +142,6 @@ def _goal(root: Path, table: str):
     return CodemodRefactorGoalRunner(
         roots=(root,),
         config=DetectorConfig(package_destination_tables=(table,)),
-        parse_workers=1,
         dry_run=True,
         migration_type=PackageMoveConcept,
         guard_suite=ArchitectureGuardSuite(),
@@ -242,7 +239,6 @@ def test_a_consumer_root_holding_none_of_the_tables_packages_keeps_its_modules(
     report = CodemodRefactorGoalRunner(
         roots=(tmp_path,),
         config=DetectorConfig(package_destination_tables=(TABLE,)),
-        parse_workers=1,
         dry_run=True,
         migration_type=PackageMoveConcept,
         guard_suite=ArchitectureGuardSuite(),
@@ -276,7 +272,6 @@ def _run_table(root: Path):
     return CodemodRefactorGoalRunner(
         roots=(root,),
         config=DetectorConfig(package_destination_tables=(TABLE,)),
-        parse_workers=1,
         dry_run=True,
         migration_type=PackageMoveConcept,
         guard_suite=ArchitectureGuardSuite(),
@@ -339,7 +334,6 @@ def test_the_stage_budget_comes_from_the_table_and_a_budget_stop_lands_its_prefi
         return CodemodRefactorGoalRunner(
             roots=(tmp_path,),
             config=DetectorConfig(package_destination_tables=(TABLE,)),
-            parse_workers=1,
             dry_run=True,
             migration_type=PackageMoveConcept,
             trajectory_budget=CodemodRefactorTrajectoryBudget(max_depth=max_depth),
@@ -678,7 +672,6 @@ def test_a_package_move_keeps_every_per_module_detector_exact_and_says_what_it_c
     runner = CodemodRefactorGoalRunner(
         roots=(tmp_path,),
         config=DetectorConfig(package_destination_tables=(TABLE,)),
-        parse_workers=1,
         dry_run=True,
         migration_type=PackageMoveConcept,
         guard_suite=ArchitectureGuardSuite(),

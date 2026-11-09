@@ -4486,7 +4486,6 @@ def test_exact_leaf_methods_promote_to_one_proved_existing_authority(
     goal_report = CodemodRefactorGoalRunner(
         roots=(tmp_path,),
         config=DetectorConfig(),
-        parse_workers=1,
         dry_run=True,
         migration_type=ClassFamilyAuthorityConcept,
         trajectory_budget=CodemodRefactorTrajectoryBudget(max_depth=2),
@@ -13196,50 +13195,52 @@ def test_parse_python_module_roots_can_skip_direct_test_files(
     assert [module.path.name for module in modules] == ["prod.py"]
 
 
-def test_parse_python_modules_reuses_ast_cache(
+def test_parse_python_modules_reuses_semantic_hash_cache(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _write_module(tmp_path, "pkg/mod.py", "\nclass Cached:\n    pass\n")
     cache_dir = tmp_path / ".cache" / "ast"
-    parse_calls = 0
-    real_parse = ast.parse
+    hash_calls = 0
+    real_hash = ast_tools_module.semantic_python_source_hash
 
-    def counted_parse(*args: object, **kwargs: object) -> ast.Module:
-        nonlocal parse_calls
-        parse_calls += 1
-        return real_parse(*args, **kwargs)
+    def counted_hash(source: str) -> str:
+        nonlocal hash_calls
+        hash_calls += 1
+        return real_hash(source)
 
-    monkeypatch.setattr("nominal_refactor_advisor.ast_tools.ast.parse", counted_parse)
+    monkeypatch.setattr(ast_tools_module, "semantic_python_source_hash", counted_hash)
 
     first_modules = parse_python_modules(tmp_path / "pkg", cache_dir=cache_dir)
     second_modules = parse_python_modules(tmp_path / "pkg", cache_dir=cache_dir)
 
     assert [module.module_name for module in first_modules] == ["mod"]
     assert [module.module_name for module in second_modules] == ["mod"]
-    assert parse_calls == 1
+    assert hash_calls == 1
+    assert first_modules.modules[0].semantic_hash == second_modules.modules[0].semantic_hash
 
 
-def test_parse_python_modules_uses_default_ast_cache(
+def test_parse_python_modules_uses_default_semantic_hash_cache(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _write_module(tmp_path, "pkg/mod.py", "\nclass Cached:\n    pass\n")
     monkeypatch.setenv("NRA_CACHE_HOME", (tmp_path / "cache-home").as_posix())
-    parse_calls = 0
-    real_parse = ast.parse
+    hash_calls = 0
+    real_hash = ast_tools_module.semantic_python_source_hash
 
-    def counted_parse(*args: object, **kwargs: object) -> ast.Module:
-        nonlocal parse_calls
-        parse_calls += 1
-        return real_parse(*args, **kwargs)
+    def counted_hash(source: str) -> str:
+        nonlocal hash_calls
+        hash_calls += 1
+        return real_hash(source)
 
-    monkeypatch.setattr("nominal_refactor_advisor.ast_tools.ast.parse", counted_parse)
+    monkeypatch.setattr(ast_tools_module, "semantic_python_source_hash", counted_hash)
 
     first_modules = parse_python_modules(tmp_path / "pkg")
     second_modules = parse_python_modules(tmp_path / "pkg")
 
     assert [module.module_name for module in first_modules] == ["mod"]
     assert [module.module_name for module in second_modules] == ["mod"]
-    assert parse_calls == 1
+    assert hash_calls == 1
+    assert first_modules.modules[0].semantic_hash == second_modules.modules[0].semantic_hash
     assert default_parse_cache_dir().is_dir()
 
 
@@ -13845,7 +13846,6 @@ def test_fast_cache_evidence_local_partial_reuses_unchanged_findings_when_reques
             config=DetectorConfig(),
             parse_cache_dir=cache_dir,
             use_parse_cache=True,
-            parse_workers=1,
             analysis_workers=1,
             source_policy=None,
             reuse_policy=FastCacheReusePolicy.EVIDENCE_LOCAL_PARTIAL,
@@ -13857,7 +13857,6 @@ def test_fast_cache_evidence_local_partial_reuses_unchanged_findings_when_reques
             config=DetectorConfig(),
             parse_cache_dir=cache_dir,
             use_parse_cache=True,
-            parse_workers=1,
             analysis_workers=1,
             source_policy=None,
             reuse_policy=FastCacheReusePolicy.EVIDENCE_LOCAL_PARTIAL,
@@ -13950,7 +13949,6 @@ def test_fast_partial_cache_does_not_poison_exact_cache(
             config=DetectorConfig(),
             parse_cache_dir=cache_dir,
             use_parse_cache=True,
-            parse_workers=1,
             analysis_workers=1,
             source_policy=None,
             reuse_policy=FastCacheReusePolicy.EVIDENCE_LOCAL_PARTIAL,
@@ -13993,7 +13991,6 @@ def test_fast_partial_changed_analysis_uses_low_auto_parallel_threshold(
             config=DetectorConfig(),
             parse_cache_dir=tmp_path / ".nra-cache" / "ast",
             use_parse_cache=True,
-            parse_workers=1,
             analysis_workers=0,
             source_policy=None,
             reuse_policy=FastCacheReusePolicy.EVIDENCE_LOCAL_PARTIAL,
@@ -14205,7 +14202,7 @@ def test_parse_python_modules_parallel_order_is_deterministic(tmp_path: Path) ->
     _write_module(tmp_path, "pkg/alpha.py", "\nclass Alpha:\n    pass\n")
     _write_module(tmp_path, "pkg/middle.py", "\nclass Middle:\n    pass\n")
 
-    modules = parse_python_module_roots((tmp_path,), parse_workers=4)
+    modules = parse_python_module_roots((tmp_path,))
 
     assert [module.module_name for module in modules] == [
         "pkg.alpha",
@@ -20325,7 +20322,6 @@ def test_codemod_refactor_goal_runner_derives_zero_stage_achievement(
     report = CodemodRefactorGoalRunner(
         roots=(tmp_path,),
         config=DetectorConfig(),
-        parse_workers=1,
         dry_run=True,
         migration_type=SemanticCarrierConcept,
         guard_suite=ArchitectureGuardSuite(),
@@ -20431,7 +20427,6 @@ def test_goal_runner_rejects_terminal_with_new_finding_obligations(
         report = NewObligationRunner(
             roots=(tmp_path,),
             config=DetectorConfig(),
-            parse_workers=1,
             dry_run=True,
             migration_type=SemanticCarrierConcept,
             guard_suite=ArchitectureGuardSuite(),
@@ -20651,7 +20646,6 @@ def test_codemod_refactor_goal_runner_builds_staged_replay_plan(
         report = CodemodRefactorGoalRunner(
             roots=(tmp_path,),
             config=DetectorConfig(),
-            parse_workers=1,
             dry_run=True,
             migration_type=SemanticCarrierConcept,
             trajectory_budget=CodemodRefactorTrajectoryBudget(max_depth=2),
@@ -20664,7 +20658,6 @@ def test_codemod_refactor_goal_runner_builds_staged_replay_plan(
         state_limited_report = CodemodRefactorGoalRunner(
             roots=(tmp_path,),
             config=DetectorConfig(),
-            parse_workers=1,
             dry_run=True,
             migration_type=SemanticCarrierConcept,
             trajectory_budget=CodemodRefactorTrajectoryBudget(
@@ -20859,7 +20852,6 @@ def test_goal_runner_does_not_commit_conflicting_trajectory_branches(
         report = CodemodRefactorGoalRunner(
             roots=(tmp_path,),
             config=DetectorConfig(),
-            parse_workers=1,
             dry_run=False,
             migration_type=SemanticCarrierConcept,
             trajectory_budget=CodemodRefactorTrajectoryBudget(max_depth=2),
@@ -20990,7 +20982,6 @@ def test_goal_runner_analyzes_equivalent_branch_state_once(
         report = CodemodRefactorGoalRunner(
             roots=(tmp_path,),
             config=DetectorConfig(),
-            parse_workers=1,
             dry_run=True,
             migration_type=SemanticCarrierConcept,
             trajectory_budget=CodemodRefactorTrajectoryBudget(max_depth=2),
@@ -21228,7 +21219,6 @@ def test_goal_runner_crosses_local_worsening_move_to_unique_terminal(
         return CodemodRefactorGoalRunner(
             roots=(tmp_path,),
             config=DetectorConfig(),
-            parse_workers=1,
             dry_run=True,
             migration_type=SemanticCarrierConcept,
             trajectory_budget=CodemodRefactorTrajectoryBudget(max_depth=3),
@@ -21320,7 +21310,6 @@ def test_class_family_migration_rejects_unproved_external_class_creation(
     report = CodemodRefactorGoalRunner(
         roots=(tmp_path,),
         config=DetectorConfig(),
-        parse_workers=1,
         dry_run=True,
         migration_type=ClassFamilyAuthorityConcept,
         trajectory_budget=CodemodRefactorTrajectoryBudget(max_depth=3),
@@ -21379,7 +21368,6 @@ def test_class_family_migration_never_commits_an_unproved_first_stage(
     report = CodemodRefactorGoalRunner(
         roots=(tmp_path,),
         config=DetectorConfig(),
-        parse_workers=1,
         dry_run=False,
         migration_type=ClassFamilyAuthorityConcept,
         trajectory_budget=CodemodRefactorTrajectoryBudget(max_depth=3),
@@ -21419,7 +21407,6 @@ def test_class_family_migration_reports_native_proof_before_depth_budget(
     report = CodemodRefactorGoalRunner(
         roots=(tmp_path,),
         config=DetectorConfig(),
-        parse_workers=1,
         dry_run=False,
         migration_type=ClassFamilyAuthorityConcept,
         trajectory_budget=CodemodRefactorTrajectoryBudget(max_depth=1),
@@ -21513,7 +21500,6 @@ def test_class_family_goal_does_not_project_an_unproved_transition(
     report = CodemodRefactorGoalRunner(
         roots=(tmp_path,),
         config=DetectorConfig(),
-        parse_workers=1,
         dry_run=True,
         migration_type=ClassFamilyAuthorityConcept,
         trajectory_budget=CodemodRefactorTrajectoryBudget(max_depth=3),
@@ -21611,7 +21597,6 @@ def test_codemod_refactor_goal_runner_scopes_context_root_progress(
             roots=(tmp_path,),
             report_roots=(report_path,),
             config=DetectorConfig(),
-            parse_workers=1,
             dry_run=True,
             migration_type=SemanticCarrierConcept,
             trajectory_budget=CodemodRefactorTrajectoryBudget(max_depth=2),
@@ -21691,7 +21676,6 @@ def test_codemod_refactor_goal_reports_terminal_synthesis_failures(
         report = CodemodRefactorGoalRunner(
             roots=(tmp_path,),
             config=DetectorConfig(),
-            parse_workers=1,
             dry_run=True,
             guard_suite=ArchitectureGuardSuite(),
             initial_scan=CodemodWorkflowScan(
@@ -25743,7 +25727,6 @@ def test_numeric_literal_dispatch_goal_proves_one_target_only_replay(
     report = CodemodRefactorGoalRunner(
         roots=(tmp_path,),
         config=DetectorConfig(),
-        parse_workers=1,
         dry_run=True,
         migration_type=AutoRegisterStrategyFamilyConcept,
         trajectory_budget=CodemodRefactorTrajectoryBudget(max_depth=2),

@@ -93,7 +93,6 @@ def test_refactor_search_scores_the_conveyor_collapse_and_looks_past_it(
         DetectorConfig(),
         cache_dir=None,
         use_parse_cache=False,
-        parse_workers=1,
     )
 
     turn = search.turn(scan, search.score(scan), depth=2)
@@ -407,7 +406,6 @@ def test_parameter_conveyor_goal_runner_proves_one_terminal_replay(
     report = CodemodRefactorGoalRunner(
         roots=(tmp_path,),
         config=DetectorConfig(),
-        parse_workers=1,
         dry_run=True,
         migration_type=SemanticCarrierConcept,
         guard_suite=ArchitectureGuardSuite(),

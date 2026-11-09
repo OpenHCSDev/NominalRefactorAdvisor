@@ -2539,7 +2539,6 @@ class CalibrationCliCommand(CliReportCommand):
             config=self.detector_config,
             cache_dir=self.configured_parse_cache_dir,
             use_parse_cache=self.args.use_parse_cache,
-            parse_workers=self.args.parse_workers,
         )
 
     @property
@@ -2582,7 +2581,6 @@ class ScanPredictionCliCommand(SingleRootReportCliCommand):
             compare_ref=self.args.compare_ref,
             cache_dir=self.configured_parse_cache_dir,
             use_parse_cache=self.args.use_parse_cache,
-            parse_workers=self.args.parse_workers,
         )
 
     @property
@@ -2604,7 +2602,6 @@ class MemberAwarenessCliCommand(SingleRootReportCliCommand):
             config=self.detector_config,
             cache_dir=self.configured_parse_cache_dir,
             use_parse_cache=self.args.use_parse_cache,
-            parse_workers=self.args.parse_workers,
             introspection=IntrospectionSource.from_argument(self.args.introspection_trace),
         )
 
@@ -2627,7 +2624,6 @@ class RefactorSearchCliCommand(SingleRootReportCliCommand):
             config=self.detector_config,
             cache_dir=self.configured_parse_cache_dir,
             use_parse_cache=self.args.use_parse_cache,
-            parse_workers=self.args.parse_workers,
             budget=SearchBudgetArguments.budget(self.args),
             introspection=IntrospectionSource.from_argument(self.args.introspection_trace),
         )
@@ -2653,7 +2649,6 @@ class EconomicsProofCliCommand(SingleRootReportCliCommand):
             scan_budget_seconds=self.args.scan_budget_seconds,
             cache_dir=self.configured_parse_cache_dir,
             use_parse_cache=self.args.use_parse_cache,
-            parse_workers=self.args.parse_workers,
         )
 
     @property
@@ -3894,7 +3889,6 @@ class CodemodRefactorGoalCliCommand(
             roots=self.roots,
             report_roots=self.report_roots,
             config=self.config,
-            parse_workers=self.args.parse_workers,
             analysis_workers=self.args.analysis_workers,
             guard_suite=self.execution_request.sequence.guard_suite,
             dry_run=not self.execution_request.mode.applies_changes,
@@ -3961,7 +3955,6 @@ class ScanAnalysisOutcome(ABC):
         self,
         eligibility: SourceSnapshotCacheEligibility,
         analysis_cache_dir: Path | None,
-        parse_workers: int,
     ) -> CodemodSourceSnapshot:
         """The source snapshot for these findings."""
         return CodemodSourceSnapshot.from_modules(self.modules, self.findings)
@@ -4005,7 +3998,6 @@ class IdentifiedOutcome(ScanAnalysisOutcome):
         self,
         eligibility: SourceSnapshotCacheEligibility,
         analysis_cache_dir: Path | None,
-        parse_workers: int,
     ) -> CodemodSourceSnapshot:
         if eligibility.can_use_cached_source_context:
             CodemodSourceContextCache(analysis_cache_dir).store(
@@ -4040,13 +4032,12 @@ class ServedScanWithSourceContext(ServedScan):
         self,
         eligibility: SourceSnapshotCacheEligibility,
         analysis_cache_dir: Path | None,
-        parse_workers: int,
     ) -> CodemodSourceSnapshot:
         if eligibility.can_use_cached_source_context:
             return self.source_context.snapshot_for_findings(
-                self.findings, parse_workers=parse_workers
+                self.findings
             )
-        return super().source_snapshot(eligibility, analysis_cache_dir, parse_workers)
+        return super().source_snapshot(eligibility, analysis_cache_dir)
 
 
 @dataclass(frozen=True)
@@ -4173,7 +4164,6 @@ class ColdScanAnalysis:
                 (report_root,),
                 cache_dir=self.parse_cache_dir,
                 use_parse_cache=self.args.use_parse_cache,
-                parse_workers=self.args.parse_workers,
                 source_policy=self.source_policy,
             )
             parse_elapsed += perf_counter() - started
@@ -4230,7 +4220,6 @@ class ColdScanAnalysis:
             self.roots,
             cache_dir=self.parse_cache_dir,
             use_parse_cache=self.args.use_parse_cache,
-            parse_workers=self.args.parse_workers,
             source_policy=self.source_policy,
         )
         return UnanalysedScan(
@@ -4638,7 +4627,6 @@ def _scan_main(
                 config=config,
                 parse_cache_dir=parse_cache_dir,
                 use_parse_cache=args.use_parse_cache,
-                parse_workers=args.parse_workers,
                 analysis_workers=args.analysis_workers,
                 source_policy=source_policy,
                 report_roots=path_scope.report_roots,
@@ -4741,7 +4729,7 @@ def _scan_main(
     if source_snapshot_cache_eligibility.needs_source_snapshot:
         started = perf_counter()
         source_snapshot = scan_outcome.source_snapshot(
-            source_snapshot_cache_eligibility, analysis_cache_dir, args.parse_workers
+            source_snapshot_cache_eligibility, analysis_cache_dir
         )
         source_index_seconds = round(perf_counter() - started, 3)
 

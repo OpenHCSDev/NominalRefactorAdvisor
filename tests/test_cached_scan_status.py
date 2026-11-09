@@ -170,7 +170,6 @@ def test_summary_fast_path_retains_identity_and_partial_isolation(tmp_path):
         config=DetectorConfig(),
         parse_cache_dir=tmp_path / "cache" / "ast",
         use_parse_cache=True,
-        parse_workers=1,
         analysis_workers=1,
         source_policy=None,
         reuse_policy=FastCacheReusePolicy.EXACT_ONLY,

@@ -22,7 +22,6 @@ import sys
 import tokenize
 from abc import ABC, abstractmethod
 from collections.abc import Container, Iterable, Iterator, Mapping, Sequence
-from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field, fields, is_dataclass, replace
 from enum import Enum, StrEnum
 from fnmatch import fnmatchcase
@@ -142,18 +141,17 @@ _IGNORED_PYTHON_TREE_DIRS = frozenset(
     }
 )
 _DEFAULT_PARSE_WORKERS = 1
-_MAX_AUTO_PARSE_WORKERS = 16
 
 
 @dataclass(frozen=True)
-class AstParseCacheSchema:
-    """Nominal schema identity for persisted Python AST cache entries."""
+class SemanticHashCacheSchema:
+    """Nominal schema identity for persisted source semantic-hash entries."""
 
-    version: int = 2
+    version: int = 3
 
 
-class AstCachePayloadUnavailable:
-    """Sentinel for unreadable or incompatible persisted AST cache payloads."""
+class SemanticHashCachePayloadUnavailable:
+    """Sentinel for unreadable or incompatible persisted semantic-hash payloads."""
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -166,13 +164,15 @@ class FileStat:
 
 
 @dataclass(frozen=True, kw_only=True)
-class AstParseCachePayload(FileStat):
-    """Persisted AST parse-cache entry for one source file signature."""
+class SemanticHashCachePayload(FileStat):
+    """Persisted semantic hash for one source file signature.
+
+    The AST is not stored: unpickling it costs as much as ``ast.parse``.
+    """
 
     version: int
     source_signature: str
     python_version: PythonVersion
-    module: ast.Module
     semantic_hash: str
 
     def matches(
@@ -182,7 +182,7 @@ class AstParseCachePayload(FileStat):
         source_signature: str,
     ) -> bool:
         return (
-            self.version == ast_parse_cache_schema.version
+            self.version == semantic_hash_cache_schema.version
             and self.path == str(path.resolve())
             and self.source_signature == source_signature
             and self.mtime_ns == path_stat.st_mtime_ns
@@ -191,8 +191,8 @@ class AstParseCachePayload(FileStat):
         )
 
 
-ast_parse_cache_schema = AstParseCacheSchema()
-ast_cache_payload_unavailable = AstCachePayloadUnavailable()
+semantic_hash_cache_schema = SemanticHashCacheSchema()
+semantic_hash_payload_unavailable = SemanticHashCachePayloadUnavailable()
 
 
 @dataclass(frozen=True)
@@ -648,12 +648,12 @@ def _cache_entry_path(cache_dir: Path, path: Path) -> Path:
     return cache_dir / f"{token}.pickle"
 
 
-def _load_cached_ast(
+def _load_cached_semantic_hash(
     path: Path,
     source_signature: str,
     *,
     cache_dir: Path | None = None,
-) -> AstParseCachePayload | None:
+) -> SemanticHashCachePayload | None:
     if cache_dir is None:
         return None
     try:
@@ -674,17 +674,16 @@ def _load_cached_ast(
         AttributeError,
         ImportError,
     ):
-        payload = ast_cache_payload_unavailable
-    if not isinstance(payload, AstParseCachePayload):
+        payload = semantic_hash_payload_unavailable
+    if not isinstance(payload, SemanticHashCachePayload):
         return None
     if not payload.matches(path, path_stat, source_signature):
         return None
     return payload
 
 
-def _write_cached_ast(
+def _write_cached_semantic_hash(
     path: Path,
-    module: ast.Module,
     source_signature: str,
     semantic_hash: str,
     *,
@@ -697,14 +696,13 @@ def _write_cached_ast(
     except OSError:
         return
     cache_entry = _cache_entry_path(cache_dir, path)
-    payload = AstParseCachePayload(
-        version=ast_parse_cache_schema.version,
+    payload = SemanticHashCachePayload(
+        version=semantic_hash_cache_schema.version,
         path=str(path.resolve()),
         mtime_ns=path_stat.st_mtime_ns,
         size=path_stat.st_size,
         source_signature=source_signature,
         python_version=PythonVersion.running(),
-        module=module,
         semantic_hash=semantic_hash,
     )
     try:
@@ -723,29 +721,24 @@ def _parse_source_module(
 ) -> ParsedModule:
     source = read_source_text(path)
     source_signature = python_source_cache_signature(source)
-    cached_payload = (
-        _load_cached_ast(path, source_signature, cache_dir=context.parse_cache_dir)
-        if context.use_parse_cache
-        else None
-    )
     semantic_hash = (
         None
         if source_semantic_hash is None
         else source_semantic_hash.for_source_signature(source_signature)
     )
-    if semantic_hash is None and cached_payload is not None:
-        semantic_hash = cached_payload.semantic_hash
-    if cached_payload is None:
-        module = ast.parse(source, filename=str(path))
-    else:
-        module = cached_payload.module
+    if semantic_hash is None and context.use_parse_cache:
+        cached_payload = _load_cached_semantic_hash(
+            path, source_signature, cache_dir=context.parse_cache_dir
+        )
+        if cached_payload is not None:
+            semantic_hash = cached_payload.semantic_hash
+    module = ast.parse(source, filename=str(path))
     semantic_hash_required = context.use_parse_cache or source_semantic_hash is not None
     if semantic_hash is None and semantic_hash_required:
         semantic_hash = semantic_python_source_hash(source)
         if context.use_parse_cache:
-            _write_cached_ast(
+            _write_cached_semantic_hash(
                 path,
-                module,
                 source_signature,
                 semantic_hash,
                 cache_dir=context.parse_cache_dir,
@@ -789,22 +782,6 @@ def _canonicalize_ast_line_numbers(
             )
             if end_line_number is not canonical_end_line_number:
                 attributes["end_lineno"] = canonical_end_line_number
-
-
-@dataclass(frozen=True)
-class PythonParseWorkerPolicy:
-    """Resolve a requested Python parse-worker count once for every parser."""
-
-    requested_count: int
-
-    @property
-    def worker_count(self) -> int:
-        if self.requested_count <= 0:
-            cpu_count = os.cpu_count()
-            if cpu_count is None:
-                cpu_count = 1
-            return min(_MAX_AUTO_PARSE_WORKERS, cpu_count)
-        return max(1, self.requested_count)
 
 
 @dataclass(frozen=True)
@@ -1328,15 +1305,10 @@ class SourceModuleBatchParser:
     """Parse exact in-memory source modules with the shared worker policy."""
 
     source_modules: tuple[SourceModule, ...]
-    parse_workers: int = _DEFAULT_PARSE_WORKERS
 
     def parsed_modules(self) -> tuple[ParsedModule, ...]:
-        worker_count = PythonParseWorkerPolicy(self.parse_workers).worker_count
         with suspend_cyclic_gc():
-            if worker_count <= 1 or len(self.source_modules) <= 1:
-                return tuple(module.parse() for module in self.source_modules)
-            with ThreadPoolExecutor(max_workers=worker_count) as executor:
-                return tuple(executor.map(SourceModule.parse, self.source_modules))
+            return tuple(module.parse() for module in self.source_modules)
 
 
 _DATACLASS_FIELD_NAMES: dict[type, tuple[str, ...] | None] = {}
@@ -3034,20 +3006,6 @@ def _parse_module_roots(
     return modules
 
 
-def _parse_module_roots_concurrently(
-    root_parser: PythonModuleRootParser, paths: tuple[Path, ...]
-) -> list[ParsedModule]:
-    parse_workers = PythonParseWorkerPolicy(root_parser.parse_workers).worker_count
-
-    def parse_path(path: Path) -> ParsedModule:
-        return _parse_source_module(path, context=root_parser)
-
-    with suspend_cyclic_gc():
-        with ThreadPoolExecutor(max_workers=parse_workers) as executor:
-            modules = list(executor.map(parse_path, paths))
-    return modules
-
-
 @contextmanager
 def suspend_cyclic_gc() -> Iterator[None]:
     """Avoid repeated heap traversals while building one bounded fact batch.
@@ -3163,7 +3121,6 @@ def python_source_paths_for_roots(
 @dataclass(frozen=True)
 class PythonModuleRootParser(PythonModuleParseContext):
     root: Path
-    parse_workers: int = _DEFAULT_PARSE_WORKERS
     source_policy: PythonSourcePathPolicy = field(
         default_factory=PythonSourcePathPolicy
     )
@@ -3175,7 +3132,6 @@ class PythonModuleRootParser(PythonModuleParseContext):
         *,
         cache_dir: Path | None = None,
         use_parse_cache: bool = True,
-        parse_workers: int = _DEFAULT_PARSE_WORKERS,
         source_policy: PythonSourcePathPolicy | None = None,
     ) -> PythonModuleRootParser:
         resolved_cache_dir = (
@@ -3189,7 +3145,6 @@ class PythonModuleRootParser(PythonModuleParseContext):
             analysis_root=PythonModulePathIdentity.analysis_root_for_scan_root(root),
             parse_cache_dir=resolved_cache_dir,
             use_parse_cache=use_parse_cache,
-            parse_workers=parse_workers,
             source_policy=active_source_policy,
         )
 
@@ -3200,14 +3155,12 @@ class PythonModuleRootParser(PythonModuleParseContext):
         *,
         cache_dir: Path | None = None,
         use_parse_cache: bool = True,
-        parse_workers: int = _DEFAULT_PARSE_WORKERS,
         source_policy: PythonSourcePathPolicy | None = None,
     ) -> list[ParsedModule]:
         parser = cls.for_root(
             root,
             cache_dir=cache_dir,
             use_parse_cache=use_parse_cache,
-            parse_workers=parse_workers,
             source_policy=source_policy,
         )
         return parser.parsed_modules()
@@ -3252,12 +3205,7 @@ class PythonModuleRootParser(PythonModuleParseContext):
             for path in paths
             if path.is_file() and self.source_policy.allows_file_path(path)
         )
-        if (
-            PythonParseWorkerPolicy(self.parse_workers).worker_count <= 1
-            or len(allowed_paths) <= 1
-        ):
-            return _parse_module_roots(self, allowed_paths)
-        return _parse_module_roots_concurrently(self, allowed_paths)
+        return _parse_module_roots(self, allowed_paths)
 
 
 def parse_python_modules(
@@ -3265,7 +3213,6 @@ def parse_python_modules(
     *,
     cache_dir: Path | None = None,
     use_parse_cache: bool = True,
-    parse_workers: int = _DEFAULT_PARSE_WORKERS,
     source_policy: PythonSourcePathPolicy | None = None,
 ) -> ParsedModuleSet:
     """Parse one path (file or directory) into canonical ParsedModule records."""
@@ -3275,7 +3222,6 @@ def parse_python_modules(
                 root,
                 cache_dir=cache_dir,
                 use_parse_cache=use_parse_cache,
-                parse_workers=parse_workers,
                 source_policy=source_policy,
             )
         )
@@ -3287,7 +3233,6 @@ def parse_python_module_roots(
     *,
     cache_dir: Path | None = None,
     use_parse_cache: bool = True,
-    parse_workers: int = _DEFAULT_PARSE_WORKERS,
     source_policy: PythonSourcePathPolicy | None = None,
 ) -> ParsedModuleSet:
     """Parse multiple file or directory roots into one de-duplicated module set."""
@@ -3298,7 +3243,6 @@ def parse_python_module_roots(
             root,
             cache_dir=cache_dir,
             use_parse_cache=use_parse_cache,
-            parse_workers=parse_workers,
             source_policy=source_policy,
         )
         admitted_paths: list[Path] = []

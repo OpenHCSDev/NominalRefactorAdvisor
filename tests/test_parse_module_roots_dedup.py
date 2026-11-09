@@ -38,7 +38,6 @@ def test_overlapping_roots_parse_each_admitted_source_once(
     modules = ast_tools.parse_python_module_roots(
         (package, package / "nested", package / "alpha.py"),
         use_parse_cache=False,
-        parse_workers=1,
     )
 
     assert [module.path for module in modules] == [
@@ -83,7 +82,6 @@ def test_duplicate_symlink_keeps_first_admitted_path_and_identity(
     modules = ast_tools.parse_python_module_roots(
         (alias, source),
         use_parse_cache=False,
-        parse_workers=1,
     )
 
     assert len(modules) == 1
@@ -101,7 +99,6 @@ def test_duplicate_file_root_keeps_first_parser_root_module_identity(
     modules = ast_tools.parse_python_module_roots(
         (tmp_path, source),
         use_parse_cache=False,
-        parse_workers=1,
     )
 
     assert len(modules) == 1

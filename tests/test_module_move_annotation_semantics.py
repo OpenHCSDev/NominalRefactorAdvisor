@@ -105,7 +105,7 @@ def test_guarding_original_runtime_alias_changes_dataclass_creation(
 
 def _move(root: Path):
     snapshot = CodemodSourceSnapshot.from_modules(
-        parse_python_modules(root, use_parse_cache=False, parse_workers=1)
+        parse_python_modules(root, use_parse_cache=False)
     )
     operation = MoveSymbolsToModuleOperation(
         target=SourceRewriteTarget(file_path=(root / "pkg/source.py").as_posix()),

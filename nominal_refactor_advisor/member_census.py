@@ -702,7 +702,6 @@ def build_member_awareness_census(
     config: DetectorConfig | None = None,
     cache_dir: Path | None = None,
     use_parse_cache: bool = True,
-    parse_workers: int = 1,
     introspection: IntrospectionSource = NoTrace(),
 ) -> MemberAwarenessCensus:
     """Count the consumers that name each family's members under ``root``."""
@@ -713,7 +712,6 @@ def build_member_awareness_census(
                 root,
                 cache_dir=cache_dir,
                 use_parse_cache=use_parse_cache,
-                parse_workers=parse_workers,
             )
         ),
         config or DetectorConfig(),
