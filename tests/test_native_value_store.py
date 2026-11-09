@@ -130,7 +130,7 @@ def test_ambiguous_production_target_pair_is_rejected_by_both_query_contracts():
     node = assignment(source)
     original = value_store(compilation, node)
     outcome = compilation.execution_outcome
-    compilation.__dict__["_execution_outcome"] = replace(
+    compilation.__dict__["execution_outcome"] = replace(
         outcome,
         scopes=(replace(outcome.scopes[0], value_stores=(original, copy(original))),),
     )

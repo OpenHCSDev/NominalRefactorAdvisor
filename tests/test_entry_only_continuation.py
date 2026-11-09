@@ -118,13 +118,13 @@ def test_missing_ambiguous_or_late_return_cannot_supply_body_coverage():
     receipt = tail.receipt
     (scope,) = [scope for scope in outcome.scopes if scope.continuation is receipt]
     for returns in ((), (receipt, receipt), (replace(receipt, stores=()),)):
-        compilation.__dict__["_execution_outcome"] = replace(
+        compilation.__dict__["execution_outcome"] = replace(
             outcome,
             scopes=tuple(replace(scope, continuation=value) for value in returns),
         )
         with pytest.raises(ValueError, match="return continuation|body boundary"):
             _ = tail.completed
-    compilation.__dict__["_execution_outcome"] = outcome
+    compilation.__dict__["execution_outcome"] = outcome
     assert tail.completed is None
 
 

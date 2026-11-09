@@ -143,7 +143,7 @@ def test_duplicate_receipts_and_stale_index_cannot_supply_unique_store():
     compilation = NativePythonCompilation(source, "duplicate.py")
     node = assignment(source)
     original = store_for(compilation, node)
-    index = compilation._execution_outcome
+    index = compilation.execution_outcome
     for other in (original, replace(original)):
         duplicated = replace(
             index, scopes=(replace(index.scopes[0], value_stores=(original, other)),)
