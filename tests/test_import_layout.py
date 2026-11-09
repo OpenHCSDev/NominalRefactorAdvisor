@@ -34,7 +34,23 @@ def test_a_parenthesised_import_stays_a_column(tmp_path) -> None:
     assert _render(statement, layout) == "from pkg.b import (\n    A,\n    B,\n)\n"
 
 
-def test_an_import_rendered_again_as_written_is_never_wrapped() -> None:
+def test_a_requested_import_merged_past_the_limit_becomes_a_column(tmp_path) -> None:
+    """A merge can push a one-line import past the file's limit; it is then wrapped,
+    never left as an overlong line."""
+
+    from nominal_refactor_advisor.codemod_imports import RequestedImportStatement
+    from nominal_refactor_advisor.lexical_bindings import ImportAlias
+
+    (tmp_path / "pyproject.toml").write_text('[tool.ruff]\nline-length = 40\n')
+    requested = RequestedImportStatement(_statement("from pkg.a import Alpha\n")).with_aliases(
+        ImportAlias.from_alias(ast.alias(name)) for name in ("Alpha", "Beta", "Gamma", "Delta")
+    )
+    rendered = requested.source_in((tmp_path / "m.py").as_posix())
+    assert rendered == "from pkg.a import (\n    Alpha,\n    Beta,\n    Gamma,\n    Delta,\n)\n"
+    assert all(len(line) <= 40 for line in rendered.splitlines())
+
+
+def test_an_import_inside_a_string_stays_one_line() -> None:
     names = ", ".join(f"Name{index}" for index in range(30))
     statement = _statement(f"from pkg.a import {names}\n")
-    assert _render(statement, ImportLayout.as_written(statement)) == f"from pkg.b import {names}\n"
+    assert _render(statement, ImportLayout.in_string()) == f"from pkg.b import {names}\n"

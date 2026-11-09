@@ -24,7 +24,7 @@ class ModuleImportBinding:
 
     @property
     def source(self) -> str:
-        return self.request.source
+        return self.request.one_name_source
 
     @property
     def scope(self) -> ModuleImportScope:
@@ -140,7 +140,7 @@ class DirectModuleImportBindingIdentity(ModuleImportBindingIdentity):
         return RequestedImportStatement(
             ast.Import(names=[alias]),
             scope=scope,
-        ).source
+        ).one_name_source
 
 
 @dataclass(frozen=True)
