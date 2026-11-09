@@ -20891,6 +20891,7 @@ def test_goal_runner_analyzes_equivalent_branch_state_once(
     from nominal_refactor_advisor.codemod_workflow import CodemodWorkflowScan
     from nominal_refactor_advisor.codemod_workflow import CodemodWorkflowStopReason
     from nominal_refactor_advisor.codemod_workflow import EveryDetectorCoverage
+    from nominal_refactor_advisor.codemod_workflow import ProvedWorkflowScan
 
     detector_ids = (
         "equivalent_trajectory_left_test",
@@ -20957,8 +20958,10 @@ def test_goal_runner_analyzes_equivalent_branch_state_once(
     ) -> CodemodWorkflowScan:
         del self, scan, target_findings
         projected_analysis_digests.append(stage.simulation.rewritten_source_digest)
-        return CodemodWorkflowScan.of_snapshot(
-            stage.required_after_snapshot, [], EveryDetectorCoverage()
+        return ProvedWorkflowScan(
+            proved=stage.required_after_snapshot,
+            findings=[],
+            coverage=EveryDetectorCoverage(),
         )
 
     previous_synthesizers = {
@@ -21012,6 +21015,7 @@ def test_goal_runner_crosses_local_worsening_move_to_unique_terminal(
     from nominal_refactor_advisor.codemod_runtime import CodemodPlanDocumentSimulation
     from nominal_refactor_advisor.codemod_workflow import (
         EveryDetectorCoverage,
+        ProvedWorkflowScan,
         StageProofCoverage,
     )
 
@@ -21160,10 +21164,10 @@ def test_goal_runner_crosses_local_worsening_move_to_unique_terminal(
     ) -> CodemodWorkflowScan:
         del self, scan, target_findings
         rewritten_source = stage.simulation.rewritten_sources[module_path.as_posix()]
-        return CodemodWorkflowScan.of_snapshot(
-            stage.required_after_snapshot,
-            list(findings_by_source[rewritten_source]),
-            StageProofCoverage(()),
+        return ProvedWorkflowScan(
+            proved=stage.required_after_snapshot,
+            findings=list(findings_by_source[rewritten_source]),
+            coverage=StageProofCoverage(()),
         )
 
     def exact_scan(

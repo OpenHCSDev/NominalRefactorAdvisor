@@ -1629,25 +1629,6 @@ class CodemodWorkflowScan:
             self.text_files
         )
 
-    @classmethod
-    def of_snapshot(
-        cls,
-        snapshot: CodemodSourceSnapshot,
-        findings: list[RefactorFinding],
-        coverage: FindingCoverage,
-    ) -> CodemodWorkflowScan:
-        """The scan of a state whose snapshot a stage already proved: its parses,
-        its text files and its indexes are that snapshot's, never built again."""
-
-        scan = cls(
-            modules=snapshot.module_set,
-            findings=findings,
-            text_files=snapshot.text_files,
-            coverage=coverage,
-        )
-        scan.__dict__["source_snapshot"] = snapshot
-        return scan
-
     @cached_property
     def _findings_by_concept(
         self,
@@ -1690,6 +1671,24 @@ class CodemodWorkflowScan:
             modules=modules,
             findings=analyze_modules(modules, config, analysis_workers=analysis_workers),
         )
+
+
+@dataclass(frozen=True)
+class ProvedWorkflowScan(CodemodWorkflowScan):
+    """The scan of a state whose snapshot a stage already proved. Its parses,
+    text files and indexes are that snapshot's, never built again."""
+
+    proved: CodemodSourceSnapshot = field(kw_only=True, repr=False)
+    modules: ParsedModuleSet = field(init=False)
+    text_files: Mapping[str, FileText] = field(init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "modules", self.proved.module_set)
+        object.__setattr__(self, "text_files", self.proved.text_files)
+
+    @property
+    def source_snapshot(self) -> CodemodSourceSnapshot:
+        return self.proved
 
 
 @dataclass(frozen=True)
@@ -2012,9 +2011,9 @@ class CodemodRefactorGoalRunner(TrajectoryScans[CodemodWorkflowScan]):
                 if detector_type.effective_detector_id() in carried_ids
             ),
         )
-        return CodemodWorkflowScan.of_snapshot(
-            after,
-            self.report_scoped_findings(
+        return ProvedWorkflowScan(
+            proved=after,
+            findings=self.report_scoped_findings(
                 (
                     *analyze_detector_types(
                         module_set,
@@ -2026,7 +2025,7 @@ class CodemodRefactorGoalRunner(TrajectoryScans[CodemodWorkflowScan]):
                     *recomputed,
                 )
             ),
-            StageProofCoverage(tuple(sorted(detector_ids | carried_ids))),
+            coverage=StageProofCoverage(tuple(sorted(detector_ids | carried_ids))),
         )
 
     def exact_scan(self, scan: CodemodWorkflowScan) -> CodemodWorkflowScan:
