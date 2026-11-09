@@ -271,6 +271,12 @@ class ModuleNameRedirect:
     source_path: str
     destinations: Mapping[str, str]
 
+    def whole_module_home(self, import_graph: SourceModuleImportGraph) -> str | None:
+        """The module the source becomes, whole, when this redirect's move takes all
+        of it; a dissolve or a partial move leaves none."""
+        del import_graph
+        return None
+
     def consumer_edits(
         self,
         context: CodemodSelectorContext,
@@ -800,6 +806,15 @@ class RelocationNameRedirect(ModuleNameRedirect):
     declarations: the imports the moved code carries, and the module-context
     names that follow the code when every name the source declares moves into
     the module this relocation creates."""
+    whole_module: bool = False
+    """Whether every name the source declares moves (`moves_whole_module`): the
+    source module then exists whole at `reader_path`, so a binding of the module
+    object can name it there."""
+
+    def whole_module_home(self, import_graph: SourceModuleImportGraph) -> str | None:
+        if not self.whole_module:
+            return None
+        return import_graph.module_name_for_file_path(self.reader_path)
 
     def name_reader_paths(self, name: str) -> frozenset[str]:
         del name
@@ -1048,6 +1063,12 @@ class _AliasOwners(ABC):
     def access_owners(self, access: _NamedModuleMemberAccess) -> frozenset[str]:
         raise NotImplementedError
 
+    @property
+    def whole_module_home(self) -> str | None:
+        """The module the source becomes, whole, if any: only a binding of the module
+        object (`from package import source`) reaching it there is retargeted."""
+        return None
+
     def attribute_readers(self, name: str) -> frozenset[str]:
         """Every module `s.name` can be read from once the move lands; a use
         whose owners name no one module for the alias can still share one of
@@ -1067,6 +1088,10 @@ class _RedirectOwners(_AliasOwners):
         if name not in self.redirect.destinations:
             return frozenset()
         return self._modules((self.redirect.destinations[name],))
+
+    @property
+    def whole_module_home(self) -> str | None:
+        return self.redirect.whole_module_home(self.import_graph)
 
     def attribute_readers(self, name: str) -> frozenset[str]:
         """Its owner, and the module a whole moved module's code carries it into."""
@@ -1115,6 +1140,11 @@ class _ModuleObjectBinding(ABC):
     def binding(self) -> str:
         raise NotImplementedError
 
+    def follows(self, owner: str, owners: _AliasOwners) -> bool:
+        """Whether this binding names `owner`, the one module all its uses reach."""
+        del owner, owners
+        return True
+
     @abstractmethod
     def retargeted(self, geometry: SourceTextGeometry, owner: str) -> SourceTextSpanReplacement:
         raise NotImplementedError
@@ -1145,6 +1175,11 @@ class _FromImportedModule(_ModuleObjectBinding):
     @property
     def binding(self) -> str:
         return self.alias.asname or self.alias.name
+
+    def follows(self, owner: str, owners: _AliasOwners) -> bool:
+        """Only to the module the source becomes whole: a name the move takes from a
+        source that stays reads better as that name's import."""
+        return owner == owners.whole_module_home
 
     def retargeted(self, geometry: SourceTextGeometry, owner: str) -> SourceTextSpanReplacement:
         package, _, leaf = owner.rpartition(".")
@@ -1214,6 +1249,7 @@ class _SourceModuleAliasRetargets:
                 )
                 == 1
                 for owner in cls._sole_owner(index, candidate.binding, scope, owners)
+                if candidate.follows(owner, owners)
             )
         )
 
@@ -1650,6 +1686,7 @@ class SourceTopLevelSymbolClosureMovePlan(SourceTopLevelSymbolClosureMoveCarrier
             },
             reader_path=request.destination_path,
             reader_bindings=reader_bindings,
+            whole_module=operation.moves_whole_module(context),
         )
         consumer_edits = (
             *destination_localizations,

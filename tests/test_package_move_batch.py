@@ -217,3 +217,35 @@ def test_a_module_bound_from_its_package_follows_as_a_module(tmp_path: Path) -> 
     assert "from pkg.messaging import commands as cmds\n" in app
     assert "cmds.ClearQueue.kind" in app
     assert _runs(root, "VALUE") == "('command', 'inbox')"
+
+
+def test_a_guarded_module_binding_stays_guarded(tmp_path: Path) -> None:
+    """`if TYPE_CHECKING: from pkg import events as ev`, read only in annotations,
+    keeps its import under the guard: a runtime import would close the cycle the
+    guard exists to break (events imports app at load time)."""
+
+    _write(
+        tmp_path,
+        {
+            "pkg/__init__.py": "",
+            "pkg/messaging/__init__.py": "",
+            "pkg/events.py": (
+                "from pkg.app import Failure\n\n\n"
+                "class Response:\n    failure = Failure\n"
+            ),
+            "pkg/app.py": (
+                "from __future__ import annotations\n\n"
+                "from typing import TYPE_CHECKING\n\n"
+                "if TYPE_CHECKING:\n    from pkg import events as ev\n\n\n"
+                "class Failure:\n    pass\n\n\n"
+                "def answer(response: ev.Response) -> ev.Response:\n    return response\n\n\n"
+                "VALUE = answer.__name__\n"
+            ),
+        },
+    )
+
+    _stages, root = _moved(tmp_path, "| `messaging` | `events.py` | |\n")
+    app = (root / "pkg/app.py").read_text()
+    assert "if TYPE_CHECKING:\n    from pkg.messaging import events as ev\n" in app
+    assert "def answer(response: ev.Response) -> ev.Response:" in app
+    assert _runs(root, "VALUE") == "answer"
