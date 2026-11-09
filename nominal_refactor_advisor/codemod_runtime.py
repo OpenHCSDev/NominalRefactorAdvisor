@@ -214,6 +214,21 @@ class CodemodSourceSnapshot(CodemodSelectorContext):
 
         return self.with_text_files(TextFileRewrite.carried(self.text_files, rewrites))
 
+    def with_findings(self, findings: Iterable[RefactorFinding]) -> CodemodSourceSnapshot:
+        """This state with `findings` as the findings its index names; its
+        parses, class index, product flow and text files are this one's."""
+
+        return type(self)._from_modules_with_indexes(
+            self.parsed_modules,
+            self.required_class_family_index,
+            SourceIndexBuildArtifacts(
+                source_index=self.source_index.with_findings(findings),
+                node_index=self._source_index_build_artifacts.node_index,
+            ),
+            retained_product_flow_repository=self.product_flow_repository,
+            text_files=self.text_files,
+        )
+
     def with_text_files(self, text_files: Mapping[str, FileText]) -> CodemodSourceSnapshot:
         """This state with `text_files` as the plan's rewritten files outside the index."""
 

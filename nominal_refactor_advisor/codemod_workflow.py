@@ -1676,7 +1676,8 @@ class CodemodWorkflowScan:
 @dataclass(frozen=True)
 class ProvedWorkflowScan(CodemodWorkflowScan):
     """The scan of a state whose snapshot a stage already proved. Its parses,
-    text files and indexes are that snapshot's, never built again."""
+    text files and indexes are that snapshot's, never built again; only the
+    evidence rows follow this scan's own findings."""
 
     proved: CodemodSourceSnapshot = field(kw_only=True, repr=False)
     modules: ParsedModuleSet = field(init=False)
@@ -1686,9 +1687,9 @@ class ProvedWorkflowScan(CodemodWorkflowScan):
         object.__setattr__(self, "modules", self.proved.module_set)
         object.__setattr__(self, "text_files", self.proved.text_files)
 
-    @property
+    @cached_property
     def source_snapshot(self) -> CodemodSourceSnapshot:
-        return self.proved
+        return self.proved.with_findings(self.findings)
 
 
 @dataclass(frozen=True)

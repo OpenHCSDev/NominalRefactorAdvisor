@@ -27773,3 +27773,42 @@ def test_type_keyed_behavior_recipe_rejects_unrewritten_family_reference(
     operation = _authored_fixture_descent(snapshot, tmp_path / "pkg/mod.py")
     with pytest.raises(ValueError, match="projection family reference remains"):
         operation.source_edits_from_snapshot(snapshot)
+
+
+def test_proved_scan_index_names_its_own_findings(tmp_path: Path) -> None:
+    """A stage proves its after-state with the findings it started from; the
+    scan of that state names the findings its reproof found, never the parent's."""
+
+    from nominal_refactor_advisor.codemod_runtime import CodemodSourceSnapshot
+    from nominal_refactor_advisor.codemod_workflow import (
+        EveryDetectorCoverage,
+        ProvedWorkflowScan,
+    )
+    from nominal_refactor_advisor.models import RefactorFinding, SourceLocation
+    from nominal_refactor_advisor.patterns import PatternId
+
+    _write_module(tmp_path, "pkg/mod.py", "class Parent:\n    pass\n\n\nclass Child:\n    pass\n")
+    modules = parse_python_modules(tmp_path)
+    (file_path,) = (module.file_path for module in modules.modules)
+
+    def finding(name: str, line: int) -> RefactorFinding:
+        return RefactorFinding(
+            detector_id=f"{name.lower()}_fixture",
+            pattern_id=PatternId.AUTHORITATIVE_SCHEMA,
+            title=f"{name} fixture",
+            summary=f"{name} names one class",
+            why="fixture",
+            capability_gap="fixture",
+            relation_context="fixture",
+            evidence=(SourceLocation(file_path, line, name),),
+        )
+
+    parent, child = finding("Parent", 1), finding("Child", 5)
+    proved = CodemodSourceSnapshot.from_modules(modules, (parent,))
+    index = ProvedWorkflowScan(
+        proved=proved, findings=[child], coverage=EveryDetectorCoverage()
+    ).source_snapshot.source_index
+
+    assert index.target_ids_for_finding_ids((child.stable_id,))
+    assert index.target_ids_for_finding_ids((parent.stable_id,)) == ()
+    assert proved.source_index.target_ids_for_finding_ids((parent.stable_id,))

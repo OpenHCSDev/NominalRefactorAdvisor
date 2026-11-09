@@ -5,7 +5,7 @@ from __future__ import annotations
 import ast
 import hashlib
 from collections.abc import Iterable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import StrEnum
 from functools import cached_property
 from pathlib import Path
@@ -489,6 +489,23 @@ class SourceIndex(DataclassJsonReport):
         if target.is_module:
             return target.qualname
         return f"{self.file_by_id[target.file_id].module_name}.{target.qualname}"
+
+    def with_findings(self, findings: Iterable[RefactorFinding]) -> SourceIndex:
+        """This index's sources with evidence rows for `findings`, and only
+        those: which findings name a target is a fact of the findings at hand,
+        so a state's index never keeps another state's rows."""
+
+        return replace(
+            self,
+            evidence=EvidenceDigestsAuthority(
+                file_ids_by_path=SourceIndexBuildAuthority._file_ids_by_path(self.files),
+                targets_by_file=self.targets_by_file,
+            ).digests(
+                UniqueIdentityIndexAuthority.declarations_by_handle(
+                    tuple(findings), lambda finding: finding.stable_id
+                ).values()
+            ),
+        )
 
     @cached_property
     def target_index_by_file(self) -> TargetsByFileIndex:
@@ -1047,19 +1064,10 @@ class SourceIndexBuildAuthority:
     def build_artifacts(self) -> SourceIndexBuildArtifacts:
         files = self._file_digests()
         target_artifacts = self._target_artifacts()
-        targets_by_file = TargetsByFileIndex.from_targets(target_artifacts.targets)
-        findings_by_id = UniqueIdentityIndexAuthority.declarations_by_handle(
-            self.findings,
-            lambda finding: finding.stable_id,
-        )
         source_index = SourceIndex(
             files=files,
             ast_targets=target_artifacts.targets,
-            evidence=EvidenceDigestsAuthority(
-                file_ids_by_path=self._file_ids_by_path(files),
-                targets_by_file=targets_by_file,
-            ).digests(findings_by_id.values()),
-        )
+        ).with_findings(self.findings)
         self._warm_lookup_indexes(source_index)
         return SourceIndexBuildArtifacts(
             source_index=source_index,
