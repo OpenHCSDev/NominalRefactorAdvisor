@@ -709,6 +709,7 @@ class ClusterLayers:
                 DissolveModuleOperation(
                     target=SourceRewriteTarget(file_path=path),
                     successor_path=self.destinations[path],
+                    peer_paths=tuple(peer for peer in paths if peer != path),
                 )
             )
         return recipe
