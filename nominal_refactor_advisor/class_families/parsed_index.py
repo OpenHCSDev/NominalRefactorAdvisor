@@ -10,6 +10,7 @@ from typing import Iterable
 
 from ..ast_tools import (
     ParsedModule,
+    ParsedModuleFact,
     ParsedModuleSet,
     ParsedModuleSetFact,
 )
@@ -135,41 +136,6 @@ class ClassFamilyIndex(ClassDeclarationIndex[IndexedClass], ParsedModuleSetFact)
             if resolved_source_path_text(indexed_class.file_path) not in file_paths
         )
 
-    def projected_with_module_overlay(
-        self,
-        projected_modules: Iterable[ParsedModule],
-        changed_modules: Iterable[ParsedModule],
-    ) -> ClassFamilyIndex:
-        """Derive an exact projected index using an overlay only when closed."""
-
-        projected_module_tuple = tuple(projected_modules)
-        changed_module_tuple = tuple(changed_modules)
-        changed_file_paths = frozenset(
-            module.file_path for module in changed_module_tuple
-        )
-        retained_records = tuple(
-            record
-            for record in self.classes_by_symbol.values()
-            if record.file_path not in changed_file_paths
-        )
-        replaced_symbols = frozenset(self.classes_by_symbol).difference(
-            record.symbol for record in retained_records
-        )
-        projected_symbols = frozenset(
-            record.symbol
-            for record in ClassFamilyIndexBuilder(
-                changed_module_tuple
-            ).module_class_records()
-        )
-        if not replaced_symbols and not projected_symbols:
-            return self
-        if replaced_symbols != projected_symbols:
-            return build_class_family_index(list(projected_module_tuple))
-        return ClassFamilyIndexBuilder(
-            changed_module_tuple,
-            base_records=retained_records,
-        ).build()
-
 
 @dataclass(frozen=True)
 class ModuleClassReferenceResolver:
@@ -262,6 +228,32 @@ class ClassReferenceSymbolCollector(ast.NodeVisitor):
             self.symbols.add(symbol)
 
 
+@dataclass(frozen=True)
+class ModuleIndexedClasses(ParsedModuleFact):
+    """One module's class records before a family index resolves their bases. A
+    fact of the parse, so an unchanged module is read once per plan, not once per
+    index build."""
+
+    records: tuple[IndexedClass, ...]
+
+    @classmethod
+    def derive(cls, parsed_module: ParsedModule) -> ModuleIndexedClasses:
+        indexed_class_nodes = iter_class_definitions(list(parsed_module.module.body))
+        binding_snapshots = _module_nominal_binding_snapshots(
+            ModuleNominalBindingAuthority(parsed_module),
+            tuple(node.lineno for _qualname, node in indexed_class_nodes),
+            include_final=False,
+        )
+        return cls(
+            tuple(
+                IndexedClass.from_parsed_class(
+                    parsed_module, qualname, node, binding_snapshots[node.lineno]
+                )
+                for qualname, node in indexed_class_nodes
+            )
+        )
+
+
 def build_class_family_index(modules: Sequence[ParsedModule]) -> ClassFamilyIndex:
     """Build one class-family index; the caller that owns the modules holds it."""
 
@@ -318,26 +310,11 @@ class ClassFamilyIndexBuilder:
         )
 
     def module_class_records(self) -> tuple[IndexedClass, ...]:
-        records: list[IndexedClass] = []
-        for parsed_module in self.modules:
-            indexed_class_nodes = iter_class_definitions(
-                list(parsed_module.module.body)
-            )
-            binding_snapshots = _module_nominal_binding_snapshots(
-                ModuleNominalBindingAuthority(parsed_module),
-                tuple(node.lineno for _qualname, node in indexed_class_nodes),
-                include_final=False,
-            )
-            for qualname, node in indexed_class_nodes:
-                records.append(
-                    IndexedClass.from_parsed_class(
-                        parsed_module,
-                        qualname,
-                        node,
-                        binding_snapshots[node.lineno],
-                    )
-                )
-        return tuple(records)
+        return tuple(
+            record
+            for parsed_module in self.modules
+            for record in parsed_module.fact(ModuleIndexedClasses).records
+        )
 
     def resolved_record(
         self,
