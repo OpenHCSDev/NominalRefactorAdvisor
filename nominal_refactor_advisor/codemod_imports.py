@@ -108,12 +108,13 @@ class ImportBlockInsertionPointABC(ABC):
         source: str,
         slot: ImportInsertionSlot,
         additions: tuple[RequestedImportStatement, ...],
+        file_path: str,
     ) -> str:
-        """Render additions with any required following group boundary."""
+        """Render additions in `file_path` with any required following group boundary."""
 
         existing_imports = self.leading_import_statements
         inserted_source = RequestedImportBlock(additions).source_after(
-            slot.previous_statement(self)
+            slot.previous_statement(self), file_path
         )
         if (
             slot.index < len(existing_imports)
@@ -969,6 +970,7 @@ class ModuleImportMutation(KeyedSourceEditCoalescence):
             source=source,
             slot=slot,
             additions=additions,
+            file_path=self.file_path,
         )
         spacing = DestinationInsertionSpacing.from_source(
             source,
@@ -1019,6 +1021,7 @@ class ModuleImportMutation(KeyedSourceEditCoalescence):
             source=source,
             slot=slot,
             additions=additions,
+            file_path=self.file_path,
         )
         if slot.index == len(existing_imports):
             if len(existing_imports) < len(insertion_point.guard.body):
@@ -1064,9 +1067,11 @@ class ModuleImportMutation(KeyedSourceEditCoalescence):
             if insertion_point.insertion_index_for(addition) != import_boundary_index
         )
         runtime_source = RequestedImportBlock(boundary_runtime_additions).source_after(
-            insertion_point.previous_import_statement
+            insertion_point.previous_import_statement, self.file_path
         )
-        guarded_source = RequestedImportBlock(guarded_additions).source_after(None)
+        guarded_source = RequestedImportBlock(guarded_additions).source_after(
+            None, self.file_path
+        )
         separator_before_guard = (
             "\n"
             if runtime_source or insertion_point.previous_import_statement is not None
@@ -1304,6 +1309,19 @@ class RequestedImportStatement:
             layout=ImportLayout.as_written(self.statement),
         ).source
 
+    def source_in(self, file_path: str) -> str:
+        """This import as written into `file_path`: in its own layout, fitted to
+        the file's line limit, so a merge of one-line requests that no longer fits
+        becomes a column."""
+
+        if isinstance(self.statement, ast.Import):
+            return self.source
+        return ImportFromSource(
+            module_name=ImportFromModuleName.from_node(self.statement).source,
+            aliases=tuple(self.statement.names),
+            layout=ImportLayout.of(self.statement, file_path),
+        ).source
+
     def with_aliases(
         self,
         aliases: Iterable[ImportAlias],
@@ -1340,6 +1358,7 @@ class RequestedImportBlock:
     def source_after(
         self,
         previous_statement: ast.Import | ast.ImportFrom | None,
+        file_path: str,
     ) -> str:
         previous = (
             RequestedImportStatement(previous_statement)
@@ -1353,7 +1372,7 @@ class RequestedImportBlock:
                 and previous.source_group is not statement.source_group
             ):
                 source_parts.append("\n")
-            source_parts.append(statement.source)
+            source_parts.append(statement.source_in(file_path))
             previous = statement
         return "".join(source_parts)
 
