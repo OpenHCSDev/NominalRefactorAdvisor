@@ -3170,16 +3170,32 @@ class SourceBindingRelocatingModuleSymbolMoveOperationABC(
         """An entry point or setting naming a moved name on the source, which no
         longer binds it, names the name's owner instead."""
 
-        source_path = self.required_source_path(context, self.operation_key())
-        redirect = self.move_plan(context).name_redirect
         return (
             *super().text_file_changes(context),
-            *_RelocatedNameStrings(
-                source_path,
-                redirect.source_module_name(context.module_import_graph),
-                redirect.destinations,
-                None,
-            ).manifest_edits(context, self),
+            *self.relocated_strings(context).manifest_edits(context, self),
+        )
+
+    def move_source_edits(
+        self,
+        context: CodemodSourceSnapshot,
+    ) -> tuple[NominalSourceEdit, ...]:
+        """A string naming a moved name on the source (a patch target such as
+        `"pkg.mod.Name.attr"`, a docstring's `pkg.mod.Name`) names its new home."""
+
+        return (
+            *super().move_source_edits(context),
+            *self.relocated_strings(context).edits(context),
+        )
+
+    def relocated_strings(self, context: CodemodSelectorContext) -> _RelocatedNameStrings:
+        """Every string mention of a name this move takes, on its source module."""
+
+        redirect = self.move_plan(context).name_redirect
+        return _RelocatedNameStrings(
+            self.required_source_path(context, self.operation_key()),
+            redirect.source_module_name(context.module_import_graph),
+            redirect.destinations,
+            None,
         )
 
     def source_local_dependency_resolution(
@@ -3546,7 +3562,9 @@ class _ScriptEntry:
 
         where = f"{source_path!r}:{self.statement.lineno}"
         if successor_path is None:
-            raise ValueError(f"{where} runs the module as a script; declare its successor_path")
+            raise ValueError(
+                f"{where} runs the module as a script; declare its successor_path as an existing module"
+            )
         source_module = context.module_nodes_by_file_path[source_path]
         successor_module = context.module_nodes_by_file_path[successor_path]
         if _ScriptEntry.of(successor_module):
@@ -4233,14 +4251,10 @@ class _ModuleIdentityStrings:
                 segment = source[start:end]
                 routed: list[tuple[int, int]] = []
                 for match in embedded.matches(segment):
-                    unowned = [name for name in embedded.names(match) if name not in self.owners]
-                    if unowned:
-                        raise ValueError(
-                            f"{file_path!r}:{node.lineno} imports {unowned!r} from the "
-                            f"dissolved module {self.source_module_name!r} inside a "
-                            "string; it does not bind them"
-                        )
-                    routed.append(match.span())
+                    if self._routes_embedded_import(
+                        f"{file_path!r}:{node.lineno}", embedded.names(match)
+                    ):
+                        routed.append(match.span())
                 replacements.extend(
                     self.string_replacements(
                         context, f"{file_path!r}:{node.lineno}", segment, start, routed
@@ -4252,6 +4266,18 @@ class _ModuleIdentityStrings:
             if replacements:
                 edits.append(geometry.nominal_edit(file_path=file_path, replacements=tuple(replacements)))
         return tuple(edits)
+
+    def _routes_embedded_import(self, where: str, names: list[str]) -> bool:
+        """Whether a `from <module> import ...` inside a string is left to the
+        embedded-import rewrite: every name it imports must have an owner."""
+
+        unowned = [name for name in names if name not in self.owners]
+        if unowned:
+            raise ValueError(
+                f"{where} imports {unowned!r} from the dissolved module "
+                f"{self.source_module_name!r} inside a string; it does not bind them"
+            )
+        return True
 
     def _glued_replacements(
         self,
@@ -4287,7 +4313,7 @@ class _ModuleIdentityStrings:
                 if self.successor_path is None:
                     raise ValueError(
                         f"{file_path!r}:{literal.lineno} glues the dissolved module "
-                        f"{self.source_module_name!r} together; declare its successor_path"
+                        f"{self.source_module_name!r} together; declare its successor_path as an existing module"
                     )
                 successor = context.module_import_graph.module_name_for_file_path(
                     self.successor_path
@@ -4342,7 +4368,7 @@ class _ModuleIdentityStrings:
         if self.successor_path is None:
             raise ValueError(
                 f"{where} names the dissolved module "
-                f"{match.group(0)!r}; declare its successor_path or retain the call"
+                f"{match.group(0)!r}; declare its successor_path as an existing module or retain the call"
             )
         return import_graph.module_name_for_file_path(self.successor_path)
 
@@ -4350,7 +4376,7 @@ class _ModuleIdentityStrings:
         if self.successor_path is None:
             raise ValueError(
                 f"{where} names the dissolved module's path "
-                f"{path!r}; declare its successor_path or retain the call"
+                f"{path!r}; declare its successor_path as an existing module or retain the call"
             )
         root = self.source_path[: len(self.source_path) - len(path)]
         if not self.successor_path.startswith(root):
@@ -4390,6 +4416,26 @@ class _RelocatedNameStrings(_ModuleIdentityStrings):
         """The source file stays where it is, so no path to it changes."""
 
         del spelled
+        return ()
+
+    def _routes_embedded_import(self, where: str, names: list[str]) -> bool:
+        """An embedded import of a name that left is the consumer rewrite's to
+        retarget, so its span is left to it; one of names that stay still reads
+        true and stays as written."""
+
+        del where
+        return any(name in self.owners for name in names)
+
+    def _glued_replacements(
+        self,
+        context: CodemodSelectorContext,
+        file_path: str,
+        index: ModuleNodeIndex,
+        geometry: SourceTextGeometry,
+    ) -> tuple[SourceTextSpanReplacement, ...]:
+        """A glued module name still names the module, which stays."""
+
+        del context, file_path, index, geometry
         return ()
 
 
@@ -4468,7 +4514,7 @@ class DissolveModuleOperation(RetainedCallOperation):
                 else SourcePathResolutionAuthority.from_source_index(
                     self.successor_path,
                     context.source_index,
-                ).required_path()
+                ).optional_path()
             ),
             frozenset(self.retained_calls),
         )

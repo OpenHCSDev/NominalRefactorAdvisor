@@ -37,6 +37,7 @@ from nominal_refactor_advisor.codemod_import_bindings import DirectModuleImportB
 from nominal_refactor_advisor.codemod_import_scopes import ModuleImportScope
 from nominal_refactor_advisor.codemod_module_declarations import ModuleSymbolTable
 from nominal_refactor_advisor.codemod_preflight import CodemodOperationPreflightError
+from nominal_refactor_advisor.codemod_operations import RefactorRecipeOperation
 from nominal_refactor_advisor.codemod_runtime import (
     FindingRecipeEvaluation,
     RefactorRecipe,
@@ -790,20 +791,37 @@ class ClusterLayers:
         )
 
     def _row_refusals(self, recipe: RefactorRecipe) -> dict[str, str]:
-        paths = {
-            operation.operation_key(): operation.target.file_path
-            for operation in recipe.operations
-        }
+        """Each row's own refusal, by the operation that produced it: an operation
+        key names a class of operation, so two rows of one class share it."""
+
         try:
             projected = recipe.rewrite_context(self.context)
         except CodemodOperationPreflightError as error:
-            return {paths[error.report.operation]: error.report.message}
+            return {
+                operation.target.file_path: error.report.message
+                for operation in recipe.operations
+                if self.creation_refuses(operation)
+            } or {
+                operation.target.file_path: error.report.message
+                for operation in recipe.operations
+                if operation.operation_key() == error.report.operation
+            }
         return {
-            paths[report.operation]: report.message
+            operation.target.file_path: report.message
             for operation in recipe.operations
             for report in operation.preflight_reports(projected)
             if not report.status.is_passed
         }
+
+    def creation_refuses(self, operation: RefactorRecipeOperation) -> bool:
+        """Whether the files this operation creates refuse on their own; a creation
+        that conflicts only with a peer's refuses with every row of its class."""
+
+        try:
+            operation.source_file_creations(self.context)
+        except CodemodOperationPreflightError:
+            return True
+        return False
 
     @cached_property
     def batch_paths(self) -> tuple[str, ...]:

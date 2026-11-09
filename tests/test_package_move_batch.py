@@ -523,10 +523,10 @@ def test_a_shell_whose_own_dissolve_refuses_stays_and_the_rest_still_move(
     tmp_path: Path,
 ) -> None:
     """`held` and `plain` only re-export `Alpha` and dissolve before anything
-    relocates. Neither has a module to dissolve into, so each refuses on its own;
-    that used to refuse the whole dissolve stage and left `alpha` waiting behind
-    `held` forever. Each shell now stays with its reason and `alpha` moves, its
-    re-exports following it."""
+    relocates. `held` also runs as a script, and no successor module exists to run
+    that block from, so its dissolve refuses on its own; that used to refuse the
+    whole dissolve stage and left `alpha` waiting behind `held` forever. `held` now
+    stays with its reason, `plain` dissolves, and `alpha` moves."""
 
     _write(
         tmp_path,
@@ -534,7 +534,9 @@ def test_a_shell_whose_own_dissolve_refuses_stays_and_the_rest_still_move(
             "pkg/__init__.py": "",
             "pkg/messaging/__init__.py": "",
             "pkg/alpha.py": "class Alpha:\n    kind = 'a'\n",
-            "pkg/held.py": "from pkg.alpha import Alpha\n",
+            "pkg/held.py": (
+                "from pkg.alpha import Alpha\n\nif __name__ == '__main__':\n    print(Alpha.kind)\n"
+            ),
             "pkg/plain.py": "from pkg.alpha import Alpha\n",
             "pkg/app.py": (
                 "import pkg.held as held\nfrom pkg.plain import Alpha\n\n"
@@ -554,14 +556,15 @@ def test_a_shell_whose_own_dissolve_refuses_stays_and_the_rest_still_move(
         migration_type=PackageMoveConcept,
         guard_suite=ArchitectureGuardSuite(),
     ).run()
-    assert report.to_markdown().count("stays: its dissolve refused") == 2
+    assert report.to_markdown().count("stays: its dissolve refused") == 1
     replay = report.replay_sequence.simulate(
         CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     )
     assert replay.is_clean
     replay.apply()
     assert not (tmp_path / "pkg/alpha.py").exists()
-    assert (tmp_path / "pkg/plain.py").read_text() == "from pkg.messaging.alpha import Alpha\n"
+    assert not (tmp_path / "pkg/plain.py").exists()
+    assert (tmp_path / "pkg/held.py").exists()
     assert _runs(tmp_path, "VALUE") == "('a', 'a')"
 
 
@@ -706,6 +709,77 @@ def test_a_refusing_module_first_in_line_no_longer_holds_back_the_rest(
     assert _runs(tmp_path, "VALUE") == "('pkg', 'z')"
 
 
+def test_a_re_export_shell_named_in_a_table_dissolves_without_a_successor_module(
+    tmp_path: Path,
+) -> None:
+    """`plain` only re-exports `Alpha`. Its row names `messaging/plain.py`, which
+    nothing creates, and no string or script names `plain`, so nothing needs a
+    successor: it dissolves, its consumer importing `Alpha` from its new home."""
+
+    _write(
+        tmp_path,
+        {
+            "pkg/__init__.py": "",
+            "pkg/messaging/__init__.py": "",
+            "pkg/alpha.py": "class Alpha:\n    kind = 'a'\n",
+            "pkg/plain.py": "from pkg.alpha import Alpha\n",
+            "pkg/app.py": "from pkg.plain import Alpha\n\nVALUE = Alpha.kind\n",
+        },
+    )
+
+    _stages, root = _moved(tmp_path, "| `messaging` | `alpha.py`, `plain.py` | |\n")
+    assert not (root / "pkg/plain.py").exists()
+    assert "from pkg.messaging.alpha import Alpha" in (root / "pkg/app.py").read_text()
+    assert _runs(root, "VALUE") == "a"
+
+
+def test_a_refusal_holds_back_only_the_row_that_refused(tmp_path: Path) -> None:
+    """Three rows move into new modules, one operation class for all three, and
+    `astamp`'s refuses (it reads `__file__`). An operation key names a class of
+    operation, so a refusal matched by key landed on whichever row of the class came
+    last and held `beta` back for `astamp`'s reason. It belongs to `astamp` alone:
+    `alpha` and `beta` move together."""
+
+    _write(
+        tmp_path,
+        {
+            "pkg/__init__.py": "",
+            "pkg/messaging/__init__.py": "",
+            "pkg/alpha.py": "class Alpha:\n    kind = 'a'\n",
+            "pkg/astamp.py": (
+                "from pathlib import Path\n\nROOT = Path(__file__).resolve().parents[0].name\n"
+            ),
+            "pkg/beta.py": "class Beta:\n    kind = 'b'\n",
+            "pkg/app.py": (
+                "from pkg.alpha import Alpha\nfrom pkg.astamp import ROOT\nfrom pkg.beta import Beta\n\n"
+                "VALUE = (Alpha.kind, ROOT, Beta.kind)\n"
+            ),
+        },
+    )
+
+    report = CodemodRefactorGoalRunner(
+        roots=(tmp_path,),
+        config=DetectorConfig(
+            package_destination_tables=(
+                "| `messaging` | `alpha.py`, `astamp.py`, `beta.py` | |\n",
+            )
+        ),
+        dry_run=True,
+        migration_type=PackageMoveConcept,
+        guard_suite=ArchitectureGuardSuite(),
+    ).run()
+    replay = report.replay_sequence.simulate(
+        CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    )
+    assert replay.is_clean
+    replay.apply()
+    assert (tmp_path / "pkg/messaging/alpha.py").exists()
+    assert (tmp_path / "pkg/messaging/beta.py").exists()
+    assert (tmp_path / "pkg/astamp.py").exists()
+    assert _runs(tmp_path, "VALUE") == "('a', 'pkg', 'b')"
+
+
+
 def test_a_move_whose_new_package_init_imports_its_importer_refuses(tmp_path: Path) -> None:
     """`svc/__init__.py` imports `run` from `child`, and `child` imports `unit`. Moving
     `unit` into `svc/` would have `child` import `pkg.svc.unit`, whose package
@@ -755,3 +829,94 @@ def test_a_package_init_re_exporting_the_module_moving_into_it_still_moves(
     _stages, root = _moved(tmp_path, "| `svc` | `unit.py` | |\n")
     assert (root / "pkg/svc/unit.py").exists()
     assert _runs(root, "VALUE") == "Unit"
+
+
+def test_a_type_alias_moves_with_its_module(tmp_path: Path) -> None:
+    """`type RecordBuilder = ...` (PEP 695) declares a name like a class does. A
+    whole-module move takes it with the rest, rather than refusing a statement it
+    thought it would strand."""
+
+    _write(
+        tmp_path,
+        {
+            "pkg/__init__.py": "",
+            "pkg/messaging/__init__.py": "",
+            "pkg/records.py": (
+                "from collections.abc import Callable\n\n\n"
+                "class Record:\n    kind = 'record'\n\n\n"
+                "type RecordBuilder = Callable[[int], Record]\n\n\n"
+                "def build(size: int) -> Record:\n    return Record()\n"
+            ),
+            "pkg/app.py": (
+                "from pkg.records import RecordBuilder, build\n\n"
+                "VALUE = (RecordBuilder.__name__, build(1).kind)\n"
+            ),
+        },
+    )
+
+    _stages, root = _moved(tmp_path, "| `messaging` | `records.py` | |\n")
+    assert "type RecordBuilder = Callable[[int], Record]" in (
+        root / "pkg/messaging/records.py"
+    ).read_text()
+    assert _runs(root, "VALUE") == "('RecordBuilder', 'record')"
+
+
+def test_an_annotation_only_global_moves_with_the_code_that_assigns_it(
+    tmp_path: Path,
+) -> None:
+    """`_remote: object` declares the name and its type without a value; an
+    initializer binds it through `global`. A whole-module move takes the
+    annotation with the functions instead of refusing it as no declaration."""
+
+    _write(
+        tmp_path,
+        {
+            "pkg/__init__.py": "",
+            "pkg/messaging/__init__.py": "",
+            "pkg/remote.py": (
+                "_remote: object\n\n\n"
+                "def initialize(value: object) -> None:\n    global _remote\n    _remote = value\n\n\n"
+                "def current() -> object:\n    return _remote\n"
+            ),
+            "pkg/app.py": (
+                "from pkg.remote import current, initialize\n\ninitialize('r')\nVALUE = current()\n"
+            ),
+        },
+    )
+
+    _stages, root = _moved(tmp_path, "| `messaging` | `remote.py` | |\n")
+    moved = (root / "pkg/messaging/remote.py").read_text()
+    assert moved.index("_remote: object") < moved.index("def initialize")
+    assert _runs(root, "VALUE") == "r"
+
+
+def test_a_string_naming_a_moved_class_follows_it(tmp_path: Path) -> None:
+    """A patch target (`"pkg.store.Profiles.directory"`) and a docstring naming
+    `pkg.store.Profiles` both name the class where it was. The relocation rewrites
+    them to its new home, so the dissolve after it finds nothing still pointing at
+    the shell and no string blocks it."""
+
+    _write(
+        tmp_path,
+        {
+            "pkg/__init__.py": "",
+            "pkg/messaging/__init__.py": "",
+            "pkg/store.py": "class Profiles:\n    directory = 'old'\n",
+            "pkg/patching.py": (
+                "import importlib\n\n\n"
+                "def target() -> str:\n"
+                "    return 'pkg.store.Profiles.directory'\n\n\n"
+                "def resolve() -> str:\n"
+                "    module, cls, attr = target().rsplit('.', 2)\n"
+                "    return getattr(getattr(importlib.import_module(module), cls), attr)\n"
+            ),
+            "pkg/doc.py": '"""Reads `pkg.store.Profiles` for its directory."""\n\nVALUE = 1\n',
+            "pkg/app.py": "from pkg.patching import resolve\n\nVALUE = resolve()\n",
+        },
+    )
+
+    _stages, root = _moved(tmp_path, "| `messaging` | `store.py` | |\n")
+    assert not (root / "pkg/store.py").exists()
+    assert "'pkg.messaging.store.Profiles.directory'" in (root / "pkg/patching.py").read_text()
+    assert "`pkg.messaging.store.Profiles`" in (root / "pkg/doc.py").read_text()
+    assert _runs(root, "VALUE") == "old"
