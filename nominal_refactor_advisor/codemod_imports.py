@@ -1402,15 +1402,19 @@ class ImportLayout(ABC):
         return f"{head}(\n{alias_lines})\n"
 
     @classmethod
-    def of(cls, statement: ast.ImportFrom, file_path: str) -> ImportLayout:
+    def of(cls, statement: ast.Import | ast.ImportFrom, file_path: str) -> ImportLayout:
         """The layout of `statement` as written in `file_path`: a parenthesised
         import stays a column, a one-line import stays one line while it fits."""
 
-        if statement.end_lineno != statement.lineno:
-            return ColumnImportLayout()
-        return FittedImportLayout(
-            DeclaredRoot.line_length_for(Path(file_path)) - statement.col_offset
-        )
+        match statement:
+            case ast.ImportFrom(lineno=int(start), end_lineno=int(end)) if end != start:
+                return ColumnImportLayout()
+            case ast.ImportFrom(col_offset=int(indent)):
+                return FittedImportLayout(
+                    DeclaredRoot.line_length_for(Path(file_path)) - indent
+                )
+        # Built in code, not written anywhere: a new import, fitted to the file.
+        return cls.fitted(file_path)
 
     @classmethod
     def fitted(cls, file_path: str) -> ImportLayout:

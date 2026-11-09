@@ -6758,10 +6758,7 @@ def test_refactor_recipe_converts_literal_dispatch_to_polymorphism(
     rewritten = module_path.read_text()
     assert 'if kind == "csv"' not in rewritten
     assert (
-        "from abc import (\n"
-        "    ABC,\n"
-        "    abstractmethod,\n"
-        ")\n"
+        "from abc import ABC, abstractmethod\n"
         "from typing import ClassVar\n\n"
         "from metaclass_registry import AutoRegisterMeta\n\n\n"
         "def traced(function):"
@@ -8592,8 +8589,6 @@ def test_refactor_recipe_moves_symbol_dependency_closure_between_modules(
     rewritten_source = source_path.read_text()
     rewritten_destination = destination_path.read_text()
     assert "from pkg.destination import Helper as Helper, LocalBase as LocalBase\n" in rewritten_source
-    assert "    Helper as Helper," in rewritten_source
-    assert "    LocalBase as LocalBase," in rewritten_source
     assert "from dataclasses import field" in rewritten_source
     assert "from pathlib import Path" in rewritten_source
     assert "from typing import ClassVar" not in rewritten_source
@@ -19046,8 +19041,6 @@ def test_module_cli_creates_destination_and_moves_symbols_from_stdin(
     assert "Codemod apply complete" in apply_result.stdout
     rewritten_source = source_path.read_text()
     assert "from pkg.destination import Helper as Helper, LocalBase as LocalBase\n" in rewritten_source
-    assert "    Helper as Helper," in rewritten_source
-    assert "    LocalBase as LocalBase," in rewritten_source
     assert "class Helper" not in source_path.read_text()
     rewritten_destination = destination_path.read_text()
     assert rewritten_destination.startswith(
