@@ -627,9 +627,12 @@ def test_import_mutation_preserves_group_boundaries_for_multiple_additions(
 @pytest.mark.parametrize(
     ("source", "expected_separator"),
     (
-        ("import ast\nVALUE = 1\n", "\n\n"),
-        ("import ast\n\nVALUE = 1\n", "\n"),
+        ("import ast\nVALUE = 1\n", "\n"),
+        ("import ast\n\nVALUE = 1\n", ""),
         ("import ast\n\n\nVALUE = 1\n", ""),
+        ("import ast\ndef build():\n    pass\n", "\n\n"),
+        ("import ast\n\nclass Built:\n    pass\n", "\n"),
+        ("import ast\n\n@dataclass\nclass Built:\n    pass\n", "\n"),
     ),
 )
 def test_import_insertion_derives_only_missing_separator_lines(
