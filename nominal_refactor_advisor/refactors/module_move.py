@@ -315,6 +315,9 @@ class ModuleNameRedirect:
                             ),
                         )
                     )
+                    edits.extend(
+                        self._sorted_owner_imports(import_graph, consumer_path, scope, statement)
+                    )
             retargets = _SourceModuleAliasRetargets.of(
                 parsed.fact(ModuleNodeIndex),
                 source_module_name=source_module_name,
@@ -407,6 +410,39 @@ class ModuleNameRedirect:
         del import_graph, run_only, source_module_name, source
         return ()
 
+    def _sorted_owner_imports(
+        self,
+        import_graph: SourceModuleImportGraph,
+        consumer_path: str,
+        scope: ModuleImportScope,
+        statement: ast.ImportFrom,
+    ) -> tuple[ModuleImportMutation, ...]:
+        """A module-level or `TYPE_CHECKING` `from source import ...` naming moved
+        names: the moved names leave it, and each owner's import is inserted
+        where the block's order puts its module, in the statement's own layout.
+        Rewriting it where it stood would keep the old module's sort position."""
+
+        moved = tuple(
+            alias for alias in statement.names if alias.name != "*" and alias.name in self.destinations
+        )
+        if not moved:
+            return ()
+        return (
+            ModuleImportMutation.remove_names(
+                file_path=consumer_path,
+                module_name=ImportFromModuleName.from_node(statement).source,
+                names=(alias.name for alias in moved),
+                scope=scope,
+            ),
+            *self._owner_imports(
+                import_graph,
+                consumer_path,
+                scope,
+                moved,
+                layout=ImportLayout.of(statement, consumer_path),
+            ),
+        )
+
     def _in_place_import_replacements(
         self,
         import_graph: SourceModuleImportGraph,
@@ -415,10 +451,10 @@ class ModuleNameRedirect:
         consumer_path: str,
         source_module_name: str,
     ) -> tuple[tuple[ast.ImportFrom, str], ...]:
-        """Every `from source import ...` naming moved names, at module level, under
-        `TYPE_CHECKING` or inside a body, rewritten where it stands: one statement
-        per owner, plus one for the names that stay. The reader's imports keep
-        their place and grouping."""
+        """Every `from source import ...` inside a function body naming moved
+        names, rewritten where it stands: one statement per owner, plus one for
+        the names that stay. A body has no import block to keep sorted; a module
+        level or `TYPE_CHECKING` import is `_sorted_owner_imports`'."""
 
         scope_by_statement = {
             id(statement): scope
@@ -440,8 +476,10 @@ class ModuleNameRedirect:
                 continue
             if any(alias.name == "*" for alias in statement.names):
                 raise ValueError(f"{consumer_path!r}:{statement.lineno} star-imports locally")
+            if id(statement) in scope_by_statement:
+                continue
             kept = tuple(alias for alias in statement.names if alias.name not in self.destinations)
-            scope = scope_by_statement.get(id(statement), ModuleImportScope.RUNTIME)
+            scope = ModuleImportScope.RUNTIME
             lines = [
                 ImportFromSource(
                     module_name=scope.required_module_reference(
@@ -696,8 +734,10 @@ class ModuleNameRedirect:
         consumer_path: str,
         scope: ModuleImportScope,
         aliases: tuple[ast.alias, ...],
+        layout: ImportLayout | None = None,
     ) -> Iterator[ModuleImportMutation]:
-        """One import per owner, of the aliases that owner now declares."""
+        """One import per owner, of the aliases that owner now declares, in
+        `layout` (a rewritten import's own), or fitted to the file when new."""
 
         for destination_path in sorted({self.destinations[alias.name] for alias in aliases}):
             owned = tuple(
@@ -713,7 +753,7 @@ class ModuleNameRedirect:
                         imported_name=owned[0].name,
                     ),
                     aliases=owned,
-                    layout=ImportLayout.fitted(consumer_path),
+                    layout=layout or ImportLayout.fitted(consumer_path),
                 ).source,
                 scope=scope,
             )
