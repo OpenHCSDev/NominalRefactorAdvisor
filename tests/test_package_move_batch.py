@@ -370,3 +370,31 @@ def test_a_whole_module_move_carries_the_statements_between_its_declarations(
     assert moved.index("BUDGET = 3") < moved.index("assert BUDGET > 1") < moved.index("class Policy")
     assert moved.index("class Policy") < moved.index("pkg.seen.NAMES.append(Policy.__name__)")
     assert _runs(root, "VALUE") == "(3, 'Policy')"
+
+
+def test_a_merge_row_carries_the_statements_of_the_module_it_folds(tmp_path: Path) -> None:
+    """`limits.py merges into policy.py` moves every declaration into a module that
+    already exists: the source never becomes that module, but its shell must still
+    empty, so the assert on its constant moves too."""
+
+    _write(
+        tmp_path,
+        {
+            "pkg/__init__.py": "",
+            "pkg/planning/__init__.py": "",
+            "pkg/policy.py": "class Policy:\n    pass\n",
+            "pkg/limits.py": "LIMIT = 2\nassert LIMIT > 1\n",
+            "pkg/app.py": (
+                "from pkg.limits import LIMIT\nfrom pkg.policy import Policy\n\n"
+                "VALUE = (LIMIT, Policy.__name__)\n"
+            ),
+        },
+    )
+
+    _stages, root = _moved(
+        tmp_path, "| `planning` | `policy.py`; `limits.py` merges into `policy.py` | |\n"
+    )
+    assert not (root / "pkg/limits.py").exists()
+    merged = (root / "pkg/planning/policy.py").read_text()
+    assert merged.index("LIMIT = 2") < merged.index("assert LIMIT > 1")
+    assert _runs(root, "VALUE") == "(2, 'Policy')"
