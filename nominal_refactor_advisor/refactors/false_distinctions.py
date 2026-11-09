@@ -415,11 +415,11 @@ class EnumFoldProof:
             name,
             members,
             tuple(
-                (parsed, *enum_uses(parsed.module, name.__eq__))
+                (parsed, *enum_uses(parsed, name.__eq__))
                 for parsed in snapshot.parsed_modules
             ),
             tuple(
-                (test, *enum_uses(test.module, name.__eq__))
+                (test, *enum_uses(test, name.__eq__))
                 for test in snapshot.module_set.fact(SiblingTestModules).modules
             ),
         )

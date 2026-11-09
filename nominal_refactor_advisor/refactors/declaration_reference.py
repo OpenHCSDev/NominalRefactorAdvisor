@@ -20,6 +20,7 @@ from ..class_identity_observations import (
     NameImport,
     TypeSpelling,
 )
+from ..ast_tools import ParsedModule
 from ..codemod_reproof import SourceReprovedOperation
 from ..codemod_runtime import (
     CodemodSourceSnapshot,
@@ -192,13 +193,13 @@ class DeclarationReferenceOperation(SourceReprovedOperation, ABC):
         """This file's rewrites, once the rewritten source is proved to differ only in them."""
 
         parsed = context.parsed_module_for_source_path(path)
-        rewrites = self.rewrites(context, parsed.module, path)
+        rewrites = self.rewrites(context, parsed, path)
         self.require_only_replaced(context.sources_by_file_path[path], rewrites)
         return rewrites
 
     @abstractmethod
     def rewrites(
-        self, context: CodemodSelectorContext, module: ast.Module, path: str
+        self, context: CodemodSelectorContext, parsed: ParsedModule, path: str
     ) -> tuple[SpanRewrite, ...]:
         raise NotImplementedError
 
@@ -294,18 +295,14 @@ class UnquoteResolvedTypeNamesOperation(DeclarationReferenceOperation):
         ast.Constant,
     )
 
-    def rewrites(self, context, module, path):
-        parents = {
-            id(child): parent
-            for parent in ast.walk(module)
-            for child in ast.iter_child_nodes(parent)
-        }
+    def rewrites(self, context, parsed, path):
+        parents = parsed.syntax_index.parent_by_node
         return tuple(
             SpanRewrite(
                 quoted.node,
-                self.reference_source(quoted, parents.get(id(quoted.node))),
+                self.reference_source(quoted, parents.get(quoted.node)),
             )
-            for quoted in ModuleReferenceScope(module).unquotable(
+            for quoted in ModuleReferenceScope(parsed.module).unquotable(
                 DeclaredInterpreter.of(Path(path))
             )
         )
@@ -350,16 +347,13 @@ class ReferenceImportedModuleOperation(DeclarationReferenceOperation):
         "Reference the imported module instead of spelling its name."
     )
 
-    def rewrites(self, context, module, path):
+    def rewrites(self, context, parsed, path):
         scope = ModuleReferenceScope(
-            module,
-            package=IdentityPositions.package_of(
-                context.parsed_module_for_source_path(path)
-            ),
+            parsed.module, package=IdentityPositions.package_of(parsed)
         )
         return tuple(
             SpanRewrite(spelled.replaced, reference)
-            for spelled in SpelledModules(module)
+            for spelled in SpelledModules(parsed.module)
             if spelled.replaced is not None
             and (reference := scope.module_reference(spelled)) is not None
         )
@@ -375,15 +369,14 @@ class ReferenceNamedClassOperation(DeclarationReferenceOperation, ABC):
     file's last top-level import.
     """
 
-    def rewrites(self, context, module, path):
+    def rewrites(self, context, parsed, path):
+        module = parsed.module
         identities = context.declared_identities
         positions = IdentitySpelling.positions()
         found: dict[int, SpanRewrite] = {}
         imported: dict[int, dict[str, None]] = {}
         created: dict[str, dict[str, None]] = {}
-        for node, detail in IdentityPositions(
-            context.parsed_module_for_source_path(path)
-        ).spellings():
+        for node, detail in IdentityPositions(parsed).spellings():
             position = positions[detail[0]]
             if not (
                 position.rewrite(detail, identities, path).rewritable(

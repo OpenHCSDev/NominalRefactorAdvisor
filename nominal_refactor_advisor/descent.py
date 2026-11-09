@@ -11,6 +11,7 @@ refusal lists each one at its file:line.
 """
 
 from __future__ import annotations
+from .module_node_index import ModuleNodeIndex
 
 import ast
 import re
@@ -25,7 +26,6 @@ from .ast_field_decoders import declared_annotations
 from .ast_projection import StatementValue
 from .value_expression import CompactValueExpression
 from .ast_tools import (
-    AstParentIndex,
     BuiltinCallName,
     ParsedModule,
     PythonSourcePathPolicy,
@@ -1780,7 +1780,7 @@ class Fold(Cases, ABC):
             if module is enum.module
             else set()
         )
-        parents = AstParentIndex(module.module).parent_by_node
+        parents = module.fact(ModuleNodeIndex).parents
         annotations = {
             id(node)
             for annotated in ast.walk(module.module)
@@ -2318,7 +2318,7 @@ class KeyedMirror(Mirror, Keyed, Enumerated, Descent):
         keyed: KeyedMap,
         handled: set[int],
     ) -> None:
-        parents = AstParentIndex(module.module).parent_by_node
+        parents = module.fact(ModuleNodeIndex).parents
         annotations = {
             id(node)
             for annotated in ast.walk(module.module)

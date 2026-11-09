@@ -41,7 +41,7 @@ from .. import (
     ast_field_decoders,
     ast_projection,
 )
-from ..ast_tools import ParsedModule
+from ..ast_tools import AstParentIndex, ParsedModule
 from ..codemod_declaration_source import PythonExpressionSourceFormatter
 from ..codemod_foreign_family_source import (
     FunctionRewriteAuthority,
@@ -1425,12 +1425,10 @@ class OptionalAstFieldAuthority(FunctionRewriteAuthority):
     rewrite_name = "Probe routing"
 
     @cached_property
-    def parents(self) -> dict[ast.AST, ast.AST]:
-        return {
-            child: parent
-            for parent in ast.walk(self.function)
-            for child in ast.iter_child_nodes(parent)
-        }
+    def parents(self) -> AstParentIndex:
+        """The function's own parent relation: its root has no parent here."""
+
+        return AstParentIndex.of(self.function)
 
     @cached_property
     def bound_names(self) -> frozenset[str]:

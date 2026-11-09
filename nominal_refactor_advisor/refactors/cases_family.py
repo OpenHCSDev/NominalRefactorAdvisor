@@ -1,4 +1,5 @@
 from __future__ import annotations
+from ..module_node_index import ModuleNodeIndex
 
 import ast
 import builtins
@@ -422,7 +423,7 @@ def member_type(root: str, source: str) -> str:
 
     tree = ast.parse(source, mode="eval")
     lines = SourceLines(source)
-    parents = AstParentIndex(tree).parent_by_node
+    parents = AstParentIndex.of(tree).parent_by_node
     replacements: list[tuple[int, int, str]] = []
     for part in type_positions(tree.body):
         if is_name(part, [root]):
@@ -1506,7 +1507,7 @@ class CasesFamily(Cases, Descent):
         properties now methods become calls."""
 
         renames: dict[int, str] = {}
-        parents = AstParentIndex(function).parent_by_node
+        parents = AstParentIndex.of(function).parent_by_node
         for statement in function.body:
             for node in ast.walk(statement):
                 if isinstance(node, ast.Attribute) and isinstance(node.ctx, ast.Load):
@@ -1838,7 +1839,7 @@ class CasesFamily(Cases, Descent):
     ) -> None:
         """Member references, annotations and iteration; the root keeps the enum's name."""
 
-        parents = AstParentIndex(module.module).parent_by_node
+        parents = module.fact(ModuleNodeIndex).parents
         annotations = {
             id(node): annotation
             for annotated in ast.walk(module.module)
@@ -1956,7 +1957,7 @@ class CasesFamily(Cases, Descent):
                         f"{node.name} also declares one of {sorted(model.called)}",
                     )
         for module in snapshot.parsed_modules:
-            parents = AstParentIndex(module.module).parent_by_node
+            parents = module.fact(ModuleNodeIndex).parents
             for node in ast.walk(module.module):
                 if (
                     isinstance(node, ast.Attribute)
@@ -2891,7 +2892,7 @@ class Block(Site):
                 *self.function.args.kwonlyargs,
             )
         }
-        parents = AstParentIndex(
+        parents = AstParentIndex.of(
             ast.Module(body=list(statements), type_ignores=[])
         ).parent_by_node
         for statement in statements:

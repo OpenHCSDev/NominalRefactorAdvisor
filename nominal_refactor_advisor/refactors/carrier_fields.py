@@ -252,7 +252,7 @@ class ReplaceFieldsWithCarrierOperation(SourceReprovedOperation):
         constructor_symbol: str,
     ) -> tuple[SourceTextSpanReplacement, ...]:
         replacements: list[SourceTextSpanReplacement] = []
-        parent_index = AstParentIndex(root)
+        parent_index = AstParentIndex.of(root)
         for call in (node for node in ast.walk(root) if isinstance(node, ast.Call)):
             nominal_call = NominalConstructorCall.from_context(
                 context,
@@ -333,7 +333,7 @@ class ReplaceFieldsWithCarrierOperation(SourceReprovedOperation):
         replacements: list[SourceTextSpanReplacement] = []
         projection_map = self.field_projection_map
         carrier_field_name = self.carrier_field_name
-        parent_index = AstParentIndex(root)
+        parent_index = AstParentIndex.of(root)
         module_bindings = ModuleNominalBindingAuthority(
             context.parsed_module_for_source_path(source_path)
         )

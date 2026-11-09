@@ -108,7 +108,6 @@ from ..ast_projection import CallKeywords
 from ..ast_tools import (
     ParsedModuleFact,
     BuiltinCallName,
-    AstParentIndex,
     BuilderCallShape,
     ClassFunctionStackNodeVisitor,
     CollectedFamily,
@@ -1749,7 +1748,7 @@ class CandidateCollectorBaseReference:
         owner = next(
             (
                 ancestor
-                for ancestor in (node, *AstParentIndex(module.module).ancestors(node))
+                for ancestor in (node, *module.syntax_index.parent_index.ancestors(node))
                 if isinstance(ancestor, ast.ClassDef)
             ),
             None,

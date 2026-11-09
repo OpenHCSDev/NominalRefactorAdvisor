@@ -7,7 +7,7 @@ import unicodedata
 from collections import Counter, deque
 from dataclasses import dataclass, field
 
-from .ast_tools import ParsedModule, ParsedModuleFact
+from .ast_tools import AstParentIndex, ParsedModule, ParsedModuleFact
 from .lexical_bindings import ImportBoundNameProjection
 
 _FUNCTION_SCOPES = (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)
@@ -39,7 +39,7 @@ class ModuleNodeIndex(ParsedModuleFact):
     string_constants: tuple[ast.Constant, ...]
     calls: tuple[ast.Call, ...]
     names_by_id: dict[str, tuple[ast.Name, ...]] = field(repr=False)
-    parents: dict[ast.AST, ast.AST] = field(repr=False)
+    parents: AstParentIndex = field(repr=False)
     loads: Counter[str] = field(repr=False)
     attribute_bases: frozenset[str]
     bound_name_counts: Counter[str] = field(repr=False)
@@ -54,7 +54,7 @@ class ModuleNodeIndex(ParsedModuleFact):
         strings: list[ast.Constant] = []
         calls: list[ast.Call] = []
         names: dict[str, list[ast.Name]] = {}
-        parents: dict[ast.AST, ast.AST] = {}
+        parents = parsed_module.syntax_index.parent_index
         loads: Counter[str] = Counter()
         attribute_bases: set[str] = set()
         bound: Counter[str] = Counter()
@@ -65,7 +65,6 @@ class ModuleNodeIndex(ParsedModuleFact):
         while pending:
             node = pending.popleft()
             for child in ast.iter_child_nodes(node):
-                parents[child] = node
                 pending.append(child)
             match node:
                 case ast.Import(names=aliases):
@@ -239,7 +238,7 @@ class ModuleNodeIndex(ParsedModuleFact):
         return self._scope_in(self.parents, node)
 
     @staticmethod
-    def _scope_in(parents: dict[ast.AST, ast.AST], node: ast.AST) -> ast.AST | None:
+    def _scope_in(parents: AstParentIndex, node: ast.AST) -> ast.AST | None:
         below: ast.AST | None = None
         child, current = node, parents.get(node)
         while current is not None:
