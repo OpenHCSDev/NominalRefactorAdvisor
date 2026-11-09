@@ -499,8 +499,14 @@ class ClusterLayers:
 
     def declared_names(self, path: str) -> tuple[str, ...]:
         """The names a module declares itself, in source order. `__all__` moves
-        with them: a whole-module move takes every name it lists."""
+        with them: a whole-module move takes every name it lists. Retained on the
+        source state: every finding's layers ask it for every other module."""
 
+        return self.context.retained_operation_derivation(
+            (ClusterLayers.declared_names, path), lambda: self._declared_names(path)
+        )
+
+    def _declared_names(self, path: str) -> tuple[str, ...]:
         table = ModuleSymbolTable(
             file_path=path,
             source=self.context.sources_by_file_path[path],
@@ -522,15 +528,42 @@ class ClusterLayers:
         Only these order the moves; a guarded or function-local import is
         rewritten where it stands whichever module moves first."""
 
-        return self._edges(
-            path,
-            lambda parsed: ModuleImportScope.RUNTIME.import_statements(parsed.module),
-        )
+        return self._runtime_edges[path]
 
     def any_scope_module_names(self, path: str) -> frozenset[str]:
         """The modules `path` imports at any scope, guarded and local included."""
 
-        return self._edges(path, lambda parsed: parsed.fact(ModuleNodeIndex).imports)
+        return self._any_scope_edges[path]
+
+    @cached_property
+    def _runtime_edges(self) -> dict[str, frozenset[str]]:
+        """Each present module's load-time imports. The layers are rebuilt per finding,
+        so the edges are retained on the source state, read once for all of them."""
+
+        return {
+            path: self.context.retained_operation_derivation(
+                (ClusterLayers.imported_module_names, path),
+                lambda path=path: self._edges(
+                    path,
+                    lambda parsed: ModuleImportScope.RUNTIME.import_statements(parsed.module),
+                ),
+            )
+            for path in self.present_paths
+        }
+
+    @cached_property
+    def _any_scope_edges(self) -> dict[str, frozenset[str]]:
+        """Each present module's imports at any scope, retained on the source state."""
+
+        return {
+            path: self.context.retained_operation_derivation(
+                (ClusterLayers.any_scope_module_names, path),
+                lambda path=path: self._edges(
+                    path, lambda parsed: parsed.fact(ModuleNodeIndex).imports
+                ),
+            )
+            for path in self.present_paths
+        }
 
     def _edges(
         self, path: str, statements: Callable[[ParsedModule], Iterable[ast.stmt]]
@@ -572,7 +605,11 @@ class ClusterLayers:
         """Pairs of declaring flat modules that import each other when they load
         and keep separate modules: no move order separates them."""
 
-        return self._mutual_pairs(self.imports)
+        return self._mutual_pairs(self._runtime_edges)
+
+    @cached_property
+    def _any_scope_mutual_imports(self) -> tuple[tuple[str, str], ...]:
+        return self._mutual_pairs(self._any_scope_edges)
 
     def deferred_cycles(self, path: str) -> tuple[tuple[str, str], ...]:
         """Pairs with `path` that import each other only through a guard or a
@@ -580,7 +617,7 @@ class ClusterLayers:
 
         return tuple(
             pair
-            for pair in self._mutual_pairs(self.imports_at_any_scope)
+            for pair in self._any_scope_mutual_imports
             if path in pair and pair not in self.mutual_imports
         )
 
@@ -596,20 +633,26 @@ class ClusterLayers:
             )
         )
 
-    def imports_at_any_scope(self, importer: str, imported: str) -> bool:
-        module_name = self.context.module_import_graph.module_name_for_file_path(imported)
-        return module_name in self.any_scope_module_names(importer)
-
     def _mutual_pairs(
-        self, imports: Callable[[str, str], bool]
+        self, edges: dict[str, frozenset[str]]
     ) -> tuple[tuple[str, str], ...]:
+        """Declaring modules that import each other, in declaring order. Read from
+        each module's own import edges, so the work is the edges, not every pair."""
+
+        graph = self.context.module_import_graph
         declaring = [path for path in self.present_paths if not self.emptied(path)]
-        return tuple(
+        order = {path: index for index, path in enumerate(declaring)}
+        by_module = {graph.module_name_for_file_path(path): path for path in declaring}
+        pairs = {
             (path, other)
-            for index, path in enumerate(declaring)
-            for other in declaring[index + 1 :]
-            if not self.joins(path, other) and imports(path, other) and imports(other, path)
-        )
+            for path in declaring
+            for module in edges[path]
+            if (other := by_module.get(module)) is not None
+            and order[other] > order[path]
+            and graph.module_name_for_file_path(path) in edges[other]
+            and not self.joins(path, other)
+        }
+        return tuple(sorted(pairs, key=lambda pair: (order[pair[0]], order[pair[1]])))
 
     def ready(self, path: str) -> bool:
         """It can move now: its destination exists, it is not a module a row
