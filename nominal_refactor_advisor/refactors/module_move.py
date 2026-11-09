@@ -1104,6 +1104,58 @@ class _DestinationOwners(_AliasOwners):
 
 
 @dataclass(frozen=True)
+class _ModuleObjectBinding(ABC):
+    """One import binding the source module object to a name: the name its uses
+    read, the node whose scope it binds in, and its rewrite to the module's owner."""
+
+    alias: ast.alias
+
+    @property
+    @abstractmethod
+    def binding(self) -> str:
+        raise NotImplementedError
+
+    @abstractmethod
+    def retargeted(self, geometry: SourceTextGeometry, owner: str) -> SourceTextSpanReplacement:
+        raise NotImplementedError
+
+
+@dataclass(frozen=True)
+class _ImportedModuleAlias(_ModuleObjectBinding):
+    """`import source as s`: the alias names the owner, `owner as s`."""
+
+    @property
+    def binding(self) -> str:
+        return self.alias.asname or ""
+
+    def retargeted(self, geometry: SourceTextGeometry, owner: str) -> SourceTextSpanReplacement:
+        start, end = geometry.required_node_offsets(self.alias)
+        return SourceTextSpanReplacement.from_offsets(
+            start_offset=start, end_offset=end, replacement_source=f"{owner} as {self.binding}"
+        )
+
+
+@dataclass(frozen=True)
+class _FromImportedModule(_ModuleObjectBinding):
+    """`from package import source [as s]`, its statement's only name: the statement
+    imports the owner from the owner's package, under the same name."""
+
+    statement: ast.ImportFrom
+
+    @property
+    def binding(self) -> str:
+        return self.alias.asname or self.alias.name
+
+    def retargeted(self, geometry: SourceTextGeometry, owner: str) -> SourceTextSpanReplacement:
+        package, _, leaf = owner.rpartition(".")
+        start, end = geometry.required_node_offsets(self.statement)
+        named = leaf if leaf == self.binding else f"{leaf} as {self.binding}"
+        return SourceTextSpanReplacement.from_offsets(
+            start_offset=start, end_offset=end, replacement_source=f"from {package} import {named}"
+        )
+
+
+@dataclass(frozen=True)
 class _SourceModuleAliasRetargets:
     """`import source as s` whose every load of `s` reaches a name in one module
     binds that module where it stands: the same scope, the same alias, the uses
@@ -1112,13 +1164,16 @@ class _SourceModuleAliasRetargets:
     "Name", ...)` (the reader of the name, for a patch). A function that imports
     the module to keep it off the import path at load time keeps doing so. An
     alias that also reads a name staying behind, reaches several modules, or is
-    used any other way stays with `_SourceModuleObjectReads`."""
+    used any other way stays with `_SourceModuleObjectReads`. The module object
+    bound by `from package import source as s` (its statement's only name) is
+    retargeted the same way: its `s.Name` reads stay, so two moved classes sharing
+    a name never meet in one import."""
 
-    aliases: tuple[tuple[ast.alias, str], ...]
+    aliases: tuple[tuple[_ModuleObjectBinding, str], ...]
 
     @property
     def bindings(self) -> frozenset[str]:
-        return frozenset(alias.asname for alias, _owner in self.aliases if alias.asname)
+        return frozenset(binding.binding for binding, _owner in self.aliases)
 
     @classmethod
     def of(
@@ -1128,22 +1183,37 @@ class _SourceModuleAliasRetargets:
         source_module_name: str,
         owners: _AliasOwners,
     ) -> _SourceModuleAliasRetargets:
-        candidates = tuple(
-            alias
-            for node in index.imports
-            if isinstance(node, ast.Import)
-            for alias in node.names
-            if alias.asname is not None and alias.name == source_module_name
+        package, _, leaf = source_module_name.rpartition(".")
+        candidates: tuple[_ModuleObjectBinding, ...] = (
+            *(
+                _ImportedModuleAlias(alias)
+                for node in index.imports
+                if isinstance(node, ast.Import)
+                for alias in node.names
+                if alias.asname is not None and alias.name == source_module_name
+            ),
+            *(
+                _FromImportedModule(node.names[0], node)
+                for node in index.imports
+                if isinstance(node, ast.ImportFrom)
+                and package
+                and not node.level
+                and node.module == package
+                and len(node.names) == 1
+                and node.names[0].name == leaf
+            ),
         )
         if not candidates:
             return cls(())
         return cls(
             tuple(
-                (alias, owner)
-                for alias in candidates
-                if alias.asname is not None
-                and index.bindings_in(alias.asname, scope := index.scope_of(alias)) == 1
-                for owner in cls._sole_owner(index, alias.asname, scope, owners)
+                (candidate, owner)
+                for candidate in candidates
+                if index.bindings_in(
+                    candidate.binding, scope := index.scope_of(candidate.alias)
+                )
+                == 1
+                for owner in cls._sole_owner(index, candidate.binding, scope, owners)
             )
         )
 
@@ -1191,9 +1261,9 @@ class _SourceModuleAliasRetargets:
         that is about to stop existing or importing itself."""
 
         local = tuple(
-            alias
-            for alias, owner in self.aliases
-            if owner == reader_module and index.scope_of(alias) is None
+            binding
+            for binding, owner in self.aliases
+            if owner == reader_module and index.scope_of(binding.alias) is None
         )
         if not local:
             return ()
@@ -1207,15 +1277,15 @@ class _SourceModuleAliasRetargets:
                         end_offset=end,
                         replacement_source=parent.attr,
                     )
-                    for alias in local
-                    for node in index.uses_of(alias.asname or "", None)
+                    for binding in local
+                    for node in index.uses_of(binding.binding, None)
                     if isinstance(parent := index.parents.get(node), ast.Attribute)
                     for start, end in (geometry.required_node_offsets(parent),)
                 ),
             ),
             ModuleImportMutation.remove_bound_names(
                 file_path=file_path,
-                names=tuple(alias.asname for alias in local if alias.asname),
+                names=tuple(binding.binding for binding in local),
                 rationale="The reader declares every name the alias read.",
             ),
         )
@@ -1225,13 +1295,7 @@ class _SourceModuleAliasRetargets:
         return geometry.nominal_edit(
             file_path=file_path,
             replacements=tuple(
-                SourceTextSpanReplacement.from_offsets(
-                    start_offset=start,
-                    end_offset=end,
-                    replacement_source=f"{owner} as {alias.asname}",
-                )
-                for alias, owner in self.aliases
-                for start, end in (geometry.required_node_offsets(alias),)
+                binding.retargeted(geometry, owner) for binding, owner in self.aliases
             ),
         )
 

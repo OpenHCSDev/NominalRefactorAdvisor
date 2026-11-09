@@ -190,3 +190,30 @@ def test_a_peer_imported_from_its_parent_package_is_imported_from_its_new_one(
     assert "from pkg.messaging import records\n" in moved
     assert "from pkg.messaging import records as late" in moved
     assert _runs(root, "VALUE") == "('record', 'record')"
+
+
+def test_a_module_bound_from_its_package_follows_as_a_module(tmp_path: Path) -> None:
+    """`from pkg import commands as cmds` reads `cmds.ClearQueue` beside another
+    `ClearQueue` it binds directly: the import line names the module's new home and
+    the reads stay, where redirecting them to a name import would collide."""
+
+    _write(
+        tmp_path,
+        {
+            "pkg/__init__.py": "",
+            "pkg/messaging/__init__.py": "",
+            "pkg/commands.py": "class ClearQueue:\n    kind = 'command'\n",
+            "pkg/inbox.py": "class ClearQueue:\n    kind = 'inbox'\n",
+            "pkg/app.py": (
+                "from pkg import commands as cmds\n"
+                "from pkg.inbox import ClearQueue\n\n"
+                "VALUE = (cmds.ClearQueue.kind, ClearQueue.kind)\n"
+            ),
+        },
+    )
+
+    _stages, root = _moved(tmp_path, "| `messaging` | `commands.py` | |\n")
+    app = (root / "pkg/app.py").read_text()
+    assert "from pkg.messaging import commands as cmds\n" in app
+    assert "cmds.ClearQueue.kind" in app
+    assert _runs(root, "VALUE") == "('command', 'inbox')"
