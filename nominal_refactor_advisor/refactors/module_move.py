@@ -4301,7 +4301,7 @@ class _MovedRelativeImports:
     ) -> _MovedRelativeImports:
         source_file = context.module_import_graph.source_file_for_path(source_path)
         if source_file is None:
-            raise ValueError("A move needs its source module's identity to resolve relative imports")
+            raise ValueError("A move resolves relative imports in its source module's package")
         return cls(source_file.module_path_identity)
 
     def applied(self, block: str) -> str:

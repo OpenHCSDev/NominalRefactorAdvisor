@@ -575,7 +575,7 @@ def test_cases_family_hands_back_an_enum_imported_inside_a_function(
     )
 
 
-def test_cases_family_names_the_case_import_absolutely_and_keeps_the_authors_relative_one(
+def test_cases_family_names_its_import_absolutely_and_keeps_the_authors(
     tmp_path: Path,
 ) -> None:
     package = tmp_path / "nominal_refactor_advisor"
