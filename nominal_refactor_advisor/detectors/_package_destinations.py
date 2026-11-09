@@ -47,11 +47,8 @@ class FlatModulePackageDestinationDetector(
     def _collect_findings(
         self, modules: ParsedModuleSet, config: DetectorConfig
     ) -> list[RefactorFinding]:
-        """The table reads only each module's name, path and classes, so the
-        header-core view answers it; nothing settles field declarations."""
-
         return self._findings_from_compact_projections(
-            CompactModuleClassProjectionFamily.header_core_projections(modules), config
+            type(self).compact_module_projections(modules), config
         )
 
     def _findings_from_compact_projections(
