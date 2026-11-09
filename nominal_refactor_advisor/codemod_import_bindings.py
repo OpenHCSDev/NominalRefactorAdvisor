@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import ast
 from abc import ABC, abstractmethod
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
 
 from nominal_refactor_advisor.codemod_import_graph import SourceModuleImportGraph
@@ -128,6 +128,17 @@ class ModuleImportBindingIdentity(DataclassJsonReport, ABC):
 
         raise NotImplementedError
 
+    def read_homes(
+        self,
+        moved_modules: Mapping[str, str],
+        declaring_module: Callable[[str, str], str | None],
+    ) -> Mapping[str, str]:
+        """`moved_modules` as this binding reads them. A module import reads the
+        module itself, wherever it moves."""
+
+        del declaring_module
+        return moved_modules
+
 
 @dataclass(frozen=True)
 class DirectModuleImportBindingIdentity(ModuleImportBindingIdentity):
@@ -185,6 +196,22 @@ class FromModuleImportBindingIdentity(ModuleImportBindingIdentity):
     @property
     def imported_name(self) -> str:
         return self.member_name
+
+    def read_homes(
+        self,
+        moved_modules: Mapping[str, str],
+        declaring_module: Callable[[str, str], str | None],
+    ) -> Mapping[str, str]:
+        """A name a moved module only re-binds is read from the module declaring it
+        (`declaring_module(module, name)`), at that module's new home if it moves too:
+        the move leaves an unread re-binding behind, so the new home lacks it."""
+
+        if self.module_name not in moved_modules:
+            return moved_modules
+        owner = declaring_module(self.module_name, self.member_name)
+        if owner is None or owner == self.module_name:
+            return moved_modules
+        return {**moved_modules, self.module_name: moved_modules.get(owner, owner)}
 
     def moved(
         self, moved_modules: Mapping[str, str], bound_name: str

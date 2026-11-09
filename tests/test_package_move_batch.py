@@ -600,3 +600,62 @@ def test_a_bare_peer_import_holds_back_its_own_module_not_the_batch(
     assert stages == 4
     assert not any((root / f"pkg/{name}.py").exists() for name in ("alpha", "beta", "records", "messages"))
     assert _runs(root, "VALUE") == "('a', 'b', 'record')"
+
+
+def test_a_name_a_batch_peer_only_rebinds_is_imported_from_its_declaring_module(
+    tmp_path: Path,
+) -> None:
+    """`records` re-binds `HudGroup` from `hud_groups` and reads it nowhere, so its
+    move leaves the re-binding behind. `heartbeat` imported `HudGroup` from `records`;
+    both move, and `heartbeat` now reads it from `hud_groups`, the module that
+    declares it, not from `records`' new home, where it no longer exists."""
+
+    _write(
+        tmp_path,
+        {
+            "pkg/__init__.py": "",
+            "pkg/team/__init__.py": "",
+            "pkg/hud_groups.py": "class HudGroup:\n    kind = 'hud'\n",
+            "pkg/records.py": (
+                "from pkg.hud_groups import HudGroup\n\n\nclass Record:\n    kind = 'record'\n"
+            ),
+            "pkg/heartbeat.py": (
+                "from pkg.records import HudGroup, Record\n\n\n"
+                "class Heartbeat:\n    kinds = (HudGroup.kind, Record.kind)\n"
+            ),
+            "pkg/app.py": "from pkg.heartbeat import Heartbeat\n\nVALUE = Heartbeat.kinds\n",
+        },
+    )
+
+    _stages, root = _moved(tmp_path, "| `team` | `records.py`, `heartbeat.py` | |\n")
+    moved = (root / "pkg/team/heartbeat.py").read_text()
+    assert "from pkg.hud_groups import HudGroup" in moved
+    assert _runs(root, "VALUE") == "('hud', 'record')"
+
+
+def test_a_re_bound_name_imported_inside_a_moved_function_reads_its_declaring_module(
+    tmp_path: Path,
+) -> None:
+    """The same re-binding, imported where it's used, inside a function: the moved
+    text names `hud_groups` too, not `records`' new home."""
+
+    _write(
+        tmp_path,
+        {
+            "pkg/__init__.py": "",
+            "pkg/team/__init__.py": "",
+            "pkg/hud_groups.py": "class HudGroup:\n    kind = 'hud'\n",
+            "pkg/records.py": (
+                "from pkg.hud_groups import HudGroup\n\n\nclass Record:\n    kind = 'record'\n"
+            ),
+            "pkg/heartbeat.py": (
+                "def kinds() -> tuple[str, str]:\n"
+                "    from pkg.records import HudGroup, Record\n\n"
+                "    return (HudGroup.kind, Record.kind)\n"
+            ),
+            "pkg/app.py": "from pkg.heartbeat import kinds\n\nVALUE = kinds()\n",
+        },
+    )
+
+    _stages, root = _moved(tmp_path, "| `team` | `records.py`, `heartbeat.py` | |\n")
+    assert _runs(root, "VALUE") == "('hud', 'record')"

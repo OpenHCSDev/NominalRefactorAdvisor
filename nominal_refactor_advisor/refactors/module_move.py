@@ -11,11 +11,13 @@ from abc import (
 )
 from collections import Counter
 from collections.abc import (
+    Callable,
     Iterable,
     Iterator,
     Mapping,
 )
-from dataclasses import dataclass, field
+from dataclasses import dataclass
+from functools import partial
 from itertools import product
 from pathlib import Path, PurePosixPath
 from typing import ClassVar, cast
@@ -32,6 +34,7 @@ from nominal_refactor_advisor.ast_tools import (
 from nominal_refactor_advisor.module_node_index import ModuleNodeIndex
 from nominal_refactor_advisor.codemod_import_bindings import (
     DirectModuleImportBindingIdentity,
+    ModuleImportBindingIdentity,
     FromModuleImportBindingIdentity,
 )
 from nominal_refactor_advisor.codemod_import_graph import SourceModuleImportGraph
@@ -2211,7 +2214,7 @@ class SourceTopLevelSymbolClosureMovePlan(SourceTopLevelSymbolClosureMoveCarrier
                     import_source=dependency.destination_source(
                         context.module_import_graph,
                         self.destination_path,
-                        BatchModuleMove.modules(self.batch, context.module_import_graph),
+                        BatchModuleMove.modules_for(self.batch, context, dependency.identity),
                     ),
                     scope=dependency.scope,
                     rationale=self.rationale
@@ -2368,6 +2371,20 @@ class BatchModuleMove(CodemodPayloadRecord):
             move.source_module(import_graph): move.destination_module(import_graph)
             for move in batch
         }
+
+    @staticmethod
+    def modules_for(
+        batch: tuple[BatchModuleMove, ...],
+        context: CodemodSelectorContext,
+        identity: ModuleImportBindingIdentity,
+    ) -> Mapping[str, str]:
+        """`modules`, as one import binding reads them (`read_homes`), each
+        imported name traced to its declaring module by `ImportedNameOwner`."""
+
+        return identity.read_homes(
+            BatchModuleMove.modules(batch, context.module_import_graph),
+            partial(ImportedNameOwner.declaring_module, context),
+        )
 
     @staticmethod
     def home(batch: tuple[BatchModuleMove, ...], path: str) -> str:
@@ -3290,6 +3307,15 @@ class ExtractSymbolClosureToNewModuleOperation(
 class ImportedNameOwner:
     """The indexed module that declares an imported name, followed through the
     modules that only re-import it; None when the name comes from outside the index."""
+
+    @staticmethod
+    def declaring_module(
+        context: CodemodSelectorContext, module_name: str, name: str
+    ) -> str | None:
+        """The name of the indexed module declaring `name` (`declaring_path`)."""
+
+        path = ImportedNameOwner.declaring_path(context, module_name, name)
+        return None if path is None else context.module_import_graph.module_name_for_file_path(path)
 
     @staticmethod
     def declaring_path(
@@ -4620,7 +4646,10 @@ class _MovedImports:
     (``DirectModuleImportBindingIdentity.follows_move``)."""
 
     source_identity: PythonModulePathIdentity
-    moved_modules: Mapping[str, str] = field(default_factory=dict)
+    moved_modules: Mapping[str, str]
+    declaring_module: Callable[[str, str], str | None]
+    """The module declaring a name another module imports (`ImportedNameOwner`): a
+    name a moved peer only re-binds is read from there (`read_homes`)."""
 
     @classmethod
     def of(
@@ -4632,7 +4661,11 @@ class _MovedImports:
         source_file = context.module_import_graph.source_file_for_path(source_path)
         if source_file is None:
             raise ValueError("A move resolves relative imports in its source module's package")
-        return cls(source_file.module_path_identity, moved_modules)
+        return cls(
+            source_file.module_path_identity,
+            moved_modules,
+            partial(ImportedNameOwner.declaring_module, context),
+        )
 
     def applied(self, block: str) -> str:
         tree = ast.parse(block)
@@ -4666,7 +4699,20 @@ class _MovedImports:
                     (*geometry.required_node_offsets(node), self._peer_import(absolute, node))
                 )
                 continue
-            named = self.moved_modules.get(absolute, absolute)
+            homes = {
+                alias.name: FromModuleImportBindingIdentity(
+                    module_name=absolute, member_name=alias.name
+                )
+                .read_homes(self.moved_modules, self.declaring_module)
+                .get(absolute, absolute)
+                for alias in node.names
+            }
+            if len(set(homes.values())) > 1:
+                replacements.append(
+                    (*geometry.required_node_offsets(node), self._split_import(node, homes))
+                )
+                continue
+            named = next(iter(homes.values()), self.moved_modules.get(absolute, absolute))
             if not node.level and named == node.module:
                 continue
             start, _end = geometry.required_node_offsets(node)
@@ -4677,6 +4723,20 @@ class _MovedImports:
         for start, end, text in sorted(replacements, reverse=True):
             block = block[:start] + text + block[end:]
         return block
+
+    @staticmethod
+    def _split_import(node: ast.ImportFrom, homes: Mapping[str, str]) -> str:
+        """One `from <home> import ...` per module its names now live in, in source
+        order, at the statement's indentation."""
+
+        by_home: dict[str, list[str]] = {}
+        for alias in node.names:
+            by_home.setdefault(homes[alias.name], []).append(
+                alias.name if alias.asname is None else f"{alias.name} as {alias.asname}"
+            )
+        return f"\n{' ' * node.col_offset}".join(
+            f"from {home} import {', '.join(names)}" for home, names in by_home.items()
+        )
 
     def _peer_import(self, package: str, node: ast.ImportFrom) -> str:
         """`from pkg import a, b`, every name a module the stage moves into one new
