@@ -371,3 +371,33 @@ def test_a_shared_field_declared_differently_refuses_the_move():
     (refusal,) = candidate.refusals
     assert refusal.kind is OverlapReceiptKind.DECLARATION_DIFFERS
     assert not candidate.permitted
+
+
+def test_a_classmethod_building_its_own_class_by_position_refuses_the_reorder():
+    """`cls(...)` in the class's own classmethod binds its fields by position
+    exactly as an outside call does, so a mixin that moves the block ahead of
+    the class's own fields would rebind it; the guard names it."""
+
+    (candidate,) = _verdicts(
+        (
+            "pkg.routes",
+            "from dataclasses import dataclass\n\n\n"
+            "@dataclass(frozen=True)\nclass First:\n"
+            "    seq: int\n    target: str\n    sender: str\n    lookup: str\n    stamp: float\n\n"
+            "    @classmethod\n    def of(cls, message):\n"
+            "        return cls(message.seq, message.target, message.sender, message.lookup, 1.0)\n\n\n"
+            "@dataclass(frozen=True)\nclass Second:\n"
+            "    target: str\n    sender: str\n    lookup: str\n    first_seq: int\n\n"
+            "    @classmethod\n    def of(cls, message):\n"
+            "        return cls(target=message.target, sender=message.sender,\n"
+            "                   lookup=message.lookup, first_seq=message.seq)\n",
+        ),
+    )
+
+    positional = [
+        receipt
+        for receipt in candidate.receipts
+        if receipt.kind is OverlapReceiptKind.POSITIONAL_CONSTRUCTION
+    ]
+    assert [receipt.detail.split("`")[1] for receipt in positional] == ["First"]
+    assert not candidate.permitted
