@@ -3546,7 +3546,9 @@ class _ScriptEntry:
 
         where = f"{source_path!r}:{self.statement.lineno}"
         if successor_path is None:
-            raise ValueError(f"{where} runs the module as a script; declare its successor_path")
+            raise ValueError(
+                f"{where} runs the module as a script; declare its successor_path as an existing module"
+            )
         source_module = context.module_nodes_by_file_path[source_path]
         successor_module = context.module_nodes_by_file_path[successor_path]
         if _ScriptEntry.of(successor_module):
@@ -4287,7 +4289,7 @@ class _ModuleIdentityStrings:
                 if self.successor_path is None:
                     raise ValueError(
                         f"{file_path!r}:{literal.lineno} glues the dissolved module "
-                        f"{self.source_module_name!r} together; declare its successor_path"
+                        f"{self.source_module_name!r} together; declare its successor_path as an existing module"
                     )
                 successor = context.module_import_graph.module_name_for_file_path(
                     self.successor_path
@@ -4342,7 +4344,7 @@ class _ModuleIdentityStrings:
         if self.successor_path is None:
             raise ValueError(
                 f"{where} names the dissolved module "
-                f"{match.group(0)!r}; declare its successor_path or retain the call"
+                f"{match.group(0)!r}; declare its successor_path as an existing module or retain the call"
             )
         return import_graph.module_name_for_file_path(self.successor_path)
 
@@ -4350,7 +4352,7 @@ class _ModuleIdentityStrings:
         if self.successor_path is None:
             raise ValueError(
                 f"{where} names the dissolved module's path "
-                f"{path!r}; declare its successor_path or retain the call"
+                f"{path!r}; declare its successor_path as an existing module or retain the call"
             )
         root = self.source_path[: len(self.source_path) - len(path)]
         if not self.successor_path.startswith(root):
@@ -4468,7 +4470,7 @@ class DissolveModuleOperation(RetainedCallOperation):
                 else SourcePathResolutionAuthority.from_source_index(
                     self.successor_path,
                     context.source_index,
-                ).required_path()
+                ).optional_path()
             ),
             frozenset(self.retained_calls),
         )
