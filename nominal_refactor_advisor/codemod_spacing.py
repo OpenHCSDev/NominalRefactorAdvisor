@@ -82,6 +82,10 @@ class DestinationInsertionSpacing:
     preceding_blank_line_count: int
     has_following_content: bool
     following_blank_line_count: int
+    following_content_is_definition: bool
+    """Whether the first statement after the insertion is a `def`, `class` or a
+    decorator: an import block keeps two blank lines before one, one before any
+    other statement."""
     inserted_source_is_import_block: bool
     boundary: SourceInsertionBoundary
 
@@ -110,7 +114,11 @@ class DestinationInsertionSpacing:
             len(following_lines),
         )
 
+        following_content = next((line.lstrip() for line in following_lines if line.strip()), "")
         return cls(
+            following_content_is_definition=following_content.startswith(
+                ("def ", "async def ", "class ", "@")
+            ),
             has_preceding_content=any(line.strip() for line in preceding_lines),
             preceding_blank_line_count=preceding_blank_line_count,
             has_following_content=any(line.strip() for line in following_lines),
@@ -135,7 +143,8 @@ class DestinationInsertionSpacing:
             self.boundary.required_blank_line_count - self.following_blank_line_count,
         )
         if self.inserted_source_is_import_block:
-            return "\n" * missing_blank_lines
+            required = 2 if self.following_content_is_definition else 1
+            return "\n" * max(0, required - self.following_blank_line_count)
         if not self.has_following_content:
             return "\n"
         return "\n" * (1 + missing_blank_lines)
