@@ -704,3 +704,33 @@ def test_a_refusing_module_first_in_line_no_longer_holds_back_the_rest(
     assert (tmp_path / "pkg/astamp.py").exists()
     assert (tmp_path / "pkg/messaging/zeta.py").exists()
     assert _runs(tmp_path, "VALUE") == "('pkg', 'z')"
+
+
+def test_a_type_alias_moves_with_its_module(tmp_path: Path) -> None:
+    """`type RecordBuilder = ...` (PEP 695) declares a name like a class does. A
+    whole-module move takes it with the rest, rather than refusing a statement it
+    thought it would strand."""
+
+    _write(
+        tmp_path,
+        {
+            "pkg/__init__.py": "",
+            "pkg/messaging/__init__.py": "",
+            "pkg/records.py": (
+                "from collections.abc import Callable\n\n\n"
+                "class Record:\n    kind = 'record'\n\n\n"
+                "type RecordBuilder = Callable[[int], Record]\n\n\n"
+                "def build(size: int) -> Record:\n    return Record()\n"
+            ),
+            "pkg/app.py": (
+                "from pkg.records import RecordBuilder, build\n\n"
+                "VALUE = (RecordBuilder.__name__, build(1).kind)\n"
+            ),
+        },
+    )
+
+    _stages, root = _moved(tmp_path, "| `messaging` | `records.py` | |\n")
+    assert "type RecordBuilder = Callable[[int], Record]" in (
+        root / "pkg/messaging/records.py"
+    ).read_text()
+    assert _runs(root, "VALUE") == "('RecordBuilder', 'record')"
