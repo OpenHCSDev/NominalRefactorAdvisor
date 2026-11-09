@@ -122,5 +122,5 @@ def test_keywording_refuses_a_descendant_whose_positions_differ(tmp_path: Path) 
 def test_keywording_refuses_an_unknown_keyword_only_option(tmp_path: Path) -> None:
     records = RECORDS.replace("@dataclass(frozen=True)\nclass Point", "FLAG = False\n\n\n@dataclass(frozen=True, kw_only=FLAG)\nclass Point")
     _write(tmp_path, {"pkg/__init__.py": "", "pkg/records.py": records})
-    with pytest.raises(CodemodOperationPreflightError, match="not a literal"):
+    with pytest.raises(CodemodOperationPreflightError, match="`pkg.records.Point`'s field `x` is keyword-only by a non-literal"):
         _simulate(tmp_path, "Point")

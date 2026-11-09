@@ -1827,8 +1827,8 @@ class ConstructionKeywording:
     own class (`cls(...)` in a classmethod, `type(self)(...)` or
     `self.__class__(...)` in a method) may be any descendant, so the rewrite
     also needs every descendant's positional parameters to start with the same
-    names. The class and every such descendant need a closed dataclass schema
-    whose fields' keyword-only-ness is known; any construction that unpacks
+    names. The class and every such descendant need known construction
+    parameters (`CompactClassFamilyIndex.construction_parameters`); any construction that unpacks
     arguments, passes more than the parameters, or passes a bare generator
     refuses the whole rewrite. A read that hands the class on as a value or a
     positional class pattern is left alone: it binds through `__match_args__`
@@ -1850,15 +1850,7 @@ class ConstructionKeywording:
         return keywording
 
     def parameter_names(self, symbol: str) -> tuple[str, ...]:
-        resolution = (
-            self.snapshot.class_overlap_verdicts.class_index.product_authority_resolutions_by_symbol.get(
-                symbol
-            )
-        )
-        authority = None if resolution is None else resolution.authority
-        if authority is None:
-            raise ValueError(f"`{symbol}` has no closed dataclass schema")
-        return authority.positional_parameter_names()
+        return self.snapshot.class_overlap_verdicts.class_index.construction_parameters(symbol)
 
     @cached_property
     def constructions(self) -> tuple[PositionalConstruction, ...]:

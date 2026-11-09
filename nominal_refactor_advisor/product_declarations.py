@@ -18,11 +18,13 @@ class CompactProductAuthorityViolation(StrEnum):
         "unresolved_dataclass_decorator",
         "the dataclass decorator does not resolve to the standard-library declaration",
         (),
+        True,
     )
     MULTIPLE_DATACLASS_DECORATORS = (
         "multiple_dataclass_decorators",
         "more than one dataclass decorator applies to the same declaration",
         (),
+        True,
     )
     GENERATED_INIT_DISABLED = (
         "generated_init_disabled",
@@ -33,16 +35,19 @@ class CompactProductAuthorityViolation(StrEnum):
         "dynamic_dataclass_options",
         "the dataclass constructor options cannot be resolved statically",
         (),
+        True,
     )
     CUSTOM_CLASS_DECORATOR = (
         "custom_class_decorator",
         "another class decorator can replace or mutate the dataclass declaration",
         (),
+        True,
     )
     CUSTOM_CLASS_CREATION = (
         "custom_class_creation",
         "class keywords or a custom metaclass can change construction semantics",
         (),
+        True,
     )
     CUSTOM_PRODUCT_LIFECYCLE = (
         "custom_product_lifecycle",
@@ -83,16 +88,19 @@ class CompactProductAuthorityViolation(StrEnum):
         "dynamic_field_schema",
         "class execution can add or replace annotations outside the direct field declarations",
         (),
+        True,
     )
     NESTED_CLASS_SCOPE = (
         "nested_class_scope",
         "the enclosing class namespace prevents exact module-binding recovery",
         (),
+        True,
     )
     INCOMPLETE_BASE_RESOLUTION = (
         "incomplete_base_resolution",
         "not every direct base resolves to one repository declaration",
         (),
+        True,
     )
     MULTIPLE_PRODUCT_BASES = (
         "multiple_product_bases",
@@ -108,21 +116,26 @@ class CompactProductAuthorityViolation(StrEnum):
         "cyclic_product_lineage",
         "the product declaration participates in a cyclic inheritance graph",
         (),
+        True,
     )
 
     explanation: str
     implicated_member_names: tuple[str, ...]
+    hides_fields: bool
+    """Whether the declaration's dataclass fields cannot be read from its source."""
 
     def __new__(
         cls,
         value: str,
         explanation: str,
         implicated_member_names: tuple[str, ...],
+        hides_fields: bool = False,
     ) -> Self:
         member = str.__new__(cls, value)
         member._value_ = value
         member.explanation = explanation
         member.implicated_member_names = implicated_member_names
+        member.hides_fields = hides_fields
         return member
 
     def is_violated_by_member_names(self, member_names: frozenset[str]) -> bool:
