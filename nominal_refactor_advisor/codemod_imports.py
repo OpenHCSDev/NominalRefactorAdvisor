@@ -93,8 +93,8 @@ class ImportBlockInsertionPointABC(ABC):
                 if RequestedImportStatement(
                     statement,
                     scope=self.scope,
-                ).canonical_family_key
-                > addition.canonical_family_key
+                ).family_key_in(self.file_path)
+                > addition.family_key_in(self.file_path)
             ),
             len(self.leading_import_statements),
         )
@@ -121,8 +121,10 @@ class ImportBlockInsertionPointABC(ABC):
         )
         if (
             slot.index < len(existing_imports)
-            and additions[-1].source_group
-            is not RequestedImportStatement(existing_imports[slot.index]).source_group
+            and additions[-1].source_group_in(self.file_path)
+            is not RequestedImportStatement(existing_imports[slot.index]).source_group_in(
+                self.file_path
+            )
         ):
             spacing = DestinationInsertionSpacing.from_source(
                 source,
@@ -177,8 +179,10 @@ class ImportInsertionSlot(ABC):
         imports = point.leading_import_statements
         if (
             index < len(imports)
-            and RequestedImportStatement(imports[index], scope=point.scope).source_group
-            is addition.source_group
+            and RequestedImportStatement(imports[index], scope=point.scope).source_group_in(
+                point.file_path
+            )
+            is addition.source_group_in(point.file_path)
         ):
             return StartOfNextFamily(index)
         return AfterPreviousImport(index)
@@ -470,7 +474,8 @@ class ModuleImportMutation(KeyedSourceEditCoalescence):
     ) -> ModuleImportMutation:
         first = mutations[0]
         additions = cls._coalesced_additions(
-            addition for mutation in mutations for addition in mutation.additions
+            (addition for mutation in mutations for addition in mutation.additions),
+            first.file_path,
         )
         removals = cls._coalesced_removals(
             removal for mutation in mutations for removal in mutation.removals
@@ -526,6 +531,7 @@ class ModuleImportMutation(KeyedSourceEditCoalescence):
     @staticmethod
     def _coalesced_additions(
         additions: Iterable[RequestedImportStatement],
+        file_path: str,
     ) -> tuple[RequestedImportStatement, ...]:
         aliases_by_family: dict[
             tuple[
@@ -548,7 +554,7 @@ class ModuleImportMutation(KeyedSourceEditCoalescence):
             RequestedImportStatement,
         ] = {}
         for addition in additions:
-            family = addition.family_identity
+            family = addition.family_identity_in(file_path)
             statement_by_family.setdefault(family, addition)
             aliases = aliases_by_family.setdefault(family, [])
             for alias in addition.aliases:
@@ -563,7 +569,7 @@ class ModuleImportMutation(KeyedSourceEditCoalescence):
             )
             for family in sorted(
                 statement_by_family,
-                key=lambda item: statement_by_family[item].canonical_family_key,
+                key=lambda item: statement_by_family[item].family_key_in(file_path),
             )
         )
 
@@ -642,7 +648,7 @@ class ModuleImportMutation(KeyedSourceEditCoalescence):
         module = context.module_nodes_by_file_path.get(self.file_path)
         if module is None:
             module = ast.parse(source, filename=self.file_path)
-        additions = list(self._coalesced_additions(self.additions))
+        additions = list(self._coalesced_additions(self.additions, self.file_path))
         guard_projection = TypeCheckingGuardProjection.from_module(module)
         if (
             any(addition.scope.is_guarded for addition in additions)
@@ -655,7 +661,8 @@ class ModuleImportMutation(KeyedSourceEditCoalescence):
                         *RequestedImportStatement.from_source(
                             "from typing import TYPE_CHECKING\n"
                         ),
-                    )
+                    ),
+                    self.file_path,
                 )
             )
         removals_by_module = {
@@ -1137,26 +1144,34 @@ class ModuleImportMutation(KeyedSourceEditCoalescence):
 class ImportSourceGroup(StrEnum):
     """Canonical Python import group derived from an import declaration."""
 
-    FUTURE = ("future", 0, lambda reference: False)
+    FUTURE = ("future", 0, lambda reference, first_party: False)
     STANDARD_LIBRARY = (
         "standard_library",
         1,
-        lambda reference: not reference.is_relative
-        and reference.root_module_name in sys.stdlib_module_names,
+        lambda reference, first_party: not reference.is_relative
+        and reference.root_module_name in sys.stdlib_module_names
+        and reference.root_module_name not in first_party,
     )
     THIRD_PARTY = (
         "third_party",
         2,
-        lambda reference: not reference.is_relative
-        and reference.root_module_name not in sys.stdlib_module_names,
+        lambda reference, first_party: not reference.is_relative
+        and reference.root_module_name not in sys.stdlib_module_names
+        and reference.root_module_name not in first_party,
     )
-    RELATIVE = ("relative", 3, lambda reference: reference.is_relative)
+    FIRST_PARTY = (
+        "first_party",
+        3,
+        lambda reference, first_party: not reference.is_relative
+        and reference.root_module_name in first_party,
+    )
+    RELATIVE = ("relative", 4, lambda reference, first_party: reference.is_relative)
 
     def __new__(
         cls,
         value: str,
         canonical_rank: int,
-        reference_matcher: Callable[[ImportFromModuleName], bool],
+        reference_matcher: Callable[[ImportFromModuleName, frozenset[str]], bool],
     ) -> ImportSourceGroup:
         member = str.__new__(cls, value)
         member._value_ = value
@@ -1172,23 +1187,27 @@ class ImportSourceGroup(StrEnum):
 
     @classmethod
     def from_declaration(
-        cls, declaration: ImportDeclarationABC
+        cls, declaration: ImportDeclarationABC, first_party: frozenset[str]
     ) -> tuple[ImportSourceGroup, ...]:
+        """`first_party` is the importing repository's own top-level modules
+        (`DeclaredRoot.first_party_for`): they sort after third-party imports."""
         if declaration.is_future_import:
             return (cls.FUTURE,)
         return tuple(
             dict.fromkeys(
-                cls.from_module_reference(reference)
+                cls.from_module_reference(reference, first_party)
                 for reference in declaration.module_references
             )
         )
 
     @classmethod
     def from_module_reference(
-        cls, reference: ImportFromModuleName
+        cls, reference: ImportFromModuleName, first_party: frozenset[str]
     ) -> ImportSourceGroup:
         """Require one declaration-owned match, independent of source-order rank."""
-        matches = tuple(group for group in cls if group._reference_matcher(reference))
+        matches = tuple(
+            group for group in cls if group._reference_matcher(reference, first_party)
+        )
         if len(matches) != 1:
             raise ValueError(
                 f"Import reference has no unique canonical source group: {reference.source!r}"
@@ -1202,7 +1221,6 @@ class RequestedImportStatement:
 
     statement: ast.Import | ast.ImportFrom
     scope: ModuleImportScope = ModuleImportScope.RUNTIME
-
     @cached_property
     def declaration(self) -> ImportDeclarationABC:
         return ImportBoundNameProjection(self.statement).declaration
@@ -1251,9 +1269,8 @@ class RequestedImportStatement:
             return None
         return ImportFromModuleName.from_node(self.statement)
 
-    @property
-    def family_identity(
-        self,
+    def family_identity_in(
+        self, file_path: str
     ) -> tuple[
         ModuleImportScope,
         ImportSourceGroup,
@@ -1261,31 +1278,32 @@ class RequestedImportStatement:
         int,
         str | None,
     ]:
+        group = self.source_group_in(file_path)
         if isinstance(self.statement, ast.Import):
-            return self.scope, self.source_group, ast.Import, 0, None
+            return self.scope, group, ast.Import, 0, None
         return (
             self.scope,
-            self.source_group,
+            group,
             ast.ImportFrom,
             self.statement.level,
             self.statement.module,
         )
 
-    @property
-    def canonical_family_key(self) -> tuple[int, int, str, int, str]:
-        """Return deterministic source order without encoding semantic priority."""
+    def family_key_in(self, file_path: str) -> tuple[int, int, str, int, str]:
+        """This statement's place in `file_path`'s import order."""
 
+        group = self.source_group_in(file_path)
         if isinstance(self.statement, ast.Import):
             return (
                 self.scope.canonical_rank,
-                self.source_group.canonical_rank,
+                group.canonical_rank,
                 type(self.statement).__name__,
                 0,
                 "",
             )
         return (
             self.scope.canonical_rank,
-            self.source_group.canonical_rank,
+            group.canonical_rank,
             type(self.statement).__name__,
             self.statement.level,
             self.statement.module or "",
@@ -1297,27 +1315,23 @@ class RequestedImportStatement:
 
         return self.declaration.is_future_import
 
-    @property
-    def is_relative_import(self) -> bool:
-        """Return whether this statement belongs to the relative-import group."""
+    def source_groups_in(self, file_path: str) -> tuple[ImportSourceGroup, ...]:
+        """The groups this statement's declaration falls in, written into
+        `file_path`: that repository's own modules are first party."""
+        return ImportSourceGroup.from_declaration(
+            self.declaration, DeclaredRoot.first_party_for(Path(file_path))
+        )
 
-        return self.source_group is ImportSourceGroup.RELATIVE
+    def source_group_in(self, file_path: str) -> ImportSourceGroup:
+        """The one group this statement falls in, written into `file_path`."""
 
-    @property
-    def source_groups(self) -> tuple[ImportSourceGroup, ...]:
-        """Return groups derived from this statement's actual declaration."""
-        return ImportSourceGroup.from_declaration(self.declaration)
-
-    @property
-    def source_group(self) -> ImportSourceGroup:
-        """Return the one canonical group represented by this statement."""
-
-        if len(self.source_groups) != 1:
+        groups = self.source_groups_in(file_path)
+        if len(groups) != 1:
             raise ValueError(
                 "One import statement spans multiple canonical source groups: "
                 f"{ast.unparse(self.statement)!r}"
             )
-        return self.source_groups[0]
+        return groups[0]
 
     @property
     def bound_names(self) -> tuple[str, ...]:
@@ -1399,7 +1413,8 @@ class RequestedImportBlock:
         for statement in self.statements:
             if (
                 previous is not None
-                and previous.source_group is not statement.source_group
+                and previous.source_group_in(self.file_path)
+                is not statement.source_group_in(self.file_path)
             ):
                 source_parts.append("\n")
             source_parts.append(statement.source_in(self.file_path))
