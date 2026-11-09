@@ -227,6 +227,14 @@ class FunctionAnnotationVisitor(FunctionDefaultVisitor):
         self.visit_ordered_annotations(roots)
 
 
+def _member_order(name: str) -> tuple[int, str, str]:
+    """Order-by-type for an imported name: a constant (`TYPE_CHECKING`) sorts
+    before a class (`ClassVar`), a class before anything else (`field`)."""
+
+    kind = 0 if name.isupper() and len(name) > 1 else 1 if name[:1].isupper() else 2
+    return kind, name.lower(), name
+
+
 @dataclass(frozen=True)
 class ImportAlias:
     """One import alias spelled without an `as` clause."""
@@ -252,10 +260,11 @@ class ImportAlias:
         return ast.alias(name=self.name)
 
     @property
-    def canonical_key(self) -> tuple[str, str]:
-        """Return the source-spelling key for commutative import merging."""
+    def canonical_key(self) -> tuple[int, str, str, str]:
+        """The alias's place in its statement: constants, then classes, then the
+        rest (the order-by-type ruff's import sort keeps), case-insensitively."""
 
-        return self.name, ""
+        return (*_member_order(self.name), "")
 
     @property
     def declares_reexport(self) -> bool:
@@ -312,8 +321,8 @@ class RenamedImportAlias(ImportAlias):
         return ast.alias(name=self.name, asname=self.asname)
 
     @property
-    def canonical_key(self) -> tuple[str, str]:
-        return self.name, self.asname
+    def canonical_key(self) -> tuple[int, str, str, str]:
+        return (*_member_order(self.name), self.asname)
 
     @property
     def declares_reexport(self) -> bool:
