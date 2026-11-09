@@ -249,3 +249,30 @@ def test_a_guarded_module_binding_stays_guarded(tmp_path: Path) -> None:
     assert "if TYPE_CHECKING:\n    from pkg.messaging import events as ev\n" in app
     assert "def answer(response: ev.Response) -> ev.Response:" in app
     assert _runs(root, "VALUE") == "answer"
+
+
+def test_a_module_bound_only_to_run_it_follows_the_move(tmp_path: Path) -> None:
+    """`import pkg.registry as registry` and `from pkg import registry as reg`, read
+    nowhere, import the module for what it runs: they name its new home."""
+
+    _write(
+        tmp_path,
+        {
+            "pkg/__init__.py": "",
+            "pkg/messaging/__init__.py": "",
+            "pkg/registry.py": "import pkg.seen\n\nENTRY = pkg.seen.NAMES.append('registered')\n",
+            "pkg/seen.py": "NAMES = []\n",
+            "pkg/app.py": (
+                "import pkg.registry as registry\n"
+                "from pkg import registry as reg\n"
+                "from pkg.seen import NAMES\n\n"
+                "VALUE = NAMES[0]\n"
+            ),
+        },
+    )
+
+    _stages, root = _moved(tmp_path, "| `messaging` | `registry.py` | |\n")
+    app = (root / "pkg/app.py").read_text()
+    assert "import pkg.messaging.registry as registry\n" in app
+    assert "from pkg.messaging import registry as reg\n" in app
+    assert _runs(root, "VALUE") == "registered"

@@ -1267,7 +1267,13 @@ class _SourceModuleAliasRetargets:
 
         owned: list[frozenset[str]] = []
         readable: list[frozenset[str]] = []
-        for node in index.uses_of(binding, scope):
+        uses = tuple(index.uses_of(binding, scope))
+        if not uses:
+            # Bound only to run the module (`import pkg.source as source`, read nowhere):
+            # once the module moves whole, its new home is what runs.
+            home = owners.whole_module_home
+            return () if home is None else (home,)
+        for node in uses:
             parent = index.parents.get(node)
             if isinstance(parent, ast.Attribute) and parent.value is node:
                 owned.append(owners.attribute_owners(parent.attr))
