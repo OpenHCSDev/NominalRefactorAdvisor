@@ -37,7 +37,7 @@ from functools import cache, cached_property
 from typing import ClassVar
 
 from .ast_field_decoders import declared_annotations, variadic_parameters
-from .ast_tools import ParsedModule, collect_family_items
+from .ast_tools import AstParentIndex, ParsedModule, collect_family_items
 from .lexical_bindings import ImportBoundNameProjection
 from .class_index import (
     ClassMemberAnswersABC,
@@ -1766,15 +1766,8 @@ class ReceiverPathBuilder:
     module_name: str
     module: ast.Module
     aliases: Mapping[str, str]
+    parents: AstParentIndex
     _bindings: dict[tuple[int, str], ReceiverPath] = field(default_factory=dict)
-
-    @cached_property
-    def parents(self) -> dict[int, ast.AST]:
-        return {
-            id(child): parent
-            for parent in ast.walk(self.module)
-            for child in ast.iter_child_nodes(parent)
-        }
 
     @cached_property
     def module_names(self) -> frozenset[str]:
@@ -1816,7 +1809,7 @@ class ReceiverPathBuilder:
     # expressions -------------------------------------------------------------
 
     def path_of(self, expression: ast.expr) -> ReceiverPath:
-        if id(expression) not in self.parents:
+        if expression not in self.parents:
             return unresolved(f"`{ast.unparse(expression)}` is not in this module's tree")
         return self._path(expression, frozenset())
 
@@ -1935,7 +1928,7 @@ class ReceiverPathBuilder:
         """
 
         trail: list[ast.AST] = [node]
-        current = self.parents.get(id(node))
+        current = self.parents.get(node)
         for _depth in range(len(self.parents) + 1):
             if current is None:
                 break
@@ -1955,7 +1948,7 @@ class ReceiverPathBuilder:
                 case ast.ClassDef(body=body) if any(statement is child for statement in body):
                     yield current
             trail.append(current)
-            current = self.parents.get(id(current))
+            current = self.parents.get(current)
         yield self.module
 
     def _name(self, node: ast.Name, name: str, pending: Pending) -> ReceiverPath:
@@ -2035,7 +2028,7 @@ class ReceiverPathBuilder:
         )
 
     def _placement(self, function: FunctionNode) -> FunctionPlacement:
-        match self.parents.get(id(function)):
+        match self.parents.get(function):
             case ast.ClassDef() as owner:
                 return MethodPlacement(
                     f"{self.module_name}.{self.class_qualnames[id(owner)]}"

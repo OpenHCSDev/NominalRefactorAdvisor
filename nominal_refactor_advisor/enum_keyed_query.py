@@ -6,7 +6,6 @@ import ast
 from dataclasses import dataclass
 
 from .ast_tools import (
-    AstParentIndex,
     CompactModuleIdentity,
     CollectedFamily,
     ParsedModule,
@@ -491,7 +490,7 @@ class EnumKeyedDerivedMapFacadeComponentBuilder:
         resolver: ModuleClassReferenceResolver,
     ) -> tuple[EnumKeyedQueryConsumer, ...]:
         consumers = []
-        parent_index = AstParentIndex(self.module.module)
+        parent_index = self.module.syntax_index.parent_index
         for node in ast.walk(self.module.module):
             if not (
                 isinstance(node, ast.Subscript)

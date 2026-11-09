@@ -1011,7 +1011,7 @@ class FunctionBindingProjectionSourceAuthority(FunctionSourceAuthority):
         if not attribute_path:
             return roots
         selector = LexicalValueReference(binding.binding_name, attribute_path)
-        parents = AstParentIndex(self.node).parent_by_node
+        parents = AstParentIndex.of(self.node).parent_by_node
         reads = tuple(
             expression
             for root in roots

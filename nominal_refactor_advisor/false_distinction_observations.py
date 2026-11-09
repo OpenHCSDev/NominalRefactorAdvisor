@@ -1086,9 +1086,9 @@ class MemberGroup(ABC):
         )
 
     @classmethod
-    def of(cls, member: ast.Attribute, parents: Mapping[int, ast.AST]) -> MemberGroup:
-        parent = parents.get(id(member))
-        grandparent = None if parent is None else parents.get(id(parent))
+    def of(cls, member: ast.Attribute, parents: Mapping[ast.AST, ast.AST]) -> MemberGroup:
+        parent = parents.get(member)
+        grandparent = None if parent is None else parents.get(parent)
         match parent, grandparent:
             case (
                 ast.Tuple(elts=elements) | ast.List(elts=elements) | ast.Set(elts=elements),
@@ -1243,14 +1243,14 @@ class EnumUseKind(StrEnum):
     OTHER = "other"
 
     @classmethod
-    def of(cls, node: ast.AST, parents: Mapping[int, ast.AST]) -> EnumUseKind:
+    def of(cls, node: ast.AST, parents: Mapping[ast.AST, ast.AST]) -> EnumUseKind:
         """A member access, a type use (annotation or `isinstance`), or anything else.
 
         Calling, subscripting or iterating the class reaches members by value,
         name or order, which a fold would change.
         """
 
-        parent = parents.get(id(node))
+        parent = parents.get(node)
         match parent:
             case ast.Attribute(value=owner) if owner is node:
                 return cls.MEMBER
@@ -1322,11 +1322,12 @@ class EnumUseModule(RestatingSiteModule):
 
 
 def enum_uses(
-    module: ast.Module, owners: Callable[[str], bool]
+    parsed: ParsedModule, owners: Callable[[str], bool]
 ) -> tuple[list[EnumMemberUse], list[EnumClassUse], list[MemberGroup]]:
     """Every `Owner.MEMBER` and every other spelling of an owner that `owners` admits."""
 
-    parents = {id(child): node for node in ast.walk(module) for child in ast.iter_child_nodes(node)}
+    module = parsed.module
+    parents = parsed.syntax_index.parent_by_node
     member_uses: list[EnumMemberUse] = []
     class_uses: list[EnumClassUse] = []
     groups: list[MemberGroup] = []
@@ -1358,7 +1359,7 @@ class EnumUseSiteFamily(ShapeFamily[EnumUseModule]):
     @classmethod
     def collect(cls, parsed_module: ParsedModule) -> list[EnumUseModule]:
         member_uses, class_uses, _groups = enum_uses(
-            parsed_module.module, cls.spelled_like_a_class
+            parsed_module, cls.spelled_like_a_class
         )
         return [
             EnumUseModule(
@@ -1415,7 +1416,7 @@ class EnumMemberIndex:
         evidence = (
             *((module.member_uses, module.class_uses) for module in modules),
             *(
-                enum_uses(test.module, EnumUseSiteFamily.spelled_like_a_class)[:2]
+                enum_uses(test, EnumUseSiteFamily.spelled_like_a_class)[:2]
                 for test in tests.modules
             ),
         )

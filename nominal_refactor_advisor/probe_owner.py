@@ -253,6 +253,7 @@ class ProbeOwnerResolver:
                 parsed_module.module_name,
                 parsed_module.module,
                 module_import_aliases(parsed_module),
+                parsed_module.syntax_index.parent_index,
             ),
         )
 

@@ -1053,18 +1053,34 @@ class ParsedModuleSet(Sequence[ParsedModule]):
 
 
 @dataclass(frozen=True)
-class AstParentIndex:
-    """One AST's derived parent relation and ordered ancestor queries."""
+class AstParentIndex(Mapping[ast.AST, ast.AST]):
+    """One AST's parent relation, child to parent, and its ordered ancestor
+    queries. A whole module's comes from its parse (`syntax_index.parent_index`),
+    from the one traversal the parse already makes; `of(root)` derives one for a
+    subtree, whose root has no parent inside it."""
 
     root: ast.AST
+    parent_by_node: dict[ast.AST, ast.AST] = field(repr=False, compare=False)
 
-    @cached_property
-    def parent_by_node(self) -> dict[ast.AST, ast.AST]:
-        return {
-            child: parent
-            for parent in ast.walk(self.root)
-            for child in ast.iter_child_nodes(parent)
-        }
+    @classmethod
+    def of(cls, root: ast.AST) -> AstParentIndex:
+        return cls(
+            root,
+            {
+                child: parent
+                for parent in ast.walk(root)
+                for child in ast.iter_child_nodes(parent)
+            },
+        )
+
+    def __getitem__(self, node: ast.AST) -> ast.AST:
+        return self.parent_by_node[node]
+
+    def __iter__(self) -> Iterator[ast.AST]:
+        return iter(self.parent_by_node)
+
+    def __len__(self) -> int:
+        return len(self.parent_by_node)
 
     def ancestors(self, node: ast.AST) -> tuple[ast.AST, ...]:
         ancestors = []
@@ -3414,6 +3430,12 @@ class ModuleSyntaxIndex:
     node_indices_by_type: dict[type[ast.AST], array]
     scopes: tuple[LexicalSyntaxScope, ...]
     named_functions: tuple[tuple[str, ast.FunctionDef | ast.AsyncFunctionDef], ...]
+
+    @cached_property
+    def parent_index(self) -> AstParentIndex:
+        """`parent_by_node` with its ancestor queries."""
+
+        return AstParentIndex(self.module, self.parent_by_node)
 
     @cached_property
     def children_by_node(self) -> dict[ast.AST, tuple[ast.AST, ...]]:

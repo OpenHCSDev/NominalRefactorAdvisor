@@ -2186,10 +2186,11 @@ class _ModuleSiblingData(ABC):
 
         source_dir = Path(source_path).parent
         destination_dir = Path(destination_path).parent
-        module = context.module_nodes_by_file_path[source_path]
+        parsed = context.parsed_module_for_source_path(source_path)
+        module = parsed.module
         stays: dict[str, str] = {}
         try:
-            reads = _SiblingFileReads.reads(module)
+            reads = _SiblingFileReads.reads(parsed)
         except _UnrecognizedFileRead as read:
             reads = ()
             stays["__file__"] = f"it reads `__file__` as {read}, not as a file beside the module"
@@ -2342,11 +2343,11 @@ class _SiblingFileReads:
     """How a module reads where it sits through `__file__`."""
 
     @staticmethod
-    def reads(module: ast.Module) -> tuple[_LocationRead, ...]:
-        parents: dict[ast.AST | None, ast.AST] = {child: node for node in ast.walk(module) for child in ast.iter_child_nodes(node)}
+    def reads(parsed: ParsedModule) -> tuple[_LocationRead, ...]:
+        parents = parsed.syntax_index.parent_by_node
         return tuple(
             _SiblingFileReads._read(node, parents)
-            for node in ast.walk(module)
+            for node in ast.walk(parsed.module)
             if isinstance(node, ast.Name) and node.id == "__file__"
         )
 
@@ -2360,7 +2361,7 @@ class _SiblingFileReads:
         )
 
     @staticmethod
-    def _read(node: ast.Name, parents: Mapping[ast.AST | None, ast.AST]) -> _LocationRead:
+    def _read(node: ast.Name, parents: Mapping[ast.AST, ast.AST]) -> _LocationRead:
         call = parents.get(node)
         if not (
             isinstance(call, ast.Call)
