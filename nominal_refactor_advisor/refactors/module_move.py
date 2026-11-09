@@ -1336,7 +1336,7 @@ class SourceTopLevelSymbolClosureMovePlan(SourceTopLevelSymbolClosureMoveCarrier
         name_redirect = RelocationNameRedirect(
             source_path=request.source_path,
             destinations={
-                **cls._removed_binding_owners(context, report),
+                **cls._removed_binding_owners(context, report, request.destination_path),
                 **{name: request.destination_path for name in moved_symbol_names},
             },
             reader_path=request.destination_path,
@@ -1373,28 +1373,45 @@ class SourceTopLevelSymbolClosureMovePlan(SourceTopLevelSymbolClosureMoveCarrier
             rationale=request.rationale,
         )
 
-    @staticmethod
+    @classmethod
     def _removed_binding_owners(
+        cls,
         context: CodemodSelectorContext,
         report: ModuleMoveDependencyReport,
+        destination_path: str,
     ) -> dict[str, str]:
-        """Source imports the move removes, each to the module declaring it, so a
-        reader that reached the name through the source reads it from its owner.
-        A name declared outside the index has no owner path and is left alone."""
+        """Source imports the move removes, each to where a reader that reached the
+        name through the source reads it now."""
 
         return {
-            dependency.name: owner
+            dependency.name: cls._removed_binding_owner(context, dependency, destination_path)
             for dependency in report.source_removal_dependencies
-            if dependency.identity.imported_name == dependency.name
-            if (
-                owner := ImportedNameOwner.declaring_path(
-                    context,
-                    dependency.identity.module_name,
-                    dependency.name,
-                )
-            )
-            is not None
         }
+
+    @staticmethod
+    def _removed_binding_owner(
+        context: CodemodSelectorContext,
+        dependency: ModuleMoveImportDependency,
+        destination_path: str,
+    ) -> str:
+        """A name imported under its own name from an indexed module reads from the
+        module declaring it, past modules that only re-import it. Any other removed
+        binding (`import os`, `from os import sep`, an alias) names no indexed
+        declaration; the move removes it only because the moved code alone read it,
+        so the destination binds it now and the reader reads it there. Leaving
+        those alone left `source.os` reading a binding the move took away."""
+
+        identity = dependency.identity
+        indexed = context.module_import_graph.unique_source_file_for_module_name(identity.module_name)
+        if identity.imported_name != dependency.name or indexed is None:
+            return destination_path
+        owner = ImportedNameOwner.declaring_path(context, identity.module_name, dependency.name)
+        if owner is None:
+            raise ValueError(
+                f"{dependency.name!r} is imported from indexed module {identity.module_name!r}, "
+                "but no indexed module declares it: its re-imports cycle or leave the index"
+            )
+        return owner
 
     @staticmethod
     def _destination_self_binding_removals(
