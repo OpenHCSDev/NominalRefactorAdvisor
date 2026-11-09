@@ -113,3 +113,41 @@ def test_a_move_out_of_a_walker_calls_package_refuses(tmp_path: Path) -> None:
         "would stop it registering: it walks pkg's direct modules (the walk is flat)"
     ) in report.to_markdown()
     assert not report.replay_sequence.documents
+
+
+def test_a_move_out_of_a_metaclass_keyword_walk_refuses(tmp_path: Path) -> None:
+    """`FamilyMeta.__new__` turns the `discovery_package=` class keyword into a flat
+    `RegistryConfig` walk (agent-comms' `FamilyMeta` shape, walking flat here). The
+    keyword on `Plugin` is its root, so `Alpha` may not leave `pkg`'s direct modules."""
+
+    family = _family("")
+    family["pkg/family.py"] = (
+        "from metaclass_registry import AutoRegisterMeta, LazyDiscoveryDict, RegistryConfig\n\n\n"
+        "class FamilyMeta(AutoRegisterMeta):\n"
+        "    def __new__(mcs, name, bases, namespace, *, discovery_package=None, **options):\n"
+        "        if discovery_package is not None:\n"
+        "            namespace['__registry_config__'] = RegistryConfig(\n"
+        "                registry_dict=LazyDiscoveryDict(),\n"
+        "                key_attribute='key',\n"
+        "                discovery_package=discovery_package,\n"
+        "                discovery_recursive=False,\n"
+        "            )\n"
+        "        return super().__new__(mcs, name, bases, namespace, **options)\n\n\n"
+        "class Plugin(metaclass=FamilyMeta, discovery_package=__package__):\n"
+        "    key = None\n"
+    )
+    _write(tmp_path, family)
+    assert _runs(tmp_path, "VALUE") == "['alpha']"
+
+    report = CodemodRefactorGoalRunner(
+        roots=(tmp_path,),
+        config=DetectorConfig(package_destination_tables=("| `messaging` | `alpha.py` | |\n",)),
+        dry_run=True,
+        migration_type=PackageMoveConcept,
+        guard_suite=ArchitectureGuardSuite(),
+    ).run()
+    assert (
+        "Alpha is a member of the Plugin family, and moving it to pkg.messaging.alpha "
+        "would stop it registering: it walks pkg's direct modules (the walk is flat)"
+    ) in report.to_markdown()
+    assert not report.replay_sequence.documents

@@ -697,7 +697,7 @@ class UnresolvedWalkRoot(FamilyWalkRoot):
         return f"it walks the package `{self.expression}`, which is not a static value"
 
 
-def _module_name_value(node: ast.AST | None, parsed_module: ParsedModule) -> str | None:
+def static_module_name(node: ast.AST | None, parsed_module: ParsedModule) -> str | None:
     """A string the module spells statically: a literal, `__package__`, `__name__`,
     or an f-string or `+` of those."""
 
@@ -710,12 +710,12 @@ def _module_name_value(node: ast.AST | None, parsed_module: ParsedModule) -> str
         case ast.Name(id="__name__"):
             return identity.import_name
         case ast.FormattedValue(value=value, conversion=-1, format_spec=None):
-            return _module_name_value(value, parsed_module)
+            return static_module_name(value, parsed_module)
         case ast.JoinedStr(values=values):
-            parts = [_module_name_value(value, parsed_module) for value in values]
+            parts = [static_module_name(value, parsed_module) for value in values]
             return None if None in parts else "".join(part for part in parts if part is not None)
         case ast.BinOp(left=left, op=ast.Add(), right=right):
-            pair = (_module_name_value(left, parsed_module), _module_name_value(right, parsed_module))
+            pair = (static_module_name(left, parsed_module), static_module_name(right, parsed_module))
             return None if None in pair else f"{pair[0]}{pair[1]}"
     return None
 
@@ -729,7 +729,7 @@ def registry_config_walk_root(parsed_module: ParsedModule, node: ast.ClassDef) -
     if package is None:
         return NoWalkRoot()
     recursive = _registry_config_keyword(config, "discovery_recursive")
-    name = _module_name_value(package, parsed_module)
+    name = static_module_name(package, parsed_module)
     match recursive:
         case None | ast.Constant(value=bool()) if name is not None:
             return PackageWalkRoot(
