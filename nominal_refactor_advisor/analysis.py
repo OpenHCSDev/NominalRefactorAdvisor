@@ -11,6 +11,7 @@ from collections.abc import (
     Sequence,
 )
 from concurrent.futures import ProcessPoolExecutor
+from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from functools import cached_property
@@ -298,12 +299,29 @@ class DetectorAnalysisWorkerPlan:
         """Run independent preparation tasks under this plan's worker budget."""
         if not self.uses_process_pool:
             return [function(item) for item in items]
-        with ProcessPoolExecutor(
-            max_workers=self.effective_worker_count,
-            mp_context=_analysis_process_pool_mp_context(),
-            initializer=ScanCache.initialize_worker,
-        ) as executor:
+        with self.pool(ScanCache.initialize_worker) as executor:
             return list(executor.map(function, items, chunksize=1))
+
+    @contextmanager
+    def pool(
+        self, initializer: Callable[..., None], initargs: tuple[object, ...] = ()
+    ) -> Iterator[ProcessPoolExecutor]:
+        """The plan's worker pool. Workers fork from this process and share its parsed
+        tree copy-on-write; the cyclic collector would walk every tracked object in
+        each of them and dirty those pages, so the tree is frozen out of its reach
+        while the pool runs."""
+
+        gc.freeze()
+        try:
+            with ProcessPoolExecutor(
+                max_workers=self.effective_worker_count,
+                mp_context=_analysis_process_pool_mp_context(),
+                initializer=initializer,
+                initargs=initargs,
+            ) as executor:
+                yield executor
+        finally:
+            gc.unfreeze()
 
     @property
     def effective_worker_count(self) -> int:
@@ -313,12 +331,36 @@ class DetectorAnalysisWorkerPlan:
             cpu_count = os.cpu_count()
             if cpu_count is None:
                 cpu_count = 1
-            return min(
-                self.max_auto_worker_count,
-                cpu_count,
-                self.work_item_count,
+            return max(
+                1,
+                min(
+                    self.max_auto_worker_count,
+                    cpu_count,
+                    self.work_item_count,
+                    self.memory_worker_ceiling,
+                ),
             )
         return max(1, min(self.requested_worker_count, self.work_item_count))
+
+    @cached_property
+    def memory_worker_ceiling(self) -> int:
+        """How many workers the free memory holds when each, at worst, ends up
+        holding its own copy of everything this process holds now (its resident
+        size): `MemAvailable` over that, read once so every answer this plan gives
+        agrees. It is a floor on the true cost: on NRA's own source each worker held
+        about 1.2 times the parent's resident size. Without `/proc` there is no
+        ceiling."""
+
+        try:
+            meminfo = Path("/proc/meminfo").read_text(encoding="ascii")
+            statm = Path("/proc/self/statm").read_text(encoding="ascii")
+        except OSError:
+            return self.max_auto_worker_count
+        available_kib = next(
+            int(line.split()[1]) for line in meminfo.splitlines() if line.startswith("MemAvailable:")
+        )
+        resident_kib = int(statm.split()[1]) * os.sysconf("SC_PAGE_SIZE") // 1024
+        return available_kib // max(1, resident_kib)
 
     @property
     def uses_process_pool(self) -> bool:
@@ -463,11 +505,8 @@ class DetectorTypeShardRunner:
         if not self.detector_types:
             return []
         if self.worker_plan.uses_process_pool:
-            with ProcessPoolExecutor(
-                max_workers=self.worker_plan.effective_worker_count,
-                mp_context=_analysis_process_pool_mp_context(),
-                initializer=initialize_detector_analysis_worker,
-                initargs=(self.worker_state,),
+            with self.worker_plan.pool(
+                initialize_detector_analysis_worker, (self.worker_state,)
             ) as executor:
                 return list(
                     executor.map(
@@ -3732,11 +3771,8 @@ class IncrementalAnalysisCacheResolver:
                 config=self._config,
             )
             tasks = tuple(enumerate(detector_types_by_module))
-            with ProcessPoolExecutor(
-                max_workers=worker_plan.effective_worker_count,
-                mp_context=_analysis_process_pool_mp_context(),
-                initializer=initialize_per_module_detector_shard_worker,
-                initargs=(state,),
+            with worker_plan.pool(
+                initialize_per_module_detector_shard_worker, (state,)
             ) as executor:
                 return list(
                     executor.map(
