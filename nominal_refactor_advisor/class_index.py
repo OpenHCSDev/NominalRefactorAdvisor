@@ -138,6 +138,8 @@ from nominal_refactor_advisor.public_exports import (
 from nominal_refactor_advisor.registration_facets import (
     CompactManualSelectorAxis,
     CompactManualSubclassRosterRoot,
+    FamilyWalkRoot,
+    NoWalkRoot,
     _autoregister_registry_key_attr_name,
     _compact_manual_selector_axes,
     _compact_manual_subclass_roster_roots,
@@ -145,6 +147,7 @@ from nominal_refactor_advisor.registration_facets import (
     _direct_class_assignments,
     _is_registration_authority,
     _string_constant,
+    registry_config_walk_root,
 )
 from nominal_refactor_advisor.scan_cache import ScanCache
 from nominal_refactor_advisor.source_entry import ImportedSourceModuleEntryPremise
@@ -202,15 +205,17 @@ class ClassRegistryFacts(NamedTuple):
     base_references: tuple[CompactNominalReference, ...] = ()
     stores_created_class: bool = False
     stores_subclass: bool = False
+    walk_root: FamilyWalkRoot = NoWalkRoot()
+    """Where the family the class declares looks for its members (`FamilyWalkRoot`)."""
 
     @classmethod
     def of_class(
         cls,
         node: ast.ClassDef,
         module_binding_snapshot: ModuleNominalBindingSnapshot,
-        module: ast.Module,
+        parsed_module: ParsedModule,
     ) -> ClassRegistryFacts:
-        creation = CreatedClassStore.of(node, module)
+        creation = CreatedClassStore.of(node, parsed_module.module)
         return cls(
             metaclass_references=tuple(
                 module_binding_snapshot.reference_for(parts)
@@ -226,6 +231,7 @@ class ClassRegistryFacts(NamedTuple):
             base_references=_compact_base_references(node, module_binding_snapshot),
             stores_created_class=creation.stores_created_class(),
             stores_subclass=creation.stores_subclass(),
+            walk_root=registry_config_walk_root(parsed_module, node),
         )
 
 
@@ -4403,9 +4409,7 @@ def _compact_indexed_classes(
             is_abstract=_is_abstract_class(node, binding_snapshots[node.lineno]),
             dataclass_declaration=binding_facets.dataclass_declaration,
             enum_declaration=binding_facets.enum_declaration,
-            registry_facts=ClassRegistryFacts.of_class(
-                node, module_binding_snapshot, parsed_module.module
-            ),
+            registry_facts=ClassRegistryFacts.of_class(node, module_binding_snapshot, parsed_module),
             is_registration_authority=_is_registration_authority(node),
             autoregister_registry_key_attr_name=_autoregister_registry_key_attr_name(
                 parsed_module,

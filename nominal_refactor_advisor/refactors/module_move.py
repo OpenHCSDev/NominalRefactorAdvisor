@@ -112,6 +112,7 @@ from nominal_refactor_advisor.lexical_bindings import (
     ImportBoundNameProjection,
     ImportFromModuleName,
 )
+from nominal_refactor_advisor.package_walks import family_walk_roots
 from nominal_refactor_advisor.public_exports import (
     CompactModulePublicExportContract,
     module_public_export_contract,
@@ -2471,6 +2472,17 @@ class ModuleSymbolMoveOperation(RepositorySourceReprovedOperation, ABC):
     ) -> ModuleMoveDependencyReport:
         return self.move_plan(context).dependency_report
 
+    def indexed_destination_path(self, context: CodemodSelectorContext) -> str:
+        """The destination as the source index spells paths: the indexed file when it
+        exists, else the path a created module will take."""
+
+        existing = context.module_import_graph.source_file_for_path(self.destination_path)
+        if existing is not None:
+            return existing.file_path
+        return SourceCreationPathAuthority.from_source_index(
+            self.destination_path, context.source_index
+        ).resolved_path()
+
     def require_no_package_init_cycle(self, context: CodemodSelectorContext) -> None:
         """Importing the new home runs each package `__init__` above it first. Every
         module importing the source when it loads now imports the new home, so a
@@ -2482,14 +2494,7 @@ class ModuleSymbolMoveOperation(RepositorySourceReprovedOperation, ABC):
         graph = context.module_import_graph
         source_path = self.required_source_path(context, self.operation_key())
         source = graph.module_name_for_file_path(source_path)
-        existing = graph.source_file_for_path(self.destination_path)
-        destination = (
-            existing.file_path
-            if existing is not None
-            else SourceCreationPathAuthority.from_source_index(
-                self.destination_path, context.source_index
-            ).resolved_path()
-        )
+        destination = self.indexed_destination_path(context)
         packages = _package_inits(graph, destination) - _package_inits(graph, source_path)
         importers = sorted(
             module for module, imported in graph.import_edges_by_module.items() if source in imported
@@ -2506,12 +2511,54 @@ class ModuleSymbolMoveOperation(RepositorySourceReprovedOperation, ABC):
                         "back, a cycle that leaves one of them half-built"
                     )
 
+    def require_members_stay_walked(self, context: CodemodSelectorContext) -> None:
+        """A family that walks a package for its members registers a member only
+        where the walk reaches. A move that takes a moved class, or a class it
+        inherits a walk from, out of that reach refuses, naming the family and
+        its root: nothing else would notice the member had stopped registering."""
+
+        graph = context.module_import_graph
+        source_path = self.required_source_path(context, self.operation_key())
+        row = BatchModuleMove(
+            source_path=source_path, destination_path=self.indexed_destination_path(context)
+        )
+        source, destination = row.source_module(graph), row.destination_module(graph)
+        index = context.required_class_family_index
+        modules = tuple(
+            context.parsed_module_for_source_path(source_file.file_path)
+            for source_file in context.source_index.files
+        )
+        for declaration in self.move_selection(context, source_path).declarations:
+            symbol = index.symbol_for(file_path=source_path, qualname=declaration.name)
+            if symbol is None:
+                continue
+            families = (symbol, *index.ancestor_symbols(symbol))
+            roots = (
+                *(
+                    (declared.qualname, declared.registry_facts.walk_root)
+                    for family in families
+                    if (declared := index.class_for(family)) is not None
+                ),
+                *(
+                    (receiver.rpartition(".")[2], root)
+                    for receiver, root in family_walk_roots(modules, frozenset(families))
+                ),
+            )
+            for family_name, root in roots:
+                reason = root.leaving_reason(source, destination)
+                if reason is not None:
+                    raise ValueError(
+                        f"{declaration.name} is a member of the {family_name} family, "
+                        f"and moving it to {destination} would stop it registering: {reason}"
+                    )
+
     def preflight_reports(
         self,
         context: CodemodSelectorContext,
     ) -> tuple[CodemodOperationPreflightReport, ...]:
         try:
             self.required_reproof(lambda: self.require_no_package_init_cycle(context))
+            self.required_reproof(lambda: self.require_members_stay_walked(context))
             dependency_report = self.required_reproof(
                 lambda: self.dependency_report(context)
             )

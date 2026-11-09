@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from enum import StrEnum
 
@@ -643,6 +644,99 @@ def _registry_config_keyword(
         keyword.value for keyword in node.keywords if keyword.arg == keyword_name
     )
     return values[0] if len(values) == 1 else None
+
+
+class FamilyWalkRoot(ABC):
+    """Where a registry family finds its members: it imports the modules of one
+    package, its whole tree when the walk is recursive, its direct modules when flat.
+    A member moved where the walk does not reach registers only if something else
+    imports it, so a move refuses to take one there."""
+
+    @abstractmethod
+    def leaving_reason(self, source: str, destination: str) -> str | None:
+        """Why moving a member from module `source` to `destination` takes it out
+        of this walk, or None when the walk still reaches it."""
+
+
+@dataclass(frozen=True)
+class NoWalkRoot(FamilyWalkRoot):
+    """A class that declares no walk: its members register when imported."""
+
+    def leaving_reason(self, source: str, destination: str) -> str | None:
+        return None
+
+
+@dataclass(frozen=True)
+class PackageWalkRoot(FamilyWalkRoot):
+    package: str
+    recursive: bool
+
+    def walks(self, module: str) -> bool:
+        if module == self.package:
+            return True
+        prefix = f"{self.package}."
+        if not module.startswith(prefix):
+            return False
+        return self.recursive or "." not in module.removeprefix(prefix)
+
+    def leaving_reason(self, source: str, destination: str) -> str | None:
+        if not self.walks(source) or self.walks(destination):
+            return None
+        reach = "tree" if self.recursive else "direct modules (the walk is flat)"
+        return f"it walks {self.package}'s {reach}, and {destination} is outside it"
+
+
+@dataclass(frozen=True)
+class UnresolvedWalkRoot(FamilyWalkRoot):
+    """A walk whose package is not a static value: no move can show it still
+    reaches the member, so every member move refuses with the expression named."""
+
+    expression: str
+
+    def leaving_reason(self, source: str, destination: str) -> str | None:
+        return f"it walks the package `{self.expression}`, which is not a static value"
+
+
+def static_module_name(node: ast.AST | None, parsed_module: ParsedModule) -> str | None:
+    """A string the module spells statically: a literal, `__package__`, `__name__`,
+    or an f-string or `+` of those."""
+
+    identity = parsed_module.module_path_identity
+    match node:
+        case ast.Constant(value=str(value)):
+            return value
+        case ast.Name(id="__package__"):
+            return identity.package_name
+        case ast.Name(id="__name__"):
+            return identity.import_name
+        case ast.FormattedValue(value=value, conversion=-1, format_spec=None):
+            return static_module_name(value, parsed_module)
+        case ast.JoinedStr(values=values):
+            parts = [static_module_name(value, parsed_module) for value in values]
+            return None if None in parts else "".join(part for part in parts if part is not None)
+        case ast.BinOp(left=left, op=ast.Add(), right=right):
+            pair = (static_module_name(left, parsed_module), static_module_name(right, parsed_module))
+            return None if None in pair else f"{pair[0]}{pair[1]}"
+    return None
+
+
+def registry_config_walk_root(parsed_module: ParsedModule, node: ast.ClassDef) -> FamilyWalkRoot:
+    """The walk a class's `__registry_config__ = RegistryConfig(discovery_package=...)`
+    declares; flat unless `discovery_recursive=True`."""
+
+    config = _direct_class_assignments(node).get("__registry_config__")
+    package = _registry_config_keyword(config, "discovery_package")
+    if package is None:
+        return NoWalkRoot()
+    recursive = _registry_config_keyword(config, "discovery_recursive")
+    name = static_module_name(package, parsed_module)
+    match recursive:
+        case None | ast.Constant(value=bool()) if name is not None:
+            return PackageWalkRoot(
+                package=name,
+                recursive=isinstance(recursive, ast.Constant) and recursive.value is True,
+            )
+    return UnresolvedWalkRoot(ast.unparse(package if name is None else recursive))
 
 
 def _autoregister_registry_key_attr_name(
