@@ -13195,50 +13195,52 @@ def test_parse_python_module_roots_can_skip_direct_test_files(
     assert [module.path.name for module in modules] == ["prod.py"]
 
 
-def test_parse_python_modules_reuses_ast_cache(
+def test_parse_python_modules_reuses_semantic_hash_cache(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _write_module(tmp_path, "pkg/mod.py", "\nclass Cached:\n    pass\n")
     cache_dir = tmp_path / ".cache" / "ast"
-    parse_calls = 0
-    real_parse = ast.parse
+    hash_calls = 0
+    real_hash = ast_tools_module.semantic_python_source_hash
 
-    def counted_parse(*args: object, **kwargs: object) -> ast.Module:
-        nonlocal parse_calls
-        parse_calls += 1
-        return real_parse(*args, **kwargs)
+    def counted_hash(source: str) -> str:
+        nonlocal hash_calls
+        hash_calls += 1
+        return real_hash(source)
 
-    monkeypatch.setattr("nominal_refactor_advisor.ast_tools.ast.parse", counted_parse)
+    monkeypatch.setattr(ast_tools_module, "semantic_python_source_hash", counted_hash)
 
     first_modules = parse_python_modules(tmp_path / "pkg", cache_dir=cache_dir)
     second_modules = parse_python_modules(tmp_path / "pkg", cache_dir=cache_dir)
 
     assert [module.module_name for module in first_modules] == ["mod"]
     assert [module.module_name for module in second_modules] == ["mod"]
-    assert parse_calls == 1
+    assert hash_calls == 1
+    assert first_modules.modules[0].semantic_hash == second_modules.modules[0].semantic_hash
 
 
-def test_parse_python_modules_uses_default_ast_cache(
+def test_parse_python_modules_uses_default_semantic_hash_cache(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _write_module(tmp_path, "pkg/mod.py", "\nclass Cached:\n    pass\n")
     monkeypatch.setenv("NRA_CACHE_HOME", (tmp_path / "cache-home").as_posix())
-    parse_calls = 0
-    real_parse = ast.parse
+    hash_calls = 0
+    real_hash = ast_tools_module.semantic_python_source_hash
 
-    def counted_parse(*args: object, **kwargs: object) -> ast.Module:
-        nonlocal parse_calls
-        parse_calls += 1
-        return real_parse(*args, **kwargs)
+    def counted_hash(source: str) -> str:
+        nonlocal hash_calls
+        hash_calls += 1
+        return real_hash(source)
 
-    monkeypatch.setattr("nominal_refactor_advisor.ast_tools.ast.parse", counted_parse)
+    monkeypatch.setattr(ast_tools_module, "semantic_python_source_hash", counted_hash)
 
     first_modules = parse_python_modules(tmp_path / "pkg")
     second_modules = parse_python_modules(tmp_path / "pkg")
 
     assert [module.module_name for module in first_modules] == ["mod"]
     assert [module.module_name for module in second_modules] == ["mod"]
-    assert parse_calls == 1
+    assert hash_calls == 1
+    assert first_modules.modules[0].semantic_hash == second_modules.modules[0].semantic_hash
     assert default_parse_cache_dir().is_dir()
 
 
@@ -20425,7 +20427,6 @@ def test_goal_runner_rejects_terminal_with_new_finding_obligations(
         report = NewObligationRunner(
             roots=(tmp_path,),
             config=DetectorConfig(),
-            parse_workers=1,
             dry_run=True,
             migration_type=SemanticCarrierConcept,
             guard_suite=ArchitectureGuardSuite(),
