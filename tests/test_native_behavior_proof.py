@@ -63,7 +63,6 @@ def snapshot_with_environment(tmp_path, source):
         snapshot.required_class_family_index,
         snapshot._source_index_build_artifacts,
         repository,
-        operation_derivations={},
     )
 
 
@@ -285,7 +284,6 @@ def test_dsl_dependency_edit_invalidates_reused_local_native_execution(
         snapshot.required_class_family_index,
         snapshot._source_index_build_artifacts,
         repository,
-        operation_derivations={},
     )
     original = invocation_requirement(
         snapshot, path, registry_identity.mro_registry_value
@@ -387,7 +385,6 @@ def test_native_mapping_mutation_cannot_hide_behind_a_retained_namespace(
         original.required_class_family_index,
         original._source_index_build_artifacts,
         repository,
-        operation_derivations={},
     )
     requirement = invocation_requirement(
         snapshot, path, registry_identity.mro_registry_value
@@ -507,7 +504,6 @@ def test_type_query_does_not_hide_temporary_destructor_effects(tmp_path, express
         initial.required_class_family_index,
         initial._source_index_build_artifacts,
         repository,
-        operation_derivations={},
     )
     requirement = invocation_requirement(snapshot, path, type)
     resolution = requirement.inspect()

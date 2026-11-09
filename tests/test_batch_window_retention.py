@@ -14,7 +14,6 @@ from nominal_refactor_advisor.codemod import (
 )
 from nominal_refactor_advisor.codemod_runtime import (
     NominalEditBatch,
-    RefactorRecipeOperationCompiler,
 )
 from nominal_refactor_advisor.codemod_declaration_source import ClassMemberInsertion
 from nominal_refactor_advisor.codemod_imports import ModuleImportMutation
@@ -39,9 +38,7 @@ SOURCE = "left = object; right = type; tail = sorted\n"
 
 
 def compiler(source=SOURCE):
-    return RefactorRecipeOperationCompiler.from_context(
-        CodemodSourceSnapshot.from_source_mapping({PATH: source})
-    )
+    return CodemodSourceSnapshot.from_source_mapping({PATH: source}).execution_snapshot()
 
 
 def exact(source=SOURCE, old="left", new="renamed"):

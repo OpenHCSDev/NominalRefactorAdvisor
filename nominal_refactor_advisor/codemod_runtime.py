@@ -225,7 +225,6 @@ class CodemodSourceSnapshot(CodemodSelectorContext):
             self._source_index_build_artifacts,
             retained_product_flow_repository=self._retained_product_flow_repository,
             text_files=text_files,
-            operation_derivations={},
         )
 
     _retained_product_flow_repository: SourceProductFlowRepository | None = field(
@@ -383,7 +382,6 @@ class CodemodSourceSnapshot(CodemodSelectorContext):
                     else AstTargetNodeIndex(ast_target_node_cache)
                 ),
             ),
-            operation_derivations={},
         )
 
     @classmethod
@@ -398,7 +396,6 @@ class CodemodSourceSnapshot(CodemodSelectorContext):
             modules.modules,
             modules.fact(ClassFamilyIndex),
             build_source_index_artifacts(modules.modules, tuple(findings)),
-            operation_derivations={},
         )
 
     @classmethod
@@ -409,12 +406,8 @@ class CodemodSourceSnapshot(CodemodSelectorContext):
         source_index_artifacts: SourceIndexBuildArtifacts,
         retained_product_flow_repository: SourceProductFlowRepository | None = None,
         text_files: Mapping[str, FileText] | None = None,
-        *,
-        operation_derivations: dict[Hashable, object],
     ) -> CodemodSourceSnapshot:
-        """Build from source and semantic indexes proved for that exact source.
-        A snapshot of the same state passes its own `operation_derivations`, so
-        the state's derivations are shared; a new state passes an empty one."""
+        """Build from source and semantic indexes proved for that exact source."""
 
         module_node_cache = {module.file_path: module.module for module in modules}
         snapshot = cls(
@@ -431,7 +424,6 @@ class CodemodSourceSnapshot(CodemodSelectorContext):
             ),
             _retained_product_flow_repository=retained_product_flow_repository,
             text_files={} if text_files is None else text_files,
-            _operation_derivations=operation_derivations,
         )
         snapshot._parsed_modules_by_file_path.update(
             (module.file_path, module) for module in modules
@@ -471,7 +463,6 @@ class CodemodSourceSnapshot(CodemodSelectorContext):
                 )
             ),
             text_files=self.text_files,
-            operation_derivations={},
         )
 
     @cached_property
@@ -541,7 +532,6 @@ class CodemodSourceSnapshot(CodemodSelectorContext):
                 remaining, ()
             ),
             text_files=self.text_files,
-            operation_derivations={},
         )
 
     def modules_with_source_overlay(
@@ -647,62 +637,6 @@ class CodemodSourceSnapshot(CodemodSelectorContext):
         )
 
 
-@dataclass(frozen=True)
-class _RecipeReplacementGroup:
-    target: AstTargetDigest
-    replacements: tuple[PhysicalSourceEdit, ...]
-
-
-@dataclass(frozen=True)
-class NominalEditBatch:
-    """Original edit records and the source authority which derived them.
-
-    Lowering may merge exact spans into whole-line replacements. Retaining the
-    original records preserves their finer provenance for separate proof work.
-    This compiler product does not replace document preflight or guards.
-    """
-
-    compiler: RefactorRecipeOperationCompiler
-    edits: tuple[NominalSourceEdit, ...]
-
-    @cached_property
-    def windows(self) -> tuple[SourceEditWindowABC, ...]:
-        """Retain both actual coalescence phases under this batch's source authority."""
-        nominal_windows = tuple(
-            window
-            for group in NominalSourceEdit.declaration_groups(
-                self.edits, lambda edit: edit
-            )
-            for window in group[0].resolved_peer_windows(group, self.compiler)
-        )
-        return tuple(
-            window
-            for group in NominalSourceEdit.declaration_groups(
-                nominal_windows, lambda window: window.physical_edit
-            )
-            for window in group[0].physical_edit.coalesced_window_peers(
-                group, self.compiler
-            )
-        )
-
-    @cached_property
-    def physical_edits(self) -> tuple[PhysicalSourceEdit, ...]:
-        return PhysicalSourceEdit.require_compatible(
-            tuple(
-                self.compiler._materialized_contributors(window.physical_edit)
-                for window in self.windows
-            )
-        )
-
-    @cached_property
-    def planned_rewrites(self) -> tuple[PlannedSourceRewrite, ...]:
-        return self.compiler._planned_rewrites_from_physical_edits(self.physical_edits)
-
-
-@dataclass(frozen=True)
-class RefactorRecipeOperationCompiler(CodemodSourceSnapshot):
-    """Compile declarative recipe operations into simulator-ready rewrites."""
-
     def edit_batch_for_recipes(
         self, recipes: Iterable[RefactorRecipe]
     ) -> NominalEditBatch:
@@ -719,23 +653,6 @@ class RefactorRecipeOperationCompiler(CodemodSourceSnapshot):
                     plan_item_index=index,
                 )
             ),
-        )
-
-    @classmethod
-    def from_context(
-        cls,
-        context: CodemodSelectorContext,
-    ) -> Self:
-        if isinstance(context, cls):
-            return context
-        snapshot = context.execution_snapshot()
-        return cls._from_modules_with_indexes(
-            snapshot.parsed_modules,
-            snapshot.required_class_family_index,
-            snapshot._source_index_build_artifacts,
-            snapshot.product_flow_repository,
-            text_files=snapshot.text_files,
-            operation_derivations=snapshot._operation_derivations,
         )
 
     def planned_rewrites_for_recipes(
@@ -863,6 +780,59 @@ class RefactorRecipeOperationCompiler(CodemodSourceSnapshot):
     ) -> tuple[str, int, int, str]:
         target = group.target
         return (target.file_path, target.line, target.end_line, target.qualname)
+
+
+
+@dataclass(frozen=True)
+class _RecipeReplacementGroup:
+    target: AstTargetDigest
+    replacements: tuple[PhysicalSourceEdit, ...]
+
+
+@dataclass(frozen=True)
+class NominalEditBatch:
+    """Original edit records and the source authority which derived them.
+
+    Lowering may merge exact spans into whole-line replacements. Retaining the
+    original records preserves their finer provenance for separate proof work.
+    This compiler product does not replace document preflight or guards.
+    """
+
+    compiler: CodemodSourceSnapshot
+    edits: tuple[NominalSourceEdit, ...]
+
+    @cached_property
+    def windows(self) -> tuple[SourceEditWindowABC, ...]:
+        """Retain both actual coalescence phases under this batch's source authority."""
+        nominal_windows = tuple(
+            window
+            for group in NominalSourceEdit.declaration_groups(
+                self.edits, lambda edit: edit
+            )
+            for window in group[0].resolved_peer_windows(group, self.compiler)
+        )
+        return tuple(
+            window
+            for group in NominalSourceEdit.declaration_groups(
+                nominal_windows, lambda window: window.physical_edit
+            )
+            for window in group[0].physical_edit.coalesced_window_peers(
+                group, self.compiler
+            )
+        )
+
+    @cached_property
+    def physical_edits(self) -> tuple[PhysicalSourceEdit, ...]:
+        return PhysicalSourceEdit.require_compatible(
+            tuple(
+                self.compiler._materialized_contributors(window.physical_edit)
+                for window in self.windows
+            )
+        )
+
+    @cached_property
+    def planned_rewrites(self) -> tuple[PlannedSourceRewrite, ...]:
+        return self.compiler._planned_rewrites_from_physical_edits(self.physical_edits)
 
 
 @dataclass(frozen=True)
@@ -1299,7 +1269,7 @@ class CodemodPlanDocumentPreflight:
 
     document: CodemodPlanDocument
     base_snapshot: CodemodSourceSnapshot
-    rewrite_snapshot: RefactorRecipeOperationCompiler
+    rewrite_snapshot: CodemodSourceSnapshot
     report: CodemodPlanPreflightReport
 
     edit_batch: NominalEditBatch | None
@@ -1322,9 +1292,7 @@ class CodemodPlanDocumentPreflight:
         document: CodemodPlanDocument,
         snapshot: CodemodSourceSnapshot,
     ) -> CodemodPlanDocumentPreflight:
-        rewrite_snapshot = RefactorRecipeOperationCompiler.from_context(
-            document.rewrite_snapshot(snapshot)
-        )
+        rewrite_snapshot = document.rewrite_snapshot(snapshot)
         report = document.preflight_rewrite_snapshot(rewrite_snapshot)
         edit_batch = None
         if report.is_clean:
@@ -3211,9 +3179,11 @@ class FindingRecipePlanBuilder:
         cached_edits = self.physical_edit_cache.get(recipe)
         if cached_edits is not None:
             return cached_edits
-        physical_edits = RefactorRecipeOperationCompiler.from_context(
+        physical_edits = (
             recipe.rewrite_context(selector_context)
-        ).physical_edits_for_recipes((recipe,))
+            .execution_snapshot()
+            .physical_edits_for_recipes((recipe,))
+        )
         self.physical_edit_cache[recipe] = physical_edits
         return physical_edits
 

@@ -12,7 +12,6 @@ from nominal_refactor_advisor.codemod import (
     SourceRewriteTarget,
 )
 from nominal_refactor_advisor.codemod_declaration_source import ClassMemberInsertion
-from nominal_refactor_advisor.codemod_runtime import RefactorRecipeOperationCompiler
 from nominal_refactor_advisor.codemod_source_edits import (
     SourceTextGeometry,
     SourceTextSpan,
@@ -26,9 +25,7 @@ PATH = Path(__file__).with_name("member_fixture.py").resolve().as_posix()
 def test_exact_member_geometry_agrees_with_actual_lowering(newline, inline):
     suite = " Ω = object" if inline else (newline or "\n") + "    Ω = object"
     source = "class Handler:" + suite + newline
-    compiler = RefactorRecipeOperationCompiler.from_context(
-        CodemodSourceSnapshot.from_source_mapping({PATH: source})
-    )
+    compiler = CodemodSourceSnapshot.from_source_mapping({PATH: source}).execution_snapshot()
     operation = InsertClassMemberOperation(
         target=SourceRewriteTarget(file_path=PATH, qualname="Handler"),
         source="added = 1\n",
@@ -63,9 +60,7 @@ def test_exact_member_geometry_agrees_with_actual_lowering(newline, inline):
 
 def test_exact_member_projection_rejects_an_existing_binding():
     source = "class Handler:\n    existing = object\n"
-    compiler = RefactorRecipeOperationCompiler.from_context(
-        CodemodSourceSnapshot.from_source_mapping({PATH: source})
-    )
+    compiler = CodemodSourceSnapshot.from_source_mapping({PATH: source}).execution_snapshot()
     operation = InsertClassMemberOperation(
         target=SourceRewriteTarget(file_path=PATH, qualname="Handler"),
         source="existing = 1\n",

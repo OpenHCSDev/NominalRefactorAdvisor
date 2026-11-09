@@ -19,7 +19,6 @@ from nominal_refactor_advisor.codemod import (
     SourceRewriteTarget,
 )
 from nominal_refactor_advisor.codemod_operations import RefactorRecipeOperation
-from nominal_refactor_advisor.codemod_runtime import RefactorRecipeOperationCompiler
 from nominal_refactor_advisor.codemod_native_requirements import (
     DeclaredNativeUseInvariants,
     NativeUseRequirement,
@@ -270,9 +269,7 @@ REGISTRY['alpha'] = Alpha
 REGISTRY['beta'] = Beta
 """
     path = "/repo/registry_join.py"
-    compiler = RefactorRecipeOperationCompiler.from_context(
-        CodemodSourceSnapshot.from_source_mapping({path: source})
-    )
+    compiler = CodemodSourceSnapshot.from_source_mapping({path: source}).execution_snapshot()
     recipe = RefactorRecipe(
         "registry",
         operations=(

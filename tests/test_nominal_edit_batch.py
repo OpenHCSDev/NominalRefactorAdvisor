@@ -15,7 +15,6 @@ from nominal_refactor_advisor.codemod import (
     SourceRewriteTarget,
     SourceTextReplacement,
 )
-from nominal_refactor_advisor.codemod_runtime import RefactorRecipeOperationCompiler
 from nominal_refactor_advisor.codemod_source_edits import (
     PhysicalSourceEditConflictError,
 )
@@ -26,9 +25,7 @@ SOURCE = "class Handler:\n    value = object\n"
 
 
 def compiler(source=SOURCE):
-    return RefactorRecipeOperationCompiler.from_context(
-        CodemodSourceSnapshot.from_source_mapping({PATH: source})
-    )
+    return CodemodSourceSnapshot.from_source_mapping({PATH: source}).execution_snapshot()
 
 
 def recipes():

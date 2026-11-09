@@ -11,7 +11,6 @@ from nominal_refactor_advisor.refactors.source_insertion import EnsureImportOper
 from nominal_refactor_advisor.codemod import (
     CodemodPlanSequence,
     CodemodSourceSnapshot,
-    RefactorRecipeOperationCompiler,
     SourceRewriteTarget,
 )
 from nominal_refactor_advisor.codemod_imports import (
@@ -173,7 +172,7 @@ def test_synthesized_imports_use_destination_line_endings(
         scope=scope,
     )
     edits = mutation.resolved_edits(snapshot)
-    compiler = RefactorRecipeOperationCompiler.from_context(snapshot)
+    compiler = snapshot.execution_snapshot()
     result = snapshot.simulate_rewrites(
         compiler._planned_rewrites_from_physical_edits(edits)
     )
