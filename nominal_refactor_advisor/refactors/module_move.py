@@ -112,6 +112,7 @@ from nominal_refactor_advisor.lexical_bindings import (
     ImportBoundNameProjection,
     ImportFromModuleName,
 )
+from nominal_refactor_advisor.package_walks import family_walk_roots
 from nominal_refactor_advisor.public_exports import (
     CompactModulePublicExportContract,
     module_public_export_contract,
@@ -2523,18 +2524,31 @@ class ModuleSymbolMoveOperation(RepositorySourceReprovedOperation, ABC):
         )
         source, destination = row.source_module(graph), row.destination_module(graph)
         index = context.required_class_family_index
+        modules = tuple(
+            context.parsed_module_for_source_path(source_file.file_path)
+            for source_file in context.source_index.files
+        )
         for declaration in self.move_selection(context, source_path).declarations:
             symbol = index.symbol_for(file_path=source_path, qualname=declaration.name)
             if symbol is None:
                 continue
-            for family in (symbol, *index.ancestor_symbols(symbol)):
-                declared = index.class_for(family)
-                if declared is None:
-                    continue
-                reason = declared.registry_facts.walk_root.leaving_reason(source, destination)
+            families = (symbol, *index.ancestor_symbols(symbol))
+            roots = (
+                *(
+                    (declared.qualname, declared.registry_facts.walk_root)
+                    for family in families
+                    if (declared := index.class_for(family)) is not None
+                ),
+                *(
+                    (receiver.rpartition(".")[2], root)
+                    for receiver, root in family_walk_roots(modules, frozenset(families))
+                ),
+            )
+            for family_name, root in roots:
+                reason = root.leaving_reason(source, destination)
                 if reason is not None:
                     raise ValueError(
-                        f"{declaration.name} is a member of the {declared.qualname} family, "
+                        f"{declaration.name} is a member of the {family_name} family, "
                         f"and moving it to {destination} would stop it registering: {reason}"
                     )
 
