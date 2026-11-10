@@ -2407,10 +2407,69 @@ class BatchModuleMove(CodemodPayloadRecord):
 
 
 @dataclass(frozen=True, kw_only=True)
-class ModuleSymbolMoveOperation(RepositorySourceReprovedOperation, ABC):
-    """Repository-proved destination contract for module-symbol moves."""
+class DestinationModuleOperationABC(RepositorySourceReprovedOperation, ABC):
+    """A module operation whose destination has one source path."""
 
     destination_path: str = codemod_payload_field(SourcePathPayloadValueCodec())
+
+
+@dataclass(frozen=True, kw_only=True)
+class NewModuleCreationOperationABC(DestinationModuleOperationABC, ABC):
+    """Create a module and its missing package declarations atomically."""
+
+    def source_file_creations(
+        self,
+        context: CodemodSelectorContext,
+    ) -> tuple[SourceFileCreation, ...]:
+        return self.required_reproof(
+            lambda: (
+                SourceFileCreation.from_operation(
+                    self,
+                    requested_path=self.destination_path,
+                    source_index=context.source_index,
+                    source=self.initial_destination_source(context),
+                ),
+                *(
+                    SourceFileCreation.from_operation(
+                        self,
+                        requested_path=init_path,
+                        source_index=context.source_index,
+                        source="",
+                    )
+                    for init_path in self.undeclared_package_inits(context)
+                ),
+            )
+        )
+
+    def undeclared_package_inits(self, context: CodemodSelectorContext) -> tuple[str, ...]:
+        """The `__init__.py` of each directory the destination creates inside a
+        declared package: a module written under `pkg/` (which has its
+        `__init__.py`) into `pkg/sub/` makes `sub` a package the way its parent
+        is. Under no declared package (a top-level or namespace layout), none."""
+
+        sources = context.sources_by_file_path
+        missing: list[str] = []
+        directory = PurePosixPath(self.destination_path).parent
+        while directory != directory.parent:
+            init_path = (directory / PACKAGE_INIT_FILE_NAME).as_posix()
+            if init_path in sources:
+                return tuple(reversed(missing))
+            if init_path != self.destination_path:
+                missing.append(init_path)
+            directory = directory.parent
+        return ()
+
+    @abstractmethod
+    def initial_destination_source(self, context: CodemodSelectorContext) -> str:
+        """The source this particular operation creates."""
+
+        raise NotImplementedError
+
+
+@dataclass(frozen=True, kw_only=True)
+class ModuleSymbolMoveOperation(DestinationModuleOperationABC, ABC):
+    """Repository-proved destination contract for module-symbol moves."""
+
     batch: tuple[BatchModuleMove, ...] = codemod_payload_field(
         PayloadRecordArrayValueCodec(BatchModuleMove), default=()
     )
@@ -3009,7 +3068,9 @@ class _SiblingFileReads:
 
 
 @dataclass(frozen=True, kw_only=True)
-class NewModuleSymbolMoveOperationABC(ModuleSymbolMoveOperation, ABC):
+class NewModuleSymbolMoveOperationABC(
+    NewModuleCreationOperationABC, ModuleSymbolMoveOperation, ABC
+):
     """Module move whose destination source is created atomically."""
 
     def module_context_names_following(
@@ -3074,48 +3135,6 @@ class NewModuleSymbolMoveOperationABC(ModuleSymbolMoveOperation, ABC):
         default=None,
     )
 
-    def source_file_creations(
-        self,
-        context: CodemodSelectorContext,
-    ) -> tuple[SourceFileCreation, ...]:
-        return self.required_reproof(
-            lambda: (
-                SourceFileCreation.from_operation(
-                    self,
-                    requested_path=self.destination_path,
-                    source_index=context.source_index,
-                    source=self.initial_destination_source(context),
-                ),
-                *(
-                    SourceFileCreation.from_operation(
-                        self,
-                        requested_path=init_path,
-                        source_index=context.source_index,
-                        source="",
-                    )
-                    for init_path in self.undeclared_package_inits(context)
-                ),
-            )
-        )
-
-    def undeclared_package_inits(self, context: CodemodSelectorContext) -> tuple[str, ...]:
-        """The `__init__.py` of each directory the destination creates inside a
-        declared package: a module written under `pkg/` (which has its
-        `__init__.py`) into `pkg/sub/` makes `sub` a package the way its parent
-        is. Under no declared package (a top-level or namespace layout), none."""
-
-        sources = context.sources_by_file_path
-        missing: list[str] = []
-        directory = PurePosixPath(self.destination_path).parent
-        while directory != directory.parent:
-            init_path = (directory / PACKAGE_INIT_FILE_NAME).as_posix()
-            if init_path in sources:
-                return tuple(reversed(missing))
-            if init_path != self.destination_path:
-                missing.append(init_path)
-            directory = directory.parent
-        return ()
-
     def initial_destination_source(self, context: CodemodSelectorContext) -> str:
         """Resolve caller source, or the caller's module docstring followed by the
         source module's derived annotation policy."""
@@ -3145,6 +3164,91 @@ class NewModuleSymbolMoveOperationABC(ModuleSymbolMoveOperation, ABC):
         return (
             *self.source_file_creations(context),
             *self.move_source_edits(context),
+        )
+
+
+@dataclass(frozen=True, kw_only=True)
+class RelocateModuleToNewModuleOperation(NewModuleCreationOperationABC, RetainedCallOperation):
+    """Move an entire ordered module body, including executable statements before
+    its first declaration or a script with no declarations at all."""
+
+    def initial_destination_source(self, context: CodemodSelectorContext) -> str:
+        source_path = self.required_source_path(context, self.operation_key())
+        return context.sources_by_file_path[source_path]
+
+    def require_relocation(self, context: CodemodSelectorContext) -> None:
+        """Check location answers after native planning indexes the virtual destination."""
+        source_path = self.required_source_path(context, self.operation_key())
+        module = context.module_nodes_by_file_path[source_path]
+        graph = context.module_import_graph
+        source_module = graph.module_name_for_file_path(source_path)
+        destination_module = graph.module_name_for_file_path(self.destination_path)
+        if source_module is None or destination_module is None:
+            raise ValueError("Whole-module placement requires both module identities")
+        if source_module.rpartition(".")[0] != destination_module.rpartition(".")[0] and any(
+            isinstance(node, ast.ImportFrom) and node.level for node in ast.walk(module)
+        ):
+            raise ValueError("Whole-module placement across packages requires resolved relative imports")
+        sibling = _ModuleSiblingData.of(context, source_path, self.destination_path)
+        reads = {node.id for node in ast.walk(module) if isinstance(node, ast.Name)}
+        blocked = sorted(reads & sibling.stays.keys())
+        if blocked:
+            raise ValueError(
+                "Whole-module placement changes location-dependent reads: "
+                + "; ".join(sibling.detail(name) for name in blocked)
+            )
+
+    def redirect(self, context: CodemodSelectorContext) -> RelocationNameRedirect:
+        source_path = self.required_source_path(context, self.operation_key())
+        table = ModuleSymbolTable(
+            file_path=source_path,
+            source=context.sources_by_file_path[source_path],
+            module=context.module_nodes_by_file_path[source_path],
+        )
+        names = table.top_level_names | frozenset(table.import_bindings_by_name)
+        return RelocationNameRedirect(
+            source_path=source_path,
+            destinations={name: self.destination_path for name in names},
+            reader_path=self.destination_path,
+            reader_bindings=names,
+            home=context.module_import_graph.module_name_for_file_path(self.destination_path),
+        )
+
+    def identity_strings(self, context: CodemodSelectorContext) -> _ModuleIdentityStrings:
+        redirect = self.redirect(context)
+        return _ModuleIdentityStrings(
+            redirect.source_path,
+            redirect.source_module_name(context.module_import_graph),
+            redirect.destinations,
+            self.destination_path,
+            frozenset(self.retained_calls),
+        )
+
+    def text_file_changes(self, context: CodemodSelectorContext) -> tuple[TextFileChange, ...]:
+        strings = self.identity_strings(context)
+        sibling = _ModuleSiblingData.of(context, strings.source_path, self.destination_path)
+        return (
+            *sibling.carry(context, self),
+            *strings.manifest_edits(context, self),
+            *strings.script_edits(context, self),
+        )
+
+    def source_file_deletions(self, context: CodemodSelectorContext) -> tuple[SourceFileDeletion, ...]:
+        return (
+            SourceFileDeletion(
+                operation_type=type(self),
+                file_path=self.required_source_path(context, self.operation_key()),
+                rationale=self.rationale_text("Delete the relocated module's original path."),
+            ),
+        )
+
+    def source_edits_from_snapshot(self, context: CodemodSourceSnapshot) -> tuple[NominalSourceEdit, ...]:
+        self.require_relocation(context)
+        redirect = self.redirect(context)
+        return (
+            *self.source_file_creations(context),
+            *redirect.consumer_edits(context, excluded_paths=frozenset({redirect.source_path})),
+            *self.identity_strings(context).edits(context),
         )
 
 

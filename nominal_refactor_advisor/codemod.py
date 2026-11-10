@@ -570,6 +570,7 @@ from nominal_refactor_advisor.refactors.module_move import (
     MoveSymbolsToModuleOperation as MoveSymbolsToModuleOperation,
     NewModuleSymbolMoveOperationABC as NewModuleSymbolMoveOperationABC,
     RelocateSymbolsToModuleOperation as RelocateSymbolsToModuleOperation,
+    RelocateModuleToNewModuleOperation as RelocateModuleToNewModuleOperation,
     RelocateSymbolsToNewModuleOperation as RelocateSymbolsToNewModuleOperation,
     SourceBindingPreservingModuleSymbolMoveOperationABC as SourceBindingPreservingModuleSymbolMoveOperationABC,
     SourceBindingRelocatingModuleSymbolMoveOperationABC as SourceBindingRelocatingModuleSymbolMoveOperationABC,

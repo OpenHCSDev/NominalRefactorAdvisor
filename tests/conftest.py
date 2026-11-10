@@ -112,6 +112,7 @@ def _isolated_default_advisor_cache() -> Iterator[None]:
                 os.environ[environment_name] = previous_cache_home
 
 
+@pytest.hookimpl(optionalhook=True)
 def pytest_xdist_auto_num_workers(config: pytest.Config) -> int:
     """`-n auto` takes the cores nobody else is using.
 
