@@ -557,6 +557,9 @@ from nominal_refactor_advisor.lexical_bindings import (
     ImportFromModuleName as ImportFromModuleName,
 )
 from nominal_refactor_advisor.lexical_scopes import FunctionBindingProjection
+from nominal_refactor_advisor.refactors.module_history import (
+    ReplayGitModuleImportsOperation as ReplayGitModuleImportsOperation,
+)
 from nominal_refactor_advisor.refactors.module_move import (
     DependencyClosureModuleSymbolSelectionOperationABC as DependencyClosureModuleSymbolSelectionOperationABC,
     ExistingModuleSymbolMoveOperationABC as ExistingModuleSymbolMoveOperationABC,
