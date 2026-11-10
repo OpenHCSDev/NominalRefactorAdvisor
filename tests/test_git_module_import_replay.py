@@ -53,6 +53,7 @@ def recorded_move(tmp_path: Path) -> tuple[Path, str, str, Path]:
     "from pkg.old import answer as call\nprint(call())\n",
     "def run():\n    from pkg.old import answer as call\n    return call()\nprint(run())\n",
     "import pkg.old as provider\nprint(provider.answer())\n",
+    "import sys\nfrom pkg.old import answer as call\nprint(call())\n",
 ])
 def test_replay_uses_recorded_moves_and_only_writes_callers(recorded_move, source: str) -> None:
     provider, before, after, caller = recorded_move
@@ -73,7 +74,7 @@ def test_replay_uses_recorded_moves_and_only_writes_callers(recorded_move, sourc
     assert set(result.simulation.rewritten_sources) == {str(path)}
     result.apply()
     assert "pkg.old" not in path.read_text()
-    assert "pkg.nominal.new" in path.read_text()
+    assert path.read_text() == source.replace("pkg.old", "pkg.nominal.new")
     assert unrelated.read_text() == "from pkg.old import answer\n"
     assert Repository(provider).tree(after) == tree
     assert git(provider, "status", "--porcelain") == ""

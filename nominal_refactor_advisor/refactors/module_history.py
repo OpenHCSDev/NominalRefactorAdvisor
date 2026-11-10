@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import ast
+from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
-from functools import cached_property
+from functools import cache, cached_property
 from pathlib import Path, PurePosixPath
 
 from nominal_refactor_advisor.ast_tools import ParsedModule, ParsedModuleSet, SourceModule
+from nominal_refactor_advisor.module_node_index import ModuleNodeIndex
 from nominal_refactor_advisor.audit.repository import Repository
 from nominal_refactor_advisor.codemod_module_declarations import ModuleSymbolTable
 from nominal_refactor_advisor.codemod_payload import (
@@ -15,9 +18,10 @@ from nominal_refactor_advisor.codemod_payload import (
 )
 from nominal_refactor_advisor.codemod_reproof import RepositorySourceReprovedOperation
 from nominal_refactor_advisor.codemod_runtime import CodemodSourceSnapshot
+from nominal_refactor_advisor.codemod_selection_context import CodemodSelectorContext
 from nominal_refactor_advisor.codemod_source_edits import NominalSourceEdit
 from nominal_refactor_advisor.python_module_identity import PythonModulePathIdentity
-from nominal_refactor_advisor.refactors.module_move import RelocationNameRedirect
+from nominal_refactor_advisor.refactors.module_move import FilesReachingModule, RelocationNameRedirect
 from nominal_refactor_advisor.source_identity import PACKAGE_INIT_FILE_NAME
 
 
@@ -32,6 +36,7 @@ class _GitPythonRevision:
     def paths(self) -> frozenset[str]:
         return self.repository.python_paths(self.revision, ".")
 
+    @cache
     def identity(self, relative: str) -> PythonModulePathIdentity:
         directory = PurePosixPath(relative).parent
         while str(directory / PACKAGE_INIT_FILE_NAME) in self.paths:
@@ -43,6 +48,51 @@ class _GitPythonRevision:
         return SourceModule.from_path_identity(
             self.identity(relative), self.repository.source(self.revision, relative)
         ).parse()
+
+
+@dataclass(frozen=True)
+class _MovedProviderBindings(Mapping[str, str]):
+    """An actual required binding must still exist at its recorded destination."""
+
+    source_names: frozenset[str]
+    destination_names: frozenset[str]
+    destination: str
+
+    def __iter__(self) -> Iterator[str]:
+        return iter(self.source_names)
+
+    def __len__(self) -> int:
+        return len(self.source_names)
+
+    def __getitem__(self, name: str) -> str:
+        if name not in self.source_names:
+            raise KeyError(name)
+        if name not in self.destination_names:
+            raise ValueError(f"Recorded move loses provider bindings: {name}")
+        return self.destination
+
+
+@dataclass(frozen=True)
+class _HistoryModuleRedirect(RelocationNameRedirect):
+    """An existing caller keeps its import at the same execution boundary."""
+
+    @staticmethod
+    def _sorted_block_import_ids(source: str, file_path: str, module: ast.Module) -> frozenset[int]:
+        return frozenset()
+
+    def consumer_edits(
+        self, context: CodemodSelectorContext, *, excluded_paths: frozenset[str]
+    ) -> tuple[NominalSourceEdit, ...]:
+        source_name = self.source_module_name(context.module_import_graph)
+        for source, parsed in FilesReachingModule(context, source_name):
+            if source.file_path in excluded_paths:
+                continue
+            for statement in parsed.fact(ModuleNodeIndex).import_froms():
+                if source.module_path_identity.resolve_import_from_module(
+                    imported_module=statement.module, level=statement.level
+                ) == source_name and any(alias.name == "*" for alias in statement.names):
+                    raise ValueError("Historical star imports need an explicit import-order proof")
+        return super().consumer_edits(context, excluded_paths=excluded_paths)
 
 
 @dataclass(frozen=True)
@@ -58,11 +108,13 @@ class _RecordedModuleMove:
         return table.explicit_names
 
     @cached_property
-    def redirect(self) -> RelocationNameRedirect:
+    def redirect(self) -> _HistoryModuleRedirect:
         names = self.bindings(self.before)
-        return RelocationNameRedirect(
+        return _HistoryModuleRedirect(
             source_path=self.before.file_path,
-            destinations={name: self.after.file_path for name in names},
+            destinations=_MovedProviderBindings(
+                names, self.bindings(self.after), self.after.file_path
+            ),
             reader_path=self.after.file_path,
             reader_bindings=names,
             home=self.after.module_name,
@@ -72,14 +124,7 @@ class _RecordedModuleMove:
     def consumer_edits(
         self, context: CodemodSourceSnapshot, providers: frozenset[str]
     ) -> tuple[NominalSourceEdit, ...]:
-        edits = self.redirect.consumer_edits(context, excluded_paths=providers)
-        missing = self.bindings(self.before) - self.bindings(self.after)
-        if edits and missing:
-            raise ValueError(
-                f"Recorded move {self.before.module_name!r} loses provider bindings: "
-                + ", ".join(sorted(missing))
-            )
-        return edits
+        return self.redirect.consumer_edits(context, excluded_paths=providers)
 
 
 @dataclass(frozen=True, kw_only=True)
