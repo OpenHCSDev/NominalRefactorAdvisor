@@ -54,6 +54,7 @@ def recorded_move(tmp_path: Path) -> tuple[Path, str, str, Path]:
     "def run():\n    from pkg.old import answer as call\n    return call()\nprint(run())\n",
     "import pkg.old as provider\nprint(provider.answer())\n",
     "import sys\nfrom pkg.old import answer as call\nprint(call())\n",
+    "import pkg.old\nprint(17)\n",
 ])
 def test_replay_uses_recorded_moves_and_only_writes_callers(recorded_move, source: str) -> None:
     provider, before, after, caller = recorded_move

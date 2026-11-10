@@ -38,6 +38,7 @@ def test_whole_script_keeps_cold_import_order_and_path_callers(tmp_path: Path, d
         'caller.py': 'SCRIPT = "pkg/probe.py"\n',
         'module_caller.py': 'MODULE = "pkg.probe"\n',
         'import_runner.py': 'import pkg.probe as probe\nassert probe.VALUE == 17\n',
+        'run_only_runner.py': 'import pkg.probe\n',
         'path_runner.py': 'import runpy\nrunpy.run_path("pkg/probe.py", run_name="__main__")\n',
     }
     for relative, body in sources.items():
@@ -50,7 +51,7 @@ def test_whole_script_keeps_cold_import_order_and_path_callers(tmp_path: Path, d
         cwd=tmp_path, env=environment, capture_output=True, text=True, timeout=10,
     )
     assert before.returncode == 0, before.stderr
-    for runner in ('import_runner.py', 'path_runner.py'):
+    for runner in ('import_runner.py', 'path_runner.py', 'run_only_runner.py'):
         original = subprocess.run(
             [sys.executable, str(tmp_path / runner), 'pkg.first'],
             cwd=tmp_path, env=environment, capture_output=True, text=True, timeout=10,
@@ -80,7 +81,7 @@ def test_whole_script_keeps_cold_import_order_and_path_callers(tmp_path: Path, d
     )
     assert after.returncode == 0, after.stderr
     assert after.stdout == before.stdout
-    for runner in ('import_runner.py', 'path_runner.py'):
+    for runner in ('import_runner.py', 'path_runner.py', 'run_only_runner.py'):
         migrated = subprocess.run(
             [sys.executable, str(tmp_path / runner), 'pkg.first'],
             cwd=tmp_path, env=environment, capture_output=True, text=True, timeout=10,

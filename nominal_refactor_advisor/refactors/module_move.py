@@ -847,7 +847,19 @@ class RelocationNameRedirect(ModuleNameRedirect):
                 f"{run_only.file_path!r}:{run_only.statements[0].lineno} imports "
                 f"{source_module_name!r} to run it, and {reader!r} binds another package head"
             )
-        return (run_only.edit(source, source_module_name, (source_module_name, reader)),)
+        return (run_only.edit(source, source_module_name, self.run_module_names(source_module_name, reader)),)
+
+    def run_module_names(self, source_module: str, reader: str) -> tuple[str, ...]:
+        """A partial relocation keeps the old module's initialization too."""
+        return source_module, reader
+
+
+@dataclass(frozen=True)
+class WholeModuleNameRedirect(RelocationNameRedirect):
+    """The destination replaces the entire provider, including its initialization."""
+
+    def run_module_names(self, source_module: str, reader: str) -> tuple[str, ...]:
+        return (reader,)
 
 
 @ScanCache.cached
@@ -3198,7 +3210,7 @@ class RelocateModuleToNewModuleOperation(NewModuleCreationOperationABC, Retained
                 + "; ".join(sibling.detail(name) for name in blocked)
             )
 
-    def redirect(self, context: CodemodSelectorContext) -> RelocationNameRedirect:
+    def redirect(self, context: CodemodSelectorContext) -> WholeModuleNameRedirect:
         source_path = self.required_source_path(context, self.operation_key())
         table = ModuleSymbolTable(
             file_path=source_path,
@@ -3206,7 +3218,7 @@ class RelocateModuleToNewModuleOperation(NewModuleCreationOperationABC, Retained
             module=context.module_nodes_by_file_path[source_path],
         )
         names = table.explicit_names
-        return RelocationNameRedirect(
+        return WholeModuleNameRedirect(
             source_path=source_path,
             destinations={name: self.destination_path for name in names},
             reader_path=self.destination_path,
