@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import tomllib
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
 from functools import cache, cached_property
@@ -19,9 +20,15 @@ from nominal_refactor_advisor.codemod_payload import (
 from nominal_refactor_advisor.codemod_reproof import RepositorySourceReprovedOperation
 from nominal_refactor_advisor.codemod_runtime import CodemodSourceSnapshot
 from nominal_refactor_advisor.codemod_selection_context import CodemodSelectorContext
-from nominal_refactor_advisor.codemod_source_edits import NominalSourceEdit
+from nominal_refactor_advisor.codemod_source_edits import NominalSourceEdit, TextFileChange
 from nominal_refactor_advisor.python_module_identity import PythonModulePathIdentity
-from nominal_refactor_advisor.refactors.module_move import FilesReachingModule, WholeModuleNameRedirect
+from nominal_refactor_advisor.refactors.module_move import (
+    FilesReachingModule,
+    WholeModuleNameRedirect,
+    _ModuleIdentityStrings,
+    _ProjectManifests,
+    _TomlStrings,
+)
 from nominal_refactor_advisor.source_identity import PACKAGE_INIT_FILE_NAME
 
 
@@ -95,6 +102,64 @@ class _HistoryModuleRedirect(WholeModuleNameRedirect):
         return super().consumer_edits(context, excluded_paths=excluded_paths)
 
 
+class _CallerManifestScope:
+    """Only manifests governing physical caller sources belong to this replay."""
+
+    caller_root: str
+
+    def caller_modules(self, context: CodemodSelectorContext) -> tuple[ParsedModule, ...]:
+        return tuple(module for module in context.execution_snapshot().parsed_modules
+                     if Path(module.file_path).is_relative_to(Path(self.caller_root)))
+
+    def project_manifests(self, context: CodemodSelectorContext) -> tuple[Path, ...]:
+        return tuple(path for path in _ProjectManifests.governing(
+            module.file_path for module in self.caller_modules(context)
+        ) if path.is_relative_to(Path(self.caller_root)))
+
+
+@dataclass(frozen=True, kw_only=True)
+class _EntryPointGroupStrings(_CallerManifestScope, _ModuleIdentityStrings):
+    caller_root: str
+
+    def manifest_string_spans(self, source: str) -> tuple[tuple[int, int], ...]:
+        spans = tuple(_TomlStrings.entry_point_group_spans(source))
+        groups = tomllib.loads(source).get("project", {}).get("entry-points", {})
+        if self.source_module_name in groups and not any(
+            source[start:end] == self.source_module_name for start, end in spans
+        ):
+            raise ValueError("Entry-point group spelling needs an explicit TOML key proof")
+        return tuple((start, end) for start, end in spans
+                     if source[start:end] == self.source_module_name)
+
+
+@dataclass(frozen=True)
+class _DeclaredEntryPointGroup:
+    provider: str
+    value: str
+    shape: tuple[str, ...]
+
+    @classmethod
+    def collect(cls, module: ParsedModule) -> tuple[_DeclaredEntryPointGroup, ...]:
+        declarations = []
+        for node in module.module.body:
+            if not isinstance(node, ast.ClassDef):
+                continue
+            for statement in node.body:
+                match statement:
+                    case ast.AnnAssign(target=ast.Name(id="entry_point_group"), value=ast.Constant(value=str(value))):
+                        annotation = ast.dump(statement.annotation)
+                    case ast.Assign(targets=[ast.Name(id="entry_point_group")], value=ast.Constant(value=str(value))):
+                        annotation = ""
+                    case _:
+                        continue
+                declarations.append(cls(node.name, value, (
+                    annotation,
+                    *(ast.dump(part) for part in (*node.bases, *node.keywords,
+                        *node.decorator_list, *(part for part in node.body if part is not statement))),
+                )))
+        return tuple(declarations)
+
+
 @dataclass(frozen=True)
 class _RecordedModuleMove:
     before: ParsedModule
@@ -126,9 +191,24 @@ class _RecordedModuleMove:
     ) -> tuple[NominalSourceEdit, ...]:
         return self.redirect.consumer_edits(context, excluded_paths=providers)
 
+    def entry_point_groups(self, caller_root: str) -> tuple[_EntryPointGroupStrings, ...]:
+        targets = {group.provider: group for group in _DeclaredEntryPointGroup.collect(self.after)}
+        groups = {}
+        for original in _DeclaredEntryPointGroup.collect(self.before):
+            target = targets.get(original.provider)
+            if original.value != self.before.module_name:
+                continue
+            if target is None or target.value != self.after.module_name or target.shape != original.shape:
+                raise ValueError(f"Entry-point provider {original.provider!r} changed beyond its group identity")
+            groups[original.value] = _EntryPointGroupStrings(
+                source_path=self.before.file_path, source_module_name=original.value,
+                owners={}, successor_path=self.after.file_path, caller_root=caller_root,
+            )
+        return tuple(groups.values())
+
 
 @dataclass(frozen=True, kw_only=True)
-class ReplayGitModuleImportsOperation(RepositorySourceReprovedOperation):
+class ReplayGitModuleImportsOperation(_CallerManifestScope, RepositorySourceReprovedOperation):
     """Repair caller imports from Git-recorded moves; provider sources are read-only.
 
     References resolve to immutable commits at construction, so applying a saved
@@ -153,11 +233,11 @@ class ReplayGitModuleImportsOperation(RepositorySourceReprovedOperation):
         object.__setattr__(self, "source_revision", repository.revision(self.source_revision))
         object.__setattr__(self, "target_revision", repository.revision(self.target_revision))
 
-    def recorded_moves(self, callers: tuple[ParsedModule, ...]) -> tuple[_RecordedModuleMove, ...]:
+    def recorded_moves(self, callers: tuple[ParsedModule, ...], metadata: tuple[str, ...] = ()) -> tuple[_RecordedModuleMove, ...]:
         repository = Repository(Path(self.provider_repository))
         before = _GitPythonRevision(repository, self.source_revision)
         after = _GitPythonRevision(repository, self.target_revision)
-        caller_sources = tuple(module.source for module in callers)
+        caller_sources = (*metadata, *(module.source for module in callers))
         moves = tuple(
             _RecordedModuleMove(before.module(old), after.module(new))
             for change in repository.changes(self.source_revision, self.target_revision)
@@ -177,22 +257,30 @@ class ReplayGitModuleImportsOperation(RepositorySourceReprovedOperation):
             raise ValueError("Recorded module moves have ambiguous package identities")
         return moves
 
+    def replay_proof(self, context: CodemodSelectorContext) -> tuple[tuple[_RecordedModuleMove, ...], CodemodSourceSnapshot, frozenset[str]]:
+        def derive():
+            snapshot = context.execution_snapshot()
+            callers = self.caller_modules(context)
+            metadata = tuple(snapshot.text_file(path).required_text(path)
+                             for path in self.project_manifests(context))
+            moves = self.recorded_moves(callers, metadata)
+            provider_modules = tuple(module for move in moves for module in (move.before, move.after))
+            proof = CodemodSourceSnapshot.from_modules(
+                ParsedModuleSet((*callers, *provider_modules))
+            ).with_text_files(snapshot.text_files)
+            return moves, proof, frozenset(module.file_path for module in provider_modules)
+        return context.retained_operation_derivation((self, type(self).replay_proof), derive)
+
     def source_edits_from_snapshot(
         self, context: CodemodSourceSnapshot
     ) -> tuple[NominalSourceEdit, ...]:
-        caller_root = Path(self.caller_root)
-        callers = tuple(
-            module for module in context.parsed_modules
-            if Path(module.file_path).is_relative_to(caller_root)
-        )
-        moves = self.recorded_moves(callers)
-        if not moves:
-            return ()
-        provider_modules = tuple(module for move in moves for module in (move.before, move.after))
-        proof = CodemodSourceSnapshot.from_modules(ParsedModuleSet((*callers, *provider_modules)))
-        providers = frozenset(module.file_path for module in provider_modules)
-        return tuple(
-            edit
-            for move in moves
-            for edit in move.consumer_edits(proof, providers)
-        )
+        moves, proof, providers = self.replay_proof(context)
+        return tuple(edit for move in moves for edit in move.consumer_edits(proof, providers))
+
+    def text_file_changes(self, context: CodemodSelectorContext) -> tuple[TextFileChange, ...]:
+        moves, proof, _providers = self.replay_proof(context)
+        return self.required_reproof(lambda: tuple(
+            edit for move in moves
+            for group in move.entry_point_groups(self.caller_root)
+            for edit in group.manifest_edits(proof, self)
+        ))

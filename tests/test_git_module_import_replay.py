@@ -5,6 +5,8 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+import tomllib
+from importlib.metadata import EntryPoint, EntryPoints
 from pathlib import Path
 
 import pytest
@@ -103,6 +105,95 @@ def test_replay_refuses_missing_target_bindings(recorded_move) -> None:
         RefactorRecipe("refuse-missing-binding").with_operation(operation).simulate(
             CodemodSourceSnapshot.from_modules(parse_python_modules(caller))
         )
+
+
+@pytest.fixture
+def metadata_move(tmp_path: Path) -> tuple[Path, str, str, Path]:
+    provider = tmp_path / "provider"
+    (provider / "pkg").mkdir(parents=True)
+    (provider / "pkg/__init__.py").write_text("")
+    original = (
+        'class Preparation:\n'
+        '    entry_point_group = "pkg.old"\n'
+        '    @classmethod\n'
+        '    def load(cls, distribution):\n'
+        '        return distribution.entry_points.select(group=cls.entry_point_group)\n'
+        '    def prepare(self):\n'
+        '        """Prepare the existing runtime requirements before publishing this distribution."""\n'
+        '        return None\n'
+    )
+    (provider / "pkg/old.py").write_text(original)
+    git(provider, "init", "-q")
+    git(provider, "add", ".")
+    git(provider, "commit", "-qm", "original preparation provider")
+    before = git(provider, "rev-parse", "HEAD")
+    (provider / "pkg/nominal").mkdir()
+    (provider / "pkg/nominal/__init__.py").write_text("")
+    git(provider, "mv", "pkg/old.py", "pkg/nominal/new.py")
+    (provider / "pkg/nominal/new.py").write_text(original.replace('"pkg.old"', '"pkg.nominal.new"'))
+    git(provider, "add", ".")
+    git(provider, "commit", "-qm", "move preparation provider and its group declaration")
+    after = git(provider, "rev-parse", "HEAD")
+    caller = tmp_path / "caller"
+    caller.mkdir()
+    (caller / "client.py").write_text("# No provider import: metadata is the only caller.\n")
+    return provider, before, after, caller
+
+
+def test_metadata_only_group_follows_verified_provider_declaration(metadata_move) -> None:
+    provider, before, after, caller = metadata_move
+    manifest = caller / "pyproject.toml"
+    original = (
+        '[project]\nname = "consumer"\nversion = "1"\ndescription = "pkg.old"\n'
+        '[project.entry-points."pkg.old"]\nneovim = "caller.hooks:Preparation"\n'
+        '[project.entry-points."pkg.old.extra"]\nother = "caller.other:Hook"\n'
+        '[tool.example]\ntext = "pkg.old"\n'
+    )
+    manifest.write_text(original)
+    old_groups = tomllib.loads(original)["project"]["entry-points"]
+    old_entries = EntryPoints(EntryPoint(name=name, value=target, group=group)
+                             for group, members in old_groups.items() for name, target in members.items())
+    assert not old_entries.select(group="pkg.nominal.new")
+    operation = ReplayGitModuleImportsOperation(
+        provider_repository=str(provider), source_revision=before,
+        target_revision=after, caller_root=str(caller),
+    )
+    result = RefactorRecipe("replay-preparation-metadata").with_operation(operation).simulate(
+        CodemodSourceSnapshot.from_modules(parse_python_modules(caller))
+    )
+    assert result.is_clean, result
+    result.apply()
+    assert manifest.read_text() == original.replace(
+        '[project.entry-points."pkg.old"]', '[project.entry-points."pkg.nominal.new"]'
+    )
+    groups = tomllib.loads(manifest.read_text())["project"]["entry-points"]
+    entries = EntryPoints(EntryPoint(name=name, value=target, group=group)
+                         for group, members in groups.items() for name, target in members.items())
+    selected = entries.select(group="pkg.nominal.new")
+    assert len(selected) == 1
+    assert selected["neovim"].value == "caller.hooks:Preparation"
+    assert git(provider, "status", "--porcelain") == ""
+    assert not result.simulation.rewritten_sources
+
+
+def test_group_replay_refuses_changed_provider_loading_behavior(metadata_move) -> None:
+    provider, before, _after, caller = metadata_move
+    path = provider / "pkg/nominal/new.py"
+    path.write_text(path.read_text().replace("return distribution.entry_points", "return other.entry_points"))
+    git(provider, "add", ".")
+    git(provider, "commit", "-qm", "change loading behavior too")
+    manifest = caller / "pyproject.toml"
+    original = '[project.entry-points."pkg.old"]\nneovim = "caller.hooks:Preparation"\n'
+    manifest.write_text(original)
+    operation = ReplayGitModuleImportsOperation(
+        provider_repository=str(provider), source_revision=before,
+        target_revision="HEAD", caller_root=str(caller),
+    )
+    with pytest.raises(CodemodOperationPreflightError, match="changed beyond its group identity"):
+        RefactorRecipe("refuse-changed-provider").with_operation(operation).simulate(
+            CodemodSourceSnapshot.from_modules(parse_python_modules(caller))
+        )
+    assert manifest.read_text() == original
 
 
 def test_replay_requires_an_isolated_caller_tree(recorded_move) -> None:

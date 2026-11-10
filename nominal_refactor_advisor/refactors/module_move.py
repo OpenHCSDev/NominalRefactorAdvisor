@@ -4236,6 +4236,18 @@ class _TomlStrings:
             else:
                 index += 1
 
+    @classmethod
+    def entry_point_group_spans(cls, source: str) -> Iterator[tuple[int, int]]:
+        """Quoted PEP 621 group keys in table headers, never values or prose."""
+        for start, end in cls.content_spans(source):
+            line_start = source.rfind("\n", 0, start) + 1
+            line_end = source.find("\n", end)
+            line_end = len(source) if line_end < 0 else line_end
+            prefix = source[line_start : start - 1].strip()
+            suffix = source[end + 1 : line_end].partition("#")[0].strip()
+            if re.fullmatch(r"\[\s*project\s*\.\s*entry-points\s*\.\s*", prefix) and suffix == "]":
+                yield start, end
+
     @staticmethod
     def _closing(source: str, start: int, delimiter: str) -> int:
         index = start
@@ -4323,6 +4335,12 @@ class _ModuleIdentityStrings:
             if self.source_path == tail or self.source_path.endswith(f"/{tail}")
         )
 
+    def project_manifests(self, context: CodemodSelectorContext) -> tuple[Path, ...]:
+        return _ProjectManifests.governing(context.execution_snapshot().sources_by_file_path)
+
+    def manifest_string_spans(self, source: str) -> Iterable[tuple[int, int]]:
+        return _TomlStrings.content_spans(source)
+
     def manifest_edits(
         self,
         context: CodemodSelectorContext,
@@ -4333,11 +4351,11 @@ class _ModuleIdentityStrings:
         or path setting."""
 
         edits: list[TextFileEdit] = []
-        for manifest in _ProjectManifests.governing(context.execution_snapshot().sources_by_file_path):
+        for manifest in self.project_manifests(context):
             source = context.execution_snapshot().text_file(manifest).required_text(manifest)
             replacements = tuple(
                 replacement
-                for start, end in _TomlStrings.content_spans(source)
+                for start, end in self.manifest_string_spans(source)
                 for replacement in self.string_replacements(
                     context,
                     f"{manifest.as_posix()!r}:{source.count(chr(10), 0, start) + 1}",
@@ -4367,7 +4385,7 @@ class _ModuleIdentityStrings:
         governing projects ship: `python -m module`, or its path after
         `$repo_root/`. Comments are prose and stay as written."""
 
-        manifests = _ProjectManifests.governing(context.execution_snapshot().sources_by_file_path)
+        manifests = self.project_manifests(context)
         edits: list[TextFileEdit] = []
         for script in _ProjectScripts.governing(manifests):
             source = context.execution_snapshot().text_file(script).required_text(script)
