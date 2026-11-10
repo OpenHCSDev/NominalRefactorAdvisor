@@ -3205,11 +3205,12 @@ class RelocateModuleToNewModuleOperation(NewModuleCreationOperationABC, Retained
             source=context.sources_by_file_path[source_path],
             module=context.module_nodes_by_file_path[source_path],
         )
+        names = table.top_level_names | frozenset(table.import_bindings_by_name)
         return RelocationNameRedirect(
             source_path=source_path,
-            destinations={name: self.destination_path for name in table.top_level_names},
+            destinations={name: self.destination_path for name in names},
             reader_path=self.destination_path,
-            reader_bindings=table.top_level_names,
+            reader_bindings=names,
             home=context.module_import_graph.module_name_for_file_path(self.destination_path),
         )
 

@@ -37,6 +37,8 @@ def test_whole_script_keeps_cold_import_order_and_path_callers(tmp_path: Path, d
         'pkg/probe.py': source,
         'caller.py': 'SCRIPT = "pkg/probe.py"\n',
         'module_caller.py': 'MODULE = "pkg.probe"\n',
+        'import_runner.py': 'import pkg.probe as probe\nassert probe.VALUE == 17\n',
+        'path_runner.py': 'import runpy\nrunpy.run_path("pkg/probe.py", run_name="__main__")\n',
     }
     for relative, body in sources.items():
         path = tmp_path / relative
@@ -48,6 +50,13 @@ def test_whole_script_keeps_cold_import_order_and_path_callers(tmp_path: Path, d
         cwd=tmp_path, env=environment, capture_output=True, text=True, timeout=10,
     )
     assert before.returncode == 0, before.stderr
+    for runner in ('import_runner.py', 'path_runner.py'):
+        original = subprocess.run(
+            [sys.executable, str(tmp_path / runner), 'pkg.first'],
+            cwd=tmp_path, env=environment, capture_output=True, text=True, timeout=10,
+        )
+        assert original.returncode == 0, original.stderr
+        assert original.stdout == before.stdout
     destination = tmp_path / 'pkg/support/probe.py'
     operation = RelocateModuleToNewModuleOperation(
         target=SourceRewriteTarget(file_path=str(tmp_path / 'pkg/probe.py')),
@@ -71,6 +80,13 @@ def test_whole_script_keeps_cold_import_order_and_path_callers(tmp_path: Path, d
     )
     assert after.returncode == 0, after.stderr
     assert after.stdout == before.stdout
+    for runner in ('import_runner.py', 'path_runner.py'):
+        migrated = subprocess.run(
+            [sys.executable, str(tmp_path / runner), 'pkg.first'],
+            cwd=tmp_path, env=environment, capture_output=True, text=True, timeout=10,
+        )
+        assert migrated.returncode == 0, migrated.stderr
+        assert migrated.stdout == before.stdout
 
 
 @pytest.mark.parametrize(('source', 'reason'), [
