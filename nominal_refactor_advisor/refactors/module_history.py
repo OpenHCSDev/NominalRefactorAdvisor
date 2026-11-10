@@ -21,7 +21,7 @@ from nominal_refactor_advisor.codemod_runtime import CodemodSourceSnapshot
 from nominal_refactor_advisor.codemod_selection_context import CodemodSelectorContext
 from nominal_refactor_advisor.codemod_source_edits import NominalSourceEdit
 from nominal_refactor_advisor.python_module_identity import PythonModulePathIdentity
-from nominal_refactor_advisor.refactors.module_move import FilesReachingModule, RelocationNameRedirect
+from nominal_refactor_advisor.refactors.module_move import FilesReachingModule, WholeModuleNameRedirect
 from nominal_refactor_advisor.source_identity import PACKAGE_INIT_FILE_NAME
 
 
@@ -73,7 +73,7 @@ class _MovedProviderBindings(Mapping[str, str]):
 
 
 @dataclass(frozen=True)
-class _HistoryModuleRedirect(RelocationNameRedirect):
+class _HistoryModuleRedirect(WholeModuleNameRedirect):
     """An existing caller keeps its import at the same execution boundary."""
 
     @staticmethod
