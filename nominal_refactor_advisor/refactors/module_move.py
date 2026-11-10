@@ -3174,6 +3174,11 @@ class RelocateModuleToNewModuleOperation(NewModuleCreationOperationABC, Retained
 
     def initial_destination_source(self, context: CodemodSelectorContext) -> str:
         source_path = self.required_source_path(context, self.operation_key())
+        return context.sources_by_file_path[source_path]
+
+    def require_relocation(self, context: CodemodSelectorContext) -> None:
+        """Check location answers after native planning indexes the virtual destination."""
+        source_path = self.required_source_path(context, self.operation_key())
         module = context.module_nodes_by_file_path[source_path]
         graph = context.module_import_graph
         source_module = graph.module_name_for_file_path(source_path)
@@ -3192,7 +3197,6 @@ class RelocateModuleToNewModuleOperation(NewModuleCreationOperationABC, Retained
                 "Whole-module placement changes location-dependent reads: "
                 + "; ".join(sibling.detail(name) for name in blocked)
             )
-        return context.sources_by_file_path[source_path]
 
     def redirect(self, context: CodemodSelectorContext) -> RelocationNameRedirect:
         source_path = self.required_source_path(context, self.operation_key())
@@ -3238,6 +3242,7 @@ class RelocateModuleToNewModuleOperation(NewModuleCreationOperationABC, Retained
         )
 
     def source_edits_from_snapshot(self, context: CodemodSourceSnapshot) -> tuple[NominalSourceEdit, ...]:
+        self.require_relocation(context)
         redirect = self.redirect(context)
         return (
             *self.source_file_creations(context),

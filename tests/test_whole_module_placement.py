@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 
 from nominal_refactor_advisor.ast_tools import parse_python_modules
+from nominal_refactor_advisor.codemod_preflight import CodemodOperationPreflightError
 from nominal_refactor_advisor.codemod import (
     CodemodSourceSnapshot,
     RefactorRecipe,
@@ -34,7 +35,8 @@ def test_whole_script_keeps_cold_import_order_and_path_callers(tmp_path: Path, d
         'pkg/first.py': 'from pkg.state import events\nevents.append("first")\n',
         'pkg/later.py': 'from pkg.state import events\nassert events == ["first"]\nevents.append("later")\nVALUE = 17\n',
         'pkg/probe.py': source,
-        'caller.py': 'SCRIPT = "pkg/probe.py"\nMODULE = "pkg.probe"\n',
+        'caller.py': 'SCRIPT = "pkg/probe.py"\n',
+        'module_caller.py': 'MODULE = "pkg.probe"\n',
     }
     for relative, body in sources.items():
         path = tmp_path / relative
@@ -62,7 +64,7 @@ def test_whole_script_keeps_cold_import_order_and_path_callers(tmp_path: Path, d
     assert (tmp_path / 'pkg/support/__init__.py').exists()
     caller = (tmp_path / 'caller.py').read_text()
     assert '"pkg/support/probe.py"' in caller
-    assert '"pkg.support.probe"' in caller
+    assert '"pkg.support.probe"' in (tmp_path / 'module_caller.py').read_text()
     after = subprocess.run(
         [sys.executable, str(destination), 'pkg.first'],
         cwd=tmp_path, env=environment, capture_output=True, text=True, timeout=10,
@@ -71,8 +73,11 @@ def test_whole_script_keeps_cold_import_order_and_path_callers(tmp_path: Path, d
     assert after.stdout == before.stdout
 
 
-@pytest.mark.parametrize('source', ['print(__file__)\n', 'from . import sibling\n'])
-def test_whole_script_refuses_unproved_location_changes(tmp_path: Path, source: str) -> None:
+@pytest.mark.parametrize(('source', 'reason'), [
+    ('print(__file__)\n', 'location-dependent reads'),
+    ('from . import sibling\n', 'resolved relative imports'),
+])
+def test_whole_script_refuses_unproved_location_changes(tmp_path: Path, source: str, reason: str) -> None:
     package = tmp_path / 'pkg'
     package.mkdir()
     (package / '__init__.py').write_text('')
@@ -81,9 +86,9 @@ def test_whole_script_refuses_unproved_location_changes(tmp_path: Path, source: 
         target=SourceRewriteTarget(file_path=str(package / 'probe.py')),
         destination_path=str(package / 'support/probe.py'),
     )
-    result = RefactorRecipe('refuse-changed-location').with_operation(operation).simulate(
-        CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
-    )
-    assert not result.is_clean
+    with pytest.raises(CodemodOperationPreflightError, match=reason):
+        RefactorRecipe('refuse-changed-location').with_operation(operation).simulate(
+            CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+        )
     assert (package / 'probe.py').read_text() == source
     assert not (package / 'support/probe.py').exists()
