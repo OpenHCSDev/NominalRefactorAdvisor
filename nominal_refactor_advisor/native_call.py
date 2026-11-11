@@ -1051,7 +1051,9 @@ class OwnerIndependentDecoratorContract(NativeDecoratorContract):
     def require_application(
         cls, application: SourceDefinitionDecoratorApplicationABC, declaration: NativeDeclaration
     ) -> None:
-        if application.argument is not application.creation:
+        # creation_results[0] is the definition itself, so only the innermost decorator
+        # (index 0) receives the freshly created source function as its argument.
+        if application.index != 0:
             raise ValueError("Owner-independent wrapping requires the fresh source function")
         NativeCreationBackend.current().require_owner_independent_wrapping(declaration)
 
