@@ -343,3 +343,64 @@ def test_another_class_s_method_of_the_same_name_and_an_alike_binding_do_not_ref
     assert "    return Identity.proof_for(value)\n" in use and "three = Proof.proof_for('x')" in use
     assert "from dataclasses import dataclass, field\n" in _source(tmp_path, result, "proof")
     assert _runs(tmp_path, result) == "s/s-p/x"
+
+
+GUARDED_THREADS = (
+    "from __future__ import annotations\n\n"
+    "from dataclasses import dataclass\n"
+    "from typing import TYPE_CHECKING\n\n"
+    "if TYPE_CHECKING:\n"
+    "    from pkg.registry import Registry\n\n\n"
+    "@dataclass(frozen=True)\n"
+    "class Thread:\n"
+    "    name: str\n\n"
+    "    def environment(self, root: str, registry: Registry) -> dict[str, str]:\n"
+    "        from pkg.requests import Request\n\n"
+    "        return {**Request.for_thread(self).encoded(root), 'seen': registry.seen(self.name)}\n"
+)
+REGISTRY = (
+    "class Registry:\n"
+    "    def seen(self, name: str) -> str:\n"
+    "        return f'seen {name}'\n"
+)
+
+
+@pytest.mark.native_proof
+def test_a_name_read_only_in_an_annotation_matches_the_destination_s_runtime_import(
+    tmp_path: Path,
+) -> None:
+    """The source binds the name only under TYPE_CHECKING and reads it only in an annotation;
+    the destination imports the same declaration at runtime. It is one binding, so the move
+    proceeds (agent-comms P130: work_for_problem's `registry: Registration`)."""
+
+    requests = REQUESTS.replace(
+        "from pkg.threads import Thread\n", "from pkg.registry import Registry\nfrom pkg.threads import Thread\n",
+    )
+    _write(tmp_path, {"threads": GUARDED_THREADS, "requests": requests, "registry": REGISTRY})
+    result = _simulate(tmp_path)
+
+    assert result.is_clean is True
+    moved = _source(tmp_path, result, "requests")
+    assert "registry: Registry) -> dict[str, str]:" in moved
+    assert moved.count("from pkg.registry import Registry") == 1
+
+
+@pytest.mark.native_proof
+def test_a_runtime_read_is_not_answered_by_a_destination_import_guarded_for_type_checking(
+    tmp_path: Path,
+) -> None:
+    """Under eager annotations, or for a read in the body, a TYPE_CHECKING-only binding in the
+    destination binds nothing when the code runs, so the move refuses instead of proving."""
+
+    threads = GUARDED_THREADS.replace(
+        "'seen': registry.seen(self.name)}", "'seen': Registry().seen(self.name)}",
+    ).replace("if TYPE_CHECKING:\n    from pkg.registry import Registry\n", "from pkg.registry import Registry\n")
+    requests = REQUESTS.replace(
+        "from pkg.threads import Thread\n",
+        "from typing import TYPE_CHECKING\n\nfrom pkg.threads import Thread\n\n"
+        "if TYPE_CHECKING:\n    from pkg.registry import Registry\n",
+    )
+    _write(tmp_path, {"threads": threads, "requests": requests, "registry": REGISTRY})
+
+    with pytest.raises(CodemodOperationPreflightError, match="only under TYPE_CHECKING"):
+        _simulate(tmp_path)

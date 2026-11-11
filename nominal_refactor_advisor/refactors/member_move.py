@@ -26,7 +26,7 @@ import builtins
 import re
 from dataclasses import dataclass
 from functools import cached_property
-from typing import ClassVar
+from typing import ClassVar, NamedTuple
 
 from nominal_refactor_advisor.refactors.answered_method import (
     AnsweredMethod as AnsweredMethod,
@@ -44,6 +44,8 @@ from nominal_refactor_advisor.refactors.answered_method import (
     OutsideScan as OutsideScan,
     ReceiverBinding as ReceiverBinding,
 )
+from nominal_refactor_advisor.ast_tools import ModuleAnnotationEvaluationMode
+from nominal_refactor_advisor.codemod_import_scopes import ModuleImportScope
 from nominal_refactor_advisor.codemod_imports import ModuleImportMutation
 from nominal_refactor_advisor.codemod_payload import (
     OptionalStringPayloadValueCodec,
@@ -248,6 +250,25 @@ class MovedMethod(AnsweredMethod):
                 lines.add(node.lineno)
         return frozenset(lines)
 
+    @cached_property
+    def runtime_reads(self) -> frozenset[str]:
+        """Names the method reads when it runs or is defined: everything but its parameter and
+        return annotations, which a module postponing annotations never evaluates."""
+
+        annotations = tuple(
+            annotation
+            for annotation in (
+                *(argument.annotation for argument in ast.walk(self.method.args) if isinstance(argument, ast.arg)),
+                self.method.returns,
+            )
+            if annotation is not None
+        )
+        annotated = frozenset(id(node) for annotation in annotations for node in ast.walk(annotation))
+        return frozenset(
+            node.id for node in ast.walk(self.method)
+            if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load) and id(node) not in annotated
+        )
+
     def free_names(self) -> frozenset[str]:
         """Module-level names of the source the method reads, which its new module must bind."""
 
@@ -270,19 +291,37 @@ class MovedMethod(AnsweredMethod):
             snapshot.module_nodes_by_file_path[destination_path].body
         )
         graph = snapshot.module_import_graph
+        postponed = not ModuleAnnotationEvaluationMode.from_module(
+            snapshot.module_nodes_by_file_path[destination_path]
+        ).annotations_execute_at_declaration
         imports: list[ModuleImportMutation] = []
         for name in sorted(self.free_names()):
+            # A TYPE_CHECKING binding answers only a read nothing evaluates when the code runs.
+            needed = (
+                ModuleImportScope.TYPE_CHECKING
+                if postponed and name not in self.runtime_reads else ModuleImportScope.RUNTIME
+            )
+            source = _binding(snapshot, self.source_class.file_path, name)
             if name in destination_names:
-                if _binding(snapshot, destination_path, name) != _binding(
-                    snapshot, self.source_class.file_path, name,
-                ):
+                destination = _binding(snapshot, destination_path, name)
+                if destination.declaration != source.declaration:
                     raise ValueError(
                         f"{self.name!r} reads {name!r}, which {destination_path} binds to something else"
                     )
+                if destination.scope.canonical_rank > needed.canonical_rank:
+                    raise ValueError(
+                        f"{self.name!r} reads {name!r} when it runs, which {destination_path} "
+                        f"binds only under TYPE_CHECKING"
+                    )
                 continue
+            if source.scope.canonical_rank > needed.canonical_rank:
+                raise ValueError(
+                    f"{self.name!r} reads {name!r} when it runs, which {self.source_class.file_path} "
+                    f"binds only under TYPE_CHECKING; moving it would promote that import"
+                )
             statement = next(
                 (
-                    statement for statement in source_module.body
+                    statement for statement in source.scope.import_statements(source_module)
                     if isinstance(statement, ast.ImportFrom)
                     and name in ImportBoundNameProjection(statement).names()
                 ),
@@ -305,6 +344,7 @@ class MovedMethod(AnsweredMethod):
             imports.append(ModuleImportMutation.from_source(
                 file_path=destination_path,
                 import_source=import_source,
+                scope=source.scope,
                 rationale=f"{self.name!r} reads {name!r} in its new class.",
             ))
         return tuple(imports)
@@ -784,26 +824,43 @@ def _imported_file(snapshot: CodemodSourceSnapshot, file_path: str, statement: a
     return provider.file_path
 
 
-def _binding(snapshot: CodemodSourceSnapshot, file_path: str, name: str) -> tuple[str, str] | None:
-    """The declaration a module-level name resolves to: the module and name it imports or
-    declares, so two modules binding one object by different statements, relative or absolute,
-    compare equal."""
+class ModuleBinding(NamedTuple):
+    """What a module-level name resolves to: the declaration it names (the module and name it
+    imports or declares, None when neither) and the scope that binds it. Two modules binding one
+    object compare equal by declaration, whatever statement or scope binds it in each."""
 
+    declaration: tuple[str, str] | None
+    scope: ModuleImportScope
+
+
+def _binding(snapshot: CodemodSourceSnapshot, file_path: str, name: str) -> ModuleBinding:
     source_file = snapshot.module_import_graph.source_file_for_path(file_path)
     if source_file is None:
         raise ValueError(f"{file_path} is outside the scan")
     identity = source_file.module_path_identity
-    for statement in snapshot.module_nodes_by_file_path[file_path].body:
-        if isinstance(statement, ast.ImportFrom):
-            for alias in statement.names:
-                if ImportBoundNameProjection(statement).alias_bound_name(alias) == name:
-                    module = identity.resolve_import_from_module(
-                        imported_module=statement.module, level=statement.level,
-                    )
-                    return str(module), alias.name
-        elif isinstance(statement, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)) and statement.name == name:
-            return str(snapshot.module_import_graph.module_name_for_file_path(file_path)), name
-    return None
+    module = snapshot.module_nodes_by_file_path[file_path]
+
+    def imported(statement: ast.ImportFrom) -> tuple[str, str] | None:
+        for alias in statement.names:
+            if ImportBoundNameProjection(statement).alias_bound_name(alias) == name:
+                module_name = identity.resolve_import_from_module(
+                    imported_module=statement.module, level=statement.level,
+                )
+                return str(module_name), alias.name
+        return None
+
+    for statement in module.body:
+        if isinstance(statement, ast.ImportFrom) and (declaration := imported(statement)):
+            return ModuleBinding(declaration, ModuleImportScope.RUNTIME)
+        if isinstance(statement, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)) and statement.name == name:
+            return ModuleBinding(
+                (str(snapshot.module_import_graph.module_name_for_file_path(file_path)), name),
+                ModuleImportScope.RUNTIME,
+            )
+    for statement in ModuleImportScope.TYPE_CHECKING.import_statements(module):
+        if isinstance(statement, ast.ImportFrom) and (declaration := imported(statement)):
+            return ModuleBinding(declaration, ModuleImportScope.TYPE_CHECKING)
+    return ModuleBinding(None, ModuleImportScope.RUNTIME)
 
 
 @dataclass(frozen=True, kw_only=True)
