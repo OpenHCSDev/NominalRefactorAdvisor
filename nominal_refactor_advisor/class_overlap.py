@@ -39,7 +39,7 @@ from __future__ import annotations
 import ast
 import math
 from collections import defaultdict
-from collections.abc import Callable, Iterable, Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from abc import abstractmethod
 from dataclasses import dataclass
 from enum import StrEnum
@@ -219,9 +219,18 @@ class ClassUse:
 
 @dataclass(frozen=True)
 class ClassUseIndex:
-    """Which consumers use each scanned class, and how."""
+    """Which consumers use each scanned class, and how.
 
-    uses_by_symbol: Mapping[str, tuple[ClassUse, ...]]
+    A reference is resolved only when a class it may name is asked about. Every
+    answer the resolver gives ends in the same name as the reference's last part,
+    or, for a single imported name, its import target's last part, so a reference
+    is filed under those names and resolved as a whole, longest prefix first,
+    exactly as when every reference is resolved up front."""
+
+    resolver: CompactClassReferenceResolver
+    references_by_terminal_name: Mapping[
+        str, tuple[tuple[CompactModuleClassProjection, CompactClassReference], ...]
+    ]
 
     @classmethod
     def from_projections(
@@ -230,25 +239,55 @@ class ClassUseIndex:
         class_index: CompactClassFamilyIndex,
     ) -> ClassUseIndex:
         resolver = CompactClassReferenceResolver.from_index(projections, class_index)
-        uses: dict[str, list[ClassUse]] = defaultdict(list)
-        for projection in projections:
-            for reference in projection.class_references:
-                for length in range(len(reference.reference_parts), 0, -1):
-                    symbol = resolver.symbol_for(
-                        module_name=projection.module_name,
-                        reference_parts=reference.reference_parts[:length],
-                        allow_unique_unqualified=False,
-                    )
-                    if symbol is None:
-                        continue
-                    role = (
-                        reference.role
-                        if length == len(reference.reference_parts)
-                        else ClassReferenceRole.OTHER
-                    )
-                    uses[symbol].append(ClassUse(projection.file_path, reference, role))
-                    break
-        return cls({symbol: tuple(found) for symbol, found in uses.items()})
+        filed: dict[str, dict[tuple[int, int], tuple[CompactModuleClassProjection, CompactClassReference]]] = defaultdict(dict)
+        for module_order, projection in enumerate(projections):
+            aliases = resolver.import_aliases_by_module_name.get(projection.module_name, {})
+            for reference_order, reference in enumerate(projection.class_references):
+                parts = reference.reference_parts
+                names = {*parts}
+                if parts[0] in aliases:
+                    names.add(aliases[parts[0]].rpartition(".")[2])
+                for name in names:
+                    filed[name][module_order, reference_order] = (projection, reference)
+        return cls(
+            resolver,
+            {name: tuple(found[key] for key in sorted(found)) for name, found in filed.items()},
+        )
+
+    def resolved(
+        self, projection: CompactModuleClassProjection, reference: CompactClassReference
+    ) -> tuple[str, ClassReferenceRole] | None:
+        """The class the reference's longest resolving prefix names, and its role."""
+
+        for length in range(len(reference.reference_parts), 0, -1):
+            symbol = self.resolver.symbol_for(
+                module_name=projection.module_name,
+                reference_parts=reference.reference_parts[:length],
+                allow_unique_unqualified=False,
+            )
+            if symbol is not None:
+                return symbol, (
+                    reference.role
+                    if length == len(reference.reference_parts)
+                    else ClassReferenceRole.OTHER
+                )
+        return None
+
+    def uses_for(self, symbol: str) -> tuple[ClassUse, ...]:
+        """Every reference to the class, in module and reference order."""
+
+        found = self.__dict__.setdefault("_uses", {})
+        if symbol not in found:
+            found[symbol] = tuple(
+                ClassUse(projection.file_path, reference, role)
+                for projection, reference in self.references_by_terminal_name.get(
+                    symbol.rpartition(".")[2], ()
+                )
+                for resolved in [self.resolved(projection, reference)]
+                if resolved is not None and resolved[0] == symbol
+                for role in [resolved[1]]
+            )
+        return found[symbol]
 
     def constructions_of(
         self, indexed_class: CompactIndexedClass, *, positional: bool = False
@@ -260,7 +299,7 @@ class ClassUseIndex:
 
         return tuple(
             use
-            for use in self.uses_by_symbol.get(indexed_class.symbol, ())
+            for use in self.uses_for(indexed_class.symbol)
             if use.role is ClassReferenceRole.CONSTRUCTION
             and (
                 not positional
@@ -275,7 +314,7 @@ class ClassUseIndex:
         own_prefix = f"{indexed_class.qualname}."
         return tuple(
             use
-            for use in self.uses_by_symbol.get(indexed_class.symbol, ())
+            for use in self.uses_for(indexed_class.symbol)
             if not (
                 use.file_path == indexed_class.file_path
                 and (
@@ -513,45 +552,54 @@ class ClassOverlapVerdicts:
         """A verdict per pair of classes: on their own declarations, or, when
         those are too few, on the declarations they have through their MROs."""
 
-        return self.judged(lambda first, second: True)
+        return self.judged(
+            self.bodies.overlaps,
+            self._inheriting_pairs_of(self.bodies.classes_by_symbol),
+        )
 
     def candidates_touching(self, symbols: frozenset[str]) -> tuple[ClassOverlapCandidate, ...]:
-        """The verdicts `candidates` holds for the pairs one of whose classes is in
-        `symbols`, in the same order, judging no other pair. A verdict reads only
-        its own overlap and the scan's indexes, so a pair judged alone is judged
-        as it is among all of them; a move proving one composition asks this
-        instead of judging every overlap in the scan on each virtual source."""
+        """The verdicts `candidates` holds whose owner or restating classes include
+        one of `symbols`, in the same order, judging only the pairs such a verdict
+        can come from. A pair's verdict is owned by one of its classes or by a
+        class declaring its shared declarations itself, so each such pair shares
+        a declaration one of `symbols` makes, or is an inheriting pair starting
+        from a class that inherits one. A verdict reads only its own overlap and
+        the scan's indexes, so a pair judged alone is judged as it is among all
+        of them; a move proving one composition asks this instead of judging
+        every overlap in the scan on each virtual source."""
 
         if "candidates" in self.__dict__:
-            return tuple(
-                candidate
-                for candidate in self.candidates
-                if not symbols.isdisjoint((candidate.owner.symbol, *candidate.restating_symbols))
-            )
-        touching = self.__dict__.setdefault("_candidates_touching", {})
-        if symbols not in touching:
-            touching[symbols] = self.judged(
-                lambda first, second: first in symbols or second in symbols
-            )
-        return touching[symbols]
+            found = self.candidates
+        else:
+            touching = self.__dict__.setdefault("_candidates_touching", {})
+            if symbols not in touching:
+                touching[symbols] = self.judged(
+                    self.bodies.overlaps_sharing_with(symbols),
+                    self._inheriting_pairs_of(self._inheritors_pairing_with(symbols)),
+                )
+            found = touching[symbols]
+        return tuple(
+            candidate
+            for candidate in found
+            if not symbols.isdisjoint((candidate.owner.symbol, *candidate.restating_symbols))
+        )
 
     def judged(
-        self, admits: Callable[[str, str], bool]
+        self,
+        overlaps: Iterable[ClassBodyOverlap],
+        inheriting_pairs: frozenset[tuple[str, str]],
     ) -> tuple[ClassOverlapCandidate, ...]:
-        """The verdicts on the pairs `admits` keeps, by first and second symbol."""
+        """The verdicts on these overlaps, then on these inheriting pairs that
+        share nothing of their own."""
 
         candidates: list[ClassOverlapCandidate] = []
         judged: set[tuple[str, str]] = set()
-        for overlap in self.bodies.overlaps:
-            if not admits(overlap.first.symbol, overlap.second.symbol):
-                continue
+        for overlap in overlaps:
             candidate = self.verdict(overlap)
             if candidate is not None:
                 candidates.append(candidate)
                 judged.add((overlap.first.symbol, overlap.second.symbol))
-        for first, second in sorted(
-            pair for pair in self._inheriting_pairs - judged if admits(*pair)
-        ):
+        for first, second in sorted(inheriting_pairs - judged):
             overlap = self.bodies.overlap(first, second).with_inherited(
                 self.resolved_declarations(first), self.resolved_declarations(second)
             )
@@ -563,23 +611,22 @@ class ClassOverlapVerdicts:
                 candidates.append(candidate)
         return tuple(candidates)
 
-    @cached_property
-    def resolved_declarations_by_symbol(
-        self,
-    ) -> Mapping[str, Mapping[str, ResolvedClassBodyDeclaration]]:
-        """Each scanned class's declarations through the known prefix of its MRO."""
-
-        return {
-            symbol: self.bodies.resolved_declarations_of(
-                self.class_index.mro_authority.lookup_prefix(symbol)
-            )
-            for symbol in self.bodies.classes_by_symbol
-        }
-
     def resolved_declarations(
         self, symbol: str
     ) -> Mapping[str, ResolvedClassBodyDeclaration]:
-        return self.resolved_declarations_by_symbol[symbol]
+        """A scanned class's declarations through the known prefix of its MRO;
+        nothing for a class outside the scan."""
+
+        resolved = self.__dict__.setdefault("_resolved_declarations", {})
+        if symbol not in resolved:
+            resolved[symbol] = (
+                self.bodies.resolved_declarations_of(
+                    self.class_index.mro_authority.lookup_prefix(symbol)
+                )
+                if symbol in self.bodies.classes_by_symbol
+                else {}
+            )
+        return resolved[symbol]
 
     def _restated_through_an_ancestor(self, overlap: ClassBodyOverlap) -> bool:
         """One class has every shared copy exactly as one of its ancestors has
@@ -591,7 +638,7 @@ class ClassOverlapVerdicts:
             (overlap.second, {shared.name: shared.second_owner.symbol for shared in overlap.shared}),
         ):
             for ancestor in self.class_index.ancestor_symbols(indexed_class.symbol):
-                resolved = self.resolved_declarations_by_symbol.get(ancestor, {})
+                resolved = self.resolved_declarations(ancestor)
                 if all(
                     name in resolved and resolved[name].owner.symbol == owner
                     for name, owner in owners.items()
@@ -604,9 +651,8 @@ class ClassOverlapVerdicts:
 
         return self.resolved_declarations(symbol)[name].declaration
 
-    @cached_property
-    def _inheriting_pairs(self) -> frozenset[tuple[str, str]]:
-        """Pairs where one class inherits a declaration the other makes itself.
+    def _inheriting_pairs_of(self, symbols: Iterable[str]) -> frozenset[tuple[str, str]]:
+        """Pairs where one of `symbols` inherits a declaration another class makes itself.
 
         The other is not the ancestor it inherits from, and neither is an
         ancestor of the other. Declarations more than `holder_limit` classes
@@ -614,9 +660,9 @@ class ClassOverlapVerdicts:
         """
 
         pairs: set[tuple[str, str]] = set()
-        for symbol, declarations in self.resolved_declarations_by_symbol.items():
+        for symbol in symbols:
             family = {symbol, *self.class_index.ancestor_symbols(symbol)}
-            for resolved in declarations.values():
+            for resolved in self.resolved_declarations(symbol).values():
                 if resolved.owner.symbol == symbol:
                     continue
                 for identity in resolved.declaration.identities:
@@ -630,6 +676,31 @@ class ClassOverlapVerdicts:
                             continue
                         pairs.add((min(holder, symbol), max(holder, symbol)))
         return frozenset(pairs)
+
+    def _inheritors_pairing_with(self, symbols: frozenset[str]) -> tuple[str, ...]:
+        """Every class an inheriting pair with one of `symbols` can start from:
+        the symbols themselves, and each class inheriting a declaration whose
+        identity one of them makes. The owner it inherits from holds that
+        identity too, so the class is that owner or one of its descendants."""
+
+        found: dict[str, None] = dict.fromkeys(
+            symbol for symbol in symbols if symbol in self.bodies.classes_by_symbol
+        )
+        for symbol in tuple(found):
+            for declaration in self.bodies.declarations_of(symbol).values():
+                for identity in declaration.identities:
+                    holders = self.bodies.holders[identity]
+                    if len(holders) > self.bodies.holder_limit:
+                        continue
+                    for owner in holders:
+                        found.update(
+                            dict.fromkeys(
+                                descendant
+                                for descendant in self.class_index.descendant_symbols(owner)
+                                if descendant in self.bodies.classes_by_symbol
+                            )
+                        )
+        return tuple(found)
 
     def resolved(self, indexed_class: CompactIndexedClass) -> CompactIndexedClass:
         """The class as the family index resolved it: its bases are symbols there."""
@@ -826,7 +897,7 @@ class ClassOverlapVerdicts:
                 return ()
             return tuple(
                 (use.location, use.reference.copied_fields)
-                for use in self.uses.uses_by_symbol.get(indexed_class.symbol, ())
+                for use in self.uses.uses_for(indexed_class.symbol)
                 if use.role is ClassReferenceRole.CONSTRUCTION
                 and use.reference.copied_fields
             )

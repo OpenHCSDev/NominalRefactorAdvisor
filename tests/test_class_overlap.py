@@ -401,3 +401,47 @@ def test_a_classmethod_building_its_own_class_by_position_refuses_the_reorder():
     ]
     assert [receipt.detail.split("`")[1] for receipt in positional] == ["First"]
     assert not candidate.permitted
+
+
+SITES = (
+    "pkg.sites",
+    "from dataclasses import dataclass\n\nfrom pkg.summaries import Scope as Area\n\n\n"
+    "@dataclass(frozen=True)\nclass Location:\n"
+    "    file_path: str\n    line: int\n    symbol: str\n\n\n"
+    "@dataclass(frozen=True)\nclass Evidence(Location):\n    kind: str\n\n\n"
+    "@dataclass(frozen=True)\nclass CallSite:\n"
+    "    file_path: str\n    line: int\n    symbol: str\n    target: str\n\n\n"
+    "@dataclass(frozen=True)\nclass ProofEdge:\n"
+    "    file_path: str\n    line: int\n    symbol: str\n    authority: str\n\n\n"
+    "def edge(site: CallSite) -> ProofEdge:\n"
+    "    return ProofEdge(site.file_path, site.line, site.symbol, Area.__name__)\n",
+)
+
+
+def test_verdicts_touching_a_class_are_the_scan_verdicts_naming_it():
+    """A move asks only about the classes it names, on every virtual source; the
+    narrowed search must find exactly the verdicts and uses the whole scan does,
+    inherited pairs and aliased imports included."""
+
+    projections = tuple(
+        CompactModuleClassProjectionFamily.collect_modules(
+            tuple(_module(name, source) for name, source in (SPREAD, SITES))
+        )
+    )
+    index = build_compact_class_family_index(projections)
+    scan = ClassOverlapVerdicts(projections, index)
+
+    def named(candidates, symbol):
+        return [
+            (candidate.owner.symbol, candidate.restating_symbols, candidate.move)
+            for candidate in candidates
+            if symbol in (candidate.owner.symbol, *candidate.restating_symbols)
+        ]
+
+    assert len(scan.candidates) >= 3
+    for symbol in index.classes_by_symbol:
+        asked = ClassOverlapVerdicts(projections, index)
+        assert named(asked.candidates_touching(frozenset({symbol})), symbol) == named(
+            scan.candidates, symbol
+        )
+    assert {use.consumer for use in scan.uses.uses_for("pkg.summaries.Scope")} >= {"edge"}
