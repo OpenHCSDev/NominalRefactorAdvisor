@@ -92,6 +92,50 @@ should answer once. m consumers × n cases of restated decisions become m + n.
 Verify subagent work from the diff and by re-running the command yourself; a
 report is a claim.
 
+## Running a sweep: what the agent-comms sweep taught (2026-11-11)
+
+- **Fill the plan, simulate once, apply once.** Compose every plan with
+  `--codemod-compose-sequence A.json B.json …` and simulate the whole sequence
+  from the branch head. A simulate per slice is the incremental loop. Inside
+  that one simulate, a refusal is the only evidence that an operation is
+  missing.
+- **`no_evaluator` does not mean no operation.** Before calling something a
+  gap, grep the registered operations and the ones nothing constructs.
+  `CreateMixinOperation` + `ComposeExistingClassOperation` was the
+  extract-new-base that people kept asking for, and
+  `KeywordizeConstructionOperation` existed for a whole night with no
+  synthesis branch that built it. Sort rejections by their stated reason
+  first. The reason names the real gap.
+- **Authored plans are not blocked by the unproved horizon.** Only synthesized
+  one-shot export is. When the planner cannot prove a decision, author it with
+  existing operations (`patch_target`, `insert_before_target`,
+  `compose_existing_class`) and let each operation's preflight prove its site.
+  A hand edit is worse than an authored op, never better.
+- **Select by declaration in plans that chain.** Synthesized recipes select by
+  `target_id` from the scan that made them, and those ids go stale once an
+  earlier plan rewrites the file. Use `file_path` + `target_qualname`, or
+  regenerate from a scan of the tree the plan will run on.
+- **A stage that deletes members says what each class keeps.** Deleting a
+  class's only member with `patch_target` leaves an empty body, and parse
+  validation refuses it. `compose_existing` writes `pass` (or keeps the
+  docstring) on its own. When deleting an override, put the new parent first
+  in the base list so every deleted member still resolves to the same winner.
+- **Scan with every consumer.** `dead_module` and `dissolve_module` only see
+  the scan. Pass `--context-root` for each sibling repository that imports the
+  package (agent-comms: Toad) before deleting a module. Scan from the
+  repository root so `[project.scripts]` counts.
+- **Check which NRA you are running.** Installing the target package into the
+  NRA venv can replace an editable NRA with the target's pinned wheel. After
+  any `uv pip install`, print `nominal_refactor_advisor.__file__`.
+- **Results travel; caches do not.** Finding ids hash detector, pattern,
+  summary and evidence, not the engine build. So picks and plans posted as
+  JSON match on any agent's scan of the same source. `git grep "^class NAME"`
+  every new class name before submitting a pick.
+- **A string that must fail by name stays a string.** Evidence that a class
+  does not exist yet (`ClassDeclared("Name")`) cannot be written as a
+  reference. Every other string standing in for a type is slop, and is work
+  for this plan.
+
 ## Start with worked transformations
 
 Read [theory → evidence → migration](references/theory-to-workflow.md) for the
