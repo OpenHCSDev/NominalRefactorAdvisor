@@ -36,6 +36,7 @@ from nominal_refactor_advisor.ast_tools import (
     BuiltinCallName,
     CollectedFamily,
     ParsedModule,
+    ParsedModuleFact,
     ParsedModuleSourceProjection,
 )
 from nominal_refactor_advisor.call_binding import (
@@ -113,6 +114,34 @@ from nominal_refactor_advisor.value_expression import LexicalValueReference
 DYNAMIC_ATTRIBUTE_HOOKS = frozenset(("__getattr__", "__getattribute__"))
 # Attributes whose access reaches something other than a function of that name.
 INDIRECT_ATTRIBUTES = DYNAMIC_ATTRIBUTE_HOOKS | frozenset(("__call__", "__get__"))
+
+
+@dataclass(frozen=True)
+class DynamicAttributeHookDeclarations(ParsedModuleFact):
+    """Every function the module declares under a name in `DYNAMIC_ATTRIBUTE_HOOKS`,
+    wherever it is declared: in the module, in a class however nested, under any
+    statement, or inside another function, whence it can still be installed on a
+    class. A hook declared twice counts twice. Read from the parse, it needs no flow
+    projection, and it is never smaller than the hooks among the module's function
+    declarations."""
+
+    symbols: tuple[str, ...]
+
+    @classmethod
+    def derive(cls, parsed_module: ParsedModule) -> Self:
+        symbols: list[str] = []
+        pending: list[tuple[ast.AST, str]] = [(parsed_module.module, parsed_module.module_name)]
+        while pending:
+            scope, prefix = pending.pop()
+            for child in ast.iter_child_nodes(scope):
+                match child:
+                    case ast.FunctionDef() | ast.AsyncFunctionDef() | ast.ClassDef():
+                        if not isinstance(child, ast.ClassDef) and child.name in DYNAMIC_ATTRIBUTE_HOOKS:
+                            symbols.append(f"{prefix}.{child.name}")
+                        pending.append((child, f"{prefix}.{child.name}"))
+                    case _:
+                        pending.append((child, prefix))
+        return cls(tuple(sorted(symbols)))
 
 
 @dataclass(frozen=True)
@@ -1263,7 +1292,10 @@ class ProductFlowRepository(
         return tuple(
             sorted(
                 symbol
-                for symbol in self.function_declarations_by_symbol
+                for symbol in (
+                    *self.function_declarations_by_symbol,
+                    *self.ambiguous_function_declaration_symbols,
+                )
                 if symbol.rpartition(".")[2] in DYNAMIC_ATTRIBUTE_HOOKS
             )
         )
@@ -2419,6 +2451,18 @@ class CompactProductFlowRepository(ProductFlowRepository):
 @dataclass(frozen=True)
 class SourceProductFlowRepository(RepositoryModuleBindingProof, ProductFlowRepository):
     """Derive flow queries and runtime capture from the same original source task."""
+
+    @cached_property
+    def dynamic_attribute_owners(self) -> tuple[str, ...]:
+        """Read from each module's parse: answering whether any owner exists never
+        projects the flow of every module in the scan."""
+        return tuple(
+            sorted(
+                symbol
+                for module in self.modules
+                for symbol in module.fact(DynamicAttributeHookDeclarations).symbols
+            )
+        )
 
     def iter_product_projections(self) -> Iterator[CompactProductFlowModuleProjection]:
         """Preserve every original module without projecting unrequested successors."""

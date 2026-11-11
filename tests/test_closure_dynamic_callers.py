@@ -201,3 +201,45 @@ def test_an_annotated_member_of_self_bounds_a_fetch_to_its_class_family():
     )
     assert _closed(repository, "pkg.calls._Kind._other")
     assert not _closed(repository, "pkg.calls._Unrelated._label")
+
+
+def test_dynamic_attribute_hook_declarations_count_every_hook_definition() -> None:
+    """A hook counts wherever it is declared: in the module, in a class however nested or
+    guarded, and inside a function body, from which it can still be installed on a
+    class. A hook declared twice counts twice."""
+
+    from nominal_refactor_advisor.product_flow_authority import (
+        DynamicAttributeHookDeclarations,
+    )
+
+    source = (
+        "def __getattr__(name): ...\n"
+        "class Outer:\n"
+        "    class Inner:\n"
+        "        def __getattribute__(self, name): ...\n"
+        "    if True:\n"
+        "        def __getattr__(self, name): ...\n"
+        "    else:\n"
+        "        def __getattr__(self, name): ...\n"
+        "    def method(self):\n"
+        "        def __getattr__(name): ...\n"
+        "def factory():\n"
+        "    class Local:\n"
+        "        def __getattr__(self, name): ...\n"
+        "    return Local\n"
+    )
+    path = Path("pkg", "hooks.py")
+    module = ParsedModule(
+        path=path,
+        module_name="pkg.hooks",
+        module=ast.parse(source, filename=str(path)),
+        source=source,
+    )
+    assert module.fact(DynamicAttributeHookDeclarations).symbols == (
+        "pkg.hooks.Outer.Inner.__getattribute__",
+        "pkg.hooks.Outer.__getattr__",
+        "pkg.hooks.Outer.__getattr__",
+        "pkg.hooks.Outer.method.__getattr__",
+        "pkg.hooks.__getattr__",
+        "pkg.hooks.factory.Local.__getattr__",
+    )
