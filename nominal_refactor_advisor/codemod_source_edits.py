@@ -1076,7 +1076,7 @@ class TextFileChange(ABC):
             file_changes = tuple(group)
             kinds = {type(change) for change in file_changes}
             if len(kinds) != 1:
-                raise ValueError(
+                raise PhysicalSourceEditConflictError(
                     f"{file_path!r} is both edited and carried: "
                     f"{tuple(sorted(kind.__name__ for kind in kinds))!r}"
                 )
@@ -1120,7 +1120,7 @@ class TextFileEdit(TextFileChange):
         file_path = changes[0].file_path
         sources = {edit.source for edit in changes}
         if len(sources) != 1:
-            raise ValueError(f"Text edits of {file_path!r} read different texts")
+            raise PhysicalSourceEditConflictError(f"Text edits of {file_path!r} read different texts")
         (source,) = sources
         spans = sorted(
             {
@@ -1131,7 +1131,7 @@ class TextFileEdit(TextFileChange):
         )
         for (_, first_end, _), (second_start, _, _) in pairwise(spans):
             if second_start < first_end:
-                raise ValueError(f"Text edits of {file_path!r} overlap at offset {second_start}")
+                raise PhysicalSourceEditConflictError(f"Text edits of {file_path!r} overlap at offset {second_start}")
         rewritten = cls.applied(source, spans)
         if rewritten == source:
             return ()
