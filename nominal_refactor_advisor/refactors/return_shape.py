@@ -28,26 +28,8 @@ from nominal_refactor_advisor.codemod_source_edits import (
     SourceTextSpanReplacement,
 )
 from nominal_refactor_advisor.module_node_index import ModuleNodeIndex
-from nominal_refactor_advisor.refactors.answered_method import AnsweredMethod
+from nominal_refactor_advisor.refactors.answered_method import AnsweredMethod, AnsweredUse
 from nominal_refactor_advisor.type_checker_session import SourceTexts, TypeCheckerSession
-
-
-@dataclass(frozen=True)
-class TupleReturnSite:
-    """One return statement in one override that returns a zero-or-one tuple."""
-
-    file_path: str
-    node: ast.Return
-    kind: str  # "value" for (x,), "empty" for ()
-
-
-@dataclass(frozen=True)
-class ReaderRewriteSite:
-    """One call-site reader that consumes the tuple result."""
-
-    file_path: str
-    node: ast.AST
-    kind: str  # "for_loop", "next_iter", "truthiness", "unpack"
 
 
 def _tuple_return_kind(node: ast.Return) -> str | None:
@@ -66,16 +48,36 @@ def _tuple_return_kind(node: ast.Return) -> str | None:
 def _find_returns(function: ast.FunctionDef | ast.AsyncFunctionDef) -> list[ast.Return]:
     """Every return statement directly in this function (not nested functions)."""
     returns: list[ast.Return] = []
-    for node in ast.walk(function):
-        if isinstance(node, ast.Return) and node is not function:
-            if not any(
-                isinstance(parent, (ast.FunctionDef, ast.AsyncFunctionDef))
-                and parent is not function
-                for parent in ast.walk(function)
-                if node in ast.walk(parent)
-            ):
-                returns.append(node)
+    _collect_returns(function.body, returns)
     return returns
+
+
+def _collect_returns(
+    stmts: list[ast.stmt], into: list[ast.Return]
+) -> None:
+    """Walk statements collecting returns, stopping at nested function boundaries."""
+    for stmt in stmts:
+        if isinstance(stmt, ast.Return):
+            into.append(stmt)
+        elif isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            pass
+        elif isinstance(stmt, (ast.If, ast.With, ast.AsyncWith)):
+            _collect_returns(stmt.body, into)
+            if hasattr(stmt, "orelse"):
+                _collect_returns(stmt.orelse, into)
+        elif isinstance(stmt, (ast.For, ast.AsyncFor, ast.While)):
+            _collect_returns(stmt.body, into)
+            _collect_returns(stmt.orelse, into)
+        elif isinstance(stmt, (ast.Try, ast.TryStar)):
+            _collect_returns(stmt.body, into)
+            for handler in stmt.handlers:
+                if handler.body:
+                    _collect_returns(handler.body, into)
+            _collect_returns(stmt.orelse, into)
+            _collect_returns(stmt.finalbody, into)
+        elif isinstance(stmt, ast.Match):
+            for case in stmt.cases:
+                _collect_returns(case.body, into)
 
 
 def _classify_returns(
@@ -180,25 +182,15 @@ class FlattenTupleReturnOperation(RepositorySourceReprovedOperation):
                     add(resolved_class.file_path, start, end, new_annotation)
 
         answered = AnsweredMethod(snapshot, base, function)
-        session: TypeCheckerSession | None = None
+        session = TypeCheckerSession.started(SourceTexts(snapshot.parsed_modules))
         try:
-            undeclared = any(
-                not answered.bound_class(
-                    r.expression, r.parsed.file_path, None,
-                    answered._name_scopes(r.anchor, r.parsed.fact(ModuleNodeIndex).parents),
-                )
-                for r in answered.references()
-            )
-            if undeclared:
-                session = TypeCheckerSession.started(SourceTexts(snapshot.parsed_modules))
             calls = answered.answering_calls(session)
         finally:
-            if session is not None:
-                session.stop()
+            session.stop()
 
         for use in calls:
             geo = geometry(use.file_path)
-            self._rewrite_reader(use, geo, replacements)
+            self._rewrite_reader(use, snapshot, geo, replacements)
 
         return tuple(
             geometry(file_path).nominal_edit(
@@ -246,21 +238,98 @@ class FlattenTupleReturnOperation(RepositorySourceReprovedOperation):
 
     def _rewrite_reader(
         self,
-        use: object,
+        use: AnsweredUse,
+        snapshot: CodemodSourceSnapshot,
         geometry: SourceTextGeometry,
         replacements: dict[str, list[SourceTextSpanReplacement]],
     ) -> None:
         """Rewrite one reader of the result from tuple consumption to Optional.
 
-        The reader patterns:
-        - ``for x in method():`` → ``if (x := method()) is not None:``
-        - ``next(iter(result), None)`` → ``result``
-        - ``if result:`` stays (truthiness of None is already False)
-        """
-        # Reader rewriting is complex and depends on the AST context of the call.
-        # For now, the operation rewrites method bodies (the proven part) and
-        # refuses readers it cannot classify, naming the site.
-        # Full reader rewriting is the next commit.
-        pass
+        The dominant pattern: ``for x in method():`` becomes
+        ``if (x := method()) is not None:`` and the loop body keeps its
+        indentation.  Other patterns (next(iter()), unpacking, truthiness)
+        refuse by name until they are implemented."""
+
+        parents = snapshot.parsed_module_for_source_path(
+            use.file_path
+        ).fact(ModuleNodeIndex).parents
+        call_node = use.node
+        parent = parents.get(id(call_node))
+        if parent is None:
+            raise ValueError(
+                f"{use.where} calls `{self.method_name}` but the call has no "
+                "parent in the AST"
+            )
+
+        if isinstance(parent, ast.For) and parent.iter is call_node:
+            self._rewrite_for_loop(use, parent, geometry, replacements)
+            return
+
+        if (
+            isinstance(parent, ast.Call)
+            and isinstance(parent.func, ast.Name)
+            and parent.func.id == "iter"
+            and len(parent.args) == 1
+        ):
+            grandparent = parents.get(id(parent))
+            if (
+                isinstance(grandparent, ast.Call)
+                and isinstance(grandparent.func, ast.Name)
+                and grandparent.func.id == "next"
+                and len(grandparent.args) >= 1
+            ):
+                self._rewrite_next_iter(use, grandparent, geometry, replacements)
+                return
+
+        if isinstance(parent, (ast.If, ast.BoolOp)):
+            return
+
+        raise ValueError(
+            f"{use.where} reads `{self.method_name}` in a context this "
+            f"operation cannot rewrite: {type(parent).__name__} at line "
+            f"{getattr(parent, 'lineno', '?')}"
+        )
+
+    def _rewrite_for_loop(
+        self,
+        use: AnsweredUse,
+        for_node: ast.For,
+        geometry: SourceTextGeometry,
+        replacements: dict[str, list[SourceTextSpanReplacement]],
+    ) -> None:
+        """``for x in method():`` → ``if (x := method()) is not None:``"""
+        target_src = ast.unparse(for_node.target)
+        call_src = ast.unparse(use.node)
+        start, end = geometry.required_node_offsets(for_node)
+        header_end = for_node.body[0].col_offset
+        for_src = geometry.source[start:end]
+        header_line = geometry.source[start:].split("\n", 1)[0]
+        new_header = f"if ({target_src} := {call_src}) is not None:"
+        start_of_header, end_of_header = start, start + len(header_line)
+        replacements.setdefault(use.file_path, []).append(
+            SourceTextSpanReplacement.from_offsets(
+                start_offset=start_of_header,
+                end_offset=end_of_header,
+                replacement_source=new_header,
+            )
+        )
+
+    def _rewrite_next_iter(
+        self,
+        use: AnsweredUse,
+        next_call: ast.Call,
+        geometry: SourceTextGeometry,
+        replacements: dict[str, list[SourceTextSpanReplacement]],
+    ) -> None:
+        """``next(iter(method()), None)`` → ``method()``"""
+        call_src = ast.unparse(use.node)
+        start, end = geometry.required_node_offsets(next_call)
+        replacements.setdefault(use.file_path, []).append(
+            SourceTextSpanReplacement.from_offsets(
+                start_offset=start,
+                end_offset=end,
+                replacement_source=call_src,
+            )
+        )
 
 
