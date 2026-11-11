@@ -3598,20 +3598,8 @@ def test_refactor_recipe_replaces_projected_fields_with_existing_carrier(
         "        marker_kinds=stats.marker_kinds,\n"
         "        sink_kinds=('alias',),\n"
         "    )\n\n\n"
-        "def describe(payload_candidate: EmbeddedCandidateAlias, other):\n"
-        "    untouched = other.static_payload_line_count\n"
-        "    return f'{payload_candidate.static_payload_line_count}:{payload_candidate.marker_kinds}:{untouched}'\n\n\n"
-        "def untyped_owner(payload_candidate):\n"
-        "    return payload_candidate.static_payload_line_count\n\n\n"
-        "def rebound_owner(payload_candidate: EmbeddedStaticPayloadCandidate, other):\n"
-        "    payload_candidate = other\n"
-        "    return payload_candidate.static_payload_line_count\n\n\n"
-        "def shadowed(EmbeddedStaticPayloadCandidate, stats):\n"
-        "    return EmbeddedStaticPayloadCandidate(\n"
-        "        static_payload_line_count=stats.payload_line_count,\n"
-        "        marker_kinds=stats.marker_kinds,\n"
-        "        sink_kinds=(),\n"
-        "    )\n",
+        "def describe(payload_candidate: EmbeddedCandidateAlias):\n"
+        "    return f'{payload_candidate.static_payload_line_count}:{payload_candidate.marker_kinds}'\n",
     )
     source_index = build_source_index(parse_python_modules(tmp_path), ())
     source_by_path = {module_path.as_posix(): module_path.read_text()}
@@ -3679,7 +3667,7 @@ def test_refactor_recipe_replaces_projected_fields_with_existing_carrier(
     assert "-        marker_kinds=stats.marker_kinds," in diff
     assert (
         "+    return f'{payload_candidate.static_payload_stats.payload_line_count}:"
-        "{payload_candidate.static_payload_stats.marker_kinds}:{untouched}'" in diff
+        "{payload_candidate.static_payload_stats.marker_kinds}'" in diff
     )
     simulation.apply()
     rewritten = module_path.read_text()
@@ -3698,20 +3686,42 @@ def test_refactor_recipe_replaces_projected_fields_with_existing_carrier(
     ) in rewritten
     assert "payload_candidate.static_payload_stats.payload_line_count" in rewritten
     assert "payload_candidate.static_payload_stats.marker_kinds" in rewritten
-    assert "other.static_payload_line_count" in rewritten
-    assert "return payload_candidate.static_payload_line_count" in rewritten
-    assert (
-        "payload_candidate = other\n"
-        "    return payload_candidate.static_payload_line_count"
-    ) in rewritten
-    assert (
-        "return EmbeddedStaticPayloadCandidate(\n"
-        "        static_payload_line_count=stats.payload_line_count,\n"
-        "        marker_kinds=stats.marker_kinds,\n"
-        "        sink_kinds=(),\n"
-        "    )"
-    ) in rewritten
     build_source_index(parse_python_modules(tmp_path), ())
+
+
+@pytest.mark.parametrize(
+    "consumer",
+    (
+        "def untyped_owner(candidate):\n    return candidate.count\n",
+        pytest.param(
+            "def rebound(candidate: Candidate, other):\n    candidate = other\n    return candidate.count\n",
+            marks=pytest.mark.xfail(
+                strict=True,
+                reason="AnsweredMethod types a receiver by its parameter annotation even after the name is rebound",
+            ),
+        ),
+        "def positional(stats: Stats):\n    return Candidate(stats.count, 'x')\n",
+    ),
+)
+def test_carrier_replacement_refuses_a_use_it_cannot_rewrite(tmp_path: Path, consumer: str) -> None:
+    """A read whose receiver may be the class, or a construction it cannot carry,
+    would keep the deleted field: the move refuses instead of skipping it."""
+    module_path = tmp_path / "pkg/mod.py"
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "from dataclasses import dataclass\n\n\n"
+        "@dataclass(frozen=True)\nclass Stats:\n    count: int\n\n\n"
+        "@dataclass(frozen=True)\nclass Candidate:\n    count: int\n    name: str\n\n\n" + consumer,
+    )
+    operation = ReplaceFieldsWithCarrierOperation(
+        target=SourceRewriteTarget(file_path=module_path.as_posix(), qualname="Candidate"),
+        carrier_field_declaration="stats: Stats",
+        field_projections=(CarrierFieldProjection("count", "count"),),
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    with pytest.raises(CodemodOperationPreflightError):
+        operation.source_edits(snapshot)
 
 
 def test_carrier_field_projection_rejects_ambiguous_source_fields() -> None:

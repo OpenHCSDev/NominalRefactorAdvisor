@@ -395,7 +395,7 @@ class ForeignBase:
             module = sys.modules.get(candidate)
             base = None if module is None else getattr(module, attribute, None)
             if isinstance(base, type) or hasattr(base, "__mro_entries__"):
-                return hasattr(base, name) and name not in vars(object)
+                return hasattr(base, name) and getattr(base, name) is not getattr(object, name, None)
         return True
 
 

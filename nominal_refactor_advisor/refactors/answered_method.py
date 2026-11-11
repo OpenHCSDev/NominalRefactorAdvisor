@@ -416,6 +416,16 @@ class DeclaredClass(NameBinding):
         return moved.declared_class(file_path, self.node.name) if isinstance(scope, ast.Module) else None
 
 
+@dataclass(frozen=True)
+class AliasBinding(NameBinding):
+    """`Alias = Name` in the scope: whatever `Name` binds there, the alias binds too."""
+
+    value: ast.Name
+
+    def class_binding(self, moved: AnsweredMethod, file_path: str, scope: ast.AST) -> ClassBinding | None:
+        return moved.named_class(file_path, self.value.id, (scope,))
+
+
 _NESTED_SCOPES = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)
 
 
@@ -435,6 +445,15 @@ class _ScopeBindings:
                 pending.extend(ast.iter_child_nodes(node))
         return found
 
+    def assigned_value(self, target: ast.Name) -> ast.Name | None:
+        """The name a plain `target = other` binds the target to, if that is all it does."""
+
+        for node in self.nodes():
+            match node:
+                case ast.Assign(targets=[bound], value=ast.Name() as value) if bound is target:
+                    return value
+        return None
+
     def binding(self, name: str) -> NameBinding | None:
         last: NameBinding | None = None
         for node in self.nodes():
@@ -451,7 +470,12 @@ class _ScopeBindings:
             elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == name:
                 last = NameBinding()
             elif isinstance(node, ast.Name) and node.id == name and isinstance(node.ctx, ast.Store):
-                last = NameBinding()
+                assigned = self.assigned_value(node)
+                last = (
+                    NameBinding()
+                    if assigned is None or assigned.id == name
+                    else AliasBinding(assigned)
+                )
             elif isinstance(node, ast.arg) and node.arg == name:
                 last = NameBinding()
         return last

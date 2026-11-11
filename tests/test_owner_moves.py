@@ -573,10 +573,10 @@ def test_a_hold_source_pick_holds_the_value_it_copied(tmp_path: Path) -> None:
     assert _run(tmp_path, probe) == before
 
 
-def test_holding_the_source_is_refused_while_another_file_names_the_copier(
+def test_holding_the_source_rewrites_a_reader_in_another_file(
     tmp_path: Path,
 ) -> None:
-    """The move rewrites the copier's own file, so a reader elsewhere refuses it."""
+    """A typed reader of the copier in another module reads through the held source."""
     _write(
         tmp_path,
         {
@@ -595,5 +595,7 @@ def test_holding_the_source_is_refused_while_another_file_names_the_copier(
         carrier_field_declaration="first: First",
     )
 
-    with pytest.raises(CodemodOperationPreflightError, match="named in"):
-        operation.source_edits(snapshot)
+    simulation = RefactorRecipe("hold").with_operation(operation).simulate(snapshot)
+    assert simulation.is_clean, simulation.preflight_report
+    report = simulation.simulation.rewritten_sources[str(tmp_path / "pkg/report.py")]
+    assert "return second.first.beta\n" in report
