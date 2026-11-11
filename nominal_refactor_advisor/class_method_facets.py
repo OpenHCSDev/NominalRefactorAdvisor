@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+from abc import ABC, abstractmethod
 import hashlib
 from collections import (
     defaultdict,
@@ -13,7 +14,6 @@ from dataclasses import dataclass
 from enum import StrEnum
 from functools import cached_property
 from typing import (
-    TYPE_CHECKING,
     Callable,
     Self,
     TypeAlias,
@@ -30,8 +30,17 @@ from nominal_refactor_advisor.declaration_dependencies import ClassScopeDependen
 from nominal_refactor_advisor.foreign_family import FunctionDefinition
 from nominal_refactor_advisor.lexical_bindings import LEXICAL_SCOPE_BINDING_AUTHORITY
 
-if TYPE_CHECKING:
-    from nominal_refactor_advisor.class_index import ModuleNominalBindingSnapshot
+class DecoratorBindings(ABC):
+    """What the bindings at a class statement's line say each decorator names. The
+    module's binding snapshot is one; this module asks only this question of it."""
+
+    @abstractmethod
+    def decorators_bound_to(
+        self, definition: ast.FunctionDef | ast.AsyncFunctionDef, identities: frozenset[str]
+    ) -> tuple[bool, ...]:
+        """For each decorator of the definition, in order, whether it is a name path the
+        bindings resolve to one of the identities."""
+        raise NotImplementedError
 
 
 class MethodFamilyResidueRole(StrEnum):
@@ -115,7 +124,7 @@ class MethodPromotionInspection:
     """Current method syntax and lexical bindings relevant to promotion safety."""
 
     method: ast.FunctionDef | ast.AsyncFunctionDef
-    binding_snapshot: ModuleNominalBindingSnapshot
+    binding_snapshot: DecoratorBindings
     """The module's bindings where the method's class statement runs, which is when its
     decorators and annotations are evaluated."""
     class_bound_names: frozenset[str]
@@ -204,15 +213,14 @@ def _has_custom_method_decorator(inspection: MethodPromotionInspection) -> bool:
     """A decorator promotes only when it is a name path the class statement's bindings
     resolve to a promotable declaration; a name the class body binds first is the class's."""
 
-    references = inspection.binding_snapshot.decorator_references(inspection.method)
+    bound = inspection.binding_snapshot.decorators_bound_to(
+        inspection.method, PROMOTABLE_METHOD_DECORATOR_IDENTITIES
+    )
     return any(
         (head := _decorator_head(decorator)) is None
         or head in inspection.class_bound_names
-        or not any(
-            reference.has_bound_name(identity)
-            for identity in PROMOTABLE_METHOD_DECORATOR_IDENTITIES
-        )
-        for decorator, reference in zip(inspection.method.decorator_list, references, strict=True)
+        or not promotable
+        for decorator, promotable in zip(inspection.method.decorator_list, bound, strict=True)
     )
 
 
@@ -323,7 +331,7 @@ class ClassMethodPromotionSafetyProfile:
     def from_method(
         cls,
         method: ast.FunctionDef | ast.AsyncFunctionDef,
-        binding_snapshot: ModuleNominalBindingSnapshot,
+        binding_snapshot: DecoratorBindings,
         class_bound_names: frozenset[str] = frozenset(),
         *,
         source_lines: tuple[str, ...],
@@ -498,7 +506,7 @@ def _compact_class_method(
     class_symbol: str,
     method: ast.FunctionDef | ast.AsyncFunctionDef,
     source_lines: tuple[str, ...],
-    binding_snapshot: ModuleNominalBindingSnapshot,
+    binding_snapshot: DecoratorBindings,
     class_bound_names: frozenset[str],
     *,
     include_family_semantics: bool,
@@ -552,7 +560,7 @@ def _compact_class_method(
 def _compact_class_methods(
     parsed_module: ParsedModule,
     indexed_class_nodes: tuple[tuple[str, ast.ClassDef], ...],
-    binding_snapshots: Mapping[int | None, ModuleNominalBindingSnapshot],
+    binding_snapshots: Mapping[int | None, DecoratorBindings],
     *,
     method_names: frozenset[str] | None = None,
 ) -> tuple[CompactClassMethod, ...]:

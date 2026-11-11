@@ -1017,22 +1017,9 @@ class NativeDescriptorResult(
         self.require_closed()
 
 
-class NativeDecoratorContract(ABC):
+class NativeDecoratorContract(NativeDeclarationFamily):
     """What applying one family of native decorators requires beyond its argument's
     descriptor metadata, which every member's application reads."""
-
-    natives: ClassVar[tuple[NativeDeclaration, ...]]
-
-    @classmethod
-    def admitted_natives(cls) -> tuple[NativeDeclaration, ...]:
-        return tuple(native for member in cls.__subclasses__() for native in member.natives)
-
-    @classmethod
-    def admitting(cls, declaration: NativeDeclaration) -> type[NativeDecoratorContract]:
-        members = tuple(member for member in cls.__subclasses__() if declaration in member.natives)
-        if len(members) != 1:
-            raise ValueError("Native decorator has no unique application contract")
-        return members[0]
 
     @classmethod
     @abstractmethod
@@ -1045,7 +1032,7 @@ class NativeDecoratorContract(ABC):
 class NativeDescriptorDecoratorContract(NativeDecoratorContract):
     """`staticmethod`, `classmethod` and `property`: a native descriptor over the argument."""
 
-    natives = CPythonClassConstruction.descriptor_wrappers
+    native_declarations = CPythonClassConstruction.descriptor_wrappers
 
     @classmethod
     def require_application(
@@ -1058,7 +1045,7 @@ class OwnerIndependentDecoratorContract(NativeDecoratorContract):
     """A wrapper whose `update_wrapper` call reads the freshly created source function;
     an earlier decorator's result could carry a `__dict__` or attribute hooks of its own."""
 
-    natives = OwnerIndependentMethodWrapper.natives()
+    native_declarations = OwnerIndependentMethodWrapper.admitted_native_declarations()
 
     @classmethod
     def require_application(

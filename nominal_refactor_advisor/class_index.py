@@ -76,6 +76,7 @@ from nominal_refactor_advisor.ast_tools import (
 )
 from nominal_refactor_advisor.class_method_facets import (
     CompactClassMethod,
+    DecoratorBindings,
     _compact_class_methods,
     _is_classmethod,
 )
@@ -2984,7 +2985,7 @@ DecoratedDefinition: TypeAlias = (
 
 
 @dataclass(frozen=True)
-class ModuleNominalBindingSnapshot:
+class ModuleNominalBindingSnapshot(DecoratorBindings):
     """Exact known and unresolved bindings before one module source position."""
 
     bindings_by_name: dict[str, CompactNominalBinding]
@@ -3021,6 +3022,14 @@ class ModuleNominalBindingSnapshot:
         order; a decorator that is no name path (`@registry[key]`) is unbound."""
 
         return tuple(self._decorator_reference(decorator) for decorator in node.decorator_list)
+
+    def decorators_bound_to(
+        self, definition: ast.FunctionDef | ast.AsyncFunctionDef, identities: frozenset[str]
+    ) -> tuple[bool, ...]:
+        return tuple(
+            any(reference.has_bound_name(identity) for identity in identities)
+            for reference in self.decorator_references(definition)
+        )
 
     def decorated_by(
         self,

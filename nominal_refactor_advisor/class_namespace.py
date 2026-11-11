@@ -59,7 +59,7 @@ if TYPE_CHECKING:
 
 
 PROMOTABLE_METHOD_DECORATOR_IDENTITIES = frozenset(
-    native.qualified_name for native in NativeDecoratorContract.admitted_natives()
+    native.qualified_name for native in NativeDecoratorContract.admitted_native_declarations()
 )
 """What a method's decorator may resolve to and still promote: a native whose application
 contract the decorator chain proves."""
@@ -140,7 +140,7 @@ class NativeClassNamespaceEffect(ClassNamespaceEffect, ABC):
 
 
 class DecoratorClassNamespaceEffect(NativeClassNamespaceEffect):
-    native_declarations = NativeDecoratorContract.admitted_natives()
+    native_declarations = NativeDecoratorContract.admitted_native_declarations()
 
 
 @dataclass(frozen=True)

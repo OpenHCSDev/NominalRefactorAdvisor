@@ -363,18 +363,24 @@ class NativeDeclarationFamily(ABC):
     native_declarations: ClassVar[tuple[NativeDeclaration, ...]]
 
     @classmethod
-    def select_from_capture(cls, captured: CapturedReferenceResolution) -> type[Self]:
-        authorities = loaded_concrete_nominal_descendants(cls)
-        native = captured.require_native(
-            tuple(
-                declaration
-                for authority in authorities
-                for declaration in authority.native_declarations
-            )
+    def admitted_native_declarations(cls) -> tuple[NativeDeclaration, ...]:
+        """Every native some loaded concrete member owns."""
+        return tuple(
+            declaration
+            for authority in loaded_concrete_nominal_descendants(cls)
+            for declaration in authority.native_declarations
         )
+
+    @classmethod
+    def select_from_capture(cls, captured: CapturedReferenceResolution) -> type[Self]:
+        return cls.select(captured.require_native(cls.admitted_native_declarations()))
+
+    @classmethod
+    def select(cls, native: NativeDeclaration) -> type[Self]:
+        """The unique most-specific loaded member owning this native."""
         matches = tuple(
             authority
-            for authority in authorities
+            for authority in loaded_concrete_nominal_descendants(cls)
             if native in authority.native_declarations
         )
         refinements = tuple(
@@ -389,7 +395,7 @@ class NativeDeclarationFamily(ABC):
         return refinements[0]
 
 
-class OwnerIndependentMethodWrapper(Case):
+class OwnerIndependentMethodWrapper(Case, NativeDeclarationFamily):
     """A native decorator that runs no user code when applied and is inert toward the class
     declaring the method it decorates. Applied to a function, it builds a new function object
     and calls `functools.update_wrapper` on it, which reads the function's attributes named in
@@ -402,7 +408,6 @@ class OwnerIndependentMethodWrapper(Case):
     and only while `require_current_source` finds the running interpreter's code to be the
     code this claim describes."""
 
-    native: ClassVar[NativeDeclaration]
     manager: ClassVar[str]
     """The class the returned wrapper constructs when called; applying the decorator
     references it only inside the unexecuted wrapper body."""
@@ -421,25 +426,10 @@ class OwnerIndependentMethodWrapper(Case):
     updated_attributes: ClassVar[tuple[str, ...]] = ("__dict__",)
 
     @classmethod
-    def natives(cls) -> tuple[NativeDeclaration, ...]:
-        return tuple(member.native for member in cls.__subclasses__())
-
-    @classmethod
-    def identities(cls) -> frozenset[str]:
-        return frozenset(native.qualified_name for native in cls.natives())
-
-    @classmethod
     def modules(cls) -> tuple[ModuleType, ...]:
         """The modules declaring the members, which an import of one of them reads."""
 
-        return tuple(dict.fromkeys(sys.modules[native.declaration.__module__] for native in cls.natives()))
-
-    @classmethod
-    def admitting(cls, declaration: NativeDeclaration) -> type[OwnerIndependentMethodWrapper]:
-        members = tuple(member for member in cls.__subclasses__() if member.native == declaration)
-        if len(members) != 1:
-            raise ValueError("Decorator is not an owner-independent method wrapper")
-        return members[0]
+        return tuple(dict.fromkeys(sys.modules[native.declaration.__module__] for native in cls.admitted_native_declarations()))
 
     @classmethod
     def require_current_source(cls) -> None:
@@ -447,7 +437,8 @@ class OwnerIndependentMethodWrapper(Case):
         source, `functools.wraps` and `functools.update_wrapper` must have the shapes the
         claim describes, bound to each other, with the attribute tuples it names."""
 
-        decorator = cls.native.declaration
+        (native,) = cls.native_declarations
+        decorator = native.declaration
         if type(decorator) is not FunctionType:
             raise ValueError("Owner-independent wrapper is not an exact Python function")
         if (
@@ -543,7 +534,7 @@ class ContextManagerWrapper(OwnerIndependentMethodWrapper):
     from the function it wrapped, each time it is called."""
 
     value = "contextmanager"
-    native = NativeDeclaration(contextlib.contextmanager)
+    native_declarations = (NativeDeclaration(contextlib.contextmanager),)
     manager = "_GeneratorContextManager"
 
 
@@ -552,7 +543,7 @@ class AsyncContextManagerWrapper(OwnerIndependentMethodWrapper):
     manager."""
 
     value = "asynccontextmanager"
-    native = NativeDeclaration(contextlib.asynccontextmanager)
+    native_declarations = (NativeDeclaration(contextlib.asynccontextmanager),)
     manager = "_AsyncGeneratorContextManager"
 
 

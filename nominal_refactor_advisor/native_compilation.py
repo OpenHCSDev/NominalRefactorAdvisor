@@ -4328,7 +4328,7 @@ class CPythonClassConstruction(NativeCreationBackend):
         # partial is a heap type, so its static lifetime is not the question: immutability
         # is, since it fixes the construction and call slots nobody can then replace. The
         # transient partial only references functions and exact tuples when released.
-        OwnerIndependentMethodWrapper.admitting(declaration).require_current_source()
+        OwnerIndependentMethodWrapper.select(declaration).require_current_source()
         if type(partial) is not type:
             raise ValueError("Owner-independent wrapping requires the native partial type")
         CPythonStaticTypeRequirement.IMMUTABLETYPE.require(
