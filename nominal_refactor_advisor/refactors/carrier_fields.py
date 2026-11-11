@@ -182,6 +182,7 @@ class ReplaceFieldsWithCarrierOperation(RepositorySourceReprovedOperation):
         )
         if not fields:
             raise ValueError(f"`{target.qualname}` declares none of the projected fields")
+        self.require_concrete_carrier(context, fields[0], target.file_path)
         geometries: dict[str, SourceTextGeometry] = {}
 
         def geometry(file_path: str) -> SourceTextGeometry:
@@ -233,6 +234,32 @@ class ReplaceFieldsWithCarrierOperation(RepositorySourceReprovedOperation):
                 ),
             )
         )
+
+    def require_concrete_carrier(
+        self, context: CodemodSourceSnapshot, field: AnsweredField, file_path: str
+    ) -> None:
+        """The held field must be rebuildable from what the record stores: a record
+        typed by an abstract class with members cannot say which member it held, so
+        any decoder of the record (a wire reply, a stored row) fails on it."""
+
+        declaration = self.carrier_field.parsed_field_statement
+        assert isinstance(declaration, ast.AnnAssign)
+        annotation = declaration.annotation
+        if not isinstance(annotation, ast.Name):
+            return
+        binding = field.named_class(
+            file_path, annotation.id, (context.module_nodes_by_file_path[file_path],)
+        )
+        if binding is None:
+            return
+        compact = context.compact_class_index
+        carrier = compact.classes_by_symbol.get(binding.symbol)
+        members = compact.descendant_symbols(binding.symbol)
+        if carrier is not None and carrier.is_abstract and members:
+            raise ValueError(
+                f"`{annotation.id}` is abstract with members {sorted(members)!r}: a record "
+                "holding it cannot be decoded back to the member it held"
+            )
 
     def construction_replacements(
         self, call: ast.Call, geometry: SourceTextGeometry, file_path: str

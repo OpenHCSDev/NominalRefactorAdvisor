@@ -27814,3 +27814,28 @@ def test_proved_scan_index_names_its_own_findings(tmp_path: Path) -> None:
     assert index.target_ids_for_finding_ids((child.stable_id,))
     assert index.target_ids_for_finding_ids((parent.stable_id,)) == ()
     assert proved.source_index.target_ids_for_finding_ids((parent.stable_id,))
+
+
+def test_carrier_replacement_refuses_an_abstract_carrier_with_members(tmp_path: Path) -> None:
+    """agent-comms ThreadImported holding an ImportedConversation (ABC with two members):
+    the reply Toad decodes could no longer say which conversation it held."""
+    module_path = tmp_path / "pkg/mod.py"
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "from abc import ABC\nfrom dataclasses import dataclass\n\n\n"
+        "@dataclass(frozen=True)\nclass Conversation(ABC):\n    count: int\n\n\n"
+        "@dataclass(frozen=True)\nclass Snapshot(Conversation):\n    path: str\n\n\n"
+        "@dataclass(frozen=True)\nclass Kept(Conversation):\n    session: str\n\n\n"
+        "@dataclass(frozen=True)\nclass Imported:\n    count: int\n    name: str\n\n\n"
+        "def reply(conversation: Conversation) -> Imported:\n"
+        "    return Imported(count=conversation.count, name='x')\n",
+    )
+    operation = ReplaceFieldsWithCarrierOperation(
+        target=SourceRewriteTarget(file_path=module_path.as_posix(), qualname="Imported"),
+        carrier_field_declaration="conversation: Conversation",
+        field_projections=(CarrierFieldProjection("count", "count"),),
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    with pytest.raises(CodemodOperationPreflightError, match="cannot be decoded back"):
+        operation.source_edits(snapshot)
