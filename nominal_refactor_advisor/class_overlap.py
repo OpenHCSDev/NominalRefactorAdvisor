@@ -442,6 +442,17 @@ class ClassOverlapCandidate(ScoredByReceipts):
         return tuple(shared.name for shared in self.overlap.shared)
 
     @property
+    def inherited_names(self) -> frozenset[str]:
+        """Names from the shared block that one class inherits instead of declaring."""
+        return frozenset(shared.name for shared in self.overlap.inherited)
+
+    @property
+    def owned_shared_names(self) -> tuple[str, ...]:
+        """Shared names both classes declare themselves (not inherited)."""
+        inherited = self.inherited_names
+        return tuple(name for name in self.shared_names if name not in inherited)
+
+    @property
     def restating_classes(self) -> tuple[CompactIndexedClass, ...]:
         return tuple(
             indexed_class

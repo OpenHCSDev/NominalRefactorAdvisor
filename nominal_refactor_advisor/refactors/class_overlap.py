@@ -55,6 +55,7 @@ from nominal_refactor_advisor.class_overlap import (
     PromoteToSharedBase,
 )
 from nominal_refactor_advisor.class_references import ClassReferenceRole
+from nominal_refactor_advisor.overlap_receipts import OverlapReceiptKind
 from nominal_refactor_advisor.codemod import RefactorRecipe
 from nominal_refactor_advisor.codemod_authority_claims import AstTargetAuthorityClaim
 from nominal_refactor_advisor.codemod_declaration_source import (
@@ -2106,10 +2107,15 @@ def require_owner_candidate(
     owner_kind: type[OwnerCandidate],
     subject: tuple[str, ...],
     member_names: Iterable[str],
+    *,
+    tolerate_inherited: bool = False,
 ) -> tuple[ClassOverlapCandidate, OwnerCandidate]:
     """An extract-mixin verdict over the anchor whose block holds these names and
     that offers an owner of this kind about this subject, with no guard fired on
-    the verdict or the owner."""
+    the verdict or the owner.
+
+    With ``tolerate_inherited``, INHERITED_DECLARATION receipts do not refuse:
+    the caller filters the block to the declarations both classes own."""
 
     wanted = frozenset(member_names)
     for verdict in snapshot.class_overlap_verdicts.candidates_touching(
@@ -2123,10 +2129,18 @@ def require_owner_candidate(
                 and owner.subject == subject
                 and anchor_symbol in owner.composers
             ):
-                if not verdict.permitted:
+                blocking = tuple(
+                    receipt
+                    for receipt in verdict.refusals
+                    if not (
+                        tolerate_inherited
+                        and receipt.kind is OverlapReceiptKind.INHERITED_DECLARATION
+                    )
+                )
+                if blocking:
                     raise ValueError(
                         "The verdict refuses the move: "
-                        + "; ".join(receipt.detail for receipt in verdict.refusals)
+                        + "; ".join(receipt.detail for receipt in blocking)
                     )
                 if not owner.permitted:
                     raise ValueError(
@@ -2194,7 +2208,8 @@ class MixinCreation:
             raise ValueError("A mixin needs a one-line docstring without quotes")
         module_name = snapshot.parsed_module_for_source_path(anchor.file_path).module_name
         _, owner = require_owner_candidate(
-            snapshot, anchor.symbol, NewMixinOwner, (module_name,), member_names
+            snapshot, anchor.symbol, NewMixinOwner, (module_name,), member_names,
+            tolerate_inherited=True,
         )
         if not name.isidentifier() or keyword_module.iskeyword(name):
             raise ValueError(f"`{name}` is no class name")
@@ -2592,10 +2607,26 @@ class ClassOverlapFindingRecipeSynthesizer(
                     return f"no composing class lives in `{owner.module_name}`"
                 if pick.judgement is None:
                     return "a new mixin needs the pick's judgement for its docstring"
+                verdict_match = next(
+                    (
+                        v for v in verdicts.candidates_touching(
+                            frozenset(owner.composers[:2])
+                        )
+                        if v.move is ExtractMixin
+                        and frozenset(owner.block) <= frozenset(v.shared_names)
+                    ),
+                    None,
+                )
+                inherited = verdict_match.inherited_names if verdict_match else frozenset()
+                block = tuple(
+                    name for name in owner.block if name not in inherited
+                )
+                if not block:
+                    return "every shared declaration is inherited; nothing to extract"
                 return (
                     CreateMixinOperation(
                         target=source_rewrite_target(anchor),
-                        member_names=owner.block,
+                        member_names=block,
                         mixin_name=pick.name,
                         docstring=pick.judgement[:1].upper() + pick.judgement[1:].rstrip(".") + ".",
                         composers=tuple(
