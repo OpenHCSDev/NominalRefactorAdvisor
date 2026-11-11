@@ -27857,12 +27857,15 @@ def test_carrier_replacement_refuses_a_record_on_a_declared_durable_base(tmp_pat
         target=SourceRewriteTarget(file_path=module_path.as_posix(), qualname="Reply"),
         carrier_field_declaration="stats: Stats",
         field_projections=(CarrierFieldProjection("count", "count"),),
-        durable_bases=(SourceRewriteTarget(file_path=module_path.as_posix(), qualname="DurableTables"),),
+    )
+    (tmp_path / "pyproject.toml").write_text(
+        '[tool.nominal-refactor-advisor]\ndurable-bases = ["pkg.mod:DurableTables"]\n'
     )
     snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     with pytest.raises(CodemodOperationPreflightError, match=r"moves its keys \(count -> stats.count\)"):
         operation.source_edits(snapshot)
-    simulation = RefactorRecipe("carrier").with_operation(
-        replace(operation, durable_bases=())
-    ).simulate(snapshot)
+    (tmp_path / "pyproject.toml").write_text("[tool.nominal-refactor-advisor]\n")
+    simulation = RefactorRecipe("carrier").with_operation(operation).simulate(
+        CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    )
     assert simulation.is_clean, simulation.preflight_report
