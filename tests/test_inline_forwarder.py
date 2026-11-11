@@ -96,7 +96,11 @@ def test_a_forwarder_is_inlined_and_its_guarded_import_leaves(tmp_path: Path) ->
             "reorders the evaluation",
         ),
         ("def untyped(actor, todo):\n    actor.require_may_change(todo)\n", "on a receiver typed"),
-        ("TABLE = {'change': 'require_may_change'}\n", "in a string"),
+        (
+            "TABLE = {'change': 'require_may_change'}\n\n\n"
+            "def run(actor: Actor, todo, kind: str) -> None:\n    getattr(actor, TABLE[kind])(todo)\n",
+            "in a string",
+        ),
     ),
 )
 def test_inlining_is_refused_where_a_call_cannot_inline(
@@ -243,22 +247,29 @@ def test_a_forwarder_that_overrides_its_base_is_refused(tmp_path: Path) -> None:
 @pytest.mark.parametrize(
     ("consumer", "refused"),
     (
-        ("def word(claims):\n    return require(claims, 'require_may_change')\n\n\ndef require(claims, report):\n    return f'A {report} report needs a claim'\n", False),
-        ("def word():\n    return f'{\"require_may_change\"} failed'\n", False),
-        ("def pick(row):\n    return field(row, 'require_may_change')\n\n\ndef field(row, name):\n    return getattr(row, name)\n", True),
-        ("def probe(actor):\n    return hasattr(actor, 'require_may_change')\n", True),
-        ("NAMES = ('require_may_change',)\n", True),
-        ("def same(name):\n    return name == 'require_may_change'\n", True),
+        ("def word(claims):\n    return f'A {claims} report: require_may_change'\n", False),
+        ("TABLE = {'change': 'require_may_change'}\nNAMES = ('require_may_change',)\n", False),
+        (
+            "NAMES = ('require_may_change',)\n\n\nclass Row:\n"
+            "    def field(self, name: str):\n        return getattr(self, name)\n",
+            False,
+        ),
+        (
+            "NAMES = ('require_may_change',)\n\n\n"
+            "def call(actor: Actor, name: str):\n    return getattr(actor, name)\n",
+            True,
+        ),
+        ("NAMES = ('require_may_change',)\n\n\ndef call(cls, name):\n    return vars(cls)[name]\n", True),
     ),
 )
 def test_only_a_string_that_can_feed_a_lookup_refuses(
     tmp_path: Path, consumer: str, refused: bool
 ) -> None:
-    """A message that says the name is prose; a table, a comparison, a lookup or a
-    call into a function that looks an attribute up by its parameter reaches it."""
+    """A string reaches the method only through a lookup by a non-constant name on
+    a family receiver; another class's own lookup, or none at all, leaves it text."""
     _identity(tmp_path)
     _write(tmp_path, "pkg/orders.py", "class Todo:\n    def require_maintainer(self, actor) -> None:\n        pass\n")
-    _write(tmp_path, "pkg/consumer.py", consumer)
+    _write(tmp_path, "pkg/consumer.py", "from pkg.identity import Actor\n\n\n" + consumer)
     snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     (report,) = _inline(tmp_path).preflight_reports(snapshot)
     assert (report.status is CodemodPreflightStatus.FAILED) is refused, report

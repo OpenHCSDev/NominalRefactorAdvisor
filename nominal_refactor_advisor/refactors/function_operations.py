@@ -15,7 +15,6 @@ from typing import ClassVar
 from nominal_refactor_advisor.refactors.answered_method import (
     AnsweredMethod,
     AnsweredProperty,
-    AttributeLookup,
 )
 from nominal_refactor_advisor.refactors.declaration_operations import (
     DeclarationDecoratorsPayload,
@@ -763,7 +762,7 @@ class InlineForwarderOperation(RepositorySourceReprovedOperation):
         forwarder = prop or _ForwarderBody.of(method, qualname)
         answered = (AnsweredMethod if prop is None else AnsweredProperty)(snapshot, source_class, method)
         answered.require_sole_dispatch("inlining it")
-        _MethodNameStrings.require_none(snapshot, method_name)
+        _MethodNameStrings.require_none(answered)
         replacements: dict[str, list[tuple[ast.AST, str]]] = {source_path: [(method, "")]}
         for call in answered.answering_calls():
             parents = snapshot.parsed_module_for_source_path(call.file_path).fact(ModuleNodeIndex).parents
@@ -802,35 +801,29 @@ class InlineForwarderOperation(RepositorySourceReprovedOperation):
 
 
 class _MethodNameStrings:
-    """A string spelling the forwarder's name can reach it past every typed call
-    only through an attribute lookup by name. The inline deletes the method, so a
-    string that may feed such a lookup refuses: one held as data (a table entry,
-    a comparison, an assignment) or passed to a lookup itself. A string that is
-    only part of a message (an f-string, a concatenation, an argument to a call
-    that is no lookup) cannot, unless the scan has a function that looks an
-    attribute up by one of its own parameters, which turns a name argument into
-    a lookup."""
+    """A string spelling the forwarder's name reaches it past every typed call only
+    through an attribute lookup by a name that is not a constant, run on a family
+    receiver. The inline deletes the method, so a string spelling it refuses while
+    such a lookup exists; with none, every such string is text (a message, a table
+    of words, a wire key) and outlives the method harmlessly."""
 
-    @classmethod
-    def require_none(cls, snapshot: CodemodSourceSnapshot, name: str) -> None:
-        lookups: dict[str, str] | None = None
-        for parsed in snapshot.parsed_modules:
+    @staticmethod
+    def require_none(answered: AnsweredMethod) -> None:
+        name = answered.name
+        for parsed in answered.snapshot.parsed_modules:
             if name not in parsed.source:
                 continue
             index = parsed.fact(ModuleNodeIndex)
             for node in index.string_constants:
-                if node.value != name or cls.docstring(node, index.parents):
+                if node.value != name or _MethodNameStrings.docstring(node, index.parents):
                     continue
-                callee = cls.prose_callee(node, index.parents)
-                if callee is None:
-                    raise ValueError(f"{parsed.file_path!r}:{node.lineno} names {name!r} in a string")
-                if lookups is None:
-                    lookups = cls.parameter_lookups(snapshot)
-                if callee in lookups:
+                lookup = answered.lookup_reaching_family()
+                if lookup is not None:
                     raise ValueError(
-                        f"{parsed.file_path!r}:{node.lineno} passes {name!r} to {callee!r}, "
-                        f"which looks an attribute up by it at {lookups[callee]}"
+                        f"{parsed.file_path!r}:{node.lineno} names {name!r} in a string, and "
+                        f"{lookup} looks attributes up on the family by a name"
                     )
+                return
 
     @staticmethod
     def docstring(node: ast.Constant, parents: Mapping[ast.AST, ast.AST]) -> bool:
@@ -841,50 +834,6 @@ class _MethodNameStrings:
             and bool(owner.body)
             and owner.body[0] is statement
         )
-
-    @classmethod
-    def prose_callee(cls, node: ast.AST, parents: Mapping[ast.AST, ast.AST]) -> str | None:
-        """Where a string that only reaches text goes: "" for a message part, the
-        callee's name for an argument to a call that is no lookup; None for a
-        string held as data or handed to a lookup."""
-
-        parent = parents.get(node)
-        while isinstance(parent, (ast.FormattedValue, ast.JoinedStr)) or (
-            isinstance(parent, ast.BinOp) and isinstance(parent.op, (ast.Add, ast.Mod))
-        ):
-            if isinstance(parent, ast.JoinedStr):
-                return ""
-            node, parent = parent, parents.get(parent)
-        call = parents.get(parent) if isinstance(parent, ast.keyword) else parent
-        if not isinstance(call, ast.Call) or node is call.func:
-            return None
-        callee = AttributeLookup.callee_name(call.func)
-        if callee is None or callee in AttributeLookup.LOOKUPS:
-            return None
-        return callee
-
-    @classmethod
-    def parameter_lookups(cls, snapshot: CodemodSourceSnapshot) -> dict[str, str]:
-        """Each function that looks an attribute up by one of its own parameters, by
-        name, with where: a name passed to it is a lookup by that name."""
-
-        found: dict[str, str] = {}
-        for parsed in snapshot.parsed_modules:
-            for function in ast.walk(parsed.module):
-                if not isinstance(function, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                    continue
-                arguments = function.args
-                parameters = {
-                    argument.arg
-                    for argument in (*arguments.posonlyargs, *arguments.args, *arguments.kwonlyargs)
-                }
-                for call in ast.walk(function):
-                    if isinstance(call, ast.Call) and any(
-                        isinstance(argument, ast.Name) and argument.id in parameters
-                        for argument in AttributeLookup.name_arguments(call)
-                    ):
-                        found.setdefault(function.name, f"{parsed.file_path}:{call.lineno}")
-        return found
 
 
 @dataclass(frozen=True)
