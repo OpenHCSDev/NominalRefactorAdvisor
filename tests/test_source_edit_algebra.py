@@ -938,3 +938,38 @@ def test_a_source_both_deleted_and_rewritten_is_a_conflict_the_plan_refuses() ->
             base_revisions=(),
             deleted_file_paths=("pkg/shell.py",),
         )
+
+
+def test_conflicting_offset_replacements_raise_edit_conflict_not_bare_value_error() -> None:
+    """Two recipes writing different text to the same offset span is a conflict the
+    trajectory search must catch, not a ValueError that crashes the run."""
+
+    source = "class Foo:\n    bar = 1\n    baz = 2\n"
+    geometry = SourceTextGeometry(source)
+    replacements = (
+        SourceTextSpanReplacement.from_offsets(
+            start_offset=16, end_offset=17, replacement_source="10",
+        ),
+        SourceTextSpanReplacement.from_offsets(
+            start_offset=16, end_offset=17, replacement_source="20",
+        ),
+    )
+    with pytest.raises(PhysicalSourceEditConflictError, match="different source"):
+        geometry.replacements_in_span(0, len(source), replacements)
+
+
+def test_overlapping_offset_replacements_raise_edit_conflict() -> None:
+    """Overlapping offset spans are edit conflicts, not bare ValueErrors."""
+
+    source = "class Foo:\n    bar = 1\n    baz = 2\n"
+    geometry = SourceTextGeometry(source)
+    replacements = (
+        SourceTextSpanReplacement.from_offsets(
+            start_offset=10, end_offset=20, replacement_source="x",
+        ),
+        SourceTextSpanReplacement.from_offsets(
+            start_offset=15, end_offset=25, replacement_source="y",
+        ),
+    )
+    with pytest.raises(PhysicalSourceEditConflictError, match="overlap"):
+        geometry.replacements_in_span(0, len(source), replacements)

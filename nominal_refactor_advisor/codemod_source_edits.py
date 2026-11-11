@@ -2231,7 +2231,7 @@ class SourceTextGeometry(SourceLineSegmentAuthority):
                 replacement_by_span[replacement_span] = replacement
                 continue
             if existing.replacement_source != replacement.replacement_source:
-                raise ValueError(
+                raise PhysicalSourceEditConflictError(
                     "Offset replacements assign different source to the same span: "
                     f"{replacement.start_offset}:{replacement.end_offset}"
                 )
@@ -2242,7 +2242,7 @@ class SourceTextGeometry(SourceLineSegmentAuthority):
         )
         for first, second in pairwise(ordered):
             if first.overlaps(second):
-                raise ValueError(
+                raise PhysicalSourceEditConflictError(
                     "Offset replacement spans overlap: "
                     f"{first.start_offset}:{first.end_offset} and "
                     f"{second.start_offset}:{second.end_offset}"
