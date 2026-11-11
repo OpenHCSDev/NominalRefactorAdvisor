@@ -843,8 +843,12 @@ class ClassOverlapVerdicts:
                 *self._family_receipts(first, second),
                 *self._construction_receipts(first, second, move),
                 *self._identity_receipts(owner, restating, move),
-                *self._positional_construction_receipts(
-                    move, (first, second)
+                *(
+                    self._positional_construction_receipts(
+                        move, (first, second)
+                    )
+                    if move is not ExtractMixin
+                    else ()
                 ),
             ),
         )

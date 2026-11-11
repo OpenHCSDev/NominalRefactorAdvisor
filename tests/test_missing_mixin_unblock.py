@@ -45,6 +45,24 @@ BASE_WITH_DESCENDANT = (
     "    extra: str = ''\n"
 )
 
+POSITIONAL_CONSTRUCTION = (
+    "from dataclasses import dataclass\n\n\n"
+    "@dataclass(frozen=True)\n"
+    "class PositionallyBuilt:\n"
+    "    alpha: str\n"
+    "    beta: int\n"
+    "    gamma: float\n"
+    "    own_pos: str = 'x'\n\n\n"
+    "@dataclass(frozen=True)\n"
+    "class KeywordBuilt:\n"
+    "    alpha: str\n"
+    "    beta: int\n"
+    "    gamma: float\n"
+    "    own_kw: str = 'y'\n\n\n"
+    "def make_positional() -> PositionallyBuilt:\n"
+    "    return PositionallyBuilt('a', 1, 2.0)\n"
+)
+
 COPIER = (
     "from dataclasses import dataclass\n\n\n"
     "@dataclass(frozen=True)\n"
@@ -218,6 +236,37 @@ def test_keyword_only_construction_diff_does_not_block_extract_mixin(
         assert not construction_refusals, (
             f"ExtractMixin should not be blocked by keyword-only construction diff, "
             f"got {[r.detail for r in construction_refusals]}"
+        )
+
+
+def test_positional_construction_does_not_block_extract_mixin_verdict(
+    tmp_path: Path,
+) -> None:
+    """Positional construction is handled by a keywording prerequisite at the
+    owner level. It should not block the verdict for ExtractMixin moves."""
+
+    from nominal_refactor_advisor.class_overlap import ExtractMixin
+    from nominal_refactor_advisor.overlap_receipts import OverlapReceiptKind
+
+    package = tmp_path / "pkg"
+    package.mkdir()
+    (package / "__init__.py").write_text("")
+    (package / "classes.py").write_text(POSITIONAL_CONSTRUCTION)
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+
+    verdicts = snapshot.class_overlap_verdicts
+    extract_mixins = [
+        c for c in verdicts.candidates if c.move is ExtractMixin
+    ]
+    assert extract_mixins, "fixture must produce an ExtractMixin verdict"
+    for c in extract_mixins:
+        positional_refusals = [
+            r for r in c.refusals
+            if r.kind is OverlapReceiptKind.POSITIONAL_CONSTRUCTION
+        ]
+        assert not positional_refusals, (
+            f"ExtractMixin verdict should not have POSITIONAL_CONSTRUCTION guards, "
+            f"got {[r.detail for r in positional_refusals]}"
         )
 
 
