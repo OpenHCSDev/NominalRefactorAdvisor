@@ -2843,8 +2843,9 @@ class _ModuleSiblingData(ABC):
         """Files are carried only when every `__file__` read is `Path(__file__).with_name(NAME)`,
         `Path(__file__).parent / NAME` for a literal NAME, or the top package's directory
         `Path(__file__).resolve().parents[(__package__ or "").count(".")]`; each NAME exists
-        beside the source, no other indexed module beside it spells that NAME, and
-        nothing of that name stands beside the destination yet."""
+        beside the source, no other indexed module beside it spells that NAME, none of the
+        files under it is a Python source the scan indexes, and nothing of that name stands
+        beside the destination yet."""
 
         source_dir = Path(source_path).parent
         destination_dir = Path(destination_path).parent
@@ -2892,6 +2893,12 @@ class _ModuleSiblingData(ABC):
                 if sibling.is_dir()
                 else [sibling]
             )
+            # A carried file is data beside the module; a Python source the scan indexes is code,
+            # and carrying it as text would move a module (a package's own __init__.py) as data.
+            if code := next((member for member in members if member.as_posix() in context.sources_by_file_path), None):
+                return _NoSiblingCarry(
+                    {**stays, "__file__": f"{code.as_posix()!r}, beside it under {name!r}, is Python source"}
+                )
             files.extend((member, destination_dir / member.relative_to(source_dir)) for member in members)
         try:
             texts = tuple(

@@ -109,3 +109,31 @@ def test_whole_script_refuses_unproved_location_changes(tmp_path: Path, source: 
         )
     assert (package / 'probe.py').read_text() == source
     assert not (package / 'support/probe.py').exists()
+
+
+def test_a_sibling_holding_python_source_is_not_carried_as_data(tmp_path: Path) -> None:
+    """The module reads `instructions` beside it, and moving it into that package would carry
+    the package's own `__init__.py` as data, a second revision of a Python source
+    (agent-comms P23: instruction_bytes.py into instructions/). Code is not a file beside
+    the module, so the move refuses by name instead of proving a gutted package."""
+
+    package = tmp_path / 'pkg'
+    (package / 'instructions').mkdir(parents=True)
+    (package / '__init__.py').write_text('')
+    (package / 'instructions/__init__.py').write_text('"""Instruction texts, read by name."""\n')
+    (package / 'instructions/greeting.md').write_text('hello\n')
+    source = (
+        'from pathlib import Path\n\n\n'
+        'def instruction(name: str) -> str:\n'
+        '    return (Path(__file__).with_name("instructions") / name).read_text()\n'
+    )
+    (package / 'instruction_bytes.py').write_text(source)
+    operation = RelocateModuleToNewModuleOperation(
+        target=SourceRewriteTarget(file_path=str(package / 'instruction_bytes.py')),
+        destination_path=str(package / 'instructions/instruction_bytes.py'),
+    )
+    with pytest.raises(CodemodOperationPreflightError, match="is Python source"):
+        RefactorRecipe('refuse-carrying-code').with_operation(operation).simulate(
+            CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+        )
+    assert (package / 'instruction_bytes.py').read_text() == source
