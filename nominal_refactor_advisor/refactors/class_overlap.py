@@ -2711,7 +2711,10 @@ class ClassOverlapFindingRecipeSynthesizer(
         verdicts = snapshot.class_overlap_verdicts
         if not metrics.permitted:
             if not metrics.keyword_cure:
-                return self.rejected_evaluation("the verdict refuses the move")
+                return self.rejected_evaluation(
+                    "the verdict refuses the move: "
+                    + "; ".join(receipt.detail for receipt in metrics.refusals)
+                )
             return self.keywording_evaluation(finding, metrics.keyword_cure, verdicts, context)
         if metrics.move is ComposeExisting:
             owner = verdicts.class_index.class_for(metrics.owner_symbol)
