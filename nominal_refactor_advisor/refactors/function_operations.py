@@ -675,8 +675,7 @@ class InlineForwarderOperation(RepositorySourceReprovedOperation):
         forwarder = _ForwarderBody.of(method, qualname)
         answered = AnsweredMethod(snapshot, source_class, method)
         answered.require_sole_dispatch("inlining it")
-        for parsed in snapshot.parsed_modules:
-            _MethodNameStrings.require_none(parsed, method_name)
+        _MethodNameStrings.require_none(snapshot, method_name)
         replacements: dict[str, list[tuple[ast.AST, str]]] = {source_path: [(method, "")]}
         for call in answered.answering_calls():
             parents = snapshot.parsed_module_for_source_path(call.file_path).fact(ModuleNodeIndex).parents
@@ -715,26 +714,113 @@ class InlineForwarderOperation(RepositorySourceReprovedOperation):
 
 
 class _MethodNameStrings:
-    """A string spelling the forwarder's name outside a docstring (a dispatch
-    table, a compared name) reaches it past every typed call. The inline deletes
-    the method, so such a string would outlive it and the inline refuses."""
+    """A string spelling the forwarder's name can reach it past every typed call
+    only through an attribute lookup by name. The inline deletes the method, so a
+    string that may feed such a lookup refuses: one held as data (a table entry,
+    a comparison, an assignment) or passed to a lookup itself. A string that is
+    only part of a message (an f-string, a concatenation, an argument to a call
+    that is no lookup) cannot, unless the scan has a function that looks an
+    attribute up by one of its own parameters, which turns a name argument into
+    a lookup."""
+
+    OBJECT_LOOKUPS: ClassVar[frozenset[str]] = frozenset({"getattr", "hasattr", "setattr", "delattr"})
+    """Lookups that take an object, then the attribute name."""
+    NAME_LOOKUPS: ClassVar[frozenset[str]] = frozenset({"attrgetter", "methodcaller"})
+    """Lookups that take only attribute names."""
+    LOOKUPS: ClassVar[frozenset[str]] = OBJECT_LOOKUPS | NAME_LOOKUPS
+
+    @classmethod
+    def name_arguments(cls, call: ast.Call) -> list[ast.expr]:
+        """The arguments a lookup reads as attribute names; none for any other call."""
+
+        callee = cls.callee_name(call.func)
+        if callee in cls.OBJECT_LOOKUPS:
+            return call.args[1:2]
+        if callee in cls.NAME_LOOKUPS:
+            return call.args[:1] if callee == "methodcaller" else list(call.args)
+        return []
+
+    @classmethod
+    def require_none(cls, snapshot: CodemodSourceSnapshot, name: str) -> None:
+        lookups: dict[str, str] | None = None
+        for parsed in snapshot.parsed_modules:
+            if name not in parsed.source:
+                continue
+            index = parsed.fact(ModuleNodeIndex)
+            for node in index.string_constants:
+                if node.value != name or cls.docstring(node, index.parents):
+                    continue
+                callee = cls.prose_callee(node, index.parents)
+                if callee is None:
+                    raise ValueError(f"{parsed.file_path!r}:{node.lineno} names {name!r} in a string")
+                if lookups is None:
+                    lookups = cls.parameter_lookups(snapshot)
+                if callee in lookups:
+                    raise ValueError(
+                        f"{parsed.file_path!r}:{node.lineno} passes {name!r} to {callee!r}, "
+                        f"which looks an attribute up by it at {lookups[callee]}"
+                    )
 
     @staticmethod
-    def require_none(parsed: ParsedModule, name: str) -> None:
-        if name not in parsed.source:
-            return
-        index = parsed.fact(ModuleNodeIndex)
-        docstrings = {
-            id(node.body[0].value)
-            for node in (parsed.module, *index.parents)
-            if isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef))
-            and node.body
-            and isinstance(node.body[0], ast.Expr)
-            and isinstance(node.body[0].value, ast.Constant)
-        }
-        for node in index.string_constants:
-            if node.value == name and id(node) not in docstrings:
-                raise ValueError(f"{parsed.file_path!r}:{node.lineno} names {name!r} in a string")
+    def docstring(node: ast.Constant, parents: Mapping[ast.AST, ast.AST]) -> bool:
+        statement = parents.get(node)
+        owner = parents.get(statement) if isinstance(statement, ast.Expr) else None
+        return (
+            isinstance(owner, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef))
+            and bool(owner.body)
+            and owner.body[0] is statement
+        )
+
+    @classmethod
+    def prose_callee(cls, node: ast.AST, parents: Mapping[ast.AST, ast.AST]) -> str | None:
+        """Where a string that only reaches text goes: "" for a message part, the
+        callee's name for an argument to a call that is no lookup; None for a
+        string held as data or handed to a lookup."""
+
+        parent = parents.get(node)
+        while isinstance(parent, (ast.FormattedValue, ast.JoinedStr)) or (
+            isinstance(parent, ast.BinOp) and isinstance(parent.op, (ast.Add, ast.Mod))
+        ):
+            if isinstance(parent, ast.JoinedStr):
+                return ""
+            node, parent = parent, parents.get(parent)
+        call = parents.get(parent) if isinstance(parent, ast.keyword) else parent
+        if not isinstance(call, ast.Call) or node is call.func:
+            return None
+        callee = cls.callee_name(call.func)
+        if callee is None or callee in cls.LOOKUPS:
+            return None
+        return callee
+
+    @staticmethod
+    def callee_name(func: ast.expr) -> str | None:
+        match func:
+            case ast.Name(id=name) | ast.Attribute(attr=name):
+                return name
+        return None
+
+    @classmethod
+    def parameter_lookups(cls, snapshot: CodemodSourceSnapshot) -> dict[str, str]:
+        """Each function that looks an attribute up by one of its own parameters, by
+        name, with where: a name passed to it is a lookup by that name."""
+
+        found: dict[str, str] = {}
+        for parsed in snapshot.parsed_modules:
+            for function in ast.walk(parsed.module):
+                if not isinstance(function, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    continue
+                arguments = function.args
+                parameters = {
+                    argument.arg
+                    for argument in (*arguments.posonlyargs, *arguments.args, *arguments.kwonlyargs)
+                }
+                for call in ast.walk(function):
+                    if isinstance(call, ast.Call) and any(
+                        isinstance(argument, ast.Name) and argument.id in parameters
+                        for argument in cls.name_arguments(call)
+                    ):
+                        found.setdefault(function.name, f"{parsed.file_path}:{call.lineno}")
+        return found
 
 
 @dataclass(frozen=True)

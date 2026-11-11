@@ -238,3 +238,27 @@ def test_a_forwarder_that_overrides_its_base_is_refused(tmp_path: Path) -> None:
     (report,) = operation.preflight_reports(snapshot)
     assert report.status is CodemodPreflightStatus.FAILED, report
     assert "overrides ('Record',)" in report.message
+
+
+@pytest.mark.parametrize(
+    ("consumer", "refused"),
+    (
+        ("def word(claims):\n    return require(claims, 'require_may_change')\n\n\ndef require(claims, report):\n    return f'A {report} report needs a claim'\n", False),
+        ("def word():\n    return f'{\"require_may_change\"} failed'\n", False),
+        ("def pick(row):\n    return field(row, 'require_may_change')\n\n\ndef field(row, name):\n    return getattr(row, name)\n", True),
+        ("def probe(actor):\n    return hasattr(actor, 'require_may_change')\n", True),
+        ("NAMES = ('require_may_change',)\n", True),
+        ("def same(name):\n    return name == 'require_may_change'\n", True),
+    ),
+)
+def test_only_a_string_that_can_feed_a_lookup_refuses(
+    tmp_path: Path, consumer: str, refused: bool
+) -> None:
+    """A message that says the name is prose; a table, a comparison, a lookup or a
+    call into a function that looks an attribute up by its parameter reaches it."""
+    _identity(tmp_path)
+    _write(tmp_path, "pkg/orders.py", "class Todo:\n    def require_maintainer(self, actor) -> None:\n        pass\n")
+    _write(tmp_path, "pkg/consumer.py", consumer)
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    (report,) = _inline(tmp_path).preflight_reports(snapshot)
+    assert (report.status is CodemodPreflightStatus.FAILED) is refused, report
