@@ -10,6 +10,7 @@ would delete could have an effect.
 from __future__ import annotations
 
 import ast
+import builtins
 import io
 import re
 import tokenize
@@ -682,6 +683,9 @@ class NameUseKind(StrEnum):
     CONSTRUCT = "construct"
     RAISE = "raise"
     CATCH = "catch"
+    READ_IDENTITY = "read_identity"
+    """Caught by a handler that reads the caught object's class (`type(error)`,
+    `error.__class__`): every subclass of the caught class is told apart there."""
     OTHER = "other"
 
     @classmethod
@@ -716,6 +720,34 @@ class NameUseKind(StrEnum):
         return frozenset((cls.CONSTRUCT, cls.RAISE))
 
 
+class IdentityRead:
+    """A read of a bound object's class: `type(bound)`, `builtins.type(bound)` or
+    `bound.__class__`."""
+
+    @staticmethod
+    def of(node: ast.AST, bound: str) -> bool:
+        match node:
+            case ast.Call(
+                func=ast.Name(id="type") | ast.Attribute(value=ast.Name(id="builtins"), attr="type"),
+                args=[ast.Name(id=read)],
+            ):
+                return read == bound
+            case ast.Attribute(value=ast.Name(id=read), attr="__class__"):
+                return read == bound
+        return False
+
+    @staticmethod
+    def caught_names(caught: ast.expr) -> Iterator[str]:
+        """The class names an `except` clause catches."""
+
+        match caught:
+            case ast.Tuple(elts=elements):
+                for element in elements:
+                    yield from IdentityRead.caught_names(element)
+            case ast.Name(id=name) | ast.Attribute(attr=name):
+                yield name
+
+
 @dataclass(frozen=True)
 class NameUse:
     """One name spelled somewhere in a module, and what that spelling does."""
@@ -748,6 +780,11 @@ class NameUse:
                         yield word, NameUseKind.OTHER, node.lineno
                 case ast.alias(name=name, asname=exported) if exported == name:
                     yield name, NameUseKind.OTHER, node.lineno
+                case ast.ExceptHandler(type=ast.expr() as caught, name=str() as bound) if any(
+                    IdentityRead.of(inner, bound) for inner in ast.walk(node)
+                ):
+                    for name in IdentityRead.caught_names(caught):
+                        yield name, NameUseKind.READ_IDENTITY, node.lineno
         for token in tokenize.generate_tokens(io.StringIO(parsed_module.source).readline):
             if token.type == tokenize.COMMENT:
                 for word in SPELLED_WORD.findall(token.string):
@@ -900,7 +937,8 @@ class EmptySubclassIndex:
     """The scan's empty subclasses that differ from their base only by name.
 
     A class qualifies when its simple name is unique in the scan; every
-    spelling of that name anywhere constructs or raises it; it and every
+    spelling of that name anywhere constructs or raises it; no handler catching
+    one of its ancestors reads the caught object's class; it and every
     ancestor resolve to scanned classes or builtins, none with a metaclass,
     class keywords, a registering metaclass or an `__init_subclass__` that
     stores the subclass (the class index's registration facts); and its base
@@ -958,7 +996,27 @@ class EmptySubclassIndex:
             self.class_index.symbols_by_simple_name.get(name) == (symbol,)
             and self.kinds_by_name.get(name, frozenset()) <= NameUseKind.only_builds()
             and all(map(self.closed_and_unregistered, lineage))
+            and not any(
+                NameUseKind.READ_IDENTITY in self.kinds_by_name.get(ancestor, frozenset())
+                for ancestor in self.ancestor_names(lineage)
+            )
         )
+
+    def ancestor_names(self, lineage: tuple[str, ...]) -> Iterator[str]:
+        """The simple names of every class above `lineage[0]`: its scanned
+        ancestors and the builtin classes they derive from. A handler catching
+        one of them and reading the caught object's class tells every subclass
+        of it apart."""
+
+        for symbol in lineage[1:]:
+            yield symbol.rpartition(".")[2]
+        for symbol in lineage:
+            for reference in self.class_index.classes_by_symbol[symbol].base_references:
+                match reference:
+                    case BoundNominalReference(
+                        root_binding=CompactNominalBinding(kind=CompactNominalBindingKind.BUILTIN),
+                    ) if isinstance(builtin := getattr(builtins, reference.resolved_parts[-1], None), type):
+                        yield from (ancestor.__name__ for ancestor in builtin.__mro__)
 
     def closed_and_unregistered(self, symbol: str) -> bool:
         indexed = self.class_index.classes_by_symbol.get(symbol)

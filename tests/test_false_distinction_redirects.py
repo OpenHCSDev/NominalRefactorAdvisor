@@ -434,6 +434,57 @@ def test_a_test_that_only_constructs_the_subclass_blocks_the_redirect(tmp_path: 
     )
 
 
+SEND_FAILURES = {
+    "pkg/__init__.py": "",
+    "pkg/send.py": (
+        "class SendFailure(Exception):\n    pass\n\n\nclass SendUnknown(SendFailure):\n    pass\n\n\n"
+        "class SendNotWritten(SendFailure):\n    pass\n\n\n"
+        "def send(written):\n    raise SendNotWritten('no') if not written else SendUnknown('maybe')\n"
+    ),
+}
+IDENTITY_READS = {
+    "type-name-of-the-base": (
+        "from pkg.send import SendFailure, send\n\n\ndef report(written):\n    try:\n"
+        "        send(written)\n    except SendFailure as error:\n"
+        "        return f'failed: {type(error).__name__}: {error}'\n"
+    ),
+    "builtins-type-of-the-base": (
+        "import builtins\n\nfrom pkg.send import SendFailure, send\n\n\ndef report(written):\n"
+        "    try:\n        send(written)\n    except SendFailure as error:\n"
+        "        return builtins.type(error)\n"
+    ),
+    "class-of-a-builtin-ancestor": (
+        "from pkg.send import send\n\n\ndef report(written):\n    try:\n"
+        "        send(written)\n    except (KeyError, Exception) as error:\n"
+        "        return error.__class__\n"
+    ),
+}
+
+
+@pytest.mark.parametrize("name", sorted(IDENTITY_READS))
+def test_a_catch_reading_the_caught_class_tells_its_subclasses_apart(tmp_path: Path, name: str):
+    _write(tmp_path, {**SEND_FAILURES, "pkg/report.py": IDENTITY_READS[name]})
+    assert _findings(NameOnlySubclassDetector, tmp_path) == []
+
+
+def test_a_catch_reading_only_the_message_keeps_the_subclasses_alike(tmp_path: Path):
+    _write(
+        tmp_path,
+        {
+            **SEND_FAILURES,
+            "pkg/report.py": (
+                "from pkg.send import SendFailure, send\n\n\ndef report(written):\n    try:\n"
+                "        send(written)\n    except SendFailure as error:\n"
+                "        return f'{error!r} {type(written).__name__}'\n"
+            ),
+        },
+    )
+    assert sorted(finding.summary.split("`")[1] for finding in _findings(NameOnlySubclassDetector, tmp_path)) == [
+        "SendNotWritten",
+        "SendUnknown",
+    ]
+
+
 @pytest.mark.parametrize(
     ("source", "kind"),
     (
@@ -452,6 +503,15 @@ def test_name_use_kinds_wherever_they_appear(tmp_path: Path, source: str, kind: 
     (tmp_path / "m.py").write_text(source)
     (module,) = parse_python_modules(tmp_path, use_parse_cache=False)
     assert {use.kind for use in NameUse.in_module(module) if use.name == "Target"} == {kind}
+
+
+def test_a_handler_reading_the_caught_class_reads_its_identity(tmp_path: Path):
+    (tmp_path / "m.py").write_text("try:\n    pass\nexcept Target as e:\n    type(e)\n")
+    (module,) = parse_python_modules(tmp_path, use_parse_cache=False)
+    assert {use.kind for use in NameUse.in_module(module) if use.name == "Target"} == {
+        NameUseKind.CATCH,
+        NameUseKind.READ_IDENTITY,
+    }
 
 
 def test_a_test_naming_a_member_alone_keeps_the_members_apart(tmp_path: Path):
