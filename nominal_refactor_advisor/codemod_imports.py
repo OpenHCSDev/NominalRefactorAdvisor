@@ -867,13 +867,14 @@ class ModuleImportMutation(KeyedSourceEditCoalescence):
             )
         )
         replacements.extend(
-            SourceSpanDeletion(
+            SourceSpanDeletion.for_statement_span(
                 file_path=self.file_path,
-                span=SourceLineSpan(guard.lineno, guard.end_lineno or guard.lineno),
+                source=source,
+                statement_span=SourceLineSpan(
+                    guard.lineno, guard.end_lineno or guard.lineno
+                ),
                 rationale=self.rationale
                 or f"Remove empty type-checking import guard in {self.file_path!r}.",
-                contributors=self.contributors,
-                origins=self.origins,
             )
             for guard in guard_projection.guards
             if id(guard) in deletable_guards

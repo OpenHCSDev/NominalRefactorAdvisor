@@ -413,6 +413,8 @@ def test_a_guard_hiding_no_cycle_becomes_a_runtime_import(tmp_path: Path) -> Non
     # The deleted guard was the flag's last reader, so its import goes too.
     assert "TYPE_CHECKING" not in reader
     assert "from pkg.owner import Moved" in reader
+    # The emptied guard leaves no extra blank lines behind.
+    assert "\n\n\n\n" not in reader, f"triple blank lines after guard deletion:\n{reader}"
     imported = _run(tmp_path, "import typing, pkg.reader; assert typing.get_type_hints(pkg.reader.read)")
     assert imported.returncode == 0, imported.stderr
 
