@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import ast
 from dataclasses import dataclass
-from typing import ClassVar
 
 from nominal_refactor_advisor.codemod_payload import (
     RequiredStringPayloadValueCodec,
@@ -108,8 +107,6 @@ class FlattenTupleReturnOperation(RepositorySourceReprovedOperation):
     rewrite refuses, naming the site."""
 
     method_name: str = codemod_payload_field(RequiredStringPayloadValueCodec())
-
-    operation_name: ClassVar[str] = "flatten_tuple_return"
 
     def source_edits_from_snapshot(
         self, snapshot: CodemodSourceSnapshot,
