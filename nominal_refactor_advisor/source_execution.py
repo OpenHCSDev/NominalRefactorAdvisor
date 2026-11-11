@@ -3606,10 +3606,10 @@ class SourceExecutionABC(
 
     def require_empty_interval(self, interval: SingleFlowPrefix) -> None:
         """Require no original source operations or effects within this actual interval."""
+        owner = interval.context.flow.owner
         if any(
-            operation.owner is interval.context.flow.owner
-            and interval.contains(operation.event)
-            for operation in self.source.operations
+            operation.owner is owner and interval.contains(operation.event)
+            for operation in self.source.operations_by_owner_identity.get(id(owner), ())
         ) or tuple(self.effects.occurrences(self.source, interval)):
             raise ValueError("Later original source operations or effects remain")
 

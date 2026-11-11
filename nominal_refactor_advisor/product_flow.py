@@ -4016,6 +4016,16 @@ class SourceProductFlowProjection:
         return {identity: tuple(operations) for identity, operations in grouped.items()}
 
     @cached_property
+    def operations_by_owner_identity(
+        self,
+    ) -> Mapping[int, tuple[SourceFlowOperation, ...]]:
+        """Each actual flow owner's own operations, in their original order."""
+        grouped: dict[int, list[SourceFlowOperation]] = {}
+        for operation in self.operations:
+            grouped.setdefault(id(operation.owner), []).append(operation)
+        return {identity: tuple(operations) for identity, operations in grouped.items()}
+
+    @cached_property
     def value_reads_by_node(self) -> dict[ast.AST, CompactFlowValue]:
         """Exact evaluated-value captures, distinct from earlier lexical reads."""
         sites = UniqueIdentityIndexAuthority.unambiguous_declarations_by_handle(

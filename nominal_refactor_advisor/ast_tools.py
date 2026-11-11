@@ -1000,8 +1000,9 @@ class ParsedModuleSet(Sequence[ParsedModule]):
     def _facts(self) -> dict[type[ParsedModuleSetFact], ParsedModuleSetFact]:
         return {}
 
+    @ScanCache.scope()
     def fact(self, kind: type[ParsedModuleSetFactT]) -> ParsedModuleSetFactT:
-        """This set's fact of one declared kind, derived once."""
+        """This set's fact of one declared kind, derived once, in one scan scope."""
 
         facts = self._facts
         if kind not in facts:
