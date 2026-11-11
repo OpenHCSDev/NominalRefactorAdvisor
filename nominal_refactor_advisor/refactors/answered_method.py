@@ -32,7 +32,8 @@ class AnsweredMethod:
 
     snapshot: CodemodSourceSnapshot
     source_class: ResolvedClassTarget
-    method: ast.FunctionDef | ast.AsyncFunctionDef
+    method: ast.FunctionDef | ast.AsyncFunctionDef | ast.AnnAssign
+    """The member's declaration in the class body."""
 
     @property
     def name(self) -> str:
@@ -103,6 +104,26 @@ class AnsweredMethod:
             if binding is None:
                 continue
             return binding.class_binding(self, file_path, scope)
+        return None
+
+    def class_symbol(
+        self, file_path: str, expression: ast.expr, parents: dict[ast.AST, ast.AST]
+    ) -> str | None:
+        """The scanned class an expression names where it stands: `Name` by its
+        binding, `module.Name` through the module it imports; None for anything else."""
+
+        scopes = _name_scopes(expression, parents)
+        match expression:
+            case ast.Name(id=name):
+                binding = self.named_class(file_path, name, scopes)
+                return binding.symbol if isinstance(binding, (NamedClass, OtherClass)) else None
+            case ast.Attribute(value=ast.Name(id=module), attr=name):
+                binding = self.named_class(file_path, module, scopes)
+                if not isinstance(binding, OtherModule):
+                    return None
+                provider = self.snapshot.module_import_graph.unique_source_file_for_module_name(binding.symbol)
+                found = None if provider is None else self.declared_class(provider.file_path, name)
+                return found.symbol if isinstance(found, (NamedClass, OtherClass)) else None
         return None
 
     def declared_class(self, file_path: str, qualname: str) -> ClassBinding | None:
@@ -314,7 +335,11 @@ class ImportedName(NameBinding):
         provider = None if module is None else graph.unique_source_file_for_module_name(module)
         if provider is None:
             return OutsideScan(str(module))
-        return moved.declared_class(provider.file_path, self.alias.name)
+        declared = moved.declared_class(provider.file_path, self.alias.name)
+        submodule = f"{module}.{self.alias.name}"
+        if declared is None and graph.unique_source_file_for_module_name(submodule) is not None:
+            return OtherModule(submodule)
+        return declared
 
 
 @dataclass(frozen=True)
@@ -470,6 +495,24 @@ class AnsweredProperty(AnsweredMethod):
     def answer(self, site: MethodReference, binding: ReceiverBinding) -> AnsweredUse:
         if not isinstance(site.attribute.ctx, ast.Load):
             raise ValueError(f"{site.where} assigns or deletes the property {self.name!r}")
+        self.admits(binding, site.where)
+        return AnsweredUse(site.file_path, site.attribute)
+
+
+@dataclass(frozen=True)
+class AnsweredField(AnsweredMethod):
+    """A field of a class family, declared `name: T` in the class body: it is
+    answered by every read and every write of its name on a family receiver."""
+
+    @property
+    def name(self) -> str:
+        declaration = self.method
+        assert isinstance(declaration, ast.AnnAssign) and isinstance(declaration.target, ast.Name)
+        return declaration.target.id
+
+    def answer(self, site: MethodReference, binding: ReceiverBinding) -> AnsweredUse:
+        if isinstance(site.attribute.ctx, ast.Del):
+            raise ValueError(f"{site.where} deletes the field {self.name!r}")
         self.admits(binding, site.where)
         return AnsweredUse(site.file_path, site.attribute)
 

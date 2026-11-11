@@ -86,6 +86,9 @@ from nominal_refactor_advisor.refactors.class_member_authority import (
     PromoteExactDataclassFieldsToExistingAuthorityOperation as PromoteExactDataclassFieldsToExistingAuthorityOperation,
     PromoteExactLeafMethodsToAncestorOperation as PromoteExactLeafMethodsToAncestorOperation,
 )
+from nominal_refactor_advisor.refactors.carrier_member import (
+    CarrierFieldBecomesMemberOperation as CarrierFieldBecomesMemberOperation,
+)
 from nominal_refactor_advisor.refactors.function_operations import (
     AliasFunctionOperation as AliasFunctionOperation,
     CallExpressionSourcePayload as CallExpressionSourcePayload,
