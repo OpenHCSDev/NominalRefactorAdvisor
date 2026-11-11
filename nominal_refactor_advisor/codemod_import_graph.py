@@ -132,9 +132,17 @@ class SourceModuleImportGraph:
         return frozenset()
 
     def known_import_targets(self, module_name: str) -> frozenset[str]:
-        if module_name in self.known_module_names:
-            return frozenset((module_name,))
-        return frozenset()
+        """Every known module on the path to `module_name`: importing `a.b.c`
+        first executes `a/__init__.py` then `a/b/__init__.py`, so each ancestor
+        package is an implicit import target whose cycle must be checked."""
+
+        targets: set[str] = set()
+        parts = module_name.split(".")
+        for depth in range(1, len(parts) + 1):
+            prefix = ".".join(parts[:depth])
+            if prefix in self.known_module_names:
+                targets.add(prefix)
+        return frozenset(targets)
 
     def import_would_create_cycle(
         self,
@@ -142,13 +150,24 @@ class SourceModuleImportGraph:
         importing_file_path: str,
         imported_file_path: str,
     ) -> bool:
+        """Whether adding an import from `importing` to `imported` creates a
+        cycle. Importing a module inside a package first executes every ancestor
+        package's ``__init__``, so the hypothetical import reaches the imported
+        module and every known ancestor package on the way."""
+
         importing_module = self.module_name_for_file_path(importing_file_path)
         imported_module = self.module_name_for_file_path(imported_file_path)
         if importing_module is None or imported_module is None:
             return True
         if importing_module == imported_module:
             return False
-        return self.module_reaches(imported_module, importing_module)
+        # The import triggers the imported module and every ancestor init.
+        # The importing module itself is excluded: a package init importing
+        # from its own submodules is normal Python (partial initialization).
+        triggered = self.known_import_targets(imported_module) - {importing_module}
+        return any(
+            self.module_reaches(target, importing_module) for target in triggered
+        )
 
     def module_name_for_file_path(self, file_path: str) -> str | None:
         source_file = self.source_file_for_path(file_path)

@@ -464,6 +464,30 @@ def test_a_guard_hiding_a_cycle_is_refused(tmp_path: Path) -> None:
     assert "hides a cycle" in report.message
 
 
+def test_a_guard_hiding_a_cycle_through_a_package_init_is_refused(tmp_path: Path) -> None:
+    """Importing `pkg.sub.owner` first executes `pkg/sub/__init__.py`; if that
+    init imports from the reader, promoting the guard creates a cycle through
+    the package init that the old graph missed."""
+
+    _write(tmp_path, "pkg/__init__.py", "")
+    _write(tmp_path, "pkg/sub/__init__.py", "from pkg.reader import read\n")
+    _write(tmp_path, "pkg/sub/owner.py", "class Moved:\n    pass\n")
+    _write(
+        tmp_path,
+        "pkg/reader.py",
+        "from typing import TYPE_CHECKING\n\n"
+        "if TYPE_CHECKING:\n"
+        "    from pkg.sub.owner import Moved\n\n\n"
+        "def read(moved: 'Moved') -> None:\n"
+        "    pass\n",
+    )
+    report = _promote(tmp_path, "pkg/reader.py", "pkg.sub.owner", "Moved").preflight_reports(
+        _snapshot(tmp_path)
+    )[0]
+    assert report.status is CodemodPreflightStatus.FAILED
+    assert "hides a cycle" in report.message
+
+
 def test_a_move_drops_the_destinations_guarded_import_of_the_moved_declaration(
     tmp_path: Path,
 ) -> None:
