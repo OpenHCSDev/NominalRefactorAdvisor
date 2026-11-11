@@ -23,6 +23,7 @@ from nominal_refactor_advisor.detectors import _base as collector_runtime
 from nominal_refactor_advisor.native_class_mro import NativeClassMroDeclaration
 from nominal_refactor_advisor.native_declarations import (
     NativeDeclaration,
+    OwnerIndependentMethodWrapper,
     NativeLanguageFeature,
 )
 from nominal_refactor_advisor.native_subscription import NativeSubscriptionAuthority
@@ -72,6 +73,7 @@ def test_standard_factory_owns_unchanged_initial_associations(tmp_path):
         typing,
         dataclasses,
         NativeLanguageFeature.module,
+        *OwnerIndependentMethodWrapper.modules(),
     )
     assert entry.frame.globals is entry.frame.locals is entry
     assert entry.frame.builtins is entry.builtins

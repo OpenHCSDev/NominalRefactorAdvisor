@@ -26,6 +26,7 @@ from nominal_refactor_advisor.class_families.parsed_index import (
     ModuleClassReferenceResolver,
 )
 from nominal_refactor_advisor.class_index import (
+    ClassLineBindingSnapshots,
     CompactModuleClassProjectionFamily,
     ModuleNominalBindingAuthority,
     build_compact_class_family_index,
@@ -115,7 +116,9 @@ class _TypeKeyedBehaviorMethodDescent:
     def transformed_source(self) -> str:
         safety = ClassMethodPromotionSafetyProfile.from_method(
             self.projection_method,
-            LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(self.source_module.module.body),
+            self.source_module.fact(ClassLineBindingSnapshots).snapshots[
+                self.projection_class.node.lineno
+            ],
             LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(
                 self.projection_class.node.body
             ),
