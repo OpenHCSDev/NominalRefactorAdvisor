@@ -2562,6 +2562,8 @@ class ClassOverlapFindingRecipeSynthesizer(
         if pick.finding != finding.stable_id:
             return f"covered by the owner pick on {pick.finding}"
         owner = pick.candidate
+        if owner.keyword_cure:
+            return ClassOverlapFindingRecipeSynthesizer.keywordings(owner.keyword_cure, verdicts)
         composers = tuple(
             indexed_class
             for symbol in owner.composers
@@ -2636,6 +2638,45 @@ class ClassOverlapFindingRecipeSynthesizer(
                 )
         return f"`{owner.kind}` owners have no move"
 
+    @staticmethod
+    def keywordings(
+        symbols: tuple[str, ...], verdicts: ClassOverlapVerdicts
+    ) -> tuple[RepositorySourceReprovedOperation, ...] | str:
+        """The stage that clears a positional-construction guard: every construction
+        of these classes bound by keyword. The move itself is proved at the next
+        stage, on the source this one leaves, where the guard no longer fires."""
+
+        classes = tuple(verdicts.class_index.class_for(symbol) for symbol in symbols)
+        if None in classes:
+            return "a class built by position left the source"
+        return tuple(
+            KeywordizeConstructionOperation(target=source_rewrite_target(indexed_class))
+            for indexed_class in classes
+            if indexed_class is not None
+        )
+
+    def keywording_evaluation(
+        self,
+        finding: RefactorFinding,
+        symbols: tuple[str, ...],
+        verdicts: ClassOverlapVerdicts,
+        context: CodemodSelectorContext,
+    ) -> FindingRecipeEvaluation:
+        operations = self.keywordings(symbols, verdicts)
+        if isinstance(operations, str):
+            return self.rejected_evaluation(operations)
+        recipe = RefactorRecipe(
+            recipe_id=f"{finding.stable_id}-keywordize",
+            reason="Build the classes this move reorders by keyword, so the move can prove.",
+        )
+        for operation in operations:
+            try:
+                operation.source_edits(context)
+            except (CodemodOperationPreflightError, ValueError) as error:
+                return self.rejected_evaluation(str(error))
+            recipe = recipe.with_operation(operation)
+        return self.executable_evaluation(recipe)
+
     def evaluate_recipe_for_finding(
         self,
         finding: RefactorFinding,
@@ -2644,10 +2685,12 @@ class ClassOverlapFindingRecipeSynthesizer(
         metrics = finding.metrics
         if context is None or not isinstance(metrics, ClassOverlapMetrics):
             return self.rejected_evaluation("a class overlap needs its verdict and source")
-        if not metrics.move_permitted:
-            return self.rejected_evaluation("the verdict refuses the move")
         snapshot = context.execution_snapshot()
         verdicts = snapshot.class_overlap_verdicts
+        if not metrics.permitted:
+            if not metrics.keyword_cure:
+                return self.rejected_evaluation("the verdict refuses the move")
+            return self.keywording_evaluation(finding, metrics.keyword_cure, verdicts, context)
         if metrics.move is ComposeExisting:
             owner = verdicts.class_index.class_for(metrics.owner_symbol)
             restating = tuple(

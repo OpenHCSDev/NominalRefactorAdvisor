@@ -480,3 +480,22 @@ def test_a_mixin_one_composer_cannot_compose_is_not_created(tmp_path: Path) -> N
 
     with pytest.raises(CodemodOperationPreflightError):
         operation.source_edits(snapshot)
+
+
+def test_a_positional_construction_is_keyworded_first_then_the_pick_composes(
+    tmp_path: Path,
+) -> None:
+    """A reordering pick refused only because a composer is built by position takes
+    two stages: every construction bound by keyword, then the composition."""
+    positional = REORDERED + "\n\ndef build():\n    return First(0, 1, 'x')\n"
+    probe = "from pkg.records import build\nprint(build().gamma(), build().lead)\n"
+    _write(tmp_path, {"pkg/__init__.py": "", "pkg/records.py": positional})
+    before = _run(tmp_path, probe)
+
+    report = _goal_with_pick(tmp_path, "Lettered")
+
+    source = (tmp_path / "pkg/records.py").read_text()
+    assert report.stage_count == 2
+    assert "return First(lead=0, alpha=1, beta='x')" in source
+    assert "class First(Lettered):\n" in source
+    assert _run(tmp_path, probe) == before

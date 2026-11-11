@@ -45,7 +45,12 @@ from nominal_refactor_advisor.json_reports import (
     json_report_field,
     json_report_property,
 )
-from nominal_refactor_advisor.receipts import Receipt, ReceiptKind, ScoredByReceipts
+from nominal_refactor_advisor.receipts import (
+    KeywordCuredReceipt,
+    Receipt,
+    ReceiptKind,
+    ScoredByReceipts,
+)
 from nominal_refactor_advisor.models import SourceLocation
 
 
@@ -124,7 +129,7 @@ class OwnerCandidate(ScoredByReceipts, SemanticRecord, ABC):
     def pick_refusals(self, pick: OwnerPick) -> Iterator[str]:
         """Why ``pick`` cannot choose this candidate; nothing when it can."""
 
-        if not self.permitted:
+        if not self.permitted and not self.keyword_cure:
             yield f"`{pick.owner}` is refused: " + "; ".join(
                 receipt.detail for receipt in self.refusals
             )
@@ -958,20 +963,22 @@ class BlockOwnerQuestion:
                     count=len(reordered),
                 )
             )
-            positional = tuple(
-                location
+            constructed = {
+                member: locations
                 for symbol in reordered
                 for member in (symbol, *self.descendants_of(symbol))
-                for location in self.positional_constructions_of(member)
-            )
+                if (locations := self.positional_constructions_of(member))
+            }
+            positional = tuple(location for locations in constructed.values() for location in locations)
             if positional:
                 receipts.append(
-                    Receipt(
+                    KeywordCuredReceipt(
                         OwnerReceiptKind.POSITIONAL_CONSTRUCTION,
                         f"{len(positional)} construction(s) of a reordered composer or "
                         "a descendant bind fields by position",
                         positional[:4],
                         count=len(positional),
+                        constructed=tuple(constructed),
                     )
                 )
         elif reordered:
@@ -1032,19 +1039,21 @@ class BlockOwnerQuestion:
                     count=len(built),
                 )
             )
-        positional = tuple(
-            location
+        constructed = {
+            symbol: locations
             for symbol in affected
-            for location in self.positional_constructions_of(symbol)
-        )
+            if (locations := self.positional_constructions_of(symbol))
+        }
+        positional = tuple(location for locations in constructed.values() for location in locations)
         if positional:
             receipts.append(
-                Receipt(
+                KeywordCuredReceipt(
                     OwnerReceiptKind.CONSTRUCTION_CHANGED,
                     f"{len(positional)} construction(s) of `{owner.qualname}` or its "
                     "descendants bind fields by position; added fields would shift them",
                     positional[:4],
                     count=len(positional),
+                    constructed=tuple(constructed),
                 )
             )
         return tuple(receipts)

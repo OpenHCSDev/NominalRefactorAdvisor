@@ -66,7 +66,7 @@ from nominal_refactor_advisor.class_references import (
     CompactClassReference,
 )
 from nominal_refactor_advisor.overlap_receipts import OverlapReceiptKind
-from nominal_refactor_advisor.receipts import Receipt, ScoredByReceipts
+from nominal_refactor_advisor.receipts import KeywordCuredReceipt, Receipt, ScoredByReceipts
 from nominal_refactor_advisor.owner_candidates import (
     BlockOwnerQuestion,
     ModuleImportGraph,
@@ -422,7 +422,7 @@ class ClassOverlapCandidate(ScoredByReceipts):
 
 
 @dataclass(frozen=True)
-class ClassOverlapMetrics(FindingMetrics):
+class ClassOverlapMetrics(FindingMetrics, ScoredByReceipts):
     """One verdict as finding metrics: the move, the confidence score and every receipt."""
 
     shape: ClassOverlapShape
@@ -431,7 +431,6 @@ class ClassOverlapMetrics(FindingMetrics):
     restating_symbols: tuple[str, ...]
     shared_declaration_names: tuple[str, ...]
     confidence_score: float
-    move_permitted: bool
     receipts: tuple[Receipt, ...]
     owner_candidates: tuple[OwnerCandidate, ...] = ()
     owner_pick: PickedOwner | None = None
@@ -448,7 +447,6 @@ class ClassOverlapMetrics(FindingMetrics):
             ),
             shared_declaration_names=candidate.shared_names,
             confidence_score=round(candidate.confidence, 4),
-            move_permitted=candidate.permitted,
             receipts=candidate.receipts,
             owner_candidates=candidate.owner_candidates,
         )
@@ -900,12 +898,13 @@ class ClassOverlapVerdicts:
             positional = self.uses.constructions_of(indexed_class, positional=True)
             if positional:
                 receipts.append(
-                    Receipt(
+                    KeywordCuredReceipt(
                         OverlapReceiptKind.POSITIONAL_CONSTRUCTION,
                         f"`{indexed_class.qualname}` is constructed by position or "
                         f"unpacking in {len(positional)} place(s); moving its fields "
                         "ahead of its own would rebind them",
                         tuple(use.location for use in positional[:4]),
+                        constructed=(indexed_class.symbol,),
                     )
                 )
         return tuple(receipts)
