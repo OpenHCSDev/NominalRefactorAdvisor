@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import ast
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import dataclass, field, fields, is_dataclass
 import hashlib
 from pathlib import Path
@@ -69,13 +69,11 @@ def _declaration_implementation_module_names(
     return implementation_module_names(declaration_tuple)
 
 
-@dataclass
+@dataclass(frozen=True)
 class _ImplementationDependencyTraversal:
-    """Walk executable declarations once within their nominal package roots."""
+    """Walk executable declarations within their nominal package roots."""
 
     expansion_roots: frozenset[str]
-    _module_names: set[str] = field(default_factory=set, init=False)
-    _seen_value_ids: set[int] = field(default_factory=set, init=False)
 
     @classmethod
     def for_values(
@@ -92,16 +90,10 @@ class _ImplementationDependencyTraversal:
 
     def collect(self, values: Iterable[object]) -> tuple[str, ...]:
         graph = _dependency_graph(self.expansion_roots)
-        pending = list(values)
-        while pending:
-            value = pending.pop()
-            if id(value) in self._seen_value_ids:
-                continue
-            self._seen_value_ids.add(id(value))
-            node = graph.node(value)
-            self._module_names.update(node.module_names)
-            pending.extend(node.dependencies)
-        return tuple(sorted(self._module_names))
+        reached = 0
+        for value in values:
+            reached |= graph.reached_modules(value)
+        return graph.module_names(reached)
 
 
 class AnswerDeclaration:
@@ -146,6 +138,87 @@ class _DependencyGraph:
 
     expansion_roots: frozenset[str]
     _nodes: dict[int, _DependencyNode] = field(default_factory=dict, init=False)
+    _reached: dict[int, int] = field(default_factory=dict, init=False)
+    _module_bits: dict[str, int] = field(default_factory=dict, init=False)
+    _module_order: list[str] = field(default_factory=list, init=False)
+
+    def module_names(self, reached: int) -> tuple[str, ...]:
+        """The sorted module names a reach mask holds."""
+        return tuple(
+            sorted(name for bit, name in enumerate(self._module_order) if reached >> bit & 1)
+        )
+
+    def _owner_mask(self, node: _DependencyNode) -> int:
+        mask = 0
+        for name in node.module_names:
+            bit = self._module_bits.get(name)
+            if bit is None:
+                bit = self._module_bits[name] = 1 << len(self._module_order)
+                self._module_order.append(name)
+            mask |= bit
+        return mask
+
+    def reached_modules(self, root: object) -> int:
+        """Every owner module reachable from the value, as a mask over module names.
+
+        Each value's reach is derived once per graph, so the roots of every family
+        and detector share it instead of each walking the whole graph again. The
+        graph has cycles, so reach is assigned per strongly connected component
+        (Tarjan, iteratively): every member of a cycle reaches the same modules.
+        """
+        known = self._reached.get(id(root))
+        if known is not None:
+            return known
+        order: dict[int, int] = {}
+        low: dict[int, int] = {}
+        mask: dict[int, int] = {}
+        component: list[int] = []
+        on_component: set[int] = set()
+
+        def enter(value: object) -> tuple[object, Iterator[object]]:
+            value_id = id(value)
+            node = self.node(value)
+            order[value_id] = low[value_id] = len(order)
+            mask[value_id] = self._owner_mask(node)
+            component.append(value_id)
+            on_component.add(value_id)
+            return value, iter(node.dependencies)
+
+        frames = [enter(root)]
+        while frames:
+            value, dependencies = frames[-1]
+            value_id = id(value)
+            for dependency in dependencies:
+                dependency_id = id(dependency)
+                finished = self._reached.get(dependency_id)
+                if finished is not None:
+                    mask[value_id] |= finished
+                elif dependency_id not in order:
+                    frames.append(enter(dependency))
+                    break
+                elif dependency_id in on_component:
+                    low[value_id] = min(low[value_id], order[dependency_id])
+                    mask[value_id] |= mask[dependency_id]
+            else:
+                frames.pop()
+                if low[value_id] == order[value_id]:
+                    members: list[int] = []
+                    reached = 0
+                    while True:
+                        member = component.pop()
+                        on_component.discard(member)
+                        members.append(member)
+                        reached |= mask[member]
+                        if member == value_id:
+                            break
+                    for member in members:
+                        self._reached[member] = reached
+                    mask[value_id] = reached
+                if frames:
+                    parent_id = id(frames[-1][0])
+                    low[parent_id] = min(low[parent_id], low[value_id])
+                    mask[parent_id] |= mask[value_id]
+        return self._reached[id(root)]
 
     def node(self, value: object) -> _DependencyNode:
         node = self._nodes.get(id(value))
