@@ -143,6 +143,15 @@ class AnsweredMethod:
     def admits(self, binding: ReceiverBinding, where: str) -> None:
         """Refuse a call whose receiver would change what the method means."""
 
+    def answer(self, site: MethodReference, binding: ReceiverBinding) -> AnsweredUse:
+        """The reference as a use the method answers: a method is answered by a call
+        alone, since any other reference would lose it."""
+
+        if site.call is None:
+            raise ValueError(f"{site.where} uses {self.name!r} other than by calling it")
+        self.admits(binding, site.where)
+        return MethodCall(site.file_path, site.attribute, site.call)
+
     def answering_calls(self) -> tuple[MethodCall, ...]:
         """The calls the method answers, each receiver typed by the class binding, the
         declarations or the checker."""
@@ -181,14 +190,14 @@ class AnsweredMethod:
                 )
                 if bound is not None:
                     if bound.reaches_family():
-                        answering.append(site.answered(self, bound))
+                        answering.append(self.answer(site, bound))
                     continue
                 owner = resolver.owner(node.value).resolved(typing)
                 spans = owner.type_checker_spans()
                 if spans:
                     undeclared[spans[0]] = site
                 elif self.answers(tuple(getattr(owner, "class_symbols", tuple)()), where):
-                    answering.append(site.answered(self, ReceiverBinding(self.symbol)))
+                    answering.append(self.answer(site, ReceiverBinding(self.symbol)))
         if undeclared:
             with TypeCheckerSession.session(SourceTexts(snapshot.parsed_modules)) as session:
                 answers = session.receiver_types(undeclared)
@@ -197,14 +206,14 @@ class AnsweredMethod:
                 if not isinstance(answer, InferredReceiverType):
                     raise ValueError(f"{site.where}: the type checker gives no type for the receiver")
                 if self.answers(answer.classes, site.where):
-                    answering.append(site.answered(self, ReceiverBinding(self.symbol)))
+                    answering.append(self.answer(site, ReceiverBinding(self.symbol)))
         nested = [
             site for site in answering
             for other in answering
-            if other is not site and other.call in ast.walk(site.call)
+            if other is not site and other.node in ast.walk(site.node)
         ]
         if nested:
-            raise ValueError(f"{nested[0].where} nests one answered call inside another")
+            raise ValueError(f"{nested[0].where} nests one answered use inside another")
         return tuple(answering)
 
 
@@ -423,36 +432,82 @@ class MethodReference:
     def where(self) -> str:
         return f"{self.file_path}:{self.attribute.lineno}"
 
-    def answered(self, moved: AnsweredMethod, binding: ReceiverBinding) -> MethodCall:
-        """The reference as a call the method answers: one that is not a call would lose
-        the method, and the method may refuse the binding."""
-
-        if self.call is None:
-            raise ValueError(f"{self.where} uses {moved.name!r} other than by calling it")
-        moved.admits(binding, self.where)
-        return MethodCall(self.file_path, self.call, self.attribute)
 
 
 @dataclass(frozen=True)
-class MethodCall:
-    """One call the moved method answers, and the receiver it is called on."""
+class AnsweredUse:
+    """One use of the member the proof answers: the attribute, and the expression a
+    rewrite replaces."""
 
     file_path: str
-    call: ast.Call
     attribute: ast.Attribute
 
     @property
+    def node(self) -> ast.expr:
+        return self.attribute
+
+    @property
     def where(self) -> str:
-        return f"{self.file_path}:{self.call.lineno}"
+        return f"{self.file_path}:{self.node.lineno}"
 
 
-_DYNAMIC_ACCESS = frozenset({"getattr", "hasattr", "setattr", "delattr"})
+@dataclass(frozen=True)
+class MethodCall(AnsweredUse):
+    """One call the moved method answers, and the receiver it is called on."""
+
+    call: ast.Call
+
+    @property
+    def node(self) -> ast.expr:
+        return self.call
+
+
+@dataclass(frozen=True)
+class AnsweredProperty(AnsweredMethod):
+    """A property of a class family: it is answered by every read of its name on a
+    family receiver. A write or delete would need a setter it does not have."""
+
+    def answer(self, site: MethodReference, binding: ReceiverBinding) -> AnsweredUse:
+        if not isinstance(site.attribute.ctx, ast.Load):
+            raise ValueError(f"{site.where} assigns or deletes the property {self.name!r}")
+        self.admits(binding, site.where)
+        return AnsweredUse(site.file_path, site.attribute)
+
+
+class AttributeLookup:
+    """The calls that reach an attribute by its name as a value."""
+
+    OBJECT_LOOKUPS: ClassVar[frozenset[str]] = frozenset({"getattr", "hasattr", "setattr", "delattr"})
+    """Lookups that take an object, then the attribute name."""
+    NAME_LOOKUPS: ClassVar[frozenset[str]] = frozenset({"attrgetter", "methodcaller"})
+    """Lookups that take only attribute names (methodcaller: one, then call arguments)."""
+    LOOKUPS: ClassVar[frozenset[str]] = OBJECT_LOOKUPS | NAME_LOOKUPS
+
+    @staticmethod
+    def callee_name(func: ast.expr) -> str | None:
+        match func:
+            case ast.Name(id=name) | ast.Attribute(attr=name):
+                return name
+        return None
+
+    @classmethod
+    def name_arguments(cls, call: ast.Call) -> list[ast.expr]:
+        """The arguments a lookup reads as attribute names; none for any other call."""
+
+        callee = cls.callee_name(call.func)
+        if callee in cls.OBJECT_LOOKUPS:
+            return call.args[1:2]
+        if callee == "methodcaller":
+            return call.args[:1]
+        if callee in cls.NAME_LOOKUPS:
+            return list(call.args)
+        return []
 
 
 def _dynamic_access(node: ast.AST, name: str) -> bool:
     """Whether a node reaches an attribute of this name by a string, past any receiver typing."""
 
-    return (
-        isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id in _DYNAMIC_ACCESS
-        and len(node.args) > 1 and isinstance(node.args[1], ast.Constant) and node.args[1].value == name
+    return isinstance(node, ast.Call) and any(
+        isinstance(argument, ast.Constant) and argument.value == name
+        for argument in AttributeLookup.name_arguments(node)
     )

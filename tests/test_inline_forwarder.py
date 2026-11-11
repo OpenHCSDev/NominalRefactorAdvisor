@@ -262,3 +262,29 @@ def test_only_a_string_that_can_feed_a_lookup_refuses(
     snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     (report,) = _inline(tmp_path).preflight_reports(snapshot)
     assert (report.status is CodemodPreflightStatus.FAILED) is refused, report
+
+
+def test_a_property_forwarder_inlines_as_the_chain_it_reads(tmp_path: Path) -> None:
+    """agent-comms `TargetField.annotation` returns `self.plan.annotation`: every
+    read becomes that chain on the read's receiver, and the property goes."""
+    _write(tmp_path, "pkg/__init__.py", "")
+    _write(
+        tmp_path,
+        "pkg/fields.py",
+        "class Plan:\n    annotation: object = int\n\n\n"
+        "class TargetField:\n"
+        "    def __init__(self, plan: Plan) -> None:\n        self.plan = plan\n\n"
+        "    @property\n    def annotation(self) -> object:\n        return self.plan.annotation\n\n\n"
+        "def kind(field: TargetField) -> object:\n    return field.annotation\n",
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    operation = InlineForwarderOperation(
+        target=SourceRewriteTarget(
+            file_path=(tmp_path / "pkg/fields.py").as_posix(), qualname="TargetField.annotation"
+        )
+    )
+    simulation = RefactorRecipe("inline").with_operation(operation).simulate(snapshot)
+    assert simulation.is_clean, simulation.preflight_report
+    rewritten = simulation.simulation.rewritten_sources[(tmp_path / "pkg/fields.py").as_posix()]
+    assert "def annotation" not in rewritten
+    assert "return field.plan.annotation\n" in rewritten

@@ -12,7 +12,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import ClassVar
 
-from nominal_refactor_advisor.refactors.answered_method import AnsweredMethod
+from nominal_refactor_advisor.refactors.answered_method import (
+    AnsweredMethod,
+    AnsweredProperty,
+    AttributeLookup,
+)
 from nominal_refactor_advisor.refactors.declaration_operations import (
     DeclarationDecoratorsPayload,
     DeclarationMutationOperationABC,
@@ -506,8 +510,27 @@ class ProjectStaticCallsToAdapterOperation(SourceReprovedOperation):
         )
 
 
+class _Forwarder(ABC):
+    """A member whose body only forwards: what it reads besides self, whether its
+    value is read, and its body rewritten for one use."""
+
+    method: ast.FunctionDef | ast.AsyncFunctionDef
+    imports: tuple[ast.Import | ast.ImportFrom, ...]
+    returns: bool
+
+    @property
+    @abstractmethod
+    def free_names(self) -> frozenset[str]: ...
+
+    @abstractmethod
+    def value_used(self, use: ast.AST, parents: Mapping[ast.AST, ast.AST]) -> bool: ...
+
+    @abstractmethod
+    def inlined(self, use: ast.expr, receiver: ast.expr, file_path: str) -> str: ...
+
+
 @dataclass(frozen=True)
-class _ForwarderBody:
+class _ForwarderBody(_Forwarder):
     """A method whose whole body is one call built from its own parameters, after
     any imports that bind what it calls. An async forwarder awaits that call, so
     its callers' `await` reaches the forwarded call itself."""
@@ -623,6 +646,70 @@ class _ForwarderBody:
         return ast.unparse(Substitute().visit(copy.deepcopy(self.call)))
 
 
+@dataclass(frozen=True)
+class _PropertyForwarderBody(_Forwarder):
+    """A property whose whole body returns an attribute chain on self: every read of
+    it becomes that chain on the read's receiver."""
+
+    method: ast.FunctionDef
+    value: ast.Attribute
+
+    imports: tuple[ast.Import | ast.ImportFrom, ...] = ()
+    returns: bool = True
+
+    @property
+    def free_names(self) -> frozenset[str]:
+        """A chain on self reads nothing else."""
+
+        return frozenset()
+
+    @classmethod
+    def of(cls, method: ast.FunctionDef | ast.AsyncFunctionDef, qualname: str) -> _PropertyForwarderBody | None:
+        """The property's chain, or None when the method is no property."""
+
+        match method.decorator_list:
+            case [ast.Name(id="property")]:
+                pass
+            case _:
+                return None
+        body = [
+            statement
+            for statement in method.body
+            if not (
+                isinstance(statement, ast.Expr)
+                and isinstance(statement.value, ast.Constant)
+                and isinstance(statement.value.value, str)
+            )
+        ]
+        self_name = method.args.args[0].arg if method.args.args else None
+        match body:
+            case [ast.Return(value=ast.Attribute() as value)] if (
+                isinstance(method, ast.FunctionDef) and cls.chain_root(value) == self_name
+            ):
+                return cls(method, value)
+        raise ValueError(f"{qualname!r} is not a property returning an attribute of self")
+
+    @staticmethod
+    def chain_root(value: ast.expr) -> str | None:
+        while isinstance(value, ast.Attribute):
+            value = value.value
+        return value.id if isinstance(value, ast.Name) else None
+
+    def value_used(self, use: ast.AST, parents: Mapping[ast.AST, ast.AST]) -> bool:
+        return True
+
+    def inlined(self, use: ast.Attribute, receiver: ast.expr, file_path: str) -> str:
+        """The chain with self replaced by the read's receiver, which it evaluates once."""
+
+        self_name = self.method.args.args[0].arg
+
+        class Substitute(ast.NodeTransformer):
+            def visit_Name(self, node: ast.Name) -> ast.expr:
+                return receiver if node.id == self_name else node
+
+        return ast.unparse(Substitute().visit(copy.deepcopy(self.value)))
+
+
 @dataclass(frozen=True, kw_only=True)
 class InlineForwarderOperation(RepositorySourceReprovedOperation):
     """Inline a method whose body only forwards one call, at every call site, and
@@ -672,17 +759,18 @@ class InlineForwarderOperation(RepositorySourceReprovedOperation):
         )
         if method is None:
             raise ValueError(f"{qualname!r} is not declared in {source_path!r}")
-        forwarder = _ForwarderBody.of(method, qualname)
-        answered = AnsweredMethod(snapshot, source_class, method)
+        prop = _PropertyForwarderBody.of(method, qualname)
+        forwarder = prop or _ForwarderBody.of(method, qualname)
+        answered = (AnsweredMethod if prop is None else AnsweredProperty)(snapshot, source_class, method)
         answered.require_sole_dispatch("inlining it")
         _MethodNameStrings.require_none(snapshot, method_name)
         replacements: dict[str, list[tuple[ast.AST, str]]] = {source_path: [(method, "")]}
         for call in answered.answering_calls():
             parents = snapshot.parsed_module_for_source_path(call.file_path).fact(ModuleNodeIndex).parents
-            if not forwarder.returns and forwarder.value_used(call.call, parents):
+            if not forwarder.returns and forwarder.value_used(call.node, parents):
                 raise ValueError(f"{call.where} uses the value of {method_name!r}, which returns None")
             replacements.setdefault(call.file_path, []).append(
-                (call.call, forwarder.inlined(call.call, call.attribute.value, call.file_path))
+                (call.node, forwarder.inlined(call.node, call.attribute.value, call.file_path))
             )
         callee = _ForwardedNames(snapshot, source_path, forwarder)
         edits: list[NominalSourceEdit] = []
@@ -722,23 +810,6 @@ class _MethodNameStrings:
     that is no lookup) cannot, unless the scan has a function that looks an
     attribute up by one of its own parameters, which turns a name argument into
     a lookup."""
-
-    OBJECT_LOOKUPS: ClassVar[frozenset[str]] = frozenset({"getattr", "hasattr", "setattr", "delattr"})
-    """Lookups that take an object, then the attribute name."""
-    NAME_LOOKUPS: ClassVar[frozenset[str]] = frozenset({"attrgetter", "methodcaller"})
-    """Lookups that take only attribute names."""
-    LOOKUPS: ClassVar[frozenset[str]] = OBJECT_LOOKUPS | NAME_LOOKUPS
-
-    @classmethod
-    def name_arguments(cls, call: ast.Call) -> list[ast.expr]:
-        """The arguments a lookup reads as attribute names; none for any other call."""
-
-        callee = cls.callee_name(call.func)
-        if callee in cls.OBJECT_LOOKUPS:
-            return call.args[1:2]
-        if callee in cls.NAME_LOOKUPS:
-            return call.args[:1] if callee == "methodcaller" else list(call.args)
-        return []
 
     @classmethod
     def require_none(cls, snapshot: CodemodSourceSnapshot, name: str) -> None:
@@ -787,17 +858,10 @@ class _MethodNameStrings:
         call = parents.get(parent) if isinstance(parent, ast.keyword) else parent
         if not isinstance(call, ast.Call) or node is call.func:
             return None
-        callee = cls.callee_name(call.func)
-        if callee is None or callee in cls.LOOKUPS:
+        callee = AttributeLookup.callee_name(call.func)
+        if callee is None or callee in AttributeLookup.LOOKUPS:
             return None
         return callee
-
-    @staticmethod
-    def callee_name(func: ast.expr) -> str | None:
-        match func:
-            case ast.Name(id=name) | ast.Attribute(attr=name):
-                return name
-        return None
 
     @classmethod
     def parameter_lookups(cls, snapshot: CodemodSourceSnapshot) -> dict[str, str]:
@@ -817,7 +881,7 @@ class _MethodNameStrings:
                 for call in ast.walk(function):
                     if isinstance(call, ast.Call) and any(
                         isinstance(argument, ast.Name) and argument.id in parameters
-                        for argument in cls.name_arguments(call)
+                        for argument in AttributeLookup.name_arguments(call)
                     ):
                         found.setdefault(function.name, f"{parsed.file_path}:{call.lineno}")
         return found
@@ -832,7 +896,7 @@ class _ForwardedNames:
 
     snapshot: CodemodSourceSnapshot
     source_path: str
-    forwarder: _ForwarderBody
+    forwarder: _Forwarder
 
     @property
     def tables(self) -> tuple[ModuleSymbolTable, ...]:
