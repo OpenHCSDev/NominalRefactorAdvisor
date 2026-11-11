@@ -142,12 +142,7 @@ class ResolvedServedClass:
                 raise ValueError(f"Served header {request.served_header!r} does not take base {base!r}")
         members = ClassMemberPromotionStatement.selected(source_class.node, request.member_names)
         resolved = cls(request, source_class, members)
-        context = ClassMemberMoveProofContext(
-            source_class=source_class,
-            destination_class=source_class,
-            source=snapshot.sources_by_file_path[source_class.file_path],
-            module_bound_names=resolved.module_names(snapshot),
-        )
+        context = ClassMemberMoveProofContext.between(snapshot, source_class, source_class)
         ServedMemberScope(source_class, frozenset(request.member_names), members).require_safe(
             context
         )
