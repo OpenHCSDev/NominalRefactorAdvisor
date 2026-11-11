@@ -1,5 +1,8 @@
 """Equivalent full-report scopes share global execution and cache identity."""
 
+import json
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -70,3 +73,60 @@ def test_symlink_report_coverage_preserves_analysis_spelling(tmp_path: Path) -> 
     scope = AnalysisPathScope((alias,), (target,))
     assert scope.analysis_roots == (alias,)
     assert not scope.has_report_filter
+
+
+def test_a_sibling_context_root_adds_to_the_requested_roots(tmp_path: Path) -> None:
+    scanned, sibling = tmp_path / "scan", tmp_path / "sibling"
+    scanned.mkdir()
+    sibling.mkdir()
+
+    scope = AnalysisPathScope.from_requested_roots((scanned,), (sibling,))
+
+    assert scope.analysis_roots == (scanned, sibling)
+    assert scope.report_roots == (scanned,)
+
+
+def test_a_containing_context_root_still_replaces_the_requested_roots(
+    tmp_path: Path,
+) -> None:
+    package = tmp_path / "pkg"
+    package.mkdir()
+
+    scope = AnalysisPathScope.from_requested_roots((package,), (tmp_path,))
+
+    assert scope.analysis_roots == (tmp_path,)
+
+
+def test_a_sibling_importer_keeps_a_module_alive(tmp_path: Path) -> None:
+    files = {
+        "scan/pkg/__init__.py": "",
+        "scan/pkg/imported_elsewhere.py": "VALUE = 1\n",
+        "scan/pkg/user.py": "from pkg import used\nX = used.Y\n",
+        "scan/pkg/used.py": "Y = 2\n",
+        "scan/pkg/orphan.py": "from pkg import user\n",
+        "sibling/app/__init__.py": "",
+        "sibling/app/consumer.py": "from pkg import imported_elsewhere\n",
+        "sibling/app/unreached.py": "Z = 3\n",
+    }
+    for relative, source in files.items():
+        path = tmp_path / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(source)
+
+    completed = subprocess.run(
+        [
+            sys.executable, "-m", "nominal_refactor_advisor", str(tmp_path / "scan"),
+            "--context-root", str(tmp_path / "sibling"),
+            "--json", "--raw-findings", "--no-cache",
+        ],
+        capture_output=True, text=True, check=True,
+    )
+
+    report = json.loads(completed.stdout)
+    findings = report.get("supporting_raw_findings") or report["findings"]
+    dead = {
+        finding["evidence"][0]["file_path"]
+        for finding in findings
+        if finding["detector_id"] == "dead_module"
+    }
+    assert dead == {str(tmp_path / "scan/pkg/orphan.py")}

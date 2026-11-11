@@ -15,6 +15,10 @@ from nominal_refactor_advisor.class_overlap import (
     ComposeExisting,
     ExtractMixin,
 )
+from nominal_refactor_advisor.refactors.carrier_fields import (
+    CarrierFieldProjection,
+    ReplaceFieldsWithCarrierOperation,
+)
 from nominal_refactor_advisor.refactors.class_overlap import (
     CreateMixinOperation,
     ExtendOwnerOperation,
@@ -499,3 +503,97 @@ def test_a_positional_construction_is_keyworded_first_then_the_pick_composes(
     assert "return First(lead=0, alpha=1, beta='x')" in source
     assert "class First(Lettered):\n" in source
     assert _run(tmp_path, probe) == before
+
+
+COPIED = (
+    "from dataclasses import dataclass\n\n\n"
+    "@dataclass(frozen=True)\n"
+    "class First:\n"
+    "    alpha: int\n"
+    "    beta: str\n"
+    "    gamma: float\n"
+    "    own_first: int = 0\n\n\n"
+    "@dataclass(frozen=True)\n"
+    "class Second:\n"
+    "    alpha: int\n"
+    "    beta: str\n"
+    "    gamma: float\n"
+    "    own_second: int = 0\n\n\n"
+    "def summarize(first: First) -> Second:\n"
+    "    return Second(alpha=first.alpha, beta=first.beta, gamma=first.gamma)\n\n\n"
+    "def describe(second: Second) -> str:\n"
+    "    return f'{second.beta}{second.alpha}{second.gamma}'\n"
+)
+
+
+def test_a_hold_source_pick_holds_the_value_it_copied(tmp_path: Path) -> None:
+    """A class built by copying one value's block holds that value instead."""
+    probe = (
+        "from pkg.records import First, describe, summarize\n"
+        "print(describe(summarize(First(alpha=1, beta='x', gamma=2.5))))\n"
+    )
+    _write(tmp_path, {"pkg/__init__.py": "", "pkg/records.py": COPIED})
+    before = _run(tmp_path, probe)
+    modules = parse_python_modules(tmp_path, use_parse_cache=False)
+    findings = analyze_modules(modules, DetectorConfig())
+    (copy,) = (
+        finding
+        for finding in findings
+        if isinstance(finding.metrics, ClassOverlapMetrics)
+        and finding.metrics.move is ExtractMixin
+    )
+    hold = next(
+        owner for owner in copy.metrics.owner_candidates if owner.kind == "hold_source"
+    )
+
+    CodemodRefactorGoalRunner(
+        roots=(tmp_path,),
+        config=DetectorConfig(),
+        dry_run=False,
+        guard_suite=ArchitectureGuardSuite(),
+        initial_scan=CodemodWorkflowScan(modules=modules, findings=findings),
+        migration_type=ClassBodyCompositionConcept,
+        owner_picks=OwnerPicks(
+            "picks.json",
+            "0",
+            (
+                OwnerPick(
+                    finding=copy.stable_id,
+                    owner=hold.candidate_id,
+                    because=hold.receipts[0].kind.value,
+                    name="first",
+                ),
+            ),
+        ),
+    ).run()
+
+    source = (tmp_path / "pkg/records.py").read_text()
+    assert "class Second:\n    first: First\n" in source
+    assert "return Second(first=first)" in source
+    assert _run(tmp_path, probe) == before
+
+
+def test_holding_the_source_is_refused_while_another_file_names_the_copier(
+    tmp_path: Path,
+) -> None:
+    """The move rewrites the copier's own file, so a reader elsewhere refuses it."""
+    _write(
+        tmp_path,
+        {
+            "pkg/__init__.py": "",
+            "pkg/records.py": COPIED,
+            "pkg/report.py": "from pkg.records import Second\n\n\ndef label(second: Second) -> str:\n    return second.beta\n",
+        },
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    operation = ReplaceFieldsWithCarrierOperation(
+        target=SourceRewriteTarget(file_path=str(tmp_path / "pkg/records.py"), qualname="Second"),
+        field_projections=tuple(
+            CarrierFieldProjection(source_field=name, carrier_attribute=name)
+            for name in ("alpha", "beta", "gamma")
+        ),
+        carrier_field_declaration="first: First",
+    )
+
+    with pytest.raises(CodemodOperationPreflightError, match="named in"):
+        operation.source_edits(snapshot)

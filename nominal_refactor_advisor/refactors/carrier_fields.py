@@ -168,6 +168,7 @@ class ReplaceFieldsWithCarrierOperation(SourceReprovedOperation):
         target_class = ResolvedClassTarget(target, class_node)
         target_symbol = target_class.required_symbol(context)
         source_path = target.file_path
+        self.require_used_only_in(context, source_path, class_node.name)
         source = context.sources_by_file_path[source_path]
         geometry = SourceTextGeometry(source)
         root = context.module_nodes_by_file_path[source_path]
@@ -280,6 +281,17 @@ class ReplaceFieldsWithCarrierOperation(SourceReprovedOperation):
             )
             if carrier_source is None:
                 continue
+            if len({keyword.value.lineno for keyword in projected_keywords}) != len(
+                projected_keywords
+            ):
+                # Keywords sharing a line cannot each own that line: rewrite the
+                # argument list instead, every other argument kept verbatim.
+                argument_list = self.carrier_argument_list(
+                    call, projected_keywords, carrier_source, geometry
+                )
+                if argument_list is not None:
+                    replacements.append(argument_list)
+                continue
             first_keyword = projected_keywords[0]
             replacements.append(
                 self.line_span_replacement(
@@ -296,6 +308,65 @@ class ReplaceFieldsWithCarrierOperation(SourceReprovedOperation):
                 for keyword in projected_keywords[1:]
             )
         return tuple(replacements)
+
+    @staticmethod
+    def require_used_only_in(
+        context: CodemodSourceSnapshot, source_path: str, class_name: str
+    ) -> None:
+        """This move rewrites one file, so a class another file names would keep
+        its old fields and constructions there: refuse rather than split it."""
+
+        for file_path, module in context.module_nodes_by_file_path.items():
+            if file_path == source_path:
+                continue
+            if any(
+                (isinstance(node, ast.Name) and node.id == class_name)
+                or (isinstance(node, ast.Attribute) and node.attr == class_name)
+                or (
+                    isinstance(node, ast.alias)
+                    and class_name in (node.name.rpartition(".")[2], node.asname)
+                )
+                for node in ast.walk(module)
+            ):
+                raise ValueError(
+                    f"`{class_name}` is named in {file_path}; this move rewrites "
+                    f"only {source_path}"
+                )
+
+    def carrier_argument_list(
+        self,
+        call: ast.Call,
+        projected_keywords: tuple[ast.keyword, ...],
+        carrier_source: str,
+        geometry: SourceTextGeometry,
+    ) -> SourceTextSpanReplacement | None:
+        """The call's arguments with the projected keywords replaced, in place
+        of the first of them, by one carrier keyword."""
+
+        projected = {id(keyword) for keyword in projected_keywords}
+        parts: list[str] = []
+        for argument in call.args:
+            if (segment := geometry.segment_for_node(argument)) is None:
+                return None
+            parts.append(segment)
+        for keyword in call.keywords:
+            if keyword is projected_keywords[0]:
+                parts.append(f"{self.carrier_field_name}={carrier_source}")
+                continue
+            if id(keyword) in projected:
+                continue
+            if (segment := geometry.segment_for_node(keyword.value)) is None:
+                return None
+            parts.append(
+                f"**{segment}" if keyword.arg is None else f"{keyword.arg}={segment}"
+            )
+        _, func_end = geometry.required_node_offsets(call.func)
+        _, call_end = geometry.required_node_offsets(call)
+        return SourceTextSpanReplacement.from_offsets(
+            start_offset=func_end,
+            end_offset=call_end,
+            replacement_source=f"({', '.join(parts)})",
+        )
 
     def projected_keyword_carrier_source(
         self,

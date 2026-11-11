@@ -99,11 +99,16 @@ from nominal_refactor_advisor.native_class_mro import NativeClassMroDeclaration
 from nominal_refactor_advisor.owner_candidates import (
     ComposeExistingOwner,
     ExistingClassOwner,
+    HoldSourceOwner,
     NewMixinOwner,
     OwnerCandidate,
     SharedBaseOwner,
 )
 from nominal_refactor_advisor.refactor_concepts import ClassBodyCompositionConcept
+from nominal_refactor_advisor.refactors.carrier_fields import (
+    CarrierFieldProjection,
+    ReplaceFieldsWithCarrierOperation,
+)
 from nominal_refactor_advisor.semantic_descent import (
     AuthorityClaim,
     SemanticAuthorityKind,
@@ -2635,6 +2640,23 @@ class ClassOverlapFindingRecipeSynthesizer(
                         target=source_rewrite_target(base),
                         member_names=owner.block,
                     ),
+                )
+            case HoldSourceOwner():
+                source = verdicts.class_index.class_for(owner.symbol)
+                if source is None or not composers:
+                    return "the picked source left the source"
+                if not (pick.name or "").isidentifier():
+                    return "a hold-source pick needs the held field's `name`"
+                return tuple(
+                    ReplaceFieldsWithCarrierOperation(
+                        target=source_rewrite_target(copier),
+                        field_projections=tuple(
+                            CarrierFieldProjection(source_field=name, carrier_attribute=name)
+                            for name in owner.block
+                        ),
+                        carrier_field_declaration=f"{pick.name}: {source.qualname}",
+                    )
+                    for copier in composers
                 )
         return f"`{owner.kind}` owners have no move"
 
