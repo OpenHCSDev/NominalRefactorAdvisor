@@ -168,10 +168,21 @@ class ReplaceFieldsWithCarrierOperation(RepositorySourceReprovedOperation):
             raise ValueError("Field carrier replacement requires a class target")
         target_class = ResolvedClassTarget(target, class_node)
         target_symbol = target_class.required_symbol(context)
-        if context.required_class_family_index.descendant_symbols(target_symbol):
-            raise ValueError(
-                f"`{target.qualname}` has descendants, which build or read its fields too"
+        descendants = context.required_class_family_index.descendant_symbols(target_symbol)
+        if descendants:
+            projected = frozenset(self.field_projection_map)
+            compact_index = context.compact_class_index
+            declaring_descendants = tuple(
+                symbol
+                for symbol in descendants
+                if (cls := compact_index.classes_by_symbol.get(symbol)) is not None
+                and projected & cls.direct_declared_member_names
             )
+            if declaring_descendants:
+                raise ValueError(
+                    f"`{target.qualname}` has descendants declaring projected fields: "
+                    f"{sorted(declaring_descendants)!r}"
+                )
         declarations = {
             self.field_name_for_statement(statement): statement
             for statement in class_node.body
