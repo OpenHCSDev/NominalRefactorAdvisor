@@ -448,12 +448,14 @@ class OwnerIndependentMethodWrapper(Case):
         claim describes, bound to each other, with the attribute tuples it names."""
 
         decorator = cls.native.declaration
+        if type(decorator) is not FunctionType:
+            raise ValueError("Owner-independent wrapper is not an exact Python function")
         if (
             functools.WRAPPER_ASSIGNMENTS != cls.read_attributes
             or functools.WRAPPER_UPDATES != cls.updated_attributes
             or functools.wraps.__defaults__ != (cls.read_attributes, cls.updated_attributes)
             or functools.update_wrapper.__defaults__ != (cls.read_attributes, cls.updated_attributes)
-            or getattr(decorator, "__globals__", {}).get("wraps") is not functools.wraps
+            or decorator.__globals__.get("wraps") is not functools.wraps
             or functools.wraps.__globals__.get("partial") is not functools.partial
             or functools.wraps.__globals__.get("update_wrapper") is not functools.update_wrapper
         ):
@@ -497,8 +499,10 @@ class OwnerIndependentMethodWrapper(Case):
         raise ValueError("Owner-independent wrapper source differs from its claimed shape")
 
 
-def _docless_body(node: ast.AST) -> tuple[ast.stmt, ...]:
-    body = tuple(getattr(node, "body", ()))
+def _docless_body(
+    node: ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef,
+) -> tuple[ast.stmt, ...]:
+    body = tuple(node.body)
     match body:
         case (ast.Expr(value=ast.Constant(value=str())), *rest):
             return tuple(rest)
