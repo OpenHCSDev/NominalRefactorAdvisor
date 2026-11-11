@@ -74,6 +74,7 @@ from nominal_refactor_advisor.false_distinction_observations import (
 from nominal_refactor_advisor.models import RefactorFinding
 from nominal_refactor_advisor.refactor_concepts import FalseDistinctionErasureConcept
 from nominal_refactor_advisor.source_index import AstTargetNodeKind
+from nominal_refactor_advisor.stored_records import StoredRecords
 
 FoundT = TypeVar("FoundT")
 
@@ -234,6 +235,12 @@ class RedirectEmptySubclassOperation(RepositorySourceReprovedOperation):
                 f"`{target.qualname}` is not one undecorated class with a single named base and no body"
             )
         (subclass,) = found
+        index = snapshot.compact_class_index
+        symbol = index.symbol_for(file_path=target.file_path, qualname=target.qualname)
+        if symbol is not None:
+            StoredRecords.of(snapshot, target.file_path).require_unstored(
+                frozenset((symbol, *index.ancestor_symbols(symbol))), f"`{subclass.name}`"
+            )
         proof = DeclarationRedirectProof.require_redirect(
             snapshot.parsed_modules, target, node, bound_name=subclass.base.id
         )
@@ -500,6 +507,14 @@ class FoldEnumMembersOperation(RepositorySourceReprovedOperation):
         if len(self.members) < 2 or not set(self.members) <= set(statements):
             raise ValueError(f"`{proof.name}` does not declare the members {self.members!r}")
         kept, *folded = sorted(self.members, key=list(statements).index)
+        enum_symbol = snapshot.compact_class_index.symbol_for(
+            file_path=target.file_path, qualname=target.qualname
+        )
+        if enum_symbol is not None:
+            StoredRecords.of(snapshot, target.file_path).require_unstored(
+                frozenset((enum_symbol,)),
+                ", ".join(f"`{proof.name}.{name}`" for name in folded),
+            )
         refusals = tuple(proof.refusals(tuple(self.members)))
         if refusals:
             raise ValueError("; ".join(dict.fromkeys(refusals)))

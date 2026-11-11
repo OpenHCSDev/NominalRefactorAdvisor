@@ -555,3 +555,66 @@ def test_a_class_declared_in_a_test_is_never_reported(tmp_path: Path):
         },
     )
     assert _findings(NameOnlySubclassDetector, tmp_path, include_tests=True) == []
+
+
+STORED_FAILURES = {
+    "pyproject.toml": (
+        "[project]\nname = 'pkg'\nversion = '0'\n\n"
+        "[tool.nominal-refactor-advisor]\ndurable-bases = ['pkg.tables:DurableTables']\n"
+    ),
+    "pkg/__init__.py": "",
+    "pkg/tables.py": "class DurableTables:\n    pass\n",
+    "pkg/failures.py": (
+        "class TurnFailure(Exception):\n    pass\n\n\n"
+        "class QueuedInputNotSent(TurnFailure):\n    pass\n\n\n"
+        "def fail():\n    raise QueuedInputNotSent('unwritten')\n"
+    ),
+    "pkg/ledger.py": (
+        "from dataclasses import dataclass\n\n"
+        "from pkg.failures import TurnFailure\nfrom pkg.tables import DurableTables\n\n\n"
+        "class LedgerTable(DurableTables):\n    pass\n\n\n"
+        "@dataclass(frozen=True)\nclass FailedTurnEvidence(LedgerTable):\n"
+        "    turn_id: str\n    failure: type[TurnFailure]\n"
+    ),
+}
+
+
+def test_redirect_refuses_a_member_a_stored_row_can_name(tmp_path: Path):
+    """agent-comms 88e245f7: deleting a TurnFailure member left `failed_turn_evidence`
+    rows naming it, and the install's table rebuild failed its CHECK. A row of a
+    class below a declared durable base holding the family is the member's reader."""
+
+    _write(tmp_path, STORED_FAILURES)
+    operation = RedirectEmptySubclassOperation(target=_target(tmp_path, "QueuedInputNotSent"))
+    with pytest.raises(ValueError, match="pkg.ledger.FailedTurnEvidence.failure can hold it"):
+        operation.source_edits(_snapshot(tmp_path))
+
+
+def test_redirect_of_a_member_nothing_stores_still_applies(tmp_path: Path):
+    files = dict(STORED_FAILURES)
+    files["pkg/ledger.py"] = files["pkg/ledger.py"].replace(
+        "    failure: type[TurnFailure]\n", "    failure_text: str\n"
+    )
+    _write(tmp_path, files)
+    operation = RedirectEmptySubclassOperation(target=_target(tmp_path, "QueuedInputNotSent"))
+    assert operation.source_edits(_snapshot(tmp_path))
+
+
+def test_fold_refuses_members_a_stored_row_can_hold(tmp_path: Path):
+    """A stored enum field keeps the member's value: folding it away leaves rows
+    whose value no member declares."""
+
+    files = dict(MODE_PACKAGE)
+    files["pyproject.toml"] = STORED_FAILURES["pyproject.toml"]
+    files["pkg/tables.py"] = STORED_FAILURES["pkg/tables.py"]
+    files["pkg/runs.py"] = (
+        "from dataclasses import dataclass\n\nfrom pkg.modes import Mode\n"
+        "from pkg.tables import DurableTables\n\n\n"
+        "@dataclass(frozen=True)\nclass Run(DurableTables):\n    mode: 'Mode'\n"
+    )
+    _write(tmp_path, files)
+    operation = FoldEnumMembersOperation(
+        target=_target(tmp_path, "Mode"), members=("FAST", "QUICK")
+    )
+    with pytest.raises(ValueError, match="pkg.runs.Run.mode can hold it"):
+        operation.source_edits(_snapshot(tmp_path))
