@@ -261,10 +261,16 @@ class AnsweredMethod:
         cannot type, may."""
 
         receivers: list[TypedReceiver] = []
+        namespaces: list[TypedReceiver] = []
         for parsed in self.snapshot.parsed_modules:
             for node in ast.walk(parsed.module):
-                if _namespace_lookup(node):
-                    return f"{parsed.file_path}:{node.lineno}"
+                namespace = _namespace_lookup(node)
+                if namespace is not None:
+                    where = f"{parsed.file_path}:{node.lineno}"
+                    if isinstance(namespace, ast.Call):
+                        return where
+                    namespaces.append(TypedReceiver(parsed, namespace, node, where, None))
+                    continue
                 if not isinstance(node, ast.Call):
                     continue
                 names = AttributeLookup.name_arguments(node)
@@ -276,9 +282,14 @@ class AnsweredMethod:
                 receivers.append(TypedReceiver(parsed, node.args[0], node, where, None))
         try:
             reached = self.reaching(receivers)
+            classes = [
+                receiver for receiver, binding in self.reaching(namespaces)
+                if isinstance(binding, ClassBinding)
+            ]
         except ValueError as error:
             return str(error)
-        return reached[0][0].where if reached else None
+        found = [receiver for receiver, _binding in reached] + classes
+        return found[0].where if found else None
 
 
 @dataclass(frozen=True)
@@ -601,22 +612,27 @@ class AttributeLookup:
         return []
 
 
-def _namespace_lookup(node: ast.AST) -> bool:
-    """A read of a namespace by a name that is not a constant: `x.__dict__[k]`,
-    `x.__dict__.get(k)` or `vars(x)[k]`. The receiver is a namespace, not typed."""
+def _namespace_lookup(node: ast.AST) -> ast.expr | None:
+    """The object whose namespace a read takes by a name that is not a constant
+    (`x.__dict__[k]`, `x.__dict__.get(k)`, `vars(x)[k]`), or None for any other
+    node. Only a class's namespace holds its methods and properties: an
+    instance's holds its own values. `type(x)` comes back as the call itself,
+    a class this proof cannot name."""
 
-    def namespace(expression: ast.expr) -> bool:
+    def namespace_of(expression: ast.expr) -> ast.expr | None:
         match expression:
-            case ast.Attribute(attr="__dict__") | ast.Call(func=ast.Name(id="vars")):
-                return True
-        return False
+            case ast.Attribute(value=owner, attr="__dict__"):
+                return owner
+            case ast.Call(func=ast.Name(id="vars"), args=[owner]):
+                return owner
+        return None
 
     match node:
-        case ast.Subscript(value=value, slice=key) if namespace(value):
-            return not isinstance(key, ast.Constant)
-        case ast.Call(func=ast.Attribute(value=value, attr="get"), args=[key, *_]) if namespace(value):
-            return not isinstance(key, ast.Constant)
-    return False
+        case ast.Subscript(value=value, slice=key) if not isinstance(key, ast.Constant):
+            return namespace_of(value)
+        case ast.Call(func=ast.Attribute(value=value, attr="get"), args=[key, *_]) if not isinstance(key, ast.Constant):
+            return namespace_of(value)
+    return None
 
 
 def _dynamic_access(node: ast.AST, name: str) -> bool:

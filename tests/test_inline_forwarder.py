@@ -259,7 +259,9 @@ def test_a_forwarder_that_overrides_its_base_is_refused(tmp_path: Path) -> None:
             "def call(actor: Actor, name: str):\n    return getattr(actor, name)\n",
             True,
         ),
-        ("NAMES = ('require_may_change',)\n\n\ndef call(cls, name):\n    return vars(cls)[name]\n", True),
+        ("NAMES = ('require_may_change',)\n\n\ndef call(name):\n    return vars(Actor)[name]\n", True),
+        ("NAMES = ('require_may_change',)\n\n\ndef call(actor: Actor, name):\n    return type(actor).__dict__[name]\n", True),
+        ("NAMES = ('require_may_change',)\n\n\ndef call(actor: Actor, name):\n    return vars(actor)[name]\n", False),
     ),
 )
 def test_only_a_string_that_can_feed_a_lookup_refuses(
