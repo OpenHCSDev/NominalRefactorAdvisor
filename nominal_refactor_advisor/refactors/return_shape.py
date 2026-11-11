@@ -281,6 +281,13 @@ class FlattenTupleReturnOperation(RepositorySourceReprovedOperation):
         if isinstance(parent, (ast.If, ast.BoolOp)):
             return
 
+        if isinstance(parent, ast.Return) and parent.value is call_node:
+            self._rewrite_return(use, parent, geometry, replacements)
+            return
+
+        if isinstance(parent, ast.Starred) and parent.value is call_node:
+            return
+
         raise ValueError(
             f"{use.where} reads `{self.method_name}` in a context this "
             f"operation cannot rewrite: {type(parent).__name__} at line "
@@ -330,6 +337,30 @@ class FlattenTupleReturnOperation(RepositorySourceReprovedOperation):
                 start_offset=start,
                 end_offset=end,
                 replacement_source=call_src,
+            )
+        )
+
+    def _rewrite_return(
+        self,
+        use: AnsweredUse,
+        return_node: ast.Return,
+        geometry: SourceTextGeometry,
+        replacements: dict[str, list[SourceTextSpanReplacement]],
+    ) -> None:
+        """``return method()`` → ``return ((_r := method()),) if _r is not None else ()``
+
+        The caller still returns a tuple; the called method now returns
+        ``T | None``.  A walrus wraps the result back into a one-element
+        tuple or an empty tuple so the caller's contract stays unchanged."""
+        call_src = ast.unparse(use.node)
+        assert return_node.value is not None
+        start, end = geometry.required_node_offsets(return_node.value)
+        new_src = f"((_r := {call_src}),) if _r is not None else ()"
+        replacements.setdefault(use.file_path, []).append(
+            SourceTextSpanReplacement.from_offsets(
+                start_offset=start,
+                end_offset=end,
+                replacement_source=new_src,
             )
         )
 

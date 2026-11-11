@@ -161,3 +161,29 @@ def test_annotation_flattens(tmp_path: Path) -> None:
     assert FlattenTupleReturnOperation._flatten_annotation("tuple[int, ...]") == "int | None"
     assert FlattenTupleReturnOperation._flatten_annotation("str") == "str"
     assert FlattenTupleReturnOperation._flatten_annotation("list[str]") == "list[str]"
+
+
+def test_return_context_reader_wraps_in_tuple(tmp_path: Path) -> None:
+    """A caller that does ``return method()`` wraps the flattened result back."""
+    package = tmp_path / "pkg"
+    package.mkdir()
+    (package / "__init__.py").write_text("")
+    (package / "base.py").write_text(BASE)
+    (package / "strict.py").write_text(STRICT)
+    (package / "consumer.py").write_text(
+        "from pkg.base import Validator\n\n\n"
+        "def relay(v: Validator) -> tuple[str, ...]:\n"
+        "    return v.warning()\n"
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    operation = _operation(tmp_path)
+    recipe = RefactorRecipe(recipe_id="test", operations=(operation,))
+    document = CodemodPlanDocument(recipes=(recipe,))
+    simulation = document.simulate(snapshot)
+    consumer_path = (tmp_path / "pkg/consumer.py").as_posix()
+    rewritten = simulation.simulation.rewritten_sources.get(
+        consumer_path, snapshot.sources_by_file_path[consumer_path]
+    )
+    assert "return v.warning()" not in rewritten
+    assert "_r := v.warning()" in rewritten
+    assert "is not None" in rewritten
