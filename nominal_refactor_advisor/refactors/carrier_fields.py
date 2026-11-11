@@ -15,6 +15,7 @@ from nominal_refactor_advisor.codemod_payload import (
     RequiredStringPayloadValueCodec,
     codemod_payload_field,
 )
+from nominal_refactor_advisor.codemod_selector_models import SourceRewriteTarget
 from nominal_refactor_advisor.codemod_reproof import RepositorySourceReprovedOperation
 from nominal_refactor_advisor.module_node_index import ModuleNodeIndex
 from nominal_refactor_advisor.refactors.answered_method import AnsweredField
@@ -123,6 +124,13 @@ class ReplaceFieldsWithCarrierOperation(RepositorySourceReprovedOperation):
     carrier_field_declaration: str = codemod_payload_field(
         RequiredStringPayloadValueCodec()
     )
+    durable_bases: tuple[SourceRewriteTarget, ...] = codemod_payload_field(
+        PayloadRecordArrayValueCodec(SourceRewriteTarget), default=()
+    )
+    """The owning repository's roots of stored state (agent-comms: DurableTables,
+    DurableFile), passed by the plan. Rows already stored keep the old keys, so a
+    target descending from one refuses: that move is a data migration. A live
+    reply needs no input: its typed readers move with it, or the move refuses."""
 
     @property
     def carrier_field(self) -> CarrierFieldDeclaration:
@@ -183,6 +191,7 @@ class ReplaceFieldsWithCarrierOperation(RepositorySourceReprovedOperation):
         if not fields:
             raise ValueError(f"`{target.qualname}` declares none of the projected fields")
         self.require_concrete_carrier(context, fields[0], target.file_path)
+        self.require_not_stored(context, target_symbol)
         geometries: dict[str, SourceTextGeometry] = {}
 
         def geometry(file_path: str) -> SourceTextGeometry:
@@ -234,6 +243,21 @@ class ReplaceFieldsWithCarrierOperation(RepositorySourceReprovedOperation):
                 ),
             )
         )
+
+    def require_not_stored(self, context: CodemodSourceSnapshot, target_symbol: str) -> None:
+        index = context.required_class_family_index
+        lineage = {target_symbol, *index.ancestor_symbols(target_symbol)}
+        for base in self.durable_bases:
+            symbol = ResolvedClassTarget.from_rewrite_target(context, base).required_symbol(context)
+            if symbol in lineage:
+                moved = ", ".join(
+                    f"{name} -> {self.carrier_field_name}.{attribute}"
+                    for name, attribute in self.field_projection_map.items()
+                )
+                raise ValueError(
+                    f"`{target_symbol}` is a `{symbol}`, whose rows are already stored: "
+                    f"holding the carrier moves its keys ({moved}), a migration this move does not carry"
+                )
 
     def require_concrete_carrier(
         self, context: CodemodSourceSnapshot, field: AnsweredField, file_path: str

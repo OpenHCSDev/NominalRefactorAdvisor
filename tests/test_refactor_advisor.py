@@ -12,6 +12,7 @@ import sys
 from abc import ABC
 from collections.abc import Mapping
 from dataclasses import fields, replace
+from dataclasses import replace
 from pathlib import Path
 from typing import cast
 from unittest.mock import Mock
@@ -27839,3 +27840,29 @@ def test_carrier_replacement_refuses_an_abstract_carrier_with_members(tmp_path: 
     snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     with pytest.raises(CodemodOperationPreflightError, match="cannot be decoded back"):
         operation.source_edits(snapshot)
+
+
+def test_carrier_replacement_refuses_a_record_on_a_declared_durable_base(tmp_path: Path) -> None:
+    module_path = tmp_path / "pkg/mod.py"
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "from dataclasses import dataclass\n\n\n"
+        "class DurableTables:\n    pass\n\n\n"
+        "@dataclass(frozen=True)\nclass Stats:\n    count: int\n\n\n"
+        "@dataclass(frozen=True)\nclass Reply(DurableTables):\n    count: int\n    name: str\n\n\n"
+        "def reply(stats: Stats) -> Reply:\n    return Reply(count=stats.count, name='x')\n",
+    )
+    operation = ReplaceFieldsWithCarrierOperation(
+        target=SourceRewriteTarget(file_path=module_path.as_posix(), qualname="Reply"),
+        carrier_field_declaration="stats: Stats",
+        field_projections=(CarrierFieldProjection("count", "count"),),
+        durable_bases=(SourceRewriteTarget(file_path=module_path.as_posix(), qualname="DurableTables"),),
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    with pytest.raises(CodemodOperationPreflightError, match=r"moves its keys \(count -> stats.count\)"):
+        operation.source_edits(snapshot)
+    simulation = RefactorRecipe("carrier").with_operation(
+        replace(operation, durable_bases=())
+    ).simulate(snapshot)
+    assert simulation.is_clean, simulation.preflight_report
