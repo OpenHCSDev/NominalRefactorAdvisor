@@ -831,7 +831,11 @@ class ClassOverlapVerdicts:
                 ),
                 *axis_receipts,
                 *differing_receipts,
-                *self._inherited_receipts(overlap),
+                *(
+                    self._inherited_receipts(overlap)
+                    if move is not ExtractMixin
+                    else ()
+                ),
                 *self._size_receipts(extractable, first, second),
                 *self._member_receipts(overlap, members),
                 *self._kept_difference_receipts(overlap),

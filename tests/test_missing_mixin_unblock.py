@@ -135,6 +135,42 @@ def test_all_inherited_block_refuses_mixin(
             assert c.inherited_names
 
 
+def test_extract_mixin_verdict_not_blocked_by_inherited(
+    tmp_path: Path,
+) -> None:
+    """An ExtractMixin verdict with INHERITED_DECLARATION should be permitted:
+    inherited names don't block the verdict, because the recipe synthesizer
+    filters them from the block."""
+
+    from nominal_refactor_advisor.class_overlap import ExtractMixin
+    from nominal_refactor_advisor.overlap_receipts import OverlapReceiptKind
+
+    package = tmp_path / "pkg"
+    package.mkdir()
+    (package / "__init__.py").write_text("")
+    (package / "classes.py").write_text(INHERITED_SHARED)
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+
+    verdicts = snapshot.class_overlap_verdicts
+    extract_mixin_with_inherited = [
+        c for c in verdicts.candidates
+        if c.move is ExtractMixin and c.inherited_names
+    ]
+    assert extract_mixin_with_inherited, (
+        "fixture must produce an ExtractMixin verdict with inherited declarations"
+    )
+    for c in extract_mixin_with_inherited:
+        inherited_refusals = [
+            r for r in c.refusals
+            if r.kind is OverlapReceiptKind.INHERITED_DECLARATION
+        ]
+        assert not inherited_refusals, (
+            f"ExtractMixin verdict should not have INHERITED_DECLARATION guards, "
+            f"got {[r.detail for r in inherited_refusals]}"
+        )
+        assert c.inherited_names, "inherited_names still available via overlap"
+
+
 def test_descendant_without_projected_fields_does_not_block_carrier(
     tmp_path: Path,
 ) -> None:
