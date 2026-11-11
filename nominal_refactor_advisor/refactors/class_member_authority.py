@@ -12,6 +12,7 @@ from dataclasses import (
     replace,
 )
 from functools import cached_property
+from typing import Self
 
 from nominal_refactor_advisor.annotation_semantics import StringizedAnnotationSurface
 from nominal_refactor_advisor.ast_tools import (
@@ -19,6 +20,10 @@ from nominal_refactor_advisor.ast_tools import (
     statements_without_docstring,
 )
 from nominal_refactor_advisor.class_families.parsed_index import IndexedClass
+from nominal_refactor_advisor.class_index import (
+    ClassLineBindingSnapshots,
+    ModuleNominalBindingSnapshot,
+)
 from nominal_refactor_advisor.class_member_lookup import (
     ClassMemberLookupProof,
     ClassNamespaceDelta,
@@ -369,13 +374,12 @@ class ClassMemberPromotionTargets(CodemodSourceSnapshot):
         if any("." in target.qualname for target in self.targets):
             return "Method promotion requires top-level class targets"
         for class_target in self.targets:
-            module = self.module_nodes_by_file_path[class_target.file_path]
             source_lines = tuple(
                 self.source_for(class_target.file_path).splitlines(keepends=True)
             )
-            module_bound_names = LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(
-                module.body
-            )
+            binding_snapshot = self.parsed_module_for_source_path(
+                class_target.file_path
+            ).fact(ClassLineBindingSnapshots).snapshots[class_target.node.lineno]
             class_bound_names = LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(
                 class_target.node.body
             )
@@ -384,7 +388,7 @@ class ClassMemberPromotionTargets(CodemodSourceSnapshot):
                     continue
                 profile = ClassMethodPromotionSafetyProfile.from_method(
                     statement,
-                    module_bound_names,
+                    binding_snapshot,
                     class_bound_names,
                     source_lines=source_lines,
                 )
@@ -1540,16 +1544,22 @@ class ClassMethodPromotionStatement(ClassMemberPromotionStatement):
         super().require_safe_move(context)
         if not isinstance(self.statement, (ast.FunctionDef, ast.AsyncFunctionDef)):
             raise ValueError("Class method projection does not contain a method")
-        profile = ClassMethodPromotionSafetyProfile.from_method(
-            self.statement,
-            context.module_bound_names,
-            context.class_bound_names,
-            source_lines=context.source_lines,
-        )
-        if profile.hazards:
+        # Its decorators run where its class statement runs now and where the
+        # destination's will: both must resolve them to a promotable declaration.
+        hazards = tuple(dict.fromkeys(
+            hazard
+            for binding_snapshot in context.binding_snapshots
+            for hazard in ClassMethodPromotionSafetyProfile.from_method(
+                self.statement,
+                binding_snapshot,
+                context.class_bound_names,
+                source_lines=context.source_lines,
+            ).hazards
+        ))
+        if hazards:
             raise ValueError(
                 f"Class method {self.statement.name!r} has promotion hazards "
-                f"{tuple(hazard.value for hazard in profile.hazards)!r}"
+                f"{tuple(hazard.value for hazard in hazards)!r}"
             )
 
 
@@ -1559,7 +1569,30 @@ class ClassMemberMoveProofContext(SourceTextGeometry):
 
     source_class: ResolvedClassTarget
     destination_class: ResolvedClassTarget
-    module_bound_names: frozenset[str]
+    binding_snapshots: tuple[ModuleNominalBindingSnapshot, ...]
+    """The module's bindings where the source and the destination class statements run."""
+
+    @classmethod
+    def between(
+        cls,
+        snapshot: CodemodSourceSnapshot,
+        source_class: ResolvedClassTarget,
+        destination_class: ResolvedClassTarget,
+    ) -> Self:
+        """The facts of moving members from one class to another, each class read at the
+        line its statement runs in its own module."""
+
+        return cls(
+            source_class=source_class,
+            destination_class=destination_class,
+            source=snapshot.sources_by_file_path[source_class.file_path],
+            binding_snapshots=tuple(
+                snapshot.parsed_module_for_source_path(target.file_path)
+                .fact(ClassLineBindingSnapshots)
+                .snapshots[target.node.lineno]
+                for target in (source_class, destination_class)
+            ),
+        )
 
     @cached_property
     def class_bound_names(self) -> frozenset[str]:
@@ -1619,14 +1652,7 @@ class ClassMemberMoveSelection:
                 f"Destination class {destination_class.qualname!r} is not an ancestor "
                 f"of {source_class.qualname!r}"
             )
-        source = snapshot.sources_by_file_path[source_class.file_path]
-        module = snapshot.module_nodes_by_file_path[source_class.file_path]
-        context = ClassMemberMoveProofContext(
-            source_class=source_class,
-            destination_class=destination_class,
-            source=source,
-            module_bound_names=LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(module.body),
-        )
+        context = ClassMemberMoveProofContext.between(snapshot, source_class, destination_class)
         requested_names = frozenset(member_names)
         members = ClassMemberPromotionStatement.selected(source_class.node, member_names)
         resolved_names = tuple(member.name for member in members)

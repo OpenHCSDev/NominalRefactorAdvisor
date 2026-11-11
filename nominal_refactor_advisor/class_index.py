@@ -76,6 +76,7 @@ from nominal_refactor_advisor.ast_tools import (
 )
 from nominal_refactor_advisor.class_method_facets import (
     CompactClassMethod,
+    DecoratorBindings,
     _compact_class_methods,
     _is_classmethod,
 )
@@ -1625,11 +1626,7 @@ class CompactModuleClassHeader(CompactModuleIdentity):
         binding pass: each class reads the bindings before it, each wrapper the
         module's final ones."""
         indexed_class_nodes = iter_class_definitions(list(parsed_module.module.body))
-        binding_snapshots = _module_nominal_binding_snapshots(
-            ModuleNominalBindingAuthority(parsed_module),
-            tuple(node.lineno for _qualname, node in indexed_class_nodes),
-            include_final=True,
-        )
+        binding_snapshots = parsed_module.fact(ClassLineBindingSnapshots).snapshots
         return cls(
             module_name=parsed_module.module_name,
             file_path=parsed_module.file_path,
@@ -2988,7 +2985,7 @@ DecoratedDefinition: TypeAlias = (
 
 
 @dataclass(frozen=True)
-class ModuleNominalBindingSnapshot:
+class ModuleNominalBindingSnapshot(DecoratorBindings):
     """Exact known and unresolved bindings before one module source position."""
 
     bindings_by_name: dict[str, CompactNominalBinding]
@@ -3025,6 +3022,14 @@ class ModuleNominalBindingSnapshot:
         order; a decorator that is no name path (`@registry[key]`) is unbound."""
 
         return tuple(self._decorator_reference(decorator) for decorator in node.decorator_list)
+
+    def decorators_bound_to(
+        self, definition: ast.FunctionDef | ast.AsyncFunctionDef, identities: frozenset[str]
+    ) -> tuple[bool, ...]:
+        return tuple(
+            any(reference.has_bound_name(identity) for identity in identities)
+            for reference in self.decorator_references(definition)
+        )
 
     def decorated_by(
         self,
@@ -4072,6 +4077,28 @@ def _module_nominal_binding_snapshots(
 
 
 @dataclass(frozen=True)
+class ClassLineBindingSnapshots(ParsedModuleFact):
+    """The module's bindings where each class statement runs, keyed by its line, and its
+    final bindings under None: one pass, read by the class header and by every check of
+    what a class body's decorators and annotations resolve to."""
+
+    snapshots: dict[int | None, ModuleNominalBindingSnapshot]
+
+    @classmethod
+    def derive(cls, parsed_module: ParsedModule) -> Self:
+        return cls(
+            _module_nominal_binding_snapshots(
+                ModuleNominalBindingAuthority(parsed_module),
+                tuple(
+                    node.lineno
+                    for _qualname, node in iter_class_definitions(list(parsed_module.module.body))
+                ),
+                include_final=True,
+            )
+        )
+
+
+@dataclass(frozen=True)
 class ModuleImportBindings(ParsedModuleFact):
     """The import aliases one module binds, by local name."""
 
@@ -4694,6 +4721,7 @@ class CompactModuleClassProjectionFamily(CollectedFamily[CompactModuleClassProje
         class_methods = _compact_class_methods(
             parsed_module,
             indexed_class_nodes,
+            parsed_module.fact(ClassLineBindingSnapshots).snapshots,
             method_names=(None if demand is None else demand.class_method_names),
         )
         return [

@@ -16,7 +16,7 @@ from nominal_refactor_advisor.class_namespace import (
     AssignmentSourceEffect,
     BindingSourceEffect,
     ClassNamespaceExecutionEvidence,
-    DescriptorClassNamespaceEffect,
+    DecoratorClassNamespaceEffect,
     LiteralSourceEffect,
     CallClassNamespaceEffect,
     SourceExecutionEffectEvidence,
@@ -50,9 +50,9 @@ def test_decorator_application_site_is_definition_not_captured_operand():
     (effect,) = (
         effect
         for effect in application.effects
-        if isinstance(effect, DescriptorClassNamespaceEffect)
+        if isinstance(effect, DecoratorClassNamespaceEffect)
     )
-    assert isinstance(effect, DescriptorClassNamespaceEffect)
+    assert isinstance(effect, DecoratorClassNamespaceEffect)
     assert any(
         isinstance(effect, BindingSourceEffect) for effect in application.effects
     )
@@ -124,7 +124,7 @@ def test_decorator_factory_invocation_and_returned_decorator_application_survive
     (application_effect,) = (
         effect
         for effect in application_site.effects
-        if isinstance(effect, DescriptorClassNamespaceEffect)
+        if isinstance(effect, DecoratorClassNamespaceEffect)
     )
     assert application_effect.operand is factory_call
     observed = source_product_flow_projection(module)

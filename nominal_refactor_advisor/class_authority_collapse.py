@@ -46,7 +46,6 @@ class ClassBehaviorProofContext:
     """Class-local proof inputs derived once for all behavior comparisons."""
 
     owner: IndexedClass
-    module_bound_names: frozenset[str]
     class_bound_names: frozenset[str]
     source_lines: tuple[str, ...]
     scope: ClassBodyModuleScope
@@ -63,9 +62,6 @@ class ClassBehaviorProofContext:
     ) -> ClassBehaviorProofContext:
         return cls(
             owner=owner,
-            module_bound_names=LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(
-                parsed_module.module.body
-            ),
             class_bound_names=LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(
                 owner.node.body
             ),
@@ -92,7 +88,7 @@ class ClassMethodBehaviorAuthority:
     ) -> ClassMethodBehaviorAuthority:
         safety_profile = ClassMethodPromotionSafetyProfile.from_method(
             method,
-            context.module_bound_names,
+            context.binding_snapshot,
             context.class_bound_names,
             source_lines=context.source_lines,
         )

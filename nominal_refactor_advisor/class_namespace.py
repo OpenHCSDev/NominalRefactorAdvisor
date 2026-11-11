@@ -33,7 +33,7 @@ from nominal_refactor_advisor.lexical_scopes import (
 )
 from nominal_refactor_advisor.native_compilation import NativeCreationBackend
 from nominal_refactor_advisor.native_declarations import NativeDeclaration
-from nominal_refactor_advisor.native_call import NativeDescriptorCall
+from nominal_refactor_advisor.native_call import NativeDecoratorContract
 from nominal_refactor_advisor.product_flow import (
     CompactCallableReferenceUse,
     CompactDefinitionTarget,
@@ -58,11 +58,11 @@ if TYPE_CHECKING:
     from nominal_refactor_advisor.class_index import ModuleNominalBindingView
 
 
-# Native descriptor decorators receive the function just declared. Explicit
-# construction also requires evidence about the argument's metadata access.
-NATIVE_METHOD_DECORATORS = tuple(
-    native.declaration for native in NativeDescriptorCall.native_declarations
+PROMOTABLE_METHOD_DECORATOR_IDENTITIES = frozenset(
+    native.qualified_name for native in NativeDecoratorContract.admitted_native_declarations()
 )
+"""What a method's decorator may resolve to and still promote: a native whose application
+contract the decorator chain proves."""
 
 
 @dataclass(frozen=True)
@@ -139,8 +139,8 @@ class NativeClassNamespaceEffect(ClassNamespaceEffect, ABC):
         environment.require_native(self.operand, self.native_declarations)
 
 
-class DescriptorClassNamespaceEffect(NativeClassNamespaceEffect):
-    native_declarations = NativeDescriptorCall.native_declarations
+class DecoratorClassNamespaceEffect(NativeClassNamespaceEffect):
+    native_declarations = NativeDecoratorContract.admitted_native_declarations()
 
 
 @dataclass(frozen=True)
@@ -717,7 +717,7 @@ class _ClassNamespaceEffectProjection(ast.NodeVisitor):
         self._record_effect(DefinitionHeaderEffect, node)
         self._record_effect(BindingSourceEffect, node)
         for decorator in node.decorator_list:
-            self._record_effect(DescriptorClassNamespaceEffect, decorator)
+            self._record_effect(DecoratorClassNamespaceEffect, decorator)
 
     visit_AsyncFunctionDef = visit_FunctionDef
 
