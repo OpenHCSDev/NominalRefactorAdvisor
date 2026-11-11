@@ -7638,8 +7638,17 @@ def test_relocation_keeps_star_and_module_object_readers_working(
             "value = source.Moved.value + Moved.value - 3\n",
             "value = Moved.value + Moved.value - 3\n",
         ),
+        (
+            "from pkg import source as source_module\n\nsb = source_module\n"
+            "value = sb.Moved.value\n",
+            "value = Moved.value\n",
+        ),
     ),
-    ids=("local-variables-of-the-binding-name", "name-the-file-also-imports"),
+    ids=(
+        "local-variables-of-the-binding-name",
+        "name-the-file-also-imports",
+        "module-level-alias-of-the-binding",
+    ),
 )
 def test_relocation_reads_only_the_module_scope_uses_of_a_source_binding(
     tmp_path: Path,
