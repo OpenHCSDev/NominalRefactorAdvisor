@@ -3700,7 +3700,7 @@ class CurrentSnapshotRecipeBatchEvaluation:
                     )
                 )
                 continue
-            if simulation.assessment.disposition.unproved:
+            if not simulation.assessment.disposition.clean:
                 obstacles.append(
                     FindingRecipeTrajectoryObstacle(
                         kind=FindingRecipeTrajectoryObstacleKind.BATCH_SIMULATION,
