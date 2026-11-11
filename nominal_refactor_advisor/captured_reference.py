@@ -12,6 +12,7 @@ import inspect
 import sys
 from abc import ABC, abstractmethod
 from collections.abc import (
+    Callable,
     Iterator,
     Mapping,
 )
@@ -723,6 +724,7 @@ class CapturedNativeObject(NativeTypeCapture):
 
 
 NamespaceEntryT = TypeVar("NamespaceEntryT")
+FoldT = TypeVar("FoldT")
 
 
 class NamespaceEvidenceABC(ABC):
@@ -1205,23 +1207,41 @@ class AdmittedExecutionPrefixABC(ABC):
     supplying this relation. Bindings and writes remain derived from each flow.
     """
 
+    @property
     @abstractmethod
+    def execution_parts(self) -> tuple[AdmittedExecutionPrefixABC, ...]:
+        """This receipt's ordered parts, in execution order; none when atomic."""
+        raise NotImplementedError
+
     def _expand_intervals(
         self,
         pending: list[AdmittedExecutionPrefixABC],
         intervals: list[SingleFlowPrefix],
     ) -> None:
-        """Contribute this receipt's actual ordered parts or atomic interval."""
-        raise NotImplementedError
+        """Contribute this receipt's ordered parts as a reversed stack."""
+        pending.extend(reversed(self.execution_parts))
+
+    def _atomic_intervals(self) -> tuple[SingleFlowPrefix, ...]:
+        """The intervals a receipt with no parts is made of."""
+        intervals: list[SingleFlowPrefix] = []
+        self._expand_intervals([], intervals)
+        return tuple(intervals)
 
     @property
     def intervals(self) -> tuple[SingleFlowPrefix, ...]:
         """Project ordered occurrences without recursing through prior prefixes."""
-        pending: list[AdmittedExecutionPrefixABC] = [self]
-        intervals: list[SingleFlowPrefix] = []
-        while pending:
-            pending.pop()._expand_intervals(pending, intervals)
-        return tuple(intervals)
+
+        def remember(
+            node: AdmittedExecutionPrefixABC,
+            intervals: tuple[SingleFlowPrefix, ...],
+        ) -> None:
+            vars(node)["_intervals"] = intervals
+
+        return self._fold_first_parts(
+            lambda node: vars(node).get("_intervals"),
+            lambda previous, fresh: (*(previous or ()), *fresh),
+            remember,
+        )
 
     @property
     def endpoint(self) -> SingleFlowPrefix:
@@ -1237,21 +1257,110 @@ class AdmittedExecutionPrefixABC(ABC):
         return terminal[-1]
 
     def require_admitted(self, initial: InitialNativeIsland) -> None:
-        previous: dict[tuple[int, int], SingleFlowPrefix] = {}
-        for interval in self.intervals:
-            initial.require_frame(interval.frame)
-            activation = (id(interval.context), id(interval.frame))
-            if activation in previous:
-                earlier = previous[activation]
-                if earlier.position is None or interval.after != earlier.position:
+        self._admitted_cuts(initial)
+
+    def _fold_first_parts(
+        self,
+        known: Callable[[AdmittedExecutionPrefixABC], FoldT | None],
+        extend: Callable[[FoldT | None, tuple[SingleFlowPrefix, ...]], FoldT],
+        remember: Callable[[AdmittedExecutionPrefixABC, FoldT], None],
+    ) -> FoldT:
+        """Fold a receipt's intervals, reusing what its first part already folded.
+
+        A receipt is immutable and begins with its first part, so a fold over
+        its intervals is that part's fold extended by the remaining parts. The
+        first-part spine is walked iteratively down to a remembered fold or an
+        atomic interval, so a long history neither recurses nor is refolded."""
+        spine: list[AdmittedExecutionPrefixABC] = []
+        node: AdmittedExecutionPrefixABC = self
+        state = known(node)
+        while state is None:
+            spine.append(node)
+            parts = node.execution_parts
+            if not parts:
+                break
+            node = parts[0]
+            state = known(node)
+        for node in reversed(spine):
+            parts = node.execution_parts
+            state = extend(
+                state if parts else None,
+                tuple(interval for part in parts[1:] for interval in part.intervals)
+                if parts
+                else node._atomic_intervals(),
+            )
+            remember(node, state)
+        return cast(FoldT, state)
+
+    def _admitted_cuts(
+        self, initial: InitialNativeIsland
+    ) -> Mapping[tuple[int, int], SingleFlowPrefix]:
+        """Each activation's last admitted interval, folded once per island.
+
+        Admission of an immutable receipt is a fact about the receipt and its
+        island; only an admission is remembered, so a refusal raises again."""
+        admitted = initial.admitted_receipts
+
+        def known(
+            node: AdmittedExecutionPrefixABC,
+        ) -> Mapping[tuple[int, int], SingleFlowPrefix] | None:
+            entry = admitted.get(id(node))
+            return entry[1] if entry is not None and entry[0] is node else None
+
+        def extend(
+            previous: Mapping[tuple[int, int], SingleFlowPrefix] | None,
+            intervals: tuple[SingleFlowPrefix, ...],
+        ) -> Mapping[tuple[int, int], SingleFlowPrefix]:
+            cuts = dict(previous or {})
+            for interval in intervals:
+                initial.require_frame(interval.frame)
+                activation = (id(interval.context), id(interval.frame))
+                if activation in cuts:
+                    earlier = cuts[activation]
+                    if earlier.position is None or interval.after != earlier.position:
+                        raise ValueError(
+                            "Execution intervals must join the same activation cut"
+                        )
+                elif interval.after is not None:
                     raise ValueError(
-                        "Execution intervals must join the same activation cut"
+                        "A prefix cannot omit its activation's earlier interval"
                     )
-            elif interval.after is not None:
-                raise ValueError(
-                    "A prefix cannot omit its activation's earlier interval"
-                )
-            previous[activation] = interval
+                cuts[activation] = interval
+            return cuts
+
+        def remember(
+            node: AdmittedExecutionPrefixABC,
+            cuts: Mapping[tuple[int, int], SingleFlowPrefix],
+        ) -> None:
+            admitted[id(node)] = (node, cuts)
+
+        return self._fold_first_parts(known, extend, remember)
+
+    @property
+    def intervals_by_activation(
+        self,
+    ) -> Mapping[tuple[int, int], tuple[SingleFlowPrefix, ...]]:
+        """This receipt's intervals grouped by activation, in execution order."""
+
+        def extend(
+            previous: Mapping[tuple[int, int], tuple[SingleFlowPrefix, ...]] | None,
+            intervals: tuple[SingleFlowPrefix, ...],
+        ) -> Mapping[tuple[int, int], tuple[SingleFlowPrefix, ...]]:
+            grouped = dict(previous or {})
+            for interval in intervals:
+                activation = (id(interval.context), id(interval.frame))
+                grouped[activation] = (*grouped.get(activation, ()), interval)
+            return grouped
+
+        def remember(
+            node: AdmittedExecutionPrefixABC,
+            grouped: Mapping[tuple[int, int], tuple[SingleFlowPrefix, ...]],
+        ) -> None:
+            vars(node)["_intervals_by_activation"] = grouped
+
+        return self._fold_first_parts(
+            lambda node: vars(node).get("_intervals_by_activation"), extend, remember
+        )
 
     def require_event(
         self,
@@ -1264,7 +1373,9 @@ class AdmittedExecutionPrefixABC(ABC):
             raise ValueError("Execution event is absent from its original flow")
         occurrences = tuple(
             interval
-            for interval in self.intervals
+            for interval in self.intervals_by_activation.get(
+                (id(context), id(frame)), ()
+            )
             if interval.context is context
             and interval.frame is frame
             and interval.contains(event)
@@ -1398,6 +1509,10 @@ class SingleFlowPrefix(AdmittedExecutionPrefixABC):
         ):
             raise ValueError("Flow interval requires proved ordered cuts")
 
+    @property
+    def execution_parts(self) -> tuple[AdmittedExecutionPrefixABC, ...]:
+        return ()
+
     def _expand_intervals(
         self,
         pending: list[AdmittedExecutionPrefixABC],
@@ -1443,12 +1558,9 @@ class SequentialExecutionPrefix(AdmittedExecutionPrefixABC):
         if not self.parts:
             raise ValueError("An execution prefix requires at least one part")
 
-    def _expand_intervals(
-        self,
-        pending: list[AdmittedExecutionPrefixABC],
-        intervals: list[SingleFlowPrefix],
-    ) -> None:
-        pending.extend(reversed(self.parts))
+    @property
+    def execution_parts(self) -> tuple[AdmittedExecutionPrefixABC, ...]:
+        return self.parts
 
 
 @dataclass(frozen=True, eq=False)
@@ -1476,12 +1588,9 @@ class ChildExecutionPrefix(AdmittedExecutionPrefixABC):
                 "Child entry requires a parent cut and a fresh child interval"
             )
 
-    def _expand_intervals(
-        self,
-        pending: list[AdmittedExecutionPrefixABC],
-        intervals: list[SingleFlowPrefix],
-    ) -> None:
-        pending.extend((self.child, self.parent))
+    @property
+    def execution_parts(self) -> tuple[AdmittedExecutionPrefixABC, ...]:
+        return (self.parent, self.child)
 
 
 @dataclass(frozen=True, eq=False)
@@ -1513,12 +1622,9 @@ class FunctionInvocationPrefix(AdmittedExecutionPrefixABC):
                 "Function entry requires the callee declaration's fresh body interval"
             )
 
-    def _expand_intervals(
-        self,
-        pending: list[AdmittedExecutionPrefixABC],
-        intervals: list[SingleFlowPrefix],
-    ) -> None:
-        pending.extend((self.child, self.parent))
+    @property
+    def execution_parts(self) -> tuple[AdmittedExecutionPrefixABC, ...]:
+        return (self.parent, self.child)
 
 
 class SourceDefinitionApplicationAuthorityABC(ABC):
@@ -1593,12 +1699,9 @@ class DefinitionApplicationPrefix(AdmittedExecutionPrefixABC):
                 "Function entry requires the callee declaration's fresh body interval"
             )
 
-    def _expand_intervals(
-        self,
-        pending: list[AdmittedExecutionPrefixABC],
-        intervals: list[SingleFlowPrefix],
-    ) -> None:
-        pending.extend((self.child, self.application.application_prefix))
+    @property
+    def execution_parts(self) -> tuple[AdmittedExecutionPrefixABC, ...]:
+        return (self.application.application_prefix, self.child)
 
 
 @dataclass(frozen=True)
@@ -1700,6 +1803,14 @@ class InitialNativeIsland:
     extra_storages: InitVar[tuple[dict[NativeDictionaryKey, object], ...]] = ()
     modules_by_name: Mapping[str, ModuleType] = field(init=False, repr=False)
     namespaces: tuple[NativeNamespace, ...] = field(init=False, repr=False)
+    admitted_receipts: dict[
+        int,
+        tuple[
+            AdmittedExecutionPrefixABC,
+            Mapping[tuple[int, int], SingleFlowPrefix],
+        ],
+    ] = field(default_factory=dict, init=False, repr=False)
+    """Receipts this island has admitted, each with its activations' last cuts."""
 
     def require_frame(self, frame: InitialNativeFrame) -> None:
         """Validate exact evidence without demanding unused unresolved fallbacks."""

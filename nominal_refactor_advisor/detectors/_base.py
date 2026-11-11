@@ -42,6 +42,7 @@ from metaclass_registry import AutoRegisterMeta, LazyDiscoveryDict, RegistryConf
 
 from nominal_refactor_advisor.ast_field_decoders import ParameterAnnotations
 from nominal_refactor_advisor.implementation_identity import AnswerDeclaration
+from nominal_refactor_advisor.scan_cache import ScanCache
 from nominal_refactor_advisor.ast_projection import ExpressionReference
 from nominal_refactor_advisor.class_families.parsed_index import (
     ClassFamilyIndex,
@@ -707,9 +708,11 @@ class IssueDetector(
         """The scan-deadline stage while ``phase`` runs this detector."""
         return f"{phase}:{cls.effective_detector_id() or cls.__qualname__}"
 
+    @ScanCache.scope()
     def detect(
         self, modules: ParsedModuleSet, config: DetectorConfig
     ) -> list[RefactorFinding]:
+        """One detection is one analysis invocation: its modules share a scan scope."""
         return self._normalize_findings(self._collect_findings(modules, config), config)
 
     @staticmethod
