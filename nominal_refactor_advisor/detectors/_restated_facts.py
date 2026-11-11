@@ -41,6 +41,12 @@ from nominal_refactor_advisor.type_checker_session import (
     TypeCheckerSession,
     TypeCheckerSources,
 )
+from nominal_refactor_advisor.refactors.function_operations import InlineForwarderOperation
+from nominal_refactor_advisor.refactors.module_move import DissolveModuleOperation
+from nominal_refactor_advisor.refactors.restated_fact_recipes import (
+    DeadModuleDissolutionFindingRecipeSynthesizer,
+    ForwarderInlineFindingRecipeSynthesizer,
+)
 from nominal_refactor_advisor.codemod_legacy_path_recipe import (
     LegacyPathErasureFindingRecipeSynthesizer,
 )
@@ -674,7 +680,8 @@ def _class_family_index(
 
 
 class ForwardingFacadeDetector(
-    JoinedRestatedFactDetector[CompactClassFamilyIndex, RestatingSite]
+    JoinedRestatedFactDetector[CompactClassFamilyIndex, RestatingSite],
+    ForwarderInlineFindingRecipeSynthesizer,
 ):
     """A class holding an object in an attribute, with members that only forward to it.
 
@@ -694,6 +701,7 @@ class ForwardingFacadeDetector(
         fact="The forwarding members restate the held class's attribute and method set, so they silently go stale when the held class changes.",
         owner="The owner is the held class: consumers read it directly, or the facade is-a held class and inherits it.",
         factoring="Either consumers read the held object directly and the forwards are deleted, or, when the facade is-a the held thing, the held class becomes a parent and the forwards are deleted; never keep forwards for API compatibility.",
+        operations=(InlineForwarderOperation,),
     )
     finding_spec = restated.spec(
         PatternId.FORWARDING_FACADE,
@@ -769,7 +777,10 @@ def _overrides_inherited(
     return symbol is None or bool(index.overridden_declarations(symbol, member))
 
 
-class DeadModuleDetector(JoinedRestatedFactDetector[UnreachedModules, RestatingSite]):
+class DeadModuleDetector(
+    JoinedRestatedFactDetector[UnreachedModules, RestatingSite],
+    DeadModuleDissolutionFindingRecipeSynthesizer,
+):
     """A scanned module that nothing imports and that is not an entry point."""
 
     module_projection_families = (DeadModuleSiteFamily, ModuleReferenceFamily)
@@ -777,6 +788,7 @@ class DeadModuleDetector(JoinedRestatedFactDetector[UnreachedModules, RestatingS
         fact="No scanned module imports or names this module, so whatever it holds is a second copy of what its readers use instead, or nothing.",
         owner="The owner of its behaviour is the module the scan already imports; the dead module owns nothing.",
         factoring="Delete the module.",
+        operations=(DissolveModuleOperation,),
     )
     finding_spec = restated.spec(
         PatternId.DEAD_MODULE,

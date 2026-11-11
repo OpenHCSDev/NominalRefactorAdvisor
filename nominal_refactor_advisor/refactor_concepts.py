@@ -172,6 +172,14 @@ class FalseDistinctionErasureConcept(NominalBoundaryConcept):
     """Delete a distinction the code then treats identically."""
 
 
+class ForwarderInlineConcept(NominalBoundaryConcept):
+    """Read the held object directly where a facade only forwarded to it."""
+
+
+class DeadModuleDissolutionConcept(NominalBoundaryConcept):
+    """Delete a module nothing imports, its consumers following the owners of its names."""
+
+
 class DeclarationReferenceConcept(NominalBoundaryConcept):
     """Write a spelled declaration as the reference it spells."""
 
