@@ -1221,27 +1221,14 @@ class AdmittedExecutionPrefixABC(ABC):
         """Contribute this receipt's ordered parts as a reversed stack."""
         pending.extend(reversed(self.execution_parts))
 
-    def _atomic_intervals(self) -> tuple[SingleFlowPrefix, ...]:
-        """The intervals a receipt with no parts is made of."""
-        intervals: list[SingleFlowPrefix] = []
-        self._expand_intervals([], intervals)
-        return tuple(intervals)
-
     @property
     def intervals(self) -> tuple[SingleFlowPrefix, ...]:
         """Project ordered occurrences without recursing through prior prefixes."""
-
-        def remember(
-            node: AdmittedExecutionPrefixABC,
-            intervals: tuple[SingleFlowPrefix, ...],
-        ) -> None:
-            vars(node)["_intervals"] = intervals
-
-        return self._fold_first_parts(
-            lambda node: vars(node).get("_intervals"),
-            lambda previous, fresh: (*(previous or ()), *fresh),
-            remember,
-        )
+        pending: list[AdmittedExecutionPrefixABC] = [self]
+        intervals: list[SingleFlowPrefix] = []
+        while pending:
+            pending.pop()._expand_intervals(pending, intervals)
+        return tuple(intervals)
 
     @property
     def endpoint(self) -> SingleFlowPrefix:
@@ -1287,7 +1274,7 @@ class AdmittedExecutionPrefixABC(ABC):
                 state if parts else None,
                 tuple(interval for part in parts[1:] for interval in part.intervals)
                 if parts
-                else node._atomic_intervals(),
+                else node.intervals,
             )
             remember(node, state)
         return cast(FoldT, state)
