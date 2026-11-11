@@ -561,7 +561,7 @@ class ModuleSymbolTable:
         ) or (
             not resolution.is_ambiguous
             and any(
-                available_identity == identity
+                available_identity.means_same_object(identity)
                 and required_scope.is_satisfied_by(binding.scope)
                 for binding, available_identity in resolution.unique_candidates
             )
@@ -589,7 +589,7 @@ class ModuleSymbolTable:
         if resolution.is_ambiguous:
             return True
         return any(
-            available_identity != identity
+            not available_identity.means_same_object(identity)
             for _, available_identity in resolution.unique_candidates
         )
 

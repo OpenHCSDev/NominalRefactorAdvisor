@@ -52,3 +52,33 @@ def test_a_reader_inside_a_function_does_not_constrain_the_landing(tmp_path: Pat
     assert result.is_clean
     dest = result.required_after_snapshot.sources_by_file_path[str(tmp_path / "pkg/dest.py")]
     assert dest.index("class Preparation") < dest.index("class Family")
+
+
+def test_a_typing_alias_and_its_class_are_one_authority(tmp_path: Path) -> None:
+    """openhcs: the source binds Iterable from typing, the destination from
+    collections.abc; typing.Iterable stands for collections.abc.Iterable."""
+    (tmp_path / "pkg").mkdir()
+    (tmp_path / "pkg/__init__.py").write_text("")
+    (tmp_path / "pkg/source.py").write_text(
+        "from typing import Iterable\n\n\nclass Family:\n"
+        "    def each(self, values: Iterable[int]) -> list[int]:\n        return list(values)\n"
+    )
+    (tmp_path / "pkg/dest.py").write_text(
+        "from collections.abc import Iterable\n\n\ndef total(values: Iterable[int]) -> int:\n    return sum(values)\n"
+    )
+    result = _relocate(tmp_path)
+    assert result.is_clean
+    dest = result.required_after_snapshot.sources_by_file_path[str(tmp_path / "pkg/dest.py")]
+    assert dest.count("import Iterable") == 1 and "class Family" in dest
+
+
+def test_a_typing_name_that_is_no_alias_still_conflicts(tmp_path: Path) -> None:
+    (tmp_path / "pkg").mkdir()
+    (tmp_path / "pkg/__init__.py").write_text("")
+    (tmp_path / "pkg/source.py").write_text(
+        "from typing import Protocol\n\n\nclass Family(Protocol):\n    pass\n"
+    )
+    (tmp_path / "pkg/dest.py").write_text("from pkg.other import Protocol\n")
+    (tmp_path / "pkg/other.py").write_text("class Protocol:\n    pass\n")
+    with pytest.raises(CodemodOperationPreflightError, match="different authorities"):
+        _relocate(tmp_path)
