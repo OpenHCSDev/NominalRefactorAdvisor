@@ -8,6 +8,7 @@ import pytest
 
 from nominal_refactor_advisor.ast_tools import parse_python_modules
 from nominal_refactor_advisor.codemod import (
+    CodemodPlanDocument,
     CodemodSourceSnapshot,
     RefactorRecipe,
     SourceRewriteTarget,
@@ -61,21 +62,15 @@ def test_return_statements_flatten_across_family(tmp_path: Path) -> None:
     """Every override's return (value,) → value and () → None."""
     snapshot = _snapshot(tmp_path)
     operation = _operation(tmp_path)
-    edits = operation.source_edits_from_snapshot(snapshot)
     recipe = RefactorRecipe(recipe_id="test", operations=(operation,))
-    document_snapshot = snapshot.execution_snapshot()
-    rewrites = document_snapshot._planned_rewrites_from_physical_edits(
-        tuple(edit for edit in edits if hasattr(edit, "file_path"))
-    )
-    simulation = snapshot.simulate_rewrites(rewrites)
+    document = CodemodPlanDocument(recipes=(recipe,))
+    simulation = document.simulate(snapshot)
 
     base_path = (tmp_path / "pkg/base.py").as_posix()
     strict_path = (tmp_path / "pkg/strict.py").as_posix()
-    consumer_path = (tmp_path / "pkg/consumer.py").as_posix()
 
-    base_rewritten = simulation.rewritten_sources.get(base_path, "")
-    strict_rewritten = simulation.rewritten_sources.get(strict_path, "")
-    consumer_rewritten = simulation.rewritten_sources.get(consumer_path, "")
+    base_rewritten = simulation.simulation.rewritten_sources.get(base_path, "")
+    strict_rewritten = simulation.simulation.rewritten_sources.get(strict_path, "")
 
     assert "return None" in base_rewritten
     assert "return ()" not in base_rewritten
@@ -87,13 +82,12 @@ def test_empty_return_becomes_none(tmp_path: Path) -> None:
     """A base returning () becomes return None."""
     snapshot = _snapshot(tmp_path)
     operation = _operation(tmp_path)
-    edits = operation.source_edits_from_snapshot(snapshot)
-    compiler = snapshot.execution_snapshot()
-    rewrites = compiler._planned_rewrites_from_physical_edits(edits)
-    simulation = snapshot.simulate_rewrites(rewrites)
+    recipe = RefactorRecipe(recipe_id="test", operations=(operation,))
+    document = CodemodPlanDocument(recipes=(recipe,))
+    simulation = document.simulate(snapshot)
 
     base_path = (tmp_path / "pkg/base.py").as_posix()
-    rewritten = simulation.rewritten_sources.get(base_path, "")
+    rewritten = simulation.simulation.rewritten_sources.get(base_path, "")
     assert "return None" in rewritten
     assert "return ()" not in rewritten
 
