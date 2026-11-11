@@ -1369,13 +1369,8 @@ class BaseFold:
 
     def require_movable(self, restatement: RestatedDeclarations) -> None:
         child = restatement.restating
-        context = ClassMemberMoveProofContext(
-            source_class=child.target,
-            destination_class=self.base.target,
-            source=self.snapshot.sources_by_file_path[child.file_path],
-            module_bound_names=LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(
-                self.snapshot.parsed_module_for_source_path(child.file_path).module.body
-            ),
+        context = ClassMemberMoveProofContext.between(
+            self.snapshot, child.target, self.base.target
         )
         for statement in restatement.statements:
             member = ClassMemberPromotionStatement.for_statement(statement)
@@ -2145,14 +2140,7 @@ def movable_members(
 ) -> None:
     """Each statement is a member that moves without reading its class's scope."""
 
-    context = ClassMemberMoveProofContext(
-        source_class=source.target,
-        destination_class=destination.target,
-        source=snapshot.sources_by_file_path[source.file_path],
-        module_bound_names=LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(
-            snapshot.parsed_module_for_source_path(source.file_path).module.body
-        ),
-    )
+    context = ClassMemberMoveProofContext.between(snapshot, source.target, destination.target)
     for statement in statements:
         member = ClassMemberPromotionStatement.for_statement(statement)
         if member is None:

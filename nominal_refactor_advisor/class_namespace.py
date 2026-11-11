@@ -5,7 +5,7 @@ from __future__ import annotations
 import ast
 from abc import ABC, abstractmethod
 from collections.abc import Iterator
-from contextlib import contextmanager
+from contextlib import asynccontextmanager, contextmanager
 from dataclasses import dataclass
 from functools import cached_property
 from typing import (
@@ -22,6 +22,7 @@ from nominal_refactor_advisor.ast_projection import (
 )
 from nominal_refactor_advisor.ast_tools import ModuleAnnotationEvaluationMode
 from nominal_refactor_advisor.captured_reference import SingleFlowPrefix
+from nominal_refactor_advisor.case_root import Case
 from nominal_refactor_advisor.declaration_dependencies import (
     DeclarationDependencyUse,
     ModuleBindingResolutionPhase,
@@ -63,6 +64,44 @@ if TYPE_CHECKING:
 NATIVE_METHOD_DECORATORS = tuple(
     native.declaration for native in NativeDescriptorCall.native_declarations
 )
+
+
+class OwnerIndependentMethodWrapper(Case):
+    """A decorator whose result depends only on the function it wraps and that reads and
+    stores nothing on the class declaring it, so a method it decorates means the same
+    declared in an ancestor. A decorator is one of these only when its binding resolves to
+    the member's declaration, never by how it is spelled."""
+
+    native: ClassVar[NativeDeclaration]
+
+    @classmethod
+    def identities(cls) -> frozenset[str]:
+        return frozenset(member.native.qualified_name for member in cls.__subclasses__())
+
+
+class ContextManagerWrapper(OwnerIndependentMethodWrapper):
+    """`contextlib.contextmanager` turns the generator function it is given into a
+    context-manager factory from that function alone."""
+
+    value = "contextmanager"
+    native = NativeDeclaration(contextmanager)
+
+
+class AsyncContextManagerWrapper(OwnerIndependentMethodWrapper):
+    """`contextlib.asynccontextmanager` does the same for an async generator function."""
+
+    value = "asynccontextmanager"
+    native = NativeDeclaration(asynccontextmanager)
+
+
+PROMOTABLE_METHOD_DECORATOR_IDENTITIES = frozenset(
+    (
+        *(native.qualified_name for native in NativeDescriptorCall.native_declarations),
+        *OwnerIndependentMethodWrapper.identities(),
+    )
+)
+"""What a method's decorator may resolve to and still promote: a native descriptor, or a
+wrapper no owner changes."""
 
 
 @dataclass(frozen=True)
