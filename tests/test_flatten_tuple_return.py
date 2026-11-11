@@ -92,6 +92,20 @@ def test_empty_return_becomes_none(tmp_path: Path) -> None:
     assert "return ()" not in rewritten
 
 
+def test_for_loop_reader_becomes_if_walrus(tmp_path: Path) -> None:
+    """``for message in v.warning():`` → ``if (message := v.warning()) is not None:``"""
+    snapshot = _snapshot(tmp_path)
+    operation = _operation(tmp_path)
+    recipe = RefactorRecipe(recipe_id="test", operations=(operation,))
+    document = CodemodPlanDocument(recipes=(recipe,))
+    simulation = document.simulate(snapshot)
+
+    consumer_path = (tmp_path / "pkg/consumer.py").as_posix()
+    rewritten = simulation.simulation.rewritten_sources.get(consumer_path, "")
+    assert "if (message := v.warning()) is not None:" in rewritten
+    assert "for message in v.warning():" not in rewritten
+
+
 def test_annotation_flattens(tmp_path: Path) -> None:
     """tuple[str, ...] annotation becomes str | None."""
     from nominal_refactor_advisor.refactors.return_shape import FlattenTupleReturnOperation

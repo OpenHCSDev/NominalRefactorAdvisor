@@ -295,17 +295,21 @@ class FlattenTupleReturnOperation(RepositorySourceReprovedOperation):
         replacements: dict[str, list[SourceTextSpanReplacement]],
     ) -> None:
         """``for x in method():`` → ``if (x := method()) is not None:``"""
+        if for_node.orelse:
+            raise ValueError(
+                f"{use.where} has an else clause on the for loop; "
+                "flatten_tuple_return cannot rewrite for/else"
+            )
         target_src = ast.unparse(for_node.target)
         call_src = ast.unparse(use.node)
-        start, end = geometry.required_node_offsets(for_node)
-        header_end = for_node.body[0].col_offset
-        for_src = geometry.source[start:end]
+        start, _end = geometry.required_node_offsets(for_node)
         header_line = geometry.source[start:].split("\n", 1)[0]
-        new_header = f"if ({target_src} := {call_src}) is not None:"
-        start_of_header, end_of_header = start, start + len(header_line)
+        indent = header_line[: len(header_line) - len(header_line.lstrip())]
+        new_header = f"{indent}if ({target_src} := {call_src}) is not None:"
+        end_of_header = start + len(header_line)
         replacements.setdefault(use.file_path, []).append(
             SourceTextSpanReplacement.from_offsets(
-                start_offset=start_of_header,
+                start_offset=start,
                 end_offset=end_of_header,
                 replacement_source=new_header,
             )
