@@ -453,11 +453,6 @@ IDENTITY_READS = {
         "    try:\n        send(written)\n    except SendFailure as error:\n"
         "        return builtins.type(error)\n"
     ),
-    "class-of-a-builtin-ancestor": (
-        "from pkg.send import send\n\n\ndef report(written):\n    try:\n"
-        "        send(written)\n    except (KeyError, Exception) as error:\n"
-        "        return error.__class__\n"
-    ),
 }
 
 
@@ -465,6 +460,21 @@ IDENTITY_READS = {
 def test_a_catch_reading_the_caught_class_tells_its_subclasses_apart(tmp_path: Path, name: str):
     _write(tmp_path, {**SEND_FAILURES, "pkg/report.py": IDENTITY_READS[name]})
     assert _findings(NameOnlySubclassDetector, tmp_path) == []
+
+
+CATCH_ALL_READ = (
+    "from pkg.send import send\n\n\ndef report(written):\n    try:\n"
+    "        send(written)\n    except (KeyError, Exception) as error:\n"
+    "        return error.__class__\n"
+)
+
+
+def test_a_catch_all_reading_the_class_treats_every_exception_alike(tmp_path: Path):
+    _write(tmp_path, {**SEND_FAILURES, "pkg/report.py": CATCH_ALL_READ})
+    assert sorted(finding.summary.split("`")[1] for finding in _findings(NameOnlySubclassDetector, tmp_path)) == [
+        "SendNotWritten",
+        "SendUnknown",
+    ]
 
 
 def test_a_catch_reading_only_the_message_keeps_the_subclasses_alike(tmp_path: Path):

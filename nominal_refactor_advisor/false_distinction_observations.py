@@ -938,7 +938,7 @@ class EmptySubclassIndex:
 
     A class qualifies when its simple name is unique in the scan; every
     spelling of that name anywhere constructs or raises it; no handler catching
-    one of its ancestors reads the caught object's class; it and every
+    one of its scanned ancestors reads the caught object's class; it and every
     ancestor resolve to scanned classes or builtins, none with a metaclass,
     class keywords, a registering metaclass or an `__init_subclass__` that
     stores the subclass (the class index's registration facts); and its base
@@ -1002,21 +1002,15 @@ class EmptySubclassIndex:
             )
         )
 
-    def ancestor_names(self, lineage: tuple[str, ...]) -> Iterator[str]:
-        """The simple names of every class above `lineage[0]`: its scanned
-        ancestors and the builtin classes they derive from. A handler catching
-        one of them and reading the caught object's class tells every subclass
-        of it apart."""
+    @staticmethod
+    def ancestor_names(lineage: tuple[str, ...]) -> Iterator[str]:
+        """The simple names of the scanned classes above `lineage[0]`. A handler
+        catching one of them and reading the caught object's class tells that
+        family's members apart; a catch-all `except Exception` does not, since
+        it treats every exception in the program alike."""
 
         for symbol in lineage[1:]:
             yield symbol.rpartition(".")[2]
-        for symbol in lineage:
-            for reference in self.class_index.classes_by_symbol[symbol].base_references:
-                match reference:
-                    case BoundNominalReference(
-                        root_binding=CompactNominalBinding(kind=CompactNominalBindingKind.BUILTIN),
-                    ) if isinstance(builtin := getattr(builtins, reference.resolved_parts[-1], None), type):
-                        yield from (ancestor.__name__ for ancestor in builtin.__mro__)
 
     def closed_and_unregistered(self, symbol: str) -> bool:
         indexed = self.class_index.classes_by_symbol.get(symbol)
