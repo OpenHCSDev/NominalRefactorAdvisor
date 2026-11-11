@@ -39,7 +39,7 @@ from __future__ import annotations
 import ast
 import math
 from collections import defaultdict
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from abc import abstractmethod
 from dataclasses import dataclass
 from enum import StrEnum
@@ -513,14 +513,45 @@ class ClassOverlapVerdicts:
         """A verdict per pair of classes: on their own declarations, or, when
         those are too few, on the declarations they have through their MROs."""
 
+        return self.judged(lambda first, second: True)
+
+    def candidates_touching(self, symbols: frozenset[str]) -> tuple[ClassOverlapCandidate, ...]:
+        """The verdicts `candidates` holds for the pairs one of whose classes is in
+        `symbols`, in the same order, judging no other pair. A verdict reads only
+        its own overlap and the scan's indexes, so a pair judged alone is judged
+        as it is among all of them; a move proving one composition asks this
+        instead of judging every overlap in the scan on each virtual source."""
+
+        if "candidates" in self.__dict__:
+            return tuple(
+                candidate
+                for candidate in self.candidates
+                if not symbols.isdisjoint((candidate.owner.symbol, *candidate.restating_symbols))
+            )
+        touching = self.__dict__.setdefault("_candidates_touching", {})
+        if symbols not in touching:
+            touching[symbols] = self.judged(
+                lambda first, second: first in symbols or second in symbols
+            )
+        return touching[symbols]
+
+    def judged(
+        self, admits: Callable[[str, str], bool]
+    ) -> tuple[ClassOverlapCandidate, ...]:
+        """The verdicts on the pairs `admits` keeps, by first and second symbol."""
+
         candidates: list[ClassOverlapCandidate] = []
         judged: set[tuple[str, str]] = set()
         for overlap in self.bodies.overlaps:
+            if not admits(overlap.first.symbol, overlap.second.symbol):
+                continue
             candidate = self.verdict(overlap)
             if candidate is not None:
                 candidates.append(candidate)
                 judged.add((overlap.first.symbol, overlap.second.symbol))
-        for first, second in sorted(self._inheriting_pairs - judged):
+        for first, second in sorted(
+            pair for pair in self._inheriting_pairs - judged if admits(*pair)
+        ):
             overlap = self.bodies.overlap(first, second).with_inherited(
                 self.resolved_declarations(first), self.resolved_declarations(second)
             )

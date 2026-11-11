@@ -721,7 +721,9 @@ def require_verdict(
     wanted = frozenset(classes)
     matches = tuple(
         candidate
-        for candidate in snapshot.class_overlap_verdicts.candidates
+        for candidate in snapshot.class_overlap_verdicts.candidates_touching(
+            wanted if owner_symbol is None else frozenset((owner_symbol,))
+        )
         if candidate.move is move
         and (
             wanted <= candidate.restating_symbols
@@ -2110,7 +2112,9 @@ def require_owner_candidate(
     the verdict or the owner."""
 
     wanted = frozenset(member_names)
-    for verdict in snapshot.class_overlap_verdicts.candidates:
+    for verdict in snapshot.class_overlap_verdicts.candidates_touching(
+        frozenset((anchor_symbol,))
+    ):
         if verdict.move is not ExtractMixin or not wanted <= frozenset(verdict.shared_names):
             continue
         for owner in verdict.owner_candidates:
