@@ -1,5 +1,7 @@
 """Member promotion preserves header bindings at its destination owner."""
 
+import ast
+import functools
 from pathlib import Path
 import subprocess
 import sys
@@ -135,25 +137,46 @@ WRAPPED = "    {decorator}\n    def value(self):\n        yield 4\n"
 OBSERVE = "with Owner().value() as seen:\n    print(seen)\n"
 
 
+def _members(path: Path) -> dict[str, dict[str, list[str]]]:
+    """Each class's method names with their decorators, as source text."""
+
+    return {
+        node.name: {
+            member.name: [ast.unparse(decorator) for decorator in member.decorator_list]
+            for member in node.body
+            if isinstance(member, (ast.FunctionDef, ast.AsyncFunctionDef))
+        }
+        for node in ast.parse(path.read_text()).body
+        if isinstance(node, ast.ClassDef)
+    }
+
+
 @pytest.mark.native_proof
 @pytest.mark.parametrize(
-    "imports,decorator",
+    "imports,decorator,method,observe",
     (
-        ("from contextlib import contextmanager\n", "@contextmanager"),
-        ("import contextlib\n", "@contextlib.contextmanager"),
+        ("from contextlib import contextmanager\n", "@contextmanager", WRAPPED, OBSERVE),
+        ("import contextlib\n", "@contextlib.contextmanager", WRAPPED, OBSERVE),
+        (
+            "from contextlib import asynccontextmanager\n",
+            "@asynccontextmanager",
+            "    {decorator}\n    async def value(self):\n        yield 4\n",
+            "print(type(Owner().value()).__name__)\n",
+        ),
     ),
-    ids=("from_import", "attribute"),
+    ids=("from_import", "attribute", "async"),
 )
 def test_an_owner_independent_wrapper_promotes_by_its_binding(
-    tmp_path: Path, imports: str, decorator: str
+    tmp_path: Path, imports: str, decorator: str, method: str, observe: str
 ) -> None:
-    """contextlib.contextmanager wraps the function alone and touches no owner state, so a
-    method it decorates promotes; which spelling binds it does not matter (P118)."""
+    """contextlib's context-manager decorators wrap the function alone and touch no owner
+    state, so a method they decorate promotes; which spelling binds them does not matter
+    (P118)."""
 
     path = tmp_path / "probe.py"
     source = (
         f"{imports}class Base:\n    pass\n"
-        f"class Owner(Base):\n{WRAPPED.format(decorator=decorator)}{OBSERVE}"
+        f"class Owner(Base):\n{method.format(decorator=decorator)}{observe}"
     )
     path.write_text(source, encoding="utf-8", newline="")
     before = subprocess.check_output([sys.executable, str(path)])
@@ -162,7 +185,54 @@ def test_an_owner_independent_wrapper_promotes_by_its_binding(
     assert simulation.is_clean
     simulation.apply()
     assert subprocess.check_output([sys.executable, str(path)]) == before
-    assert "class Base:\n" + WRAPPED.format(decorator=decorator) in path.read_text()
+    assert _members(path) == {"Base": {"value": [decorator[1:]]}, "Owner": {}}
+
+
+@pytest.mark.native_proof
+def test_a_wrapper_over_another_decorator_refuses(tmp_path: Path) -> None:
+    """update_wrapper reads the attributes and `__dict__` of whatever it wraps. Over a fresh
+    source function those are stored slots; over another decorator's result they are that
+    object's, so the wrapper's claim no longer covers the application and it refuses."""
+
+    path = tmp_path / "probe.py"
+    source = (
+        "from contextlib import contextmanager\nclass Base:\n    pass\n"
+        "class Owner(Base):\n    @contextmanager\n    @staticmethod\n"
+        "    def value():\n        yield 4\n"
+        "print(callable(Owner.value))\n"
+    )
+    path.write_text(source, encoding="utf-8", newline="")
+    subprocess.run([sys.executable, str(path)], check=True, capture_output=True)
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    with pytest.raises(ValueError, match="Function decorator result remains unproved"):
+        _plan(path).simulate(snapshot)
+    assert path.read_bytes() == source.encode("utf-8")
+
+
+@pytest.mark.native_proof
+def test_a_wrapper_refuses_when_update_wrapper_reads_other_attributes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """CPython before 3.14 has update_wrapper read `__annotations__`, which evaluates the
+    method's annotations. The wrapper's claim names the attributes it reads, so an
+    interpreter reading others refuses instead of quietly admitting user code."""
+
+    assigned = functools.WRAPPER_ASSIGNMENTS
+    monkeypatch.setattr(
+        functools,
+        "WRAPPER_ASSIGNMENTS",
+        tuple("__annotations__" if name == "__annotate__" else name for name in assigned),
+    )
+    path = tmp_path / "probe.py"
+    source = (
+        "from contextlib import contextmanager\nclass Base:\n    pass\n"
+        f"class Owner(Base):\n{WRAPPED.format(decorator='@contextmanager')}{OBSERVE}"
+    )
+    path.write_text(source, encoding="utf-8", newline="")
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    with pytest.raises(ValueError, match="Function decorator result remains unproved"):
+        _plan(path).simulate(snapshot)
+    assert path.read_bytes() == source.encode("utf-8")
 
 
 @pytest.mark.parametrize(

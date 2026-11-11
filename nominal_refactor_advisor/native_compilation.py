@@ -71,6 +71,7 @@ from nominal_refactor_advisor.native_declarations import (
     NativeConstantContentsABC,
     NativeScalarValueABC,
     NativeTypeDeclaration,
+    OwnerIndependentMethodWrapper,
 )
 from nominal_refactor_advisor.scan_cache import ScanCache
 from nominal_refactor_advisor.source_geometry import (
@@ -3549,6 +3550,10 @@ class NativeCreationBackend(ABC, metaclass=AutoRegisterMeta):
         """Require a supported native wrapper over independently proved metadata."""
         raise ValueError("Native descriptor wrapping remains unproved")
 
+    def require_owner_independent_wrapping(self, declaration: NativeDeclaration) -> None:
+        """Require a wrapper whose application writes only onto the function it returns."""
+        raise ValueError("Native owner-independent wrapping remains unproved")
+
     def require_dictionary_class_lookup(self, declaration_type: type) -> None:
         """Require exact-dict membership for an independently admitted class key."""
         raise ValueError("Native dictionary class-key lookup remains unproved")
@@ -4316,6 +4321,19 @@ class CPythonClassConstruction(NativeCreationBackend):
         if declaration not in self.descriptor_wrappers:
             raise ValueError("Descriptor wrapping has no supported native contract")
         self.require_static_type_mro(declaration.declaration)
+
+    def require_owner_independent_wrapping(self, declaration: NativeDeclaration) -> None:
+        # Applying the wrapper constructs a native partial over update_wrapper and calls
+        # it once; the family member checks the Python source on each side of that call.
+        # partial is a heap type, so its static lifetime is not the question: immutability
+        # is, since it fixes the construction and call slots nobody can then replace. The
+        # transient partial only references functions and exact tuples when released.
+        OwnerIndependentMethodWrapper.admitting(declaration).require_current_source()
+        if type(partial) is not type:
+            raise ValueError("Owner-independent wrapping requires the native partial type")
+        CPythonStaticTypeRequirement.IMMUTABLETYPE.require(
+            type.__getattribute__(partial, "__flags__")
+        )
 
     def require_dictionary_class_lookup(self, declaration_type: type) -> None:
         # Every resident key has the shared dictionary-key contract. Exact

@@ -5,7 +5,7 @@ from __future__ import annotations
 import ast
 from abc import ABC, abstractmethod
 from collections.abc import Iterator
-from contextlib import asynccontextmanager, contextmanager
+from contextlib import contextmanager
 from dataclasses import dataclass
 from functools import cached_property
 from typing import (
@@ -22,7 +22,6 @@ from nominal_refactor_advisor.ast_projection import (
 )
 from nominal_refactor_advisor.ast_tools import ModuleAnnotationEvaluationMode
 from nominal_refactor_advisor.captured_reference import SingleFlowPrefix
-from nominal_refactor_advisor.case_root import Case
 from nominal_refactor_advisor.declaration_dependencies import (
     DeclarationDependencyUse,
     ModuleBindingResolutionPhase,
@@ -34,7 +33,7 @@ from nominal_refactor_advisor.lexical_scopes import (
 )
 from nominal_refactor_advisor.native_compilation import NativeCreationBackend
 from nominal_refactor_advisor.native_declarations import NativeDeclaration
-from nominal_refactor_advisor.native_call import NativeDescriptorCall
+from nominal_refactor_advisor.native_call import NativeDecoratorContract
 from nominal_refactor_advisor.product_flow import (
     CompactCallableReferenceUse,
     CompactDefinitionTarget,
@@ -59,49 +58,11 @@ if TYPE_CHECKING:
     from nominal_refactor_advisor.class_index import ModuleNominalBindingView
 
 
-# Native descriptor decorators receive the function just declared. Explicit
-# construction also requires evidence about the argument's metadata access.
-NATIVE_METHOD_DECORATORS = tuple(
-    native.declaration for native in NativeDescriptorCall.native_declarations
-)
-
-
-class OwnerIndependentMethodWrapper(Case):
-    """A decorator whose result depends only on the function it wraps and that reads and
-    stores nothing on the class declaring it, so a method it decorates means the same
-    declared in an ancestor. A decorator is one of these only when its binding resolves to
-    the member's declaration, never by how it is spelled."""
-
-    native: ClassVar[NativeDeclaration]
-
-    @classmethod
-    def identities(cls) -> frozenset[str]:
-        return frozenset(member.native.qualified_name for member in cls.__subclasses__())
-
-
-class ContextManagerWrapper(OwnerIndependentMethodWrapper):
-    """`contextlib.contextmanager` turns the generator function it is given into a
-    context-manager factory from that function alone."""
-
-    value = "contextmanager"
-    native = NativeDeclaration(contextmanager)
-
-
-class AsyncContextManagerWrapper(OwnerIndependentMethodWrapper):
-    """`contextlib.asynccontextmanager` does the same for an async generator function."""
-
-    value = "asynccontextmanager"
-    native = NativeDeclaration(asynccontextmanager)
-
-
 PROMOTABLE_METHOD_DECORATOR_IDENTITIES = frozenset(
-    (
-        *(native.qualified_name for native in NativeDescriptorCall.native_declarations),
-        *OwnerIndependentMethodWrapper.identities(),
-    )
+    native.qualified_name for native in NativeDecoratorContract.admitted_natives()
 )
-"""What a method's decorator may resolve to and still promote: a native descriptor, or a
-wrapper no owner changes."""
+"""What a method's decorator may resolve to and still promote: a native whose application
+contract the decorator chain proves."""
 
 
 @dataclass(frozen=True)
@@ -178,8 +139,8 @@ class NativeClassNamespaceEffect(ClassNamespaceEffect, ABC):
         environment.require_native(self.operand, self.native_declarations)
 
 
-class DescriptorClassNamespaceEffect(NativeClassNamespaceEffect):
-    native_declarations = NativeDescriptorCall.native_declarations
+class DecoratorClassNamespaceEffect(NativeClassNamespaceEffect):
+    native_declarations = NativeDecoratorContract.admitted_natives()
 
 
 @dataclass(frozen=True)
@@ -756,7 +717,7 @@ class _ClassNamespaceEffectProjection(ast.NodeVisitor):
         self._record_effect(DefinitionHeaderEffect, node)
         self._record_effect(BindingSourceEffect, node)
         for decorator in node.decorator_list:
-            self._record_effect(DescriptorClassNamespaceEffect, decorator)
+            self._record_effect(DecoratorClassNamespaceEffect, decorator)
 
     visit_AsyncFunctionDef = visit_FunctionDef
 

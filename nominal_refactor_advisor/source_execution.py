@@ -125,6 +125,7 @@ from nominal_refactor_advisor.native_declarations import (
 )
 from nominal_refactor_advisor.native_reference import NativeReferenceEnvironment
 from nominal_refactor_advisor.native_call import (
+    NativeDecoratorContract,
     CallAuthority,
     DefaultObjectConstruction,
     NativeDefinitionApplicationAuthorityABC,
@@ -949,10 +950,12 @@ class SourceNativeDecoratorApplication(
     NativeDescriptorResult,
     SourceDefinitionDecoratorApplicationABC,
 ):
-    """Native descriptor application over the shared definition topology."""
+    """Native decorator application over the shared definition topology."""
 
     creation: SourceCreatedFunctionCapture
     index: int
+
+    native_declarations = NativeDecoratorContract.admitted_natives()
 
     @property
     def _native_application_path(
@@ -1000,7 +1003,7 @@ class SourceNativeDecoratorApplication(
         self.descriptor_argument.require_descriptor_argument()
         try:
             declaration = self.callee.require_native(self.native_declarations)
-            NativeCreationBackend.current().require_descriptor_wrapping(declaration)
+            NativeDecoratorContract.admitting(declaration).require_application(self, declaration)
         except ValueError as error:
             raise ValueError("Function decorator result remains unproved") from error
         self.execution.require_binding_write(self.creation.node)

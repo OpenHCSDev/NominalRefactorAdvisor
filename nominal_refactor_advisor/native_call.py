@@ -57,6 +57,7 @@ from nominal_refactor_advisor.native_declarations import (
     NativeDeclarationFamily,
     NativeParameterDefault,
     NativeDictionaryKey,
+    OwnerIndependentMethodWrapper,
 )
 from nominal_refactor_advisor.native_subscription import NativeArgumentInspection
 from nominal_refactor_advisor.product_flow import (
@@ -75,6 +76,9 @@ from nominal_refactor_advisor.registry_identity import mro_registry_value
 
 if TYPE_CHECKING:
     from nominal_refactor_advisor.native_reference import NativeReferenceEnvironment
+    from nominal_refactor_advisor.source_execution import (
+        SourceDefinitionDecoratorApplicationABC,
+    )
 
 
 @dataclass(frozen=True, eq=False)
@@ -1011,6 +1015,58 @@ class NativeDescriptorResult(
 
     def require_class_installation(self) -> None:
         self.require_closed()
+
+
+class NativeDecoratorContract(ABC):
+    """What applying one family of native decorators requires beyond its argument's
+    descriptor metadata, which every member's application reads."""
+
+    natives: ClassVar[tuple[NativeDeclaration, ...]]
+
+    @classmethod
+    def admitted_natives(cls) -> tuple[NativeDeclaration, ...]:
+        return tuple(native for member in cls.__subclasses__() for native in member.natives)
+
+    @classmethod
+    def admitting(cls, declaration: NativeDeclaration) -> type[NativeDecoratorContract]:
+        members = tuple(member for member in cls.__subclasses__() if declaration in member.natives)
+        if len(members) != 1:
+            raise ValueError("Native decorator has no unique application contract")
+        return members[0]
+
+    @classmethod
+    @abstractmethod
+    def require_application(
+        cls, application: SourceDefinitionDecoratorApplicationABC, declaration: NativeDeclaration
+    ) -> None:
+        raise NotImplementedError
+
+
+class NativeDescriptorDecoratorContract(NativeDecoratorContract):
+    """`staticmethod`, `classmethod` and `property`: a native descriptor over the argument."""
+
+    natives = CPythonClassConstruction.descriptor_wrappers
+
+    @classmethod
+    def require_application(
+        cls, application: SourceDefinitionDecoratorApplicationABC, declaration: NativeDeclaration
+    ) -> None:
+        NativeCreationBackend.current().require_descriptor_wrapping(declaration)
+
+
+class OwnerIndependentDecoratorContract(NativeDecoratorContract):
+    """A wrapper whose `update_wrapper` call reads the freshly created source function;
+    an earlier decorator's result could carry a `__dict__` or attribute hooks of its own."""
+
+    natives = OwnerIndependentMethodWrapper.natives()
+
+    @classmethod
+    def require_application(
+        cls, application: SourceDefinitionDecoratorApplicationABC, declaration: NativeDeclaration
+    ) -> None:
+        if application.argument is not application.creation:
+            raise ValueError("Owner-independent wrapping requires the fresh source function")
+        NativeCreationBackend.current().require_owner_independent_wrapping(declaration)
 
 
 class NativeDescriptorCall(NativeDescriptorResult, NativeCallAuthority):

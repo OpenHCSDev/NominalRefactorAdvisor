@@ -45,6 +45,7 @@ from nominal_refactor_advisor.native_declarations import (
     NativeDeclarationFamily,
     NativeLanguageFeature,
     NativeDictionaryKey,
+    OwnerIndependentMethodWrapper,
 )
 from nominal_refactor_advisor.product_flow import (
     CompactFlowContext,
@@ -333,7 +334,13 @@ class ImportedSourceModuleEntryPremise(RegisteredSourceModuleEntryPremise):
         Custom loaders and fresh imports use an explicitly supplied entry premise.
         """
         initial = InitialNativeIsland(
-            (builtins, typing, dataclasses, NativeLanguageFeature.module)
+            (
+                builtins,
+                typing,
+                dataclasses,
+                NativeLanguageFeature.module,
+                *OwnerIndependentMethodWrapper.modules(),
+            )
         )
         return cls.from_standard_source_loader(
             source,

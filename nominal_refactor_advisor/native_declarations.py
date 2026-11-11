@@ -5,6 +5,9 @@ from __future__ import annotations
 import ast
 import __future__
 import builtins
+import contextlib
+import functools
+import sys
 import types
 import dataclasses
 from abc import ABC, abstractmethod
@@ -30,6 +33,7 @@ from typing import (
     get_args,
 )
 
+from nominal_refactor_advisor.case_root import Case
 from nominal_refactor_advisor.semantic_match import loaded_concrete_nominal_descendants
 
 
@@ -383,6 +387,169 @@ class NativeDeclarationFamily(ABC):
                 "Native operation has no unique most-specific declaration-owned protocol"
             )
         return refinements[0]
+
+
+class OwnerIndependentMethodWrapper(Case):
+    """A native decorator that runs no user code when applied and is inert toward the class
+    declaring the method it decorates. Applied to a function, it builds a new function object
+    and calls `functools.update_wrapper` on it, which reads the function's attributes named in
+    `read_attributes`, writes them onto the new wrapper, copies the function's `__dict__`
+    entries into the wrapper's `__dict__`, and sets `__wrapped__` to the function. Every write
+    lands on the returned wrapper; nothing is written to the function, the class namespace,
+    the module or any registry. The result is a pure function of the function it wraps, so a
+    method it decorates means the same declared in an ancestor. A decorator is one of these
+    only when its binding resolves to the member's declaration, never by how it is spelled,
+    and only while `require_current_source` finds the running interpreter's code to be the
+    code this claim describes."""
+
+    native: ClassVar[NativeDeclaration]
+    manager: ClassVar[str]
+    """The class the returned wrapper constructs when called; applying the decorator
+    references it only inside the unexecuted wrapper body."""
+
+    read_attributes: ClassVar[tuple[str, ...]] = (
+        "__module__",
+        "__name__",
+        "__qualname__",
+        "__doc__",
+        "__annotate__",
+        "__type_params__",
+    )
+    """Reading each of these on an exact function returns a stored slot; none evaluates
+    annotations or calls user code. CPython before 3.14 read `__annotations__` instead."""
+
+    updated_attributes: ClassVar[tuple[str, ...]] = ("__dict__",)
+
+    @classmethod
+    def natives(cls) -> tuple[NativeDeclaration, ...]:
+        return tuple(member.native for member in cls.__subclasses__())
+
+    @classmethod
+    def identities(cls) -> frozenset[str]:
+        return frozenset(native.qualified_name for native in cls.natives())
+
+    @classmethod
+    def modules(cls) -> tuple[ModuleType, ...]:
+        """The modules declaring the members, which an import of one of them reads."""
+
+        return tuple(dict.fromkeys(sys.modules[native.declaration.__module__] for native in cls.natives()))
+
+    @classmethod
+    def admitting(cls, declaration: NativeDeclaration) -> type[OwnerIndependentMethodWrapper]:
+        members = tuple(member for member in cls.__subclasses__() if member.native == declaration)
+        if len(members) != 1:
+            raise ValueError("Decorator is not an owner-independent method wrapper")
+        return members[0]
+
+    @classmethod
+    def require_current_source(cls) -> None:
+        """Check the claim's hypotheses against the running interpreter: the member's own
+        source, `functools.wraps` and `functools.update_wrapper` must have the shapes the
+        claim describes, bound to each other, with the attribute tuples it names."""
+
+        decorator = cls.native.declaration
+        if (
+            functools.WRAPPER_ASSIGNMENTS != cls.read_attributes
+            or functools.WRAPPER_UPDATES != cls.updated_attributes
+            or functools.wraps.__defaults__ != (cls.read_attributes, cls.updated_attributes)
+            or functools.update_wrapper.__defaults__ != (cls.read_attributes, cls.updated_attributes)
+            or getattr(decorator, "__globals__", {}).get("wraps") is not functools.wraps
+            or functools.wraps.__globals__.get("partial") is not functools.partial
+            or functools.wraps.__globals__.get("update_wrapper") is not functools.update_wrapper
+        ):
+            raise ValueError("Owner-independent wrapper differs from its claimed functools contract")
+        cls._require_decorator_shape(_docless_body(NativeDeclaration(decorator).node))
+        _require_wraps_shape(_docless_body(NativeDeclaration(functools.wraps).node))
+        _require_update_wrapper_shape(NativeDeclaration(functools.update_wrapper).node)
+
+    @classmethod
+    def _require_decorator_shape(cls, body: tuple[ast.stmt, ...]) -> None:
+        match body:
+            case (
+                ast.FunctionDef(
+                    name=helper,
+                    decorator_list=[ast.Call(func=ast.Name(id="wraps"), args=[ast.Name(id=wrapped)], keywords=[])],
+                    args=ast.arguments(
+                        posonlyargs=[], args=[], kwonlyargs=[], defaults=[], kw_defaults=[],
+                        vararg=ast.arg(arg=positional, annotation=None),
+                        kwarg=ast.arg(arg=keyword, annotation=None),
+                    ),
+                    returns=None,
+                    type_params=[],
+                    body=[
+                        ast.Return(
+                            value=ast.Call(
+                                func=ast.Name(id=manager),
+                                args=[ast.Name(id=called), ast.Name(id=passed_positional), ast.Name(id=passed_keyword)],
+                                keywords=[],
+                            )
+                        )
+                    ],
+                ),
+                ast.Return(value=ast.Name(id=returned)),
+            ) if (
+                manager == cls.manager
+                and returned == helper
+                and called == wrapped
+                and (passed_positional, passed_keyword) == (positional, keyword)
+            ):
+                return
+        raise ValueError("Owner-independent wrapper source differs from its claimed shape")
+
+
+def _docless_body(node: ast.AST) -> tuple[ast.stmt, ...]:
+    body = tuple(getattr(node, "body", ()))
+    match body:
+        case (ast.Expr(value=ast.Constant(value=str())), *rest):
+            return tuple(rest)
+    return body
+
+
+def _require_wraps_shape(body: tuple[ast.stmt, ...]) -> None:
+    """`wraps` only constructs a native partial over `update_wrapper` from its own names."""
+
+    match body:
+        case (ast.Return(value=ast.Call(func=ast.Name(id="partial"), args=[ast.Name(id="update_wrapper")], keywords=keywords)),) if all(
+            isinstance(keyword.value, ast.Name) for keyword in keywords
+        ):
+            return
+    raise ValueError("functools.wraps differs from its claimed shape")
+
+
+def _require_update_wrapper_shape(node: ast.AST) -> None:
+    """`update_wrapper` calls only `getattr`, `setattr` and a dict's `update`, and its only
+    attribute store is `wrapper.__wrapped__`: no call reaches a user object."""
+
+    for child in ast.walk(node):
+        match child:
+            case ast.Call(func=ast.Name(id="getattr" | "setattr")) | ast.Call(func=ast.Attribute(attr="update", value=ast.Call(func=ast.Name(id="getattr")))):
+                continue
+            case ast.Call():
+                raise ValueError("functools.update_wrapper calls outside its claimed contract")
+            case ast.Attribute(ctx=ast.Store()) if not (
+                child.attr == "__wrapped__" and isinstance(child.value, ast.Name) and child.value.id == "wrapper"
+            ):
+                raise ValueError("functools.update_wrapper stores outside its claimed contract")
+            case ast.Lambda() | ast.FunctionDef() | ast.AsyncFunctionDef() | ast.Yield() | ast.Await() if child is not node:
+                raise ValueError("functools.update_wrapper has code outside its claimed contract")
+
+
+class ContextManagerWrapper(OwnerIndependentMethodWrapper):
+    """`contextlib.contextmanager`: the wrapper it returns builds a generator context manager
+    from the function it wrapped, each time it is called."""
+
+    value = "contextmanager"
+    native = NativeDeclaration(contextlib.contextmanager)
+    manager = "_GeneratorContextManager"
+
+
+class AsyncContextManagerWrapper(OwnerIndependentMethodWrapper):
+    """`contextlib.asynccontextmanager`: the same, building an async generator context
+    manager."""
+
+    value = "asynccontextmanager"
+    native = NativeDeclaration(contextlib.asynccontextmanager)
+    manager = "_AsyncGeneratorContextManager"
 
 
 @dataclass(frozen=True, eq=False)
