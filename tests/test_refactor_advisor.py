@@ -3693,13 +3693,7 @@ def test_refactor_recipe_replaces_projected_fields_with_existing_carrier(
     "consumer",
     (
         "def untyped_owner(candidate):\n    return candidate.count\n",
-        pytest.param(
-            "def rebound(candidate: Candidate, other):\n    candidate = other\n    return candidate.count\n",
-            marks=pytest.mark.xfail(
-                strict=True,
-                reason="AnsweredMethod types a receiver by its parameter annotation even after the name is rebound",
-            ),
-        ),
+        "def rebound(candidate: Candidate, other):\n    candidate = other\n    return candidate.count\n",
         "def positional(stats: Stats):\n    return Candidate(stats.count, 'x')\n",
     ),
 )

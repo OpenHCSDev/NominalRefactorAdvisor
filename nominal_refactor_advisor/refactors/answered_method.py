@@ -228,6 +228,11 @@ class AnsweredMethod:
         undeclared: dict[ReceiverSpan, TypedReceiver] = {}
         for receiver in receivers:
             parents = receiver.parsed.fact(ModuleNodeIndex).parents
+            if _rebound(receiver.expression, parents):
+                raise ValueError(
+                    f"{receiver.where} reads `{ast.unparse(receiver.expression)}`, which its "
+                    "function rebinds, so no annotation types it"
+                )
             enclosing = _enclosing_class(snapshot, receiver.parsed.file_path, receiver.anchor, parents)
             bound = self.bound_class(
                 receiver.expression, receiver.parsed.file_path, enclosing,
@@ -479,6 +484,28 @@ class _ScopeBindings:
             elif isinstance(node, ast.arg) and node.arg == name:
                 last = NameBinding()
         return last
+
+
+def _rebound(expression: ast.expr, parents: dict[ast.AST, ast.AST]) -> bool:
+    """Whether a receiver name is a parameter its enclosing function also assigns:
+    the annotation then types only some of the values it holds."""
+
+    if not isinstance(expression, ast.Name):
+        return False
+    function = parents.get(expression)
+    while function is not None and not isinstance(function, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+        function = parents.get(function)
+    if function is None:
+        return False
+    arguments = function.args
+    if expression.id not in {
+        argument.arg for argument in (*arguments.posonlyargs, *arguments.args, *arguments.kwonlyargs)
+    }:
+        return False
+    return any(
+        isinstance(node, ast.Name) and node.id == expression.id and isinstance(node.ctx, ast.Store)
+        for node in _ScopeBindings(function).nodes()
+    )
 
 
 def _name_scopes(node: ast.AST, parents: dict[ast.AST, ast.AST]) -> tuple[ast.AST, ...]:
