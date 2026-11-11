@@ -171,6 +171,56 @@ def test_extract_mixin_verdict_not_blocked_by_inherited(
         assert c.inherited_names, "inherited_names still available via overlap"
 
 
+KEYWORD_MISMATCH = (
+    "from dataclasses import dataclass\n"
+    "from nominal_refactor_advisor.nominal.declared_family import DeclaredFamily\n\n\n"
+    "@dataclass(frozen=True)\n"
+    "class FamilyMember(DeclaredFamily, affix='Member'):\n"
+    "    alpha: str\n"
+    "    beta: int\n"
+    "    gamma: float\n"
+    "    own_family: str = 'x'\n\n\n"
+    "@dataclass(frozen=True)\n"
+    "class PlainRecord:\n"
+    "    alpha: str\n"
+    "    beta: int\n"
+    "    gamma: float\n"
+    "    own_plain: str = 'y'\n"
+)
+
+
+def test_keyword_only_construction_diff_does_not_block_extract_mixin(
+    tmp_path: Path,
+) -> None:
+    """When two classes differ only in class keywords (affix vs nothing),
+    ExtractMixin should not be blocked by DIFFERENT_CONSTRUCTION: the
+    mixin does not inherit the keywords."""
+
+    from nominal_refactor_advisor.class_overlap import ExtractMixin
+    from nominal_refactor_advisor.overlap_receipts import OverlapReceiptKind
+
+    package = tmp_path / "pkg"
+    package.mkdir()
+    (package / "__init__.py").write_text("")
+    (package / "classes.py").write_text(KEYWORD_MISMATCH)
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+
+    verdicts = snapshot.class_overlap_verdicts
+    extract_mixins = [
+        c for c in verdicts.candidates if c.move is ExtractMixin
+    ]
+    assert extract_mixins, "fixture must produce an ExtractMixin verdict"
+    for c in extract_mixins:
+        construction_refusals = [
+            r for r in c.refusals
+            if r.kind is OverlapReceiptKind.DIFFERENT_CONSTRUCTION
+        ]
+        assert not construction_refusals, (
+            f"ExtractMixin should not be blocked by keyword-only construction diff, "
+            f"got {[r.detail for r in construction_refusals]}"
+        )
+
+
 def test_descendant_without_projected_fields_does_not_block_carrier(
     tmp_path: Path,
 ) -> None:
