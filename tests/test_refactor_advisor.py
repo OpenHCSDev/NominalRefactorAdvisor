@@ -6273,6 +6273,39 @@ def test_refactor_recipe_removes_import_names(
     build_source_index(parse_python_modules(tmp_path), ())
 
 
+def test_remove_import_names_refuses_a_guarded_binding(tmp_path: Path) -> None:
+    """A name bound only under `if TYPE_CHECKING:` is not a runtime import;
+    removing it by module name silently did nothing (j-board, cohort_schema)."""
+
+    _write_module(tmp_path, "pkg/__init__.py", "")
+    _write_module(
+        tmp_path,
+        "pkg/consumer.py",
+        "from typing import TYPE_CHECKING\n\n"
+        "if TYPE_CHECKING:\n    from pkg.alpha import Beta\n\n\n"
+        "def f() -> None:\n    pass\n",
+    )
+    _write_module(tmp_path, "pkg/alpha.py", "class Beta:\n    pass\n")
+    module_path = tmp_path / "pkg/consumer.py"
+    source_index = build_source_index(parse_python_modules(tmp_path), ())
+
+    recipe = RefactorRecipe(recipe_id="remove-guarded").with_operation(
+        RemoveImportNamesOperation(
+            target=SourceRewriteTarget(file_path=module_path.as_posix()),
+            module_name="pkg.alpha",
+            import_names=("Beta",),
+        )
+    )
+
+    with pytest.raises(ValueError, match="No matching import statement for name removal"):
+        recipe.simulate(
+            _indexed_snapshot(
+                source_index,
+                {module_path.as_posix(): module_path.read_text()},
+            ),
+        )
+
+
 @pytest.mark.native_proof
 def test_refactor_recipe_converts_manual_registry_to_autoregister(
     tmp_path: Path,

@@ -709,6 +709,30 @@ class ModuleImportMutation(KeyedSourceEditCoalescence):
                 if alias.name not in removed_names
             ]
 
+        unmatched_removals = {
+            (scope_key, module_key): names
+            for (scope_key, module_key), names in removals_by_module.items()
+            if names
+            and not any(
+                scope_by_statement_id[id(statement)] is scope_key
+                and ImportFromModuleName.from_node(statement) == module_key
+                for statement in import_from_statements
+            )
+        }
+        if unmatched_removals:
+            detail = "; ".join(
+                f"{sorted(names)!r} from {module_key.source!r} ({scope_key.value})"
+                for (scope_key, module_key), names in sorted(
+                    unmatched_removals.items(),
+                    key=lambda item: (item[0][0].canonical_rank, item[0][1].source),
+                )
+            )
+            raise ValueError(
+                f"No matching import statement for name removal: {detail}. "
+                "A binding under `if TYPE_CHECKING:` needs scope=TYPE_CHECKING "
+                "or use remove_import_bindings, which searches every scope."
+            )
+
         matched_bound_name_removals: set[ImportBoundNameRemoval] = set()
         for statement in import_statements:
             scope = scope_by_statement_id[id(statement)]
