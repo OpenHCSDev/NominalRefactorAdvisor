@@ -88,16 +88,14 @@ def test_empty_return_becomes_none(tmp_path: Path) -> None:
     snapshot = _snapshot(tmp_path)
     operation = _operation(tmp_path)
     edits = operation.source_edits_from_snapshot(snapshot)
+    compiler = snapshot.execution_snapshot()
+    rewrites = compiler._planned_rewrites_from_physical_edits(edits)
+    simulation = snapshot.simulate_rewrites(rewrites)
 
     base_path = (tmp_path / "pkg/base.py").as_posix()
-    all_replacements = [
-        (r.start_offset, r.end_offset, r.replacement_source)
-        for edit in edits
-        if hasattr(edit, "file_path") and edit.file_path == base_path
-        for r in getattr(edit, "replacements", ())
-    ]
-    replacement_texts = [text for _, _, text in all_replacements]
-    assert "None" in replacement_texts
+    rewritten = simulation.rewritten_sources.get(base_path, "")
+    assert "return None" in rewritten
+    assert "return ()" not in rewritten
 
 
 def test_annotation_flattens(tmp_path: Path) -> None:

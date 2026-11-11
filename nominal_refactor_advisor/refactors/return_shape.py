@@ -251,7 +251,7 @@ class FlattenTupleReturnOperation(RepositorySourceReprovedOperation):
             use.file_path
         ).fact(ModuleNodeIndex).parents
         call_node = use.node
-        parent = parents.get(id(call_node))
+        parent = parents.get(call_node)
         if parent is None:
             raise ValueError(
                 f"{use.where} calls `{self.method_name}` but the call has no "
@@ -268,7 +268,7 @@ class FlattenTupleReturnOperation(RepositorySourceReprovedOperation):
             and parent.func.id == "iter"
             and len(parent.args) == 1
         ):
-            grandparent = parents.get(id(parent))
+            grandparent = parents.get(parent)
             if (
                 isinstance(grandparent, ast.Call)
                 and isinstance(grandparent.func, ast.Name)
