@@ -86,6 +86,9 @@ from nominal_refactor_advisor.refactors.class_member_authority import (
     PromoteExactDataclassFieldsToExistingAuthorityOperation as PromoteExactDataclassFieldsToExistingAuthorityOperation,
     PromoteExactLeafMethodsToAncestorOperation as PromoteExactLeafMethodsToAncestorOperation,
 )
+from nominal_refactor_advisor.refactors.capability_guard import (
+    CapabilityGuardToOverrideOperation as CapabilityGuardToOverrideOperation,
+)
 from nominal_refactor_advisor.refactors.carrier_member import (
     CarrierFieldBecomesMemberOperation as CarrierFieldBecomesMemberOperation,
 )
@@ -781,12 +784,13 @@ class PatchTargetOperation(SourceReprovedOperation, SourceTextPatch):
         snapshot: CodemodSourceSnapshot,
     ) -> tuple[PhysicalSourceEdit, ...]:
         _, target_digest = self.target_digest(snapshot)
-        _identifier, _digest, node = self.target_node_from_context(snapshot)
         return (
             SourceTargetEditor(
                 snapshot.sources_by_file_path,
                 target_digest,
-                first_line=self.decorators.start_line(node),
+                first_line=self.decorators.region_start(
+                    lambda: self.target_node_from_context(snapshot)[2]
+                ),
             ).exact_text_patch(
                 self,
                 rationale=self.rationale

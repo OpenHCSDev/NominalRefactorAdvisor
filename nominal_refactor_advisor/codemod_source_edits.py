@@ -101,6 +101,13 @@ class SourceNodeDecoratorPolicy(Case):
     def start_line(cls, node: ast.stmt) -> int:
         return node.lineno
 
+    @classmethod
+    def region_start(cls, node: Callable[[], ast.stmt]) -> int | None:
+        """Where an edited region starts when not at its target's own line; the
+        target's node is read only by a policy that needs it."""
+
+        return None
+
 
 class Exclude(SourceNodeDecoratorPolicy):
     value = "exclude"
@@ -117,6 +124,10 @@ class Include(SourceNodeDecoratorPolicy):
         node: ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef,
     ) -> None:
         pass
+
+    @classmethod
+    def region_start(cls, node: Callable[[], ast.stmt]) -> int | None:
+        return cls.start_line(node())
 
     @classmethod
     def start_line(cls, node: ast.stmt) -> int:
