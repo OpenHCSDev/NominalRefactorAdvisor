@@ -182,8 +182,7 @@ class DestinationTable:
         flat module named like a row package holds that name too, so the root it
         shadows a package in is still the subject and the move reports the shadow."""
 
-        flat_by_root: dict[str, list[CompactModuleClassHeader]] = {}
-        packaged_by_root: dict[str, list[CompactModuleClassHeader]] = {}
+        modules_by_root: dict[str, list[CompactModuleClassHeader]] = {}
         packages_by_root: dict[str, set[str]] = {}
         for module in modules:
             parts = module.module_name.split(".")
@@ -191,8 +190,7 @@ class DestinationTable:
                 packages_by_root.setdefault(parts[0], set()).add(parts[1])
             if PurePosixPath(module.file_path).name == "__init__.py" or len(parts) < 2:
                 continue
-            by_root = flat_by_root if len(parts) == 2 else packaged_by_root
-            by_root.setdefault(parts[0], []).append(module)
+            modules_by_root.setdefault(parts[0], []).append(module)
         table_packages = {row.package.split("/")[0] for row in self.rows}
         held = {
             root: len(table_packages & packages)
@@ -215,63 +213,124 @@ class DestinationTable:
                 "add one of the table's packages to the root it describes"
             )
         (root,) = described
+        levels = self.flat_levels
+        root_modules = modules_by_root.get(root, ())
         return self.root_destinations(
-            tuple(flat_by_root.get(root, ())), tuple(packaged_by_root.get(root, ()))
+            tuple(module for module in root_modules if self.level_of(module) in levels),
+            tuple(root_modules),
         )
+
+    @cached_property
+    def flat_levels(self) -> frozenset[str]:
+        """The packages a row's flat modules can sit in: the parent of each row's
+        package and every package above it, up to the root. A row `core/runtime`
+        gathers flat modules from `core` and from the root, as `runtime` gathers
+        them from the root."""
+
+        return frozenset(
+            level for row in self.rows for level in DestinationTable.ancestors(row.package)
+        )
+
+    @staticmethod
+    def ancestors(package: str) -> tuple[str, ...]:
+        """The packages above `package` under the root, nearest first: `core/runtime`
+        gives `core` and the root `""`."""
+
+        parts = package.split("/")
+        return tuple("/".join(parts[:depth]) for depth in range(len(parts) - 1, -1, -1))
+
+    @staticmethod
+    def level_of(module: CompactModuleIdentity) -> str:
+        """The package holding `module`, under the root: `pkg.core.stores` is in `core`."""
+
+        return "/".join(module.module_name.split(".")[1:-1])
 
     def root_destinations(
         self,
         flat_modules: tuple[CompactModuleClassHeader, ...],
-        package_modules: tuple[CompactModuleClassHeader, ...],
+        root_modules: tuple[CompactModuleClassHeader, ...],
     ) -> tuple[FlatModuleDestination, ...]:
         """A class names the flat module declaring it, or, once relocated into
-        its row's package, the flat module of the same name it left behind."""
+        its row's package, the flat module of the same name it left behind. A
+        row's flat modules sit in its package's parent or a package above it,
+        nearest first; a module a row names by file that sits outside all of
+        them, and is not at its destination already, is refused by name."""
 
-        by_stem = {
-            PurePosixPath(module.file_path).stem: module for module in flat_modules
+        by_level = {
+            (self.level_of(module), PurePosixPath(module.file_path).stem): module
+            for module in flat_modules
         }
-        declaring = (
-            self.class_declarations((*flat_modules, *package_modules))
-            if self.reads_classes
-            else {}
-        )
+        flat_paths = {module.file_path for module in flat_modules}
+
+        def flat(row: DestinationRow, name: str) -> CompactModuleClassHeader | None:
+            for level in self.ancestors(row.package):
+                if (level, name) in by_level:
+                    return by_level[(level, name)]
+            return None
+
+        declaring = self.class_declarations(root_modules) if self.reads_classes else {}
+        packaged = {
+            ".".join(module.module_name.split(".")[1:]).replace(".", "/")
+            for module in root_modules
+        }
+        # A module of a row's name outside the row's levels is one the row cannot
+        # place; a name found nowhere was dissolved by an earlier stage.
+        stray = {
+            PurePosixPath(module.file_path).stem: (
+                ".".join(module.module_name.split(".")[1:]).replace(".", "/") + ".py"
+            )
+            for module in root_modules
+            if module.file_path not in flat_paths
+        }
         chosen: dict[str, str] = {}
+        unplaced: list[str] = []
         for row in self.rows:
             for name, destination in row.module_destinations():
-                if name in by_stem:
-                    chosen.setdefault(by_stem[name].file_path, destination)
-            row_package = row.package.replace("/", ".")
+                if (module := flat(row, name)) is not None:
+                    chosen.setdefault(module.file_path, destination)
+                elif destination not in packaged and (elsewhere := stray.get(name)):
+                    levels = " or ".join(
+                        f"`{level}`" if level else "the root" for level in self.ancestors(row.package)
+                    )
+                    unplaced.append(
+                        f"`{row.package}` names `{name}`, but `{elsewhere}` sits outside "
+                        f"{levels}, where the row reads its flat modules"
+                    )
+            packages = {level.replace("/", ".") for level in self.ancestors(row.package)}
+            packages.add(row.package.replace("/", "."))
             for word in sorted(row.owner_words()):
                 owners = [
-                    module
-                    for package, module in declaring.get(word, ())
-                    if package in ("", row_package)
+                    module for package, module in declaring.get(word, ()) if package in packages
                 ]
-                stem = PurePosixPath(owners[0].file_path).stem if len(owners) == 1 else ""
-                if stem in by_stem:
-                    chosen.setdefault(by_stem[stem].file_path, f"{row.package}/{stem}")
+                if len(owners) != 1:
+                    continue
+                stem = PurePosixPath(owners[0].file_path).stem
+                shell = owners[0] if owners[0].file_path in flat_paths else flat(row, stem)
+                if shell is not None:
+                    chosen.setdefault(shell.file_path, f"{row.package}/{stem}")
+        if unplaced:
+            raise ValueError("the table names modules NRA cannot place: " + "; ".join(unplaced))
         declared = {
             name: destination
             for row in self.rows
             for name, destination in row.module_destinations()
         }
-        packaged = {
-            ".".join(module.module_name.split(".")[1:]).replace(".", "/")
-            for module in package_modules
-        }
         merge_sources: set[str] = set()
         for row in self.rows:
             for name, target in row.module_merges():
-                if name not in by_stem:
+                if (source := flat(row, name)) is None:
                     continue
-                merge_sources.add(by_stem[name].file_path)
-                if target in by_stem:
-                    target_path = by_stem[target].file_path
-                    chosen[by_stem[name].file_path] = chosen.get(target_path, target)
+                merge_sources.add(source.file_path)
+                if (target_module := flat(row, target)) is not None:
+                    chosen[source.file_path] = chosen.get(target_module.file_path, target)
                 elif declared.get(target) in packaged:
-                    chosen[by_stem[name].file_path] = declared[target]
+                    chosen[source.file_path] = declared[target]
+        level_by_path = {module.file_path: self.level_of(module) for module in flat_modules}
         destination_paths = {
-            source_path: (PurePosixPath(source_path).parent / f"{destination}.py").as_posix()
+            source_path: (
+                PurePosixPath(source_path).parents[len(PurePosixPath(level_by_path[source_path]).parts)]
+                / f"{destination}.py"
+            ).as_posix()
             for source_path, destination in chosen.items()
         }
         cluster = tuple(sorted(chosen))
