@@ -260,6 +260,16 @@ def test_a_forwarder_that_overrides_its_base_is_refused(tmp_path: Path) -> None:
             True,
         ),
         ("NAMES = ('require_may_change',)\n\n\ndef call(name):\n    return vars(Actor)[name]\n", True),
+        (
+            "class Other:\n    def run(self):\n        pass\n\n\nNAMES = ('require_may_change',)\n\n\n"
+            "def patch(fake):\n    for owner, method in ((Other, 'run'),):\n        setattr(owner, method, fake)\n",
+            False,
+        ),
+        (
+            "NAMES = ('require_may_change',)\n\n\n"
+            "def patch(fake):\n    for owner, method in ((Actor, 'require_may_change'),):\n        setattr(owner, method, fake)\n",
+            True,
+        ),
         ("NAMES = ('require_may_change',)\n\n\ndef call(actor: Actor, name):\n    return type(actor).__dict__[name]\n", True),
         ("NAMES = ('require_may_change',)\n\n\ndef call(actor: Actor, name):\n    return vars(actor)[name]\n", False),
     ),

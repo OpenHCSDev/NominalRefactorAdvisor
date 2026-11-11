@@ -284,7 +284,9 @@ class AnsweredMethod:
                 where = f"{parsed.file_path}:{node.lineno}"
                 if AttributeLookup.callee_name(node.func) in AttributeLookup.NAME_LOOKUPS:
                     return where
-                receivers.append(TypedReceiver(parsed, node.args[0], node, where, None))
+                index = parsed.fact(ModuleNodeIndex)
+                for receiver in _literal_loop_values(node.args[0], index.parents) or (node.args[0],):
+                    receivers.append(TypedReceiver(parsed, receiver, node, where, None))
         try:
             reached = self.reaching(receivers)
             classes = [
@@ -484,6 +486,38 @@ class _ScopeBindings:
             elif isinstance(node, ast.arg) and node.arg == name:
                 last = NameBinding()
         return last
+
+
+def _literal_loop_values(
+    expression: ast.expr, parents: dict[ast.AST, ast.AST]
+) -> tuple[ast.expr, ...] | None:
+    """The values a loop target takes when its loop runs over a literal: for `for a, b
+    in ((X, "m"), (Y, "n")):`, `a` is X, then Y. None when the name is no such target."""
+
+    if not isinstance(expression, ast.Name):
+        return None
+    loop = parents.get(expression)
+    while loop is not None and not isinstance(loop, ast.For):
+        loop = parents.get(loop)
+    if loop is None or not isinstance(loop.iter, (ast.Tuple, ast.List)):
+        return None
+    match loop.target:
+        case ast.Name(id=name) if name == expression.id:
+            return tuple(loop.iter.elts)
+        case ast.Tuple(elts=targets):
+            position = next(
+                (i for i, target in enumerate(targets) if isinstance(target, ast.Name) and target.id == expression.id),
+                None,
+            )
+            if position is None:
+                return None
+            values = []
+            for element in loop.iter.elts:
+                if not isinstance(element, (ast.Tuple, ast.List)) or len(element.elts) != len(targets):
+                    return None
+                values.append(element.elts[position])
+            return tuple(values)
+    return None
 
 
 def _rebound(expression: ast.expr, parents: dict[ast.AST, ast.AST]) -> bool:
